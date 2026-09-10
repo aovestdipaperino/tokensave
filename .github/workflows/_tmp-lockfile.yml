@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo generate-lockfile
+      - run: cargo update -p ureq
       - uses: actions/upload-artifact@v4
         with:
           name: Cargo.lock
