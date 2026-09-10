@@ -600,6 +600,15 @@ pub fn upgrade_command(_method: &InstallMethod) -> &'static str {
 mod tests {
     use super::*;
 
+    /// `RootCerts::PlatformVerifier` only takes effect under the rustls
+    /// provider; a provider/feature mismatch would panic at agent-construction
+    /// time rather than at the call site, which would otherwise surface only
+    /// as an unexplained crash on a user's first HTTPS call.
+    #[test]
+    fn agent_with_timeout_builds_with_platform_roots() {
+        let _ = agent_with_timeout(Duration::from_secs(1));
+    }
+
     fn cfg(
         pending: u64,
         last_upload_at: i64,
