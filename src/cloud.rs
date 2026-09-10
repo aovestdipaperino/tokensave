@@ -30,9 +30,22 @@ struct WorkerResponse {
 }
 
 /// Creates a ureq agent with the given timeout.
+///
+/// Root certificates come from the OS trust store (via `RootCerts::PlatformVerifier`)
+/// rather than ureq's bundled Mozilla roots, so a corporate TLS-intercepting proxy
+/// whose root CA is installed in the OS store (e.g. Cato) doesn't break every
+/// HTTPS call tokensave makes. TLS verification itself is unaffected — only the
+/// trust anchor changes.
 pub fn agent_with_timeout(timeout: Duration) -> ureq::Agent {
+    use ureq::tls::{RootCerts, TlsConfig};
+
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
+        .tls_config(
+            TlsConfig::builder()
+                .root_certs(RootCerts::PlatformVerifier)
+                .build(),
+        )
         .build()
         .into()
 }

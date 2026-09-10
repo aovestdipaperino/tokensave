@@ -45,10 +45,7 @@ fn fetch_asset_url(tag: &str, expected_asset: &str) -> Result<String> {
     }
 
     let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/tags/{tag}");
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(30)))
-        .build()
-        .into();
+    let agent = cloud::agent_with_timeout(std::time::Duration::from_secs(30));
 
     let release: Release = agent
         .get(&url)
@@ -86,10 +83,7 @@ fn download_and_extract(url: &str, bin_name: &str) -> Result<std::path::PathBuf>
         if cfg!(windows) { ".exe" } else { "" }
     ));
 
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_mins(5)))
-        .build()
-        .into();
+    let agent = cloud::agent_with_timeout(std::time::Duration::from_mins(5));
 
     eprint!("  Downloading...");
 
