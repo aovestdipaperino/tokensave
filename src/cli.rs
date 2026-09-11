@@ -98,12 +98,18 @@ pub enum Commands {
         /// Agent to configure (auto-detects if omitted)
         #[arg(long, value_parser = agent_value_parser())]
         agent: Option<String>,
-        /// Whether to install global git `post-commit` + `post-merge` hooks
-        /// that run `tokensave sync` after each commit and after `git pull`
-        /// (plus a `post-checkout` hook for fresh clones/branch tracking).
+        /// Whether to install git `post-commit` + `post-merge` hooks that run
+        /// `tokensave sync` after each commit and after `git pull` (plus a
+        /// `post-checkout` hook for fresh clones/branch tracking).
+        ///
         /// `default` preserves the interactive prompt (or silent skip on
-        /// non-TTY). `yes` installs the hooks without asking; `no` skips
-        /// them without asking.
+        /// non-TTY). `yes` installs without asking; `no` skips without asking.
+        /// Both install into the **current repository** (#506).
+        ///
+        /// `global` instead claims `core.hooksPath`, a single machine-wide
+        /// setting that forces one hook directory on every repository — which
+        /// also takes the slot from every other hook installer, so `git lfs
+        /// install --local`, husky and pre-commit will fail while it is held.
         #[arg(long, value_enum, default_value_t = GitHookMode::Default)]
         git_hook: GitHookMode,
         /// Install into the current project's config instead of the user's

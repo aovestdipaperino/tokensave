@@ -842,7 +842,40 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             // Best-effort during `install`: a hook that could not be written
             // must not fail the whole install. The reason was already printed.
-            let _ = tokensave::agents::offer_git_post_commit_hook(&tokensave_bin, git_hook);
+            //
+            // Since #506 the hooks go into the current repository rather than
+            // claiming a global `core.hooksPath` — a single machine-wide slot
+            // whose capture breaks every other tool's hook installer. `init`
+            // has always been per-repository for the same reason. `--git-hook
+            // global` still takes the slot for anyone who wants it.
+            match git_hook {
+                tokensave::agents::GitHookMode::Global => {
+                    let _ = tokensave::agents::offer_git_post_commit_hook(&tokensave_bin, git_hook);
+                }
+                tokensave::agents::GitHookMode::No => {}
+                mode => {
+                    if let Some(warning) = tokensave::agents::global_hookspath_conflict_warning() {
+                        eprintln!("{warning}");
+                    }
+                    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+                    let forced = matches!(mode, tokensave::agents::GitHookMode::Yes);
+                    if forced && tokensave::agents::repo_hooks_dir(&cwd).is_none() {
+                        // `install` is machine-wide and is often run outside a
+                        // repository, so the default path stays quiet. Asking
+                        // for the hooks explicitly and getting nothing is worth
+                        // a word, since the request could not be honored.
+                        eprintln!(
+                            "  \x1b[33m⚠\x1b[0m --git-hook yes installs this repository's hooks, \
+                             but {} is not a git repository.\n     Run it inside one, or use \
+                             `tokensave init` / `tokensave githooks on --local --path <repo>`.\n     \
+                             For one hook directory shared by every repo: `--git-hook global`.",
+                            cwd.display()
+                        );
+                    } else {
+                        offer_local_git_hooks(&cwd, forced, false);
+                    }
+                }
+            }
         }
         Commands::Reinstall {
             wildcard_permissions,
@@ -1241,9 +1274,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 (Some("on"), false) => {
                     // The specific reason was already printed; this only stops
                     // `githooks on` from reporting a failed install as success.
+                    // `githooks on` without `--local` is the explicit request
+                    // for the machine-wide hooks; `--local` above is how the
+                    // caller asks for this repository's own.
                     if let Err(message) = tokensave::agents::offer_git_post_commit_hook(
                         &current_bin_path(),
-                        tokensave::agents::GitHookMode::Yes,
+                        tokensave::agents::GitHookMode::Global,
                     ) {
                         return Err(tokensave::errors::TokenSaveError::Config { message });
                     }
