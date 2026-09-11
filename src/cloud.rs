@@ -30,9 +30,22 @@ struct WorkerResponse {
 }
 
 /// Creates a ureq agent with the given timeout.
+///
+/// Root certificates come from the OS trust store (via `RootCerts::PlatformVerifier`)
+/// rather than ureq's bundled Mozilla roots, so a corporate TLS-intercepting proxy
+/// whose root CA is installed in the OS store (e.g. Cato) doesn't break every
+/// HTTPS call tokensave makes. TLS verification itself is unaffected — only the
+/// trust anchor changes.
 pub fn agent_with_timeout(timeout: Duration) -> ureq::Agent {
+    use ureq::tls::{RootCerts, TlsConfig};
+
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
+        .tls_config(
+            TlsConfig::builder()
+                .root_certs(RootCerts::PlatformVerifier)
+                .build(),
+        )
         .build()
         .into()
 }
@@ -586,6 +599,15 @@ pub fn upgrade_command(_method: &InstallMethod) -> &'static str {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// `RootCerts::PlatformVerifier` only takes effect under the rustls
+    /// provider; a provider/feature mismatch would panic at agent-construction
+    /// time rather than at the call site, which would otherwise surface only
+    /// as an unexplained crash on a user's first HTTPS call.
+    #[test]
+    fn agent_with_timeout_builds_with_platform_roots() {
+        let _ = agent_with_timeout(Duration::from_secs(1));
+    }
 
     fn cfg(
         pending: u64,

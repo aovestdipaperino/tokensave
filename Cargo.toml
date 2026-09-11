@@ -136,7 +136,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 toml = "1"
 yaml-rust2 = "0.10"
-ureq = { version = "3", features = ["json"] }
+ureq = { version = "3", features = ["json", "platform-verifier"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 thiserror = "2"
