@@ -107,6 +107,18 @@ pub struct BucketStat {
     /// from `input_tokens` until #474, where under prompt caching it measured
     /// only the uncached remainder of the prompt.
     pub addressable_input_tokens: u64,
+    /// How many of `turns` carry a recorded tool-result size.
+    ///
+    /// Turns ingested before #474 have no size — the column defaults to 0 —
+    /// so `addressable_input_tokens == 0` has two readings that are the same
+    /// bytes: measured and genuinely zero, or never measured. This counts the
+    /// turns that actually carry a figure, which is what separates them, and
+    /// which is the only way to describe a range straddling the upgrade
+    /// rather than rounding it off (#523). A turn whose tool results were
+    /// truly empty counts as unmeasured; for a `Read`, `Grep` or `Glob` turn
+    /// that is vanishingly rare, and erring that way keeps this a lower bound
+    /// rather than an overclaim.
+    pub turns_with_measured_sizes: u64,
 }
 
 impl BucketStat {
@@ -132,6 +144,18 @@ impl DiscoverReport {
     /// Total replaceable navigation turns across all buckets.
     pub fn total_replaceable_turns(&self) -> u64 {
         self.buckets.iter().map(|b| b.turns).sum()
+    }
+
+    /// Total replaceable turns carrying a recorded tool-result size.
+    ///
+    /// Equal to [`Self::total_replaceable_turns`] when every turn in range was
+    /// ingested after #474, 0 when none were, and something between for a
+    /// range straddling the upgrade.
+    pub fn total_turns_with_measured_sizes(&self) -> u64 {
+        self.buckets
+            .iter()
+            .map(|b| b.turns_with_measured_sizes)
+            .sum()
     }
 
     /// Total addressable input tokens across all buckets.
@@ -193,16 +217,19 @@ pub fn analyze(turns: &[(String, u64)]) -> DiscoverReport {
         bucket: NavBucket::Read,
         turns: 0,
         addressable_input_tokens: 0,
+        turns_with_measured_sizes: 0,
     };
     let mut grep = BucketStat {
         bucket: NavBucket::Grep,
         turns: 0,
         addressable_input_tokens: 0,
+        turns_with_measured_sizes: 0,
     };
     let mut glob = BucketStat {
         bucket: NavBucket::Glob,
         turns: 0,
         addressable_input_tokens: 0,
+        turns_with_measured_sizes: 0,
     };
 
     for (tool_names, input_tokens) in turns {
@@ -216,6 +243,9 @@ pub fn analyze(turns: &[(String, u64)]) -> DiscoverReport {
             stat.turns += 1;
             stat.addressable_input_tokens =
                 stat.addressable_input_tokens.saturating_add(*input_tokens);
+            if *input_tokens > 0 {
+                stat.turns_with_measured_sizes += 1;
+            }
         }
     }
 
@@ -338,5 +368,94 @@ mod tests {
         assert_eq!(report.buckets.len(), 1);
         assert_eq!(report.buckets[0].bucket, NavBucket::Grep);
         assert_eq!(report.buckets[0].turns, 1);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod measured_size_tests {
+    use super::*;
+
+    fn rows(pairs: &[(&str, u64)]) -> Vec<(String, u64)> {
+        pairs.iter().map(|(t, n)| ((*t).to_string(), *n)).collect()
+    }
+
+    /// The case #523 reported: every turn predates #474, so nothing carries a
+    /// size. The total is 0, and the count says why — a consumer can tell this
+    /// apart from a measured zero without reading English.
+    #[test]
+    fn a_wholly_unmeasured_range_reports_no_measured_turns() {
+        let report = analyze(&rows(&[("Read", 0), ("Grep", 0), ("Read", 0)]));
+        assert_eq!(report.total_replaceable_turns(), 3);
+        assert_eq!(report.total_addressable_input_tokens(), 0);
+        assert_eq!(report.total_turns_with_measured_sizes(), 0);
+    }
+
+    /// The case that reads identically in the old payload and must not: the
+    /// tokens really were measured. Same `0` total, different count.
+    #[test]
+    fn a_measured_range_is_distinguishable_from_an_unmeasured_one() {
+        let measured = analyze(&rows(&[("Read", 800), ("Grep", 200)]));
+        let unmeasured = analyze(&rows(&[("Read", 0), ("Grep", 0)]));
+
+        assert_eq!(measured.total_turns_with_measured_sizes(), 2);
+        assert_eq!(unmeasured.total_turns_with_measured_sizes(), 0);
+        assert_eq!(
+            measured.total_replaceable_turns(),
+            unmeasured.total_replaceable_turns(),
+            "the two differ only in whether the sizes were recorded"
+        );
+    }
+
+    /// The range-spanning case the issue's closing note describes, which a
+    /// single boolean would have to round off: the total is real but partial.
+    #[test]
+    fn a_straddling_range_counts_only_the_measured_turns() {
+        let report = analyze(&rows(&[
+            ("Read", 0),
+            ("Read", 500),
+            ("Grep", 0),
+            ("Grep", 300),
+            ("Glob", 100),
+        ]));
+
+        assert_eq!(report.total_replaceable_turns(), 5);
+        assert_eq!(report.total_turns_with_measured_sizes(), 3);
+        assert_eq!(report.total_addressable_input_tokens(), 900);
+    }
+
+    /// Per-bucket, because a range can straddle the upgrade unevenly and a
+    /// single top-level figure would hide which bucket is under-reported.
+    #[test]
+    fn the_measured_count_is_tracked_per_bucket() {
+        let report = analyze(&rows(&[("Read", 0), ("Read", 0), ("Grep", 700)]));
+
+        let read = report
+            .buckets
+            .iter()
+            .find(|b| b.bucket == NavBucket::Read)
+            .expect("read bucket");
+        let grep = report
+            .buckets
+            .iter()
+            .find(|b| b.bucket == NavBucket::Grep)
+            .expect("grep bucket");
+
+        assert_eq!((read.turns, read.turns_with_measured_sizes), (2, 0));
+        assert_eq!((grep.turns, grep.turns_with_measured_sizes), (1, 1));
+    }
+
+    /// A non-navigation turn is not replaceable, so it contributes to neither
+    /// count — the measured count never exceeds the replaceable total.
+    #[test]
+    fn the_measured_count_never_exceeds_the_replaceable_total() {
+        let report = analyze(&rows(&[("Read,Bash", 900), ("Read", 400), ("Edit", 800)]));
+        assert!(
+            report.total_turns_with_measured_sizes() <= report.total_replaceable_turns(),
+            "measured {} exceeded replaceable {}",
+            report.total_turns_with_measured_sizes(),
+            report.total_replaceable_turns()
+        );
+        assert_eq!(report.total_turns_with_measured_sizes(), 1);
     }
 }
