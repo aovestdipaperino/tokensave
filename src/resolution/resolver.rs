@@ -966,6 +966,22 @@ impl<'a> ReferenceResolver<'a> {
 
         if candidates.len() == 1 {
             let ref_lang = lang_from_path(&uref.file_path);
+            // Being the only candidate is not evidence. #508 taught the
+            // dotted-receiver path this; the bare-name path never learned it,
+            // so a production function declaring a local `exe` acquired an edge
+            // to a pytest fixture named `exe` purely because the fixture was
+            // the only symbol of that name in the project (#522). Scoped by
+            // language: see `bare_name_needs_evidence`.
+            if bare_name_needs_evidence(ref_lang)
+                && !is_plausibly_reachable(
+                    uref,
+                    candidates[0],
+                    &self.import_index,
+                    &self.node_id_cache,
+                )
+            {
+                return None;
+            }
             let candidate_lang = lang_from_path(&candidates[0].file_path);
             let confidence = if ref_lang != "unknown"
                 && candidate_lang != "unknown"
@@ -1379,6 +1395,28 @@ fn resolve_from_filtered<'a>(
 /// lives in. Anything else declines, and a declined reference is simply
 /// unresolved — a missing edge degrades an answer, a fabricated one corrupts
 /// it.
+/// Languages where a bare name alone is not evidence of a binding.
+///
+/// The reachability gate was built for the dotted-receiver fallback in
+/// dynamically typed languages, and its evidence model — same file, same
+/// directory, an imported name, an imported module — describes how those
+/// languages are written. A blanket rule is measurably wrong: Rust and Go
+/// resolve a bare name through a module system the gate cannot see, so
+/// gating them declines calls the code plainly makes — **11.4% of every Rust
+/// call edge** on a 1,824-file tree, against no reduction in impossible
+/// edges, because Rust never had this problem (#522).
+///
+/// **Ruby is deliberately absent.** It looks like it belongs, and it does not:
+/// it has its own resolution paths here (`try_ruby_receiver_match`, the
+/// constant-binding table), and gating its bare names drops a legitimate
+/// `Implements` edge for a module included from another file — caught by
+/// `test_ruby_incremental_sync_graph_matches_full_reindex`. Anything added to
+/// this list needs the same before/after measurement Python got, not an
+/// argument from resemblance.
+fn bare_name_needs_evidence(lang: &str) -> bool {
+    matches!(lang, "python" | "javascript" | "typescript")
+}
+
 fn is_plausibly_reachable(
     uref: &UnresolvedRef,
     candidate: &Node,
