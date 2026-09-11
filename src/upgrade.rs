@@ -74,12 +74,60 @@ fn fetch_asset_url(tag: &str, expected_asset: &str) -> Result<String> {
         })
 }
 
+/// A downloaded binary staged for installation, and the private directory
+/// holding it.
+///
+/// The directory is owned by this value so it is removed when the staged
+/// binary goes out of scope, whether the replacement succeeded or not.
+struct StagedBinary {
+    /// Held for its `Drop`, which removes the directory and anything left in
+    /// it. Never read directly — [`Self::path`] is the accessor.
+    _dir: tempfile::TempDir,
+    path: std::path::PathBuf,
+}
+
+impl StagedBinary {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Creates the private directory the downloaded binary is extracted into.
+///
+/// The destination used to be `std::env::temp_dir().join("tokensave_upgrade_<pid>")`
+/// — a name another local user can predict and pre-create. Both extraction
+/// paths open it with `create`-like semantics that follow symlinks, so on a
+/// host with a shared world-writable `/tmp` a symlink planted at that path
+/// would be followed and the target written with this process's privileges
+/// (#525). `TempDir` picks a random name and creates it exclusively, failing
+/// rather than adopting a path that already exists, which is what defeats the
+/// planted symlink; the extraction code is then unchanged and simply writes
+/// somewhere nobody else can name. The mode is narrowed to `0700` afterwards
+/// because `tempdir()` creates with `0777 & !umask` — commonly `0755`, which
+/// would leave the staged binary readable by every other local user between
+/// extraction and install.
+fn new_staging_dir() -> Result<tempfile::TempDir> {
+    let dir = tempfile::Builder::new()
+        .prefix("tokensave_upgrade_")
+        .tempdir()
+        .map_err(io_err("create temp dir failed"))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .map_err(io_err("secure temp dir failed"))?;
+    }
+
+    Ok(dir)
+}
+
 /// Downloads the archive from `url` into memory, then extracts `bin_name`
-/// to a temp path. Returns the temp path.
-fn download_and_extract(url: &str, bin_name: &str) -> Result<std::path::PathBuf> {
-    let tmp_path = std::env::temp_dir().join(format!(
-        "tokensave_upgrade_{}{}",
-        std::process::id(),
+/// into a freshly created private directory. Returns the staged binary.
+fn download_and_extract(url: &str, bin_name: &str) -> Result<StagedBinary> {
+    let tmp_dir = new_staging_dir()?;
+    let tmp_path = tmp_dir.path().join(format!(
+        "tokensave{}",
         if cfg!(windows) { ".exe" } else { "" }
     ));
 
@@ -116,7 +164,10 @@ fn download_and_extract(url: &str, bin_name: &str) -> Result<std::path::PathBuf>
     extract_zip(&raw, bin_name, &tmp_path)?;
 
     eprintln!(" Done");
-    Ok(tmp_path)
+    Ok(StagedBinary {
+        _dir: tmp_dir,
+        path: tmp_path,
+    })
 }
 
 /// Extracts `bin_name` from a `.tar.gz` archive (Unix).
@@ -508,7 +559,7 @@ fn perform_upgrade(version: &str, asset_url: &str, method: &InstallMethod) -> Re
         "tokensave"
     };
 
-    let tmp = download_and_extract(asset_url, bin_name)?;
+    let staged = download_and_extract(asset_url, bin_name)?;
 
     let label = match method {
         InstallMethod::Brew => " (Homebrew Cellar)",
@@ -516,7 +567,7 @@ fn perform_upgrade(version: &str, asset_url: &str, method: &InstallMethod) -> Re
         _ => "",
     };
     eprint!("  Replacing binary{label}...");
-    replace_binary(&tmp, method, version)?;
+    replace_binary(staged.path(), method, version)?;
     eprintln!(" Done");
 
     Ok(())
@@ -924,6 +975,79 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
 )]
 mod tests {
     use super::*;
+
+    /// The staging directory must not be at a name another local user can
+    /// predict. The old path was `temp_dir()/tokensave_upgrade_<pid>`, and a
+    /// pid is both guessable and observable, so a symlink planted there ahead
+    /// of the download would have been followed on extraction (#525).
+    #[test]
+    fn the_staging_directory_is_not_a_predictable_path() {
+        let a = new_staging_dir().expect("staging dir");
+        let b = new_staging_dir().expect("staging dir");
+
+        assert_ne!(
+            a.path(),
+            b.path(),
+            "two staging directories in the same process must not collide"
+        );
+
+        let legacy = std::env::temp_dir().join(format!("tokensave_upgrade_{}", std::process::id()));
+        assert_ne!(a.path(), legacy, "must not reuse the old pid-derived name");
+    }
+
+    /// `TempDir` must create the directory rather than adopt one that is
+    /// already there — adopting is what makes a planted path dangerous.
+    #[test]
+    fn the_staging_directory_is_freshly_created() {
+        let dir = new_staging_dir().expect("staging dir");
+        assert!(dir.path().is_dir(), "the directory must exist");
+        assert!(
+            std::fs::read_dir(dir.path())
+                .expect("read staging dir")
+                .next()
+                .is_none(),
+            "a freshly created staging directory must be empty"
+        );
+    }
+
+    /// On Unix the directory must not be readable or writable by other users,
+    /// so nothing can race the extracted binary between write and install.
+    /// `tempdir()` alone creates with `0777 & !umask` — commonly `0755`, which
+    /// leaves the staged binary readable by every other local user while it
+    /// sits there. The narrowing is therefore explicit, and asserted.
+    #[cfg(unix)]
+    #[test]
+    fn the_staging_directory_is_private_to_this_user() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = new_staging_dir().expect("staging dir");
+        let mode = std::fs::metadata(dir.path())
+            .expect("stat staging dir")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(
+            mode, 0o700,
+            "staging directory should be user-only, got {mode:o}"
+        );
+    }
+
+    /// The staged binary sits inside that directory, so its full path inherits
+    /// the directory's unpredictability even though the file name is fixed.
+    #[test]
+    fn the_staged_binary_lives_inside_the_private_directory() {
+        let dir = new_staging_dir().expect("staging dir");
+        let staged = dir.path().join(format!(
+            "tokensave{}",
+            if cfg!(windows) { ".exe" } else { "" }
+        ));
+
+        assert!(
+            staged.starts_with(dir.path()),
+            "the staged binary must be contained by the private directory"
+        );
+    }
 
     #[test]
     fn test_asset_name_stable() {

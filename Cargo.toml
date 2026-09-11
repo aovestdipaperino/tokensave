@@ -149,6 +149,9 @@ ignore = "0.4"
 gix = { version = "0.81", default-features = false, features = ["revision", "blob-diff", "sha1"] }
 dirs = "6"
 hex = "0.4"
+# Exclusive-create temp files/dirs for the upgrade download (#525): the old
+# predictable `/tmp/tokensave_upgrade_<pid>` path was followed through symlinks.
+tempfile = "3"
 rayon = "1"
 bincode = "1.3"
 getrandom = "0.2"
