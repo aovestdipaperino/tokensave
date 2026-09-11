@@ -4308,6 +4308,7 @@ dependencies = [
  "ndarray",
  "ort",
  "rayon",
+ "rustls-native-certs 0.8.4",
  "self-replace",
  "serde",
  "serde_json",
