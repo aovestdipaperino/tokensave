@@ -273,6 +273,48 @@ fn format_selected_index_age_warning(
     )
 }
 
+fn format_local_index_age_warning(age_secs: i64) -> String {
+    let hours = age_secs / 3600;
+    let mins = (age_secs % 3600) / 60;
+    if hours >= 24 {
+        format!(
+            "WARNING: Index last synced {}d {}h ago. Run `tokensave sync` to update.",
+            hours / 24,
+            hours % 24
+        )
+    } else {
+        format!("WARNING: Index last synced {hours}h {mins}m ago. Run `tokensave sync` to update.")
+    }
+}
+
+/// Checks whether an answer is a zero-hit, not-found, or diagnostic response where
+/// prepending a staleness warning banner causes agent confusion or spurious retries.
+fn is_zero_hit_or_diagnostic(tool_name: &str, result: &super::tools::ToolResult) -> bool {
+    if tool_name == "tokensave_status" {
+        return true;
+    }
+    let Some(content) = result.value.get("content").and_then(|c| c.as_array()) else {
+        return false;
+    };
+    for item in content {
+        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+            let trimmed = text.trim();
+            if trimmed.starts_with("No symbol named ")
+                || trimmed.starts_with("No trait or interface named ")
+                || trimmed.starts_with("No function or method named ")
+                || trimmed.starts_with("No struct, class, or case-class named ")
+                || trimmed.starts_with("Node not found: ")
+                || trimmed.starts_with("[]")
+                || trimmed.starts_with("{\n  \"results\": [],")
+                || trimmed.starts_with("{\"results\":[]")
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Cached result of a latest-version check against GitHub releases.
 struct VersionCheckState {
     latest: Option<String>,
@@ -383,6 +425,10 @@ pub struct McpServer {
     /// action was needed. Production code never reads this; tests poll it via
     /// [`Self::wait_for_version_reindex`].
     version_reindex_done: AtomicBool,
+    /// UNIX timestamp of the last index-age warning emitted for the local graph (0 = never).
+    last_local_age_warning_at: AtomicI64,
+    /// Last index-age warning timestamp emitted per selected provenance root.
+    selected_age_warnings_at: std::sync::Mutex<HashMap<String, i64>>,
     /// Number of global-ledger persistence tasks spawned by this server.
     #[cfg(feature = "test-transport")]
     accounting_tasks_started: AtomicUsize,
@@ -420,6 +466,19 @@ fn auto_sync_refusal(scope: &crate::tokensave::AutoSyncScope) -> String {
         // an empty message.
         crate::tokensave::AutoSyncScope::Sync(_) => "automatic sync proceeding".to_string(),
     }
+}
+
+/// Pure decision function for index-age warning emissions within a session.
+fn should_emit_index_age_warning(
+    prev_warned_at: i64,
+    now: i64,
+    is_stale: bool,
+    is_suppressed: bool,
+) -> bool {
+    if !is_stale || is_suppressed {
+        return false;
+    }
+    prev_warned_at == 0 || now.saturating_sub(prev_warned_at) >= 3600
 }
 
 /// The deferral rule for [`McpServer::startup_work_in_flight`], as a pure
@@ -566,6 +625,8 @@ impl McpServer {
             startup_catch_up_done: AtomicBool::new(false),
             version_reindex_started: AtomicBool::new(false),
             version_reindex_done: AtomicBool::new(false),
+            last_local_age_warning_at: AtomicI64::new(0),
+            selected_age_warnings_at: std::sync::Mutex::new(HashMap::new()),
             #[cfg(feature = "test-transport")]
             accounting_tasks_started: AtomicUsize::new(0),
             #[cfg(feature = "test-transport")]
@@ -2140,8 +2201,50 @@ impl McpServer {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs() as i64;
-                    let age_secs = now - last_time;
-                    if last_time > 0 && age_secs > 3600 {
+                    let age_secs = now.saturating_sub(last_time);
+                    let is_stale = last_time > 0 && age_secs > 3600;
+                    let is_suppressed = is_zero_hit_or_diagnostic(tool_name, &result);
+
+                    let prev_warned_at = self.selected_age_warnings_at.lock().map_or(0, |map| {
+                        map.get(&selected.provenance_root).copied().unwrap_or(0)
+                    });
+                    let should_warn = if should_emit_index_age_warning(
+                        prev_warned_at,
+                        now,
+                        is_stale,
+                        is_suppressed,
+                    ) {
+                        if let Ok(mut map) = self.selected_age_warnings_at.lock() {
+                            map.insert(selected.provenance_root.clone(), now);
+                        }
+                        true
+                    } else {
+                        if !is_stale {
+                            if let Ok(mut map) = self.selected_age_warnings_at.lock() {
+                                map.remove(&selected.provenance_root);
+                            }
+                        }
+                        false
+                    };
+
+                    if is_stale {
+                        if let Some(obj) = result.value.as_object_mut() {
+                            let meta = obj.entry("_meta").or_insert_with(|| json!({}));
+                            if let Some(meta_obj) = meta.as_object_mut() {
+                                meta_obj.insert(
+                                    "freshness".to_string(),
+                                    json!({
+                                        "index_age_secs": age_secs,
+                                        "last_sync_at": last_time,
+                                        "stale": true,
+                                        "warning_emitted": should_warn,
+                                    }),
+                                );
+                            }
+                        }
+                    }
+
+                    if should_warn {
                         let warning = format_selected_index_age_warning(selected, age_secs);
                         if let Some(content) = result
                             .value
@@ -2264,20 +2367,44 @@ impl McpServer {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs() as i64;
-                    let age_secs = now - last_time;
-                    if last_time > 0 && age_secs > 3600 {
-                        let hours = age_secs / 3600;
-                        let mins = (age_secs % 3600) / 60;
-                        let warning = if hours >= 24 {
-                            format!(
-                                "WARNING: Index last synced {}d {}h ago. Run `tokensave sync` to update.",
-                                hours / 24, hours % 24
-                            )
-                        } else {
-                            format!(
-                                "WARNING: Index last synced {hours}h {mins}m ago. Run `tokensave sync` to update."
-                            )
-                        };
+                    let age_secs = now.saturating_sub(last_time);
+                    let is_stale = last_time > 0 && age_secs > 3600;
+                    let is_suppressed = is_zero_hit_or_diagnostic(tool_name, &result);
+
+                    let should_warn = if should_emit_index_age_warning(
+                        self.last_local_age_warning_at.load(Ordering::Acquire),
+                        now,
+                        is_stale,
+                        is_suppressed,
+                    ) {
+                        self.last_local_age_warning_at.store(now, Ordering::Release);
+                        true
+                    } else {
+                        if !is_stale {
+                            self.last_local_age_warning_at.store(0, Ordering::Release);
+                        }
+                        false
+                    };
+
+                    if is_stale {
+                        if let Some(obj) = result.value.as_object_mut() {
+                            let meta = obj.entry("_meta").or_insert_with(|| json!({}));
+                            if let Some(meta_obj) = meta.as_object_mut() {
+                                meta_obj.insert(
+                                    "freshness".to_string(),
+                                    json!({
+                                        "index_age_secs": age_secs,
+                                        "last_sync_at": last_time,
+                                        "stale": true,
+                                        "warning_emitted": should_warn,
+                                    }),
+                                );
+                            }
+                        }
+                    }
+
+                    if should_warn {
+                        let warning = format_local_index_age_warning(age_secs);
                         if let Some(content) = result
                             .value
                             .get_mut("content")
@@ -2621,6 +2748,21 @@ mod staleness_banner_tests {
         assert!(!warning.contains('`'));
         assert!(!warning.contains("tokensave branch add"));
         assert!(!warning.contains("tokensave sync --path"));
+    }
+
+    #[test]
+    fn should_emit_index_age_warning_truth_table() {
+        use super::should_emit_index_age_warning;
+        // fresh -> no warning
+        assert!(!should_emit_index_age_warning(0, 10000, false, false));
+        // stale and suppressed (e.g. zero-hit or status) -> no warning
+        assert!(!should_emit_index_age_warning(0, 10000, true, true));
+        // stale, never warned -> warn
+        assert!(should_emit_index_age_warning(0, 10000, true, false));
+        // stale, warned recently (< 3600s ago) -> dedup / do not warn
+        assert!(!should_emit_index_age_warning(9000, 10000, true, false));
+        // stale, warned >= 3600s ago -> warn
+        assert!(should_emit_index_age_warning(6400, 10000, true, false));
     }
 }
 

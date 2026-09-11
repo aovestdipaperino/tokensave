@@ -1727,6 +1727,106 @@ async fn selected_warnings_use_canonical_selected_root_remedies() {
 }
 
 #[tokio::test]
+async fn test_index_age_warning_dedup_and_zero_hit_suppression() {
+    let (dir, server) = setup_server().await;
+    let project = dir.path();
+
+    // Backdate last_sync_at to 2 hours ago
+    let two_hours_ago = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        - 7200;
+
+    let (db, _migrated) = Database::open(&project.join(".tokensave/tokensave.db"))
+        .await
+        .unwrap();
+    db.set_metadata("last_sync_at", &two_hours_ago.to_string())
+        .await
+        .unwrap();
+    drop(db);
+
+    // 1. Zero-hit query (unknown symbol): warning must be suppressed from content text,
+    // but _meta.freshness must still be present.
+    let zero_hit_resp = call_server(
+        &server,
+        101,
+        "tokensave_body",
+        json!({ "symbol": "nonexistent_fn_xyz" }),
+    )
+    .await;
+    assert!(zero_hit_resp["error"].is_null());
+    let zero_hit_text = response_text(&zero_hit_resp);
+    assert!(
+        zero_hit_text.contains("No symbol named"),
+        "expected not found message: {zero_hit_text}"
+    );
+    assert!(
+        !zero_hit_text.contains("Index last synced"),
+        "zero hit query should not have staleness warning prepended: {zero_hit_text}"
+    );
+    assert_eq!(
+        zero_hit_resp["result"]["_meta"]["freshness"]["stale"], true,
+        "freshness metadata must flag stale: true"
+    );
+    assert_eq!(
+        zero_hit_resp["result"]["_meta"]["freshness"]["warning_emitted"], false,
+        "warning_emitted must be false when suppressed"
+    );
+
+    // 2. tokensave_status: diagnostic tool must never receive prepended text warning banner
+    let status_resp = call_server(&server, 102, "tokensave_status", json!({})).await;
+    assert!(status_resp["error"].is_null());
+    let status_text = response_text(&status_resp);
+    assert!(
+        !status_text.contains("WARNING: Index last synced"),
+        "status tool should not have text warning banner prepended: {status_text}"
+    );
+
+    // 3. Normal hit query (first emission): text warning must be emitted
+    let hit_resp = call_server(
+        &server,
+        103,
+        "tokensave_search",
+        json!({ "query": "helper" }),
+    )
+    .await;
+    assert!(hit_resp["error"].is_null());
+    let hit_text = response_text(&hit_resp);
+    assert!(
+        hit_text.contains("WARNING: Index last synced"),
+        "first stale hit should include warning banner: {hit_text}"
+    );
+    assert_eq!(
+        hit_resp["result"]["_meta"]["freshness"]["warning_emitted"], true,
+        "warning_emitted must be true on first emission"
+    );
+
+    // 4. Second call in same session: must be deduplicated (no text warning), but freshness metadata present
+    let hit_resp_2 = call_server(
+        &server,
+        104,
+        "tokensave_search",
+        json!({ "query": "helper" }),
+    )
+    .await;
+    assert!(hit_resp_2["error"].is_null());
+    let hit_text_2 = response_text(&hit_resp_2);
+    assert!(
+        !hit_text_2.contains("WARNING: Index last synced"),
+        "second call should dedup warning banner: {hit_text_2}"
+    );
+    assert_eq!(
+        hit_resp_2["result"]["_meta"]["freshness"]["stale"], true,
+        "freshness metadata remains on deduped call"
+    );
+    assert_eq!(
+        hit_resp_2["result"]["_meta"]["freshness"]["warning_emitted"], false,
+        "warning_emitted must be false on deduped call"
+    );
+}
+
+#[tokio::test]
 async fn selected_calls_skip_all_accounting_and_preserve_local_schema_charge() {
     let Some(home) = std::env::var_os("TOKENSAVE_SELECTED_ACCOUNTING_HOME") else {
         let home = TempDir::new().unwrap();
