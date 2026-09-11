@@ -20,7 +20,9 @@ fn a_global_hook_install_that_cannot_proceed_is_reported_as_an_error() {
     std::env::set_var("HOME", home.path());
     std::env::set_var("USERPROFILE", home.path());
 
-    let result = offer_git_post_commit_hook("/usr/bin/tokensave", GitHookMode::Yes);
+    // `Global` since #506: `Yes` now installs this repository's hooks instead
+    // of claiming the machine-wide slot, so it no longer reaches this path.
+    let result = offer_git_post_commit_hook("/usr/bin/tokensave", GitHookMode::Global);
 
     assert!(
         result.is_err(),

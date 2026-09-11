@@ -18,7 +18,8 @@ fn one_unwritable_hook_is_reported_and_the_others_still_install() {
     std::env::set_var("HOME", home.path());
     std::env::set_var("USERPROFILE", home.path());
 
-    let result = offer_git_post_commit_hook("/usr/bin/tokensave", GitHookMode::Yes);
+    let result = // `Global` since #506: `Yes` installs this repository's hooks now.
+    offer_git_post_commit_hook("/usr/bin/tokensave", GitHookMode::Global);
 
     assert!(
         result.is_err(),

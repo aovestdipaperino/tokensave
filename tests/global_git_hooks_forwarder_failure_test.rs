@@ -28,7 +28,8 @@ fn an_unwritable_forwarder_is_reported() {
     std::env::set_var("HOME", home.path());
     std::env::set_var("USERPROFILE", home.path());
 
-    let result = offer_git_post_commit_hook("/usr/bin/tokensave", GitHookMode::Yes);
+    let result = // `Global` since #506: `Yes` installs this repository's hooks now.
+    offer_git_post_commit_hook("/usr/bin/tokensave", GitHookMode::Global);
 
     let message = result.expect_err("a forwarder that could not be written must be reported");
     assert!(

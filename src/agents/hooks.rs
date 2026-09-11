@@ -7,19 +7,28 @@ use crate::agents::home_dir;
 use clap::ValueEnum;
 use std::path::{Path, PathBuf};
 
-/// Whether `tokensave install` should install the global git
-/// `post-commit`/`post-checkout`/`post-merge` hooks, and if so, whether to
-/// ask the user interactively or act non-interactively. The `Default`
-/// variant preserves the previous behavior: prompt on a TTY, silently skip
-/// on a non-TTY.
+/// Whether `tokensave install` should install the git
+/// `post-commit`/`post-checkout`/`post-merge` hooks, where to put them, and
+/// whether to ask first.
+///
+/// `Yes` and `Default` install into the **current repository** since #506.
+/// They used to claim a global `core.hooksPath`, which is a single
+/// machine-wide slot: taking it takes it from every other tool that installs
+/// hooks, and `git lfs install --local` then fails with exit 2 in every
+/// repository on the machine. `init` has always installed per repository for
+/// the same reason. `Global` keeps the old behavior for anyone who wants one
+/// hook directory for every repo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum GitHookMode {
-    /// Preserve today's behavior — prompt on a TTY, silently skip otherwise.
+    /// Prompt on a TTY, silently skip otherwise. Installs into the current
+    /// repository when accepted.
     Default,
-    /// Install the hook without asking, even on a TTY.
+    /// Install into the current repository without asking, even on a TTY.
     Yes,
     /// Skip the hook install entirely, without asking.
     No,
+    /// Install the global hooks, claiming `core.hooksPath` machine-wide.
+    Global,
 }
 
 /// The marker comment used to identify tokensave's section in a hook script.
@@ -268,7 +277,6 @@ pub(crate) enum HookAction {
     /// Skip the install entirely (mode `No`, or default-mode non-TTY).
     Skip,
     /// Show the interactive prompt and act on the answer.
-    Prompt,
     /// Install the hook now (no prompt).
     Install,
 }
@@ -283,10 +291,45 @@ pub(crate) fn decide_hook_action(mode: GitHookMode, hook_contents: Option<&str>)
     }
 
     match mode {
-        GitHookMode::Default if atty_stdin() => HookAction::Prompt,
-        GitHookMode::Default | GitHookMode::No => HookAction::Skip,
-        GitHookMode::Yes => HookAction::Install,
+        // `--git-hook global` is an explicit request for the machine-wide
+        // slot, so it does not prompt.
+        GitHookMode::Global => HookAction::Install,
+        // Since #506 `Yes` and `Default` install into the current repository
+        // instead, handled by the caller before it reaches this path.
+        GitHookMode::Default | GitHookMode::No | GitHookMode::Yes => HookAction::Skip,
     }
+}
+
+/// A warning for a user whose machine still has tokensave's global
+/// `core.hooksPath` claimed, or `None` when it does not.
+///
+/// `core.hooksPath` is a single machine-wide slot. Taking it takes it from
+/// every other tool that installs hooks: `git lfs install --local` finds
+/// tokensave's `pre-push` forwarder sitting there and fails with exit 2 in
+/// **every** repository on the machine, including a brand-new empty one with
+/// no LFS hook anywhere near it (#506). husky, pre-commit and lefthook
+/// collide the same way.
+///
+/// This only reports. Unsetting `core.hooksPath` here would stop the user's
+/// syncs running with no warning, and the global setup is a legitimate choice
+/// for anyone who wants one hook directory for every repo — so the remedy is
+/// named and left to them.
+pub fn global_hookspath_conflict_warning() -> Option<String> {
+    if !global_git_hooks_installed() {
+        return None;
+    }
+    let home = home_dir()?;
+    // Only warn when tokensave is the one claiming the slot. A hooks dir the
+    // user points at themselves is theirs to manage.
+    read_global_hooks_path(&home)?;
+    Some(
+        "  \x1b[33m⚠\x1b[0m tokensave holds the global `core.hooksPath`, which is a single \
+         machine-wide slot.\n     Other hook installers fail while it is taken — \
+         `git lfs install --local` exits 2 in every repository.\n     To switch this repo to \
+         its own hooks: `tokensave githooks on --local`\n     Then release the slot: \
+         `tokensave githooks off` and `git config --global --unset core.hooksPath`"
+            .to_string(),
+    )
 }
 
 /// If a global git `post-commit` hook is not already set up for tokensave,
@@ -359,22 +402,6 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) -> Res
             // Mode `No` (or default-mode non-TTY). Stay quiet — script
             // callers asked for no output here.
             return Ok(());
-        }
-        HookAction::Prompt => {
-            // TTY + default mode: ask, and bail entirely if the user declines.
-            eprintln!();
-            eprint!(
-                "Install global git \x1b[1mpost-commit\x1b[0m + \x1b[1mpost-checkout\x1b[0m + \x1b[1mpost-merge\x1b[0m hooks to auto-run \x1b[1mtokensave sync\x1b[0m after each commit and \x1b[1mgit pull\x1b[0m, and \x1b[1mtokensave init\x1b[0m after a fresh clone? [y/N] "
-            );
-            let mut answer = String::new();
-            if std::io::stdin().read_line(&mut answer).is_err() {
-                return Ok(());
-            }
-            if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
-                eprintln!("  Skipped git hooks");
-                return Ok(());
-            }
-            true
         }
         HookAction::Install => true,
     };
@@ -1196,12 +1223,6 @@ fn insert_gitconfig_value(contents: &str, section: &str, key: &str, value: &str)
     out
 }
 
-/// Returns true if stdin is connected to a terminal.
-fn atty_stdin() -> bool {
-    use std::io::IsTerminal;
-    std::io::stdin().is_terminal()
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod git_hook_tests {
@@ -1306,20 +1327,57 @@ mod git_hook_tests {
         assert_eq!(expand_tilde("/abs/path", home), "/abs/path");
     }
 
+    /// #506 changed what `yes` means. It used to install the *global* hooks,
+    /// claiming `core.hooksPath` — a single machine-wide slot whose capture
+    /// makes `git lfs install --local` fail with exit 2 in every repository on
+    /// the machine. It now installs into the current repository, so this
+    /// decision function (which governs the global path only) must decline it.
     #[test]
-    fn decide_hook_action_yes_installs_when_file_missing() {
+    fn decide_hook_action_yes_no_longer_claims_the_global_slot() {
+        assert_eq!(decide_hook_action(GitHookMode::Yes, None), HookAction::Skip);
+
+        let contents = "#!/bin/sh\necho hello\n";
         assert_eq!(
-            decide_hook_action(GitHookMode::Yes, None),
+            decide_hook_action(GitHookMode::Yes, Some(contents)),
+            HookAction::Skip
+        );
+    }
+
+    /// `global` is the explicit opt-in that replaces it, and being explicit it
+    /// installs rather than prompting.
+    #[test]
+    fn decide_hook_action_global_installs_without_prompting() {
+        assert_eq!(
+            decide_hook_action(GitHookMode::Global, None),
+            HookAction::Install
+        );
+
+        let contents = "#!/bin/sh\necho hello\n";
+        assert_eq!(
+            decide_hook_action(GitHookMode::Global, Some(contents)),
             HookAction::Install
         );
     }
 
+    /// An existing tokensave global install is still recognised as such
+    /// whichever mode asks, so `--git-hook global` on a machine that already
+    /// has it does not rewrite the hook.
     #[test]
-    fn decide_hook_action_yes_installs_when_file_exists_without_marker() {
-        let contents = "#!/bin/sh\necho hello\n";
+    fn decide_hook_action_global_reports_already_installed() {
+        let contents = format!("#!/bin/sh\n{HOOK_MARKER}\ntokensave sync\n");
         assert_eq!(
-            decide_hook_action(GitHookMode::Yes, Some(contents)),
-            HookAction::Install
+            decide_hook_action(GitHookMode::Global, Some(&contents)),
+            HookAction::AlreadyInstalled
+        );
+    }
+
+    /// `default` must never take the machine-wide slot on its own, on a TTY or
+    /// off it — that was the path #506's reporter hit without asking for it.
+    #[test]
+    fn decide_hook_action_default_never_claims_the_global_slot() {
+        assert_eq!(
+            decide_hook_action(GitHookMode::Default, None),
+            HookAction::Skip
         );
     }
 
@@ -1669,11 +1727,11 @@ mod git_hook_tests {
     #[test]
     fn decide_hook_action_default_skips_when_file_missing() {
         // On a non-TTY the default mode silently skips. We cannot
-        // guarantee whether `atty_stdin()` is true or false in a test
-        // process, so assert that the result is one of the two valid
-        // outcomes.
+        // process, so the old assertion allowed either outcome. Since #506
+        // `default` never takes the machine-wide slot at all, on a TTY or off
+        // it, so the answer no longer depends on the terminal.
         let action = decide_hook_action(GitHookMode::Default, None);
-        assert!(matches!(action, HookAction::Skip | HookAction::Prompt));
+        assert_eq!(action, HookAction::Skip);
     }
 
     #[test]
