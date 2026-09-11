@@ -178,6 +178,15 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 logo-art = "0.2"
 cc = "1"
 
+# Probe for the OS trust store before asking ureq to validate against it.
+# `rustls-platform-verifier` loads Linux/BSD roots through this same crate and
+# hard-errors when the store is empty, with no fallback to the bundled roots
+# (#526 follow-up), so tokensave checks first and keeps the bundled set when
+# the OS has nothing to offer. Not needed on macOS/Windows, which query OS
+# APIs with no equivalent failure.
+[target.'cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))'.dependencies]
+rustls-native-certs = "0.8"
+
 [dev-dependencies]
 tempfile = "3"
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }

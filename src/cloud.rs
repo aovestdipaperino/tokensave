@@ -29,23 +29,94 @@ struct WorkerResponse {
     total: u64,
 }
 
+/// Whether the OS trust store can supply any root certificates at all.
+///
+/// `RootCerts::PlatformVerifier` **replaces** ureq's bundled Mozilla roots
+/// rather than adding to them — `RootCerts` is an enum — and on Linux/BSD
+/// `rustls-platform-verifier` hard-errors when the system store yields
+/// nothing:
+///
+/// ```text
+/// if root_store.is_empty() {
+///     return Err(rustls::Error::General(
+///         "No CA certificates were loaded from the system".to_owned(),
+///     ));
+/// }
+/// ```
+///
+/// There is no fallback there, so a host with no `ca-certificates` installed —
+/// a distroless or `scratch` container, a minimal CI image — goes from working
+/// on the bundled roots to having no HTTPS at all. Probing first keeps that
+/// host on the bundled roots instead.
+///
+/// The probe uses the same loader `rustls-platform-verifier` itself uses on
+/// these targets, so it answers the question the verifier is about to ask —
+/// including honouring `SSL_CERT_FILE` and `SSL_CERT_DIR`. macOS and Windows
+/// query OS APIs with no equivalent empty-store failure, so they always use
+/// the platform verifier.
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))]
+fn platform_roots_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(probe_platform_roots)
+}
+
+#[cfg(not(all(unix, not(target_vendor = "apple"), not(target_os = "android"))))]
+fn platform_roots_available() -> bool {
+    true
+}
+
+/// The uncached probe behind [`platform_roots_available`].
+///
+/// Separate so a test can run it against a deliberately empty trust store;
+/// production always goes through the cached wrapper, since the answer cannot
+/// change within a process and the load reads the filesystem.
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))]
+#[doc(hidden)]
+pub fn probe_platform_roots() -> bool {
+    !rustls_native_certs::load_native_certs().certs.is_empty()
+}
+
+/// The root-certificate source for every HTTPS call tokensave makes.
+///
+/// Prefers the OS trust store, so a corporate TLS-intercepting proxy whose
+/// root CA is installed there (e.g. Cato) does not break every call — the
+/// problem #526 fixed. Falls back to the bundled Mozilla roots when the OS
+/// has no store to offer, which is strictly the safer direction: the bundled
+/// set is a fixed, audited list, so falling back can only ever narrow what is
+/// trusted, never widen it.
+fn root_certs() -> ureq::tls::RootCerts {
+    use ureq::tls::RootCerts;
+
+    // Once per process, and only on the rare fallback path. Someone behind an
+    // intercepting proxy otherwise has no way to tell why their OS-installed
+    // CA is being ignored; everyone else never sees this.
+    static WARNED: std::sync::Once = std::sync::Once::new();
+
+    if platform_roots_available() {
+        return RootCerts::PlatformVerifier;
+    }
+
+    WARNED.call_once(|| {
+        eprintln!(
+            "  \x1b[33m⚠\x1b[0m No CA certificates found in the system trust store; \
+             using tokensave's bundled roots.\n     Install `ca-certificates` if you need \
+             a certificate your OS trusts (e.g. a TLS-inspecting proxy's) to be honoured."
+        );
+    });
+    RootCerts::WebPki
+}
+
 /// Creates a ureq agent with the given timeout.
 ///
-/// Root certificates come from the OS trust store (via `RootCerts::PlatformVerifier`)
-/// rather than ureq's bundled Mozilla roots, so a corporate TLS-intercepting proxy
-/// whose root CA is installed in the OS store (e.g. Cato) doesn't break every
-/// HTTPS call tokensave makes. TLS verification itself is unaffected — only the
-/// trust anchor changes.
+/// Root certificates come from [`root_certs`]: the OS trust store where there
+/// is one, ureq's bundled Mozilla roots where there is not. TLS verification
+/// itself is unaffected — only the set of trust anchors changes.
 pub fn agent_with_timeout(timeout: Duration) -> ureq::Agent {
-    use ureq::tls::{RootCerts, TlsConfig};
+    use ureq::tls::TlsConfig;
 
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
-        .tls_config(
-            TlsConfig::builder()
-                .root_certs(RootCerts::PlatformVerifier)
-                .build(),
-        )
+        .tls_config(TlsConfig::builder().root_certs(root_certs()).build())
         .build()
         .into()
 }
@@ -607,6 +678,46 @@ mod tests {
     #[test]
     fn agent_with_timeout_builds_with_platform_roots() {
         let _ = agent_with_timeout(Duration::from_secs(1));
+    }
+
+    /// Whichever branch `root_certs` takes on this machine, the agent has to
+    /// build — `WebPki` is compiled in behind its own feature and would panic
+    /// at construction if it were not, exactly like the platform verifier.
+    #[test]
+    fn both_root_certificate_sources_build_an_agent() {
+        use ureq::tls::{RootCerts, TlsConfig};
+
+        for roots in [RootCerts::PlatformVerifier, RootCerts::WebPki] {
+            let _agent: ureq::Agent = ureq::Agent::config_builder()
+                .timeout_global(Some(Duration::from_secs(1)))
+                .tls_config(TlsConfig::builder().root_certs(roots).build())
+                .build()
+                .into();
+        }
+    }
+
+    /// The fallback must be the *bundled* roots, never "no verification".
+    /// Getting this backwards would turn a missing CA store into a silently
+    /// unverified connection, which is far worse than the outage it avoids.
+    #[test]
+    fn the_fallback_narrows_trust_rather_than_disabling_it() {
+        let chosen = root_certs();
+        assert!(
+            matches!(chosen, ureq::tls::RootCerts::PlatformVerifier)
+                || matches!(chosen, ureq::tls::RootCerts::WebPki),
+            "root_certs must pick a verifying source, never a disabled one"
+        );
+    }
+
+    /// The probe is consulted once and must be stable within a process — an
+    /// agent built early and one built late have to trust the same roots.
+    #[test]
+    fn the_platform_root_probe_is_stable() {
+        assert_eq!(
+            platform_roots_available(),
+            platform_roots_available(),
+            "the probe is cached; repeated calls must agree"
+        );
     }
 
     fn cfg(
