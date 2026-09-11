@@ -25,6 +25,7 @@ fn env_indexed() -> HookEnv {
         in_tokensave_project: true,
         disable_grep_hook: false,
         project_root: None,
+        cwd: None,
     }
 }
 
@@ -33,6 +34,7 @@ fn env_not_indexed() -> HookEnv {
         in_tokensave_project: false,
         disable_grep_hook: false,
         project_root: None,
+        cwd: None,
     }
 }
 

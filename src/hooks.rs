@@ -108,6 +108,12 @@ pub struct HookEnv {
     /// the whole project instead of an unknown directory. `None` and
     /// `in_tokensave_project` always agree; both come from one discovery walk.
     pub project_root: Option<PathBuf>,
+
+    /// Directory the *session* issued the tool call from, and the base every
+    /// relative target resolves against. The hook process is spawned wherever
+    /// the harness sits, so its own working directory answers a different
+    /// question and is never the base. `None` falls back to `project_root`.
+    pub cwd: Option<PathBuf>,
 }
 
 impl HookEnv {
@@ -128,6 +134,7 @@ impl HookEnv {
             in_tokensave_project: project_root.is_some(),
             disable_grep_hook,
             project_root,
+            cwd: cwd.map(Path::to_path_buf),
         }
     }
 
@@ -145,7 +152,14 @@ impl HookEnv {
             in_tokensave_project: project_root.is_some(),
             disable_grep_hook: self.disable_grep_hook,
             project_root,
+            cwd: Some(cwd),
         }
+    }
+
+    /// Base for relative targets: the session's directory, or the project root
+    /// when the event reported none.
+    fn base(&self) -> Option<&Path> {
+        self.cwd.as_deref().or(self.project_root.as_deref())
     }
 }
 
@@ -516,12 +530,14 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
             let cd_path = unescape_shell_backslashes(cd_path);
             let cd_path = expand_home_prefix(&cd_path, crate::agents::home_dir().as_deref())
                 .unwrap_or_else(|| PathBuf::from(cd_path.as_ref()));
-            match classify_path_within_project(&cd_path.to_string_lossy(), Some(root)) {
+            match classify_path_within_project(&cd_path.to_string_lossy(), Some(root), env.base()) {
                 Containment::Outside => return None,
                 Containment::Inside => {
                     // Canonicalize the cd'd directory so a symlink to a code directory
                     // is resolved to the real path and classified by its basename.
-                    let cd_base = root
+                    let cd_base = env
+                        .base()
+                        .unwrap_or(root)
                         .join(&cd_path)
                         .canonicalize()
                         .unwrap_or_else(|_| root.join(&cd_path));
@@ -573,10 +589,12 @@ fn evaluate_find_command(command: &str, env: &HookEnv) -> Option<String> {
             let cd_path = unescape_shell_backslashes(cd_path);
             let cd_path = expand_home_prefix(&cd_path, crate::agents::home_dir().as_deref())
                 .unwrap_or_else(|| PathBuf::from(cd_path.as_ref()));
-            match classify_path_within_project(&cd_path.to_string_lossy(), Some(root)) {
+            match classify_path_within_project(&cd_path.to_string_lossy(), Some(root), env.base()) {
                 Containment::Outside => return None,
                 Containment::Inside => {
-                    let cd_base = root
+                    let cd_base = env
+                        .base()
+                        .unwrap_or(root)
                         .join(&cd_path)
                         .canonicalize()
                         .unwrap_or_else(|_| root.join(&cd_path));
@@ -811,10 +829,10 @@ fn target_looks_like_code(path: &str, globs: &[&str], ty: &str, env: &HookEnv) -
     // Set when the target is known to resolve inside the indexed tree. That is
     // a stronger signal than any name-based rule, so it overrides the
     // directory-basename fallback further down (#452).
-    let mut known_inside = false;
-    if !path.is_empty() && env.project_root.is_some() {
+    let mut inside_dir: Option<PathBuf> = None;
+    if let (false, Some(root)) = (path.is_empty(), env.project_root.as_deref()) {
         let raw = path.trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
-        match classify_path_within_project(raw, env.project_root.as_deref()) {
+        match classify_path_within_project(raw, Some(root), env.base()) {
             Containment::Outside => return false,
             // Inside the tree is not the same as inside the index. A path
             // under one of the project's own `exclude` globs — `node_modules`,
@@ -825,10 +843,14 @@ fn target_looks_like_code(path: &str, globs: &[&str], ty: &str, env: &HookEnv) -
             // the out-of-tree half; the indexer and the hook were reading two
             // different notions of "in scope".
             Containment::Inside => {
-                if path_is_config_excluded(raw, env.project_root.as_deref()) {
+                if path_is_config_excluded(raw, Some(root), env.base()) {
                     return false;
                 }
-                known_inside = true;
+                inside_dir = resolve_against_base(
+                    raw,
+                    env.base().unwrap_or(root),
+                    crate::agents::home_dir().as_deref(),
+                );
             }
             // Unknown: keep the existing extension / directory rules.
             Containment::Unknown => {}
@@ -897,7 +919,7 @@ fn target_looks_like_code(path: &str, globs: &[&str], ty: &str, env: &HookEnv) -
     // name list can only get it wrong (#452 — `mypkg/`, `core/`, `api/` are
     // ordinary source roots). The basename list stays as the fallback for a
     // target we could not resolve, where a name is all we have.
-    if known_inside && dir_holds_code_files(trimmed) {
+    if inside_dir.as_deref().is_some_and(dir_holds_code_files) {
         return true;
     }
     let last = trimmed
@@ -922,12 +944,11 @@ const CODE_FILE_SCAN_BUDGET: usize = 2_000;
 /// bounded, stopping at the first file with a known code extension. Hidden
 /// directories are skipped — they are not indexed, and descending into `.git`
 /// would burn the whole budget for nothing.
-fn dir_holds_code_files(path: &str) -> bool {
-    let start = PathBuf::from(path);
-    if start.is_file() {
+fn dir_holds_code_files(path: &Path) -> bool {
+    if path.is_file() {
         return true;
     }
-    let mut queue = std::collections::VecDeque::from([start]);
+    let mut queue = std::collections::VecDeque::from([path.to_path_buf()]);
     let mut seen = 0usize;
     while let Some(dir) = queue.pop_front() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -973,15 +994,30 @@ enum Containment {
     Unknown,
 }
 
+/// Resolve `raw` the way the shell that runs it would: `~` expanded, an
+/// absolute spelling taken as it stands, a relative one joined onto `base` —
+/// the directory the *session* is in. Never the hook process's own working
+/// directory, which is wherever the harness spawned it.
+fn resolve_against_base(raw: &str, base: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let target = expand_home_prefix(raw, home)?;
+    Some(if target.is_absolute() {
+        target
+    } else {
+        base.join(target)
+    })
+}
+
 /// Classify whether `raw` points inside, outside, or somewhere undecidable
-/// relative to `project_root`. Relative paths are resolved against the root.
-/// Symlinks and `..` are followed via `canonicalize`. The only spells treated
-/// as inside without hitting the filesystem are `.`, `./`, and an exact root
-/// spelling; everything unresolvable is `Unknown` so the caller can fall back
-/// to its own conservative rules.
+/// relative to `project_root`. Relative paths are resolved against `base`, the
+/// session's working directory, falling back to the root when the event
+/// reported none. Symlinks and `..` are followed via `canonicalize`. The only
+/// spells treated as inside without hitting the filesystem are `.`, `./`, and
+/// an exact root spelling; everything unresolvable is `Unknown` so the caller
+/// can fall back to its own conservative rules.
 fn classify_path_containment_with_home(
     raw: &str,
     project_root: Option<&Path>,
+    base: Option<&Path>,
     home: Option<&Path>,
 ) -> Containment {
     let Some(root) = project_root else {
@@ -993,10 +1029,8 @@ fn classify_path_containment_with_home(
     if target.as_os_str().is_empty() || target == Path::new(".") || target == Path::new("./") {
         return Containment::Inside;
     }
-    let resolved = if target.is_absolute() {
-        target
-    } else {
-        root.join(target)
+    let Some(resolved) = resolve_against_base(raw, base.unwrap_or(root), home) else {
+        return Containment::Unknown;
     };
     match (resolved.canonicalize(), root.canonicalize()) {
         (Ok(target), Ok(root)) => {
@@ -1019,14 +1053,20 @@ fn classify_path_containment_with_home(
 /// the caller's existing rules in charge — the same fail-open policy
 /// [`classify_path_containment_with_home`] applies to a path it cannot
 /// resolve.
-fn path_is_config_excluded(raw: &str, project_root: Option<&Path>) -> bool {
+fn path_is_config_excluded(raw: &str, project_root: Option<&Path>, base: Option<&Path>) -> bool {
     let Some(root) = project_root else {
         return false;
     };
     let Ok(config) = crate::config::load_config(root) else {
         return false;
     };
-    path_is_config_excluded_with(raw, root, &config, crate::agents::home_dir().as_deref())
+    path_is_config_excluded_with(
+        raw,
+        root,
+        base,
+        &config,
+        crate::agents::home_dir().as_deref(),
+    )
 }
 
 /// [`path_is_config_excluded`] with the config and home directory injected, so
@@ -1034,16 +1074,12 @@ fn path_is_config_excluded(raw: &str, project_root: Option<&Path>) -> bool {
 fn path_is_config_excluded_with(
     raw: &str,
     root: &Path,
+    base: Option<&Path>,
     config: &crate::config::TokenSaveConfig,
     home: Option<&Path>,
 ) -> bool {
-    let Some(target) = expand_home_prefix(raw, home) else {
+    let Some(resolved) = resolve_against_base(raw, base.unwrap_or(root), home) else {
         return false;
-    };
-    let resolved = if target.is_absolute() {
-        target
-    } else {
-        root.join(target)
     };
     let (Ok(target), Ok(root)) = (resolved.canonicalize(), root.canonicalize()) else {
         return false;
@@ -1064,8 +1100,17 @@ fn path_is_config_excluded_with(
         || crate::config::is_excluded_dir(&relative, config)
 }
 
-fn classify_path_within_project(raw: &str, project_root: Option<&Path>) -> Containment {
-    classify_path_containment_with_home(raw, project_root, crate::agents::home_dir().as_deref())
+fn classify_path_within_project(
+    raw: &str,
+    project_root: Option<&Path>,
+    base: Option<&Path>,
+) -> Containment {
+    classify_path_containment_with_home(
+        raw,
+        project_root,
+        base,
+        crate::agents::home_dir().as_deref(),
+    )
 }
 
 #[cfg(test)]
@@ -1075,7 +1120,7 @@ fn path_is_within_project_with_home(
     home: Option<&Path>,
 ) -> bool {
     matches!(
-        classify_path_containment_with_home(raw, project_root, home),
+        classify_path_containment_with_home(raw, project_root, None, home),
         Containment::Inside
     )
 }
