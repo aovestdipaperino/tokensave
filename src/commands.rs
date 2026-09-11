@@ -767,6 +767,7 @@ pub async fn handle_discover(since: &str, json_output: bool) -> tokensave::error
                     "tool": b.bucket.tool_name(),
                     "suggestion": b.bucket.suggestion(),
                     "turns": b.turns,
+                    "turns_with_measured_sizes": b.turns_with_measured_sizes,
                     "addressable_input_tokens": b.addressable_input_tokens,
                     "recoverable_input_tokens": b.recoverable_input_tokens(),
                 })
@@ -777,6 +778,7 @@ pub async fn handle_discover(since: &str, json_output: bool) -> tokensave::error
             "recoverable_fraction": discover::RECOVERABLE_FRACTION,
             "total_turns": report.total_turns,
             "replaceable_turns": report.total_replaceable_turns(),
+            "turns_with_measured_sizes": report.total_turns_with_measured_sizes(),
             "total_addressable_input_tokens": report.total_addressable_input_tokens(),
             "total_recoverable_input_tokens": report.total_recoverable_input_tokens(),
             "buckets": buckets,
@@ -826,11 +828,25 @@ pub async fn handle_discover(since: &str, json_output: bool) -> tokensave::error
     // back before the upgrade reports navigation turns worth zero tokens. Say
     // why, or the honest "nothing measured here yet" reads as the very bug
     // #474 reported — a figure that is implausibly small.
-    if report.total_replaceable_turns() > 0 && report.total_addressable_input_tokens() == 0 {
+    //
+    // Which turns carry a size is a fact to read, not to infer from the total
+    // being zero: that inference called a genuinely-measured zero "unknown",
+    // and said nothing at all about a range straddling the upgrade, where the
+    // total is a real but partial figure (#523).
+    let replaceable = report.total_replaceable_turns();
+    let measured = report.total_turns_with_measured_sizes();
+    if replaceable > 0 && measured == 0 {
         println!(
             "  These turns were recorded before tool-result sizes were measured, so \
              their addressable total is unknown rather than zero. Turns ingested from \
              now on carry it."
+        );
+    } else if measured < replaceable {
+        println!(
+            "  {} of {replaceable} of these turns were recorded before tool-result sizes \
+             were measured, so the addressable total above counts the other {measured} \
+             and is a lower bound.",
+            replaceable - measured
         );
     }
 
