@@ -67,6 +67,23 @@ pub struct BranchDrift {
 // ---------------------------------------------------------------------------
 
 impl TokenSave {
+    /// Normalizes `path` to the DB's project-relative, forward-slash form,
+    /// returning `None` when it points outside `project_root`.
+    fn relative_in_root(&self, path: &str) -> Option<String> {
+        let normalized = normalize_rel_path(path);
+        let candidate = Path::new(&normalized);
+        if !candidate.is_absolute() {
+            return (!normalized.starts_with("../")).then_some(normalized);
+        }
+        // Compare canonicalized forms so a symlinked or `..`-laden absolute
+        // path cannot slip past a textual prefix check.
+        let root =
+            std::fs::canonicalize(&self.project_root).unwrap_or_else(|_| self.project_root.clone());
+        let abs = std::fs::canonicalize(candidate).unwrap_or_else(|_| candidate.to_path_buf());
+        let rel = abs.strip_prefix(&root).ok()?;
+        Some(normalize_rel_path(&rel.to_string_lossy()))
+    }
+
     /// Check whether the given files need (re-/un-)indexing to bring the DB
     /// into agreement with the filesystem.
     ///
@@ -85,7 +102,17 @@ impl TokenSave {
             // under `src/foo.py` and the file gets treated as "new" — a
             // subsequent sync would insert a *second* row alongside the
             // original, which is #87.
-            let normalized = normalize_rel_path(path);
+            // Tools accept an absolute path so edits can reach a sibling
+            // worktree, but such a file must never enter *this* graph: with an
+            // absolute argument `join` discards the base, the row would be
+            // written under its absolute path, and the served project would
+            // start answering with another project's symbols (#528). Rewrite
+            // an absolute path that is genuinely inside the root, and drop the
+            // rest — the same way a path in neither the DB nor on disk is
+            // dropped below.
+            let Some(normalized) = self.relative_in_root(path) else {
+                continue;
+            };
             let abs_path = self.project_root.join(&normalized);
             let file_exists = abs_path.exists();
             match self.db.get_file(&normalized).await {

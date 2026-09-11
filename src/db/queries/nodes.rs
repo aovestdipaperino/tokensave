@@ -22,20 +22,6 @@ pub struct NodeFilter {
     name_contains: Option<String>,
 }
 
-/// Escapes a string for use inside a `LIKE` pattern.
-///
-/// Without this, a path containing `_` or `%` acts as a wildcard: a filter for
-/// the directory `a_b` would also match `axb`. That is a wrong-results bug
-/// rather than an error, so it fails silently — which is why the escaping is
-/// paired with a test rather than left to review. `\` is the escape character,
-/// declared with `ESCAPE` at each use site.
-fn escape_like(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
-
 impl NodeFilter {
     /// An unconstrained filter, equivalent to selecting every node.
     #[must_use]
@@ -93,12 +79,8 @@ impl NodeFilter {
         let mut clauses: Vec<String> = Vec::new();
 
         if let Some(prefix) = &self.path_prefix {
-            let exact = prefix.trim_end_matches('/');
-            let mut sql = String::from("(file_path = ");
-            push_quoted(&mut sql, exact);
-            sql.push_str(" OR file_path LIKE ");
-            push_quoted(&mut sql, &format!("{}/%", escape_like(exact)));
-            sql.push_str(" ESCAPE '\\')");
+            let mut sql = String::new();
+            push_path_prefix_filter(&mut sql, "", prefix);
             clauses.push(sql);
         }
 

@@ -219,6 +219,39 @@ pub(crate) fn push_quoted(buf: &mut String, s: &str) {
     buf.push('\'');
 }
 
+/// Escapes a string for use inside a `LIKE` pattern.
+///
+/// Without this, a path containing `_` or `%` acts as a wildcard: a filter for
+/// the directory `a_b` would also match `axb`. That is a wrong-results bug
+/// rather than an error, so it fails silently — which is why the escaping is
+/// paired with a test rather than left to review. `\` is the escape character,
+/// declared with `ESCAPE` at each use site.
+pub(crate) fn escape_like(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// Appends a path-prefix filter for `<alias>file_path` to `buf`.
+///
+/// Matches the directory itself and everything under it, with the prefix
+/// quoted and `LIKE`-escaped. `alias` is a table qualifier including the dot
+/// (`"n."`) or empty for an unqualified column. Callers that need a leading
+/// `AND`/`WHERE` supply it themselves.
+pub(crate) fn push_path_prefix_filter(buf: &mut String, alias: &str, prefix: &str) {
+    let exact = prefix.trim_end_matches('/');
+    buf.push('(');
+    buf.push_str(alias);
+    buf.push_str("file_path = ");
+    push_quoted(buf, exact);
+    buf.push_str(" OR ");
+    buf.push_str(alias);
+    buf.push_str("file_path LIKE ");
+    push_quoted(buf, &format!("{}/%", escape_like(exact)));
+    buf.push_str(" ESCAPE '\\')");
+}
+
 /// Appends a SQL-safe quoted string or NULL for Option<String>.
 pub(crate) fn push_opt_quoted(buf: &mut String, opt: Option<&str>) {
     match opt {

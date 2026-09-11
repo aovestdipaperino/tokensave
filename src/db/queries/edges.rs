@@ -932,7 +932,11 @@ impl Database {
         };
 
         let path_filter = match path_prefix {
-            Some(prefix) => format!("AND {group_alias}.file_path LIKE '{prefix}%'"),
+            Some(prefix) => {
+                let mut f = String::from("AND ");
+                push_path_prefix_filter(&mut f, &format!("{group_alias}."), prefix);
+                f
+            }
             None => String::new(),
         };
 
@@ -989,7 +993,11 @@ impl Database {
         limit: usize,
     ) -> Result<Vec<(Node, u64)>> {
         let path_filter = match path_prefix {
-            Some(prefix) => format!("WHERE n.file_path LIKE '{prefix}%'"),
+            Some(prefix) => {
+                let mut f = String::from("WHERE ");
+                push_path_prefix_filter(&mut f, "n.", prefix);
+                f
+            }
             None => String::new(),
         };
 
@@ -1388,7 +1396,11 @@ impl Database {
         limit: usize,
     ) -> Result<Vec<(Node, u64, u64, u64)>> {
         let path_filter = match path_prefix {
-            Some(prefix) => format!("AND n.file_path LIKE '{prefix}%'"),
+            Some(prefix) => {
+                let mut f = String::from("AND ");
+                push_path_prefix_filter(&mut f, "n.", prefix);
+                f
+            }
             None => String::new(),
         };
 
