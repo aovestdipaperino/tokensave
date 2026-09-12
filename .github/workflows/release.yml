@@ -132,6 +132,23 @@ jobs:
         shell: bash
         run: gh release upload ${{ needs.setup.outputs.tag }} tokensave-${{ needs.setup.outputs.tag }}-${{ matrix.name }}.${{ matrix.archive }} --clobber
 
+      # Hash the exact bytes just uploaded, on the leg that produced them
+      # (#525). Collected into SHA256SUMS by the checksums job, which
+      # `tokensave upgrade` verifies against before extracting.
+      - name: Record archive SHA256 (unix)
+        if: matrix.archive == 'tar.gz' && needs.setup.outputs.publish == 'true' && needs.setup.outputs.windows_only != 'true'
+        shell: bash
+        run: |
+          ASSET="tokensave-${{ needs.setup.outputs.tag }}-${{ matrix.name }}.${{ matrix.archive }}"
+          sha256sum "$ASSET" > "${ASSET}.sha256"
+
+      - name: Upload checksum artifact (unix)
+        if: matrix.archive == 'tar.gz' && needs.setup.outputs.publish == 'true' && needs.setup.outputs.windows_only != 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: checksum-${{ matrix.name }}
+          path: "*.sha256"
+
       # --- Windows: Authenticode signing via SignPath (build half) ---
       # Production signing uses a SignPath Foundation certificate, which requires manual
       # approval in the SignPath UI, so signing is split out into the sign-windows job.
@@ -237,6 +254,73 @@ jobs:
           TAG: ${{ needs.setup.outputs.tag }}
         # This job has no checkout, so gh can't infer the repo from git context.
         run: gh release upload "${TAG}" "tokensave-${TAG}-${{ matrix.name }}.zip" --clobber --repo "$GITHUB_REPOSITORY"
+
+      # Hashed after signing, not before: signing rewrites the .exe, so a hash
+      # taken in the build job would never match what users download (#525).
+      - name: Record archive SHA256 (windows)
+        env:
+          TAG: ${{ needs.setup.outputs.tag }}
+        run: |
+          ASSET="tokensave-${TAG}-${{ matrix.name }}.zip"
+          sha256sum "$ASSET" > "${ASSET}.sha256"
+
+      - name: Upload checksum artifact (windows)
+        uses: actions/upload-artifact@v6
+        with:
+          name: checksum-${{ matrix.name }}
+          path: "*.sha256"
+
+  # Publishes the SHA256SUMS asset `tokensave upgrade` verifies against (#525).
+  #
+  # Merges into whatever SHA256SUMS the release already carries rather than
+  # replacing it. `upgrade` fails closed on a missing hash, so a partial run —
+  # a windows-only re-run, or a re-run of one leg — must not drop the other
+  # platforms' entries and block their upgrades. An asset that was re-uploaded
+  # necessarily ran its leg, so a fresh entry always wins over a stale one.
+  checksums:
+    name: Publish SHA256SUMS
+    if: always() && needs.setup.outputs.publish == 'true' && needs.sign-windows.result == 'success'
+    needs: [setup, build, sign-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download checksum artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: checksum-*
+          path: checksums
+          merge-multiple: true
+
+      - name: Assemble SHA256SUMS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.setup.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cat checksums/*.sha256 > new.txt
+
+          # Carry forward entries for assets this run did not rebuild.
+          mkdir -p existing
+          if gh release download "$TAG" --pattern SHA256SUMS --dir existing --clobber 2>/dev/null; then
+            awk '{ sub(/^\*/, "", $2); print $2 }' new.txt > fresh-names.txt
+            while read -r line; do
+              [ -n "$line" ] || continue
+              name=$(printf '%s' "$line" | awk '{ sub(/^\*/, "", $2); print $2 }')
+              grep -qxF "$name" fresh-names.txt || printf '%s\n' "$line"
+            done < existing/SHA256SUMS >> new.txt
+          fi
+
+          # Sorted so the asset is byte-stable regardless of leg completion
+          # order, which keeps a re-run from churning the file needlessly.
+          sort -k2 new.txt > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+          test -s SHA256SUMS
+
+      - name: Upload SHA256SUMS to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.setup.outputs.tag }}
+        run: gh release upload "$TAG" SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
 
   update-homebrew:
     name: Update Homebrew tap

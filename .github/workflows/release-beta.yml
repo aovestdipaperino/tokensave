@@ -94,6 +94,21 @@ jobs:
         shell: bash
         run: gh release upload ${{ github.ref_name }} tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive }} --clobber
 
+      # Hash the exact bytes that were just uploaded, on the leg that produced
+      # them (#525). Collected into a single SHA256SUMS by the checksums job
+      # below, which `tokensave upgrade` verifies against before extracting.
+      - name: Record archive SHA256
+        shell: bash
+        run: |
+          ASSET="tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive }}"
+          sha256sum "$ASSET" > "${ASSET}.sha256"
+
+      - name: Upload checksum artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: checksum-beta-${{ matrix.name }}
+          path: "*.sha256"
+
       # --- Homebrew bottle (only for platforms with bottle_tag) ---
 
       - name: Package Homebrew bottle
@@ -112,6 +127,37 @@ jobs:
         with:
           name: bottle-beta-${{ matrix.bottle_tag }}
           path: "tokensave-beta-*.bottle.tar.gz"
+
+  # Publishes the SHA256SUMS asset `tokensave upgrade` verifies against (#525).
+  # Runs after every build leg so the file covers all platforms: upgrade fails
+  # closed on a missing hash, so a sums file that omits a platform would block
+  # upgrades for it rather than silently skipping verification.
+  checksums:
+    name: Publish SHA256SUMS
+    if: env.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download checksum artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: checksum-beta-*
+          path: checksums
+          merge-multiple: true
+
+      - name: Assemble SHA256SUMS
+        run: |
+          # Sorted so the file is byte-stable regardless of leg completion
+          # order, which keeps a re-run from producing a different asset.
+          cat checksums/*.sha256 | sort -k2 > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+          test -s SHA256SUMS
+
+      - name: Upload SHA256SUMS to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" SHA256SUMS --clobber
 
   update-homebrew:
     name: Update Homebrew tap (beta)
