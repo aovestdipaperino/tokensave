@@ -1332,6 +1332,81 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
+        Commands::AuditEdges { top, json } => {
+            let project_path = tokensave::config::resolve_path_with_discovery(None);
+            if !TokenSave::is_initialized(&project_path) {
+                return Err(tokensave::errors::TokenSaveError::Config {
+                    message: format!(
+                        "no TokenSave index at '{}' — run `tokensave init` first",
+                        project_path.display()
+                    ),
+                });
+            }
+            let cg = TokenSave::open(&project_path).await?;
+            let report = tokensave::edge_audit::audit(cg.db(), top).await?;
+
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "total_edges": report.total_edges,
+                        "gated_edges": report.gated_edges,
+                        "cross_file": report.cross_file,
+                        "sole_candidate_cross_file": report.sole_candidate_cross_file,
+                        "unreachable": report.unreachable,
+                        "hot_targets": report.hot_targets.iter().map(|t| serde_json::json!({
+                            "name": t.name,
+                            "file": t.file_path,
+                            "line": t.start_line,
+                            "kind": t.kind,
+                            "source_files": t.source_files,
+                            "edges": t.edges,
+                        })).collect::<Vec<_>>(),
+                    })
+                );
+            } else {
+                println!("Edge audit — {}", project_path.display());
+                println!(
+                    "  total edges                       {:>8}",
+                    report.total_edges
+                );
+                println!(
+                    "  in gated languages (py/js/ts)     {:>8}",
+                    report.gated_edges
+                );
+                println!(
+                    "    cross-file                      {:>8}",
+                    report.cross_file
+                );
+                println!(
+                    "    sole-candidate                  {:>8}",
+                    report.sole_candidate_cross_file
+                );
+                println!(
+                    "      without reachability evidence {:>8}   <- diff this between commits",
+                    report.unreachable
+                );
+
+                if report.hot_targets.is_empty() {
+                    println!("\nNo unreachable sole-candidate cross-file targets.");
+                } else {
+                    println!("\nMost-collided targets:");
+                    for t in &report.hot_targets {
+                        println!(
+                            "  {:>6} edges from {:>4} files  {}:{}  {} ({})",
+                            t.edges, t.source_files, t.file_path, t.start_line, t.name, t.kind
+                        );
+                    }
+                }
+                println!(
+                    "\nAn edge counted here is one the index asserts but the source file \
+                     carries no\nevidence it can reach — same directory, the name imported, \
+                     or the owning class\nimported. Unlike a production-to-tests/ count it \
+                     also sees phantoms landing inside\nproduction, and needs no \
+                     test/production classification."
+                );
+            }
+        }
         Commands::Doctor { agent } => {
             tokensave::doctor::run_doctor(agent.as_deref()).await;
         }
@@ -1651,6 +1726,7 @@ fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
             | Commands::Reinstall { .. }
             | Commands::Uninstall { .. }
             | Commands::Doctor { .. }
+            | Commands::AuditEdges { .. }
             // `Serve` is the hot path used by MCP clients (Claude Code,
             // Codex, etc.). Clients impose a 30 s `initialize` timeout, so
             // every pre-serve startup task — `try_flush` network round-trip,
