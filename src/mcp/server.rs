@@ -2008,6 +2008,15 @@ impl McpServer {
             );
         };
 
+        // Logged before selector validation and before the pre-dispatch
+        // freshness/reindex gates (#535). Those gates can outlast a client's
+        // request deadline, and a call that hangs inside them used to print
+        // nothing at all, leaving the stderr tail naming the *previous* call
+        // and misdirecting the diagnosis. Entry and dispatch are separate
+        // lines so a tail ending in `tool call:` with no matching `dispatch:`
+        // localises the hang to the pre-dispatch work.
+        eprintln!("[tokensave] tool call: {tool_name}");
+
         let mut arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
         // Request-side cost of this call (tool name + arguments + JSON-RPC
@@ -2143,7 +2152,7 @@ impl McpServer {
             self.maybe_reindex_on_version_bump();
         }
 
-        eprintln!("[tokensave] tool call: {tool_name}");
+        eprintln!("[tokensave] dispatch: {tool_name}");
 
         let server_stats = if selected.is_none() && tool_name == "tokensave_status" {
             Some(self.server_stats_json().await)

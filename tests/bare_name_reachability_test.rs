@@ -164,7 +164,7 @@ async fn a_python_bare_name_does_not_bind_to_an_unreachable_production_candidate
 
     std::fs::write(
         root.join("ui/panel.py"),
-        "import tkinter as tk\n\n\nclass Panel:\n    def writers(self):\n        t = self._txt\n\n        def p(s):\n            t.insert(tk.END, s + \"\n\")\n\n        return p\n",
+        "import tkinter as tk\n\n\nclass Panel:\n    def writers(self):\n        t = self._txt\n\n        def p(s):\n            t.insert(tk.END, s + \"\\n\")\n\n        return p\n",
     )
     .unwrap();
     std::fs::write(
