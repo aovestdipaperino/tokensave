@@ -298,7 +298,19 @@ pub fn save_config(project_root: &Path, config: &TokenSaveConfig) -> Result<()> 
     let config_path = get_config_path(project_root);
     let tmp_path = config_path.with_extension("tmp");
 
-    let json = serde_json::to_string_pretty(config).map_err(|e| TokenSaveError::Config {
+    let mut value = serde_json::to_value(config).map_err(|e| TokenSaveError::Config {
+        message: format!("failed to serialize config: {e}"),
+    })?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "_comment".to_string(),
+            serde_json::Value::String(
+                "TOKENSAVE_* environment variables override matching config values when set."
+                    .to_string(),
+            ),
+        );
+    }
+    let json = serde_json::to_string_pretty(&value).map_err(|e| TokenSaveError::Config {
         message: format!("failed to serialize config: {e}"),
     })?;
 

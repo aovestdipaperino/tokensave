@@ -717,6 +717,14 @@ being asked would be a bad surprise. Nothing new is detected when you enable
 it — the same conditions were already detected, this only changes whether they
 warn or refuse.
 
+### Configuration and environment overrides
+
+`.tokensave/config.json` is generated as ordinary JSON. It includes an
+`_comment` metadata field explaining that `TOKENSAVE_*` environment variables
+override matching config values when set. This is especially relevant for
+`TOKENSAVE_AUTO_TRACK`, `TOKENSAVE_REPORT_SAVINGS`, and
+`TOKENSAVE_UPDATE_CHECK`.
+
 
 ### CLI-Only Workflows
 

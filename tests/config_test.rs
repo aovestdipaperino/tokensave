@@ -19,6 +19,17 @@ fn test_save_and_load_config() {
 }
 
 #[test]
+fn test_generated_config_explains_environment_overrides() {
+    let dir = TempDir::new().unwrap();
+    save_config(dir.path(), &TokenSaveConfig::default()).unwrap();
+
+    let text = std::fs::read_to_string(dir.path().join(".tokensave/config.json")).unwrap();
+    assert!(text.contains("\"_comment\""));
+    assert!(text.contains("TOKENSAVE_* environment variables override"));
+    assert!(serde_json::from_str::<TokenSaveConfig>(&text).is_ok());
+}
+
+#[test]
 fn test_is_excluded() {
     let config = TokenSaveConfig::default();
     assert!(!is_excluded("src/main.rs", &config));
