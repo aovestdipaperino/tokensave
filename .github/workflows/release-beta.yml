@@ -167,7 +167,12 @@ jobs:
 
   update-homebrew:
     name: Update Homebrew tap (beta)
-    if: env.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease && !cancelled()
+    # See the stable workflow: a build leg that dies before packaging its
+    # bottle leaves that sha unset and publishes a formula with an empty hash,
+    # which Homebrew then fails to verify.
+    if: >-
+      env.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease
+      && !cancelled() && needs.build.result == 'success'
     needs: build
     runs-on: ubuntu-latest
     steps:

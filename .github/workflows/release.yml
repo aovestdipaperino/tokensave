@@ -330,7 +330,17 @@ jobs:
 
   update-homebrew:
     name: Update Homebrew tap
-    if: github.event_name == 'release' && !github.event.release.prerelease && !cancelled()
+    # `needs.build.result == 'success'` rather than only `!cancelled()`: the
+    # formula interpolates one sha per bottle, and a build leg that dies before
+    # packaging its bottle leaves that shell variable unset, so the tap gets
+    # published with an empty hash. Homebrew verifies the bottle against it, so
+    # installs on that platform fail outright. v7.12.0 shipped
+    # `arm64_sonoma: ""` exactly this way. A skipped tap update is recoverable;
+    # a published broken formula is live breakage for every user on that
+    # platform.
+    if: >-
+      github.event_name == 'release' && !github.event.release.prerelease
+      && !cancelled() && needs.build.result == 'success'
     needs: build
     runs-on: ubuntu-latest
     steps:
