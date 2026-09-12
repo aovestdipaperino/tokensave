@@ -150,3 +150,64 @@ async fn a_rust_bare_name_across_modules_is_not_gated() {
         "Rust bare-name resolution must be unaffected by the gate"
     );
 }
+
+/// The measured shape, with neither end in a test tree: a closure named `p`
+/// nested inside a method is the only symbol of that name in the project, and
+/// an ordinary local named `p` sits in a different production package that
+/// imports nothing from it.
+#[tokio::test]
+async fn a_python_bare_name_does_not_bind_to_an_unreachable_production_candidate() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("ui")).unwrap();
+    std::fs::create_dir_all(root.join("util")).unwrap();
+
+    std::fs::write(
+        root.join("ui/panel.py"),
+        "import tkinter as tk\n\n\nclass Panel:\n    def writers(self):\n        t = self._txt\n\n        def p(s):\n            t.insert(tk.END, s + \"\n\")\n\n        return p\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("util/paths.py"),
+        "import os\n\n\ndef cache_dir(root):\n    p = os.path.join(root, \".cache\")\n    os.makedirs(p, exist_ok=True)\n    return p\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(root).await.unwrap();
+    cg.sync().await.unwrap();
+
+    assert!(
+        !has_edge(&cg, "util/paths.py", "p", "ui/panel.py").await,
+        "a local name must not bind to an unreachable closure in another production module"
+    );
+}
+
+/// The recall control, same shape: an explicit import is evidence, so the edge
+/// must survive. Without this the test above could be satisfied by a rule that
+/// simply refuses all cross-package bare names.
+#[tokio::test]
+async fn a_python_bare_name_still_binds_across_production_modules_when_imported() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("ui")).unwrap();
+    std::fs::create_dir_all(root.join("util")).unwrap();
+
+    std::fs::write(
+        root.join("ui/widgets.py"),
+        "def render_banner():\n    return \"banner\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("util/report.py"),
+        "from ui.widgets import render_banner\n\n\ndef build():\n    return render_banner()\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(root).await.unwrap();
+    cg.sync().await.unwrap();
+
+    assert!(
+        has_edge(&cg, "util/report.py", "render_banner", "ui/widgets.py").await,
+        "an explicitly imported cross-package name must still resolve"
+    );
+}
