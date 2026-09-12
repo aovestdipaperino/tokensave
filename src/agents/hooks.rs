@@ -59,6 +59,142 @@ const HOOK_MARKER_CHECKOUT_END: &str = "# tokensave: end auto-init";
 /// Marker comment identifying the repo-hook chaining preamble (issue #164).
 const HOOK_MARKER_CHAIN: &str = "# tokensave: chain-repo-hook";
 
+/// Version stamp carried on the post-checkout fence's opening line (#342 Q1).
+///
+/// Bumped whenever [`post_checkout_snippet`]'s body changes, so an install
+/// carrying an older stamp is recognised as stale and rewritten in place
+/// rather than left running the shape it was installed with. v2 replaced the
+/// inline `$1`/`$3` branching with a single delegating line — see
+/// [`post_checkout_snippet`].
+const HOOK_CHECKOUT_VERSION: u32 = 2;
+
+/// Outcome of writing tokensave's block into a hook file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HookWrite {
+    /// No tokensave block was present; one was added.
+    Installed,
+    /// A tokensave block was present with different content; it was replaced
+    /// in place and everything outside the fence preserved byte-for-byte.
+    Migrated,
+    /// The block already matches; the file was not touched.
+    UpToDate,
+    Failed,
+}
+
+/// Replaces the fenced tokensave block in `contents` with `block`.
+///
+/// The fence is the first line starting with `begin_prefix` through the first
+/// subsequent line starting with `end_marker`. Everything outside that span is
+/// preserved byte-for-byte — that is the whole point of the fence, since the
+/// file may carry a user's own hook code that tokensave has no claim on.
+///
+/// Returns `None` when no complete fence is present (the caller appends
+/// instead), and `Some(unchanged)` when the block already matches, which the
+/// caller turns into a no-op rather than a rewrite.
+fn replace_fenced_block(
+    contents: &str,
+    begin_prefix: &str,
+    end_marker: &str,
+    block: &str,
+) -> Option<String> {
+    let lines: Vec<&str> = contents.split_inclusive('\n').collect();
+    let start = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with(begin_prefix))?;
+    let end = lines
+        .iter()
+        .skip(start)
+        .position(|l| l.trim_start().starts_with(end_marker))
+        .map(|offset| start + offset)?;
+
+    let mut out = String::with_capacity(contents.len() + block.len());
+    for line in &lines[..start] {
+        out.push_str(line);
+    }
+    out.push_str(block);
+    // The block always ends in a newline; if the closing marker line did not
+    // (end of file, no trailing newline), do not invent one beyond the block.
+    for line in &lines[end + 1..] {
+        out.push_str(line);
+    }
+    Some(out)
+}
+
+/// Writes `contents` to `path` atomically, preserving the existing mode.
+///
+/// A hook is executed by git, so a partially written file is a broken hook
+/// rather than a corrupted data file: the write goes to a sibling temp file
+/// and is renamed into place, which is atomic within a directory. The mode is
+/// copied from the original so a rewrite cannot silently drop the executable
+/// bit that makes the hook run at all.
+fn write_file_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".tokensave-hook-")
+        .tempfile_in(dir)?;
+    {
+        use std::io::Write;
+        tmp.write_all(contents.as_bytes())?;
+        tmp.flush()?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path).map_or(0o755, |m| m.permissions().mode());
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(mode))?;
+    }
+
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
+/// Installs or migrates tokensave's fenced block in a hook file.
+///
+/// This is the (A) branch of #342 Q1: an ownership-aware in-place rewrite.
+/// tokensave replaces only the region between its own markers, so it can now
+/// *update* its block on upgrade — and, just as importantly, could remove it
+/// cleanly, which an append-only writer never could for a hook that also
+/// carries a user's code.
+fn install_or_migrate_block(
+    hook_path: &Path,
+    begin_prefix: &str,
+    end_marker: &str,
+    block: &str,
+) -> HookWrite {
+    let Ok(existing) = std::fs::read_to_string(hook_path) else {
+        return if write_global_hook(hook_path, block) {
+            HookWrite::Installed
+        } else {
+            HookWrite::Failed
+        };
+    };
+
+    match replace_fenced_block(&existing, begin_prefix, end_marker, block) {
+        Some(updated) if updated == existing => HookWrite::UpToDate,
+        Some(updated) => match write_file_atomically(hook_path, &updated) {
+            Ok(()) => HookWrite::Migrated,
+            Err(e) => {
+                eprintln!(
+                    "  \x1b[31m✘\x1b[0m Failed to update {}: {e}",
+                    hook_path.display()
+                );
+                HookWrite::Failed
+            }
+        },
+        // No complete fence: either no tokensave block at all, or a
+        // pre-#391 one that never wrote a closing marker. Append, which
+        // leaves any legacy block alone rather than guessing its extent.
+        None => {
+            if write_global_hook(hook_path, block) {
+                HookWrite::Installed
+            } else {
+                HookWrite::Failed
+            }
+        }
+    }
+}
+
 /// Preamble that forwards a global hook to the repository's own hook.
 ///
 /// A global `core.hooksPath` makes git ignore every repository's
@@ -183,44 +319,75 @@ fn post_merge_snippet(tokensave_bin: &str) -> String {
     )
 }
 
-/// The hook snippet appended to (or written as) the post-checkout script.
+/// What a `post-checkout` event should trigger.
 ///
-/// git reports the initial checkout of a fresh clone — and of every new
-/// `git worktree add` — by passing the all-zeros sentinel as the previous
-/// HEAD. That checkout is **also** a branch checkout (git passes flag
-/// `$3 == 1`) and it can land on a branch that is not the default one:
-/// `git worktree add -b feature` and `git clone -b feature` both do. So the
-/// sentinel arm runs `tokensave init` **and then**
-/// `tokensave branch add --if-enabled`:
-/// sequentially, because `branch add` copies the index that `init` creates,
-/// and inside a single background job, because two independent background
-/// jobs would race (#391).
+/// Kept as a pure decision, separate from the effects in
+/// [`crate::commands::hook_post_checkout`], because this is exactly where #391
+/// went wrong: two correct-looking commands sat in mutually exclusive arms, so
+/// a fresh worktree was indexed but never had its branch tracked. That is a
+/// property of the *decision*, and it is only cheap to test if the decision
+/// has no side effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckoutAction {
+    /// A fresh clone or new worktree: index, then track the branch — in that
+    /// order, because tracking copies the index `init` creates.
+    InitThenTrack,
+    /// An ordinary branch switch: track without re-indexing.
+    TrackOnly,
+    /// A file checkout: do nothing.
+    Nothing,
+}
+
+/// git's all-zeros previous HEAD, marking the initial checkout of a fresh
+/// clone or of a newly added worktree.
+pub const FRESH_CHECKOUT_SENTINEL: &str = "0000000000000000000000000000000000000000";
+
+/// Classifies a `post-checkout` event from git's `$1` and `$3`.
 ///
-/// Any other branch checkout (`$3 == 1` with a real previous HEAD) runs
-/// `tokensave branch add --if-enabled` alone to transparently track the
-/// just-checked-out branch; that is a no-op when the branch is already
-/// tracked, is the default branch, or when `auto_track` is off (#397 — the
-/// flag is what makes that knob authoritative on the hook path rather than
-/// only inside `TokenSave::open`). File checkouts (`$3 == 0`) trigger nothing.
+/// The fresh-checkout sentinel wins over the branch flag: such a checkout is
+/// *also* a branch checkout, and it can land on a branch that is not the
+/// default one (`git clone -b feature`, `git worktree add -b feature`), so it
+/// needs both actions rather than either one.
+pub fn classify_checkout(prev_head: Option<&str>, branch_flag: Option<&str>) -> CheckoutAction {
+    if prev_head == Some(FRESH_CHECKOUT_SENTINEL) {
+        return CheckoutAction::InitThenTrack;
+    }
+    if branch_flag == Some("1") {
+        return CheckoutAction::TrackOnly;
+    }
+    CheckoutAction::Nothing
+}
+
+/// The hook snippet written into the post-checkout script.
+///
+/// **v2 delegates instead of branching in shell.** The block is one line that
+/// hands git's arguments to the binary:
+///
+/// ```sh
+/// # tokensave: auto-init (v2)
+/// tokensave hook post-checkout "$@" >/dev/null 2>&1 &
+/// # tokensave: end auto-init
+/// ```
+///
+/// The `$1`-is-all-zeros / `$3 == 1` branching that used to live here now
+/// lives in [`crate::commands::hook_post_checkout`]. That means one in-place
+/// rewrite of the file in a project's lifetime: every later change to hook
+/// *behaviour* ships with the binary and needs no file surgery at all. It also
+/// makes the behaviour unit-testable in Rust rather than in shell.
+///
+/// Backgrounding stays in the shell (`&`) so git is never blocked waiting on
+/// tokensave, which is the one property that has to survive the move.
 ///
 /// The section is fenced by [`HOOK_MARKER_CHECKOUT`] and
-/// [`HOOK_MARKER_CHECKOUT_END`]. Changing this body does not reach an install
-/// that already has the hook: the installer skips a post-checkout file that
-/// already carries the marker, and [`write_global_hook`] never replaces
-/// existing content. Migrating those installs is the open policy question in
-/// #342 Q1.
+/// [`HOOK_MARKER_CHECKOUT_END`], and the opening line carries
+/// [`HOOK_CHECKOUT_VERSION`]. Since #342 Q1 an install carrying an older body
+/// is rewritten in place on install/reinstall, preserving anything outside the
+/// fence byte-for-byte.
 fn post_checkout_snippet(tokensave_bin: &str) -> String {
     let bin = tokensave_bin.replace('\\', "/");
     format!(
-        "{HOOK_MARKER_CHECKOUT}\n\
-         if [ \"$1\" = \"0000000000000000000000000000000000000000\" ]; then\n\
-         \t(\n\
-         \t\t{bin} init >/dev/null 2>&1 || exit 0\n\
-         \t\t{bin} branch add --if-enabled >/dev/null 2>&1\n\
-         \t) &\n\
-         elif [ \"$3\" = \"1\" ]; then\n\
-         \t{bin} branch add --if-enabled >/dev/null 2>&1 &\n\
-         fi\n\
+        "{HOOK_MARKER_CHECKOUT} (v{HOOK_CHECKOUT_VERSION})\n\
+         {bin} hook post-checkout \"$@\" >/dev/null 2>&1 &\n\
          {HOOK_MARKER_CHECKOUT_END}\n"
     )
 }
@@ -469,16 +636,26 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) -> Res
     ) {
         write_global_hook(&checkout_path, &chain_repo_hook_snippet("post-checkout"));
     }
-    let checkout_present = checkout_contents.is_some_and(|c| c.contains(HOOK_MARKER_CHECKOUT));
-    if !checkout_present {
-        if write_global_hook(&checkout_path, &post_checkout_snippet(tokensave_bin)) {
-            eprintln!(
-                "\x1b[32m✔\x1b[0m Installed global git post-checkout hook at {}",
-                checkout_path.display()
-            );
-        } else {
-            failed.push("post-checkout");
-        }
+    // #342 Q1: rewrite our own fenced block in place when it is stale, rather
+    // than skipping because *some* tokensave block is present. A version bump
+    // in the snippet now reaches installs that already have the hook.
+    let checkout_write = install_or_migrate_block(
+        &checkout_path,
+        HOOK_MARKER_CHECKOUT,
+        HOOK_MARKER_CHECKOUT_END,
+        &post_checkout_snippet(tokensave_bin),
+    );
+    match checkout_write {
+        HookWrite::Installed => eprintln!(
+            "\x1b[32m✔\x1b[0m Installed global git post-checkout hook at {}",
+            checkout_path.display()
+        ),
+        HookWrite::Migrated => eprintln!(
+            "\x1b[32m✔\x1b[0m Updated global git post-checkout hook at {} (v{HOOK_CHECKOUT_VERSION})",
+            checkout_path.display()
+        ),
+        HookWrite::UpToDate => {}
+        HookWrite::Failed => failed.push("post-checkout"),
     }
 
     // Install the post-merge hook so `git pull` (fast-forward or a real
@@ -539,6 +716,11 @@ pub struct LocalHookInstall {
     pub installed: Vec<String>,
     /// Hooks that already carried tokensave's section.
     pub already_present: Vec<String>,
+    /// Hooks whose tokensave block was stale and was rewritten in place,
+    /// preserving anything outside the fence (#342 Q1). Reported rather than
+    /// silent: the rewrite is automatic, but a file in the user's repository
+    /// changed and they are entitled to be told.
+    pub migrated: Vec<String>,
     /// Hooks whose write was attempted and failed. The reason was printed at
     /// the point of failure; this records it so the caller can exit non-zero
     /// rather than reporting a partial install as a success.
@@ -613,6 +795,75 @@ pub fn global_git_hooks_installed() -> bool {
     })
 }
 
+/// Rewrites a stale tokensave block in this repository's hooks, without
+/// installing anything that is not already there (#342 Q1).
+///
+/// Called on the path where hooks are already present, which previously
+/// returned early and so never updated the block it had written. Migration
+/// needs no prompt: the region between tokensave's markers is tokensave's
+/// own, and everything outside it is preserved byte-for-byte. Installing a
+/// hook that is *absent* still asks, because that is a file the user has not
+/// agreed to yet.
+///
+/// Returns the hook names that were rewritten, for the caller to report.
+pub fn migrate_local_hook_blocks(repo: &Path, tokensave_bin: &str) -> Vec<String> {
+    let Some(hooks_dir) = repo_hooks_dir(repo) else {
+        return Vec::new();
+    };
+    let path = hooks_dir.join("post-checkout");
+    if !std::fs::read_to_string(&path).is_ok_and(|c| c.contains(HOOK_MARKER_CHECKOUT)) {
+        return Vec::new();
+    }
+    match install_or_migrate_block(
+        &path,
+        HOOK_MARKER_CHECKOUT,
+        HOOK_MARKER_CHECKOUT_END,
+        &post_checkout_snippet(tokensave_bin),
+    ) {
+        HookWrite::Migrated => vec!["post-checkout".to_string()],
+        _ => Vec::new(),
+    }
+}
+
+/// Hook files whose tokensave block is present but out of date (#342 Q1).
+///
+/// A read-only probe for `doctor`: the rewrite itself happens on
+/// install/reinstall, and reporting it here means an automatic change to a
+/// file in the user's repository is at least visible somewhere they can ask.
+///
+/// Only `post-checkout` is versioned; the other two hooks are a single
+/// unchanging line.
+pub fn stale_hook_blocks(repo: &Path, tokensave_bin: &str) -> Vec<PathBuf> {
+    let mut stale = Vec::new();
+    let global_dir = home_dir().map(|home| {
+        read_global_hooks_path(&home)
+            .unwrap_or_else(|| home.join(".config").join("git").join("hooks"))
+    });
+    let dirs = [repo_hooks_dir(repo), global_dir];
+    let want = post_checkout_snippet(tokensave_bin);
+
+    for dir in dirs.into_iter().flatten() {
+        let path = dir.join("post-checkout");
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !contents.contains(HOOK_MARKER_CHECKOUT) {
+            continue;
+        }
+        let current = replace_fenced_block(
+            &contents,
+            HOOK_MARKER_CHECKOUT,
+            HOOK_MARKER_CHECKOUT_END,
+            &want,
+        )
+        .is_some_and(|updated| updated == contents);
+        if !current {
+            stale.push(path);
+        }
+    }
+    stale
+}
+
 /// Does this repository's hook directory already carry tokensave's sections?
 pub fn local_git_hooks_present(repo: &Path) -> bool {
     let Some(dir) = repo_hooks_dir(repo) else {
@@ -657,16 +908,27 @@ pub fn install_local_git_hooks(
         ..Default::default()
     };
 
+    // post-checkout carries a versioned fence, so a stale block is rewritten
+    // in place here too (#342 Q1) rather than skipped for carrying *some*
+    // tokensave marker. The other two hooks are a single unchanging line and
+    // keep the additive treatment.
+    match install_or_migrate_block(
+        &hooks_dir.join("post-checkout"),
+        HOOK_MARKER_CHECKOUT,
+        HOOK_MARKER_CHECKOUT_END,
+        &post_checkout_snippet(tokensave_bin),
+    ) {
+        HookWrite::Installed => result.installed.push("post-checkout".to_string()),
+        HookWrite::Migrated => result.migrated.push("post-checkout".to_string()),
+        HookWrite::UpToDate => result.already_present.push("post-checkout".to_string()),
+        HookWrite::Failed => result.failed.push("post-checkout".to_string()),
+    }
+
     for (name, marker, snippet) in [
         (
             "post-commit",
             HOOK_MARKER,
             post_commit_snippet(tokensave_bin),
-        ),
-        (
-            "post-checkout",
-            HOOK_MARKER_CHECKOUT,
-            post_checkout_snippet(tokensave_bin),
         ),
         (
             "post-merge",
@@ -1409,29 +1671,62 @@ mod git_hook_tests {
     }
 
     #[test]
-    fn post_checkout_snippet_inits_only_on_fresh_clone() {
+    fn post_checkout_snippet_delegates_to_the_binary() {
         let s = post_checkout_snippet("/usr/local/bin/tokensave");
         assert!(
             s.contains(HOOK_MARKER_CHECKOUT),
             "must carry its idempotency marker, got: {s}"
         );
         assert!(
-            s.contains("/usr/local/bin/tokensave init"),
-            "must run `init` with the resolved binary, got: {s}"
+            s.contains("/usr/local/bin/tokensave hook post-checkout \"$@\""),
+            "must forward git's arguments to the binary verbatim, got: {s}"
         );
         assert!(
-            s.contains("0000000000000000000000000000000000000000"),
-            "must guard on the fresh-clone sentinel so branch switches re-route to branch add, got: {s}"
-        );
-        assert!(
-            s.contains("elif [ \"$3\" = \"1\" ]")
-                && s.contains("/usr/local/bin/tokensave branch add --if-enabled"),
-            "must transparently track the branch on a branch checkout (flag $3==1), got: {s}"
+            !s.contains(FRESH_CHECKOUT_SENTINEL) && !s.contains("elif"),
+            "v2 carries no branching: that moved into the binary so behaviour \
+             changes ship with it rather than needing another file rewrite, got: {s}"
         );
         assert!(
             s.trim_end().ends_with(HOOK_MARKER_CHECKOUT_END),
             "the section must be fenced so a migration can replace it in place, got: {s}"
         );
+    }
+
+    /// The #391 regression, now asserted against the decision rather than the
+    /// shell. The bug was that two correct-looking commands sat in mutually
+    /// exclusive arms, so a fresh worktree was indexed but never had its
+    /// branch tracked — a property of the classification, which is why the
+    /// classification is a pure function.
+    #[test]
+    fn a_fresh_worktree_or_clone_is_both_indexed_and_tracked() {
+        const SHA: &str = "1111111111111111111111111111111111111111";
+
+        // git passes the all-zeros previous HEAD *and* flag 1, and the branch
+        // checked out need not be the default one.
+        assert_eq!(
+            classify_checkout(Some(FRESH_CHECKOUT_SENTINEL), Some("1")),
+            CheckoutAction::InitThenTrack,
+            "a fresh worktree/clone must be indexed AND have its branch tracked"
+        );
+        // The sentinel wins even if git reported it without the branch flag.
+        assert_eq!(
+            classify_checkout(Some(FRESH_CHECKOUT_SENTINEL), Some("0")),
+            CheckoutAction::InitThenTrack
+        );
+        // An ordinary branch switch tracks without re-indexing.
+        assert_eq!(
+            classify_checkout(Some(SHA), Some("1")),
+            CheckoutAction::TrackOnly,
+            "a branch switch must not re-run init"
+        );
+        // A file checkout triggers nothing at all.
+        assert_eq!(
+            classify_checkout(Some(SHA), Some("0")),
+            CheckoutAction::Nothing,
+            "a file checkout must not run tokensave"
+        );
+        // Missing arguments must not be read as a branch checkout.
+        assert_eq!(classify_checkout(None, None), CheckoutAction::Nothing);
     }
 
     /// Runs the generated post-checkout snippet under `sh`, with a stub script
@@ -1483,37 +1778,30 @@ mod git_hook_tests {
     /// the snippet rather than by matching substrings: the bug was that two
     /// correct-looking commands sat in mutually exclusive arms, which every
     /// `contains` assertion in the test above passes straight over.
+    /// Executed rather than substring-matched, for the same reason the #391
+    /// test was: what the shell still owns is passing git's arguments through
+    /// untouched and backgrounding the call. A `"$@"` that loses or reorders
+    /// an argument would make the binary's classification correct and the
+    /// outcome wrong anyway.
     #[cfg(unix)]
     #[test]
-    fn post_checkout_snippet_tracks_the_branch_of_a_fresh_worktree_or_clone() {
-        const ZERO: &str = "0000000000000000000000000000000000000000";
+    fn the_snippet_forwards_gits_arguments_verbatim() {
+        const ZERO: &str = FRESH_CHECKOUT_SENTINEL;
         const SHA: &str = "1111111111111111111111111111111111111111";
 
-        // A new worktree or a fresh clone: git passes the all-zeros previous
-        // HEAD *and* flag 1, and the branch checked out need not be the
-        // default one (`git worktree add -b`, `git clone -b`). Both commands
-        // must run, `init` first, so `branch add` has an index to copy.
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(
-            run_post_checkout_snippet(dir.path(), &[ZERO, SHA, "1"]),
-            vec!["init".to_string(), "branch add --if-enabled".to_string()],
-            "a fresh worktree/clone must be indexed AND have its branch tracked"
-        );
-
-        // An ordinary branch switch tracks the branch without re-indexing.
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(
-            run_post_checkout_snippet(dir.path(), &[SHA, SHA, "1"]),
-            vec!["branch add --if-enabled".to_string()],
-            "a branch switch must not re-run init"
-        );
-
-        // A file checkout triggers nothing at all.
-        let dir = tempfile::tempdir().unwrap();
-        assert!(
-            run_post_checkout_snippet(dir.path(), &[SHA, SHA, "0"]).is_empty(),
-            "a file checkout must not run tokensave"
-        );
+        for args in [
+            vec![ZERO, SHA, "1"],
+            vec![SHA, SHA, "1"],
+            vec![SHA, SHA, "0"],
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let invoked = run_post_checkout_snippet(dir.path(), &args);
+            assert_eq!(
+                invoked,
+                vec![format!("hook post-checkout {}", args.join(" "))],
+                "the hook must hand git's arguments to the binary unchanged"
+            );
+        }
     }
 
     #[test]
@@ -1933,5 +2221,137 @@ mod git_hook_tests {
             ..Default::default()
         };
         assert!(!did.found_nothing());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod fence_tests {
+    use super::*;
+
+    const BEGIN: &str = "# tokensave: auto-init";
+    const END: &str = "# tokensave: end auto-init";
+    const NEW_BLOCK: &str = "# tokensave: auto-init (v2)\ntokensave hook post-checkout \"$@\" >/dev/null 2>&1 &\n# tokensave: end auto-init\n";
+
+    /// The property the whole fence exists for: a user's own hook code, on
+    /// both sides of our block, must survive a rewrite byte-for-byte.
+    #[test]
+    fn a_rewrite_preserves_everything_outside_the_fence() {
+        let existing = "#!/bin/sh\n\
+                        # my own pre-step\n\
+                        ./scripts/notify.sh \"$@\"\n\
+                        \n\
+                        # tokensave: auto-init\n\
+                        if [ \"$1\" = \"0000000000000000000000000000000000000000\" ]; then\n\
+                        \ttokensave init >/dev/null 2>&1 &\n\
+                        fi\n\
+                        # tokensave: end auto-init\n\
+                        \n\
+                        # my own post-step\n\
+                        exec ./scripts/after.sh\n";
+
+        let updated = replace_fenced_block(existing, BEGIN, END, NEW_BLOCK).unwrap();
+
+        assert!(updated.starts_with("#!/bin/sh\n# my own pre-step\n./scripts/notify.sh \"$@\"\n\n"));
+        assert!(updated.ends_with("\n# my own post-step\nexec ./scripts/after.sh\n"));
+        assert!(updated.contains("hook post-checkout"));
+        // The old body is gone rather than accumulated.
+        assert!(!updated.contains("0000000000000000000000000000000000000000"));
+        assert_eq!(updated.matches(BEGIN).count(), 1);
+        assert_eq!(updated.matches(END).count(), 1);
+    }
+
+    #[test]
+    fn an_up_to_date_block_is_returned_unchanged() {
+        // Drives the caller's no-op path: a second install must not rewrite a
+        // file whose block already matches.
+        let existing = format!("#!/bin/sh\n{NEW_BLOCK}");
+        let updated = replace_fenced_block(&existing, BEGIN, END, NEW_BLOCK).unwrap();
+        assert_eq!(updated, existing);
+    }
+
+    #[test]
+    fn a_file_with_no_fence_is_declined() {
+        // A pre-#391 block never wrote a closing marker, so its extent cannot
+        // be known. Declining means the caller appends instead of guessing
+        // which lines to delete.
+        let no_block = "#!/bin/sh\necho hello\n";
+        assert!(replace_fenced_block(no_block, BEGIN, END, NEW_BLOCK).is_none());
+
+        let unterminated = "#!/bin/sh\n# tokensave: auto-init\ntokensave init &\n";
+        assert!(replace_fenced_block(unterminated, BEGIN, END, NEW_BLOCK).is_none());
+    }
+
+    #[test]
+    fn a_rewrite_keeps_a_missing_trailing_newline_from_being_invented() {
+        // The fence ends the file with no trailing newline after the marker.
+        let existing = format!("#!/bin/sh\n{}", NEW_BLOCK.trim_end_matches('\n'));
+        let updated = replace_fenced_block(&existing, BEGIN, END, NEW_BLOCK).unwrap();
+        assert_eq!(updated, format!("#!/bin/sh\n{NEW_BLOCK}"));
+    }
+
+    #[test]
+    fn the_installed_snippet_is_a_single_delegating_line() {
+        // v2's reason for existing: the hook file carries no branching, so
+        // behaviour changes ship with the binary instead of needing another
+        // rewrite of a file in the user's repository.
+        let snippet = post_checkout_snippet("/usr/local/bin/tokensave");
+        assert!(snippet.contains(&format!("(v{HOOK_CHECKOUT_VERSION})")));
+        assert!(snippet.contains("hook post-checkout \"$@\""));
+        assert!(
+            !snippet.contains("0000000000000000000000000000000000000000"),
+            "the sentinel branch belongs in the binary now"
+        );
+        assert!(snippet.trim_end().ends_with(HOOK_MARKER_CHECKOUT_END));
+        // Backgrounded, so git is never blocked on tokensave.
+        assert!(snippet.contains("&\n"));
+    }
+
+    #[test]
+    fn a_stale_install_is_migrated_and_an_current_one_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let hook = dir.path().join("post-checkout");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\n./mine.sh\n# tokensave: auto-init\ntokensave init &\n# tokensave: end auto-init\n",
+        )
+        .unwrap();
+
+        let block = post_checkout_snippet("tokensave");
+        assert_eq!(
+            install_or_migrate_block(&hook, BEGIN, END, &block),
+            HookWrite::Migrated
+        );
+        let after = std::fs::read_to_string(&hook).unwrap();
+        assert!(after.starts_with("#!/bin/sh\n./mine.sh\n"));
+        assert!(after.contains("hook post-checkout"));
+
+        // Second run is a no-op, so reinstall does not churn the file.
+        assert_eq!(
+            install_or_migrate_block(&hook, BEGIN, END, &block),
+            HookWrite::UpToDate
+        );
+        assert_eq!(std::fs::read_to_string(&hook).unwrap(), after);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_migration_keeps_the_executable_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let hook = dir.path().join("post-checkout");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\n# tokensave: auto-init\ntokensave init &\n# tokensave: end auto-init\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        install_or_migrate_block(&hook, BEGIN, END, &post_checkout_snippet("tokensave"));
+
+        // A hook that loses +x silently stops running, which is worse than
+        // not migrating it at all.
+        let mode = std::fs::metadata(&hook).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111, "hook must stay executable");
     }
 }
