@@ -277,6 +277,22 @@ pub enum Commands {
         #[arg(long, value_name = "PATH")]
         path: Option<String>,
     },
+    /// Audit bare-name resolution quality over the built index
+    ///
+    /// Counts cross-file edges resolved through the bare-name path whose
+    /// target is the sole symbol of that name — the population the
+    /// reachability gate governs. Read it comparatively: index a tree at two
+    /// commits and diff the counts. Unlike a production-to-`tests/` count it
+    /// also sees phantoms landing inside production, and needs no
+    /// test/production classification, so it is not sensitive to layout.
+    AuditEdges {
+        /// How many of the most-collided targets to list
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Check tokensave installation, configuration, and agent integration
     Doctor {
         /// Check only this agent (default: all agents)
