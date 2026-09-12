@@ -482,6 +482,50 @@ async fn test_initialize() {
     assert!(resp["result"]["serverInfo"]["version"].is_string());
 }
 
+/// Negotiation (#535 plan, phase 1). `handle_initialize` used to ignore the
+/// client's request entirely and always answer `2024-11-05`; a host that pins a
+/// newer revision and validates the handshake strictly may treat that as an
+/// unagreed downgrade and drop the connection before `tools/list`.
+async fn initialize_with(requested: Value) -> Value {
+    let (_dir, server) = setup_server().await;
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(json!(1), "initialize", requested)],
+    )
+    .await;
+    parse_response(&responses[0])
+}
+
+#[tokio::test]
+async fn initialize_echoes_a_supported_protocol_version() {
+    for requested in ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"] {
+        let resp = initialize_with(json!({ "protocolVersion": requested })).await;
+        assert_eq!(
+            resp["result"]["protocolVersion"], requested,
+            "a revision we support must be echoed back, not silently downgraded"
+        );
+    }
+}
+
+#[tokio::test]
+async fn initialize_answers_its_newest_for_an_unsupported_protocol_version() {
+    let resp = initialize_with(json!({ "protocolVersion": "2099-01-01" })).await;
+    assert_eq!(
+        resp["result"]["protocolVersion"], "2025-11-25",
+        "an unknown revision must be answered with our newest so the client can decide"
+    );
+}
+
+#[tokio::test]
+async fn initialize_falls_back_to_the_oldest_when_no_version_is_requested() {
+    // Absent, and present-but-not-a-string: both keep today's lenient clients
+    // byte-identical to the pre-negotiation behaviour.
+    for params in [json!({}), json!({ "protocolVersion": 20251125 })] {
+        let resp = initialize_with(params).await;
+        assert_eq!(resp["result"]["protocolVersion"], "2024-11-05");
+    }
+}
+
 /// The response to a replayed `initialize` must be newline-terminated.
 /// `serve` consumes the first stdin line when it peeks at `initialize.roots`
 /// (#331) and replays it through `handle_and_write`, which wrote the response

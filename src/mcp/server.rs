@@ -449,6 +449,49 @@ pub struct McpServer {
 /// say what was skipped and how to do it deliberately — silently serving a
 /// stale (or empty) index is the failure mode that made #396 and #393 hard to
 /// diagnose from the outside.
+/// MCP revisions this server can serve, newest first.
+///
+/// The later revisions are additive over `2024-11-05` for the surface we
+/// actually implement — `tools/list`, `tools/call`, `resources/*` — so serving
+/// a client that pins one of them is a matter of agreeing on the stamp. What
+/// we do *not* yet emit (structured output, progress, resource links) is
+/// optional in every one of them. Advertising our own newest by default is a
+/// separate decision (#535 plan, phase 2) and deliberately not taken here.
+const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] =
+    ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// The revision assumed when a client sends no `protocolVersion`, or sends one
+/// that is not a string. Staying on the oldest keeps today's lenient clients
+/// byte-identical to pre-negotiation behaviour.
+const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
+
+/// Picks the `protocolVersion` to answer `initialize` with.
+///
+/// Previously this was hardcoded to `2024-11-05` and the client's request was
+/// never read — the dispatch site did not even pass `params` in. A host that
+/// pins a newer revision and validates the handshake strictly is entitled to
+/// treat that as a downgrade it did not agree to and drop the connection
+/// before `tools/list`, which surfaces to the user as a bare "MCP server failed
+/// to connect".
+///
+/// The rule is the spec's: echo the client's revision when we support it,
+/// otherwise answer with our newest and let the client decide whether it can
+/// proceed.
+fn negotiate_protocol_version(params: Option<&Value>) -> &'static str {
+    let requested = params
+        .and_then(|p| p.get("protocolVersion"))
+        .and_then(|v| v.as_str());
+
+    match requested {
+        Some(version) => SUPPORTED_PROTOCOL_VERSIONS
+            .iter()
+            .find(|supported| **supported == version)
+            .copied()
+            .unwrap_or(SUPPORTED_PROTOCOL_VERSIONS[0]),
+        None => DEFAULT_PROTOCOL_VERSION,
+    }
+}
+
 /// How long a `tools/call` may block on the lazy resync before being answered
 /// from the graph as it stands (#535).
 ///
@@ -1725,6 +1768,7 @@ impl McpServer {
         let result = match request.method.as_str() {
             "initialize" => Some(Self::handle_initialize(
                 id,
+                request.params.as_ref(),
                 self.cg.report_savings(),
                 &self.sibling_projects,
             )),
@@ -1775,6 +1819,7 @@ impl McpServer {
     /// `tokensave_metrics:` line it refers to.
     fn handle_initialize(
         id: Value,
+        params: Option<&Value>,
         report_savings: bool,
         sibling_projects: &[String],
     ) -> JsonRpcResponse {
@@ -1809,7 +1854,7 @@ impl McpServer {
         JsonRpcResponse::success(
             id,
             json!({
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": negotiate_protocol_version(params),
                 "capabilities": {
                     "tools": {},
                     "resources": {},
