@@ -123,6 +123,33 @@ pub fn is_graph_scoped_tool(definition: &ToolDefinition) -> bool {
         .unwrap_or(false)
 }
 
+/// Mark a read-only local-graph tool that has no `graph_root`/`graph_branch`
+/// selectors, so the branch-drift gate refuses it once the served branch has
+/// drifted. Deriving the refused set from this marker (instead of a
+/// hard-coded name list) keeps the gate covering any future selector-less
+/// local graph tool automatically.
+fn local_graph_no_selectors(mut definition: ToolDefinition) -> ToolDefinition {
+    let Some(meta) = definition
+        .meta
+        .get_or_insert_with(|| json!({}))
+        .as_object_mut()
+    else {
+        panic!("tool metadata must be an object");
+    };
+    meta.insert("tokensave/localGraphNoSelectors".to_string(), json!(true));
+    definition
+}
+
+/// Whether a tool reads the served local graph but cannot select another one.
+pub fn is_selectorless_local_graph_tool(definition: &ToolDefinition) -> bool {
+    definition
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("tokensave/localGraphNoSelectors"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// The `tokensave_context` description.
 ///
 /// The description must stay stable across re-indexes so MCP clients that
@@ -664,7 +691,7 @@ fn def_files() -> ToolDefinition {
 }
 
 fn def_affected() -> ToolDefinition {
-    def(
+    local_graph_no_selectors(def(
         "tokensave_affected",
         "Affected Tests",
         "Find test files affected by changed source files via dependency graph traversal. Returns a practical recommended suite plus classified direct, same-crate, cross-crate, transitive, and inline-test candidates.",
@@ -687,7 +714,7 @@ fn def_affected() -> ToolDefinition {
             },
             "required": ["files"]
         }),
-    )
+    ))
 }
 
 fn def_ambiguous_calls() -> ToolDefinition {
@@ -770,7 +797,7 @@ fn def_dead_code() -> ToolDefinition {
 }
 
 fn def_diff_context() -> ToolDefinition {
-    def(
+    local_graph_no_selectors(def(
         "tokensave_diff_context",
         "Diff Context",
         "Given changed file paths, return semantic context: which symbols were modified, what depends on them, and affected tests.",
@@ -789,7 +816,7 @@ fn def_diff_context() -> ToolDefinition {
             },
             "required": ["files"]
         }),
-    )
+    ))
 }
 
 fn def_module_api() -> ToolDefinition {
@@ -1286,7 +1313,7 @@ fn def_pr_context() -> ToolDefinition {
 }
 
 fn def_simplify_scan() -> ToolDefinition {
-    def(
+    local_graph_no_selectors(def(
         "tokensave_simplify_scan",
         "Simplify Scan",
         "Quality analysis of changed files: duplications, dead code, coupling, and complexity hotspots.",
@@ -1301,7 +1328,7 @@ fn def_simplify_scan() -> ToolDefinition {
             },
             "required": ["files"]
         }),
-    )
+    ))
 }
 
 fn def_test_map() -> ToolDefinition {
@@ -1604,7 +1631,7 @@ fn def_runtime() -> ToolDefinition {
 }
 
 fn def_redundancy() -> ToolDefinition {
-    def(
+    local_graph_no_selectors(def(
         "tokensave_redundancy",
         "Redundancy Hunt",
         "Find functionally duplicated function/method bodies via AST isomorphism, control-flow match, call-sequence match, and token-shingle Jaccard similarity. Each pair is bucketed as 'definite' (AST-identical), 'likely' (CFG or algorithmic match), or 'naming_only' (low confidence). Use when consolidating helpers or auditing code health. Computed lazily and cached per (node, body source hash) — first call on a fresh index can be slow on large repos.",
@@ -1633,7 +1660,7 @@ fn def_redundancy() -> ToolDefinition {
                 }
             }
         }),
-    )
+    ))
 }
 
 fn def_dsm() -> ToolDefinition {
@@ -1864,7 +1891,7 @@ fn def_test_coverage() -> ToolDefinition {
 }
 
 fn def_diagnose() -> ToolDefinition {
-    def(
+    local_graph_no_selectors(def(
         "tokensave_diagnose",
         "Diagnose Cargo Output",
         "Parse raw `cargo check` / `cargo clippy` stderr text and map each \
@@ -1895,7 +1922,7 @@ fn def_diagnose() -> ToolDefinition {
             },
             "required": ["cargo_output"]
         }),
-    )
+    ))
 }
 
 fn def_run_affected_tests() -> ToolDefinition {
@@ -2318,7 +2345,7 @@ fn def_config() -> ToolDefinition {
 }
 
 fn def_diagnostics() -> ToolDefinition {
-    def(
+    local_graph_no_selectors(def(
         "tokensave_diagnostics",
         "Compile / Type-Check Diagnostics",
         "Run the project's type-checker (cargo check for Rust, tsc for \
@@ -2352,7 +2379,7 @@ fn def_diagnostics() -> ToolDefinition {
                 }
             }
         }),
-    )
+    ))
 }
 
 fn def_unsafe_patterns() -> ToolDefinition {
@@ -2677,7 +2704,15 @@ fn def_diff() -> ToolDefinition {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreadable_literal)]
 mod tests {
     use super::*;
-    use crate::mcp::server::LOCAL_GRAPH_TOOLS_NOT_SUPPORTING_SELECTORS;
+    /// The drift gate's refused set, derived from the registry the same way
+    /// the server derives it at construction.
+    fn derived_selectorless_refused_tools() -> BTreeSet<String> {
+        get_tool_definitions()
+            .iter()
+            .filter(|definition| is_selectorless_local_graph_tool(definition))
+            .map(|definition| definition.name.clone())
+            .collect()
+    }
     use std::collections::BTreeSet;
 
     fn canonical_graph_scoped_tools() -> BTreeSet<&'static str> {
@@ -2883,39 +2918,39 @@ mod tests {
         let definitions = get_tool_definitions();
         let all_registered = definitions
             .iter()
-            .map(|definition| definition.name.as_str())
+            .map(|definition| definition.name.clone())
             .collect::<BTreeSet<_>>();
         let selector_capable = definitions
             .iter()
             .filter(|definition| is_graph_scoped_tool(definition))
-            .map(|definition| definition.name.as_str())
+            .map(|definition| definition.name.clone())
             .collect::<BTreeSet<_>>();
-        let exempt_selectorless = canonical_selectorless_drift_exempt_tools();
-        let refused_selectorless = LOCAL_GRAPH_TOOLS_NOT_SUPPORTING_SELECTORS
-            .iter()
-            .copied()
+        let exempt_selectorless = canonical_selectorless_drift_exempt_tools()
+            .into_iter()
+            .map(str::to_string)
             .collect::<BTreeSet<_>>();
+        let refused_selectorless = derived_selectorless_refused_tools();
 
         let multiply_classified = selector_capable
             .intersection(&refused_selectorless)
             .chain(selector_capable.intersection(&exempt_selectorless))
             .chain(refused_selectorless.intersection(&exempt_selectorless))
-            .copied()
+            .cloned()
             .collect::<BTreeSet<_>>();
         let classified = selector_capable
             .union(&refused_selectorless)
-            .copied()
+            .cloned()
             .collect::<BTreeSet<_>>()
             .union(&exempt_selectorless)
-            .copied()
+            .cloned()
             .collect::<BTreeSet<_>>();
         let added_unclassified = all_registered
             .difference(&classified)
-            .copied()
+            .cloned()
             .collect::<BTreeSet<_>>();
         let removed_stale = classified
             .difference(&all_registered)
-            .copied()
+            .cloned()
             .collect::<BTreeSet<_>>();
 
         assert!(
@@ -2924,6 +2959,31 @@ mod tests {
                 && multiply_classified.is_empty(),
             "drift classification mismatch: added/unclassified={added_unclassified:?}, \
              removed/stale={removed_stale:?}, multiply classified={multiply_classified:?}"
+        );
+    }
+
+    #[test]
+    fn selectorless_refusal_set_is_derived_and_covers_the_known_six() {
+        // The branch-drift gate refuses this exact set today; deriving it
+        // from the registry marker must reproduce the same membership, and
+        // any future selector-less local graph tool must appear here
+        // automatically instead of silently escaping the gate.
+        let derived = derived_selectorless_refused_tools();
+        let expected: BTreeSet<String> = [
+            "tokensave_affected",
+            "tokensave_diff_context",
+            "tokensave_simplify_scan",
+            "tokensave_redundancy",
+            "tokensave_diagnostics",
+            "tokensave_diagnose",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert!(
+            expected.is_subset(&derived),
+            "derived selector-less refusal set lost members: missing={:?}",
+            expected.difference(&derived).collect::<Vec<_>>()
         );
     }
 
