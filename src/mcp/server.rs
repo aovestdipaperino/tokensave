@@ -404,6 +404,13 @@ pub struct McpServer {
     /// [`maybe_sync_if_stale`](Self::maybe_sync_if_stale) so concurrent
     /// tool calls don't pile on the same walk.
     last_staleness_check_at: AtomicI64,
+    /// True while a lazy resync task spawned by
+    /// [`maybe_sync_if_stale`](Self::maybe_sync_if_stale) is still running.
+    /// The 30 s cooldown alone does not prevent overlap: once a resync
+    /// outlives its own cooldown window, the next call's `compare_exchange`
+    /// succeeds and would start a second walk over the same tree. Cleared by
+    /// the task itself on every exit path.
+    lazy_sync_in_flight: Arc<AtomicBool>,
     /// Cached worktree-vs-index mismatch detection for this session. `None`
     /// when no mismatch exists (the common case) or detection was skipped
     /// (not a git repo / git missing). Computed once at startup so we
@@ -442,6 +449,24 @@ pub struct McpServer {
 /// say what was skipped and how to do it deliberately — silently serving a
 /// stale (or empty) index is the failure mode that made #396 and #393 hard to
 /// diagnose from the outside.
+/// How long a `tools/call` may block on the lazy resync before being answered
+/// from the graph as it stands (#535).
+///
+/// `TOKENSAVE_AUTOSYNC_BUDGET_MS` overrides the default; `0` restores the
+/// pre-#535 behaviour of waiting for the resync however long it takes. The
+/// default is deliberately well under the 30 s request deadline common in MCP
+/// clients, since the budget protects an *interactive* call: a resync that has
+/// not finished in a few seconds will not finish within a latency the caller
+/// would have tolerated either.
+fn auto_sync_budget() -> Option<std::time::Duration> {
+    const DEFAULT_BUDGET_MS: u64 = 5_000;
+    let ms = std::env::var("TOKENSAVE_AUTOSYNC_BUDGET_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_BUDGET_MS);
+    (ms > 0).then(|| std::time::Duration::from_millis(ms))
+}
+
 fn auto_sync_refusal(scope: &crate::tokensave::AutoSyncScope) -> String {
     match scope {
         crate::tokensave::AutoSyncScope::Uninitialized => {
@@ -629,6 +654,7 @@ impl McpServer {
             run_started: AtomicBool::new(false),
             timings_enabled: AtomicBool::new(false),
             last_staleness_check_at: AtomicI64::new(0),
+            lazy_sync_in_flight: Arc::new(AtomicBool::new(false)),
             worktree_mismatch,
             startup_catch_up_done: AtomicBool::new(false),
             version_reindex_started: AtomicBool::new(false),
@@ -1015,6 +1041,35 @@ impl McpServer {
         true
     }
 
+    /// Test-only: clear the 30 s staleness cooldown so the next
+    /// [`Self::maybe_sync_if_stale`] actually runs. The startup catch-up sync
+    /// stamps this during `McpServer::new`, so without a reset an integration
+    /// test cannot reach the resync path at all inside its own lifetime.
+    #[doc(hidden)]
+    pub fn reset_staleness_cooldown(&self) {
+        self.last_staleness_check_at.store(0, Ordering::Release);
+    }
+
+    /// True while a lazy resync spawned by [`Self::maybe_sync_if_stale`] is
+    /// still running — i.e. the call that triggered it returned on its budget
+    /// rather than waiting the work out (#535).
+    pub fn lazy_sync_in_flight(&self) -> bool {
+        self.lazy_sync_in_flight.load(Ordering::Acquire)
+    }
+
+    /// Blocks until no lazy resync is in flight, or `timeout` elapses.
+    /// Returns whether the resync finished in time.
+    pub async fn wait_for_lazy_sync(&self, timeout: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while self.lazy_sync_in_flight() {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        true
+    }
+
     /// Walk the project tree, sync any stale files, and refresh the
     /// file-to-token-count map — but only if at least 30 s have passed
     /// since the last successful sync. The cooldown is the gate: while
@@ -1027,7 +1082,7 @@ impl McpServer {
     /// same window see the stamp and bail. If the actual sync work
     /// fails, the stamp still advances — failure to walk the tree
     /// should not cause every subsequent tool call to retry.
-    pub async fn maybe_sync_if_stale(&self) {
+    pub async fn maybe_sync_if_stale(self: &Arc<Self>) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -1049,6 +1104,52 @@ impl McpServer {
             return;
         }
 
+        // Overlap guard (#535). The cooldown above is keyed on when a check
+        // *started*; a resync that runs longer than its own window would let
+        // the next call start a second walk over the same tree.
+        if self
+            .lazy_sync_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        // Bound the *wait*, not the work (#535). The walk and resync run in a
+        // detached task holding a strong reference, so an in-flight sync is
+        // never dropped part-way through its DB writes — the same reasoning as
+        // the startup catch-up sync. What is bounded is how long the calling
+        // tool blocks on it: past the budget we answer from the graph as it
+        // stands and let the resync land for a later call. Previously this
+        // work was unbounded and inline, so a large tree could stall an
+        // interactive call past the client's request deadline, and a client
+        // that disables a server on timeout lost tokensave for the session.
+        let server = Arc::clone(self);
+        let in_flight = Arc::clone(&self.lazy_sync_in_flight);
+        let task = tokio::spawn(async move {
+            server.run_lazy_resync().await;
+            in_flight.store(false, Ordering::Release);
+        });
+
+        let Some(budget) = auto_sync_budget() else {
+            // Opt-out: wait indefinitely, the pre-#535 behaviour.
+            let _ = task.await;
+            return;
+        };
+
+        if tokio::time::timeout(budget, task).await.is_err() {
+            eprintln!(
+                "[tokensave] lazy sync exceeded {}ms; answering from the current graph and \
+                 finishing the resync in the background",
+                budget.as_millis()
+            );
+        }
+    }
+
+    /// The body of the lazy resync: walk for stale files, sync them, refresh
+    /// the token map. Split out of [`Self::maybe_sync_if_stale`] so it can run
+    /// in a detached task that outlives the call that triggered it.
+    async fn run_lazy_resync(&self) {
         let stale = match self.cg.find_stale_files_bounded().await {
             crate::tokensave::AutoSyncScope::Sync(stale) => stale,
             scope => {
