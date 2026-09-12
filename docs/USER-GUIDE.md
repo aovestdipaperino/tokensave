@@ -1011,6 +1011,55 @@ the conversation (#474).
 
 ---
 
+## Auditing resolution quality: `tokensave audit-edges`
+
+When tokensave binds a reference to a symbol it cannot actually reach, the
+result is a *phantom edge*: the graph asserts a relationship the code does not
+have. `audit-edges` counts them.
+
+```bash
+tokensave audit-edges              # human-readable summary
+tokensave audit-edges --top 25     # list more of the collided targets
+tokensave audit-edges --json
+```
+
+```
+Edge audit — /path/to/project
+  total edges                          21454
+  in gated languages (py/js/ts)        18022
+    cross-file                          9310
+    sole-candidate                      1533
+      without reachability evidence      485   <- diff this between commits
+
+Most-collided targets:
+     218 edges from  147 files  src/controllers/help_tab.py:478  p (function)
+      36 edges from   22 files  src/helpers/instructions_posture.py:741  total (method)
+```
+
+**Read the last figure comparatively, not absolutely.** It is meaningful as a
+difference between two indexes of the same tree — index one commit, index
+another, compare — which is how a change to resolution is evaluated. A single
+number in isolation says little, because some collisions are legitimate.
+
+An edge is counted when all of these hold: the source file is Python,
+JavaScript or TypeScript (the languages where a bare name alone is not evidence
+of a binding); the edge crosses a file boundary; the target is the *only*
+symbol of that name in the whole index; and the source file carries no evidence
+it can reach the target — not the same directory, not importing that name, not
+importing the class that owns it.
+
+The "most-collided targets" list is usually the more actionable half. A short
+name on a nested helper — `p`, `total`, `files`, `right` — becomes the sole
+candidate for every stray reference to that name in the project, so one
+badly-placed closure can absorb hundreds of edges.
+
+This deliberately does not classify files as production or test. An earlier
+metric counted edges crossing into `tests/`, which cannot see a phantom whose
+two ends are both production code — on one 515-file project that was 485 of
+1,216 such edges, invisible (#536).
+
+---
+
 ## Supported Languages
 
 Tokensave supports more than 50 languages, organized into three tiers. Each tier includes all the languages from the tier below it. See the README for the full table with file extensions and feature flags.
@@ -1100,6 +1149,21 @@ The `upgrade` command downloads the latest release from GitHub and replaces the 
 ```bash
 tokensave upgrade
 ```
+
+Every download is checked against the `SHA256SUMS` file published with the
+release, before it is unpacked. If the hash does not match, or the release
+publishes no sums file at all, the upgrade **stops and installs nothing**:
+
+```
+✘ downloaded archive does not match the SHA256 published for it — refusing to install.
+```
+
+That is deliberate rather than cautious. Skipping the check when the sums file
+is simply missing would mean anyone able to suppress one small file gets an
+unverified install, which is the whole thing the check exists to prevent. If you
+see this, retry — a release whose CI has not finished may not have published
+its sums yet. Checksums protect against a corrupted or substituted download;
+they are not a signature, so they cannot vouch for the release pipeline itself.
 
 Beta and stable are separate update channels — a beta build only sees beta releases and vice versa. Any attached MCP servers will continue running with the previous binary until you restart your agent.
 
