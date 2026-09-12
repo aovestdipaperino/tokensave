@@ -80,6 +80,13 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
                 })?,
             };
 
+            // Serialize the copy + metadata phase with the asynchronous
+            // post-checkout hook and transparent auto-track paths. The lock
+            // is deliberately released before the branch's sync below, so
+            // `TokenSave::open` can perform its normal auto-track check.
+            let _branch_lock =
+                tokensave::tokensave::acquire_branch_operation_lock(&tokensave_dir).await?;
+
             // Load or bootstrap metadata
             let mut meta = branch_meta::load_branch_meta(&tokensave_dir).unwrap_or_else(|| {
                 let default = branch::detect_default_branch(&project_path)
@@ -117,6 +124,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             // Save metadata BEFORE open() so it resolves the new branch to its DB
             meta.add_branch(&branch_name, &db_file, &parent);
             branch_meta::save_branch_meta(&tokensave_dir, &meta)?;
+            drop(_branch_lock);
 
             // A sync reads the working directory, so it can only speak for the
             // branch that is actually checked out. Adding some *other* branch

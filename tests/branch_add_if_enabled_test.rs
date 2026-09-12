@@ -143,6 +143,33 @@ fn an_explicit_branch_add_ignores_auto_track() {
     );
 }
 
+#[test]
+fn repeated_branch_add_is_idempotent() {
+    let tmp = project(false);
+    let root = tmp.path();
+
+    let first = tokensave(root, &["branch", "add"]);
+    assert!(
+        first.status.success(),
+        "first add must succeed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let meta_before = std::fs::read(root.join(".tokensave/branch-meta.json")).unwrap();
+
+    let second = tokensave(root, &["branch", "add"]);
+    assert!(
+        second.status.success(),
+        "repeated add must remain a no-op: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        std::fs::read(root.join(".tokensave/branch-meta.json")).unwrap(),
+        meta_before,
+        "repeated add must not rewrite branch metadata"
+    );
+    assert!(is_tracked(root, "feature"));
+}
+
 /// `TOKENSAVE_AUTO_TRACK` overrides the config for one run, the convention
 /// `TokenSave::open` already follows. Without this the knob would mean two
 /// different things depending on which entry point read it.
