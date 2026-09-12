@@ -25,20 +25,17 @@ use super::graph_scope::{
 };
 use super::tools::{
     baseline_policy, cap_baseline, get_always_load_tool_definitions, get_tool_definitions,
-    handle_tool_call, is_graph_scoped_tool, request_overhead_tokens, schema_overhead_tokens,
-    settle_session_debt,
+    handle_tool_call, is_graph_scoped_tool, is_selectorless_local_graph_tool,
+    request_overhead_tokens, schema_overhead_tokens, settle_session_debt,
 };
 use super::transport::{ErrorCode, JsonRpcRequest, JsonRpcResponse};
 
-/// Selector-less local graph tools refused after tracked-branch drift.
-pub(crate) const LOCAL_GRAPH_TOOLS_NOT_SUPPORTING_SELECTORS: &[&str] = &[
-    "tokensave_affected",
-    "tokensave_diff_context",
-    "tokensave_simplify_scan",
-    "tokensave_redundancy",
-    "tokensave_diagnostics",
-    "tokensave_diagnose",
-];
+// Selector-less local graph tools are refused after tracked-branch drift.
+// The refused set is derived at server construction from the tool registry
+// (the `tokensave/localGraphNoSelectors` marker set by
+// `super::tools::is_selectorless_local_graph_tool`) instead of a
+// hard-coded name list, so a future selector-less local graph tool cannot
+// silently fall outside the gate.
 
 /// Runtime statistics for the MCP server.
 pub struct ServerStats {
@@ -336,6 +333,8 @@ impl Drop for AccountingTaskGuard {
 pub struct McpServer {
     cg: TokenSave,
     graph_scoped_tools: HashSet<String>,
+    /// Selector-less local graph tools refused after tracked-branch drift.
+    selectorless_local_graph_tools: HashSet<String>,
     stats: ServerStats,
     tool_call_counts: std::sync::Mutex<HashMap<String, u64>>,
     /// Approximate token count per indexed file (`file_path` -> tokens).
@@ -559,6 +558,14 @@ impl McpServer {
             .filter(is_graph_scoped_tool)
             .map(|definition| definition.name)
             .collect();
+        // Derived from the same registry pass as `graph_scoped_tools`: any
+        // read-only local-graph tool without selectors is drift-refused, so a
+        // future selector-less tool cannot silently escape the gate.
+        let selectorless_local_graph_tools = get_tool_definitions()
+            .into_iter()
+            .filter(is_selectorless_local_graph_tool)
+            .map(|definition| definition.name)
+            .collect();
         // Approximates the schema payload the client actually loads into
         // context up front. Only the `anthropic/alwaysLoad` tools
         // (`tokensave_search`, `tokensave_context`, `tokensave_status`) are
@@ -599,6 +606,7 @@ impl McpServer {
         let server = Arc::new(Self {
             cg,
             graph_scoped_tools,
+            selectorless_local_graph_tools,
             stats: ServerStats::new(),
             tool_call_counts: std::sync::Mutex::new(HashMap::new()),
             file_token_map: std::sync::Mutex::new(file_token_map),
@@ -740,7 +748,7 @@ impl McpServer {
     fn branch_drift_refusal(&self, tool_name: &str) -> Option<String> {
         if tool_name == "tokensave_status"
             || (!self.graph_scoped_tools.contains(tool_name)
-                && !LOCAL_GRAPH_TOOLS_NOT_SUPPORTING_SELECTORS.contains(&tool_name))
+                && !self.selectorless_local_graph_tools.contains(tool_name))
         {
             return None;
         }
