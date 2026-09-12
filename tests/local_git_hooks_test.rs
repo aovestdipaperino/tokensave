@@ -40,9 +40,15 @@ fn hooks_land_in_the_repositorys_own_directory() {
     let dir = repo();
     let out = install_local_git_hooks(dir.path(), "/usr/bin/tokensave").expect("install");
 
+    // Sorted before comparing: which hook is written first is incidental
+    // (post-checkout is handled ahead of the others since #342 Q1, because it
+    // is the one carrying a versioned fence), and pinning that order would
+    // assert an implementation detail rather than the outcome.
+    let mut installed = out.installed.clone();
+    installed.sort();
     assert_eq!(
-        out.installed,
-        vec!["post-commit", "post-checkout", "post-merge"]
+        installed,
+        vec!["post-checkout", "post-commit", "post-merge"]
     );
     assert_eq!(out.hooks_dir, dir.path().join(".git").join("hooks"));
     assert!(local_git_hooks_present(dir.path()));
@@ -109,9 +115,12 @@ fn installing_twice_reports_the_second_run_as_already_present() {
     let second = install_local_git_hooks(dir.path(), "/usr/bin/tokensave").expect("install");
 
     assert!(second.installed.is_empty());
-    assert_eq!(
-        second.already_present,
-        vec!["post-commit", "post-checkout", "post-merge"]
+    let mut already = second.already_present.clone();
+    already.sort();
+    assert_eq!(already, vec!["post-checkout", "post-commit", "post-merge"]);
+    assert!(
+        second.migrated.is_empty(),
+        "an unchanged block must be reported as already-present, not rewritten"
     );
 }
 
@@ -182,5 +191,49 @@ fn a_hook_that_cannot_be_written_is_reported_as_failed() {
         out.installed,
         vec!["post-checkout", "post-merge"],
         "the other two hooks must still install"
+    );
+}
+
+/// #342 Q1: an install that already carries tokensave's block gets that block
+/// rewritten in place, instead of being skipped forever.
+///
+/// The append-only writer this replaces meant a change to the hook body never
+/// reached anyone who had already installed — so a runtime knob added to the
+/// snippet was simply false for them. It also meant `uninstall` could not
+/// honestly undo what `install` did to a hook carrying the user's own code.
+#[test]
+fn a_stale_block_is_rewritten_and_foreign_content_survives() {
+    let dir = repo();
+    let hooks = dir.path().join(".git").join("hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+
+    let before = "#!/bin/sh\n\
+                  ./scripts/mine.sh \"$@\"\n\
+                  # tokensave: auto-init\n\
+                  if [ \"$1\" = \"0000000000000000000000000000000000000000\" ]; then\n\
+                  \ttokensave init >/dev/null 2>&1 &\n\
+                  fi\n\
+                  # tokensave: end auto-init\n\
+                  ./scripts/after.sh\n";
+    std::fs::write(hooks.join("post-checkout"), before).unwrap();
+
+    let out = install_local_git_hooks(dir.path(), "/usr/bin/tokensave").expect("install");
+    assert_eq!(out.migrated, vec!["post-checkout"]);
+
+    let after = std::fs::read_to_string(hooks.join("post-checkout")).unwrap();
+    assert!(after.starts_with("#!/bin/sh\n./scripts/mine.sh \"$@\"\n"));
+    assert!(after.ends_with("./scripts/after.sh\n"));
+    assert!(after.contains("hook post-checkout"));
+    assert!(
+        !after.contains("0000000000000000000000000000000000000000"),
+        "the old body must be replaced, not accumulated"
+    );
+
+    // Running again is a no-op, so a reinstall does not churn the file.
+    let second = install_local_git_hooks(dir.path(), "/usr/bin/tokensave").expect("install");
+    assert!(second.migrated.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(hooks.join("post-checkout")).unwrap(),
+        after
     );
 }

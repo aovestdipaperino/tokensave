@@ -1030,6 +1030,15 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::HookPromptSubmit => {
             tokensave::hooks::hook_prompt_submit().await;
         }
+        Commands::Hook { action } => match action {
+            cli::HookAction::PostCheckout {
+                prev_head,
+                new_head: _,
+                branch_flag,
+            } => {
+                commands::hook_post_checkout(prev_head.as_deref(), branch_flag.as_deref()).await;
+            }
+        },
         Commands::HookStop => {
             tokensave::hooks::hook_stop().await;
         }
@@ -1749,6 +1758,7 @@ fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
             | Commands::HookPreToolUse
             | Commands::HookPromptSubmit
             | Commands::HookStop
+            | Commands::Hook { .. }
             | Commands::HookKiroPreToolUse
             | Commands::HookKiroPromptSubmit
             | Commands::HookKiroPostToolUse
@@ -1769,6 +1779,13 @@ fn report_local_hook_install(outcome: &tokensave::agents::LocalHookInstall) {
     for name in &outcome.installed {
         eprintln!(
             "\x1b[32m✔\x1b[0m Installed git {name} hook at {}",
+            outcome.hooks_dir.join(name).display()
+        );
+    }
+    for name in &outcome.migrated {
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Updated tokensave's section of the git {name} hook at {} \
+             (your own content in that file was left untouched)",
             outcome.hooks_dir.join(name).display()
         );
     }
@@ -1811,6 +1828,19 @@ fn offer_local_git_hooks(project_path: &std::path::Path, forced: bool, refused: 
         return;
     }
     if !forced && tokensave::agents::local_git_hooks_present(project_path) {
+        // Present, so nothing is installed — but tokensave's own fenced block
+        // may be an older shape than this binary writes. Rewriting it needs no
+        // prompt (#342 Q1): the fence marks the region tokensave owns and
+        // everything outside it is preserved byte-for-byte. Without this, the
+        // early return is exactly the bug the issue describes — a block that
+        // can never be updated after first install.
+        for name in tokensave::agents::migrate_local_hook_blocks(project_path, &current_bin_path())
+        {
+            eprintln!(
+                "\x1b[32m✔\x1b[0m Updated tokensave's section of the git {name} hook \
+                 (your own content in that file was left untouched)"
+            );
+        }
         return;
     }
     if !forced {

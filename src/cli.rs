@@ -162,6 +162,18 @@ pub enum Commands {
     /// Extraction worker (spawned by tokensave itself; not for direct use).
     #[command(name = "extract-worker", hide = true)]
     ExtractWorker,
+    /// post-checkout git hook handler (called by the installed hook, not by
+    /// users directly).
+    ///
+    /// Takes git's three post-checkout arguments — previous HEAD, new HEAD,
+    /// and the branch-checkout flag. Since #342 Q1 the installed hook is a
+    /// single line delegating here, so the decision of what a checkout should
+    /// trigger lives in the binary and ships with it.
+    #[command(name = "hook", hide = true)]
+    Hook {
+        #[command(subcommand)]
+        action: HookAction,
+    },
     /// PreToolUse hook handler (called by Claude Code, not by users directly)
     #[command(name = "hook-pre-tool-use", hide = true)]
     HookPreToolUse,
@@ -449,5 +461,23 @@ pub enum BranchAction {
         /// Project path (default: current directory)
         #[arg(short, long)]
         path: Option<String>,
+    },
+}
+
+/// Git hook handlers invoked by the installed hook scripts.
+#[derive(clap::Subcommand, Debug)]
+pub enum HookAction {
+    /// Handle a git `post-checkout` event.
+    PostCheckout {
+        /// Previous HEAD (git's `$1`). The all-zeros sentinel marks the
+        /// initial checkout of a fresh clone or a new worktree.
+        prev_head: Option<String>,
+        /// New HEAD (git's `$2`). Unused today; accepted so the hook can pass
+        /// `"$@"` through verbatim and the signature does not have to change
+        /// when it is needed.
+        new_head: Option<String>,
+        /// Branch-checkout flag (git's `$3`): `1` for a branch checkout, `0`
+        /// for a file checkout.
+        branch_flag: Option<String>,
     },
 }
