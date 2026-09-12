@@ -101,7 +101,13 @@ jobs:
         shell: bash
         run: |
           ASSET="tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive }}"
-          sha256sum "$ASSET" > "${ASSET}.sha256"
+          # macOS runners have no `sha256sum` (GNU coreutils); `shasum -a 256`
+          # is the BSD equivalent and prints the same `hash  name` format.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ASSET" > "${ASSET}.sha256"
+          else
+            shasum -a 256 "$ASSET" > "${ASSET}.sha256"
+          fi
 
       - name: Upload checksum artifact
         uses: actions/upload-artifact@v6
