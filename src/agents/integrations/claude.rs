@@ -105,6 +105,16 @@ fn claude_rules_path(claude_dir: &Path) -> PathBuf {
     claude_dir.join("rules").join("tokensave.md")
 }
 
+/// Path to the user-level managed tokensave rules file for Claude Code.
+///
+/// Public so the upgrade resync can refresh an existing rules file even when
+/// `claude` is absent from `installed_agents` (#553): a user may register
+/// tokensave per project (`.mcp.json`) or remove the user-scope entry, while
+/// `~/.claude/rules/tokensave.md` remains tokensave's own file.
+pub fn claude_managed_rules_path(home: &Path) -> PathBuf {
+    claude_rules_path(&claude_config_dir(home))
+}
+
 /// The directory named by `CLAUDE_CONFIG_DIR`, or `None` when unset/empty.
 fn claude_config_dir_override() -> Option<PathBuf> {
     let raw = std::env::var_os("CLAUDE_CONFIG_DIR")?;

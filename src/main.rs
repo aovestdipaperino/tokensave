@@ -268,6 +268,23 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     };
                     ag.install(&ctx).is_ok()
                 });
+            if outcome.changed {
+                // Refresh a tokensave-owned Claude rules file that exists on
+                // disk even when `claude` is not in `installed_agents` (#553).
+                // A user may register tokensave per project (`.mcp.json`) or
+                // remove the user-scope entry, so the agent is absent from the
+                // list while `~/.claude/rules/tokensave.md` is still
+                // tokensave's own file. Rewriting just that file is inside the
+                // contract; the full install would re-add an MCP entry the
+                // user deliberately removed. Idempotent: no-op when unchanged.
+                let claude_rules =
+                    tokensave::agents::integrations::claude::claude_managed_rules_path(&home);
+                if claude_rules.exists() {
+                    if let Ok(body) = tokensave::agents::rules_for_agent("claude") {
+                        let _ = tokensave::agents::write_managed_rules_file(&claude_rules, &body);
+                    }
+                }
+            }
             tokensave::agents::set_quiet_install(false);
             if outcome.ran {
                 // Say what this was and why (#419). The user did not ask for an

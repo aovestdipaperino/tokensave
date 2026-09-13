@@ -1317,12 +1317,16 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
         self, render_full, render_lines, render_map, render_signatures, LineRange, ReadMode,
     };
 
-    let file = args
-        .get("file")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: file".to_string(),
-        })?;
+    let file = args.get("file").and_then(|v| v.as_str()).ok_or_else(|| {
+        let hint = if args.get("path").is_some() {
+            " (got 'path' — use 'file')"
+        } else {
+            ""
+        };
+        TokenSaveError::Config {
+            message: format!("missing required parameter: file{hint}"),
+        }
+    })?;
 
     let mode_str = args.get("mode").and_then(|v| v.as_str()).unwrap_or("full");
     let mode = ReadMode::parse(mode_str).ok_or_else(|| TokenSaveError::Config {
@@ -1406,8 +1410,14 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
 
     let conn = cg.db().conn();
     let cache_enabled = !cg.db().is_read_only();
+    // `force: true` bypasses the cross-session cache so a caller that has not
+    // received this file's body in this session can always ask for it (#556).
+    let force = args
+        .get("force")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
 
-    let cached = if cache_enabled {
+    let cached = if cache_enabled && !force {
         read_cache::get(
             conn,
             &project_id,

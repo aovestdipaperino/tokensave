@@ -589,6 +589,11 @@ pub struct GraphStats {
     pub last_sync_at: u64,
     /// Timestamp of the most recent full (re)index (0 if never indexed).
     pub last_full_sync_at: u64,
+    /// tokensave version that performed the most recent full (re)index.
+    /// Empty when the project has never been fully indexed by a recorded
+    /// version, so consumers can tell "graph built by X" as a fact rather
+    /// than inferring it from `last_indexed_version` (#554).
+    pub last_full_index_version: String,
     /// Duration in milliseconds of the most recent sync (0 if unknown).
     pub last_sync_duration_ms: u64,
 }

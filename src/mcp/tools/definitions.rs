@@ -2481,7 +2481,8 @@ fn def_read() -> ToolDefinition {
          'map' (flat list of every top-level symbol from the graph — no source \
          bytes touched), 'signatures' (functions and types with their cached \
          signature). Cross-session cached: a re-call on an unchanged file returns \
-         a tiny stub with 'unchanged: true'.",
+         a tiny stub with 'unchanged: true'. Pass 'force': true to bypass the \
+         cache and always receive the body.",
         json!({
             "type": "object",
             "properties": {
@@ -2497,6 +2498,10 @@ fn def_read() -> ToolDefinition {
                 "lines": {
                     "type": "string",
                     "description": "Required when mode='lines'. Format 'A-B' or single 'A' (1-based, inclusive). E.g. '120-180' or '42'."
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Bypass the cross-session cache and return the body even when an unchanged stub would otherwise be served. Default false."
                 }
             },
             "required": ["file"]

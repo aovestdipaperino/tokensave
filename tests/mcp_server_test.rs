@@ -2495,6 +2495,61 @@ async fn test_cached_read_baseline_is_capped_not_full_file() {
     );
 }
 
+/// `force: true` bypasses the cross-session cache, so a caller that has not
+/// received this file's body in this session can always ask for it (#556).
+#[tokio::test]
+async fn test_read_force_bypasses_cache() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    let source = "fn main() { let x = helper(); }\nfn helper() -> i32 { 42 }\n";
+    fs::write(project.join("src/main.rs"), source).unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let server = McpServer::new(cg, None).await;
+
+    let read_call = |id: i64, force: bool| {
+        jsonrpc_request(
+            json!(id),
+            "tools/call",
+            json!({
+                "name": "tokensave_read",
+                "arguments": {
+                    "file": "src/main.rs",
+                    "mode": "full",
+                    "force": force
+                }
+            }),
+        )
+    };
+
+    // First call populates the cache; the second identical call with
+    // `force: true` must still return the body, not an unchanged stub.
+    let responses =
+        run_server_with_messages(server, vec![read_call(91, false), read_call(92, true)]).await;
+
+    let second_resp = responses
+        .iter()
+        .find(|r| parse_response(r)["id"] == 92)
+        .expect("should have a response for id=92");
+    let text = {
+        let resp = parse_response(second_resp);
+        resp["result"]["content"].as_array().unwrap()[0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert!(
+        text.contains("fn helper"),
+        "forced read must return the body even when the cache holds an \
+         unchanged stub, got: {text}"
+    );
+    assert!(
+        !text.contains("\"unchanged\""),
+        "forced read must not return an unchanged stub, got: {text}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 7e. schema overhead only accrues once tools/list is actually served
 // ---------------------------------------------------------------------------

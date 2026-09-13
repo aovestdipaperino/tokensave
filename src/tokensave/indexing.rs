@@ -530,6 +530,9 @@ impl TokenSave {
         let now_str = current_timestamp().to_string();
         self.db.set_metadata("last_full_sync_at", &now_str).await?;
         self.db.set_metadata("last_sync_at", &now_str).await?;
+        self.db
+            .set_metadata("last_full_index_version", env!("CARGO_PKG_VERSION"))
+            .await?;
         self.touch_branch_synced();
         self.db
             .set_metadata("last_sync_duration_ms", &duration_ms.to_string())
