@@ -32,6 +32,9 @@ pub enum TokenSaveError {
     #[error("sync lock: {message}")]
     SyncLock { message: String },
 
+    #[error("branch operation lock: {message}")]
+    BranchLock { message: String },
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 

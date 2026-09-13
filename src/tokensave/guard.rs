@@ -195,7 +195,7 @@ async fn acquire_branch_operation_lock_with_timeout(
             return Ok(lock);
         }
         if started.elapsed() >= timeout {
-            return Err(TokenSaveError::SyncLock {
+            return Err(TokenSaveError::BranchLock {
                 message: format!(
                     "branch add lock timed out after {} seconds",
                     timeout.as_secs()
@@ -222,7 +222,7 @@ fn try_acquire_branch_operation_lock(tokensave_dir: &Path) -> Result<Option<Bran
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => {
-            return Err(TokenSaveError::SyncLock {
+            return Err(TokenSaveError::BranchLock {
                 message: format!("could not create branch add lockfile: {e}"),
             });
         }
@@ -240,7 +240,7 @@ fn try_acquire_branch_operation_lock(tokensave_dir: &Path) -> Result<Option<Bran
         .write(true)
         .create_new(true)
         .open(&lock_path)
-        .map_err(|e| TokenSaveError::SyncLock {
+        .map_err(|e| TokenSaveError::BranchLock {
             message: format!("could not reclaim branch add lockfile: {e}"),
         })?;
     let _ = write!(f, "{pid}");
