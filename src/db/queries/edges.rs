@@ -459,8 +459,8 @@ impl Database {
 
     /// Histogram of annotation / attribute / decorator usages across the
     /// project. Each row is `(annotation_name, count)` sorted descending by
-    /// count. Optional `path_prefix` restricts to nodes whose `file_path`
-    /// starts with that string.
+    /// count. Optional `path_prefix` restricts to nodes in that file or under
+    /// that directory.
     ///
     /// "Annotation" here is the language-neutral term for Rust attributes
     /// (`#[derive(...)]`, `#[cfg(test)]`), Python decorators (`@pytest.fixture`),
@@ -471,14 +471,14 @@ impl Database {
         path_prefix: Option<&str>,
     ) -> Result<Vec<(String, u64)>> {
         let (sql, args) = if let Some(prefix) = path_prefix {
-            (
+            let mut sql = String::from(
                 "SELECT name, COUNT(*) AS n \
                  FROM nodes \
-                 WHERE kind = 'annotation_usage' AND file_path LIKE ?1 \
-                 GROUP BY name ORDER BY n DESC, name ASC"
-                    .to_string(),
-                libsql::params_from_iter(vec![libsql::Value::Text(format!("{prefix}%"))]),
-            )
+                 WHERE kind = 'annotation_usage' AND ",
+            );
+            push_path_prefix_filter(&mut sql, "", prefix);
+            sql.push_str(" GROUP BY name ORDER BY n DESC, name ASC");
+            (sql, libsql::params_from_iter(Vec::<libsql::Value>::new()))
         } else {
             (
                 "SELECT name, COUNT(*) AS n \
@@ -517,8 +517,8 @@ impl Database {
     /// - `name`: annotation name (`"test"`, `"derive"`, `"cfg"`, etc.). When
     ///   `None`, returns sites for *all* annotations — useful with `path_prefix`
     ///   to enumerate every annotation in a sub-tree.
-    /// - `path_prefix`: restrict to target nodes whose `file_path` starts with
-    ///   this string.
+    /// - `path_prefix`: restrict to target nodes in this file or under this
+    ///   directory.
     /// - `target_kind`: restrict to targets of this kind
     ///   (`"function"`, `"method"`, `"struct"`, `"module"`, …).
     /// - `limit`: cap the number of rows returned (callers typically pass
@@ -546,8 +546,8 @@ impl Database {
             let _ = write!(sql, " AND a.name = ?{}", params.len());
         }
         if let Some(prefix) = path_prefix {
-            params.push(libsql::Value::Text(format!("{prefix}%")));
-            let _ = write!(sql, " AND t.file_path LIKE ?{}", params.len());
+            sql.push_str(" AND ");
+            push_path_prefix_filter(&mut sql, "t.", prefix);
         }
         if let Some(k) = target_kind {
             params.push(libsql::Value::Text(k.to_string()));
@@ -795,9 +795,9 @@ impl Database {
             param_idx += 1;
         }
         if let Some(prefix) = path_prefix {
-            conditions.push(format!("n.file_path LIKE ?{param_idx}"));
-            param_values.push(libsql::Value::Text(format!("{prefix}%")));
-            param_idx += 1;
+            let mut filter = String::new();
+            push_path_prefix_filter(&mut filter, "n.", prefix);
+            conditions.push(filter);
         }
 
         let where_clause = conditions.join(" AND ");
@@ -862,9 +862,9 @@ impl Database {
             param_idx += 1;
         }
         if let Some(prefix) = path_prefix {
-            conditions.push(format!("file_path LIKE ?{param_idx}"));
-            param_values.push(libsql::Value::Text(format!("{prefix}%")));
-            param_idx += 1;
+            let mut filter = String::new();
+            push_path_prefix_filter(&mut filter, "", prefix);
+            conditions.push(filter);
         }
 
         let where_clause = if conditions.is_empty() {
@@ -1082,28 +1082,17 @@ impl Database {
         &self,
         path_prefix: Option<&str>,
     ) -> Result<Vec<(String, String, u64)>> {
-        let (sql, param_values): (&str, Vec<libsql::Value>) = match path_prefix {
-            Some(prefix) => (
-                "SELECT file_path, kind, COUNT(*) AS cnt
-                 FROM nodes
-                 WHERE file_path LIKE ?1
-                 GROUP BY file_path, kind
-                 ORDER BY file_path, cnt DESC",
-                vec![libsql::Value::Text(format!("{prefix}%"))],
-            ),
-            None => (
-                "SELECT file_path, kind, COUNT(*) AS cnt
-                 FROM nodes
-                 GROUP BY file_path, kind
-                 ORDER BY file_path, cnt DESC",
-                vec![],
-            ),
-        };
+        let mut sql = String::from("SELECT file_path, kind, COUNT(*) AS cnt FROM nodes");
+        if let Some(prefix) = path_prefix {
+            sql.push_str(" WHERE ");
+            push_path_prefix_filter(&mut sql, "", prefix);
+        }
+        sql.push_str(" GROUP BY file_path, kind ORDER BY file_path, cnt DESC");
 
         let op = "get_node_distribution";
         let mut rows = self
             .conn()
-            .query(sql, libsql::params_from_iter(param_values))
+            .query(&sql, ())
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query node distribution: {e}"),
@@ -1139,13 +1128,15 @@ impl Database {
     pub async fn get_call_edges(&self, path_prefix: Option<&str>) -> Result<Vec<(String, String)>> {
         let op = "get_call_edges";
         let (sql, param_values): (String, Vec<libsql::Value>) = match path_prefix {
-            Some(prefix) => (
-                "SELECT e.source, e.target FROM edges e
+            Some(prefix) => {
+                let mut sql = String::from(
+                    "SELECT e.source, e.target FROM edges e
                  JOIN nodes n ON e.source = n.id
-                 WHERE e.kind = 'calls' AND n.file_path LIKE ?1"
-                    .to_string(),
-                vec![libsql::Value::Text(format!("{prefix}%"))],
-            ),
+                 WHERE e.kind = 'calls' AND ",
+                );
+                push_path_prefix_filter(&mut sql, "n.", prefix);
+                (sql, vec![])
+            }
             None => (
                 "SELECT source, target FROM edges WHERE kind = 'calls'".to_string(),
                 vec![],
@@ -1188,13 +1179,15 @@ impl Database {
     ) -> Result<Vec<(String, String, Option<u32>)>> {
         let op = "get_call_edges_with_lines";
         let (sql, param_values): (String, Vec<libsql::Value>) = match path_prefix {
-            Some(prefix) => (
-                "SELECT e.source, e.target, e.line FROM edges e
+            Some(prefix) => {
+                let mut sql = String::from(
+                    "SELECT e.source, e.target, e.line FROM edges e
                  JOIN nodes n ON e.source = n.id
-                 WHERE e.kind = 'calls' AND n.file_path LIKE ?1"
-                    .to_string(),
-                vec![libsql::Value::Text(format!("{prefix}%"))],
-            ),
+                 WHERE e.kind = 'calls' AND ",
+                );
+                push_path_prefix_filter(&mut sql, "n.", prefix);
+                (sql, vec![])
+            }
             None => (
                 "SELECT source, target, line FROM edges WHERE kind = 'calls'".to_string(),
                 vec![],
@@ -1256,9 +1249,9 @@ impl Database {
             }
         }
         if let Some(prefix) = path_prefix {
-            conditions.push(format!("n.file_path LIKE ?{param_idx}"));
-            param_values.push(libsql::Value::Text(format!("{prefix}%")));
-            param_idx += 1;
+            let mut filter = String::new();
+            push_path_prefix_filter(&mut filter, "n.", prefix);
+            conditions.push(filter);
         }
 
         let where_clause = conditions.join(" AND ");
@@ -1339,8 +1332,13 @@ impl Database {
             'case_class', 'kotlin_object', 'inner_class', 'abstract_method', 'constructor', \
             'struct_method', 'val', 'var', 'mixin', 'extension', 'union', 'typedef'";
 
-        let (sql, param_values): (String, Vec<libsql::Value>) = match path_prefix {
-            Some(prefix) => (
+        let path_filter = path_prefix.map(|prefix| {
+            let mut filter = String::new();
+            push_path_prefix_filter(&mut filter, "", prefix);
+            filter
+        });
+        let (sql, param_values): (String, Vec<libsql::Value>) = match &path_filter {
+            Some(path_filter) => (
                 format!(
                     "SELECT id, kind, name, qualified_name, file_path,
                             start_line, end_line, start_column, end_column,
@@ -1349,14 +1347,11 @@ impl Database {
                      WHERE visibility = 'public'
                        AND (docstring IS NULL OR docstring = '')
                        AND kind IN ({DOC_COVERAGE_KINDS})
-                       AND file_path LIKE ?1
+                       AND {path_filter}
                      ORDER BY file_path, start_line
-                     LIMIT ?2"
+                     LIMIT ?1"
                 ),
-                vec![
-                    libsql::Value::Text(format!("{prefix}%")),
-                    libsql::Value::Integer(limit as i64),
-                ],
+                vec![libsql::Value::Integer(limit as i64)],
             ),
             None => (
                 format!(

@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), not SemVer.
 
+## [Unreleased]
+
+### Fixed
+- **A path filter no longer treats `_` and `%` as wildcards in the ten queries #524 did not reach.** #524 fixed three queries that interpolated the caller's path into `LIKE '{prefix}%'`. Ten more bound it as a parameter, `format!("{prefix}%")`, which is why an apostrophe never failed there, but binding does not change what `_` and `%` mean inside `LIKE`: `--path src/my_mod` also returned `src/myXmod`, and `--path 'src/%'` returned every directory. The tools that reach them are `rank`, `largest`, `distribution`, `recursion`, `complexity`, `doc_coverage`, `annotations` (its `file` filter, in both modes), `port_status` and `port_order`; the tenth query, `get_call_edges`, has no caller outside the tests. It needed no path from the caller either: with no `path` argument these tools scope to the directory the server was launched from, so a server started inside `svc/user_api` also answered with `svc/userXapi`. All ten now share `push_path_prefix_filter` with the three #524 fixed, so they also match the directory itself plus everything under it rather than any path merely starting with those characters: `--path src/my` no longer matches `src/my_mod`, and a single file is named in full. The tool descriptions that said "prefix" now say file or directory.
+
 ## [7.12.1] - 2026-09-12
 
 ### Fixed
