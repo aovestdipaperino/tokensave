@@ -378,6 +378,10 @@ pub async fn track_branch_copy(
 
     // No metadata → single-DB mode. Do NOT bootstrap tracking implicitly here;
     // that is `branch add`'s job. Preserves backward-compatible behavior.
+    if branch_meta::load_branch_meta(tokensave_dir).is_none() {
+        return Ok(false);
+    }
+    let _branch_lock = crate::tokensave::acquire_branch_operation_lock(tokensave_dir).await?;
     let Some(mut meta) = branch_meta::load_branch_meta(tokensave_dir) else {
         return Ok(false);
     };
@@ -477,5 +481,32 @@ mod tests {
         assert!(!track_branch_copy(empty.path(), empty.path(), "x")
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn track_branch_copy_waits_for_an_in_progress_branch_operation() {
+        use crate::branch_meta;
+        use std::time::Duration;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        branch_meta::save_branch_meta(dir.path(), &branch_meta::BranchMeta::new("main")).unwrap();
+        std::fs::write(dir.path().join("tokensave.db"), b"DBDATA").unwrap();
+        let lock = crate::tokensave::acquire_branch_operation_lock(dir.path())
+            .await
+            .unwrap();
+
+        let mut operation = tokio::spawn({
+            let root = dir.path().to_path_buf();
+            async move { track_branch_copy(&root, &root, "feature-x").await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut operation)
+                .await
+                .is_err(),
+            "a concurrent branch copy must wait for the in-progress operation"
+        );
+
+        drop(lock);
+        assert!(operation.await.unwrap().unwrap());
     }
 }
