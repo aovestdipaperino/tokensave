@@ -21,6 +21,8 @@ fn git(repo: &Path, args: &[&str]) -> std::process::Output {
     Command::new("git")
         .args(args)
         .current_dir(repo)
+        .env("HOME", repo)
+        .env("XDG_CONFIG_HOME", repo.join(".config"))
         .output()
         .expect("run git")
 }
@@ -28,17 +30,16 @@ fn git(repo: &Path, args: &[&str]) -> std::process::Output {
 /// Run git with `core.hooksPath` claimed, the way the old global install
 /// claimed it.
 ///
-/// It has to go through `GIT_CONFIG_*` rather than `git config --local`,
-/// because `.cargo/config.toml` sets exactly those variables to force
-/// `core.hooksPath` empty for the whole test suite — deliberate isolation from
-/// the developer's own global hooks (#381). That env setting **overrides**
-/// local config, so a test that sets the path with `git config --local` claims
-/// nothing, `git lfs install --local` succeeds, and the test passes while
-/// proving the opposite of what it claims.
+/// It has to go through `GIT_CONFIG_*` rather than `git config --local`, so the
+/// claimed path is explicit and scoped to this child process. The helper also
+/// isolates HOME/XDG_CONFIG_HOME so the developer's global hooks cannot alter
+/// the baseline.
 fn git_with_hooks_path(repo: &Path, hooks: &Path, args: &[&str]) -> std::process::Output {
     Command::new("git")
         .args(args)
         .current_dir(repo)
+        .env("HOME", repo)
+        .env("XDG_CONFIG_HOME", repo.join(".config"))
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", "core.hooksPath")
         .env("GIT_CONFIG_VALUE_0", hooks)
@@ -83,7 +84,7 @@ fn git_lfs_install_local_fails_while_a_global_hookspath_is_claimed() {
         &pre_push,
         "#!/bin/sh\n\
          # tokensave: chain-repo-hook\n\
-         repo_hook=\"$(git rev-parse --git-dir 2>/dev/null)/hooks/pre-push\"\n\
+         repo_hook=\"$(git rev-parse --git-common-dir 2>/dev/null)/hooks/pre-push\"\n\
          if [ -x \"$repo_hook\" ] && [ \"$repo_hook\" != \"$0\" ]; then\n\
          \t\"$repo_hook\" \"$@\"\n\
          fi\n",

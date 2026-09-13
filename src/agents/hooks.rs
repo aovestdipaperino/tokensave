@@ -52,8 +52,8 @@ const HOOK_MARKER_MERGE: &str = "# tokensave: auto-sync (post-merge)";
 ///
 /// Written since #391 so that a migration can replace the section body in
 /// place instead of having to pattern-match the shapes that shipped in 6.4.3
-/// and 7.3.0 (both of which end in a bare `fi`). Whether such a migration runs
-/// automatically or only on prompt is the open policy question in #342 Q1.
+/// and 7.3.0 (both of which end in a bare `fi`). The ownership-aware
+/// migration policy from #342 Q1 rewrites only tokensave's fenced section.
 const HOOK_MARKER_CHECKOUT_END: &str = "# tokensave: end auto-init";
 
 /// Marker comment identifying the repo-hook chaining preamble (issue #164).
@@ -201,16 +201,75 @@ fn install_or_migrate_block(
 /// `.git/hooks/` — including hooks copied there by `init.templateDir` —
 /// so a tokensave-owned global hook must delegate to the repo's hook or
 /// pre-existing user hooks silently stop running (issue #164). Uses
-/// `git rev-parse --git-dir` (not `--git-path hooks`, which resolves
-/// through `core.hooksPath` and would re-enter this very script).
+/// `git rev-parse --git-common-dir` (not `--git-path hooks`, which resolves
+/// through `core.hooksPath` and would re-enter this very script). The common
+/// directory is required for linked worktrees, where `--git-dir` points at
+/// `.git/worktrees/<name>` rather than the repository's hooks directory.
 fn chain_repo_hook_snippet(hook_name: &str) -> String {
     format!(
         "{HOOK_MARKER_CHAIN}\n\
-         repo_hook=\"$(git rev-parse --git-dir 2>/dev/null)/hooks/{hook_name}\"\n\
+         repo_hook=\"$(git rev-parse --git-common-dir 2>/dev/null)/hooks/{hook_name}\"\n\
          if [ -x \"$repo_hook\" ] && [ \"$repo_hook\" != \"$0\" ]; then\n\
          \t\"$repo_hook\" \"$@\"\n\
          fi\n"
     )
+}
+
+/// Replace an old chain preamble in an already-installed hook.
+///
+/// Global hooks are intentionally not overwritten wholesale, so changing the
+/// generated snippet alone would leave existing installations on the buggy
+/// `--git-dir` path forever. Preserve all unrelated hook content and make a
+/// second migration a no-op.
+fn migrate_chain_repo_hook(contents: &str, hook_name: &str) -> Option<String> {
+    if !contents.contains(HOOK_MARKER_CHAIN) {
+        return None;
+    }
+    let marker_start = contents.find(HOOK_MARKER_CHAIN)?;
+    let section = &contents[marker_start..];
+    let mut section_end = 0;
+    let mut found_fi = false;
+    for line in section.split_inclusive('\n') {
+        section_end += line.len();
+        if line.trim() == "fi" {
+            found_fi = true;
+            break;
+        }
+    }
+    if !found_fi || !section[..section_end].contains("git rev-parse --git-dir") {
+        return None;
+    }
+    let replacement_body = chain_repo_hook_snippet(hook_name);
+    Some(format!(
+        "{}{}{}",
+        &contents[..marker_start],
+        replacement_body,
+        &section[section_end..],
+    ))
+}
+
+fn migrate_global_chain_hooks(hooks_dir: &Path) -> Vec<&'static str> {
+    let owned = ["post-commit", "post-checkout", "post-merge"];
+    let names = owned.iter().copied().chain(
+        FORWARDED_REPO_HOOKS
+            .iter()
+            .copied()
+            .filter(|name| !owned.contains(name)),
+    );
+    let mut failed = Vec::new();
+    for name in names {
+        let path = hooks_dir.join(name);
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(migrated) = migrate_chain_repo_hook(&contents, name) else {
+            continue;
+        };
+        if std::fs::write(&path, migrated).is_err() {
+            failed.push(name);
+        }
+    }
+    failed
 }
 
 /// Client-side git hooks that tokensave does **not** itself install, but whose
@@ -582,6 +641,11 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) -> Res
         return Err(format!("failed to create {}: {e}", hooks_dir.display()));
     }
 
+    // Migrate existing tokensave-owned chain preambles before writing any
+    // other hook sections. This repairs linked-worktree forwarding without
+    // touching unrelated user content.
+    let mut failed: Vec<&str> = migrate_global_chain_hooks(&hooks_dir);
+
     // If no global hooksPath was configured, set it in ~/.gitconfig.
     if need_set_hookspath {
         let gitconfig_path = home.join(".gitconfig");
@@ -609,8 +673,6 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) -> Res
     // Hooks the user asked for whose write failed. Collected rather than
     // returned early: this installs three hooks, and bailing on the first
     // would skip the other two the user also asked for.
-    let mut failed: Vec<&str> = Vec::new();
-
     if install_post_commit {
         if write_global_hook(&hook_path, &post_commit_snippet(tokensave_bin)) {
             eprintln!(
@@ -625,8 +687,8 @@ pub fn offer_git_post_commit_hook(tokensave_bin: &str, mode: GitHookMode) -> Res
     // Install the post-checkout hook so a fresh clone or worktree
     // auto-initializes and tracks its branch. Its marker is independent of
     // post-commit's, so this is skipped only when the post-checkout hook
-    // itself is already present — which also means a body change here never
-    // reaches an existing install (#342 Q1).
+    // itself is already present. The fenced migration below updates existing
+    // installs without touching unrelated hook content (#342 Q1).
     let checkout_path = hooks_dir.join("post-checkout");
     let checkout_contents = std::fs::read_to_string(&checkout_path).ok();
     if should_chain_repo_hooks(
@@ -1491,6 +1553,7 @@ mod git_hook_tests {
     use super::*;
     use crate::agents::*;
     use std::path::Path;
+    use std::process::Command;
 
     #[test]
     fn parse_hookspath_basic() {
@@ -1804,6 +1867,95 @@ mod git_hook_tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn global_forwarder_runs_repository_hook_from_linked_worktree() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = tempfile::tempdir().unwrap();
+        let run_git = |dir: &Path, args: &[&str], hooks_path: Option<&Path>| {
+            let mut command = Command::new("git");
+            command
+                .args(args)
+                .current_dir(dir)
+                .env("HOME", repo.path())
+                .env("XDG_CONFIG_HOME", repo.path().join(".config"));
+            if let Some(hooks_path) = hooks_path {
+                command
+                    .env("GIT_CONFIG_COUNT", "1")
+                    .env("GIT_CONFIG_KEY_0", "core.hooksPath")
+                    .env("GIT_CONFIG_VALUE_0", hooks_path);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+
+        run_git(repo.path(), &["init", "-q", "-b", "main"], None);
+        run_git(
+            repo.path(),
+            &["config", "user.name", "TokenSave Test"],
+            None,
+        );
+        run_git(
+            repo.path(),
+            &["config", "user.email", "tokensave@example.com"],
+            None,
+        );
+        std::fs::write(repo.path().join("README"), "main\n").unwrap();
+        run_git(repo.path(), &["add", "README"], None);
+        run_git(repo.path(), &["commit", "-qm", "initial"], None);
+
+        let sentinel = repo.path().join("hook-fired");
+        let repo_hook = repo.path().join(".git/hooks/pre-commit");
+        std::fs::write(
+            &repo_hook,
+            format!("#!/bin/sh\nprintf fired > '{}'\n", sentinel.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&repo_hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let global_hooks = tempfile::tempdir().unwrap();
+        let global_hook = global_hooks.path().join("pre-commit");
+        std::fs::write(
+            &global_hook,
+            format!("#!/bin/sh\n{}", chain_repo_hook_snippet("pre-commit")),
+        )
+        .unwrap();
+        std::fs::set_permissions(&global_hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let worktree = repo.path().join("worktree");
+        run_git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature",
+                worktree.to_str().unwrap(),
+            ],
+            None,
+        );
+        std::fs::write(worktree.join("feature"), "feature\n").unwrap();
+        run_git(&worktree, &["add", "feature"], Some(global_hooks.path()));
+        run_git(
+            &worktree,
+            &["commit", "-qm", "feature"],
+            Some(global_hooks.path()),
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(&sentinel).unwrap(),
+            "fired",
+            "the global forwarder must reach the shared repository hook from a linked worktree"
+        );
+    }
+
     #[test]
     fn write_global_hook_creates_with_shebang_then_appends() {
         let dir = tempfile::tempdir().unwrap();
@@ -1932,7 +2084,7 @@ mod git_hook_tests {
         assert!(created.starts_with("#!/bin/sh\n"));
         assert!(created.contains(HOOK_MARKER_CHAIN));
         assert!(created.contains("/hooks/pre-push"));
-        assert!(created.contains("git rev-parse --git-dir"));
+        assert!(created.contains("git rev-parse --git-common-dir"));
     }
 
     #[test]
@@ -1948,16 +2100,42 @@ mod git_hook_tests {
     }
 
     #[test]
-    fn chain_snippet_forwards_to_repo_hook_via_git_dir() {
+    fn chain_snippet_forwards_to_repo_hook_via_common_git_dir() {
         let s = chain_repo_hook_snippet("post-checkout");
         assert!(s.contains(HOOK_MARKER_CHAIN));
-        // Must use --git-dir, not --git-path hooks: the latter resolves
-        // through core.hooksPath and would re-enter the global hook.
-        assert!(s.contains("git rev-parse --git-dir"));
+        // Must use --git-common-dir, not --git-dir: in a linked worktree,
+        // --git-dir points at .git/worktrees/<name>, not .git/hooks.
+        assert!(s.contains("git rev-parse --git-common-dir"));
+        assert!(!s.contains("--git-dir"));
         assert!(!s.contains("--git-path"));
         assert!(s.contains("/hooks/post-checkout"));
         // Args must be forwarded (post-checkout receives old/new/flag).
         assert!(s.contains("\"$@\""));
+    }
+
+    #[test]
+    fn migrate_chain_snippet_repairs_existing_worktree_forwarder() {
+        let old = "#!/bin/sh\n\
+                   # user hook\n\
+                   # tokensave: chain-repo-hook\n\
+                   repo_hook=\"$(git rev-parse --git-dir 2>/dev/null)/hooks/pre-push\"\n\
+                   if [ -x \"$repo_hook\" ] && [ \"$repo_hook\" != \"$0\" ]; then\n\
+                   \t\"$repo_hook\" \"$@\"\n\
+                   fi\n\
+                   # user hook after tokensave\n\
+                   USER_GIT_DIR=\"$(git rev-parse --git-dir)\"\n\
+                   # tokensave: auto-sync\n\
+                   tokensave sync >/dev/null 2>&1 &\n";
+        let migrated = migrate_chain_repo_hook(old, "pre-push").unwrap();
+        assert!(migrated.contains("# user hook"));
+        assert!(migrated.contains("# tokensave: auto-sync"));
+        assert!(migrated.contains("git rev-parse --git-common-dir"));
+        assert!(migrated.contains("USER_GIT_DIR=\"$(git rev-parse --git-dir)\""));
+        assert_eq!(
+            migrate_chain_repo_hook(&migrated, "pre-push"),
+            None,
+            "a second migration must be a no-op"
+        );
     }
 
     #[test]
