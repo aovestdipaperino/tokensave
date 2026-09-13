@@ -47,9 +47,9 @@ impl Database {
         Ok(())
     }
 
-    /// Returns all nodes under a directory prefix filtered by kinds.
+    /// Returns all nodes in a file or under a directory, filtered by kinds.
     ///
-    /// Uses `LIKE dir || '%'` for the path prefix and an `IN` clause for kinds.
+    /// Uses the shared escaped path filter and an `IN` clause for kinds.
     pub async fn get_nodes_by_dir(&self, dir: &str, kinds: &[NodeKind]) -> Result<Vec<Node>> {
         if kinds.is_empty() {
             return Ok(Vec::new());
@@ -58,8 +58,10 @@ impl Database {
         let kind_placeholders: Vec<String> = kinds
             .iter()
             .enumerate()
-            .map(|(i, _)| format!("?{}", i + 2))
+            .map(|(i, _)| format!("?{}", i + 1))
             .collect();
+        let mut path_filter = String::new();
+        push_path_prefix_filter(&mut path_filter, "", dir);
         let sql = format!(
             "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
@@ -67,13 +69,12 @@ impl Database {
                     branches, loops, returns, max_nesting,
                     unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
              FROM nodes
-             WHERE file_path LIKE ?1 || '%' AND kind IN ({})
+             WHERE {path_filter} AND kind IN ({})
              ORDER BY file_path, start_line",
             kind_placeholders.join(", ")
         );
 
         let mut param_values: Vec<libsql::Value> = Vec::new();
-        param_values.push(libsql::Value::Text(dir.to_string()));
         for k in kinds {
             param_values.push(libsql::Value::Text(k.as_str().to_string()));
         }
