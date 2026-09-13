@@ -20,6 +20,9 @@ const EXTERNAL_ENV_VARS: &[&str] = &[
     "TOOL_INPUT",
     // Git subprocess isolation.
     "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_0",
 ];
 const EXTERNAL_PREFIXES: &[&str] = &["CARGO_"];
 const LEGACY_TOKENSAVE_ENV_VARS: &[&str] = &["DISABLE_TOKENSAVE"];
