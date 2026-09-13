@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), not SemVer.
 
+## [Unreleased]
+
+### Changed
+- **Generated project configuration now explains environment-variable precedence.** A JSON-safe `_comment` field tells users that matching `TOKENSAVE_*` variables override values in `.tokensave/config.json`.
+
 ## [7.12.1] - 2026-09-12
 
 ### Fixed

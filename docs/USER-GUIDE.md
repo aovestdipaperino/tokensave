@@ -717,15 +717,6 @@ being asked would be a bad surprise. Nothing new is detected when you enable
 it — the same conditions were already detected, this only changes whether they
 warn or refuse.
 
-### Configuration and environment overrides
-
-`.tokensave/config.json` is generated as ordinary JSON. It includes an
-`_comment` metadata field explaining that `TOKENSAVE_*` environment variables
-override matching config values when set. This is especially relevant for
-`TOKENSAVE_AUTO_TRACK`, `TOKENSAVE_REPORT_SAVINGS`, and
-`TOKENSAVE_UPDATE_CHECK`.
-
-
 ### CLI-Only Workflows
 
 If you don't keep an agent attached, no MCP server is running to refresh the
@@ -1205,6 +1196,14 @@ tokensave sync --force # to rebuild an index you suspect is wrong
 ## Configuration Files
 
 Tokensave stores data in two places.
+
+### Configuration and environment overrides
+
+`.tokensave/config.json` is generated as ordinary JSON. It includes an
+`_comment` metadata field explaining that `TOKENSAVE_*` environment variables
+override matching config values when set. This is especially relevant for
+`TOKENSAVE_AUTO_TRACK`, `TOKENSAVE_REPORT_SAVINGS`, and
+`TOKENSAVE_UPDATE_CHECK`.
 
 ### Per-project: `.tokensave/`
 
