@@ -7,11 +7,25 @@ Thanks for your interest in contributing! This guide covers everything you need 
 ```bash
 git clone https://github.com/aovestdipaperino/tokensave.git
 cd tokensave
-cargo build
-cargo test
+cargo build --locked
+cargo test --workspace --locked
 ```
 
-Requires **Rust 1.70+** (edition 2021).
+Requires **Rust 1.95.0+** (edition 2021). The CI and release toolchain is pinned to **1.98.1**.
+
+## Build and Artifact Lifecycle
+
+Standard Cargo commands define the supported workflow:
+
+```bash
+cargo build --locked                     # debug development build
+cargo test --workspace --locked          # locked workspace tests
+cargo build --release --locked           # optimized release build
+cargo install --path . --locked          # optimized locked install into ~/.cargo/bin
+```
+
+Development commands use the debug profile; installation uses only the
+optimized release output. `target/debug` is never an installation input.
 
 ## Project Structure
 
@@ -44,8 +58,8 @@ tokensave supports more than 50 languages via feature flags (see the README for 
 Build with fewer languages for faster compile times during development:
 
 ```bash
-cargo build --no-default-features --features lite
-cargo test --no-default-features --features lite
+cargo build --locked --no-default-features --features lite
+cargo test --locked --no-default-features --features lite
 ```
 
 ## Making Changes
@@ -54,12 +68,12 @@ cargo test --no-default-features --features lite
 2. **Write tests.** Every extraction change should have a corresponding test in `tests/`. Follow the existing pattern: create a fixture in `tests/fixtures/` and assert on extracted nodes/edges.
 3. **Run the full test suite** before submitting:
    ```bash
-   cargo test
+   cargo test --workspace --locked
    ```
 4. **Format your code** with the standard Rust toolchain:
    ```bash
-   cargo fmt
-   cargo clippy
+   cargo fmt --all -- --check
+   cargo clippy --workspace --all-targets --locked
    ```
 
 ## Adding a New Language Extractor
@@ -74,13 +88,13 @@ cargo test --no-default-features --features lite
 
 ```bash
 # All tests for a specific language
-cargo test --test rust_extraction_test
+cargo test --locked --test rust_extraction_test
 
 # A single test by name
-cargo test test_find_stale_files
+cargo test --locked test_find_stale_files
 
 # Only sync-related tests
-cargo test sync
+cargo test --locked sync
 ```
 
 ## Environment Variables
