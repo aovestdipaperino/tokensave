@@ -1099,7 +1099,7 @@ fn def_distribution() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory or file path prefix to filter (e.g. 'src/main/java/com/example'). Omit for entire codebase."
+                    "description": "File or directory to filter to (e.g. 'src/main/java/com/example'). Omit for entire codebase."
                 },
                 "summary": {
                     "type": "boolean",
@@ -1166,7 +1166,7 @@ fn def_doc_coverage() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory or file path prefix to filter (e.g. 'src/main'). Omit for entire codebase."
+                    "description": "File or directory to filter to (e.g. 'src/main'). Omit for entire codebase."
                 },
                 "limit": {
                     "type": "number",
@@ -1230,11 +1230,11 @@ fn def_port_status() -> ToolDefinition {
             "properties": {
                 "source_dir": {
                     "type": "string",
-                    "description": "Path prefix for source code (e.g. 'src/python/')"
+                    "description": "Directory holding the source code (e.g. 'src/python/')"
                 },
                 "target_dir": {
                     "type": "string",
-                    "description": "Path prefix for target code (e.g. 'src/rust/')"
+                    "description": "Directory holding the target code (e.g. 'src/rust/')"
                 },
                 "kinds": {
                     "type": "array",
@@ -1257,7 +1257,7 @@ fn def_port_order() -> ToolDefinition {
             "properties": {
                 "source_dir": {
                     "type": "string",
-                    "description": "Path prefix for source code (e.g. 'src/python/')"
+                    "description": "Directory holding the source code (e.g. 'src/python/')"
                 },
                 "kinds": {
                     "type": "array",
@@ -1763,7 +1763,7 @@ fn def_annotations() -> ToolDefinition {
                 },
                 "file": {
                     "type": "string",
-                    "description": "Restrict to target nodes whose file_path starts with this prefix (file or directory)."
+                    "description": "Restrict to target nodes in this file or under this directory."
                 },
                 "target_kind": {
                     "type": "string",

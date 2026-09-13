@@ -955,15 +955,23 @@ async fn test_get_undocumented_public_symbols_no_filter() {
 #[tokio::test]
 async fn test_get_undocumented_public_symbols_with_prefix() {
     let (_dir, cg) = setup().await;
+    // The filter names a file or a directory, not a string prefix, so the
+    // file is named in full: `src/utils` would match neither.
     let undoc = cg
-        .get_undocumented_public_symbols(Some("src/utils"), 50)
+        .get_undocumented_public_symbols(Some("src/utils.rs"), 50)
         .await
         .unwrap();
     // helper in utils.rs is pub without docs
+    let names: Vec<&str> = undoc.iter().map(|n| n.name.as_str()).collect();
+    assert!(
+        names.contains(&"helper"),
+        "helper is pub without docs, should appear, found: {:?}",
+        names,
+    );
     for node in &undoc {
-        assert!(
-            node.file_path.starts_with("src/utils"),
-            "path prefix filter should only return src/utils files, got: {}",
+        assert_eq!(
+            node.file_path, "src/utils.rs",
+            "path filter should only return src/utils.rs, got: {}",
             node.file_path,
         );
     }
