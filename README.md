@@ -487,9 +487,9 @@ ignoring it.
 
 `tokensave_files` covers more than source. Files whose extension is listed in
 `artifact_extensions` (`.feature`, `.json`, `.yaml`, `.yml`, `.sql`, `.toml`,
-`.proto`, `.graphql`, `.md` by default) are tracked by path so questions like
-"where are the `.feature` files for the login flow?" have a graph answer rather
-than a blocked `find` (#323). They are never parsed and contribute no symbols;
+`.proto`, `.graphql`, `.md`, `.bnd`, `.bndrun` by default) are tracked by path
+so questions like "where are the `.feature` files for the login flow?" have a
+graph answer rather than a blocked `find` (#323). They are never parsed and contribute no symbols;
 `kind: "artifact"` and `kind: "code"` filter between the two, and analyses that
 mean "code" exclude them. An extension already handled by a language extractor
 is ignored in this list, so it cannot be used to stop a language being parsed.

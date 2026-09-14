@@ -42,6 +42,16 @@ async fn fixture() -> (TempDir, TokenSave) {
     )
     .unwrap();
     fs::write(project.join("schema.json"), "{\"title\": \"account\"}\n").unwrap();
+    fs::write(
+        project.join("osgi.bnd"),
+        "Bundle-SymbolicName: com.example.login\nExport-Package: com.example.login.api\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("integration.bndrun"),
+        "-runrequires: osgi.identity;filter:='(osgi.identity=com.example.login)'\n",
+    )
+    .unwrap();
     fs::write(project.join("data.bin"), "not a tracked artifact\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
@@ -70,6 +80,21 @@ async fn feature_files_are_indexed() {
         paths.contains(&"features/login.feature".to_string()),
         "the .feature file must be discoverable by path, got: {paths:?}"
     );
+}
+
+#[tokio::test]
+async fn bnd_files_are_indexed_as_artifacts() {
+    let (_dir, cg) = fixture().await;
+    let files = cg.get_all_files().await.unwrap();
+
+    for path in ["osgi.bnd", "integration.bndrun"] {
+        let file = files
+            .iter()
+            .find(|f| f.path == path)
+            .unwrap_or_else(|| panic!("{path} must be indexed"));
+        assert_eq!(file.kind, FileKind::Artifact);
+        assert_eq!(file.node_count, 0, "{path} must not be parsed");
+    }
 }
 
 #[tokio::test]

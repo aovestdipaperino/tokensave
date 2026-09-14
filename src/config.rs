@@ -157,7 +157,7 @@ pub struct TokenSaveConfig {
 /// every text extension would turn `tokensave_files` into a directory listing.
 fn default_artifact_extensions() -> Vec<String> {
     [
-        "feature", "json", "yaml", "yml", "sql", "toml", "proto", "graphql", "md",
+        "feature", "json", "yaml", "yml", "sql", "toml", "proto", "graphql", "md", "bnd", "bndrun",
     ]
     .iter()
     .map(|ext| (*ext).to_string())
