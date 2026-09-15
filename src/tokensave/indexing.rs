@@ -2525,6 +2525,118 @@ impl TokenSave {
         })
     }
 
+    /// Deletes a named symbol, including its leading doc comment/attribute
+    /// block and one adjacent blank line. Resolves the symbol via exact
+    /// qualified-name match — if the name is ambiguous, callable definitions
+    /// win; if still ambiguous after that filter, the edit is refused so we
+    /// don't clobber the wrong site.
+    ///
+    /// `root_override` retargets where the symbol's (index-relative) file
+    /// path is written to — e.g. a git worktree that shares the same
+    /// relative layout as the indexed project root but lives at a different
+    /// absolute location. See [`Self::resolve_edit_target`] for semantics.
+    pub async fn delete_symbol(
+        &self,
+        symbol: &str,
+        include_doc_comment: bool,
+        root_override: Option<&str>,
+    ) -> Result<EditResult> {
+        let target = resolve_symbol_for_edit(self, symbol).await?;
+        let (abs_path, rel_path) = self.resolve_edit_target(&target.file_path, root_override);
+        let resolved_path = abs_path.to_string_lossy().to_string();
+        let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
+        let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
+            message: format!("failed to read {resolved_path}: {e}"),
+        })?;
+        let lines: Vec<&str> = source.lines().collect();
+        let mut start = if include_doc_comment {
+            target.attrs_start_line as usize
+        } else {
+            target.start_line as usize
+        };
+        if include_doc_comment {
+            // `attrs_start_line` covers attributes but not every language's
+            // doc-comment marker, so scan upward for a contiguous doc-comment
+            // block directly above the symbol and include it when present.
+            let mut doc_start = target.start_line as usize;
+            while doc_start > 0 {
+                let line = lines[doc_start - 1].trim();
+                if line.starts_with("///")
+                    || line.starts_with("/**")
+                    || line.starts_with("/*")
+                    || line.starts_with('#')
+                    || line.starts_with("--")
+                    || line.starts_with(';')
+                    || line.starts_with('\'')
+                    || line.starts_with('"')
+                {
+                    doc_start -= 1;
+                } else {
+                    break;
+                }
+            }
+            start = start.min(doc_start);
+        }
+        let end_inclusive = (target.end_line as usize).min(lines.len().saturating_sub(1));
+        if start >= lines.len() || start > end_inclusive {
+            return Ok(EditResult {
+                success: false,
+                file_path: display_path,
+                resolved_path,
+                matched_str: symbol.to_string(),
+                new_str: String::new(),
+                message: format!(
+                    "symbol range [{}..={}] out of bounds for {}-line file",
+                    target.start_line,
+                    target.end_line,
+                    lines.len()
+                ),
+                changed_lines: (0, 0),
+                digest: String::new(),
+                nearest: None,
+            });
+        }
+        let mut remove_start = start;
+        let mut remove_end = end_inclusive;
+        if remove_end + 1 < lines.len() && lines[remove_end + 1].trim().is_empty() {
+            remove_end += 1;
+        } else if remove_start > 0 && lines[remove_start - 1].trim().is_empty() {
+            remove_start -= 1;
+        }
+        let mut rebuilt: Vec<String> = Vec::with_capacity(lines.len());
+        rebuilt.extend(lines[..remove_start].iter().map(|s| (*s).to_string()));
+        rebuilt.extend(lines[remove_end + 1..].iter().map(|s| (*s).to_string()));
+        let mut modified = rebuilt.join("\n");
+        if source.ends_with('\n') && !rebuilt.is_empty() {
+            modified.push('\n');
+        }
+        tokio::fs::write(&abs_path, &modified)
+            .await
+            .map_err(|e| TokenSaveError::Config {
+                message: format!("failed to write {resolved_path}: {e}"),
+            })?;
+        if let Some(rel) = &rel_path {
+            self.reindex_file(rel).await?;
+        }
+        let digest = crate::context::read_cache::digest_bytes(modified.as_bytes());
+        Ok(EditResult {
+            success: true,
+            file_path: display_path,
+            resolved_path,
+            matched_str: symbol.to_string(),
+            new_str: String::new(),
+            message: format!(
+                "deleted {}:{}-{}",
+                target.file_path,
+                remove_start + 1,
+                remove_end + 1
+            ),
+            changed_lines: ((remove_start + 1) as u32, (remove_end + 1) as u32),
+            digest,
+            nearest: None,
+        })
+    }
+
     /// Inserts `content` immediately before or after a named symbol. `position`
     /// is one of `"before"` or `"after"`. Uses the same resolution logic as
     /// `replace_symbol`.

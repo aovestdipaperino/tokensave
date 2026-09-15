@@ -2597,6 +2597,42 @@ async fn test_insert_at_preserves_trailing_newline() {
     assert_eq!(content, "fn hello() {}\n\nfn extra() {}\nfn world() {}\n");
 }
 
+#[tokio::test]
+async fn test_delete_symbol_removes_doc_and_function() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/main.rs"),
+        "/// docs\nfn hello() {}\nfn world() {}\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_delete_symbol",
+        json!({ "symbol": "hello" }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["ok"], true);
+    assert_eq!(parsed["lines"], json!([1, 2]));
+    assert!(parsed["digest"].as_str().unwrap().len() == 64);
+
+    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    assert!(!content.contains("hello"));
+    assert!(!content.contains("docs"));
+    assert!(content.contains("fn world() {}"));
+}
+
 // ---------------------------------------------------------------------------
 // tokensave_gini
 // ---------------------------------------------------------------------------

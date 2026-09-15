@@ -223,6 +223,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_str_replace(),
         def_multi_str_replace(),
         def_insert_at(),
+        def_delete_symbol(),
         def_ast_grep_rewrite(),
         graph_scoped(def_gini()),
         graph_scoped(def_dependency_depth()),
@@ -1553,6 +1554,24 @@ fn def_insert_at() -> ToolDefinition {
             "readOnlyHint": false,
             "title": "Insert Into File"
         })),
+        meta: None,
+    }
+}
+
+fn def_delete_symbol() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_delete_symbol".to_string(),
+        description: "Delete a symbol by qualified name, including its leading doc comment and one adjacent blank line. Resolves exactly like tokensave_replace_symbol; ambiguity is refused.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "symbol": { "type": "string", "description": "Qualified symbol name to delete" },
+                "include_doc_comment": { "type": "boolean", "description": "Include the leading doc comment/attribute block. Default true." },
+                "project_root": { "type": "string", "description": "Optional absolute directory to resolve a relative symbol-file path against. Alias: `cwd`." }
+            },
+            "required": ["symbol"]
+        }),
+        annotations: Some(json!({ "readOnlyHint": false, "title": "Delete Symbol" })),
         meta: None,
     }
 }

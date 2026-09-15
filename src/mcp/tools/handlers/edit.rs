@@ -185,6 +185,41 @@ pub(super) async fn handle_insert_at(cg: &TokenSave, args: Value) -> Result<Tool
     })
 }
 
+pub(super) async fn handle_delete_symbol(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let symbol =
+        args.get("symbol")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: symbol".to_string(),
+            })?;
+    let include_doc_comment = args
+        .get("include_doc_comment")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let root_override = project_root_arg(&args);
+    let result = cg
+        .delete_symbol(symbol, include_doc_comment, root_override)
+        .await?;
+    let touched_files = if result.success {
+        vec![result.file_path.clone()]
+    } else {
+        vec![]
+    };
+    let mut value = json!({ "ok": result.success, "file": result.file_path });
+    if result.success {
+        value["lines"] = json!([result.changed_lines.0, result.changed_lines.1]);
+        value["digest"] = json!(result.digest);
+    } else {
+        value["message"] = json!(result.message);
+    }
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&value).unwrap_or_default() }]
+        }),
+        touched_files,
+    })
+}
+
 pub(super) async fn handle_replace_symbol(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let symbol =
         args.get("symbol")
