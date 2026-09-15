@@ -807,6 +807,12 @@ pub struct EditResult {
     pub matched_str: String,
     pub new_str: String,
     pub message: String,
+    /// 1-based inclusive line range changed by the edit.
+    pub changed_lines: (u32, u32),
+    /// SHA-256 hex digest of the file after the edit.
+    pub digest: String,
+    /// Nearest candidate line when the edit failed to find its target.
+    pub nearest: Option<String>,
 }
 
 /// Result of a multi-string replacement edit.
@@ -831,6 +837,12 @@ pub struct InsertResult {
     pub content: String,
     pub before: bool,
     pub message: String,
+    /// 1-based inclusive line range changed by the edit.
+    pub changed_lines: (u32, u32),
+    /// SHA-256 hex digest of the file after the edit.
+    pub digest: String,
+    /// Nearest candidate line when the edit failed to find its anchor.
+    pub nearest: Option<String>,
 }
 
 /// Result of an ast-grep rewrite operation.
