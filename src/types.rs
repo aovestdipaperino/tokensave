@@ -845,6 +845,20 @@ pub struct InsertResult {
     pub nearest: Option<String>,
 }
 
+/// Result of a line-range replacement edit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LineReplaceResult {
+    pub success: bool,
+    pub file_path: String,
+    /// Fully-resolved absolute filesystem path that was actually read/written.
+    pub resolved_path: String,
+    /// 1-based inclusive line range replaced.
+    pub changed_lines: (u32, u32),
+    /// SHA-256 hex digest of the file after the edit.
+    pub digest: String,
+    pub message: String,
+}
+
 /// Result of an ast-grep rewrite operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AstGrepResult {

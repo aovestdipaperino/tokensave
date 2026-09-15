@@ -2637,6 +2637,87 @@ impl TokenSave {
         })
     }
 
+    /// Replaces a contiguous 1-based inclusive line range in a file with
+    /// `new_content`. `expected_digest` (from `tokensave_read`) makes a stale
+    /// range fail instead of corrupting the file; `new_content: ""` deletes
+    /// the block.
+    ///
+    /// `root_override` retargets resolution of a *relative* `path` to a
+    /// directory other than the indexed project root (e.g. a git worktree).
+    /// An absolute `path` is always honored verbatim regardless of this
+    /// parameter. See [`Self::resolve_edit_target`] for full semantics.
+    pub async fn replace_lines(
+        &self,
+        path: &str,
+        start: u32,
+        end: u32,
+        new_content: &str,
+        expected_digest: Option<&str>,
+        root_override: Option<&str>,
+    ) -> Result<LineReplaceResult> {
+        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override);
+        let resolved_path = abs_path.to_string_lossy().to_string();
+        let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
+        let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
+            message: format!("failed to read {resolved_path}: {e}"),
+        })?;
+        let before_digest = crate::context::read_cache::digest_bytes(source.as_bytes());
+        if let Some(expected) = expected_digest {
+            if before_digest != expected {
+                return Ok(LineReplaceResult {
+                    success: false,
+                    file_path: display_path,
+                    resolved_path,
+                    changed_lines: (0, 0),
+                    digest: before_digest.clone(),
+                    message: format!("digest mismatch: expected {expected}, got {before_digest}"),
+                });
+            }
+        }
+        let lines: Vec<&str> = source.lines().collect();
+        let start_idx = start.saturating_sub(1) as usize;
+        let end_idx = (end as usize).min(lines.len());
+        if start == 0 || start_idx >= lines.len() || start_idx >= end_idx {
+            return Ok(LineReplaceResult {
+                success: false,
+                file_path: display_path,
+                resolved_path,
+                changed_lines: (0, 0),
+                digest: before_digest,
+                message: format!(
+                    "line range {start}-{end} out of bounds (file has {} lines)",
+                    lines.len()
+                ),
+            });
+        }
+        let trailing_newline = source.ends_with('\n');
+        let mut rebuilt: Vec<String> = Vec::with_capacity(lines.len());
+        rebuilt.extend(lines[..start_idx].iter().map(|s| (*s).to_string()));
+        rebuilt.push(new_content.trim_end_matches('\n').to_string());
+        rebuilt.extend(lines[end_idx..].iter().map(|s| (*s).to_string()));
+        let mut modified = rebuilt.join("\n");
+        if trailing_newline {
+            modified.push('\n');
+        }
+        tokio::fs::write(&abs_path, &modified)
+            .await
+            .map_err(|e| TokenSaveError::Config {
+                message: format!("failed to write {resolved_path}: {e}"),
+            })?;
+        if let Some(rel) = &rel_path {
+            self.reindex_file(rel).await?;
+        }
+        let digest = crate::context::read_cache::digest_bytes(modified.as_bytes());
+        Ok(LineReplaceResult {
+            success: true,
+            file_path: display_path,
+            resolved_path,
+            changed_lines: (start, end),
+            digest,
+            message: format!("replaced lines {start}-{end}"),
+        })
+    }
+
     /// Inserts `content` immediately before or after a named symbol. `position`
     /// is one of `"before"` or `"after"`. Uses the same resolution logic as
     /// `replace_symbol`.

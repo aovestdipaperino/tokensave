@@ -220,6 +220,63 @@ pub(super) async fn handle_delete_symbol(cg: &TokenSave, args: Value) -> Result<
     })
 }
 
+pub(super) async fn handle_replace_lines(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: path".to_string(),
+        })?;
+    let start = args
+        .get("start")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: start".to_string(),
+        })? as u32;
+    let end = args
+        .get("end")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: end".to_string(),
+        })? as u32;
+    let new_content = args
+        .get("new_content")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: new_content".to_string(),
+        })?;
+    let expected_digest = args.get("expected_digest").and_then(|v| v.as_str());
+    let root_override = project_root_arg(&args);
+    let result = cg
+        .replace_lines(
+            path,
+            start,
+            end,
+            new_content,
+            expected_digest,
+            root_override,
+        )
+        .await?;
+    let touched_files = if result.success {
+        vec![result.file_path.clone()]
+    } else {
+        vec![]
+    };
+    let mut value = json!({ "ok": result.success, "file": result.file_path });
+    if result.success {
+        value["lines"] = json!([result.changed_lines.0, result.changed_lines.1]);
+        value["digest"] = json!(result.digest);
+    } else {
+        value["message"] = json!(result.message);
+    }
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&value).unwrap_or_default() }]
+        }),
+        touched_files,
+    })
+}
+
 pub(super) async fn handle_replace_symbol(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let symbol =
         args.get("symbol")

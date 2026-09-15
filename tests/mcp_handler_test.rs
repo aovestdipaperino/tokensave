@@ -2633,6 +2633,81 @@ async fn test_delete_symbol_removes_doc_and_function() {
     assert!(content.contains("fn world() {}"));
 }
 
+#[tokio::test]
+async fn test_replace_lines_success() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/main.rs"),
+        "fn a() {}\nfn b() {}\nfn c() {}\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_replace_lines",
+        json!({
+            "path": "src/main.rs",
+            "start": 2,
+            "end": 2,
+            "new_content": "fn b2() {}"
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["ok"], true);
+    assert_eq!(parsed["lines"], json!([2, 2]));
+    assert!(parsed["digest"].as_str().unwrap().len() == 64);
+
+    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    assert!(content.contains("fn b2() {}"));
+    assert!(!content.contains("fn b() {}"));
+}
+
+#[tokio::test]
+async fn test_replace_lines_stale_digest_fails() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/main.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_replace_lines",
+        json!({
+            "path": "src/main.rs",
+            "start": 1,
+            "end": 1,
+            "new_content": "fn x() {}",
+            "expected_digest": "stale"
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["ok"], false);
+    assert!(parsed["message"]
+        .as_str()
+        .unwrap()
+        .contains("digest mismatch"));
+}
+
 // ---------------------------------------------------------------------------
 // tokensave_gini
 // ---------------------------------------------------------------------------

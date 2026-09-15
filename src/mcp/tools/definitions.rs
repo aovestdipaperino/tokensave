@@ -224,6 +224,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_multi_str_replace(),
         def_insert_at(),
         def_delete_symbol(),
+        def_replace_lines(),
         def_ast_grep_rewrite(),
         graph_scoped(def_gini()),
         graph_scoped(def_dependency_depth()),
@@ -1572,6 +1573,27 @@ fn def_delete_symbol() -> ToolDefinition {
             "required": ["symbol"]
         }),
         annotations: Some(json!({ "readOnlyHint": false, "title": "Delete Symbol" })),
+        meta: None,
+    }
+}
+
+fn def_replace_lines() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_replace_lines".to_string(),
+        description: "Replace a contiguous 1-based inclusive line range in a file. `expected_digest` (from tokensave_read) makes a stale range fail instead of corrupting the file; `new_content: \"\"` deletes the block.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Absolute or project-relative file path." },
+                "start": { "type": "number", "description": "1-based first line to replace." },
+                "end": { "type": "number", "description": "1-based last line to replace (inclusive)." },
+                "new_content": { "type": "string", "description": "Replacement text; empty string deletes the block." },
+                "expected_digest": { "type": "string", "description": "Optional SHA-256 digest of the file before the edit; fails if the file changed." },
+                "project_root": { "type": "string", "description": "Optional absolute directory to resolve a relative `path` against. Alias: `cwd`." }
+            },
+            "required": ["path", "start", "end", "new_content"]
+        }),
+        annotations: Some(json!({ "readOnlyHint": false, "title": "Replace Lines" })),
         meta: None,
     }
 }

@@ -508,6 +508,7 @@ pub async fn handle_tool_call(
         "tokensave_multi_str_replace" => edit::handle_multi_str_replace(cg, args).await,
         "tokensave_insert_at" => edit::handle_insert_at(cg, args).await,
         "tokensave_delete_symbol" => edit::handle_delete_symbol(cg, args).await,
+        "tokensave_replace_lines" => edit::handle_replace_lines(cg, args).await,
         "tokensave_ast_grep_rewrite" => edit::handle_ast_grep_rewrite(cg, args).await,
         "tokensave_gini" => health::handle_gini(cg, args, scope_prefix).await,
         "tokensave_dependency_depth" => {
