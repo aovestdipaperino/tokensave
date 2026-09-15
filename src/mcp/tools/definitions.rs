@@ -1463,6 +1463,10 @@ fn def_str_replace() -> ToolDefinition {
                 "project_root": {
                     "type": "string",
                     "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root. Use this when calling from a git worktree so relative paths land in the worktree, not the primary checkout. Ignored when `path` is absolute. Alias: `cwd`."
+                },
+                "echo": {
+                    "type": "boolean",
+                    "description": "If true, echo the replaced/inserted text in the result. Default false."
                 }
             },
             "required": ["path", "old_str", "new_str"]
@@ -1537,6 +1541,10 @@ fn def_insert_at() -> ToolDefinition {
                 "project_root": {
                     "type": "string",
                     "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root. Use this when calling from a git worktree so relative paths land in the worktree, not the primary checkout. Ignored when `path` is absolute. Alias: `cwd`."
+                },
+                "echo": {
+                    "type": "boolean",
+                    "description": "If true, echo the replaced/inserted text in the result. Default false."
                 }
             },
             "required": ["path", "anchor", "content"]
@@ -2582,6 +2590,10 @@ fn def_replace_symbol() -> ToolDefinition {
                 "project_root": {
                     "type": "string",
                     "description": "Optional absolute directory the symbol's (index-relative) file path is resolved against instead of the indexed project root. Use this when calling from a git worktree that shares the same relative layout but lives at a different absolute location, so the write lands in the worktree, not the primary checkout. Alias: `cwd`."
+                },
+                "echo": {
+                    "type": "boolean",
+                    "description": "If true, echo the replaced/inserted text in the result. Default false."
                 }
             },
             "required": ["symbol", "new_source"]
@@ -2641,6 +2653,10 @@ fn def_insert_at_symbol() -> ToolDefinition {
                 "project_root": {
                     "type": "string",
                     "description": "Optional absolute directory the symbol's (index-relative) file path is resolved against instead of the indexed project root. Use this when calling from a git worktree that shares the same relative layout but lives at a different absolute location, so the write lands in the worktree, not the primary checkout. Alias: `cwd`."
+                },
+                "echo": {
+                    "type": "boolean",
+                    "description": "If true, echo the replaced/inserted text in the result. Default false."
                 }
             },
             "required": ["symbol", "content"]
