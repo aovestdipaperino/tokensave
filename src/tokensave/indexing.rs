@@ -2693,7 +2693,10 @@ impl TokenSave {
         let trailing_newline = source.ends_with('\n');
         let mut rebuilt: Vec<String> = Vec::with_capacity(lines.len());
         rebuilt.extend(lines[..start_idx].iter().map(|s| (*s).to_string()));
-        rebuilt.push(new_content.trim_end_matches('\n').to_string());
+        let replacement = new_content.trim_end_matches('\n');
+        if !replacement.is_empty() {
+            rebuilt.push(replacement.to_string());
+        }
         rebuilt.extend(lines[end_idx..].iter().map(|s| (*s).to_string()));
         let mut modified = rebuilt.join("\n");
         if trailing_newline {
