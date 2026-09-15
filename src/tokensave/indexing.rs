@@ -2422,7 +2422,11 @@ impl TokenSave {
             self.reindex_file(rel).await?;
         }
 
-        let start_line = (anchor_line + 1) as u32;
+        let start_line = if before {
+            (anchor_line + 1) as u32
+        } else {
+            (anchor_line + 2) as u32
+        };
         let end_line = start_line + content.matches('\n').count() as u32;
         let changed_lines = (start_line, end_line);
         let digest = crate::context::read_cache::digest_bytes(modified.as_bytes());

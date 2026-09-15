@@ -1889,13 +1889,48 @@ async fn test_str_replace_success() {
 
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["success"], true);
-    assert_eq!(parsed["matched_str"], "fn hello() {}");
-    assert_eq!(parsed["new_str"], "fn hello_updated() {}");
+    assert_eq!(parsed["ok"], true);
+    assert_eq!(parsed["lines"], json!([1, 1]));
+    assert!(parsed["digest"].as_str().unwrap().len() == 64);
+    assert!(parsed["matched_str"].is_null());
+    assert!(parsed["new_str"].is_null());
 
     let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
     assert!(content.contains("fn hello_updated() {}"));
     assert!(!content.contains("fn hello() {}"));
+}
+
+#[tokio::test]
+async fn test_str_replace_echo_returns_text() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    fs::write(project.join("src/main.rs"), "fn hello() {}\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_str_replace",
+        json!({
+            "path": "src/main.rs",
+            "old_str": "fn hello() {}",
+            "new_str": "fn hello_updated() {}",
+            "echo": true
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["ok"], true);
+    assert_eq!(parsed["matched_str"], "fn hello() {}");
+    assert_eq!(parsed["new_str"], "fn hello_updated() {}");
 }
 
 #[tokio::test]
@@ -1925,7 +1960,7 @@ async fn test_str_replace_not_found() {
 
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["success"], false);
+    assert_eq!(parsed["ok"], false);
     assert!(parsed["message"].as_str().unwrap().contains("not found"));
 }
 
@@ -1956,7 +1991,7 @@ async fn test_str_replace_multiple_matches_fails() {
 
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["success"], false);
+    assert_eq!(parsed["ok"], false);
     assert!(parsed["message"]
         .as_str()
         .unwrap()
@@ -2113,7 +2148,8 @@ async fn test_str_replace_unsupported_file_type_succeeds() {
 
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["ok"], true);
+    assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
     let content = fs::read_to_string(project.join("style.css")).unwrap();
     assert!(content.contains("0.85rem"));
@@ -2347,7 +2383,9 @@ async fn test_insert_at_string_anchor_before() {
 
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["ok"], true);
+    assert_eq!(parsed["lines"], json!([2, 2]));
+    assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
     let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
     assert!(
@@ -2393,8 +2431,9 @@ async fn test_insert_at_line_number() {
 
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["success"], true);
-    assert_eq!(parsed["anchor_line"], 2);
+    assert_eq!(parsed["ok"], true);
+    assert_eq!(parsed["lines"], json!([3, 3]));
+    assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
     let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
     assert!(
@@ -2436,7 +2475,7 @@ async fn test_insert_at_anchor_not_found() {
 
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["success"], false);
+    assert_eq!(parsed["ok"], false);
     assert!(parsed["message"].as_str().unwrap().contains("not found"));
 }
 
@@ -2470,7 +2509,7 @@ async fn test_insert_at_unicode_anchor_prefix_does_not_panic() {
 
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["success"], false);
+    assert_eq!(parsed["ok"], false);
     assert!(parsed["message"].as_str().unwrap().contains("not found"));
 
     let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
@@ -2509,7 +2548,7 @@ async fn test_insert_at_ambiguous_anchor() {
 
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["success"], false);
+    assert_eq!(parsed["ok"], false);
     assert!(parsed["message"]
         .as_str()
         .unwrap()
@@ -2546,7 +2585,8 @@ async fn test_insert_at_preserves_trailing_newline() {
 
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["ok"], true);
+    assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
     let content = fs::read_to_string(project.join("src/lib.rs")).unwrap();
     assert!(
@@ -6114,13 +6154,10 @@ async fn test_str_replace_resolved_path_for_relative_path_in_root() {
 
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["success"], true);
-    // Unchanged backward-compatible behavior: file_path stays project-relative.
-    assert_eq!(parsed["file_path"], "src/main.rs");
-    // New: resolved_path is always the fully-resolved absolute path actually
-    // read/written, so a caller can verify the edit landed where intended.
-    let expected_resolved = project.join("src/main.rs").to_string_lossy().to_string();
-    assert_eq!(parsed["resolved_path"], expected_resolved);
+    assert_eq!(parsed["ok"], true);
+    assert_eq!(parsed["file"], "src/main.rs");
+    assert_eq!(parsed["lines"], json!([1, 1]));
+    assert!(parsed["digest"].as_str().unwrap().len() == 64);
 }
 
 #[tokio::test]
@@ -6157,11 +6194,13 @@ async fn test_str_replace_absolute_path_outside_root_honored_verbatim() {
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(
-        parsed["success"], true,
+        parsed["ok"], true,
         "absolute path outside the indexed root must be honored, not rejected: {text}"
     );
     let expected = outside_file.to_string_lossy().to_string();
-    assert_eq!(parsed["resolved_path"], expected);
+    assert_eq!(parsed["file"], expected);
+    assert_eq!(parsed["lines"], json!([1, 1]));
+    assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
     let content = fs::read_to_string(&outside_file).unwrap();
     assert_eq!(content, "done: fixed the bug\n");
@@ -6213,12 +6252,10 @@ async fn test_str_replace_project_root_override_writes_to_worktree_not_primary_c
 
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["success"], true, "got: {text}");
-    let expected_resolved = worktree_root
-        .join("src/main.rs")
-        .to_string_lossy()
-        .to_string();
-    assert_eq!(parsed["resolved_path"], expected_resolved);
+    assert_eq!(parsed["ok"], true, "got: {text}");
+    assert_eq!(parsed["file"], "src/main.rs");
+    assert_eq!(parsed["lines"], json!([1, 1]));
+    assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
     // The worktree copy was edited...
     let worktree_content = fs::read_to_string(worktree_root.join("src/main.rs")).unwrap();
@@ -6261,9 +6298,11 @@ async fn test_insert_at_absolute_path_outside_root_honored_verbatim() {
 
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["success"], true, "got: {text}");
+    assert_eq!(parsed["ok"], true, "got: {text}");
     let expected = outside_file.to_string_lossy().to_string();
-    assert_eq!(parsed["resolved_path"], expected);
+    assert_eq!(parsed["file"], expected);
+    assert_eq!(parsed["lines"], json!([2, 2]));
+    assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
     let content = fs::read_to_string(&outside_file).unwrap();
     assert_eq!(content, "line one\ninserted line\nline two\n");
@@ -6307,12 +6346,9 @@ async fn test_replace_symbol_project_root_override_writes_to_worktree_not_primar
 
     let text = extract_text(&result.value);
     let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["success"], true, "got: {text}");
-    let expected_resolved = worktree_root
-        .join("src/lib.rs")
-        .to_string_lossy()
-        .to_string();
-    assert_eq!(parsed["resolved_path"], expected_resolved);
+    assert_eq!(parsed["ok"], true, "got: {text}");
+    assert_eq!(parsed["lines"], json!([1, 3]));
+    assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
     let worktree_content = fs::read_to_string(worktree_root.join("src/lib.rs")).unwrap();
     assert!(worktree_content.contains("hi from worktree"));
