@@ -990,13 +990,13 @@ mod tests {
     }
 
     #[test]
-    fn configs_written_before_the_field_existed_keep_reporting() {
-        // Serde must not read a missing field as `false` and silently go quiet
-        // on every project initialized before #356.
+    fn configs_written_before_the_field_existed_default_to_off() {
+        // #561: metrics are off by default, so a config written before the
+        // field existed now defaults to off rather than silently reporting.
         let json = r#"{"version":1,"root_dir":"/x","exclude":[],"max_file_size":1000,
                        "extract_docstrings":true,"track_call_sites":true}"#;
         let config: TokenSaveConfig = serde_json::from_str(json).unwrap();
-        assert!(config.report_savings);
+        assert!(!config.report_savings);
     }
 
     #[test]
