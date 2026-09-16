@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use tempfile::TempDir;
 use tokensave::db::migrations::latest_version;
 use tokensave::db::Database;
@@ -303,6 +304,36 @@ async fn test_delete_nodes_by_file() {
         .expect("failed to get nodes by file");
     assert_eq!(other_nodes.len(), 1);
     assert_eq!(other_nodes[0].id, "del-3");
+}
+
+#[tokio::test]
+async fn test_delete_nodes_by_file_concurrent_no_nested_transaction() {
+    // Regression #563: concurrent delete_nodes_by_file calls on the shared
+    // connection must not collide on the transaction ("cannot start a
+    // transaction within a transaction"). The write lock serializes them.
+    let (_dir, db) = setup_db().await;
+
+    let node1 = sample_node("del-1", "func_a", "src/target.rs");
+    let node2 = sample_node("del-2", "func_b", "src/target.rs");
+    db.insert_nodes(&[node1, node2])
+        .await
+        .expect("failed to insert nodes");
+
+    let db = Arc::new(db);
+    let db1 = Arc::clone(&db);
+    let db2 = Arc::clone(&db);
+    let t1 = tokio::spawn(async move { db1.delete_nodes_by_file("src/target.rs").await });
+    let t2 = tokio::spawn(async move { db2.delete_nodes_by_file("src/target.rs").await });
+    let r1 = t1.await.expect("task 1 panicked");
+    let r2 = t2.await.expect("task 2 panicked");
+    r1.expect("first delete failed");
+    r2.expect("second delete failed");
+
+    let nodes = db
+        .get_nodes_by_file("src/target.rs")
+        .await
+        .expect("failed to get nodes by file");
+    assert!(nodes.is_empty(), "nodes for target.rs should be deleted");
 }
 
 #[tokio::test]

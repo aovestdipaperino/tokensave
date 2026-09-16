@@ -65,6 +65,11 @@ pub(super) async fn handle_str_replace(cg: &TokenSave, args: Value) -> Result<To
         }
     } else {
         value["message"] = json!(result.message);
+        // A "write landed but reindex failed" result carries the post-edit
+        // digest so the caller can verify the file instead of retrying (#563).
+        if !result.digest.is_empty() {
+            value["digest"] = json!(result.digest);
+        }
         if let Some(nearest) = result.nearest {
             value["nearest"] = json!(nearest);
         }

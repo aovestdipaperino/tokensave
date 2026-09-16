@@ -1037,6 +1037,12 @@ impl Database {
             !file_path.starts_with('/'),
             "delete_nodes_by_file expects relative path, got absolute"
         );
+        // Serialize the whole delete against other write transactions on the
+        // shared connection: a concurrent edit reindex or background sync can
+        // otherwise open a second transaction while this one is active, which
+        // SQLite rejects as "cannot start a transaction within a transaction"
+        // (#563).
+        let _write_guard = self.write_lock.lock().await;
         self.conn()
             .execute(
                 "DELETE FROM executable_body_fts WHERE file_path = ?1",

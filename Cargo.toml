@@ -218,3 +218,12 @@ debug = "line-tables-only"
 [profile.test]
 debug = "line-tables-only"
 
+# Release builds bundle 50+ tree-sitter grammars plus SQLite; without LTO and
+# a single codegen unit the binary balloons to ~170 MB (#562). `panic = "abort"`
+# is deliberately omitted: `safe_extract` relies on `catch_unwind` to skip a
+# panicking file instead of aborting the whole sync.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+

@@ -2820,6 +2820,47 @@ async fn test_replace_lines_delete_empty() {
     assert_eq!(content, "fn a() {}\nfn c() {}\n");
 }
 
+#[tokio::test]
+async fn test_replace_lines_delete_whole_file_leaves_empty() {
+    // Regression #564: deleting the entire file with `new_content: ""` must
+    // leave an empty file, not a single stray newline.
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/main.rs"),
+        "fn a() {}\nfn b() {}\nfn c() {}\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_replace_lines",
+        json!({
+            "path": "src/main.rs",
+            "start": 1,
+            "end": 3,
+            "new_content": ""
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let text = extract_text(&result.value);
+    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(parsed["ok"], true);
+    assert_eq!(parsed["lines"], json!([1, 3]));
+    assert!(parsed["digest"].as_str().unwrap().len() == 64);
+
+    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    assert_eq!(content, "");
+}
+
 // ---------------------------------------------------------------------------
 // tokensave_gini
 // ---------------------------------------------------------------------------

@@ -962,7 +962,7 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 | **Self-upgrade** | `tokensave upgrade` with stable/beta channels | `npm update` |
 | **DB engine** | libsql (SQLite fork, WAL, async) | better-sqlite3 / wa-sqlite (WASM) |
 | **Indexing speed** | ~1.2s for 1,782 files | ~4s for 1,782 files |
-| **Binary size** | ~25 MB (all grammars bundled) | ~80 MB (node_modules + WASM) |
+| **Binary size** | ~25 MB compressed download (all grammars bundled) | ~80 MB (node_modules + WASM) |
 
 CodeGraph pioneered the approach and remains a solid choice if you prefer npm tooling and only need Claude Code integration. tokensave extends the concept with deeper analysis, more agents, multi-branch support, and a native binary with no runtime dependencies.
 
@@ -976,7 +976,7 @@ Several tools reduce token usage for AI coding agents. Here's why tokensave stan
 
 ### Single native binary, zero dependencies
 
-Every alternative requires a runtime: Python, Node.js, or both. tokensave ships as a single ~25 MB Rust binary with all 50+ tree-sitter grammars bundled. Nothing else to install.
+Every alternative requires a runtime: Python, Node.js, or both. tokensave ships as a single Rust binary with all 50+ tree-sitter grammars bundled (~25 MB compressed download). Nothing else to install.
 
 ### Deepest code intelligence
 

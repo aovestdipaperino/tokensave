@@ -70,6 +70,9 @@ pub struct Database {
     _db: LibsqlDatabase,
     read_only: bool,
     pub(super) trait_dispatch_callers: RwLock<HashMap<String, Vec<CachedTraitDispatchCaller>>>,
+    /// Serializes write transactions so concurrent edit reindex and background
+    /// sync cannot open overlapping transactions on the shared connection (#563).
+    pub(super) write_lock: tokio::sync::Mutex<()>,
 }
 
 impl Database {
@@ -123,6 +126,7 @@ impl Database {
             _db: db,
             read_only: false,
             trait_dispatch_callers: RwLock::new(HashMap::new()),
+            write_lock: tokio::sync::Mutex::new(()),
         };
         database.refresh_trait_dispatch_callers().await?;
         Ok((database, false))
@@ -170,6 +174,7 @@ impl Database {
             _db: db,
             read_only: false,
             trait_dispatch_callers: RwLock::new(HashMap::new()),
+            write_lock: tokio::sync::Mutex::new(()),
         };
         database.refresh_trait_dispatch_callers().await?;
         Ok((database, migrated))
@@ -254,6 +259,7 @@ impl Database {
             _db: db,
             read_only: true,
             trait_dispatch_callers: RwLock::new(HashMap::new()),
+            write_lock: tokio::sync::Mutex::new(()),
         };
         database.refresh_trait_dispatch_callers().await?;
         Ok(database)

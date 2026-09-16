@@ -2227,13 +2227,28 @@ impl TokenSave {
                 message: format!("failed to write {resolved_path}: {e}"),
             })?;
 
-        if let Some(rel) = &rel_path {
-            self.reindex_file(rel).await?;
-        }
-
         let changed_lines =
             Self::byte_span_lines(&source, match_start, match_start + old_str.len());
         let digest = crate::context::read_cache::digest_bytes(modified.as_bytes());
+
+        if let Some(rel) = &rel_path {
+            if let Err(e) = self.reindex_file(rel).await {
+                // The write landed; do not report a bare failure that makes
+                // the caller think nothing changed and retry (#563).
+                return Ok(EditResult {
+                    success: false,
+                    file_path: display_path,
+                    resolved_path,
+                    matched_str: old_str.to_string(),
+                    new_str: new_str.to_string(),
+                    message: format!("write landed but reindex failed: {e}"),
+                    changed_lines,
+                    digest,
+                    nearest: None,
+                });
+            }
+        }
+
         Ok(EditResult {
             success: true,
             file_path: display_path,
@@ -2699,7 +2714,9 @@ impl TokenSave {
         }
         rebuilt.extend(lines[end_idx..].iter().map(|s| (*s).to_string()));
         let mut modified = rebuilt.join("\n");
-        if trailing_newline {
+        // Deleting the whole file leaves `rebuilt` empty; do not invent a
+        // trailing newline for an empty result (#564).
+        if trailing_newline && !modified.is_empty() {
             modified.push('\n');
         }
         tokio::fs::write(&abs_path, &modified)
