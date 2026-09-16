@@ -434,10 +434,25 @@ async fn handle_literal_search(
         }
         if let Some(unscanned) = payload.get("unscanned") {
             let files = unscanned["files"].as_u64().unwrap_or(0);
-            let _ = writeln!(
-                text,
-                "unscanned: {files} files (tokensave_files --unscanned)"
-            );
+            if let Some(extensions) = unscanned.get("extensions").and_then(Value::as_array) {
+                let _ = writeln!(text, "unscanned: {files} files");
+                for entry in extensions {
+                    let ext = entry["extension"].as_str().unwrap_or_default();
+                    let count = entry["files"].as_u64().unwrap_or(0);
+                    let _ = writeln!(text, "  - {ext}: {count}");
+                }
+                if let Some(reason) = unscanned.get("reason").and_then(Value::as_str) {
+                    let _ = writeln!(text, "reason: {reason}");
+                }
+                if let Some(remedy) = unscanned.get("remedy").and_then(Value::as_str) {
+                    let _ = writeln!(text, "remedy: {remedy}");
+                }
+            } else {
+                let _ = writeln!(
+                    text,
+                    "unscanned: {files} files (tokensave_files --unscanned)"
+                );
+            }
         }
         return Ok(ToolResult {
             value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
