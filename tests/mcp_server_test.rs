@@ -1063,6 +1063,7 @@ async fn selected_context_qualifies_ids_without_rewriting_source_literals() {
         json!({
             "query": "shared_target",
             "format": "json",
+            "ids": true,
             "graph_root": selected_dir.path().display().to_string(),
             "graph_branch": "main"
         }),
@@ -1146,6 +1147,7 @@ async fn cross_project_selected_queries_leave_both_projects_unchanged() {
         json!({
             "query": "shared_target",
             "format": "json",
+            "ids": true,
             "graph_root": selected_dir.path().display().to_string(),
             "graph_branch": "main"
         }),
@@ -1580,6 +1582,7 @@ async fn qualified_colliding_id_traversal_isolated_by_root_and_branch() {
         json!({
             "query": "shared_target",
             "format": "json",
+            "ids": true,
             "graph_root": first_dir.path().display().to_string(),
             "graph_branch": "main"
         }),
@@ -1592,6 +1595,7 @@ async fn qualified_colliding_id_traversal_isolated_by_root_and_branch() {
         json!({
             "query": "shared_target",
             "format": "json",
+            "ids": true,
             "graph_root": second_dir.path().display().to_string(),
             "graph_branch": "main"
         }),

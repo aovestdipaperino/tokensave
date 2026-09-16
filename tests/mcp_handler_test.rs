@@ -83,7 +83,7 @@ async fn find_node_id(cg: &TokenSave, name: &str) -> String {
     let result = handle_tool_call(
         cg,
         "tokensave_search",
-        json!({"query": name, "format": "json"}),
+        json!({"query": name, "format": "json", "ids": true}),
         None,
         None,
     )
@@ -122,6 +122,36 @@ async fn test_search() {
         text.contains("helper"),
         "search results should contain 'helper'"
     );
+}
+
+#[tokio::test]
+async fn test_search_ids_opt_in() {
+    let (_dir, cg) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "helper", "ids": true, "format": "json"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: Value = serde_json::from_str(text).unwrap();
+    assert!(parsed[0]["id"].is_string());
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({"query": "helper", "format": "json"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    let parsed: Value = serde_json::from_str(text).unwrap();
+    assert!(parsed[0]["id"].is_null());
 }
 
 #[tokio::test]

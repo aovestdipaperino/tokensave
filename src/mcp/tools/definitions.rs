@@ -363,6 +363,10 @@ fn def_search() -> ToolDefinition {
                     "type": "string",
                     "enum": ["text", "json"],
                     "description": "Output format. 'text' returns raw source with a short header (no JSON escaping); 'json' returns the structured object. Default 'text'."
+                },
+                "ids": {
+                    "type": "boolean",
+                    "description": "Include node IDs / enclosing IDs in results. Default false; pass true when you plan a follow-up call."
                 }
             },
             "required": ["query"]

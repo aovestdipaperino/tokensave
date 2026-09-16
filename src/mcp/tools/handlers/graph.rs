@@ -89,6 +89,11 @@ pub(super) async fn handle_search(
         .and_then(|v| v.as_str())
         .unwrap_or("text");
 
+    let ids = args
+        .get("ids")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
     let path_include = parse_string_array(&args, "path_include");
     let path_exclude = parse_string_array(&args, "path_exclude");
 
@@ -101,6 +106,7 @@ pub(super) async fn handle_search(
             &path_include,
             &path_exclude,
             format,
+            ids,
         )
         .await;
     }
@@ -131,15 +137,18 @@ pub(super) async fn handle_search(
     let items: Vec<Value> = results
         .iter()
         .map(|r| {
-            json!({
-                "id": r.node.id,
+            let mut item = json!({
                 "name": r.node.name,
                 "kind": r.node.kind.as_str(),
                 "file": r.node.file_path,
                 "line": super::display_line(r.node.start_line),
                 "signature": r.node.signature.as_deref().map(crate::context::compact_signature),
                 "score": r.score,
-            })
+            });
+            if ids {
+                item["id"] = json!(r.node.id);
+            }
+            item
         })
         .collect();
 
@@ -290,6 +299,7 @@ const LITERAL_SCAN_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 /// `{ file, line, text, enclosing, enclosing_id }` location. Scanning is
 /// deterministic (files sorted by path) and stops as soon as `limit` matches
 /// are collected.
+#[allow(clippy::too_many_arguments)]
 async fn handle_literal_search(
     cg: &TokenSave,
     query: &str,
@@ -298,6 +308,7 @@ async fn handle_literal_search(
     path_include: &[String],
     path_exclude: &[String],
     format: &str,
+    ids: bool,
 ) -> Result<ToolResult> {
     if query.is_empty() {
         return Err(TokenSaveError::Config {
@@ -362,13 +373,18 @@ async fn handle_literal_search(
                 .filter(|n| n.start_line <= line0 && line0 <= n.end_line)
                 .min_by_key(|n| n.end_line.saturating_sub(n.start_line));
 
-            matches.push(json!({
+            let enclosing_name = enclosing.as_ref().map(|n| n.name.clone());
+            let enclosing_id = enclosing.as_ref().map(|n| n.id.clone());
+            let mut match_value = json!({
                 "file": file.path,
                 "line": line_no,
                 "text": line.trim(),
-                "enclosing": enclosing.map(|n| n.name.clone()),
-                "enclosing_id": enclosing.map(|n| n.id.clone()),
-            }));
+                "enclosing": enclosing_name,
+            });
+            if ids {
+                match_value["enclosing_id"] = json!(enclosing_id);
+            }
+            matches.push(match_value);
             if !touched.contains(&file.path) {
                 touched.push(file.path.clone());
             }
