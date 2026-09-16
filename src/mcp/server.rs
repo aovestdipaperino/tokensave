@@ -25,9 +25,8 @@ use super::graph_scope::{
 };
 use super::tools::{
     baseline_policy, cap_baseline, get_always_load_tool_definitions, get_tool_definitions,
-    handle_tool_call, handle_tool_call_with_session, is_graph_scoped_tool,
-    is_selectorless_local_graph_tool, request_overhead_tokens, schema_overhead_tokens,
-    settle_session_debt, SessionState,
+    handle_tool_call_with_session, is_graph_scoped_tool, is_selectorless_local_graph_tool,
+    request_overhead_tokens, schema_overhead_tokens, settle_session_debt, SessionState,
 };
 use super::transport::{ErrorCode, JsonRpcRequest, JsonRpcResponse};
 
@@ -882,7 +881,15 @@ impl McpServer {
                 failures.push(format!("{}: {error}", root.display()));
                 continue;
             }
-            let outcome = handle_tool_call(&selected.cg, tool_name, root_args, None, None).await;
+            let outcome = handle_tool_call_with_session(
+                &selected.cg,
+                tool_name,
+                root_args,
+                None,
+                None,
+                Some(&self.session_state),
+            )
+            .await;
             let mut result = match outcome {
                 Ok(result) => result,
                 Err(error) => {
