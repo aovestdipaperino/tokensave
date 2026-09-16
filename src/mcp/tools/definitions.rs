@@ -358,6 +358,11 @@ fn def_search() -> ToolDefinition {
                 "literal": {
                     "type": "boolean",
                     "description": "Exact-substring search over source text (for runtime error strings); returns file/line locations instead of ranked symbols. Case-sensitive. Default false."
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["text", "json"],
+                    "description": "Output format. 'text' returns raw source with a short header (no JSON escaping); 'json' returns the structured object. Default 'text'."
                 }
             },
             "required": ["query"]
@@ -2092,6 +2097,11 @@ fn def_body() -> ToolDefinition {
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of matching bodies to return when the name is ambiguous (default: 3, max: 20)"
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["text", "json"],
+                    "description": "Output format. 'text' returns raw source with a short header (no JSON escaping); 'json' returns the structured object. Default 'text'."
                 }
             },
             "required": ["symbol"]
@@ -2551,6 +2561,11 @@ fn def_read() -> ToolDefinition {
                 "force": {
                     "type": "boolean",
                     "description": "Bypass the cross-session cache and return the body even when an unchanged stub would otherwise be served. Default false."
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["text", "json"],
+                    "description": "Output format. 'text' returns raw source with a short header (no JSON escaping); 'json' returns the structured object. Default 'text'."
                 }
             },
             "required": ["file"]

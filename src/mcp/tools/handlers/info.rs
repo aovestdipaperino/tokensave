@@ -1058,6 +1058,11 @@ pub(super) async fn handle_body(
         .and_then(serde_json::Value::as_u64)
         .map_or(3, |v| v.clamp(1, 20) as usize);
 
+    let format = args
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text");
+
     // First try an exact-name lookup against the DB — this avoids the BM25
     // ranker's tendency to bury a definition under unrelated noise when the
     // bare name is common (e.g. `gmres` exists as both a `pub fn` and a
@@ -1119,6 +1124,26 @@ pub(super) async fn handle_body(
             "signature": n.signature,
             "body": body,
         }));
+    }
+
+    if format == "text" {
+        let mut text = format!("match_count: {}\n\n", matches.len());
+        for m in &matches {
+            let file = m["file"].as_str().unwrap_or_default();
+            let start = m["start_line"].as_u64().unwrap_or(0);
+            let end = m["end_line"].as_u64().unwrap_or(0);
+            let name = m["name"].as_str().unwrap_or_default();
+            let kind = m["kind"].as_str().unwrap_or_default();
+            let body = m["body"].as_str().unwrap_or_default();
+            let _ = write!(
+                text,
+                "file: {file}:{start}-{end}: {name} ({kind})\n{body}\n\n"
+            );
+        }
+        return Ok(ToolResult {
+            value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
+            touched_files: touched,
+        });
     }
 
     let output = json!({
@@ -1333,6 +1358,11 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
         message: format!("unknown mode '{mode_str}'; expected one of full, lines, map, signatures"),
     })?;
 
+    let format = args
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text");
+
     let line_range = if mode == ReadMode::Lines {
         let raw =
             args.get("lines")
@@ -1432,6 +1462,18 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
         None
     };
     if let Some(cached) = cached {
+        if format == "text" {
+            let text = format!(
+                "file: {display_file}\nunchanged: true\nmode: {}\ndigest: {}\ntoken_count: {}\n",
+                mode.as_str(),
+                cached.digest,
+                cached.token_count
+            );
+            return Ok(ToolResult {
+                value: json!({ "content": [{ "type": "text", "text": text }] }),
+                touched_files: vec![display_file],
+            });
+        }
         let stub = json!({
             "unchanged": true,
             "file": display_file,
@@ -1493,6 +1535,18 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
             token_count,
         )
         .await?;
+    }
+
+    if format == "text" {
+        let header = format!(
+            "file: {display_file}\nmode: {}\ndigest: {digest}\ntoken_count: {token_count}\n\n",
+            mode.as_str()
+        );
+        let text = format!("{header}{body_text}");
+        return Ok(ToolResult {
+            value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
+            touched_files: vec![display_file],
+        });
     }
 
     let payload = json!({

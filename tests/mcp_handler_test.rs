@@ -80,9 +80,15 @@ fn extract_text(value: &Value) -> &str {
 /// Searches for `name` via the search handler and returns the first matching
 /// node id whose name field equals `name`.
 async fn find_node_id(cg: &TokenSave, name: &str) -> String {
-    let result = handle_tool_call(cg, "tokensave_search", json!({"query": name}), None, None)
-        .await
-        .unwrap();
+    let result = handle_tool_call(
+        cg,
+        "tokensave_search",
+        json!({"query": name, "format": "json"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let text = extract_text(&result.value);
     let items: Vec<Value> = serde_json::from_str(text).unwrap();
     items
@@ -127,7 +133,7 @@ async fn test_search_literal_finds_string_in_body() {
     let result = handle_tool_call(
         &cg,
         "tokensave_search",
-        json!({"query": "Hello, {}!", "literal": true}),
+        json!({"query": "Hello, {}!", "literal": true, "format": "json"}),
         None,
         None,
     )
@@ -168,7 +174,7 @@ async fn test_search_literal_respects_queryignore() {
     let result = handle_tool_call(
         &cg,
         "tokensave_search",
-        json!({"query": "Hello, {}!", "literal": true}),
+        json!({"query": "Hello, {}!", "literal": true, "format": "json"}),
         None,
         None,
     )
@@ -188,7 +194,7 @@ async fn test_search_literal_no_match_returns_empty() {
     let result = handle_tool_call(
         &cg,
         "tokensave_search",
-        json!({"query": "this string does not exist anywhere zzz", "literal": true}),
+        json!({"query": "this string does not exist anywhere zzz", "literal": true, "format": "json"}),
         None,
         None,
     )
@@ -207,7 +213,7 @@ async fn test_search_literal_respects_limit() {
     let result = handle_tool_call(
         &cg,
         "tokensave_search",
-        json!({"query": "helper", "literal": true, "limit": 1}),
+        json!({"query": "helper", "literal": true, "limit": 1, "format": "json"}),
         None,
         None,
     )
@@ -232,6 +238,7 @@ async fn test_search_literal_respects_path_include() {
             "literal": true,
             "path_include": ["src/utils.rs"],
             "limit": 20,
+            "format": "json",
         }),
         None,
         None,
@@ -265,6 +272,7 @@ async fn test_search_literal_respects_path_exclude() {
             "literal": true,
             "path_exclude": ["tests/"],
             "limit": 20,
+            "format": "json",
         }),
         None,
         None,
@@ -290,7 +298,7 @@ async fn test_search_literal_case_sensitive() {
     let result = handle_tool_call(
         &cg,
         "tokensave_search",
-        json!({"query": "hello, {}!", "literal": true}),
+        json!({"query": "hello, {}!", "literal": true, "format": "json"}),
         None,
         None,
     )
@@ -302,6 +310,40 @@ async fn test_search_literal_case_sensitive() {
         parsed["matches"].as_array().unwrap().is_empty(),
         "literal search must be case-sensitive"
     );
+}
+
+#[tokio::test]
+async fn test_read_text_format_returns_raw_source() {
+    let (_dir, cg) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_read",
+        json!({ "file": "src/main.rs", "format": "text" }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(text.contains("fn main()"), "{text}");
+    assert!(text.contains("file: src/main.rs"), "{text}");
+}
+
+#[tokio::test]
+async fn test_literal_search_text_format() {
+    let (_dir, cg) = setup_project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({ "query": "helper", "literal": true, "format": "text" }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = extract_text(&result.value);
+    assert!(text.contains("src/main.rs:"), "{text}");
+    assert!(text.contains("src/utils.rs:"), "{text}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1765,7 +1807,7 @@ async fn test_search_scope_prefix_filters() {
     let result = handle_tool_call(
         &cg,
         "tokensave_search",
-        json!({"query": "helper", "limit": 20}),
+        json!({"query": "helper", "limit": 20, "format": "json"}),
         None,
         Some("tests"),
     )
@@ -3817,7 +3859,7 @@ async fn test_body_returns_full_function_source() {
     let result = handle_tool_call(
         &cg,
         "tokensave_body",
-        json!({"symbol": "format_greeting"}),
+        json!({"symbol": "format_greeting", "format": "json"}),
         None,
         None,
     )
@@ -4299,7 +4341,7 @@ async fn body_prefers_function_over_field_with_same_name() {
     let result = handle_tool_call(
         &cg,
         "tokensave_body",
-        json!({"symbol": "gmres"}),
+        json!({"symbol": "gmres", "format": "json"}),
         None,
         None,
     )
@@ -5662,7 +5704,7 @@ pub mod e;
     let result = handle_tool_call(
         &cg,
         "tokensave_search",
-        json!({"query": "LinearOperator", "limit": 10}),
+        json!({"query": "LinearOperator", "limit": 10, "format": "json"}),
         None,
         None,
     )
@@ -5718,7 +5760,7 @@ async fn search_doc_penalty_on_additive_query_path() {
     let result = handle_tool_call(
         &cg,
         "tokensave_search",
-        json!({"query": "Configuration", "limit": 10}),
+        json!({"query": "Configuration", "limit": 10, "format": "json"}),
         None,
         None,
     )

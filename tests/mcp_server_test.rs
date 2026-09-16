@@ -1062,6 +1062,7 @@ async fn selected_context_qualifies_ids_without_rewriting_source_literals() {
         "tokensave_search",
         json!({
             "query": "shared_target",
+            "format": "json",
             "graph_root": selected_dir.path().display().to_string(),
             "graph_branch": "main"
         }),
@@ -1109,6 +1110,7 @@ async fn selected_context_qualifies_ids_without_rewriting_source_literals() {
         json!({
             "file": "src/lib.rs",
             "mode": "full",
+            "format": "json",
             "graph_root": selected_dir.path().display().to_string(),
             "graph_branch": "main"
         }),
@@ -1143,6 +1145,7 @@ async fn cross_project_selected_queries_leave_both_projects_unchanged() {
         "tokensave_search",
         json!({
             "query": "shared_target",
+            "format": "json",
             "graph_root": selected_dir.path().display().to_string(),
             "graph_branch": "main"
         }),
@@ -1576,6 +1579,7 @@ async fn qualified_colliding_id_traversal_isolated_by_root_and_branch() {
         "tokensave_search",
         json!({
             "query": "shared_target",
+            "format": "json",
             "graph_root": first_dir.path().display().to_string(),
             "graph_branch": "main"
         }),
@@ -1587,6 +1591,7 @@ async fn qualified_colliding_id_traversal_isolated_by_root_and_branch() {
         "tokensave_search",
         json!({
             "query": "shared_target",
+            "format": "json",
             "graph_root": second_dir.path().display().to_string(),
             "graph_branch": "main"
         }),
@@ -2463,7 +2468,7 @@ async fn test_cached_read_baseline_is_capped_not_full_file() {
             "tools/call",
             json!({
                 "name": "tokensave_read",
-                "arguments": { "file": "src/main.rs", "mode": "full" }
+                "arguments": { "file": "src/main.rs", "mode": "full", "format": "json" }
             }),
         )
     };

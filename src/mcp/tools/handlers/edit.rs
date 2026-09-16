@@ -54,7 +54,7 @@ pub(super) async fn handle_str_replace(cg: &TokenSave, args: Value) -> Result<To
     let touched_files = vec![result.file_path.clone()];
     let mut value = json!({
         "ok": result.success,
-        "file": result.file_path,
+        "file": path,
     });
     if result.success {
         value["lines"] = json!([result.changed_lines.0, result.changed_lines.1]);
@@ -262,7 +262,7 @@ pub(super) async fn handle_replace_lines(cg: &TokenSave, args: Value) -> Result<
     } else {
         vec![]
     };
-    let mut value = json!({ "ok": result.success, "file": result.file_path });
+    let mut value = json!({ "ok": result.success, "file": path });
     if result.success {
         value["lines"] = json!([result.changed_lines.0, result.changed_lines.1]);
         value["digest"] = json!(result.digest);

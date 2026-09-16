@@ -72,7 +72,7 @@ async fn literal_search(cg: &TokenSave, query: &str) -> Value {
     let result = handle_tool_call(
         cg,
         "tokensave_search",
-        json!({ "query": query, "literal": true }),
+        json!({ "query": query, "literal": true, "format": "json" }),
         None,
         None,
     )

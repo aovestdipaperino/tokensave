@@ -112,7 +112,7 @@ async fn test_traversal_unscoped() {
     let search_result = handle_tool_call(
         &cg,
         "tokensave_search",
-        json!({"query": "serve", "limit": 10}),
+        json!({"query": "serve", "limit": 10, "format": "json"}),
         None,
         None,
     )

@@ -84,12 +84,25 @@ pub(super) async fn handle_search(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
+    let format = args
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text");
+
     let path_include = parse_string_array(&args, "path_include");
     let path_exclude = parse_string_array(&args, "path_exclude");
 
     if literal {
-        return handle_literal_search(cg, query, limit, scope_prefix, &path_include, &path_exclude)
-            .await;
+        return handle_literal_search(
+            cg,
+            query,
+            limit,
+            scope_prefix,
+            &path_include,
+            &path_exclude,
+            format,
+        )
+        .await;
     }
 
     let mut results = if path_include.is_empty() && path_exclude.is_empty() {
@@ -133,10 +146,44 @@ pub(super) async fn handle_search(
     // An empty array is where a cross-repo session gives up and concludes the
     // symbol does not exist, so this is the one place the sibling graphs are
     // worth naming (#375). Shape only changes when there is nothing to return.
+    let item_count = items.len();
+    let text_output = if format == "text" {
+        let mut text = format!("count: {item_count}\n\n");
+        for item in &items {
+            let file = item["file"].as_str().unwrap_or_default();
+            let line = item["line"].as_u64().unwrap_or(0);
+            let name = item["name"].as_str().unwrap_or_default();
+            let kind = item["kind"].as_str().unwrap_or_default();
+            let signature = item["signature"].as_str();
+            match signature {
+                Some(sig) => {
+                    let _ = writeln!(text, "{file}:{line}: {name} ({kind}) — {sig}");
+                }
+                None => {
+                    let _ = writeln!(text, "{file}:{line}: {name} ({kind})");
+                }
+            }
+        }
+        Some(text)
+    } else {
+        None
+    };
+
     let payload = match super::sibling_note(items.is_empty(), cg.project_root()).await {
         Some(note) => note,
         None => Value::Array(items),
     };
+
+    if let Some(mut text) = text_output {
+        if let Some(note) = payload.as_str() {
+            text.push_str(note);
+            text.push('\n');
+        }
+        return Ok(ToolResult {
+            value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
+            touched_files,
+        });
+    }
 
     let output = serde_json::to_string_pretty(&payload).unwrap_or_default();
     Ok(ToolResult {
@@ -250,6 +297,7 @@ async fn handle_literal_search(
     scope_prefix: Option<&str>,
     path_include: &[String],
     path_exclude: &[String],
+    format: &str,
 ) -> Result<ToolResult> {
     if query.is_empty() {
         return Err(TokenSaveError::Config {
@@ -345,6 +393,26 @@ async fn handle_literal_search(
         if let Some(object) = payload.as_object_mut() {
             object.insert("unscanned".to_string(), unscanned);
         }
+    }
+    if format == "text" {
+        let mut text = format!("count: {}\n\n", matches.len());
+        for m in &matches {
+            let file = m["file"].as_str().unwrap_or_default();
+            let line = m["line"].as_u64().unwrap_or(0);
+            let line_text = m["text"].as_str().unwrap_or_default();
+            let _ = writeln!(text, "{file}:{line}: {line_text}");
+        }
+        if let Some(unscanned) = payload.get("unscanned") {
+            let files = unscanned["files"].as_u64().unwrap_or(0);
+            let _ = writeln!(
+                text,
+                "unscanned: {files} files (tokensave_files --unscanned)"
+            );
+        }
+        return Ok(ToolResult {
+            value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
+            touched_files,
+        });
     }
     let output = serde_json::to_string_pretty(&payload).unwrap_or_default();
     Ok(ToolResult {
