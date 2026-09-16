@@ -93,6 +93,25 @@ where
     }
 }
 
+/// Reinstall every tracked agent, collecting failures instead of aborting.
+///
+/// A single agent whose harness was removed (e.g. `omp` no longer on PATH)
+/// must not block reinstalling the rest (#565). Returns the ids that failed;
+/// the caller reports them and keeps the version markers advancing so a
+/// permanent failure is not retried on every command.
+pub fn reinstall_agents<F>(agents: &[String], mut install: F) -> Vec<String>
+where
+    F: FnMut(&str) -> crate::errors::Result<()>,
+{
+    let mut failed = Vec::new();
+    for id in agents {
+        if install(id).is_err() {
+            failed.push(id.clone());
+        }
+    }
+    failed
+}
+
 /// Result of [`resync_installed_agents`].
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ResyncOutcome {
@@ -468,6 +487,35 @@ mod resync_tests {
             calls.get(),
             2,
             "install re-ran after a permanent failure (#255)"
+        );
+    }
+
+    /// The core of #565: one agent whose harness was removed (e.g. `omp` no
+    /// longer on PATH) must not abort the whole reinstall; the rest are still
+    /// attempted and the failure is collected for reporting.
+    #[test]
+    fn reinstall_collects_failures_without_aborting() {
+        let agents = vec![
+            "omp".to_string(),
+            "claude".to_string(),
+            "copilot".to_string(),
+        ];
+        let attempted = std::cell::Cell::new(0);
+        let failed = reinstall_agents(&agents, |id| {
+            attempted.set(attempted.get() + 1);
+            if id == "omp" {
+                Err(crate::errors::TokenSaveError::Config {
+                    message: "`omp config path` could not be started".to_string(),
+                })
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(failed, vec!["omp".to_string()]);
+        assert_eq!(
+            attempted.get(),
+            3,
+            "all agents must be attempted despite the failure (#565)"
         );
     }
 

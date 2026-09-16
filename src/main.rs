@@ -936,7 +936,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     agents.len(),
                     agents.join(", ")
                 );
-                for id in &agents {
+                let failed = tokensave::agents::reinstall_agents(&agents, |id| {
                     let ag = tokensave::agents::get_integration(id)?;
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
@@ -945,9 +945,17 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         scope: tokensave::agents::InstallScope::Global,
                         force_permission_style,
                     };
-                    ag.install(&ctx)?;
+                    ag.install(&ctx)
+                });
+                if failed.is_empty() {
+                    eprintln!("\x1b[32m✔\x1b[0m All agents reinstalled");
+                } else {
+                    eprintln!(
+                        "\x1b[33mwarning:\x1b[0m could not refresh tokensave config for: {}.\n  \
+                         Run \x1b[1mtokensave install\x1b[0m to see the error.",
+                        failed.join(", ")
+                    );
                 }
-                eprintln!("\x1b[32m✔\x1b[0m All agents reinstalled");
                 user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
                 user_cfg.save();
                 if let Some(warning) = tokensave::agents::cargo_build_binary_warning(&tokensave_bin)
