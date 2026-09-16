@@ -44,6 +44,9 @@ pub enum BaselinePolicy {
     /// baseline relative to what was actually returned (see
     /// [`cap_baseline`]).
     Reference,
+    /// Literal search: the realistic alternative is `grep -n`, which returns
+    /// roughly the matching lines, so the baseline is capped at the content.
+    Literal,
 }
 
 /// Reference-tool baselines are capped at `content_tokens * REF_CAP_K`: a
@@ -73,8 +76,17 @@ const REF_CAP_K: u64 = 4;
 /// kept available for a future tool that can be shown to always deliver at
 /// least full-file weight regardless of arguments or cache state; no
 /// current tool qualifies.
-pub fn baseline_policy(_tool_name: &str) -> BaselinePolicy {
-    BaselinePolicy::Reference
+pub fn baseline_policy(tool_name: &str, args: &Value) -> BaselinePolicy {
+    if tool_name == "tokensave_search"
+        && args
+            .get("literal")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        BaselinePolicy::Literal
+    } else {
+        BaselinePolicy::Reference
+    }
 }
 
 /// Applies `policy` to a raw full-file baseline (`full_file_tokens`, the sum
@@ -89,6 +101,7 @@ pub fn cap_baseline(policy: BaselinePolicy, full_file_tokens: u64, content_token
     match policy {
         BaselinePolicy::FullFile => full_file_tokens,
         BaselinePolicy::Reference => full_file_tokens.min(content_tokens.saturating_mul(REF_CAP_K)),
+        BaselinePolicy::Literal => full_file_tokens.min(content_tokens),
     }
 }
 
@@ -161,15 +174,24 @@ mod tests {
         // metadata-only stub depending on arguments/cache state, so none of
         // them get an unconditional FullFile classification — the cap
         // (see below) scales to what was actually delivered instead.
-        assert_eq!(baseline_policy("tokensave_read"), BaselinePolicy::Reference);
-        assert_eq!(baseline_policy("tokensave_body"), BaselinePolicy::Reference);
         assert_eq!(
-            baseline_policy("tokensave_diff_context"),
+            baseline_policy("tokensave_read", &serde_json::json!({})),
             BaselinePolicy::Reference
         );
-        assert_eq!(baseline_policy("tokensave_diff"), BaselinePolicy::Reference);
         assert_eq!(
-            baseline_policy("tokensave_blame"),
+            baseline_policy("tokensave_body", &serde_json::json!({})),
+            BaselinePolicy::Reference
+        );
+        assert_eq!(
+            baseline_policy("tokensave_diff_context", &serde_json::json!({})),
+            BaselinePolicy::Reference
+        );
+        assert_eq!(
+            baseline_policy("tokensave_diff", &serde_json::json!({})),
+            BaselinePolicy::Reference
+        );
+        assert_eq!(
+            baseline_policy("tokensave_blame", &serde_json::json!({})),
             BaselinePolicy::Reference
         );
     }
@@ -177,15 +199,15 @@ mod tests {
     #[test]
     fn unknown_and_reference_tools_default_to_reference() {
         assert_eq!(
-            baseline_policy("tokensave_dead_code"),
+            baseline_policy("tokensave_dead_code", &serde_json::json!({})),
             BaselinePolicy::Reference
         );
         assert_eq!(
-            baseline_policy("tokensave_search"),
+            baseline_policy("tokensave_search", &serde_json::json!({})),
             BaselinePolicy::Reference
         );
         assert_eq!(
-            baseline_policy("tokensave_some_future_tool"),
+            baseline_policy("tokensave_some_future_tool", &serde_json::json!({})),
             BaselinePolicy::Reference
         );
     }
@@ -223,6 +245,18 @@ mod tests {
     fn reference_baseline_passes_through_when_under_the_cap() {
         // A small touched-file sum under the cap is left unchanged.
         assert_eq!(cap_baseline(BaselinePolicy::Reference, 30, 100), 30);
+    }
+
+    #[test]
+    fn literal_search_baseline_is_capped_at_content() {
+        // Literal search's realistic alternative is `grep -n`, which returns
+        // roughly the matching lines, so the baseline is capped at the content
+        // rather than scaled by REF_CAP_K.
+        assert_eq!(
+            baseline_policy("tokensave_search", &serde_json::json!({ "literal": true })),
+            BaselinePolicy::Literal
+        );
+        assert_eq!(cap_baseline(BaselinePolicy::Literal, 100_000, 10), 10);
     }
 
     #[test]

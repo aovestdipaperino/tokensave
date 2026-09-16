@@ -164,10 +164,10 @@ fn default_artifact_extensions() -> Vec<String> {
     .collect()
 }
 
-/// Serde default for [`TokenSaveConfig::report_savings`], so configs written
-/// before #356 keep reporting savings rather than silently going quiet.
+/// Serde default for [`TokenSaveConfig::report_savings`]. Off by default so
+/// MCP results stay compact; accounting to the global DB still happens.
 fn default_report_savings() -> bool {
-    true
+    false
 }
 
 /// Serde default for [`TokenSaveConfig::max_auto_sync_files`], so configs
@@ -984,9 +984,9 @@ mod tests {
     }
 
     #[test]
-    fn report_savings_defaults_to_on() {
-        // #356 asked for an opt-out, not a change of default.
-        assert!(TokenSaveConfig::default().report_savings);
+    fn report_savings_defaults_to_off() {
+        // #561: metrics are off by default in MCP results.
+        assert!(!TokenSaveConfig::default().report_savings);
     }
 
     #[test]

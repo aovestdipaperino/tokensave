@@ -2328,6 +2328,7 @@ impl McpServer {
             || (&self.cg, self.scope_prefix()),
             |selected| (&selected.cg, None),
         );
+        let baseline = baseline_policy(tool_name, &arguments);
         let dispatch_outcome = handle_tool_call_with_session(
             dispatch_graph,
             tool_name,
@@ -2691,11 +2692,7 @@ impl McpServer {
                 // is always at least as large as the source it wraps — see
                 // `accounting::baseline_policy`.
                 let full_file_tokens = self.touched_file_tokens(&result.touched_files);
-                let before_tokens = cap_baseline(
-                    baseline_policy(tool_name),
-                    full_file_tokens,
-                    tool_response_tokens,
-                );
+                let before_tokens = cap_baseline(baseline, full_file_tokens, tool_response_tokens);
 
                 // The metrics line itself is appended to `content` below, so
                 // it too costs the model tokens. Two-pass: render it once
@@ -2720,13 +2717,14 @@ impl McpServer {
                 // is deliberately left outside this gate, so `tokensave gain`
                 // still sees every call.
                 let emit_metrics_line = before_tokens > 0 && self.cg.report_savings();
-                let render_metrics = |before: u64, after: u64, saved: u64| -> String {
-                    format!("\ntokensave_metrics: before={before} after={after} saved={saved}")
+                let render_metrics = |before: u64, after: u64, result: u64, saved: u64| -> String {
+                    format!("\ntokensave_metrics: before={before} after={after} result={result} saved={saved}")
                 };
                 let metrics_line_tokens = if emit_metrics_line {
                     let provisional = render_metrics(
                         before_tokens,
                         after_pre_metrics,
+                        tool_response_tokens,
                         before_tokens.saturating_sub(after_pre_metrics),
                     );
                     (provisional.len() / 4) as u64
@@ -2774,7 +2772,7 @@ impl McpServer {
                     {
                         content.push(json!({
                             "type": "text",
-                            "text": render_metrics(before_tokens, after_tokens, net_saved)
+                            "text": render_metrics(before_tokens, after_tokens, tool_response_tokens, net_saved)
                         }));
                     }
                 }
