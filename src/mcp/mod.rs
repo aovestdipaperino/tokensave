@@ -16,7 +16,10 @@ pub mod tools;
 pub mod transport;
 
 pub use server::McpServer;
-pub use tools::{get_tool_definitions, handle_tool_call, ToolDefinition};
+pub use tools::{
+    get_tool_definitions, handle_tool_call, handle_tool_call_with_session, SessionState,
+    ToolDefinition,
+};
 pub use transport::{
     ErrorCode, JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpTransport, StdioTransport,
 };

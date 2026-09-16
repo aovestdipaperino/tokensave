@@ -25,8 +25,9 @@ use super::graph_scope::{
 };
 use super::tools::{
     baseline_policy, cap_baseline, get_always_load_tool_definitions, get_tool_definitions,
-    handle_tool_call, is_graph_scoped_tool, is_selectorless_local_graph_tool,
-    request_overhead_tokens, schema_overhead_tokens, settle_session_debt,
+    handle_tool_call, handle_tool_call_with_session, is_graph_scoped_tool,
+    is_selectorless_local_graph_tool, request_overhead_tokens, schema_overhead_tokens,
+    settle_session_debt, SessionState,
 };
 use super::transport::{ErrorCode, JsonRpcRequest, JsonRpcResponse};
 
@@ -378,6 +379,9 @@ pub struct McpServer {
     /// at startup and named in the `initialize` instructions so a session knows
     /// which other graphs `graph_root` can reach (#375).
     sibling_projects: Vec<String>,
+    /// Session-scoped state shared across tool calls (e.g. which roots already
+    /// showed the full `unscanned` detail block from a literal search).
+    session_state: SessionState,
     /// Cached latest-version check result.
     version_cache: std::sync::Mutex<VersionCheckState>,
     /// Pending JSON-RPC notifications to send before the next response.
@@ -687,6 +691,7 @@ impl McpServer {
             last_flush_at: AtomicI64::new(0),
             global_db,
             sibling_projects,
+            session_state: SessionState::new(),
             version_cache: std::sync::Mutex::new(VersionCheckState {
                 latest: None,
                 checked_at: None,
@@ -2316,12 +2321,13 @@ impl McpServer {
             || (&self.cg, self.scope_prefix()),
             |selected| (&selected.cg, None),
         );
-        let dispatch_outcome = handle_tool_call(
+        let dispatch_outcome = handle_tool_call_with_session(
             dispatch_graph,
             tool_name,
             arguments,
             server_stats,
             scope_prefix,
+            Some(&self.session_state),
         )
         .await;
         let handler_elapsed_us = handler_start.map(|t| t.elapsed().as_micros() as u64);

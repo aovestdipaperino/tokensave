@@ -26,6 +26,30 @@ use crate::tokensave::TokenSave;
 
 use super::{ToolResult, MAX_RESPONSE_CHARS};
 
+/// Session-scoped state shared across tool calls in one MCP server session.
+///
+/// `unscanned_shown` tracks which project roots have already received the
+/// full `unscanned` detail block from a literal search, so later searches in
+/// the same session can return a compact count instead of repeating the
+/// extension histogram (#561).
+pub struct SessionState {
+    pub unscanned_shown: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+impl SessionState {
+    pub fn new() -> Self {
+        Self {
+            unscanned_shown: std::sync::Mutex::new(std::collections::HashSet::new()),
+        }
+    }
+}
+
+impl Default for SessionState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Converts a stored 0-based line (tree-sitter row, the convention every
 /// extractor writes to the DB) into the 1-based editor line used in every
 /// user-facing response (#203). Internal span comparisons stay 0-based;
@@ -434,17 +458,34 @@ fn normalize_path_args(args: &mut Value, preserve_drive_absolute: bool) {
     }
 }
 
+/// Dispatches a tool call to the appropriate handler, without session state.
+///
+/// Kept as a thin wrapper so existing callers (tests, CLI paths) keep working;
+/// the server passes session state through [`handle_tool_call_with_session`].
+pub async fn handle_tool_call(
+    cg: &TokenSave,
+    tool_name: &str,
+    args: Value,
+    server_stats: Option<Value>,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    handle_tool_call_with_session(cg, tool_name, args, server_stats, scope_prefix, None).await
+}
+
 /// Dispatches a tool call to the appropriate handler.
 ///
 /// Returns the tool result and touched file paths, or an error if the tool
 /// name is unknown or the handler fails. The optional `server_stats` value
-/// is included in `tokensave_status` responses when provided.
-pub async fn handle_tool_call(
+/// is included in `tokensave_status` responses when provided. `session`
+/// carries per-session state (e.g. which roots already showed the full
+/// `unscanned` detail block).
+pub async fn handle_tool_call_with_session(
     cg: &TokenSave,
     tool_name: &str,
     mut args: Value,
     server_stats: Option<Value>,
     scope_prefix: Option<&str>,
+    session: Option<&SessionState>,
 ) -> Result<ToolResult> {
     normalize_path_args(
         &mut args,
@@ -459,7 +500,7 @@ pub async fn handle_tool_call(
         "tool_name must start with 'tokensave_' prefix"
     );
     match tool_name {
-        "tokensave_search" => graph::handle_search(cg, args, scope_prefix).await,
+        "tokensave_search" => graph::handle_search(cg, args, scope_prefix, session).await,
         "tokensave_context" => graph::handle_context(cg, args, scope_prefix).await,
         "tokensave_callers" => graph::handle_callers(cg, args).await,
         "tokensave_callees" => graph::handle_callees(cg, args).await,

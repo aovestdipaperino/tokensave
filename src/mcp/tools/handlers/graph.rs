@@ -15,7 +15,7 @@ use crate::types::{BuildContextOptions, EdgeKind, Node, NodeKind, Visibility};
 use super::super::ToolResult;
 use super::{
     effective_path, filter_by_path_lists, filter_by_scope, parse_string_array, require_node_id,
-    truncate_response, truncate_response_keep_tail, unique_file_paths,
+    truncate_response, truncate_response_keep_tail, unique_file_paths, SessionState,
 };
 
 /// Rounds a derived health metric to two decimal places for compact JSON.
@@ -66,6 +66,7 @@ pub(super) async fn handle_search(
     cg: &TokenSave,
     args: Value,
     scope_prefix: Option<&str>,
+    session: Option<&SessionState>,
 ) -> Result<ToolResult> {
     let query =
         args.get("query")
@@ -107,6 +108,7 @@ pub(super) async fn handle_search(
             &path_exclude,
             format,
             ids,
+            session,
         )
         .await;
     }
@@ -309,6 +311,7 @@ async fn handle_literal_search(
     path_exclude: &[String],
     format: &str,
     ids: bool,
+    session: Option<&SessionState>,
 ) -> Result<ToolResult> {
     if query.is_empty() {
         return Err(TokenSaveError::Config {
@@ -406,8 +409,19 @@ async fn handle_literal_search(
     if let Some(unscanned) =
         unscanned_report(cg, &indexed_paths, scope_prefix, path_include, path_exclude)
     {
+        let files = unscanned["files"].as_u64().unwrap_or(0);
+        let compact = json!({ "files": files, "hint": "tokensave_files --unscanned" });
+        let should_compact = session.is_some_and(|session| {
+            let root = cg.project_root().to_string_lossy().to_string();
+            let mut shown = session
+                .unscanned_shown
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            !shown.insert(root)
+        });
+        let value = if should_compact { compact } else { unscanned };
         if let Some(object) = payload.as_object_mut() {
-            object.insert("unscanned".to_string(), unscanned);
+            object.insert("unscanned".to_string(), value);
         }
     }
     if format == "text" {

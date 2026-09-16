@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Command;
 use tempfile::{tempdir, TempDir};
-use tokensave::mcp::handle_tool_call;
+use tokensave::mcp::{handle_tool_call, handle_tool_call_with_session, SessionState};
 use tokensave::tokensave::TokenSave;
 
 fn git(root: &Path, args: &[&str]) {
@@ -75,6 +75,27 @@ async fn literal_search(cg: &TokenSave, query: &str) -> Value {
         json!({ "query": query, "literal": true, "format": "json" }),
         None,
         None,
+    )
+    .await
+    .expect("literal search must succeed");
+    let text = result.value["content"][0]["text"]
+        .as_str()
+        .expect("tool result carries text");
+    serde_json::from_str(text).expect("literal search returns JSON")
+}
+
+async fn literal_search_with_session(
+    cg: &TokenSave,
+    query: &str,
+    session: Option<&SessionState>,
+) -> Value {
+    let result = handle_tool_call_with_session(
+        cg,
+        "tokensave_search",
+        json!({ "query": query, "literal": true, "format": "json" }),
+        None,
+        None,
+        session,
     )
     .await
     .expect("literal search must succeed");
@@ -258,4 +279,24 @@ async fn a_complete_literal_answer_carries_no_unscanned_block() {
         payload["unscanned"].is_null(),
         "every tracked file was searched, so nothing should be reported: {payload:#}"
     );
+}
+
+/// The full `unscanned` detail block is shown once per root per session;
+/// later literal searches in the same session get a compact count instead.
+#[tokio::test]
+async fn unscanned_detail_once_per_root() {
+    let (_tmp, cg) = project_with_untracked_extensions().await;
+    let session = SessionState::new();
+    let first = literal_search_with_session(&cg, "someFlag", Some(&session)).await;
+    assert!(
+        first["unscanned"]["extensions"].is_array(),
+        "first search must carry the full detail block: {first:#}"
+    );
+    let second = literal_search_with_session(&cg, "someFlag", Some(&session)).await;
+    assert!(
+        second["unscanned"]["extensions"].is_null(),
+        "second search must carry only the compact count: {second:#}"
+    );
+    assert_eq!(second["unscanned"]["files"], 3);
+    assert_eq!(second["unscanned"]["hint"], "tokensave_files --unscanned");
 }
