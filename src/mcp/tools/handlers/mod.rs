@@ -730,9 +730,9 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            85
+            87
         } else {
-            84
+            86
         };
         assert_eq!(tools.len(), expected_total);
 
@@ -855,6 +855,8 @@ mod tests {
             "tokensave_replace_symbol",
             "tokensave_insert_at_symbol",
             "tokensave_run_affected_tests",
+            "tokensave_delete_symbol",
+            "tokensave_replace_lines",
         ];
         for tool in &tools {
             let ann = tool
