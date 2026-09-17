@@ -968,6 +968,17 @@ CodeGraph pioneered the approach and remains a solid choice if you prefer npm to
 
 For detailed comparisons against CodeGraph, Dual-Graph (GrapeRoot), code-review-graph, and OpenWolf, see [docs/COMPARABLE-TOOLS.md](docs/COMPARABLE-TOOLS.md).
 
+**Side-by-side comparison pages** (each one states where the other tool is better):
+[Serena](https://tokensave.dev/vs-serena) ·
+[code-review-graph](https://tokensave.dev/vs-code-review-graph) ·
+[Graphify](https://tokensave.dev/vs-graphify) ·
+[CodeGraph](https://tokensave.dev/vs-codegraph) ·
+[token-savior](https://tokensave.dev/vs-token-savior) ·
+[GrapeRoot](https://tokensave.dev/vs-graperoot) ·
+[LeanCTX](https://tokensave.dev/vs-leanctx) ·
+[OpenWolf](https://tokensave.dev/vs-openwolf) —
+index at [tokensave.dev/vs](https://tokensave.dev/vs).
+
 ---
 
 ## Why tokensave Over the Alternatives
@@ -976,11 +987,11 @@ Several tools reduce token usage for AI coding agents. Here's why tokensave stan
 
 ### Single native binary, zero dependencies
 
-Every alternative requires a runtime: Python, Node.js, or both. tokensave ships as a single Rust binary with all 50+ tree-sitter grammars bundled (~25 MB compressed download). Nothing else to install.
+Most alternatives require a runtime: Python, Node.js, or both. tokensave ships as a single Rust binary with all 50+ tree-sitter grammars bundled (~25 MB compressed download). Nothing else to install -- and unlike LSP-backed tools such as [Serena](https://tokensave.dev/vs-serena), no language server to install, start or warm up per language. Two tools now match tokensave on packaging: [CodeGraph](https://tokensave.dev/vs-codegraph) bundles its own runtime, and [LeanCTX](https://tokensave.dev/vs-leanctx) is also a single Rust binary.
 
 ### Deepest code intelligence
 
-tokensave works at the symbol level: functions, structs, fields, call edges, type hierarchies, complexity metrics. Alternatives like Dual-Graph (GrapeRoot) work at the file level -- they know which files exist but can't answer "who calls this function?" or "what breaks if I change this struct?" tokensave's 80+ specialized MCP tools cover call graph traversal, impact analysis, dead code detection, test mapping, rename preview, type hierarchies, circular dependency detection, complexity ranking, code-health analytics (Gini, DSM, dependency depth, risk-weighted test gaps), atomic edit primitives, and more. The closest competitor (code-review-graph) has 22 tools; others have 5-9.
+tokensave works at the symbol level: functions, structs, fields, call edges, type hierarchies, complexity metrics. Alternatives like Dual-Graph (GrapeRoot) work at the file level -- they know which files exist but can't answer "who calls this function?" or "what breaks if I change this struct?" tokensave's 80+ specialized MCP tools cover call graph traversal, impact analysis, dead code detection, test mapping, rename preview, type hierarchies, circular dependency detection, complexity ranking, code-health analytics (Gini, DSM, dependency depth, risk-weighted test gaps), atomic edit primitives, and more. The closest comparable graph tool, [code-review-graph](https://tokensave.dev/vs-code-review-graph), exposes 30; several others expose fewer than 10 by deliberate design.
 
 ### Broadest agent support
 
