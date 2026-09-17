@@ -482,7 +482,9 @@ code-review-graph is the most direct competitor to tokensave. Both build symbol-
 
 ## tokensave v4.0 vs OpenWolf
 
-OpenWolf ([cytostack/openwolf](https://github.com/cytostack/openwolf)) is a Claude Code efficiency tool that takes a fundamentally different approach from tokensave, Dual-Graph, and CodeGraph. Rather than building a code graph, it wraps Claude Code's lifecycle with six hook scripts that monitor, log, and intervene during the session.
+OpenWolf ([cytostack/openwolf](https://github.com/cytostack/openwolf)) takes a fundamentally different approach from tokensave, Dual-Graph, and CodeGraph. Rather than building a code graph, it keeps portable project memory in a local `.wolf/` directory and attaches to whatever session and tool events each agent exposes. It also records token usage read from the harness transcript, grouped by agent and model.
+
+It is no longer Claude-Code-only. Integration is tiered: lifecycle hooks for **Claude Code** and **Codex CLI**, a native plugin for **OpenCode**, Claude-compatible hook discovery for **Grok Build**, and context-file injection only for **Cursor**, **Gemini CLI** and **Antigravity** -- seven agents at three depths.
 
 ---
 
@@ -490,7 +492,7 @@ OpenWolf ([cytostack/openwolf](https://github.com/cytostack/openwolf)) is a Clau
 
 **tokensave** builds a semantic knowledge graph and lets the AI query it via MCP tools. The AI actively drives exploration through structured queries.
 
-**OpenWolf** doesn't analyze code structure at all. It operates as an invisible middleware layer that intercepts Claude Code's file reads and writes through lifecycle hooks. Before a file read, OpenWolf injects a summary and size estimate from a pre-built project index (`anatomy.md`). After a write, it updates the index and logs the action. Between sessions, it carries forward a "cerebrum" of corrections and preferences.
+**OpenWolf** doesn't analyze code structure at all. It operates as a middleware layer over the events an agent exposes: before a file read it can inject a summary and size estimate from a pre-built project index; after a write it updates that index and logs the action. Across sessions it carries forward checkpoints (objective, completed work, unresolved problems, next action), project notes and known fixes, and it can hand that context between agents explicitly. Memory and indexing run locally with no extra model calls.
 
 The two tools are complementary rather than competitive. tokensave answers "how does this codebase work?" OpenWolf answers "what has Claude already seen and what mistakes should it avoid repeating?"
 
@@ -500,19 +502,19 @@ The two tools are complementary rather than competitive. tokensave answers "how 
 
 | | **tokensave** | **OpenWolf** |
 |---|---|---|
-| Core mechanism | Semantic code graph queried via 87 MCP tools | Lifecycle hooks intercepting file reads/writes |
+| Core mechanism | Semantic code graph queried via 87 MCP tools | Portable `.wolf/` memory plus session and tool event hooks |
 | Code understanding | Symbol-level (functions, call graphs, type hierarchies) | File-level (path, description, size estimate) |
 | Languages | 60 with deep extraction | Language-agnostic (file-level only) |
-| Token tracking | Per-call metrics, session counter, live TUI monitor | Lifetime ledger with read/write counts, hit/miss rates, repeated-read blocking |
+| Token tracking | Per-call *estimates*, session counter, live TUI monitor | **Measured from the harness transcript**, grouped by agent and model, with cost estimates in a dashboard |
 | Redundancy prevention | Not addressed (the AI decides what to re-read) | Warns and blocks repeated file reads (~71% blocked) |
-| Correction memory | No | `cerebrum.md` carries forward mistakes, preferences, and do-not-repeat rules across sessions |
+| Correction memory | 3 tools (`record_decision`, `record_code_area`, `session_recall`), project-scoped | Carries forward corrections, preferences and do-not-repeat rules across sessions **and across agents** |
 | Bug history | No | `buglog.json` -- searchable history preventing re-discovery of known bugs |
 | Action logging | `tokensave monitor` TUI shows tool calls | `memory.md` -- chronological log with token estimates |
 | Design QC | No | Auto-captures dev server screenshots for visual review |
 | Framework knowledge | No | Curated prompts for 12 UI frameworks with migration support |
 | MCP tools | 87 specialized tools | 0 (hook-based, no MCP) |
-| Agent support | 12+ agents | Claude Code only |
-| Implementation | Rust, single binary | Node.js 20+, optional PM2 and puppeteer-core |
+| Agent support | 12+ agents | 7, tiered: full hooks (Claude Code, Codex CLI), plugin (OpenCode), compatible hooks (Grok Build), context-only (Cursor, Gemini CLI, Antigravity) |
+| Implementation | Rust, single binary | TypeScript on Node.js 20+ |
 | License | MIT | AGPL-3.0 |
 | Privacy | 100% local (optional anonymous counter upload) | 100% local |
 
@@ -522,7 +524,7 @@ The two tools are complementary rather than competitive. tokensave answers "how 
 
 #### Redundant read prevention
 
-OpenWolf's most impactful feature. It tracks every file Claude reads during a session and warns (or blocks) when Claude attempts to re-read the same file. Their benchmarks claim 71% of repeated reads blocked. tokensave has no equivalent -- it doesn't intercept file reads at all, so Claude can (and does) re-read the same file multiple times in a session.
+OpenWolf's most impactful feature. It tracks every file Claude reads during a session and warns (or blocks) when Claude attempts to re-read the same file. Figures published for an earlier release claimed 71% of repeated reads blocked; the current documentation describes the feature without quoting a rate. tokensave has no equivalent -- it doesn't intercept file reads at all, so Claude can (and does) re-read the same file multiple times in a session.
 
 #### Correction memory across sessions
 
@@ -534,11 +536,19 @@ OpenWolf's most impactful feature. It tracks every file Claude reads during a se
 
 #### Token savings magnitude
 
-OpenWolf claims ~80% token reduction on their test project (425K tokens vs 2.5M baseline). tokensave's savings come from replacing Explore agent tool calls with graph queries, which is a different (and narrower) optimization surface. OpenWolf attacks a broader set of waste: redundant reads, oversized reads, and lack of project awareness. The two approaches are additive -- using both would address different sources of token waste.
+An earlier OpenWolf release claimed ~80% token reduction on their test project (425K tokens vs 2.5M baseline); treat the figure as version-specific. tokensave's savings come from replacing Explore agent tool calls with graph queries, which is a different (and narrower) optimization surface. OpenWolf attacks a broader set of waste: redundant reads, oversized reads, and lack of project awareness. The two approaches are additive -- using both would address different sources of token waste.
 
 #### File-size awareness before reads
 
 Before Claude reads a file, OpenWolf injects the file's estimated token count from `anatomy.md`. This lets the AI make informed decisions about whether a large file is worth reading. tokensave provides token metrics after tool calls but doesn't intercept Claude's native `Read` tool to warn about file size.
+
+#### Cross-agent portability
+
+One `.wolf/` directory carries checkpoints, project notes and known fixes across Claude Code, Codex and OpenCode, with explicit handover packets between them. tokensave's session memory lives in the per-project `.tokensave` database and does not travel between agents.
+
+#### Token accounting that is measured rather than estimated
+
+OpenWolf reads real usage out of the harness transcript and groups it by agent and model, with cost estimates and hook health in a dashboard. tokensave's savings ledger is an *estimate* -- a before/after count against a modelled baseline. Both are useful; only one of them is counting what the provider actually billed.
 
 #### Design QC
 
@@ -560,9 +570,9 @@ OpenWolf has no code understanding. It knows files exist and how big they are, b
 | Multi-branch indexing | Optional per-branch DBs with cross-branch diff | No |
 | Language-specific extraction | 60 languages with deep tree-sitter parsing | Language-agnostic file listing |
 | MCP tools | 87 | 0 |
-| Agent support | 12+ agents | Claude Code only |
-| Background process | None — on-demand staleness check while agent is attached | PM2 (optional) |
-| Dependencies | None (single Rust binary) | Node.js 20+, optional PM2, optional puppeteer-core |
+| Agent support | 12+ agents | 7, tiered: full hooks (Claude Code, Codex CLI), plugin (OpenCode), compatible hooks (Grok Build), context-only (Cursor, Gemini CLI, Antigravity) |
+| Background process | None — on-demand staleness check while agent is attached | None required |
+| Dependencies | None (single Rust binary) | Node.js 20+ |
 
 ---
 
