@@ -1058,9 +1058,22 @@ mod skipped_summary_tests {
 /// checkout: a hook runs on every branch switch and must neither narrate nor
 /// be able to break `git checkout`.
 pub async fn hook_post_checkout(prev_head: Option<&str>, branch_flag: Option<&str>) {
-    use tokensave::agents::hooks::{classify_checkout, CheckoutAction};
+    use tokensave::agents::hooks::{classify_checkout, is_under_temp_dir, CheckoutAction};
 
     let project_path = tokensave::config::resolve_path(None);
+
+    // #569: under a `Global` hook install, this also fires inside ephemeral
+    // clones unrelated tools (CocoaPods, npm, ...) stage in the system temp
+    // dir and expect to own exclusively. Canonicalize both sides first: on
+    // macOS `/tmp` is a symlink to `/private/tmp`, and comparing the
+    // un-resolved forms would never match.
+    let system_temp = std::env::temp_dir();
+    let system_temp = std::fs::canonicalize(&system_temp).unwrap_or(system_temp);
+    let canonical_project_path =
+        std::fs::canonicalize(&project_path).unwrap_or_else(|_| project_path.clone());
+    if is_under_temp_dir(&canonical_project_path, &system_temp) {
+        return;
+    }
 
     match classify_checkout(prev_head, branch_flag) {
         CheckoutAction::InitThenTrack => {
