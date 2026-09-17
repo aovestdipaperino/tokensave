@@ -417,6 +417,26 @@ pub fn classify_checkout(prev_head: Option<&str>, branch_flag: Option<&str>) -> 
     CheckoutAction::Nothing
 }
 
+/// Whether `path` sits under `system_temp`.
+///
+/// Under a `Global` [`GitHookMode`] install, `core.hooksPath` applies to
+/// every `git clone`/`checkout` on the machine, including ones done by
+/// unrelated tools that stage work in a throwaway system temp directory and
+/// expect to own it exclusively until they delete or overwrite it — CocoaPods
+/// fetching a git-sourced pod is one example (#569). A backgrounded
+/// `tokensave init` racing that kind of cleanup can lose a file mid-copy out
+/// from under the other tool, e.g. `rsync --delete` failing with `No such
+/// file or directory` on `.tokensave/tokensave.db-wal`.
+///
+/// Kept as a pure prefix check, separate from resolving the two paths to
+/// compare, so it is cheap to test without touching the filesystem. Callers
+/// must canonicalize both arguments first: on macOS `/tmp` is a symlink to
+/// `/private/tmp`, and comparing the un-resolved forms would silently never
+/// match.
+pub fn is_under_temp_dir(path: &Path, system_temp: &Path) -> bool {
+    path.starts_with(system_temp)
+}
+
 /// The hook snippet written into the post-checkout script.
 ///
 /// **v2 delegates instead of branching in shell.** The block is one line that
@@ -1790,6 +1810,40 @@ mod git_hook_tests {
         );
         // Missing arguments must not be read as a branch checkout.
         assert_eq!(classify_checkout(None, None), CheckoutAction::Nothing);
+    }
+
+    /// #569: a clone/checkout under the system temp dir must be recognised so
+    /// the hook can skip it — CocoaPods and similar tools stage throwaway
+    /// clones there and race a backgrounded `tokensave init` against their
+    /// own cleanup.
+    #[test]
+    fn temp_dir_paths_are_recognised_as_ephemeral() {
+        let system_temp = Path::new("/private/var/folders/xy/abc123/T");
+
+        assert!(is_under_temp_dir(
+            &system_temp.join("d20260917-1234-abcdef"),
+            system_temp
+        ));
+        assert!(
+            is_under_temp_dir(system_temp, system_temp),
+            "the temp root itself counts as ephemeral"
+        );
+    }
+
+    #[test]
+    fn real_project_paths_are_not_ephemeral() {
+        let system_temp = Path::new("/private/var/folders/xy/abc123/T");
+
+        assert!(!is_under_temp_dir(
+            Path::new("/Users/dev/Documents/GitHub/my_pillsbox"),
+            system_temp
+        ));
+        // A prefix collision on the directory name alone must not match —
+        // only a real path-component prefix counts.
+        assert!(!is_under_temp_dir(
+            Path::new("/private/var/folders-backup/xy"),
+            system_temp
+        ));
     }
 
     /// Runs the generated post-checkout snippet under `sh`, with a stub script
