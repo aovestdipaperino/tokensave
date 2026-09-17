@@ -2,21 +2,31 @@
 
 Several tools exist that help AI coding agents work more efficiently with codebases. This page explains what sets tokensave apart and why you might choose it over the alternatives.
 
-For a neutral, detailed comparison of all five tools see [COMPARABLE-TOOLS.md](COMPARABLE-TOOLS.md).
+For a neutral, detailed comparison of five of them see [COMPARABLE-TOOLS.md](COMPARABLE-TOOLS.md). Full
+side-by-side pages for all eight — each stating where the other tool is better — are published at
+**<https://tokensave.dev/vs>**.
+
+> **Verified September 2026 against tokensave v7.12.1:** 87 MCP tools (86 without `ast-grep`), 60 languages.
+> Two claims in earlier revisions of this page were wrong and have been corrected: CodeGraph no longer requires
+> Node.js (it ships a Rust kernel and bundles its own runtime), and code-review-graph now documents 30 tools and
+> 40+ languages rather than 22 and 19.
 
 ---
 
 ## The landscape at a glance
 
-| | **tokensave** | **Dual-Graph** | **CodeGraph** | **code-review-graph** | **OpenWolf** |
-|---|---|---|---|---|---|
-| Approach | Queryable code intelligence graph | Context prefill layer | Code graph + explore tool | Code graph + review focus | Lifecycle hooks |
-| MCP tools | 70+ | 5 | 9 | 22 | 0 |
-| Languages | 50+ | 11 | 19+ | 19 + notebooks | Language-agnostic |
-| Implementation | Rust (single binary) | Python + Node.js | Node.js | Python | Node.js |
-| Runtime deps | None | Python 3.10+, Node.js 18+ | Node.js 18+ | Python 3.10+ | Node.js 20+ |
-| License | MIT | Apache 2.0 launchers, proprietary core | MIT | MIT | AGPL-3.0 |
-| Agent support | 12+ | 6 | 1 | 8 (partially overlapping set) | 1 |
+| | **tokensave** | **Serena** | **code-review-graph** | **CodeGraph** | **Graphify** | **Dual-Graph** | **LeanCTX** | **OpenWolf** |
+|---|---|---|---|---|---|---|---|---|
+| Approach | Queryable code graph | LSP semantic toolkit | Code graph + review focus | Code graph, one explore tool | Code + docs graph | Context prefill layer | Context gate on agent I/O | Project memory |
+| MCP tools | 87 | Many (retrieval + refactor) | 30 | 1 listed by design | 10 | 5 | ~56 | 0 (hook-based) |
+| Languages | 60 | 40+ (via language servers) | 40+ plus notebooks | 30+ | 36 | 12 | n/a | Language-agnostic |
+| Implementation | Rust (single binary) | Python 3.13+ / `uv` | Python | Rust kernel, bundled runtime | Python | Python + Node.js | Rust (single binary) | Node.js |
+| Runtime deps | None | Python, `uv`, a language server per language | Python 3.10+ | None | Python | Python 3.10+, Node.js 18+ | None | Node.js 20+ |
+| License | MIT | GPL-3.0-or-later (app) | MIT | MIT | Apache 2.0 | Apache 2.0 launchers, proprietary core | Apache 2.0 | AGPL-3.0 |
+| Agent support | 12+ | Many | 8 (partially overlapping) | 1 | Many | 6 | 30+ | 3 |
+
+Serena, Graphify, LeanCTX and token-savior are covered on their own pages at <https://tokensave.dev/vs>; LeanCTX and
+OpenWolf are best understood as complementary layers rather than competitors.
 
 ---
 
@@ -28,15 +38,15 @@ Dual-Graph intercepts prompts and pre-loads ranked files before the AI sees them
 
 **Deep code understanding vs file-level ranking.** Dual-Graph works at the file level: it knows which files exist and guesses which ones are relevant. tokensave works at the symbol level: it knows every function, struct, field, call edge, type hierarchy, and complexity metric. When the AI asks "who calls this function?" or "what breaks if I change this struct?", tokensave answers instantly. Dual-Graph can't answer those questions at all.
 
-**70+ specialized tools vs 5 generic ones.** tokensave exposes tools for call graph traversal, impact analysis, dead code detection, test mapping, rename preview, type hierarchies, circular dependency detection, and more. Each tool is purpose-built for a specific question. Dual-Graph has a file retriever, a neighbor lookup, and a token counter.
+**87 specialized tools vs 5 generic ones.** tokensave exposes tools for call graph traversal, impact analysis, dead code detection, test mapping, rename preview, type hierarchies, circular dependency detection, and more. Each tool is purpose-built for a specific question. Dual-Graph has a file retriever, a neighbor lookup, and a token counter.
 
 **libSQL vs JSON files.** tokensave stores its graph in libSQL with FTS5 full-text search, WAL-mode concurrent reads, and indexed queries. Dual-Graph stores everything in JSON files (`info_graph.json`, `chat_action_graph.json`, `context-store.json`) -- every lookup is a full scan. The performance difference matters on large codebases.
 
-**50+ languages vs 11.** tokensave supports more than 50 languages with deep extraction including niche languages like Nix (with derivation field extraction and flake schema awareness), Protobuf (message/service/rpc as first-class nodes), COBOL, Fortran, and legacy BASIC variants. Dual-Graph covers 11 mainstream languages (TypeScript, JavaScript, Python, Go, Swift, Rust, Java, Kotlin, C#, Ruby, PHP) and nothing more.
+**60 languages vs 12.** tokensave supports 60 languages with deep extraction including niche languages like Nix (with derivation field extraction and flake schema awareness), Protobuf (message/service/rpc as first-class nodes), COBOL, Fortran, and legacy BASIC variants. Dual-Graph covers 12 mainstream languages (TypeScript, JavaScript, Python, Go, Swift, Rust, Java, Kotlin, Scala, C#, Ruby, PHP) and nothing more.
 
 **Fully open source vs proprietary core.** tokensave is MIT-licensed Rust you can read, audit, fork, and patch. Dual-Graph's launcher scripts are Apache 2.0, but the core engine (`graperoot` on PyPI) is proprietary. You can't see what it does with your code graph. You can't run it offline without trusting a closed-source PyPI package.
 
-**Zero runtime dependencies.** tokensave ships as a single ~25 MB binary with all 50+ tree-sitter grammars bundled. Dual-Graph requires both Python 3.10+ and Node.js 18+, totaling ~80 MB+ across a Python venv and Node.js installation.
+**Zero runtime dependencies.** tokensave ships as a single ~25 MB binary with all 60 tree-sitter grammars bundled. Dual-Graph requires both Python 3.10+ and Node.js 18+, totaling ~80 MB+ across a Python venv and Node.js installation.
 
 **Persistent index, no rebuild.** tokensave keeps its graph on disk and refreshes it incrementally — an on-demand staleness check on each MCP call, a catch-up sync when the server connects, and an optional git post-commit hook — so it never rebuilds from scratch. Dual-Graph rebuilds its graph at the start of every session.
 
@@ -58,11 +68,11 @@ CodeGraph is the Node.js/TypeScript project that originally inspired tokensave. 
 
 **3.3x faster indexing.** tokensave indexes 1,782 files in ~1.2s; CodeGraph takes ~4s for the same codebase. The gap widens on larger projects thanks to rayon parallel extraction and prepared-statement DB writes.
 
-**1/3 the footprint.** tokensave is a ~25 MB binary with zero runtime dependencies. CodeGraph is ~80 MB across node_modules and WASM.
+**Comparable footprint now.** tokensave is a ~25 MB binary with zero runtime dependencies. CodeGraph used to require Node.js and ship ~80 MB of `node_modules` and WASM; it now has a Rust kernel and bundles its own runtime, so packaging is no longer a differentiator between the two.
 
-**70+ tools vs 9.** CodeGraph covers the basics: search, context, callers, callees, impact, node, files, status, and the newer explore tool. tokensave adds an entire code quality suite (complexity, coupling, god class detection, inheritance depth, doc coverage, recursion analysis), workflow tools (commit context, PR context, test mapping, diff context), refactoring support (rename preview, similar symbol detection), structural analysis (circular dependencies, unused imports, dead code), and porting tools (port status, port order).
+**87 tools vs one, by choice.** CodeGraph now deliberately lists a single tool, `codegraph_explore`, intended to answer structural questions in one call, with the others still functional but unlisted. That is a real design argument against a large surface — 87 tool definitions cost tokens on every request — and not simply a missing feature. tokensave adds an entire code quality suite (complexity, coupling, god class detection, inheritance depth, doc coverage, recursion analysis), workflow tools (commit context, PR context, test mapping, diff context), refactoring support (rename preview, similar symbol detection), structural analysis (circular dependencies, unused imports, dead code), and porting tools (port status, port order).
 
-**50+ languages vs 19+.** CodeGraph lists 17 languages by name (TypeScript, JavaScript, Python, Go, Rust, Java, C#, PHP, Ruby, C, C++, Swift, Kotlin, Dart, Svelte, Liquid, Pascal/Delphi) with a "19+" designation. tokensave supports more than 50 — including Svelte and Astro — with deep extractors for Nix, Protobuf, COBOL, Fortran, VB.NET, and legacy BASIC variants that CodeGraph doesn't cover.
+**60 languages vs 30+.** tokensave supports 60 — including Svelte and Astro — with deep extractors for Nix, Protobuf, COBOL, Fortran, VB.NET, and legacy BASIC variants that CodeGraph doesn't cover.
 
 **12+ agent integrations vs 1.** CodeGraph supports Claude Code only. tokensave integrates with Claude Code, Codex CLI, Gemini CLI, Cursor, OpenCode, Copilot, Cline, Roo Code, Zed, Antigravity, Kilo, Kiro, Kimi, and Vibe -- each with native configuration format support.
 
@@ -100,7 +110,7 @@ code-review-graph is the closest competitor in philosophy -- both build symbol-l
 
 **Optional multi-branch indexing.** tokensave can optionally maintain per-branch databases with cross-branch diff and search via `branch_search`, `branch_diff`, and `branch_list`. code-review-graph has no branch awareness.
 
-**More languages with deeper extraction.** 50+ languages with deep extractors (Nix derivation fields, Protobuf message/service/rpc, COBOL, Fortran, legacy BASIC) vs 19 languages with standard tree-sitter extraction.
+**More languages with deeper extraction.** 60 languages with deep extractors (Nix derivation fields, Protobuf message/service/rpc, COBOL, Fortran, legacy BASIC) vs 40+ with standard tree-sitter extraction.
 
 **No long-lived watcher process.** tokensave refreshes its index on demand — a staleness check on each MCP call plus a catch-up sync when the server connects — so there is no separate process to manage. code-review-graph has a foreground `watch` command that stops when you close the terminal.
 
@@ -126,9 +136,9 @@ OpenWolf takes a fundamentally different approach. It doesn't build a code graph
 
 **Code intelligence vs behavioral guardrails.** tokensave understands your code: it knows every function, every call edge, every type hierarchy, every dependency chain. OpenWolf knows files exist and how big they are, but has zero understanding of what's inside them. It can't answer "who calls this function?", "what breaks if I change this?", or "show me the type hierarchy."
 
-**70+ MCP tools vs zero.** OpenWolf is entirely hook-based -- it has no MCP tools at all. The AI can't query it. It can only intercept and annotate the AI's existing tool calls. tokensave gives the AI more than 70 structured tools to actively explore the codebase.
+**87 MCP tools vs zero.** OpenWolf is entirely hook-based -- it has no MCP tools at all. The AI can't query it. It can only intercept and annotate the AI's existing tool calls. tokensave gives the AI 87 structured tools to actively explore the codebase.
 
-**50+ languages with deep extraction.** tokensave parses more than 50 languages at the symbol level. OpenWolf is language-agnostic because it only tracks files, not code structure.
+**60 languages with deep extraction.** tokensave parses 60 languages at the symbol level. OpenWolf is language-agnostic because it only tracks files, not code structure.
 
 **12+ agent integrations vs 1.** OpenWolf works only with Claude Code. tokensave works with more than a dozen AI coding agents.
 
@@ -144,9 +154,9 @@ OpenWolf takes a fundamentally different approach. It doesn't build a code graph
 
 Several of tokensave's advantages apply across all four comparisons:
 
-**Single native binary, zero dependencies.** Every alternative requires a runtime: Python, Node.js, or both. tokensave installs and runs with nothing else on the machine.
+**Single native binary, zero dependencies.** Most alternatives require a runtime: Python, Node.js, or both. tokensave installs and runs with nothing else on the machine. Two tools now match it here — CodeGraph bundles its own runtime, and LeanCTX is also a single Rust binary — so this is no longer a universal differentiator. It remains a real one against LSP-backed tools such as Serena, which additionally need a language server installed, started and warmed for every language in the repo.
 
-**Broadest language support.** More than 50 languages with three compilation tiers (lite/medium/full) for binary size control. No other tool in this space covers as many languages with as much extraction depth.
+**Broad language support.** 60 languages with three compilation tiers (lite/medium/full) for binary size control, and deep extractors for languages most tools skip entirely.
 
 **Broadest agent support.** More than a dozen AI coding agent integrations with per-agent native configuration formats. code-review-graph supports 8 platforms with partial overlap (it adds Windsurf, Continue; tokensave adds Gemini CLI, Copilot, Cline, Roo Code). No other tool covers as many agents with as deep an integration (hooks, prompt rules, tool permissions).
 
@@ -154,6 +164,6 @@ Several of tokensave's advantages apply across all four comparisons:
 
 **Per-call token tracking.** The only tool that reports exactly how many tokens each individual MCP tool call saved, plus a live TUI monitor across all projects.
 
-**Fully open source.** MIT-licensed Rust, auditable end to end. Dual-Graph's core is proprietary. OpenWolf is AGPL-3.0. CodeGraph and code-review-graph are MIT but implemented in Node.js and Python respectively, with heavier dependency trees that are harder to audit in practice.
+**Permissively licensed and fully open.** MIT-licensed Rust, auditable end to end. Dual-Graph's core is proprietary. OpenWolf is AGPL-3.0 and Serena's application is GPL-3.0-or-later with a CLA — both worth checking before embedding in a commercial workflow. CodeGraph, code-review-graph and LeanCTX are permissively licensed open source.
 
 **Atomic, safe configuration.** tokensave is the only tool that creates backups before modifying agent config files and uses atomic writes. A crash or interruption during install can't corrupt your settings.
