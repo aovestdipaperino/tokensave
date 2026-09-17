@@ -23,7 +23,7 @@ side-by-side pages for all eight — each stating where the other tool is better
 | Implementation | Rust (single binary) | Python 3.13+ / `uv` | Python | Rust kernel, bundled runtime | Python | Python + Node.js | Rust (single binary) | Node.js |
 | Runtime deps | None | Python, `uv`, a language server per language | Python 3.10+ | None | Python | Python 3.10+, Node.js 18+ | None | Node.js 20+ |
 | License | MIT | GPL-3.0-or-later (app) | MIT | MIT | Apache 2.0 | Apache 2.0 launchers, proprietary core | Apache 2.0 | AGPL-3.0 |
-| Agent support | 12+ | Many | 8 (partially overlapping) | 1 | Many | 6 | 30+ | 3 |
+| Agent support | 12+ | Many | 8 (partially overlapping) | 1 | Many | 6 | 30+ | 7 (3 deeply) |
 
 Serena, Graphify, LeanCTX and token-savior are covered on their own pages at <https://tokensave.dev/vs>; LeanCTX and
 OpenWolf are best understood as complementary layers rather than competitors.
@@ -130,7 +130,7 @@ code-review-graph is the closest competitor in philosophy -- both build symbol-l
 
 ## vs OpenWolf
 
-OpenWolf takes a fundamentally different approach. It doesn't build a code graph at all -- it wraps Claude Code's lifecycle with six hook scripts that monitor file reads/writes, block redundant reads, and carry forward corrections across sessions.
+OpenWolf takes a fundamentally different approach. It doesn't build a code graph at all -- it keeps portable project memory in a local `.wolf/` directory, attaches to whatever session and tool events each agent exposes, identifies redundant reads, and records token usage read from the harness transcript. Integration spans seven agents at three depths: full lifecycle hooks for Claude Code and Codex CLI, a native plugin for OpenCode, compatible hook discovery for Grok Build, and context-file injection for Cursor, Gemini CLI and Antigravity.
 
 **Why tokensave is the better choice:**
 
@@ -140,13 +140,13 @@ OpenWolf takes a fundamentally different approach. It doesn't build a code graph
 
 **60 languages with deep extraction.** tokensave parses 60 languages at the symbol level. OpenWolf is language-agnostic because it only tracks files, not code structure.
 
-**12+ agent integrations vs 1.** OpenWolf works only with Claude Code. tokensave works with more than a dozen AI coding agents.
+**12+ agent integrations vs 7.** OpenWolf reaches seven agents but only three of them deeply (Claude Code, Codex CLI, OpenCode); the rest get a context file. tokensave works with more than a dozen, each with native MCP registration.
 
-**Zero runtime dependencies.** tokensave is a single Rust binary. OpenWolf requires Node.js 20+, optional PM2, and optional puppeteer-core.
+**Zero runtime dependencies.** tokensave is a single Rust binary. OpenWolf is TypeScript and requires Node.js 20+.
 
 **MIT vs AGPL-3.0.** tokensave's MIT license imposes no restrictions. OpenWolf's AGPL-3.0 requires derivative works to be open-sourced -- a concern for commercial tooling built on top of it.
 
-**Where OpenWolf still leads:** Redundant-read blocking (~71% of repeated reads prevented), correction memory across sessions (`cerebrum.md`), searchable bug history (`buglog.json`), file-size awareness before reads, and design QC with automatic dev server screenshot capture. These features address a different class of waste (behavioral inefficiency) that tokensave doesn't touch. The two tools are complementary and can run side by side.
+**Where OpenWolf still leads:** Redundant-read identification, memory that survives across sessions *and across agents* via a portable `.wolf/` directory with explicit handover packets, searchable bug history, file-size awareness before reads, design QC with dev server screenshot capture, and -- notably -- token accounting measured from the harness transcript rather than estimated, grouped by agent and model. These address a different class of waste than tokensave does. The two are complementary and run side by side; see <https://tokensave.dev/vs-openwolf>.
 
 ---
 
