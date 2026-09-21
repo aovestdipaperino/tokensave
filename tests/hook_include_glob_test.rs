@@ -24,6 +24,7 @@ fn env_rooted_at(root: &Path) -> HookEnv {
         in_tokensave_project: true,
         disable_grep_hook: false,
         project_root: Some(root.to_path_buf()),
+        cwd: None,
     }
 }
 
