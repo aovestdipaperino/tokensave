@@ -283,6 +283,39 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     definitions
 }
 
+/// The tools that [`Toolset::Core`](crate::config::Toolset::Core) lists (#576).
+///
+/// Exploration (`context`, `search`, `status`), reading (`read`, `body`,
+/// `files`), the call graph (`callers`, `callees`, `impact`) and the two
+/// string edits. Every `anthropic/alwaysLoad` tool must be here: those are the
+/// tools the server instructions send an agent to first.
+pub const CORE_TOOLS: &[&str] = &[
+    "tokensave_context",
+    "tokensave_search",
+    "tokensave_status",
+    "tokensave_read",
+    "tokensave_body",
+    "tokensave_files",
+    "tokensave_callers",
+    "tokensave_callees",
+    "tokensave_impact",
+    "tokensave_str_replace",
+    "tokensave_multi_str_replace",
+];
+
+/// Returns the tool definitions that `tools/list` sends for `toolset`.
+///
+/// [`get_tool_definitions`] stays the source of truth for everything else
+/// (dispatch, permission lists, the branch-drift gate): a tool that is not
+/// listed is hidden, not removed.
+pub fn get_listed_tool_definitions(toolset: crate::config::Toolset) -> Vec<ToolDefinition> {
+    let mut definitions = get_tool_definitions();
+    if toolset == crate::config::Toolset::Core {
+        definitions.retain(|d| CORE_TOOLS.contains(&d.name.as_str()));
+    }
+    definitions
+}
+
 /// True when a definition is marked `anthropic/alwaysLoad` — i.e. its schema
 /// is loaded into the model's context immediately, rather than being deferred
 /// and fetched on demand (via `ToolSearch`).
@@ -2896,6 +2929,28 @@ mod tests {
             tools.insert("tokensave_ast_grep_rewrite");
         }
         tools
+    }
+
+    /// #576: the core toolset lists exactly `CORE_TOOLS`, every name in it is a
+    /// real tool, and it keeps every tool the instructions point an agent at.
+    #[test]
+    fn the_core_toolset_lists_only_the_core_tools() {
+        use crate::config::Toolset;
+        let all = get_tool_definitions();
+        for name in CORE_TOOLS {
+            assert!(all.iter().any(|d| d.name == *name), "{name} is not a tool");
+        }
+        let core = get_listed_tool_definitions(Toolset::Core);
+        assert_eq!(core.len(), CORE_TOOLS.len());
+        assert!(core.iter().all(|d| CORE_TOOLS.contains(&d.name.as_str())));
+        for definition in get_always_load_tool_definitions() {
+            assert!(
+                CORE_TOOLS.contains(&definition.name.as_str()),
+                "{} is alwaysLoad but not core",
+                definition.name
+            );
+        }
+        assert_eq!(get_listed_tool_definitions(Toolset::Full).len(), all.len());
     }
 
     #[test]
