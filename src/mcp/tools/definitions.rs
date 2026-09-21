@@ -324,15 +324,165 @@ pub const CORE_TOOLS: &[&str] = &[
     "tokensave_multi_str_replace",
 ];
 
+/// The tool that lists more tools when the core toolset is active (#576).
+pub const MORE_TOOL: &str = "tokensave_more";
+
+/// The areas that [`MORE_TOOL`] can list: name, summary, tools.
+///
+/// The last area has no tool list. It is the catch-all: a tool that is not in
+/// [`CORE_TOOLS`] and not named by another area belongs to it, so a new tool
+/// is reachable without an edit here.
+pub const TOOL_AREAS: &[(&str, &str, &[&str])] = &[
+    (
+        "analysis",
+        "code-quality metrics and audits: complexity, coupling, cycles, dead code, hotspots, \
+         health, test risk and coverage, diagnostics, package dependencies",
+        &[
+            "tokensave_gini",
+            "tokensave_god_class",
+            "tokensave_dsm",
+            "tokensave_distribution",
+            "tokensave_redundancy",
+            "tokensave_hotspots",
+            "tokensave_complexity",
+            "tokensave_coupling",
+            "tokensave_circular",
+            "tokensave_largest",
+            "tokensave_rank",
+            "tokensave_health",
+            "tokensave_doc_coverage",
+            "tokensave_recursion",
+            "tokensave_test_risk",
+            "tokensave_test_coverage",
+            "tokensave_test_map",
+            "tokensave_simplify_scan",
+            "tokensave_unsafe_patterns",
+            "tokensave_dead_code",
+            "tokensave_unused_imports",
+            "tokensave_todos",
+            "tokensave_diagnostics",
+            "tokensave_diagnose",
+            "tokensave_inheritance_depth",
+            "tokensave_dependency_depth",
+            "tokensave_dependencies",
+        ],
+    ),
+    (
+        "edit",
+        "symbol-level and line-level edits, ast-grep rewrite, rename preview",
+        &[
+            "tokensave_insert_at",
+            "tokensave_delete_symbol",
+            "tokensave_replace_lines",
+            "tokensave_ast_grep_rewrite",
+            "tokensave_replace_symbol",
+            "tokensave_insert_at_symbol",
+            "tokensave_rename_preview",
+        ],
+    ),
+    (
+        "git",
+        "commit, PR, diff, blame, log and changelog context, affected tests, tracked branches",
+        &[
+            "tokensave_changelog",
+            "tokensave_commit_context",
+            "tokensave_pr_context",
+            "tokensave_diff_context",
+            "tokensave_diff",
+            "tokensave_blame",
+            "tokensave_log",
+            "tokensave_affected",
+            "tokensave_run_affected_tests",
+            "tokensave_branch_search",
+            "tokensave_branch_diff",
+            "tokensave_branch_list",
+        ],
+    ),
+    (
+        "memory",
+        "session notes and recorded decisions",
+        &[
+            "tokensave_session_start",
+            "tokensave_session_end",
+            "tokensave_session_recall",
+            "tokensave_record_decision",
+            "tokensave_record_code_area",
+        ],
+    ),
+    (
+        "navigate",
+        "more symbol lookups: node, signature, implementations, type hierarchy, imports, \
+         call chains, field and constructor sites",
+        &[],
+    ),
+];
+
+/// The area of a tool that is not in [`CORE_TOOLS`].
+pub fn tool_area(name: &str) -> &'static str {
+    TOOL_AREAS
+        .iter()
+        .find(|(_, _, tools)| tools.contains(&name))
+        .or(TOOL_AREAS.last())
+        .map_or("navigate", |(area, _, _)| area)
+}
+
+/// True when `area` is `"all"` or the name of an entry in [`TOOL_AREAS`].
+pub fn is_tool_area(area: &str) -> bool {
+    area == "all" || TOOL_AREAS.iter().any(|(name, _, _)| *name == area)
+}
+
+fn def_more() -> ToolDefinition {
+    use std::fmt::Write;
+    let mut description = "List more tokensave tools. Only the core tools are listed at the \
+                           start, to keep the tool schemas small. Call this with an area, and \
+                           the tools of that area are listed from then on. Areas:"
+        .to_string();
+    let mut areas: Vec<&str> = Vec::new();
+    for (area, summary, _) in TOOL_AREAS {
+        let _ = write!(description, "\n• {area} — {summary}");
+        areas.push(area);
+    }
+    areas.push("all");
+    def(
+        MORE_TOOL,
+        "List More Tools",
+        &description,
+        json!({
+            "type": "object",
+            "properties": {
+                "area": { "type": "string", "enum": areas, "description": "The area to list, or \"all\"." }
+            },
+            "required": ["area"]
+        }),
+    )
+}
+
 /// Returns the tool definitions that `tools/list` sends for `toolset`.
 ///
 /// [`get_tool_definitions`] stays the source of truth for everything else
 /// (dispatch, permission lists, the branch-drift gate): a tool that is not
 /// listed is hidden, not removed.
-pub fn get_listed_tool_definitions(toolset: crate::config::Toolset) -> Vec<ToolDefinition> {
+///
+/// With [`Toolset::Core`](crate::config::Toolset::Core) the list is the core
+/// tools, the tools of each area in `revealed_areas`, and [`MORE_TOOL`] while
+/// an area is still hidden.
+pub fn get_listed_tool_definitions(
+    toolset: crate::config::Toolset,
+    revealed_areas: &std::collections::BTreeSet<String>,
+) -> Vec<ToolDefinition> {
     let mut definitions = get_tool_definitions();
-    if toolset == crate::config::Toolset::Core {
-        definitions.retain(|d| CORE_TOOLS.contains(&d.name.as_str()));
+    if toolset == crate::config::Toolset::Full {
+        return definitions;
+    }
+    let all = revealed_areas.contains("all")
+        || TOOL_AREAS
+            .iter()
+            .all(|(area, _, _)| revealed_areas.contains(*area));
+    if !all {
+        definitions.retain(|d| {
+            CORE_TOOLS.contains(&d.name.as_str()) || revealed_areas.contains(tool_area(&d.name))
+        });
+        definitions.push(def_more());
     }
     definitions
 }
@@ -2957,9 +3107,12 @@ mod tests {
         for name in CORE_TOOLS {
             assert!(all.iter().any(|d| d.name == *name), "{name} is not a tool");
         }
-        let core = get_listed_tool_definitions(Toolset::Core);
-        assert_eq!(core.len(), CORE_TOOLS.len());
-        assert!(core.iter().all(|d| CORE_TOOLS.contains(&d.name.as_str())));
+        let none = std::collections::BTreeSet::new();
+        let core = get_listed_tool_definitions(Toolset::Core, &none);
+        assert_eq!(core.len(), CORE_TOOLS.len() + 1);
+        assert!(core
+            .iter()
+            .all(|d| CORE_TOOLS.contains(&d.name.as_str()) || d.name == MORE_TOOL));
         for definition in get_always_load_tool_definitions() {
             assert!(
                 CORE_TOOLS.contains(&definition.name.as_str()),
@@ -2967,7 +3120,48 @@ mod tests {
                 definition.name
             );
         }
-        assert_eq!(get_listed_tool_definitions(Toolset::Full).len(), all.len());
+        assert_eq!(
+            get_listed_tool_definitions(Toolset::Full, &none).len(),
+            all.len()
+        );
+    }
+
+    /// #576: each area names real tools only, no tool is in two areas or in
+    /// the core set as well, and the areas together reach every tool. When
+    /// every area is listed the list equals the full one, without `MORE_TOOL`.
+    #[test]
+    fn the_tool_areas_partition_the_tools_outside_the_core_set() {
+        use crate::config::Toolset;
+        use std::collections::BTreeSet;
+        let all = get_tool_definitions();
+        let mut seen = BTreeSet::new();
+        for (area, _, tools) in TOOL_AREAS {
+            for tool in *tools {
+                assert!(
+                    all.iter().any(|d| d.name == *tool),
+                    "{area}: {tool} is not a tool"
+                );
+                assert!(!CORE_TOOLS.contains(tool), "{tool} is core and in {area}");
+                assert!(seen.insert(*tool), "{tool} is in two areas");
+                assert_eq!(tool_area(tool), *area);
+            }
+        }
+        assert_eq!(tool_area("tokensave_node"), "navigate");
+        assert!(is_tool_area("all") && is_tool_area("git") && !is_tool_area("nope"));
+
+        let mut total = CORE_TOOLS.len();
+        for (area, _, _) in TOOL_AREAS {
+            let one = BTreeSet::from([(*area).to_string()]);
+            let listed = get_listed_tool_definitions(Toolset::Core, &one);
+            assert!(listed.iter().any(|d| d.name == MORE_TOOL));
+            total += listed.len() - CORE_TOOLS.len() - 1;
+        }
+        assert_eq!(total, all.len(), "the areas must reach every tool once");
+
+        let everything = BTreeSet::from(["all".to_string()]);
+        let listed = get_listed_tool_definitions(Toolset::Core, &everything);
+        assert_eq!(listed.len(), all.len());
+        assert!(listed.iter().all(|d| d.name != MORE_TOOL));
     }
 
     #[test]
