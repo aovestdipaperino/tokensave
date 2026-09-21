@@ -24,9 +24,10 @@ use super::graph_scope::{
     select_graph, validate_local_inputs, GraphSelector, FEDERATABLE_TOOLS,
 };
 use super::tools::{
-    baseline_policy, cap_baseline, get_always_load_tool_definitions, get_tool_definitions,
-    handle_tool_call_with_session, is_graph_scoped_tool, is_selectorless_local_graph_tool,
-    request_overhead_tokens, schema_overhead_tokens, settle_session_debt, SessionState,
+    baseline_policy, cap_baseline, get_always_load_tool_definitions, get_listed_tool_definitions,
+    get_tool_definitions, handle_tool_call_with_session, is_graph_scoped_tool,
+    is_selectorless_local_graph_tool, request_overhead_tokens, schema_overhead_tokens,
+    settle_session_debt, SessionState,
 };
 use super::transport::{ErrorCode, JsonRpcRequest, JsonRpcResponse};
 
@@ -1881,9 +1882,11 @@ impl McpServer {
         )
     }
 
-    /// Handles the `tools/list` method, returning all available tool definitions.
+    /// Handles the `tools/list` method, returning the tool definitions of the
+    /// configured toolset (#576). A tool that is not listed still answers a
+    /// `tools/call`.
     fn handle_tools_list(&self, id: Value) -> JsonRpcResponse {
-        let tools = get_tool_definitions();
+        let tools = get_listed_tool_definitions(self.cg.toolset());
         // Marks the schema as actually delivered so `handle_tools_call` knows
         // it's fair to debit `schema_overhead_tokens` against this session —
         // see `schema_served`.

@@ -28,6 +28,33 @@ fn default_docs_dir() -> String {
     crate::docs::DEFAULT_DOCS_DIR.to_string()
 }
 
+/// The set of tools the MCP server lists in `tools/list` (#576).
+///
+/// This selects what the server *lists*, not what it can run: a tool outside
+/// the listed set still answers a `tools/call` by name. Hiding a tool must not
+/// break an agent permission list or a hook that names it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Toolset {
+    /// Every tool. The default, so an upgrade changes nothing.
+    #[default]
+    Full,
+    /// Only the tools in `CORE_TOOLS` (see `mcp::tools`).
+    Core,
+}
+
+impl Toolset {
+    /// Parses a `TOKENSAVE_TOOLS` value. Returns `None` for a value that names
+    /// no toolset, so the caller can keep the configured one.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "full" => Some(Self::Full),
+            "core" => Some(Self::Core),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenSaveConfig {
     /// Schema version of the configuration.
@@ -148,6 +175,15 @@ pub struct TokenSaveConfig {
     /// instead of on every server start.
     #[serde(default)]
     pub suppress_scope_warning: bool,
+    /// Which tools the MCP server lists in `tools/list` (#576). Defaults to
+    /// [`Toolset::Full`]. The `TOKENSAVE_TOOLS` env var overrides this per-run.
+    ///
+    /// A client sends every listed tool schema on every turn, before any tool
+    /// is called, so the full surface is a fixed cost of the context window.
+    /// On a small-context model that cost can be more than half the window.
+    /// [`Toolset::Core`] lists only the tools most sessions use.
+    #[serde(default)]
+    pub tools: Toolset,
 }
 
 /// Serde default for [`TokenSaveConfig::artifact_extensions`].
@@ -233,6 +269,7 @@ impl Default for TokenSaveConfig {
             report_savings: default_report_savings(),
             artifact_extensions: default_artifact_extensions(),
             suppress_scope_warning: false,
+            tools: Toolset::default(),
         }
     }
 }
