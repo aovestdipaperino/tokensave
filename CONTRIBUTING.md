@@ -27,6 +27,13 @@ cargo install --path . --locked          # optimized locked install into ~/.carg
 Development commands use the debug profile; installation uses only the
 optimized release output. `target/debug` is never an installation input.
 
+`.cargo/config.toml` sets `TOKENSAVE_SKIP_AGENT_MAINTENANCE=1` for every cargo
+process, which keeps the test suite from touching your own agent configuration
+(#575). Tests spawn the freshly built binary, whose version is ahead of
+whatever you last installed, and that is the signal the silent agent resync
+watches for. Unset it only if you are deliberately exercising that path, and
+not against your real home directory.
+
 ## Project Structure
 
 ```
