@@ -8,6 +8,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ## [Unreleased]
 
 ### Added
+- **With the core toolset, `tokensave_more` lists more tools on demand (#576).** A call with an `area` (`analysis`, `edit`, `git`, `memory`, `navigate` or `all`) lists the tools of that area for the rest of the session. The server declares `tools.listChanged` and sends `notifications/tools/list_changed`, so the client fetches `tools/list` again. A session pays only for the areas it uses: the core list is 19.0 KB, and the `git` area adds 6.3 KB. The full toolset does not list `tokensave_more`, and its handshake is unchanged.
 - **A `tools` setting selects which tools `tools/list` sends (#576).** A client sends the schema of every listed tool on every turn, before any tool is called. `"tools": "core"` in `.tokensave/config.json`, or `TOKENSAVE_TOOLS=core`, lists 11 tools: `context`, `search`, `status`, `read`, `body`, `files`, `callers`, `callees`, `impact`, `str_replace` and `multi_str_replace`. The payload goes from 102.8 KB to 18.0 KB. The setting selects what the server lists, not what it can run. A tool that is not listed still answers a `tools/call`, so agent permission lists and hooks keep working. The default is `"full"`, so an upgrade changes nothing.
 
 ### Fixed
