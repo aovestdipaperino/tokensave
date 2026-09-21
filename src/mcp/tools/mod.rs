@@ -18,6 +18,7 @@ pub use accounting::{
 pub use definitions::{
     ast_grep_available, get_always_load_tool_definitions, get_tool_definitions,
     is_graph_scoped_tool, is_selectorless_local_graph_tool, CONTEXT_DESCRIPTION,
+    GRAPH_SELECTOR_INSTRUCTIONS,
 };
 pub use handlers::{handle_tool_call, handle_tool_call_with_session, SessionState};
 

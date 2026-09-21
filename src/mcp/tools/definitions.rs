@@ -63,9 +63,48 @@ fn def_always_load(
     }
 }
 
+/// `graph_root` description for a tool that answers about one graph.
+///
+/// Kept to one sentence on purpose (#576). This text is copied into every
+/// graph-scoped schema, and a client sends every schema on every turn, so each
+/// byte here costs about fifty. The full cross-project rules live once in the
+/// server instructions ([`GRAPH_SELECTOR_INSTRUCTIONS`]), and the rejection a
+/// single-graph tool gives for an array names the tools that accept one.
+///
+/// Like [`CONTEXT_DESCRIPTION`], this must stay a `const`: a changed byte
+/// invalidates the client's cached prompt prefix.
+const GRAPH_ROOT_DESCRIPTION: &str =
+    "Absolute root of another initialized project to query. Omit for the served project.";
+
+/// `graph_root` description for the tools in
+/// [`FEDERATABLE_TOOLS`](crate::mcp::graph_scope::FEDERATABLE_TOOLS).
+const GRAPH_ROOT_FEDERATED_DESCRIPTION: &str =
+    "Absolute root of another initialized project to query, or an array of roots to query \
+     together. Omit for the served project.";
+
+/// `graph_branch` description.
+const GRAPH_BRANCH_DESCRIPTION: &str =
+    "Tracked branch to query within graph_root. Requires graph_root.";
+
+/// The cross-project rules that the `graph_root` descriptions no longer carry
+/// (#576). The server sends this once per session in its instructions.
+pub const GRAPH_SELECTOR_INSTRUCTIONS: &str =
+    " A tool with a graph_root parameter can query another initialized project: pass that \
+     project's absolute root, and graph_branch to select one of its tracked branches. \
+     tokensave_search and tokensave_files also accept an array of roots and answer across all \
+     of them at once, interleaving results by rank; roots that are worktrees of a repository \
+     already named are collapsed, and the response says which. Every other tool answers about \
+     a single graph and rejects an array.";
+
 /// Add the explicit selectors and metadata used by tools that can query any
 /// initialized graph.
 fn graph_scoped(mut definition: ToolDefinition) -> ToolDefinition {
+    let root_description =
+        if crate::mcp::graph_scope::FEDERATABLE_TOOLS.contains(&definition.name.as_str()) {
+            GRAPH_ROOT_FEDERATED_DESCRIPTION
+        } else {
+            GRAPH_ROOT_DESCRIPTION
+        };
     let Some(properties) = definition
         .input_schema
         .get_mut("properties")
@@ -85,20 +124,14 @@ fn graph_scoped(mut definition: ToolDefinition) -> ToolDefinition {
                 { "type": "string" },
                 { "type": "array", "items": { "type": "string" } }
             ],
-            "description": "Exact absolute initialized project root to query. Omit to query \
-             the project this server already serves; when present it must name a different \
-             project. `tokensave_search` and `tokensave_files` also accept an array of roots \
-             and answer across all of them at once, interleaving results by rank; roots that \
-             are worktrees of a repository already named are collapsed, and the response says \
-             which. Every other tool answers about a single graph and rejects an array."
+            "description": root_description
         }),
     );
     properties.insert(
         "graph_branch".to_string(),
         json!({
             "type": "string",
-            "description": "Exact tracked branch to query within graph_root. Requires \
-             graph_root."
+            "description": GRAPH_BRANCH_DESCRIPTION
         }),
     );
 
@@ -2898,6 +2931,31 @@ mod tests {
         tools
     }
 
+    /// #576: the selector docs are copied into every graph-scoped schema, so
+    /// their size is multiplied by the number of such tools on every turn.
+    /// The long form was 457 bytes in 53 tools. Hold the short form to a
+    /// budget, and make sure the rules it dropped are still sent once.
+    #[test]
+    fn graph_selector_docs_stay_within_their_byte_budget() {
+        for text in [
+            GRAPH_ROOT_DESCRIPTION,
+            GRAPH_ROOT_FEDERATED_DESCRIPTION,
+            GRAPH_BRANCH_DESCRIPTION,
+        ] {
+            assert!(text.len() <= 130, "{} bytes: {text}", text.len());
+        }
+        assert!(GRAPH_ROOT_FEDERATED_DESCRIPTION.contains("array of roots"));
+        assert!(!GRAPH_ROOT_DESCRIPTION.contains("array"));
+        for rule in [
+            "array of roots",
+            "worktrees",
+            "rejects an array",
+            "graph_branch",
+        ] {
+            assert!(GRAPH_SELECTOR_INSTRUCTIONS.contains(rule), "{rule}");
+        }
+    }
+
     #[test]
     fn graph_scoped_defs_match_the_canonical_set() {
         let canonical = canonical_graph_scoped_tools();
@@ -2950,15 +3008,18 @@ mod tests {
                     "{}",
                     definition.name
                 );
+                // #576: one short sentence, because a client sends this text
+                // once per graph-scoped tool on every turn. Only the tools that
+                // federate mention the array form.
+                let federated =
+                    crate::mcp::graph_scope::FEDERATABLE_TOOLS.contains(&definition.name.as_str());
                 assert_eq!(
                     graph_root.unwrap()["description"],
-                    "Exact absolute initialized project root to query. Omit to query the \
-                     project this server already serves; when present it must name a different \
-                     project. `tokensave_search` and `tokensave_files` also accept an array of \
-                     roots and answer across all of them at once, interleaving results by rank; \
-                     roots that are worktrees of a repository already named are collapsed, and \
-                     the response says which. Every other tool answers about a single graph and \
-                     rejects an array.",
+                    if federated {
+                        GRAPH_ROOT_FEDERATED_DESCRIPTION
+                    } else {
+                        GRAPH_ROOT_DESCRIPTION
+                    },
                     "{}",
                     definition.name
                 );
@@ -2970,7 +3031,7 @@ mod tests {
                 );
                 assert_eq!(
                     graph_branch.unwrap()["description"],
-                    "Exact tracked branch to query within graph_root. Requires graph_root.",
+                    GRAPH_BRANCH_DESCRIPTION,
                     "{}",
                     definition.name
                 );

@@ -1848,6 +1848,10 @@ impl McpServer {
              report the savings to the user (e.g. 'TokenSave'd ~N tokens').";
 
         let mut instructions = BASE_INSTRUCTIONS.to_string();
+        // #576: the cross-project rules are sent here once per session. The
+        // `graph_root` description, which a client sends once per tool on
+        // every turn, keeps only one sentence.
+        instructions.push_str(crate::mcp::tools::GRAPH_SELECTOR_INSTRUCTIONS);
         if report_savings {
             instructions.push_str(REPORT_SAVINGS_INSTRUCTION);
         }
