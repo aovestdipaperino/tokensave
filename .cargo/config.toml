@@ -6,6 +6,16 @@
 CFLAGS = { value = "-DNDEBUG", force = false }
 CXXFLAGS = { value = "-DNDEBUG", force = false }
 
+# The test suite spawns the freshly built binary, whose CARGO_PKG_VERSION is
+# ahead of whatever the machine last installed. That is the external-upgrade
+# signal for the silent agent resync, so a plain `cargo test --workspace`
+# rewrote the developer's real ~/.claude/rules/tokensave.md (#575). Setting
+# HOME does not contain it: the rules write and the version marker that gates
+# it resolve the home directory two different ways, so a sandboxed run
+# advances the marker in the real home and the write escapes. `force = false`
+# so a test that wants the maintenance path can still ask for it.
+TOKENSAVE_SKIP_AGENT_MAINTENANCE = { value = "1", force = false }
+
 # Test fixtures create real Git repositories and must not inherit developer
 # hooks such as the global hooks installed by `tokensave install` (#381).
 # This command-scope Git setting is inherited by every Git child process while

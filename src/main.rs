@@ -185,7 +185,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         tokensave::extraction_worker::run_worker();
     }
 
-    let skip_agent_install_maintenance = should_skip_agent_install_maintenance(&command);
+    let skip_agent_install_maintenance = agent_maintenance_disabled_from_env(
+        std::env::var("TOKENSAVE_SKIP_AGENT_MAINTENANCE")
+            .ok()
+            .as_deref(),
+    ) || should_skip_agent_install_maintenance(&command);
 
     // First-run notice (check BEFORE any config save creates the file)
     let is_first_run = tokensave::user_config::UserConfig::is_fresh();
@@ -1753,6 +1757,36 @@ fn resolve_install_scope(
     }
 }
 
+/// Whether `TOKENSAVE_SKIP_AGENT_MAINTENANCE` turns off every startup
+/// maintenance task: the silent reinstall, the install-stale check, the
+/// worldwide-counter flush, and the managed-rules refresh that rides along
+/// with the resync.
+///
+/// The test suite needs this (#575). A test that spawns the freshly built
+/// binary carries a `CARGO_PKG_VERSION` ahead of whatever the machine last
+/// installed, which is signal (b) below, so the resync fires against the
+/// developer's real home and rewrites `~/.claude/rules/tokensave.md`.
+/// Redirecting `HOME` does not contain it: the rules write resolves its home
+/// through [`tokensave::agents::home_dir`] (`HOME`, then `USERPROFILE`) while
+/// the version marker that gates it goes through `dirs::home_dir`, which on
+/// Windows asks `SHGetKnownFolderPath` and ignores both. The two homes
+/// disagree, so a sandboxed run advances the marker in the real home and the
+/// write escapes anyway. `.cargo/config.toml` sets this for every `cargo
+/// test` process, alongside the `core.hooksPath` isolation that exists for
+/// the same reason.
+///
+/// Any value but the empty string and the usual falsey spellings enables it,
+/// matching `TOKENSAVE_AUTO_TRACK`.
+fn agent_maintenance_disabled_from_env(raw: Option<&str>) -> bool {
+    let Some(value) = raw else {
+        return false;
+    };
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "no" | "off"
+    )
+}
+
 fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
     matches!(
         command,
@@ -1955,7 +1989,29 @@ fn server_disabled_from_env(canonical: Option<&str>, legacy: Option<&str>) -> bo
 
 #[cfg(test)]
 mod startup_tests {
-    use super::{server_disabled_from_env, should_skip_agent_install_maintenance, Commands};
+    use super::{
+        agent_maintenance_disabled_from_env, server_disabled_from_env,
+        should_skip_agent_install_maintenance, Commands,
+    };
+
+    /// #575: `cargo test --workspace` must not rewrite the developer's real
+    /// `~/.claude/rules/tokensave.md`. `.cargo/config.toml` sets this for
+    /// every test process; unset, the maintenance path stays on so ordinary
+    /// runs are unaffected.
+    #[test]
+    fn the_env_var_turns_agent_maintenance_off() {
+        assert!(agent_maintenance_disabled_from_env(Some("1")));
+        assert!(agent_maintenance_disabled_from_env(Some("true")));
+        assert!(agent_maintenance_disabled_from_env(Some(" yes ")));
+
+        assert!(!agent_maintenance_disabled_from_env(None));
+        for falsey in ["", "0", "false", "no", "off", "OFF"] {
+            assert!(
+                !agent_maintenance_disabled_from_env(Some(falsey)),
+                "{falsey:?} should leave maintenance on"
+            );
+        }
+    }
 
     /// #419: the resync used to announce itself only as `✔ Wrote <path>` from
     /// the file layer, under a command the user had run as a query.
