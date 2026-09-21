@@ -90,6 +90,7 @@ impl AgentIntegration for OpenCodeIntegration {
         }
         let json = super::load_json_file(&config_path);
         json.get("mcp").and_then(|v| v.get("tokensave")).is_some()
+            || json.pointer("/mcp/servers/tokensave").is_some()
     }
 }
 
@@ -206,13 +207,20 @@ fn install_mcp_server(
     };
 
     let bin = crate::agents::preserve_mcp_command(
-        config.pointer("/mcp/tokensave/command"),
+        config
+            .pointer("/mcp/servers/tokensave/command")
+            .or_else(|| config.pointer("/mcp/tokensave/command")),
         tokensave_bin,
     );
-    config["mcp"]["tokensave"] = json!({
+    let mcp_server = json!({
         "type": "local",
         "command": [bin, "serve"]
     });
+    if config.pointer("/mcp/servers").is_some() {
+        config["mcp"]["servers"]["tokensave"] = mcp_server;
+    } else {
+        config["mcp"]["tokensave"] = mcp_server;
+    }
     add_instructions_entry(&mut config, instructions_entry);
 
     safe_write_json_file(config_path, &config, backup.as_deref())?;
@@ -278,10 +286,15 @@ fn uninstall_mcp_server(config_path: &Path, instructions_entry: &str) {
         return;
     };
 
-    let mcp_removed = config
+    let mcp_removed_v1 = config
         .get_mut("mcp")
         .and_then(|v| v.as_object_mut())
         .is_some_and(|mcp| mcp.remove("tokensave").is_some());
+    let mcp_removed_v2 = config
+        .pointer_mut("/mcp/servers")
+        .and_then(|v| v.as_object_mut())
+        .is_some_and(|servers| servers.remove("tokensave").is_some());
+    let mcp_removed = mcp_removed_v1 || mcp_removed_v2;
     if mcp_removed
         && config["mcp"]
             .as_object()
@@ -341,7 +354,16 @@ fn doctor_check_config(dc: &mut DoctorCounters, home: &Path) {
     }
 
     let config = load_json_file(&config_path);
-    let mcp_entry = &config["mcp"]["tokensave"];
+    let mcp_entry = config
+        .pointer("/mcp/servers/tokensave")
+        .or_else(|| config.pointer("/mcp/tokensave"));
+    let Some(mcp_entry) = mcp_entry else {
+        dc.fail(&format!(
+            "MCP server NOT registered in {} — run `tokensave install --agent opencode`",
+            config_path.display()
+        ));
+        return;
+    };
     if !mcp_entry.is_object() {
         dc.fail(&format!(
             "MCP server NOT registered in {} — run `tokensave install --agent opencode`",
