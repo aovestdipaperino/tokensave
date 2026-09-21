@@ -63,6 +63,33 @@ fn def_always_load(
     }
 }
 
+/// The `graph_root` description, which 53 tools carry.
+///
+/// It used to be one 457-byte paragraph repeated verbatim on every one of
+/// them — about 11.6k tokens of the tool surface, re-sent every turn before
+/// any tool is called (#576). Two thirds of that paragraph explained the
+/// multi-root array, which only `tokensave_search` and `tokensave_files`
+/// accept, so the other 51 tools paid for a rule that could not apply to
+/// them. The array sentence now goes only to the two tools it describes.
+///
+/// The schema keeps `anyOf` everywhere: an array reaching a single-graph tool
+/// is rejected at the call with a message that says so, and narrowing the
+/// schema instead would turn that into an opaque validation error.
+fn graph_root_description(tool: &str) -> &'static str {
+    const MULTI_ROOT: &str = "Absolute path of an initialized project to query instead of \
+        this server's own; omit for this one. Accepts an array of roots, answered at once \
+        with results interleaved by rank; worktrees of a repository already named are \
+        collapsed and the response says which.";
+    const SINGLE_ROOT: &str = "Absolute path of an initialized project to query instead of \
+        this server's own; omit for this one. One root only.";
+
+    if matches!(tool, "tokensave_search" | "tokensave_files") {
+        MULTI_ROOT
+    } else {
+        SINGLE_ROOT
+    }
+}
+
 /// Add the explicit selectors and metadata used by tools that can query any
 /// initialized graph.
 fn graph_scoped(mut definition: ToolDefinition) -> ToolDefinition {
@@ -85,20 +112,14 @@ fn graph_scoped(mut definition: ToolDefinition) -> ToolDefinition {
                 { "type": "string" },
                 { "type": "array", "items": { "type": "string" } }
             ],
-            "description": "Exact absolute initialized project root to query. Omit to query \
-             the project this server already serves; when present it must name a different \
-             project. `tokensave_search` and `tokensave_files` also accept an array of roots \
-             and answer across all of them at once, interleaving results by rank; roots that \
-             are worktrees of a repository already named are collapsed, and the response says \
-             which. Every other tool answers about a single graph and rejects an array."
+            "description": graph_root_description(&definition.name)
         }),
     );
     properties.insert(
         "graph_branch".to_string(),
         json!({
             "type": "string",
-            "description": "Exact tracked branch to query within graph_root. Requires \
-             graph_root."
+            "description": "Tracked branch within graph_root. Requires graph_root."
         }),
     );
 
@@ -2952,13 +2973,21 @@ mod tests {
                 );
                 assert_eq!(
                     graph_root.unwrap()["description"],
-                    "Exact absolute initialized project root to query. Omit to query the \
-                     project this server already serves; when present it must name a different \
-                     project. `tokensave_search` and `tokensave_files` also accept an array of \
-                     roots and answer across all of them at once, interleaving results by rank; \
-                     roots that are worktrees of a repository already named are collapsed, and \
-                     the response says which. Every other tool answers about a single graph and \
-                     rejects an array.",
+                    super::graph_root_description(&definition.name),
+                    "{}",
+                    definition.name
+                );
+                // #576: the array rule reaches only the two tools that honour
+                // it, so the other 51 do not pay for it on every turn.
+                assert_eq!(
+                    graph_root.unwrap()["description"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("array"),
+                    matches!(
+                        definition.name.as_str(),
+                        "tokensave_search" | "tokensave_files"
+                    ),
                     "{}",
                     definition.name
                 );
@@ -2970,7 +2999,7 @@ mod tests {
                 );
                 assert_eq!(
                     graph_branch.unwrap()["description"],
-                    "Exact tracked branch to query within graph_root. Requires graph_root.",
+                    "Tracked branch within graph_root. Requires graph_root.",
                     "{}",
                     definition.name
                 );
