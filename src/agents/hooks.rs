@@ -120,6 +120,84 @@ fn replace_fenced_block(
     Some(out)
 }
 
+/// Replaces an unfenced legacy post-checkout block in `contents` with `block`.
+///
+/// 6.4.3 and 7.3.0 wrote the block with no closing marker, so
+/// [`replace_fenced_block`] declines it and the caller used to append a second
+/// block beside it (#580). Both blocks then ran on every checkout, and the
+/// legacy one called `tokensave init` directly, bypassing everything
+/// [`crate::commands::hook_post_checkout`] decides (the #569 temp-dir skip
+/// included).
+///
+/// The extent is not a guess: both shipped shapes are the bare marker line, an
+/// `if` on the fresh-checkout sentinel, and a single closing `fi`. Anything
+/// that departs from that shape before the `fi` (a blank line, another
+/// tokensave marker, a nested `if`) is declined, as is a block whose `fi` is
+/// followed by the end marker, which is a fenced block and belongs to
+/// [`replace_fenced_block`].
+///
+/// An install that already went through the append path carries a complete
+/// fenced block further down as well. That duplicate is removed along with the
+/// blank separator [`write_global_hook`] put in front of it, so the file ends
+/// up with one block. Everything else is preserved byte-for-byte.
+fn replace_legacy_checkout_block(
+    contents: &str,
+    begin_marker: &str,
+    end_marker: &str,
+    block: &str,
+) -> Option<String> {
+    let lines: Vec<&str> = contents.split_inclusive('\n').collect();
+    let start = lines.iter().position(|l| l.trim() == begin_marker)?;
+    let guard = format!("if [ \"$1\" = \"{FRESH_CHECKOUT_SENTINEL}\" ]");
+    if !lines.get(start + 1)?.trim_start().starts_with(&guard) {
+        return None;
+    }
+    let mut fi = None;
+    for (i, line) in lines.iter().enumerate().skip(start + 2) {
+        let trimmed = line.trim();
+        if trimmed == "fi" {
+            fi = Some(i);
+            break;
+        }
+        if trimmed.is_empty() || is_tokensave_marker(line) || trimmed.starts_with("if ") {
+            return None;
+        }
+    }
+    let fi = fi?;
+    if lines
+        .get(fi + 1)
+        .is_some_and(|l| l.trim_start().starts_with(end_marker))
+    {
+        return None;
+    }
+
+    let rest = &lines[fi + 1..];
+    let duplicate = rest
+        .iter()
+        .position(|l| l.trim_start().starts_with(begin_marker))
+        .and_then(|dup_start| {
+            rest.iter()
+                .skip(dup_start)
+                .position(|l| l.trim_start().starts_with(end_marker))
+                .map(|offset| {
+                    let separator = dup_start > 0 && rest[dup_start - 1].trim().is_empty();
+                    (dup_start - usize::from(separator))..=(dup_start + offset)
+                })
+        });
+
+    let mut out = String::with_capacity(contents.len() + block.len());
+    for line in &lines[..start] {
+        out.push_str(line);
+    }
+    out.push_str(block);
+    for (i, line) in rest.iter().enumerate() {
+        if !duplicate.as_ref().is_some_and(|d| d.contains(&i)) {
+            out.push_str(line);
+        }
+    }
+    Some(out)
+}
+
 /// Writes `contents` to `path` atomically, preserving the existing mode.
 ///
 /// A hook is executed by git, so a partially written file is a broken hook
@@ -170,7 +248,12 @@ fn install_or_migrate_block(
         };
     };
 
-    match replace_fenced_block(&existing, begin_prefix, end_marker, block) {
+    // Legacy first (#580): in a file that holds both an unfenced legacy block
+    // and an appended fenced one, the fenced search would pair the legacy
+    // begin marker with the later end marker and replace everything between.
+    let updated = replace_legacy_checkout_block(&existing, begin_prefix, end_marker, block)
+        .or_else(|| replace_fenced_block(&existing, begin_prefix, end_marker, block));
+    match updated {
         Some(updated) if updated == existing => HookWrite::UpToDate,
         Some(updated) => match write_file_atomically(hook_path, &updated) {
             Ok(()) => HookWrite::Migrated,
@@ -182,9 +265,10 @@ fn install_or_migrate_block(
                 HookWrite::Failed
             }
         },
-        // No complete fence: either no tokensave block at all, or a
-        // pre-#391 one that never wrote a closing marker. Append, which
-        // leaves any legacy block alone rather than guessing its extent.
+        // No complete fence and no recognisable legacy block: either no
+        // tokensave block at all, or an unterminated one in a shape that
+        // never shipped. Append, which leaves it alone rather than guessing
+        // its extent.
         None => {
             if write_global_hook(hook_path, block) {
                 HookWrite::Installed
@@ -2504,14 +2588,102 @@ mod fence_tests {
 
     #[test]
     fn a_file_with_no_fence_is_declined() {
-        // A pre-#391 block never wrote a closing marker, so its extent cannot
-        // be known. Declining means the caller appends instead of guessing
-        // which lines to delete.
+        // A pre-#391 block never wrote a closing marker, so the fence search
+        // has nothing to pair the begin marker with. The shipped legacy shapes
+        // are `replace_legacy_checkout_block`'s job; anything else is appended
+        // to instead of guessing which lines to delete.
         let no_block = "#!/bin/sh\necho hello\n";
         assert!(replace_fenced_block(no_block, BEGIN, END, NEW_BLOCK).is_none());
 
         let unterminated = "#!/bin/sh\n# tokensave: auto-init\ntokensave init &\n";
         assert!(replace_fenced_block(unterminated, BEGIN, END, NEW_BLOCK).is_none());
+        assert!(replace_legacy_checkout_block(unterminated, BEGIN, END, NEW_BLOCK).is_none());
+    }
+
+    /// The unfenced body 6.4.3 wrote.
+    const LEGACY_6_4_3: &str = "# tokensave: auto-init\n\
+                                if [ \"$1\" = \"0000000000000000000000000000000000000000\" ]; then\n\
+                                \ttokensave init >/dev/null 2>&1 &\n\
+                                fi\n";
+    /// The unfenced body 7.3.0 wrote.
+    const LEGACY_7_3_0: &str = "# tokensave: auto-init\n\
+                                if [ \"$1\" = \"0000000000000000000000000000000000000000\" ]; then\n\
+                                \ttokensave init >/dev/null 2>&1 &\n\
+                                elif [ \"$3\" = \"1\" ]; then\n\
+                                \ttokensave branch add >/dev/null 2>&1 &\n\
+                                fi\n";
+    const CHAIN: &str = "# tokensave: chain-repo-hook\n\
+                         repo_hook=\"$(git rev-parse --git-common-dir 2>/dev/null)/hooks/post-checkout\"\n\
+                         if [ -x \"$repo_hook\" ] && [ \"$repo_hook\" != \"$0\" ]; then\n\
+                         \t\"$repo_hook\" \"$@\"\n\
+                         fi\n";
+
+    /// #580: both shipped unfenced shapes are replaced in place, and what
+    /// surrounds them survives byte-for-byte.
+    #[test]
+    fn a_legacy_unfenced_block_is_replaced_in_place() {
+        for legacy in [LEGACY_6_4_3, LEGACY_7_3_0] {
+            let existing = format!("#!/bin/sh\n./mine.sh\n\n{legacy}\n{CHAIN}");
+            let updated = replace_legacy_checkout_block(&existing, BEGIN, END, NEW_BLOCK).unwrap();
+            assert_eq!(
+                updated,
+                format!("#!/bin/sh\n./mine.sh\n\n{NEW_BLOCK}\n{CHAIN}")
+            );
+        }
+    }
+
+    /// #580: a file that already went through the append path holds the legacy
+    /// block *and* a fenced one. It must end up with a single block, and the
+    /// chain section between the two must not be swallowed.
+    #[test]
+    fn a_legacy_block_with_an_appended_duplicate_collapses_to_one_block() {
+        let existing = format!("#!/bin/sh\n{LEGACY_7_3_0}\n{CHAIN}\n{NEW_BLOCK}");
+        let updated = replace_legacy_checkout_block(&existing, BEGIN, END, NEW_BLOCK).unwrap();
+        assert_eq!(updated, format!("#!/bin/sh\n{NEW_BLOCK}\n{CHAIN}"));
+    }
+
+    #[test]
+    fn a_fenced_or_unrecognised_block_is_not_treated_as_legacy() {
+        // Fenced v1: same body, but closed — `replace_fenced_block` owns it.
+        let fenced = format!("#!/bin/sh\n{LEGACY_6_4_3}{END}\n");
+        assert!(replace_legacy_checkout_block(&fenced, BEGIN, END, NEW_BLOCK).is_none());
+
+        // A body that is not the shipped shape: the first `fi` would not be
+        // the end of it, so its extent is unknown.
+        let nested = "#!/bin/sh\n\
+                      # tokensave: auto-init\n\
+                      if [ \"$1\" = \"0000000000000000000000000000000000000000\" ]; then\n\
+                      \tif [ -n \"$X\" ]; then\n\
+                      \t\ttokensave init &\n\
+                      \tfi\n\
+                      fi\n";
+        assert!(replace_legacy_checkout_block(nested, BEGIN, END, NEW_BLOCK).is_none());
+
+        let current = format!("#!/bin/sh\n{NEW_BLOCK}");
+        assert!(replace_legacy_checkout_block(&current, BEGIN, END, NEW_BLOCK).is_none());
+    }
+
+    /// #580 end to end: the install path migrates a legacy file instead of
+    /// appending to it, and a second run is a no-op.
+    #[test]
+    fn a_legacy_install_is_migrated_not_appended_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let hook = dir.path().join("post-checkout");
+        std::fs::write(&hook, format!("#!/bin/sh\n{LEGACY_6_4_3}\n{CHAIN}")).unwrap();
+
+        let block = post_checkout_snippet("tokensave");
+        assert_eq!(
+            install_or_migrate_block(&hook, BEGIN, END, &block),
+            HookWrite::Migrated
+        );
+        let after = std::fs::read_to_string(&hook).unwrap();
+        assert_eq!(after, format!("#!/bin/sh\n{block}\n{CHAIN}"));
+
+        assert_eq!(
+            install_or_migrate_block(&hook, BEGIN, END, &block),
+            HookWrite::UpToDate
+        );
+        assert_eq!(std::fs::read_to_string(&hook).unwrap(), after);
     }
 
     #[test]
