@@ -7,9 +7,9 @@ use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 use tokensave::agents::{
-    available_integrations, expected_tool_perms, get_integration, migrate_installed_agents,
-    rules_for_agent, AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext,
-    InstallScope, OmpIntegration,
+    available_integrations, expected_tool_perms, get_integration, managed_rules_contents,
+    migrate_installed_agents, rules_for_agent, AgentIntegration, DoctorCounters,
+    HealthcheckContext, InstallContext, InstallScope, OmpIntegration,
 };
 use tokensave::errors::TokenSaveError;
 use tokensave::user_config::UserConfig;
@@ -334,7 +334,10 @@ fn reinstall_refreshes_owned_surfaces_and_preserves_valid_command() {
     );
     assert_eq!(
         std::fs::read_to_string(rules_path).unwrap(),
-        format!("{}\n", rules_for_agent("omp").unwrap().trim_end())
+        format!(
+            "{}\n",
+            managed_rules_contents(&rules_for_agent("omp").unwrap())
+        )
     );
 }
 
@@ -723,7 +726,10 @@ fn reinstall_refreshes_recorded_and_current_profiles() {
         );
         assert_eq!(
             std::fs::read_to_string(profile.join("rules/tokensave.md")).unwrap(),
-            format!("{}\n", rules_for_agent("omp").unwrap().trim_end())
+            format!(
+                "{}\n",
+                managed_rules_contents(&rules_for_agent("omp").unwrap())
+            )
         );
     }
 }
