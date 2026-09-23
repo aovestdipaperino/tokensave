@@ -1494,7 +1494,7 @@ fn def_str_replace() -> ToolDefinition {
                 },
                 "project_root": {
                     "type": "string",
-                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root. Use this when calling from a git worktree so relative paths land in the worktree, not the primary checkout. Ignored when `path` is absolute. Alias: `cwd`."
+                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root, e.g. a git worktree. Ignored when `path` is absolute. Alias: `cwd`."
                 },
                 "echo": {
                     "type": "boolean",
@@ -1534,7 +1534,7 @@ fn def_multi_str_replace() -> ToolDefinition {
                 },
                 "project_root": {
                     "type": "string",
-                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root. Use this when calling from a git worktree so relative paths land in the worktree, not the primary checkout. Ignored when `path` is absolute. Alias: `cwd`."
+                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root, e.g. a git worktree. Ignored when `path` is absolute. Alias: `cwd`."
                 }
             },
             "required": ["path", "replacements"]
@@ -1572,7 +1572,7 @@ fn def_insert_at() -> ToolDefinition {
                 },
                 "project_root": {
                     "type": "string",
-                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root. Use this when calling from a git worktree so relative paths land in the worktree, not the primary checkout. Ignored when `path` is absolute. Alias: `cwd`."
+                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root, e.g. a git worktree. Ignored when `path` is absolute. Alias: `cwd`."
                 },
                 "echo": {
                     "type": "boolean",
@@ -1861,39 +1861,20 @@ fn def_dependencies() -> ToolDefinition {
     def(
         "tokensave_dependencies",
         "Package Dependencies",
-        "Inspect declared dependencies across all supported package ecosystems \
-         (#105, #106). Auto-detects which manifest(s) live at the project root:\n\
-         • Rust — Cargo.toml (+ workspace members glob, [target.<cfg>] deps, [patch.*]) + Cargo.lock\n\
-         • Node — package.json (+ npm/yarn/pnpm workspaces) + package-lock.json / yarn.lock / pnpm-lock.yaml\n\
-         • Python — pyproject.toml (PEP 621 + Poetry), requirements*.txt + poetry.lock / uv.lock / Pipfile.lock\n\
-         • Go — go.mod (require blocks, replace directives) + go.sum\n\
-         • Java — pom.xml (+ <modules> + <dependencyManagement> BOMs)\n\
-         • .NET — *.csproj/*.fsproj/*.vbproj + Directory.Packages.props + packages.lock.json\n\
-         • PHP — composer.json + composer.lock\n\
-         • Ruby — Gemfile + Gemfile.lock\n\
-         • Swift — Package.swift\n\
-         • Elixir — mix.exs\n\
-         • Erlang — rebar.config\n\
-         • R — DESCRIPTION\n\
-         • Haskell — *.cabal\n\
-         • OCaml — *.opam (+ dune-project fallback)\n\
-         • Dart/Flutter — pubspec.yaml + pubspec.lock\n\
-         • Crystal — shard.yml + shard.lock\n\
-         • Gradle — build.gradle (Groovy), build.gradle.kts (Kotlin), \
-         gradle/libs.versions.toml (Version Catalog), settings.gradle{,.kts} \
-         for multi-module discovery\n\n\
+        "Inspect declared dependencies. Auto-detects the manifests at the project root and in \
+         its workspace members for Rust, Node, Python, Go, Java (Maven), Gradle, .NET, PHP, Ruby, \
+         Swift, Elixir, Erlang, R, Haskell, OCaml, Dart/Flutter and Crystal. Polyglot repos \
+         return one block per ecosystem.\n\n\
          Three modes:\n\
          • zero input → workspace summary: members + every package any member \
-         depends on, plus `licenses` aggregate, `version_drift` array (crates \
+         depends on, plus `licenses` aggregate, `version_drift` array (packages \
          pinned at different versions across members), and `members_detail` \
-         with per-member license. Polyglot repos return one block per ecosystem.\n\
+         with per-member license.\n\
          • `crate: <name>` (or `package: <name>`) → list every member that \
          depends on this package, with kind/version/resolved/features/optional/local-path.\n\
          • `member: <name>` → list every dependency declared by this member.\n\n\
-         Filters: `ecosystem: rust|node|python|go|java|dotnet|php|ruby|swift|elixir|erlang|r|haskell|ocaml|dart|crystal|gradle`, \
-         `kind: normal|dev|build|peer|optional|all`. Set `include_lockfile: true` \
-         to stamp resolved versions from the per-ecosystem lockfile. Workspace \
-         globs support `crates/*`, `packages/*/foo`, `**`, and `!negation`.",
+         Filters: `ecosystem`, `kind`. Set `include_lockfile: true` to stamp resolved \
+         versions from the per-ecosystem lockfile.",
         json!({
             "type": "object",
             "properties": {
@@ -1915,11 +1896,11 @@ fn def_dependencies() -> ToolDefinition {
                 },
                 "ecosystem": {
                     "type": "string",
-                    "description": "Restrict to one ecosystem: \"rust\" / \"node\" / \"python\" / \"go\" / \"java\" / \"dotnet\" / \"php\" / \"ruby\"."
+                    "description": "Restrict to one ecosystem: rust, node, python, go, java, dotnet, php, ruby, swift, elixir, erlang, r, haskell, ocaml, dart, crystal or gradle."
                 },
                 "include_lockfile": {
                     "type": "boolean",
-                    "description": "When true, read the per-ecosystem lockfile (Cargo.lock, package-lock.json/yarn.lock, poetry.lock/uv.lock/Pipfile.lock, go.sum, packages.lock.json, composer.lock, Gemfile.lock) and add `resolved` versions alongside declared `version` ranges. Default false."
+                    "description": "When true, read each ecosystem's lockfile and add `resolved` versions alongside declared `version` ranges. Default false."
                 }
             }
         }),
@@ -2060,7 +2041,7 @@ fn def_ast_grep_rewrite() -> ToolDefinition {
                 },
                 "project_root": {
                     "type": "string",
-                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root. Use this when calling from a git worktree so relative paths land in the worktree, not the primary checkout. Ignored when `path` is absolute. Alias: `cwd`."
+                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root, e.g. a git worktree. Ignored when `path` is absolute. Alias: `cwd`."
                 }
             },
             "required": ["path", "pattern", "rewrite"]
@@ -2306,7 +2287,7 @@ fn def_field_sites() -> ToolDefinition {
             "properties": {
                 "field": {
                     "type": "string",
-                    "description": "Field name. Bare name ('last_sync_at') matches across structs. The qualified form ('GraphStats::last_sync_at') narrows to that struct's field; sites whose receiver cannot be typed are reported in unattributed_count rather than listed, so a narrowed result is a lower bound."
+                    "description": "Field name. Bare name ('last_sync_at') matches across structs. The qualified form ('GraphStats::last_sync_at') narrows to that struct's field."
                 },
                 "writes_only": {
                     "type": "boolean",
@@ -2436,8 +2417,7 @@ fn def_diagnostics() -> ToolDefinition {
          TypeScript, pyright for Python) and return structured errors and \
          warnings. Each diagnostic includes file, line range, level, code, \
          message, driver, and the enclosing graph node when one can be \
-         resolved. Replaces the recurring 'run cargo → parse text → read \
-         file' loop with a single structured response. \
+         resolved. \
          \n\nNote: the cargo target dir is forced to .tokensave/target/ so \
          we don't race with the user's interactive cargo runs. The first \
          call against a fresh tree builds dependencies from scratch, which \
@@ -2670,7 +2650,7 @@ fn def_replace_symbol() -> ToolDefinition {
                 },
                 "project_root": {
                     "type": "string",
-                    "description": "Optional absolute directory the symbol's (index-relative) file path is resolved against instead of the indexed project root. Use this when calling from a git worktree that shares the same relative layout but lives at a different absolute location, so the write lands in the worktree, not the primary checkout. Alias: `cwd`."
+                    "description": "Optional absolute directory to resolve the symbol's index-relative file path against instead of the indexed project root, e.g. a git worktree with the same layout. Alias: `cwd`."
                 },
                 "echo": {
                     "type": "boolean",
@@ -2733,7 +2713,7 @@ fn def_insert_at_symbol() -> ToolDefinition {
                 },
                 "project_root": {
                     "type": "string",
-                    "description": "Optional absolute directory the symbol's (index-relative) file path is resolved against instead of the indexed project root. Use this when calling from a git worktree that shares the same relative layout but lives at a different absolute location, so the write lands in the worktree, not the primary checkout. Alias: `cwd`."
+                    "description": "Optional absolute directory to resolve the symbol's index-relative file path against instead of the indexed project root, e.g. a git worktree with the same layout. Alias: `cwd`."
                 },
                 "echo": {
                     "type": "boolean",
@@ -2917,6 +2897,22 @@ mod tests {
             tools.insert("tokensave_ast_grep_rewrite");
         }
         tools
+    }
+
+    /// #576: a client sends every tool description on every turn, so a long
+    /// one is a fixed cost for the whole session. `tokensave_dependencies`
+    /// was 1.9 KB because it listed every manifest and lockfile name. Details
+    /// like that belong in the tool result or in the parameter that needs them.
+    #[test]
+    fn tool_descriptions_stay_within_their_byte_budget() {
+        for definition in get_tool_definitions() {
+            assert!(
+                definition.description.len() <= 1200,
+                "{} description is {} bytes",
+                definition.name,
+                definition.description.len()
+            );
+        }
     }
 
     #[test]
