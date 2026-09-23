@@ -199,6 +199,20 @@ If your project contains code in hidden directories (e.g., `.github/scripts/`), 
 }
 ```
 
+#### Indexing a gitignored path
+
+`include` does not override `.gitignore`. To index one specific path that a `.gitignore` rule covers (for example generated code inside one repo of a multi-repo workspace) without turning gitignore handling off for the whole project, list it in `force_include`:
+
+```json
+{
+  "force_include": [
+    "services/api/generated/**"
+  ]
+}
+```
+
+Only files matching these globs are un-ignored; every other `.gitignore` rule keeps applying. The walk starts at the glob's leading literal directories (`services/api/generated` above), so prefer a specific prefix over a leading `**`. `exclude` globs still win over `force_include`, and the size limit still applies. Hidden paths the glob names are admitted too, so `include` is not needed alongside it.
+
 ---
 
 ## Connecting to Your Agent

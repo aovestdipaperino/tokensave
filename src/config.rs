@@ -68,6 +68,12 @@ pub struct TokenSaveConfig {
     /// files under `.github/` that would otherwise be skipped.
     #[serde(default)]
     pub include: Vec<String>,
+    /// Glob patterns for paths to index even when a `.gitignore` rule covers
+    /// them (#571). Scoped to the listed globs: nothing else is un-ignored.
+    /// Unlike `include`, this also admits hidden paths the glob names. An
+    /// `exclude` glob still wins, and the size limit still applies.
+    #[serde(default)]
+    pub force_include: Vec<String>,
     /// Maximum file size in bytes; files larger than this are skipped.
     pub max_file_size: u64,
     /// Whether to extract doc comments from source files.
@@ -254,6 +260,7 @@ impl Default for TokenSaveConfig {
                 "bin/**".to_string(),
             ],
             include: Vec::new(),
+            force_include: Vec::new(),
             max_file_size: 1_048_576,
             extract_docstrings: true,
             track_call_sites: true,
@@ -679,6 +686,30 @@ pub fn is_included(path: &str, config: &TokenSaveConfig) -> bool {
     false
 }
 
+/// Returns `true` if `path` matches a `force_include` glob (#571).
+pub fn is_force_included(path: &str, config: &TokenSaveConfig) -> bool {
+    let match_opts = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: false,
+        require_literal_leading_dot: false,
+    };
+
+    config.force_include.iter().any(|pattern_str| {
+        Pattern::new(pattern_str).is_ok_and(|pattern| pattern.matches_with(path, match_opts))
+    })
+}
+
+/// The directory a `force_include` walk starts from: the glob's leading
+/// components up to the first one holding a glob metacharacter, so
+/// `some/dir/**` walks only `some/dir` rather than the whole project.
+pub fn force_include_base(pattern: &str) -> String {
+    pattern
+        .split('/')
+        .take_while(|part| !part.contains(['*', '?', '[', '{']))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Returns `true` if a directory should be pruned during scanning.
 ///
 /// Matches `dir/_` against exclude patterns (for `dir/**`-style globs) and
@@ -859,6 +890,15 @@ mod tests {
     fn test_is_included_empty_matches_nothing() {
         let config = TokenSaveConfig::default();
         assert!(!is_included(".github/workflows/ci.yml", &config));
+    }
+
+    #[test]
+    fn force_include_base_stops_at_the_first_glob_component() {
+        assert_eq!(super::force_include_base("some/dir/**"), "some/dir");
+        assert_eq!(super::force_include_base("some/*/gen/**"), "some");
+        assert_eq!(super::force_include_base("docs/api.md"), "docs/api.md");
+        assert_eq!(super::force_include_base("**/generated/**"), "");
+        assert_eq!(super::force_include_base("src/{a,b}/**"), "src");
     }
 
     #[test]

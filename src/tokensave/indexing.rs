@@ -1501,6 +1501,11 @@ impl TokenSave {
 
         let mut skipped_map: HashMap<String, usize> = HashMap::new();
         let mut files = self.scan_project_files(&supported_exts, &mut skipped_map);
+        if !self.config.force_include.is_empty() {
+            files.extend(self.scan_force_included_files(&supported_exts));
+            files.sort();
+            files.dedup();
+        }
         // Manifest external entries (absolute / `~` paths) are additive
         // opt-ins indexed under their resolved absolute path (#194).
         if let Some(manifest) = self.manifest() {
@@ -1554,6 +1559,69 @@ impl TokenSave {
         } else {
             self.scan_files_walkdir(supported_exts, skipped_exts)
         }
+    }
+
+    /// Files matched by a `force_include` glob, found without consulting any
+    /// ignore rule (#571).
+    ///
+    /// The `ignore` crate drops a gitignored entry before `filter_entry` sees
+    /// it, so the main walk cannot re-admit one. Its `OverrideBuilder` is no
+    /// help either: a single whitelist override makes every path that matches
+    /// none of them ignored. So each glob gets its own walk, rooted at the
+    /// glob's literal prefix so it stays scoped to what the user listed, and
+    /// the caller merges the result into the main walk's. `exclude` globs,
+    /// the symlink-cycle prune and the size limit still apply.
+    fn scan_force_included_files(&self, supported_exts: &[&str]) -> Vec<String> {
+        let root = &self.project_root;
+        let config = &self.config;
+        let canonical_root = root.canonicalize().ok();
+        // Unsupported-extension tallies were already taken by the main walk.
+        let mut skipped = HashMap::new();
+        let mut files = Vec::new();
+        for pattern in &config.force_include {
+            let base = root.join(crate::config::force_include_base(pattern));
+            if !base.starts_with(root) || !base.exists() {
+                continue;
+            }
+            for entry in WalkDir::new(&base)
+                .follow_links(true)
+                .into_iter()
+                .filter_entry(|e| {
+                    if e.path_is_symlink()
+                        && e.file_type().is_dir()
+                        && reenters_project_root(e.path(), canonical_root.as_deref())
+                    {
+                        return false;
+                    }
+                    if e.file_type().is_dir() {
+                        if let Ok(rel) = e.path().strip_prefix(root) {
+                            let rel_str = rel.to_string_lossy().replace('\\', "/");
+                            if is_excluded_dir(&rel_str, config) {
+                                return false;
+                            }
+                        }
+                    }
+                    true
+                })
+            {
+                let Ok(entry) = entry else { continue };
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let Ok(rel) = entry.path().strip_prefix(root) else {
+                    continue;
+                };
+                let rel_str = rel.to_string_lossy().replace('\\', "/");
+                if !crate::config::is_force_included(&rel_str, config) {
+                    continue;
+                }
+                if let Some(rel_str) = self.accept_file(entry.path(), supported_exts, &mut skipped)
+                {
+                    files.push(rel_str);
+                }
+            }
+        }
+        files
     }
 
     /// Walk using `walkdir`, skipping hidden directories and `target/`.
