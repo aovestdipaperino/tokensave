@@ -207,6 +207,50 @@ pub fn hook_pre_tool_use() {
     }
 }
 
+/// Codex `PreToolUse` hook handler. Reuses tokensave's hook decision logic but
+/// emits Codex's strict `hookSpecificOutput` response shape.
+pub fn hook_pre_tool_use_codex() {
+    let raw = read_stdin_to_string();
+    let decision = if raw.trim().is_empty() {
+        evaluate_hook_decision(&std::env::var("TOOL_INPUT").unwrap_or_default())
+    } else {
+        evaluate_claude_pre_tool_use(&raw)
+    };
+    let decision_json =
+        serde_json::from_str::<serde_json::Value>(&decision).unwrap_or(serde_json::Value::Null);
+    let hook_output = decision_json.get("hookSpecificOutput");
+    let permission = decision_json
+        .get("permission")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            hook_output
+                .and_then(|output| output.get("permissionDecision"))
+                .and_then(serde_json::Value::as_str)
+        })
+        .unwrap_or("allow");
+    let permission = match permission {
+        "deny" => "deny",
+        "ask" => "ask",
+        _ => "allow",
+    };
+    let reason = hook_output
+        .and_then(|output| output.get("permissionDecisionReason"))
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            decision_json
+                .get("agent_message")
+                .and_then(serde_json::Value::as_str)
+        });
+    let mut output = serde_json::json!({
+        "hookEventName": "PreToolUse",
+        "permissionDecision": permission,
+    });
+    if let Some(reason) = reason {
+        output["permissionDecisionReason"] = serde_json::json!(reason);
+    }
+    println!("{}", serde_json::json!({ "hookSpecificOutput": output }));
+}
+
 /// Parse Claude Code's `PreToolUse` stdin JSON and return the decision string.
 ///
 /// Unwraps the nested `tool_input` object before delegating to

@@ -1056,6 +1056,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::HookPreToolUse => {
             tokensave::hooks::hook_pre_tool_use();
         }
+        Commands::HookPreToolUseCodex => {
+            tokensave::hooks::hook_pre_tool_use_codex();
+        }
         Commands::HookPromptSubmit => {
             tokensave::hooks::hook_prompt_submit().await;
         }
@@ -1815,6 +1818,7 @@ fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
             // silent-reinstall loop, and stdout must stay JSON-only for the
             // permission gate (see hooks.rs `hook_pre_tool_use`).
             | Commands::HookPreToolUse
+            | Commands::HookPreToolUseCodex
             | Commands::HookPromptSubmit
             | Commands::HookStop
             | Commands::Hook { .. }
@@ -2129,6 +2133,7 @@ mod startup_tests {
         // that rewrites every tracked agent's config) on each invocation.
         for command in [
             Commands::HookPreToolUse,
+            Commands::HookPreToolUseCodex,
             Commands::HookPromptSubmit,
             Commands::HookStop,
             Commands::HookKiroPreToolUse,

@@ -177,6 +177,9 @@ pub enum Commands {
     /// PreToolUse hook handler (called by Claude Code, not by users directly)
     #[command(name = "hook-pre-tool-use", hide = true)]
     HookPreToolUse,
+    /// Codex PreToolUse hook handler (called by Codex, not by users directly)
+    #[command(name = "hook-pre-tool-use-codex", hide = true)]
+    HookPreToolUseCodex,
     /// UserPromptSubmit hook handler (resets session counter)
     #[command(name = "hook-prompt-submit", hide = true)]
     HookPromptSubmit,
