@@ -3137,6 +3137,10 @@ mod tests {
         let mut seen = BTreeSet::new();
         for (area, _, tools) in TOOL_AREAS {
             for tool in *tools {
+                // Registered only when the `ast-grep` binary is on PATH.
+                if *tool == "tokensave_ast_grep_rewrite" && !ast_grep_available() {
+                    continue;
+                }
                 assert!(
                     all.iter().any(|d| d.name == *tool),
                     "{area}: {tool} is not a tool"
