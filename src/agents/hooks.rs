@@ -506,7 +506,7 @@ pub fn classify_checkout(prev_head: Option<&str>, branch_flag: Option<&str>) -> 
 /// Under a `Global` [`GitHookMode`] install, `core.hooksPath` applies to
 /// every `git clone`/`checkout` on the machine, including ones done by
 /// unrelated tools that stage work in a throwaway system temp directory and
-/// expect to own it exclusively until they delete or overwrite it — CocoaPods
+/// expect to own it exclusively until they delete or overwrite it — `CocoaPods`
 /// fetching a git-sourced pod is one example (#569). A backgrounded
 /// `tokensave init` racing that kind of cleanup can lose a file mid-copy out
 /// from under the other tool, e.g. `rsync --delete` failing with `No such
@@ -1897,7 +1897,7 @@ mod git_hook_tests {
     }
 
     /// #569: a clone/checkout under the system temp dir must be recognised so
-    /// the hook can skip it — CocoaPods and similar tools stage throwaway
+    /// the hook can skip it — `CocoaPods` and similar tools stage throwaway
     /// clones there and race a backgrounded `tokensave init` against their
     /// own cleanup.
     #[test]
