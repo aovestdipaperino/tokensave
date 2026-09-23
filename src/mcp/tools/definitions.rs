@@ -63,30 +63,49 @@ fn def_always_load(
     }
 }
 
-/// The `graph_root` description, which 53 tools carry.
+/// `graph_root` description for a tool that answers about one graph.
 ///
-/// It used to be one 457-byte paragraph repeated verbatim on every one of
-/// them — about 11.6k tokens of the tool surface, re-sent every turn before
-/// any tool is called (#576). Two thirds of that paragraph explained the
-/// multi-root array, which only `tokensave_search` and `tokensave_files`
-/// accept, so the other 51 tools paid for a rule that could not apply to
-/// them. The array sentence now goes only to the two tools it describes.
+/// It used to be one 457-byte paragraph repeated verbatim on every one of the
+/// 53 graph-scoped tools, re-sent every turn before any tool is called
+/// (#576). Each description is now one sentence; the full cross-project rules
+/// go once per session in [`GRAPH_SELECTOR_INSTRUCTIONS`]. Only the tools in
+/// [`FEDERATABLE_TOOLS`](crate::mcp::graph_scope::FEDERATABLE_TOOLS) mention
+/// the array form, because only they accept it.
 ///
 /// The schema keeps `anyOf` everywhere: an array reaching a single-graph tool
-/// is rejected at the call with a message that says so, and narrowing the
-/// schema instead would turn that into an opaque validation error.
-fn graph_root_description(tool: &str) -> &'static str {
-    const MULTI_ROOT: &str = "Absolute path of an initialized project to query instead of \
-        this server's own; omit for this one. Accepts an array of roots, answered at once \
-        with results interleaved by rank; worktrees of a repository already named are \
-        collapsed and the response says which.";
-    const SINGLE_ROOT: &str = "Absolute path of an initialized project to query instead of \
-        this server's own; omit for this one. One root only.";
+/// is rejected at the call with a message that names the tools that accept
+/// one, and narrowing the schema instead would turn that into an opaque
+/// validation error.
+///
+/// Like [`CONTEXT_DESCRIPTION`], these must stay constant: a changed byte
+/// invalidates the client's cached prompt prefix.
+const GRAPH_ROOT_DESCRIPTION: &str =
+    "Absolute root of another initialized project to query. Omit for the served project.";
 
-    if matches!(tool, "tokensave_search" | "tokensave_files") {
-        MULTI_ROOT
+/// `graph_root` description for the tools that accept an array of roots.
+const GRAPH_ROOT_FEDERATED_DESCRIPTION: &str =
+    "Absolute root of another initialized project to query, or an array of roots to query \
+     together. Omit for the served project.";
+
+/// `graph_branch` description.
+const GRAPH_BRANCH_DESCRIPTION: &str =
+    "Tracked branch to query within graph_root. Requires graph_root.";
+
+/// The cross-project rules that the `graph_root` descriptions no longer carry
+/// (#576). The server sends this once per session in its instructions.
+pub const GRAPH_SELECTOR_INSTRUCTIONS: &str =
+    " A tool with a graph_root parameter can query another initialized project: pass that \
+     project's absolute root, and graph_branch to select one of its tracked branches. \
+     tokensave_search and tokensave_files also accept an array of roots and answer across all \
+     of them at once, interleaving results by rank; roots that are worktrees of a repository \
+     already named are collapsed, and the response says which. Every other tool answers about \
+     a single graph and rejects an array.";
+
+fn graph_root_description(tool: &str) -> &'static str {
+    if crate::mcp::graph_scope::FEDERATABLE_TOOLS.contains(&tool) {
+        GRAPH_ROOT_FEDERATED_DESCRIPTION
     } else {
-        SINGLE_ROOT
+        GRAPH_ROOT_DESCRIPTION
     }
 }
 
@@ -119,7 +138,7 @@ fn graph_scoped(mut definition: ToolDefinition) -> ToolDefinition {
         "graph_branch".to_string(),
         json!({
             "type": "string",
-            "description": "Tracked branch within graph_root. Requires graph_root."
+            "description": GRAPH_BRANCH_DESCRIPTION
         }),
     );
 
@@ -3168,6 +3187,31 @@ mod tests {
         assert!(listed.iter().all(|d| d.name != MORE_TOOL));
     }
 
+    /// #576: the selector docs are copied into every graph-scoped schema, so
+    /// their size is multiplied by the number of such tools on every turn.
+    /// Hold the short form to a budget, and make sure the rules it dropped
+    /// are still sent once in the server instructions.
+    #[test]
+    fn graph_selector_docs_stay_within_their_byte_budget() {
+        for text in [
+            GRAPH_ROOT_DESCRIPTION,
+            GRAPH_ROOT_FEDERATED_DESCRIPTION,
+            GRAPH_BRANCH_DESCRIPTION,
+        ] {
+            assert!(text.len() <= 130, "{} bytes: {text}", text.len());
+        }
+        assert!(GRAPH_ROOT_FEDERATED_DESCRIPTION.contains("array of roots"));
+        assert!(!GRAPH_ROOT_DESCRIPTION.contains("array"));
+        for rule in [
+            "array of roots",
+            "worktrees",
+            "rejects an array",
+            "graph_branch",
+        ] {
+            assert!(GRAPH_SELECTOR_INSTRUCTIONS.contains(rule), "{rule}");
+        }
+    }
+
     #[test]
     fn graph_scoped_defs_match_the_canonical_set() {
         let canonical = canonical_graph_scoped_tools();
@@ -3248,7 +3292,7 @@ mod tests {
                 );
                 assert_eq!(
                     graph_branch.unwrap()["description"],
-                    "Tracked branch within graph_root. Requires graph_root.",
+                    GRAPH_BRANCH_DESCRIPTION,
                     "{}",
                     definition.name
                 );
