@@ -16,6 +16,7 @@
 //! matching how #346 resolved the same question for TypeScript arrows passed
 //! as arguments. `doctest` is deliberately not modelled; see the module-level
 //! comment in the extractor for why.
+#![cfg(feature = "lang-elixir")]
 
 use tokensave::extraction::ElixirExtractor;
 use tokensave::extraction::LanguageExtractor;

@@ -710,6 +710,7 @@ int api_call(int x);
     }
 
     #[test]
+    #[cfg(feature = "lang-objc")]
     fn objc_header_routes_to_objc() {
         let source = r"
 @interface Widget : NSObject

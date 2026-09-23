@@ -14,7 +14,7 @@
 //! traversal must never treat an *unresolved* instance name as a valid edge. A
 //! vendor cell that is not in the index has to produce no edge at all, rather
 //! than binding to whatever else happens to share its name.
-
+#![cfg(feature = "lang-systemverilog")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::fs;

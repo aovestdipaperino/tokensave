@@ -3140,6 +3140,7 @@ async fn test_dependency_depth() {
 /// Builds a project holding one real function plus a comment-only shell
 /// script of `filler_lines` lines, and returns the `equality` dimension of
 /// `tokensave_health`.
+#[cfg(feature = "lang-bash")]
 async fn equality_with_filler(filler_lines: usize) -> f64 {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
@@ -3175,6 +3176,7 @@ async fn equality_with_filler(filler_lines: usize) -> f64 {
 /// extracted symbols therefore scored its own length as complexity, so the
 /// `equality` dimension moved when a comment-only file got longer.
 #[tokio::test]
+#[cfg(feature = "lang-bash")]
 async fn test_health_equality_ignores_a_symbol_free_files_length() {
     let short = equality_with_filler(20).await;
     let long = equality_with_filler(400).await;
@@ -5804,6 +5806,7 @@ pub mod e;
 ///    this path — every candidate shares the 0.3×, so the exact-named
 ///    heading keeps its bonus-driven lead over partial heading matches.
 #[tokio::test]
+#[cfg(feature = "lang-markdown")]
 async fn search_doc_penalty_on_additive_query_path() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
@@ -6767,6 +6770,7 @@ async fn setup_documented_project() -> (TempDir, TokenSave) {
 }
 
 #[tokio::test]
+#[cfg(feature = "lang-markdown")]
 async fn doc_tool_returns_sidecar_documentation() {
     let (_dir, cg) = setup_documented_project().await;
     let result = handle_tool_call(
@@ -6799,6 +6803,7 @@ async fn doc_tool_returns_sidecar_documentation() {
 }
 
 #[tokio::test]
+#[cfg(feature = "lang-markdown")]
 async fn doc_tool_returns_docs_dir_doc_for_every_covered_file() {
     let (_dir, cg) = setup_documented_project().await;
     for file in ["src/search_es8.rs", "src/feed_es8.rs"] {
@@ -6837,6 +6842,7 @@ async fn doc_tool_reports_no_doc_for_undocumented_file() {
 }
 
 #[tokio::test]
+#[cfg(feature = "lang-markdown")]
 async fn doc_tool_can_omit_content() {
     let (_dir, cg) = setup_documented_project().await;
     let result = handle_tool_call(
@@ -6856,6 +6862,7 @@ async fn doc_tool_can_omit_content() {
 }
 
 #[tokio::test]
+#[cfg(feature = "lang-markdown")]
 async fn doc_tool_normalizes_backslash_paths() {
     let (_dir, cg) = setup_documented_project().await;
     let result = handle_tool_call(
@@ -6902,6 +6909,7 @@ async fn doc_tool_is_registered_in_the_tool_list() {
 }
 
 #[tokio::test]
+#[cfg(feature = "lang-markdown")]
 async fn entities_marks_files_that_have_companion_docs() {
     let (_dir, cg) = setup_documented_project().await;
     let result = handle_tool_call(
@@ -6938,6 +6946,7 @@ async fn entities_marks_undocumented_files_without_a_doc_path() {
 }
 
 #[tokio::test]
+#[cfg(feature = "lang-markdown")]
 async fn doc_staleness_flags_code_committed_after_the_doc() {
     // Drift detection is the one part that needs real git history: a doc is
     // stale when its covered code was committed *after* it.
