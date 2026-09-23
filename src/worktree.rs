@@ -56,6 +56,45 @@ pub fn git_worktree_root(dir: &Path) -> Option<PathBuf> {
     realpath(Path::new(trimmed))
 }
 
+/// When `dir` is inside a *linked* worktree, the same relative path inside
+/// the repository's main checkout; `None` from the main checkout itself,
+/// outside git, or for a bare repository (which has no main working tree).
+///
+/// The upward `.tokensave/` walk only reaches the main checkout's index when
+/// the worktree is nested inside it. Worktree managers that place checkouts
+/// elsewhere (e.g. `~/workspaces/<repo>/<branch>/`) leave the walk with
+/// nothing to find, so `serve` uses this to locate the main checkout's index
+/// the way a nested worktree would have found it.
+pub fn main_checkout_counterpart(dir: &Path) -> Option<PathBuf> {
+    let worktree_root = git_worktree_root(dir)?;
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8(output.stdout).ok()?;
+    let common = PathBuf::from(raw.trim());
+    let common = realpath(&if common.is_absolute() {
+        common
+    } else {
+        dir.join(common)
+    })?;
+    // A non-bare repository keeps its common dir at `<main>/.git`.
+    if common.file_name()? != ".git" {
+        return None;
+    }
+    let main_root = common.parent()?.to_path_buf();
+    if main_root == worktree_root {
+        return None;
+    }
+    let dir = realpath(dir)?;
+    let relative = dir.strip_prefix(&worktree_root).ok()?;
+    Some(main_root.join(relative))
+}
+
 /// Detect when `start_path` lives in one git working tree but the resolved
 /// tokensave index (`index_root`) belongs to a *different* working tree.
 ///
@@ -213,5 +252,70 @@ mod tests {
         run_git(&inner, &["init", "--quiet"]);
         // start in inner-repo, index_root = outer (plain dir, no .git)
         assert!(detect_worktree_index_mismatch(&inner, &outer).is_none());
+    }
+
+    /// A main checkout with one commit and a linked worktree created as a
+    /// *sibling* of it — outside the main tree, the layout that the upward
+    /// `.tokensave/` walk can never reach from the worktree.
+    fn main_with_sibling_worktree(tmp: &Path) -> (PathBuf, PathBuf) {
+        let main = tmp.join("main");
+        fs::create_dir_all(main.join("packages/app")).unwrap();
+        run_git(&main, &["init", "--quiet"]);
+        fs::write(main.join("packages/app/README.md"), "hi").unwrap();
+        run_git(&main, &["add", "."]);
+        run_git(
+            &main,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "--quiet",
+                "-m",
+                "init",
+            ],
+        );
+        let worktree = tmp.join("elsewhere/wt");
+        run_git(
+            &main,
+            &["worktree", "add", "--detach", worktree.to_str().unwrap()],
+        );
+        (main, worktree)
+    }
+
+    #[test]
+    fn counterpart_maps_sibling_worktree_to_main_checkout() {
+        let tmp = tempdir().unwrap();
+        let (main, worktree) = main_with_sibling_worktree(tmp.path());
+        assert_eq!(
+            main_checkout_counterpart(&worktree),
+            Some(fs::canonicalize(&main).unwrap())
+        );
+    }
+
+    #[test]
+    fn counterpart_preserves_subdirectory_within_worktree() {
+        // A monorepo whose index lives in a subproject: the worktree's
+        // subdirectory must map onto the same subdirectory of main.
+        let tmp = tempdir().unwrap();
+        let (main, worktree) = main_with_sibling_worktree(tmp.path());
+        assert_eq!(
+            main_checkout_counterpart(&worktree.join("packages/app")),
+            Some(fs::canonicalize(&main).unwrap().join("packages/app"))
+        );
+    }
+
+    #[test]
+    fn no_counterpart_from_main_checkout() {
+        let tmp = tempdir().unwrap();
+        let (main, _worktree) = main_with_sibling_worktree(tmp.path());
+        assert!(main_checkout_counterpart(&main).is_none());
+    }
+
+    #[test]
+    fn no_counterpart_outside_git() {
+        let tmp = tempdir().unwrap();
+        assert!(main_checkout_counterpart(tmp.path()).is_none());
     }
 }

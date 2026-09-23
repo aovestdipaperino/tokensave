@@ -14,6 +14,18 @@ pub async fn ensure_initialized(project_path: &Path) -> tokensave::errors::Resul
     })
 }
 
+/// Fallback for `serve`: when CWD-based discovery fails inside a linked git
+/// worktree that sits outside its main checkout, discover the project from
+/// the main checkout's equivalent path instead. A worktree nested inside the
+/// main checkout already reaches that index by walking up; this gives a
+/// sibling worktree the same answer, and the borrowed-worktree notice (#312)
+/// then tells the agent which tree it is reading.
+pub fn resolve_serve_from_main_worktree() -> Option<std::path::PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let counterpart = tokensave::worktree::main_checkout_counterpart(&cwd)?;
+    tokensave::config::discover_project_root(&counterpart)
+}
+
 /// Fallback for `serve`: when CWD-based discovery fails, check the global DB
 /// for registered projects. When multiple projects exist, pick the best match
 /// against cwd: prefer a project that is an ancestor of cwd (cwd is inside the

@@ -1127,9 +1127,22 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let cg = match serve::ensure_initialized(&project_path).await {
                 Ok(cg) => cg,
                 Err(_) => {
-                    // CWD-based discovery failed (e.g. VS Code launched us from ~).
-                    // Fall back to the global DB's registered projects.
-                    match serve::resolve_serve_from_global_db().await {
+                    // A linked worktree outside its main checkout: the upward
+                    // walk cannot reach the main index, so borrow it the way a
+                    // nested worktree would.
+                    let from_main_worktree = if explicit_path {
+                        None
+                    } else {
+                        serve::resolve_serve_from_main_worktree()
+                    };
+                    // Otherwise CWD-based discovery failed (e.g. VS Code
+                    // launched us from ~). Fall back to the global DB's
+                    // registered projects.
+                    let fallback = match from_main_worktree {
+                        Some(p) => Some(p),
+                        None => serve::resolve_serve_from_global_db().await,
+                    };
+                    match fallback {
                         Some(p) => serve::ensure_initialized(&p).await?,
                         None => {
                             // Last resort: peek at the first stdin line for MCP
