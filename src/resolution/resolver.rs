@@ -238,6 +238,7 @@ fn lang_from_path(path: &str) -> &'static str {
         "tf" | "tfvars" => "terraform",
         "zig" => "zig",
         "proto" => "proto",
+        "v" | "vh" | "sv" | "svh" => "systemverilog",
         _ => "unknown",
     }
 }
