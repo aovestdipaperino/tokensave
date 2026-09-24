@@ -281,3 +281,80 @@ async fn a_package_import_is_recorded() {
         "an `import pkg_a::*` must be recorded, got {uses:?}"
     );
 }
+
+/// A Verilog top that instantiates `child`, beside a Rust crate with a
+/// `mod child`. With `with_verilog_child`, `lib/child.v` defines the module
+/// too, in a directory as far from `rtl/` as `src/` is, so path proximity
+/// cannot break a tie between the two candidates.
+async fn mixed_language_fixture(with_verilog_child: bool) -> (TempDir, TokenSave) {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("rtl")).unwrap();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join("lib")).unwrap();
+
+    fs::write(
+        project.join("rtl/top.v"),
+        "module top (input wire clk);\n\
+        \x20 child u_child (.clk(clk));\n\
+         endmodule\n",
+    )
+    .unwrap();
+    if with_verilog_child {
+        fs::write(
+            project.join("lib/child.v"),
+            "module child (input wire clk);\nendmodule\n",
+        )
+        .unwrap();
+    }
+    fs::write(
+        project.join("src/lib.rs"),
+        "pub mod child {\n    pub fn run() {}\n}\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    (dir, cg)
+}
+
+/// A Verilog file had no language in the resolver, so a same-named symbol in
+/// another language scored as if it were in the same language. A Rust
+/// `mod child` was the only `Module` named `child`, and the instantiation
+/// bound to it at full confidence.
+#[tokio::test]
+async fn an_instantiation_does_not_bind_to_a_rust_module_of_the_same_name() {
+    let (_dir, cg) = mixed_language_fixture(false).await;
+    let nodes = cg.get_all_nodes().await.unwrap();
+    let edges = cg.get_all_edges().await.unwrap();
+    let cross: Vec<_> = edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Instantiates)
+        .filter_map(|e| nodes.iter().find(|n| n.id == e.target))
+        .map(|n| n.file_path.clone())
+        .collect();
+    assert!(
+        cross.is_empty(),
+        "no Verilog module named child exists, so nothing may be instantiated: {cross:?}"
+    );
+}
+
+/// With a Verilog `child` and a Rust `mod child` both in the index, the two
+/// tied and the reference resolved to nothing. The Verilog module must win.
+#[tokio::test]
+async fn an_instantiation_prefers_the_verilog_module_over_a_rust_module() {
+    let (_dir, cg) = mixed_language_fixture(true).await;
+    let nodes = cg.get_all_nodes().await.unwrap();
+    let edges = cg.get_all_edges().await.unwrap();
+    let targets: Vec<_> = edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Instantiates)
+        .filter_map(|e| nodes.iter().find(|n| n.id == e.target))
+        .map(|n| n.file_path.clone())
+        .collect();
+    assert_eq!(
+        targets,
+        vec!["lib/child.v".to_string()],
+        "the instantiation must resolve to the Verilog module"
+    );
+}
