@@ -16,6 +16,7 @@
 use std::fs;
 
 use tempfile::TempDir;
+use tokensave::mcp::handle_tool_call;
 use tokensave::tokensave::TokenSave;
 use tokensave::types::{EdgeKind, NodeKind};
 
@@ -381,4 +382,87 @@ async fn a_use_clause_through_a_user_library_names_the_package() {
                 .any(|n| n.id == e.target && n.kind == NodeKind::Package && n.name == "loot_pkg")
     });
     assert!(resolved, "the use clause must resolve to package loot_pkg");
+}
+
+/// Instantiation is the hierarchy of a design, and `callers`/`callees` are
+/// how that hierarchy is read: the callers of an entity are the
+/// architectures that instantiate it, tagged with the `instantiates` edge so
+/// a reader can tell them from a procedure call.
+#[tokio::test]
+async fn callers_and_callees_follow_instantiation() {
+    let (_dir, cg) = fixture().await;
+    let nodes = cg.get_all_nodes().await.unwrap();
+    let child = nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Module && n.name == "child")
+        .unwrap();
+    let top = nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Module && n.name == "top(struct)")
+        .unwrap();
+
+    let callers = cg.get_callers(&child.id, 1).await.unwrap();
+    assert!(
+        callers
+            .iter()
+            .any(|(n, e)| n.id == top.id && e.kind == EdgeKind::Instantiates),
+        "top(struct) instantiates child, so it is a caller of child: {:?}",
+        callers
+            .iter()
+            .map(|(n, e)| (&n.name, &e.kind))
+            .collect::<Vec<_>>()
+    );
+
+    let callees = cg.get_callees(&top.id, 1).await.unwrap();
+    assert!(
+        callees
+            .iter()
+            .any(|(n, e)| n.id == child.id && e.kind == EdgeKind::Instantiates),
+        "child is a callee of top(struct): {:?}",
+        callees
+            .iter()
+            .map(|(n, e)| (&n.name, &e.kind))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// `tokensave_rank` accepts `instantiates`, so the most-instantiated entity
+/// in a design can be found the way the most-implemented interface can.
+#[tokio::test]
+async fn rank_accepts_the_instantiates_edge_kind() {
+    let defs = tokensave::mcp::tools::get_tool_definitions();
+    let rank = defs.iter().find(|d| d.name == "tokensave_rank").unwrap();
+    let allowed = rank.input_schema["properties"]["edge_kind"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        allowed.contains(&"instantiates"),
+        "the schema must offer instantiates: {allowed:?}"
+    );
+
+    let (_dir, cg) = fixture().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_rank",
+        serde_json::json!({"edge_kind": "instantiates", "direction": "incoming"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = result.value["content"][0]["text"].as_str().unwrap();
+    let ranking: serde_json::Value = serde_json::from_str(text).unwrap();
+    let names: Vec<&str> = ranking["ranking"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"child"),
+        "child must be ranked as an instantiated entity: {names:?}"
+    );
 }
