@@ -75,8 +75,10 @@ async fn cost_summary_original(
     tokens_saved: u64,
 ) -> Option<CostSummary> {
     let total_cost = gdb.total_cost_since(since).await?;
-    let (total_input, total_output, total_cache_read) =
-        gdb.token_breakdown_since(since).await.unwrap_or((0, 0, 0));
+    let (total_input, total_output, total_cache_read, total_cache_write) = gdb
+        .token_breakdown_since(since)
+        .await
+        .unwrap_or((0, 0, 0, 0));
     let by_model = gdb.cost_by_model_since(since).await;
     let by_category = gdb.cost_by_category_since(since).await;
     let by_agent = gdb.cost_by_agent_since(since).await;
@@ -93,6 +95,7 @@ async fn cost_summary_original(
         total_input_tokens: total_input,
         total_output_tokens: total_output,
         total_cache_read_tokens: total_cache_read,
+        total_cache_write_tokens: total_cache_write,
         by_model,
         by_category,
         tokens_saved,
@@ -292,7 +295,37 @@ fn month_start_epoch(now: u64) -> u64 {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::global_db::AgentCostSummary;
+    use crate::global_db::{AgentCostSummary, GlobalDb};
+    use crate::types::CostTurn;
+
+    #[tokio::test]
+    async fn legacy_summary_includes_cache_write_tokens() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = GlobalDb::open_at(&temp.path().join("global.db"))
+            .await
+            .unwrap();
+        let turn = CostTurn {
+            message_id: "legacy-summary-cache-write".to_string(),
+            project_hash: "test".to_string(),
+            session_id: "test-session".to_string(),
+            model: "claude-3".to_string(),
+            timestamp: 1,
+            input_tokens: 100,
+            output_tokens: 200,
+            cache_write_tokens: 300,
+            cache_read_tokens: 400,
+            cost_usd: 0.5,
+            category: "other".to_string(),
+            tool_names: String::new(),
+            agent: "claude".to_string(),
+            credits: None,
+        };
+        assert!(db.insert_turn(&turn).await);
+
+        let summary = cost_summary_original(&db, 0, 0).await.unwrap();
+
+        assert_eq!(summary.total_cache_write_tokens, 300);
+    }
 
     fn make_agent(
         agent: &str,
