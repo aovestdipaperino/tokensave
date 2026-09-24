@@ -351,6 +351,7 @@ pub(crate) fn display_language_for_path(path: &str) -> &'static str {
         "bas" => "BASIC",
         "bat" | "cmd" => "Batch",
         "glsl" | "vert" | "frag" | "comp" | "geom" | "tesc" | "tese" => "GLSL",
+        "v" | "vh" | "sv" | "svh" => "SystemVerilog",
         "qnt" => "Quint",
         "gd" => "GDScript",
         _ => "Other",
@@ -444,6 +445,10 @@ mod tests {
         assert_eq!(display_language_for_path("foo.fst"), "F*");
         assert_eq!(display_language_for_path("foo.fsti"), "F*");
         assert_eq!(display_language_for_path("foo.cpp"), "C++");
+        assert_eq!(display_language_for_path("rtl/top.v"), "SystemVerilog");
+        assert_eq!(display_language_for_path("rtl/defs.vh"), "SystemVerilog");
+        assert_eq!(display_language_for_path("rtl/top.sv"), "SystemVerilog");
+        assert_eq!(display_language_for_path("rtl/pkg.svh"), "SystemVerilog");
         assert_eq!(
             display_language_for_path("com/example/Game.as"),
             "ActionScript"
