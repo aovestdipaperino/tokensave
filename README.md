@@ -901,6 +901,7 @@ Always compiled. The smallest binary for the most popular languages, plus Svelte
 | WGSL | `.wgsl` | `lang-wgsl` |
 | HLSL | `.hlsl`, `.fx` | `lang-hlsl` |
 | Verilog / SystemVerilog | `.v`, `.vh`, `.sv`, `.svh` | `lang-systemverilog` |
+| VHDL | `.vhd`, `.vhdl` | `lang-vhdl` |
 | Metal | `.metal` | `lang-metal` |
 | CUDA / HIP | `.cu`, `.cuh` | `lang-cuda` |
 | Markdown | `.md`, `.markdown` | `lang-markdown` |

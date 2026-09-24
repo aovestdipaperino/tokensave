@@ -4331,6 +4331,7 @@ dependencies = [
  "tree-sitter-html",
  "tree-sitter-language",
  "tree-sitter-systemverilog",
+ "tree-sitter-vhdl",
  "ureq",
  "walkdir",
  "windows-sys 0.61.2",
@@ -5151,6 +5152,16 @@ name = "tree-sitter-vb-dotnet"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "180e4a199378505f9305c3d01d6ece8a8d34035f310de1c727693f8a2296025e"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-vhdl"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0feb025ddf87c45bb98335ef2a2493cac08ec6b74d33201d1bf75df2be08de23"
 dependencies = [
  "cc",
  "tree-sitter-language",

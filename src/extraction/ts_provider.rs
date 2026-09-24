@@ -72,6 +72,8 @@ static LANGUAGES: LazyLock<HashMap<&'static str, Language>> = LazyLock::new(|| {
     map.insert("html", tree_sitter_html::LANGUAGE.into());
     #[cfg(feature = "lang-css")]
     map.insert("css", tree_sitter_css::LANGUAGE.into());
+    #[cfg(feature = "lang-vhdl")]
+    map.insert("vhdl", tree_sitter_vhdl::LANGUAGE.into());
 
     map
 });

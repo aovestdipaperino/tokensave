@@ -14,7 +14,34 @@ pub struct GraphTraverser<'a> {
     db: &'a Database,
 }
 
+/// True for a node kind that an `instantiates` edge can connect: the same
+/// set the resolver accepts as a target for one. Every other kind, which is
+/// every function and method, keeps the single-kind query, so a graph with
+/// no hierarchy pays nothing for it.
+fn is_hierarchy_kind(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Module | NodeKind::Interface | NodeKind::InterfaceType
+    )
+}
+
+/// The edge kinds a callers or callees step follows from a node.
+fn edge_kinds_for(hierarchy: bool) -> &'static [EdgeKind] {
+    if hierarchy {
+        &[EdgeKind::Calls, EdgeKind::Instantiates]
+    } else {
+        &[EdgeKind::Calls]
+    }
+}
+
 impl<'a> GraphTraverser<'a> {
+    /// Whether the start node of a traversal can carry `instantiates` edges.
+    /// A node that is not in the graph follows calls only.
+    async fn is_hierarchy_node(&self, node_id: &str) -> Result<bool> {
+        let nodes = self.db.get_nodes_by_ids(&[node_id.to_string()]).await?;
+        Ok(nodes.first().is_some_and(|n| is_hierarchy_kind(&n.kind)))
+    }
+
     /// Creates a new `GraphTraverser` backed by the given database.
     pub fn new(db: &'a Database) -> Self {
         Self { db }
@@ -288,17 +315,21 @@ impl<'a> GraphTraverser<'a> {
         let mut visited: HashSet<String> = HashSet::new();
         visited.insert(node_id.to_string());
 
-        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-        queue.push_back((node_id.to_string(), 0));
+        let mut queue: VecDeque<(String, usize, bool)> = VecDeque::new();
+        queue.push_back((
+            node_id.to_string(),
+            0,
+            self.is_hierarchy_node(node_id).await?,
+        ));
 
-        while let Some((current_id, depth)) = queue.pop_front() {
+        while let Some((current_id, depth, hierarchy)) = queue.pop_front() {
             if depth >= max_depth {
                 continue;
             }
 
             let edges = self
                 .db
-                .get_incoming_edges(&current_id, &[EdgeKind::Calls])
+                .get_incoming_edges(&current_id, edge_kinds_for(hierarchy))
                 .await?;
 
             let caller_ids: Vec<String> = edges
@@ -325,7 +356,11 @@ impl<'a> GraphTraverser<'a> {
 
                 if let Some(caller_node) = caller_map.get(caller_id) {
                     visited.insert(caller_id.clone());
-                    queue.push_back((caller_id.clone(), depth + 1));
+                    queue.push_back((
+                        caller_id.clone(),
+                        depth + 1,
+                        is_hierarchy_kind(&caller_node.kind),
+                    ));
                     // `depth` is the hop count of `current_id`; the caller we
                     // just found is one hop further out.
                     results.push((caller_node.clone(), edge, depth + 1));
@@ -350,16 +385,20 @@ impl<'a> GraphTraverser<'a> {
         let mut visited: HashSet<String> = HashSet::new();
         visited.insert(node_id.to_string());
 
-        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-        queue.push_back((node_id.to_string(), 0));
+        let mut queue: VecDeque<(String, usize, bool)> = VecDeque::new();
+        queue.push_back((
+            node_id.to_string(),
+            0,
+            self.is_hierarchy_node(node_id).await?,
+        ));
 
-        while let Some((current_id, depth)) = queue.pop_front() {
+        while let Some((current_id, depth, hierarchy)) = queue.pop_front() {
             if depth >= max_depth {
                 continue;
             }
             let edges = self
                 .db
-                .get_incoming_edges(&current_id, &[EdgeKind::Calls])
+                .get_incoming_edges(&current_id, edge_kinds_for(hierarchy))
                 .await?;
             let caller_ids: HashSet<String> = edges
                 .iter()
@@ -385,7 +424,11 @@ impl<'a> GraphTraverser<'a> {
                 }
                 if let Some(caller_node) = caller_map.get(caller_id) {
                     visited.insert(caller_id.clone());
-                    queue.push_back((caller_id.clone(), depth + 1));
+                    queue.push_back((
+                        caller_id.clone(),
+                        depth + 1,
+                        is_hierarchy_kind(&caller_node.kind),
+                    ));
                     results.push((caller_node.clone(), edge, depth + 1, None));
                 }
             }
@@ -405,7 +448,11 @@ impl<'a> GraphTraverser<'a> {
                     }
                     visited.insert(caller.id.clone());
                     if has_upstream {
-                        queue.push_back((caller.id.clone(), depth + 1));
+                        queue.push_back((
+                            caller.id.clone(),
+                            depth + 1,
+                            is_hierarchy_kind(&caller.kind),
+                        ));
                     }
                     results.push((caller, edge, depth + 1, Some(dispatch_from)));
                 }
@@ -424,17 +471,21 @@ impl<'a> GraphTraverser<'a> {
         let mut visited: HashSet<String> = HashSet::new();
         visited.insert(node_id.to_string());
 
-        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-        queue.push_back((node_id.to_string(), 0));
+        let mut queue: VecDeque<(String, usize, bool)> = VecDeque::new();
+        queue.push_back((
+            node_id.to_string(),
+            0,
+            self.is_hierarchy_node(node_id).await?,
+        ));
 
-        while let Some((current_id, depth)) = queue.pop_front() {
+        while let Some((current_id, depth, hierarchy)) = queue.pop_front() {
             if depth >= max_depth {
                 continue;
             }
 
             let edges = self
                 .db
-                .get_outgoing_edges(&current_id, &[EdgeKind::Calls])
+                .get_outgoing_edges(&current_id, edge_kinds_for(hierarchy))
                 .await?;
 
             let callee_ids: Vec<String> = edges
@@ -461,7 +512,11 @@ impl<'a> GraphTraverser<'a> {
 
                 if let Some(callee_node) = callee_map.get(callee_id) {
                     visited.insert(callee_id.clone());
-                    queue.push_back((callee_id.clone(), depth + 1));
+                    queue.push_back((
+                        callee_id.clone(),
+                        depth + 1,
+                        is_hierarchy_kind(&callee_node.kind),
+                    ));
                     results.push((callee_node.clone(), edge));
                 }
             }
@@ -897,4 +952,32 @@ fn is_container_kind(kind: &NodeKind) -> bool {
             | NodeKind::Impl
             | NodeKind::Enum
     )
+}
+
+#[cfg(test)]
+mod hierarchy_edge_kinds {
+    use super::*;
+
+    /// A function or method keeps the single-kind query, so a graph with no
+    /// `instantiates` edges pays nothing for the hierarchy rule.
+    #[test]
+    fn only_hierarchy_kinds_follow_instantiates() {
+        assert!(is_hierarchy_kind(&NodeKind::Module));
+        assert!(is_hierarchy_kind(&NodeKind::Interface));
+        assert!(is_hierarchy_kind(&NodeKind::InterfaceType));
+        for kind in [
+            NodeKind::Function,
+            NodeKind::Method,
+            NodeKind::Class,
+            NodeKind::Struct,
+            NodeKind::Package,
+        ] {
+            assert!(!is_hierarchy_kind(&kind), "{kind:?}");
+        }
+        assert_eq!(edge_kinds_for(false), &[EdgeKind::Calls]);
+        assert_eq!(
+            edge_kinds_for(true),
+            &[EdgeKind::Calls, EdgeKind::Instantiates]
+        );
+    }
 }

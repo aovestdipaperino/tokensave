@@ -1,4 +1,4 @@
-use crate::types::{NodeKind, SearchResult, Visibility};
+use crate::types::{Node, NodeKind, SearchResult, Visibility};
 
 /// Boost factor based on node kind.
 pub fn kind_boost(kind: &NodeKind) -> f64 {
@@ -224,9 +224,33 @@ pub fn apply_connectivity_boost<S: std::hash::BuildHasher>(
 }
 
 /// Re-ranks search result candidates using structural signals.
+/// True for a VHDL or Verilog source file.
+fn is_hdl_path(path: &str) -> bool {
+    let ext = path.rsplit('.').next().unwrap_or("");
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "vhd" | "vhdl" | "v" | "vh" | "sv" | "svh"
+    )
+}
+
+/// Boost for a node's kind, with one language-aware exception.
+///
+/// An HDL entity, architecture, or module is indexed as a `Module` because
+/// an instantiation targets it (#344). In a hardware design it is the
+/// primary unit, the counterpart of a class or function: a question about
+/// the design hierarchy expects entities first, not the processes and
+/// constants declared inside them. A `Module` in a VHDL or Verilog file
+/// therefore ranks with functions, not with Rust modules and Ruby mixins.
+pub fn node_kind_boost(node: &Node) -> f64 {
+    if node.kind == NodeKind::Module && is_hdl_path(&node.file_path) {
+        return 2.0;
+    }
+    kind_boost(&node.kind)
+}
+
 pub fn rerank_candidates(candidates: &mut [SearchResult]) {
     for candidate in candidates.iter_mut() {
-        let boost = kind_boost(&candidate.node.kind)
+        let boost = node_kind_boost(&candidate.node)
             * visibility_boost(&candidate.node.visibility)
             * path_boost(&candidate.node.file_path)
             * path_rank_multiplier(&candidate.node.file_path)
@@ -412,6 +436,20 @@ mod tests {
     fn test_enum_variant_low_boost() {
         assert!(kind_boost(&NodeKind::EnumVariant) < 1.0);
         assert!(kind_boost(&NodeKind::Function) > 1.0);
+    }
+
+    #[test]
+    fn hdl_design_units_rank_as_functions_not_modules() {
+        let entity = make_result(NodeKind::Module, Visibility::Pub, "rtl/top.vhd", 1.0);
+        let verilog = make_result(NodeKind::Module, Visibility::Pub, "rtl/top.sv", 1.0);
+        let rust_mod = make_result(NodeKind::Module, Visibility::Pub, "src/lib.rs", 1.0);
+        assert_eq!(node_kind_boost(&entity.node), 2.0);
+        assert_eq!(node_kind_boost(&verilog.node), 2.0);
+        assert_eq!(
+            node_kind_boost(&rust_mod.node),
+            kind_boost(&NodeKind::Module)
+        );
+        assert!(node_kind_boost(&rust_mod.node) < 2.0);
     }
 
     #[test]
