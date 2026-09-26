@@ -893,6 +893,7 @@ impl McpServer {
                 root_args,
                 None,
                 None,
+                true,
                 Some(&self.session_state),
             )
             .await;
@@ -2411,6 +2412,7 @@ impl McpServer {
             arguments,
             server_stats,
             scope_prefix,
+            selected.is_some(),
             Some(&self.session_state),
         )
         .await;

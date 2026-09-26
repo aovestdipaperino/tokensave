@@ -21,6 +21,7 @@ pub(super) async fn handle_status(
     cg: &TokenSave,
     server_stats: Option<Value>,
     scope_prefix: Option<&str>,
+    selected_graph: bool,
 ) -> Result<ToolResult> {
     let stats = cg.get_stats().await?;
     let mut output: Value = serde_json::to_value(&stats).unwrap_or(json!({}));
@@ -83,12 +84,19 @@ pub(super) async fn handle_status(
         }
     }
 
-    // File-level staleness summary (sample up to 100 files for efficiency)
-    let all_files = cg.get_all_files().await.unwrap_or_default();
-    let sample_paths: Vec<String> = all_files.iter().take(100).map(|f| f.path.clone()).collect();
-    let stale_files = cg.check_file_staleness(&sample_paths).await;
-    if !stale_files.is_empty() {
-        output["stale_files"] = json!(stale_files.len());
+    // A selected graph is a read-only snapshot, and its records cannot be
+    // compared reliably with the caller's current worktree (which may be on a
+    // different branch). Do not report a stale count that would imply such a
+    // comparison is meaningful.
+    if !selected_graph {
+        // File-level staleness summary (sample up to 100 files for efficiency)
+        let all_files = cg.get_all_files().await.unwrap_or_default();
+        let sample_paths: Vec<String> =
+            all_files.iter().take(100).map(|f| f.path.clone()).collect();
+        let stale_files = cg.check_file_staleness(&sample_paths).await;
+        if !stale_files.is_empty() {
+            output["stale_files"] = json!(stale_files.len());
+        }
     }
 
     if let Some(prefix) = scope_prefix {

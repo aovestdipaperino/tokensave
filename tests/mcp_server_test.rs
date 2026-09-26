@@ -3828,3 +3828,30 @@ async fn selected_status_reports_the_selected_graph() {
     );
     let _ = local_dir;
 }
+
+#[tokio::test]
+async fn selected_status_omits_unverifiable_stale_file_count() {
+    let (_local_dir, local) = setup_named_project("local_only").await;
+    let selected_dir = setup_selected_branch_project().await;
+    run_git(selected_dir.path(), &["checkout", "main"]);
+    let server = McpServer::new(local, None).await;
+
+    let response = call_server(
+        &server,
+        73,
+        "tokensave_status",
+        json!({
+            "graph_root": selected_dir.path().display().to_string(),
+            "graph_branch": "feature"
+        }),
+    )
+    .await;
+
+    assert!(response["error"].is_null(), "{response}");
+    let text = response_text(&response);
+    assert_eq!(response["result"]["_meta"]["tokensave"]["selected"], true);
+    assert!(
+        !text.contains("stale_files"),
+        "selected read-only graphs must not compare against the current worktree: {text}"
+    );
+}

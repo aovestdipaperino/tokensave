@@ -95,6 +95,7 @@ async fn literal_search_with_session(
         json!({ "query": query, "literal": true, "format": "json" }),
         None,
         None,
+        false,
         session,
     )
     .await
