@@ -634,6 +634,65 @@ async fn test_check_file_staleness_after_modification() {
 }
 
 #[tokio::test]
+async fn mtime_only_sync_clears_staleness_without_reindexing() {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let (dir, cg) = setup().await;
+    let path = dir.path().join("src/lib.rs");
+    let contents = fs::read(&path).unwrap();
+    let record = cg
+        .get_all_files()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|file| file.path == "src/lib.rs")
+        .unwrap();
+
+    let mut file = OpenOptions::new().write(true).open(&path).unwrap();
+    file.write_all(&contents).unwrap();
+    file.set_modified(UNIX_EPOCH + Duration::from_secs(record.indexed_at as u64 + 2))
+        .unwrap();
+
+    assert!(
+        cg.check_file_staleness(&["src/lib.rs".to_string()])
+            .await
+            .contains(&"src/lib.rs".to_string()),
+        "the mtime-only change must be stale before sync"
+    );
+    assert!(!cg.find_stale_files().await.is_empty());
+
+    let result = cg.sync().await.unwrap();
+    assert_eq!(result.files_modified, 0, "content did not change");
+    let refreshed = cg
+        .get_all_files()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|file| file.path == "src/lib.rs")
+        .unwrap();
+    assert!(
+        refreshed.modified_at > record.modified_at,
+        "sync must refresh modified_at for an mtime-only change"
+    );
+    assert_eq!(
+        refreshed.indexed_at, record.indexed_at,
+        "mtime-only sync must not reindex the file"
+    );
+    assert!(
+        cg.check_file_staleness(&["src/lib.rs".to_string()])
+            .await
+            .is_empty(),
+        "a successful mtime-only sync must clear direct staleness"
+    );
+    assert!(
+        cg.find_stale_files().await.is_empty(),
+        "a successful mtime-only sync must clear whole-tree staleness"
+    );
+}
+
+#[tokio::test]
 async fn test_check_file_staleness_new_file_not_in_db() {
     use tempfile::tempdir;
     let tmp = tempdir().unwrap();

@@ -21,6 +21,7 @@ pub(super) async fn handle_status(
     cg: &TokenSave,
     server_stats: Option<Value>,
     scope_prefix: Option<&str>,
+    selected_graph: bool,
 ) -> Result<ToolResult> {
     let stats = cg.get_stats().await?;
     let mut output: Value = serde_json::to_value(&stats).unwrap_or(json!({}));
@@ -67,7 +68,7 @@ pub(super) async fn handle_status(
     // metadata timestamp, which survives `Database::clear()`. Without this, an
     // empty files table makes `git_commits_since(0)` count every commit in
     // history (#267).
-    if !rebuild_in_progress {
+    if !rebuild_in_progress && !selected_graph {
         let staleness_since = if stats.last_updated > 0 {
             stats.last_updated as i64
         } else {
@@ -83,12 +84,19 @@ pub(super) async fn handle_status(
         }
     }
 
-    // File-level staleness summary (sample up to 100 files for efficiency)
-    let all_files = cg.get_all_files().await.unwrap_or_default();
-    let sample_paths: Vec<String> = all_files.iter().take(100).map(|f| f.path.clone()).collect();
-    let stale_files = cg.check_file_staleness(&sample_paths).await;
-    if !stale_files.is_empty() {
-        output["stale_files"] = json!(stale_files.len());
+    // A selected graph is a read-only snapshot, and its records cannot be
+    // compared reliably with the caller's current worktree (which may be on a
+    // different branch). Do not report a stale count that would imply such a
+    // comparison is meaningful.
+    if !selected_graph {
+        // File-level staleness summary (sample up to 100 files for efficiency)
+        let all_files = cg.get_all_files().await.unwrap_or_default();
+        let sample_paths: Vec<String> =
+            all_files.iter().take(100).map(|f| f.path.clone()).collect();
+        let stale_files = cg.check_file_staleness(&sample_paths).await;
+        if !stale_files.is_empty() {
+            output["stale_files"] = json!(stale_files.len());
+        }
     }
 
     if let Some(prefix) = scope_prefix {
