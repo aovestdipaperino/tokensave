@@ -118,7 +118,7 @@ impl AgentIntegration for OmpIntegration {
         {
             return true;
         }
-        resolve_omp_agent_dir().is_ok()
+        resolve_omp_agent_dir().is_ok_and(|path| path.is_dir())
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {

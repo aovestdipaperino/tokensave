@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokensave::agents::{
     available_integrations, expected_tool_perms, get_integration, managed_rules_contents,
-    migrate_installed_agents, rules_for_agent, AgentIntegration, DoctorCounters,
-    HealthcheckContext, InstallContext, InstallScope, OmpIntegration,
+    migrate_installed_agents, pick_integrations_interactive, rules_for_agent, AgentIntegration,
+    DoctorCounters, HealthcheckContext, InstallContext, InstallScope, OmpIntegration,
 };
 use tokensave::errors::TokenSaveError;
 use tokensave::user_config::UserConfig;
@@ -422,6 +422,43 @@ fn doctor_skips_omp_when_neither_global_nor_project_install_is_detected() {
 
     assert_eq!(result.issues, 0);
     assert_eq!(result.warnings, 0);
+}
+
+#[test]
+fn missing_resolved_profile_is_not_detected_but_real_profiles_are() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    let missing = temp.path().join("profiles/missing/agent");
+    write_fake_omp(&bin_dir, &missing, 0);
+    let _path = PathGuard::replace(&bin_dir);
+
+    assert!(!OmpIntegration.is_detected(&home));
+    assert!(pick_integrations_interactive(&home, &[]).is_err());
+
+    let mut config = UserConfig::default();
+    migrate_installed_agents(&home, &mut config);
+    assert!(!config.installed_agents.contains(&"omp".to_string()));
+
+    std::fs::create_dir_all(home.join(".omp")).unwrap();
+    assert!(OmpIntegration.is_detected(&home));
+    std::fs::remove_dir_all(home.join(".omp")).unwrap();
+
+    let registered = temp.path().join("profiles/registered/agent");
+    std::fs::create_dir_all(&registered).unwrap();
+    let registry_path = home.join(".tokensave/omp-profiles.json");
+    std::fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        registry_path,
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "agent_dirs": [registered],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(OmpIntegration.is_detected(&home));
 }
 
 #[test]
