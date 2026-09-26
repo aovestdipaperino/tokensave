@@ -469,7 +469,8 @@ pub async fn handle_tool_call(
     server_stats: Option<Value>,
     scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
-    handle_tool_call_with_session(cg, tool_name, args, server_stats, scope_prefix, None).await
+    handle_tool_call_with_session(cg, tool_name, args, server_stats, scope_prefix, false, None)
+        .await
 }
 
 /// Dispatches a tool call to the appropriate handler.
@@ -485,6 +486,7 @@ pub async fn handle_tool_call_with_session(
     mut args: Value,
     server_stats: Option<Value>,
     scope_prefix: Option<&str>,
+    selected_graph: bool,
     session: Option<&SessionState>,
 ) -> Result<ToolResult> {
     normalize_path_args(
@@ -506,7 +508,9 @@ pub async fn handle_tool_call_with_session(
         "tokensave_callees" => graph::handle_callees(cg, args).await,
         "tokensave_impact" => graph::handle_impact(cg, args).await,
         "tokensave_node" => graph::handle_node(cg, args).await,
-        "tokensave_status" => info::handle_status(cg, server_stats, scope_prefix).await,
+        "tokensave_status" => {
+            info::handle_status(cg, server_stats, scope_prefix, selected_graph).await
+        }
         "tokensave_files" => info::handle_files(cg, args, scope_prefix).await,
         "tokensave_affected" => git::handle_affected(cg, args).await,
         "tokensave_dead_code" => analysis::handle_dead_code(cg, args, scope_prefix).await,
