@@ -68,7 +68,7 @@ pub(super) async fn handle_status(
     // metadata timestamp, which survives `Database::clear()`. Without this, an
     // empty files table makes `git_commits_since(0)` count every commit in
     // history (#267).
-    if !rebuild_in_progress {
+    if !rebuild_in_progress && !selected_graph {
         let staleness_since = if stats.last_updated > 0 {
             stats.last_updated as i64
         } else {

@@ -3854,4 +3854,8 @@ async fn selected_status_omits_unverifiable_stale_file_count() {
         !text.contains("stale_files"),
         "selected read-only graphs must not compare against the current worktree: {text}"
     );
+    assert!(
+        !text.contains("stale_commits"),
+        "selected read-only graphs must not compare commits against the current HEAD: {text}"
+    );
 }
