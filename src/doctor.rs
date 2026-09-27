@@ -328,10 +328,20 @@ fn check_hook_freshness(dc: &mut DoctorCounters, project_path: &std::path::Path)
         return;
     }
     for path in stale {
+        let local_hook = tokensave_hooks::repo_hooks_dir(project_path)
+            .map(|dir| dir.join("post-checkout"))
+            .is_some_and(|local_path| local_path == path);
+        let repair = if local_hook {
+            format!(
+                "run `tokensave githooks on --local --path {}` to update it",
+                project_path.display()
+            )
+        } else {
+            "run `tokensave reinstall` to update it".to_string()
+        };
         dc.warn(&format!(
             "git post-checkout hook at {} carries an outdated tokensave section — \
-             run `tokensave reinstall` to update it (content outside tokensave's \
-             markers is preserved)",
+             {repair} (content outside tokensave's markers is preserved)",
             path.display()
         ));
     }

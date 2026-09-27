@@ -1336,6 +1336,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     }
                 }
                 (None, false) => {
+                    if tokensave::agents::repo_hooks_dir(&repo).is_some() {
+                        for line in tokensave::agents::describe_local_git_hooks(&repo) {
+                            eprintln!("{line}");
+                        }
+                    }
                     for line in tokensave::agents::describe_git_hooks() {
                         eprintln!("{line}");
                     }
