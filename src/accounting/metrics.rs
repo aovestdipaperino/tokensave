@@ -120,6 +120,16 @@ pub async fn cost_summary_with_droid_presence(
     since: u64,
     droid_present: bool,
 ) -> Option<CostSummary> {
+    cost_summary_with_source_presence(gdb, since, droid_present, true).await
+}
+
+/// Build a full summary while excluding stale rows for absent local sources.
+pub async fn cost_summary_with_source_presence(
+    gdb: &GlobalDb,
+    since: u64,
+    droid_present: bool,
+    copilot_present: bool,
+) -> Option<CostSummary> {
     let tokens_saved = gdb.sum_savings(None, since as i64).await.saved_tokens;
     let total_cost = gdb.total_cost_since(since).await?;
     let (total_input, total_output, total_cache_read, total_cache_write) = gdb
@@ -131,6 +141,9 @@ pub async fn cost_summary_with_droid_presence(
     let mut by_agent = gdb.cost_by_agent_since(since).await;
     if !droid_present {
         by_agent.retain(|summary| summary.agent != "droid");
+    }
+    if !copilot_present {
+        by_agent.retain(|summary| summary.agent != "copilot");
     }
 
     let all_consumed = consumed_tokens(&by_agent, droid_present);

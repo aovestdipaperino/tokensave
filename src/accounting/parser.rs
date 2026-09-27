@@ -316,7 +316,7 @@ fn is_leap(y: i64) -> bool {
 pub struct IngestStats {
     /// Number of new Claude turns inserted (receipt-only; does not count historical Droid scans).
     pub turns_inserted: u64,
-    /// Number of Droid turns inserted or updated.
+    /// Number of Droid and Copilot turns inserted or updated.
     pub turns_updated: u64,
     /// Total cost of newly-inserted Claude turns.
     pub cost_usd: f64,

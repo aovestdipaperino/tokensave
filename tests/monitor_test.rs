@@ -268,6 +268,54 @@ fn no_copilot_activity_leaves_coverage_line_unchanged() {
     );
 }
 
+#[test]
+fn copilot_partial_without_weekly_usage_keeps_panel_and_discloses_coverage() {
+    let cache = CostCache {
+        copilot_state: CoverageState::Partial,
+        ..base_cache()
+    };
+
+    assert!(cache.has_activity(), "partial source coverage is activity");
+    let line2 = &cost_panel_lines(&cache)[1];
+    assert!(
+        line2.contains("Copilot partial; no usage in range"),
+        "got: {line2}"
+    );
+}
+
+#[test]
+fn copilot_complete_without_weekly_usage_keeps_panel_and_discloses_coverage() {
+    let cache = CostCache {
+        copilot_state: CoverageState::Complete,
+        ..base_cache()
+    };
+
+    assert!(cache.has_activity(), "complete source coverage is activity");
+    let line2 = &cost_panel_lines(&cache)[1];
+    assert!(
+        line2.contains("Copilot complete; no usage in range"),
+        "got: {line2}"
+    );
+}
+
+#[test]
+fn absent_copilot_source_does_not_render_stale_cached_aiu() {
+    let cache = CostCache {
+        week_aiu: Some(900_000_000_000),
+        copilot_state: CoverageState::Absent,
+        ..base_cache()
+    };
+
+    assert!(
+        !cache.has_activity(),
+        "stale Copilot usage must not show panel"
+    );
+    assert_eq!(
+        &cost_panel_lines(&cache)[1],
+        "  Coverage: Claude local; Droid absent"
+    );
+}
+
 /// Droid credits and raw tokens render as lowercase compact notation (2.9k, 24.6k).
 #[test]
 fn droid_credits_and_tokens_formatted_compact_lowercase() {

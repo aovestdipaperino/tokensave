@@ -26,16 +26,10 @@ use crate::types::CostTurn;
 /// Nano-AIU per whole AIU. `totalNanoAiu` is fixed-point with nine fractional digits.
 pub const NANO_AIU_PER_AIU: u64 = 1_000_000_000;
 
-/// One line of a Copilot `events.jsonl` file.
-///
-/// Only `session.usage_checkpoint` lines carry usage; all other event types
-/// deserialize into this envelope with `data == None` and are ignored. Lines
-/// that are not JSON objects (arrays, primitives) fail to deserialize and are
-/// skipped without failing the whole file.
+/// Usage fields deserialized only after the top-level `type` is matched as a
+/// `session.usage_checkpoint`; unrelated event fields are ignored.
 #[derive(Debug, Deserialize)]
 struct EventEnvelope {
-    #[serde(rename = "type")]
-    kind: String,
     timestamp: Option<String>,
     data: Option<CheckpointData>,
 }
@@ -44,7 +38,6 @@ struct EventEnvelope {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CheckpointData {
-    #[serde(default)]
     total_nano_aiu: i64,
     #[serde(default)]
     model_cache_state: Vec<ModelCacheEntry>,
@@ -61,6 +54,11 @@ struct LatestCheckpoint {
     nano_aiu: i64,
     timestamp: Option<String>,
     model: Option<String>,
+}
+
+struct ParsedEventFile {
+    turn: Option<CostTurn>,
+    malformed_checkpoint: bool,
 }
 
 /// Format a nano-AIU counter as a human-readable whole-AIU string, e.g. `1.1K`.
@@ -106,26 +104,37 @@ pub(crate) fn find_event_files(root: &Path) -> Vec<PathBuf> {
 }
 
 /// Scan one `events.jsonl` file for the checkpoint with the highest cumulative
-/// `totalNanoAiu`. Returns `None` when the file contains no checkpoint line.
+/// `totalNanoAiu`. Also reports whether any checkpoint record was malformed.
 ///
-/// Non-checkpoint lines and lines that are not JSON objects are skipped; they
-/// are the common case in `events.jsonl` and must not fail the scan.
-fn latest_checkpoint(contents: &str) -> Option<LatestCheckpoint> {
+/// Non-checkpoint lines and non-object JSON are skipped, since both are common
+/// in `events.jsonl`.
+fn latest_checkpoint(contents: &str) -> (Option<LatestCheckpoint>, bool) {
     let mut best: Option<LatestCheckpoint> = None;
+    let mut malformed_checkpoint = false;
     for line in contents.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        let Ok(ev) = serde_json::from_str::<EventEnvelope>(trimmed) else {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
             continue;
         };
-        if ev.kind != "session.usage_checkpoint" {
+        if value.get("type").and_then(serde_json::Value::as_str) != Some("session.usage_checkpoint")
+        {
             continue;
         }
-        let Some(data) = ev.data else {
+        let Ok(ev) = serde_json::from_value::<EventEnvelope>(value) else {
+            malformed_checkpoint = true;
             continue;
         };
+        let Some(data) = ev.data else {
+            malformed_checkpoint = true;
+            continue;
+        };
+        if data.total_nano_aiu > 0 && ev.timestamp.as_deref().and_then(parse_timestamp).is_none() {
+            malformed_checkpoint = true;
+            continue;
+        }
         let candidate = LatestCheckpoint {
             nano_aiu: data.total_nano_aiu,
             timestamp: ev.timestamp,
@@ -136,7 +145,7 @@ fn latest_checkpoint(contents: &str) -> Option<LatestCheckpoint> {
             _ => best = Some(candidate),
         }
     }
-    best
+    (best, malformed_checkpoint)
 }
 
 /// Parse a single Copilot session `events.jsonl` file at `path`.
@@ -153,7 +162,18 @@ fn latest_checkpoint(contents: &str) -> Option<LatestCheckpoint> {
 /// All token fields are zero. `cost_usd` is always `0.0`. `credits` holds the
 /// cumulative `totalNanoAiu` (always positive here, since a non-positive AIU
 /// checkpoint returns `Ok(None)` above).
+#[cfg(test)]
 pub(crate) fn parse_events_file(path: &Path) -> Result<Option<CostTurn>, ()> {
+    parse_events_file_detailed(path).and_then(|parsed| {
+        if parsed.turn.is_none() && parsed.malformed_checkpoint {
+            Err(())
+        } else {
+            Ok(parsed.turn)
+        }
+    })
+}
+
+fn parse_events_file_detailed(path: &Path) -> Result<ParsedEventFile, ()> {
     let contents = std::fs::read_to_string(path).map_err(|_| ())?;
 
     // Session id is the immediate parent directory name.
@@ -164,15 +184,22 @@ pub(crate) fn parse_events_file(path: &Path) -> Result<Option<CostTurn>, ()> {
         .ok_or(())?
         .to_string();
 
-    let Some(cp) = latest_checkpoint(&contents) else {
-        return Ok(None);
+    let (latest, malformed_checkpoint) = latest_checkpoint(&contents);
+    let Some(cp) = latest else {
+        return Ok(ParsedEventFile {
+            turn: None,
+            malformed_checkpoint,
+        });
     };
 
     // A checkpoint with no AIU is a fresh session with no accountable usage
     // (premium requests are out of scope), so it stays out of parse_errors and
     // coverage rather than becoming a phantom zero-AIU row.
     if cp.nano_aiu <= 0 {
-        return Ok(None);
+        return Ok(ParsedEventFile {
+            turn: None,
+            malformed_checkpoint,
+        });
     }
 
     // Nonzero usage: the checkpoint timestamp is required to bucket the turn.
@@ -187,22 +214,25 @@ pub(crate) fn parse_events_file(path: &Path) -> Result<Option<CostTurn>, ()> {
     let model = cp.model.unwrap_or_else(|| "unknown".to_string());
     let message_id = format!("copilot:{session_id}");
 
-    Ok(Some(CostTurn {
-        message_id,
-        project_hash: "unknown".to_string(),
-        session_id,
-        model,
-        timestamp,
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_write_tokens: 0,
-        cache_read_tokens: 0,
-        cost_usd: 0.0,
-        category: "unclassified".to_string(),
-        tool_names: String::new(),
-        agent: "copilot".to_string(),
-        credits,
-    }))
+    Ok(ParsedEventFile {
+        turn: Some(CostTurn {
+            message_id,
+            project_hash: "unknown".to_string(),
+            session_id,
+            model,
+            timestamp,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            cost_usd: 0.0,
+            category: "unclassified".to_string(),
+            tool_names: String::new(),
+            agent: "copilot".to_string(),
+            credits,
+        }),
+        malformed_checkpoint,
+    })
 }
 
 /// Result of a Copilot session directory ingestion.
@@ -218,8 +248,8 @@ pub(crate) struct CopilotIngestResult {
 ///
 /// Coverage rules:
 /// - [`CoverageState::Absent`]: no files found and no walk errors.
-/// - [`CoverageState::Partial`]: any parse/read/walk failure, or any valid
-///   session lacks AIU credits.
+/// - [`CoverageState::Partial`]: any malformed checkpoint or read/walk failure,
+///   or any valid session lacks AIU credits.
 /// - [`CoverageState::Complete`]: all files parse and every valid session
 ///   carries AIU credits.
 pub(crate) async fn ingest_dir(
@@ -243,10 +273,16 @@ pub(crate) async fn ingest_dir(
     let mut turns: Vec<CostTurn> = Vec::new();
 
     for file in &files {
-        match parse_events_file(file) {
+        match parse_events_file_detailed(file) {
             Err(()) => parse_errors += 1,
-            Ok(None) => {}
-            Ok(Some(turn)) => turns.push(turn),
+            Ok(parsed) => {
+                if parsed.malformed_checkpoint {
+                    parse_errors += 1;
+                }
+                if let Some(turn) = parsed.turn {
+                    turns.push(turn);
+                }
+            }
         }
     }
 
@@ -263,7 +299,7 @@ pub(crate) async fn ingest_dir(
 
     let mut rows_changed: u64 = 0;
     for turn in &turns {
-        if gdb.upsert_droid_turn(turn).await {
+        if gdb.upsert_copilot_turn(turn).await {
             rows_changed += 1;
         }
     }
@@ -447,5 +483,103 @@ mod tests {
         assert_eq!(res.coverage.state, CoverageState::Complete);
         assert_eq!(res.coverage.sessions, 2);
         assert_eq!(res.rows_changed, 2);
+    }
+
+    #[tokio::test]
+    async fn malformed_higher_checkpoint_does_not_drop_valid_usage() {
+        let root_tmp = TempDir::new().unwrap();
+        let content = format!(
+            "{}\n{}",
+            checkpoint_line(900_000_000_000, 0, "gpt-5.4", "2026-07-31T09:00:00.000Z"),
+            r#"{"type":"session.usage_checkpoint","data":{"totalNanoAiu":1500000000000,"modelCacheState":[]},"timestamp":"invalid"}"#
+        );
+        write_session(root_tmp.path(), "sess-checkpoint-fallback", &content);
+        let db_tmp = TempDir::new().unwrap();
+        let db_path = db_tmp.path().join(".tokensave").join("global.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let gdb = crate::global_db::GlobalDb::open_at(&db_path).await.unwrap();
+
+        let res = ingest_dir(&gdb, root_tmp.path()).await;
+
+        assert_eq!(res.coverage.state, CoverageState::Partial);
+        assert_eq!(res.coverage.sessions, 1);
+        assert_eq!(res.rows_changed, 1);
+        let rows = gdb.cost_by_agent_since(0).await;
+        let credits = rows
+            .iter()
+            .find(|summary| summary.agent == "copilot")
+            .and_then(|summary| summary.credits);
+        assert_eq!(credits, Some(900_000_000_000));
+    }
+
+    #[tokio::test]
+    async fn ingest_dir_reingest_moves_checkpoint_to_later_range() {
+        let root_tmp = TempDir::new().unwrap();
+        let session_path = write_session(
+            root_tmp.path(),
+            "sess-changing",
+            &checkpoint_line(900_000_000_000, 0, "gpt-5.4", "2026-07-31T09:00:00.000Z"),
+        );
+        let db_tmp = TempDir::new().unwrap();
+        let db_path = db_tmp.path().join(".tokensave").join("global.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let gdb = crate::global_db::GlobalDb::open_at(&db_path).await.unwrap();
+
+        let first = ingest_dir(&gdb, root_tmp.path()).await;
+        assert_eq!(first.rows_changed, 1);
+
+        fs::write(
+            session_path,
+            checkpoint_line(1_500_000_000_000, 0, "gpt-5.4", "2026-08-03T09:00:00.000Z"),
+        )
+        .unwrap();
+        let second = ingest_dir(&gdb, root_tmp.path()).await;
+        assert_eq!(second.rows_changed, 1);
+
+        let later_start = parse_timestamp("2026-08-03T09:00:00.000Z").unwrap();
+        let rows = gdb.cost_by_agent_since(later_start).await;
+        let copilot_credits = rows
+            .iter()
+            .find(|summary| summary.agent == "copilot")
+            .and_then(|summary| summary.credits);
+        assert_eq!(copilot_credits, Some(1_500_000_000_000));
+    }
+
+    #[tokio::test]
+    async fn ingest_dir_malformed_checkpoint_is_partial() {
+        let root_tmp = TempDir::new().unwrap();
+        write_session(
+            root_tmp.path(),
+            "sess-malformed",
+            r#"{"type":"session.usage_checkpoint","data":{"totalNanoAiu":"invalid"},"timestamp":"2026-07-31T09:00:00.000Z"}"#,
+        );
+        let db_tmp = TempDir::new().unwrap();
+        let db_path = db_tmp.path().join(".tokensave").join("global.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let gdb = crate::global_db::GlobalDb::open_at(&db_path).await.unwrap();
+
+        let res = ingest_dir(&gdb, root_tmp.path()).await;
+
+        assert_eq!(res.coverage.state, CoverageState::Partial);
+        assert_eq!(res.coverage.sessions, 0);
+    }
+
+    #[tokio::test]
+    async fn ingest_dir_checkpoint_missing_total_is_partial() {
+        let root_tmp = TempDir::new().unwrap();
+        write_session(
+            root_tmp.path(),
+            "sess-missing-total",
+            r#"{"type":"session.usage_checkpoint","data":{},"timestamp":"2026-07-31T09:00:00.000Z"}"#,
+        );
+        let db_tmp = TempDir::new().unwrap();
+        let db_path = db_tmp.path().join(".tokensave").join("global.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let gdb = crate::global_db::GlobalDb::open_at(&db_path).await.unwrap();
+
+        let res = ingest_dir(&gdb, root_tmp.path()).await;
+
+        assert_eq!(res.coverage.state, CoverageState::Partial);
+        assert_eq!(res.coverage.sessions, 0);
     }
 }
