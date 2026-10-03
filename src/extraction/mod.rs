@@ -36,6 +36,8 @@ mod powershell_extractor;
 mod proto_extractor;
 #[cfg(feature = "lang-ruby")]
 mod ruby_extractor;
+#[cfg(feature = "lang-ruby")]
+mod ruby_template_extractor;
 #[cfg(feature = "lang-vbnet")]
 mod vbnet_extractor;
 
@@ -155,6 +157,8 @@ pub use powershell_extractor::PowerShellExtractor;
 pub use proto_extractor::ProtoExtractor;
 #[cfg(feature = "lang-ruby")]
 pub use ruby_extractor::RubyExtractor;
+#[cfg(feature = "lang-ruby")]
+pub use ruby_template_extractor::RubyTemplateExtractor;
 #[cfg(feature = "lang-vbnet")]
 pub use vbnet_extractor::VbNetExtractor;
 

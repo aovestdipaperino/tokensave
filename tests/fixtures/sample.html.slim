@@ -1,0 +1,11 @@
+h1 = page_title
+- rows = load_rows()
+- if visible?
+  - rows.each do |row|
+    p = format_row(row)
+- else
+  = empty_message()
+/ ignored
+  = ignored_helper()
+p title=tooltip() Hello #{greeting()}
+p literal_helper()

@@ -363,6 +363,8 @@ fn is_code_extension(ext: &str) -> bool {
             | "cs"
             | "rb"
             | "rake"
+            | "erb"
+            | "slim"
             | "php"
             | "swift"
             | "kt"

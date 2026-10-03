@@ -44,6 +44,8 @@ fn fence_language(file_path: &str) -> &'static str {
         "java" => "java",
         "kt" | "kts" => "kotlin",
         "rb" | "rake" => "ruby",
+        "erb" => "erb",
+        "slim" => "slim",
         "php" => "php",
         "cs" => "csharp",
         "c" | "h" => "c",

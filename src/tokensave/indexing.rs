@@ -5,9 +5,11 @@ use super::*;
 const RUBY_SINGLETON_KIND_METADATA: &str = "ruby_singleton_method_kind_v1";
 
 fn is_ruby_source(path: &str) -> bool {
-    std::path::Path::new(path)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("rb") || ext.eq_ignore_ascii_case("rake"))
+    std::path::Path::new(path).extension().is_some_and(|ext| {
+        ["rb", "rake", "erb", "slim"]
+            .iter()
+            .any(|ruby_ext| ext.eq_ignore_ascii_case(ruby_ext))
+    })
 }
 
 fn legacy_ruby_repair_complete(
