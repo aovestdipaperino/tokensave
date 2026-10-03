@@ -124,6 +124,14 @@ impl RubyExtractor {
     /// `file_path` is used for qualified names and node IDs (not for I/O).
     /// `source` is the Ruby source code to parse.
     pub fn extract_ruby(file_path: &str, source: &str) -> ExtractionResult {
+        Self::extract_source(file_path, source, false)
+    }
+
+    pub(super) fn extract_template(file_path: &str, source: &str) -> ExtractionResult {
+        Self::extract_source(file_path, source, true)
+    }
+
+    fn extract_source(file_path: &str, source: &str, template: bool) -> ExtractionResult {
         let start = Instant::now();
         let mut state = ExtractionState::new(file_path, source);
 
@@ -168,11 +176,17 @@ impl RubyExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state.node_stack.push((file_path.to_string(), file_node_id));
+        state
+            .node_stack
+            .push((file_path.to_string(), file_node_id.clone()));
 
         // Walk the AST.
         let root = tree.root_node();
         Self::visit_children(&mut state, root);
+        if template {
+            Self::extract_call_sites(&mut state, root, &file_node_id);
+            super::ruby_template_extractor::extract_bare_calls(&mut state, root, &file_node_id);
+        }
 
         state.node_stack.pop();
 
@@ -3374,7 +3388,7 @@ impl RubyExtractor {
 
 impl crate::extraction::LanguageExtractor for RubyExtractor {
     fn extensions(&self) -> &[&str] {
-        &["rb", "rake"]
+        &["rb", "rake", "erb", "slim"]
     }
 
     fn language_name(&self) -> &'static str {
@@ -3382,6 +3396,10 @@ impl crate::extraction::LanguageExtractor for RubyExtractor {
     }
 
     fn extract(&self, file_path: &str, source: &str) -> ExtractionResult {
-        Self::extract_ruby(file_path, source)
+        if matches!(file_path.rsplit('.').next(), Some("erb" | "slim")) {
+            super::RubyTemplateExtractor.extract(file_path, source)
+        } else {
+            Self::extract_ruby(file_path, source)
+        }
     }
 }

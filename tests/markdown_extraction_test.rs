@@ -101,6 +101,23 @@ fn test_markdown_extracts_rake_link() {
 }
 
 #[test]
+fn test_markdown_extracts_ruby_template_links() {
+    for target in ["views/sample.html.erb", "views/sample.html.slim"] {
+        let source = format!("See [template]({target}) for details.");
+        let result = MarkdownExtractor.extract("README.md", &source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let target_id = generate_node_id(target, &NodeKind::File, target, 0);
+        let uses_edges: Vec<_> = result
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == EdgeKind::Uses)
+            .collect();
+        assert_eq!(uses_edges.len(), 1, "{target}");
+        assert_eq!(uses_edges[0].target, target_id);
+    }
+}
+
+#[test]
 fn test_markdown_skips_external_links() {
     let source = "Check [Google](https://google.com) for more.";
     let result = MarkdownExtractor.extract("README.md", source);

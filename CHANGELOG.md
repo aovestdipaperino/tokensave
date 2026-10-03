@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Added
+
+- Index embedded Ruby in ERB and Slim templates, including calls to helpers, with locations in the original template. Available with `lang-ruby`; controller-to-view and partial-render relationships are not inferred.
 
 ## [7.14.1] - 2026-10-02
 
