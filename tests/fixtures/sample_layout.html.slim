@@ -1,0 +1,13 @@
+<html>
+  - items.each do |doc|
+    = title_for(doc)
+  = link_to \
+    "x", item_path
+  - total = price \
+    * qty
+  = total
+  - case payload()
+  - in {title:, key: value}
+    = show(title, value)
+</html>
+= footer()

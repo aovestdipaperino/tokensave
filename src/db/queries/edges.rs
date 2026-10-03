@@ -41,7 +41,7 @@ impl Database {
                                     END, ':') AS constant_name
                              FROM nodes
                              WHERE kind IN ('class', 'module')
-                               AND (file_path LIKE '%.rb' OR file_path LIKE '%.rake')
+                               AND (file_path LIKE '%.rb' OR file_path LIKE '%.rake' OR file_path LIKE '%.erb' OR file_path LIKE '%.slim')
                                AND qualified_name NOT LIKE '%<anonymous>%'
                                AND substr(qualified_name, 1, length(file_path) + 2) = file_path || '::'
                          )
