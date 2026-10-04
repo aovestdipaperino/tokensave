@@ -17,6 +17,8 @@ pub enum NodeKind {
     Method,
     /// A Ruby method defined on the enclosing class/module singleton.
     SingletonMethod,
+    /// A statically declared Rails HTTP route.
+    Route,
     Impl,
     Const,
     Static,
@@ -106,6 +108,7 @@ impl NodeKind {
             NodeKind::Function => "function",
             NodeKind::Method => "method",
             NodeKind::SingletonMethod => "singleton_method",
+            NodeKind::Route => "route",
             NodeKind::Impl => "impl",
             NodeKind::Const => "const",
             NodeKind::Static => "static",
@@ -182,6 +185,7 @@ impl NodeKind {
             "function" => Some(NodeKind::Function),
             "method" => Some(NodeKind::Method),
             "singleton_method" => Some(NodeKind::SingletonMethod),
+            "route" => Some(NodeKind::Route),
             "impl" => Some(NodeKind::Impl),
             "const" => Some(NodeKind::Const),
             "static" => Some(NodeKind::Static),
@@ -494,11 +498,13 @@ pub enum ResolvedBy {
     /// A relative JavaScript / TypeScript import specifier bound to the file
     /// it names, with TypeScript's `.js` to `.ts` mapping applied (#647).
     RelativeImport = 14,
+    /// A route declaration bound to one directly owned public controller action.
+    RailsRoute = 15,
 }
 
 impl ResolvedBy {
     /// Every variant, in code order.
-    pub const ALL: [ResolvedBy; 14] = [
+    pub const ALL: [ResolvedBy; 15] = [
         ResolvedBy::ExactMatch,
         ResolvedBy::ExactMatchScored,
         ResolvedBy::QualifiedMatch,
@@ -513,6 +519,7 @@ impl ResolvedBy {
         ResolvedBy::PathTailMatch,
         ResolvedBy::PathTailMatchScored,
         ResolvedBy::RelativeImport,
+        ResolvedBy::RailsRoute,
     ];
 
     /// The resolver's name for this path, as `ResolvedRef::resolved_by` holds it.
@@ -533,6 +540,7 @@ impl ResolvedBy {
             ResolvedBy::PathTailMatch => "path-tail-match",
             ResolvedBy::PathTailMatchScored => "path-tail-match-scored",
             ResolvedBy::RelativeImport => "relative-import",
+            ResolvedBy::RailsRoute => "rails-route",
         }
     }
 
@@ -573,6 +581,7 @@ impl ResolvedBy {
                 | ResolvedBy::GoSelectorImport
                 | ResolvedBy::RubySelfReceiver
                 | ResolvedBy::RubyConstantReceiver
+                | ResolvedBy::RailsRoute
                 | ResolvedBy::GdscriptTypedReceiver
                 | ResolvedBy::RelativeImport
         )

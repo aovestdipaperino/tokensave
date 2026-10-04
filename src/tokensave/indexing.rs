@@ -2,6 +2,8 @@
 use super::query::resolve_symbol_for_edit;
 use super::*;
 
+const RAILS_ROUTE_REFERENCES_METADATA: &str = "rails_route_references_v3";
+
 const RUBY_SINGLETON_KIND_METADATA: &str = "ruby_singleton_method_kind_v1";
 
 /// Ruby source whose every change rebuilds the reopening table. ERB and
@@ -564,6 +566,7 @@ impl TokenSave {
         // 8. Restore indexes and normal durability
         self.db.end_bulk_load().await?;
         self.db.rebuild_ruby_reopenings().await?;
+        self.rebuild_rails_routes_best_effort(true).await;
         self.db.rebuild_trait_dispatch_callers().await?;
         on_verbose(&format!(
             "wrote to database in {:.1}s",
@@ -584,6 +587,9 @@ impl TokenSave {
         if self.registry.extractor_for_language("ruby").is_some() {
             self.db
                 .set_metadata(RUBY_SINGLETON_KIND_METADATA, "1")
+                .await?;
+            self.db
+                .set_metadata(RAILS_ROUTE_REFERENCES_METADATA, "1")
                 .await?;
         }
 
@@ -1098,6 +1104,7 @@ impl TokenSave {
         if ruby_changed {
             self.db.rebuild_ruby_reopenings().await?;
         }
+        self.rebuild_rails_routes_best_effort(ruby_changed).await;
         self.db.rebuild_trait_dispatch_callers().await?;
         self.db
             .set_metadata("last_sync_at", &current_timestamp().to_string())
@@ -1184,6 +1191,12 @@ impl TokenSave {
             && self
                 .db
                 .get_metadata(RUBY_SINGLETON_KIND_METADATA)
+                .await?
+                .is_none();
+        let repair_route_references = self.registry.extractor_for_language("ruby").is_some()
+            && self
+                .db
+                .get_metadata(RAILS_ROUTE_REFERENCES_METADATA)
                 .await?
                 .is_none();
 
@@ -1293,6 +1306,30 @@ impl TokenSave {
         for path in &legacy_ruby_files {
             if !stale.contains(path) {
                 stale.push(path.clone());
+            }
+        }
+        // Re-extract indexed Ruby sources once, when the project has routes, for
+        // route targets and the evidence they are resolved with, without changing
+        // the DB schema. Templates hold no controllers or route declarations.
+        let backfill_routes = repair_route_references
+            && current_set.iter().any(|path| {
+                matches!(
+                    crate::extraction::rails_support::route_file(path),
+                    Some(
+                        crate::extraction::rails_support::RouteFile::Main { .. }
+                            | crate::extraction::rails_support::RouteFile::Drawn { .. }
+                    )
+                )
+            });
+        if backfill_routes {
+            for (path, record) in &db_map {
+                if is_ruby_source(path)
+                    && record.kind == FileKind::Code
+                    && current_set.contains(path.as_str())
+                    && !stale.contains(path)
+                {
+                    stale.push(path.clone());
+                }
             }
         }
         on_verbose(&format!(
@@ -1509,6 +1546,13 @@ impl TokenSave {
         if ruby_changed {
             self.db.rebuild_ruby_reopenings().await?;
         }
+        self.rebuild_rails_routes_best_effort(
+            removed
+                .iter()
+                .chain(to_index.iter())
+                .any(|path| is_ruby_source(path)),
+        )
+        .await;
         self.db.rebuild_trait_dispatch_callers().await?;
         let duration_ms = start.elapsed().as_millis() as u64;
         self.db
@@ -1521,6 +1565,13 @@ impl TokenSave {
         if self.registry.extractor_for_language("ruby").is_some() && ruby_repair_complete {
             self.db
                 .set_metadata(RUBY_SINGLETON_KIND_METADATA, "1")
+                .await?;
+        }
+        // One attempt is enough: a file the extractor skipped keeps its old rows
+        // until it changes, instead of re-extracting every Ruby file on each sync.
+        if backfill_routes {
+            self.db
+                .set_metadata(RAILS_ROUTE_REFERENCES_METADATA, "1")
                 .await?;
         }
 
@@ -2292,6 +2343,18 @@ impl TokenSave {
         (abs_path, rel_for_index)
     }
 
+    async fn rebuild_rails_routes_best_effort(&self, ruby_changed: bool) {
+        if ruby_changed {
+            if let Err(error) = self.db.invalidate_rails_routes().await {
+                eprintln!("[tokensave] Rails route invalidation failed: {error}");
+                return;
+            }
+        }
+        if let Err(error) = self.db.rebuild_rails_routes().await {
+            eprintln!("[tokensave] Rails route wiring pending: {error}");
+        }
+    }
+
     /// Re-indexes a single file after an edit.
     pub(crate) async fn reindex_file(&self, file_path: &str) -> Result<()> {
         let abs_path = self.absolute_path(file_path);
@@ -2351,6 +2414,8 @@ impl TokenSave {
         if ruby_changed {
             self.db.rebuild_ruby_reopenings().await?;
         }
+        self.rebuild_rails_routes_best_effort(is_ruby_source(file_path))
+            .await;
         self.db.rebuild_trait_dispatch_callers().await?;
 
         Ok(())

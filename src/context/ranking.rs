@@ -6,6 +6,7 @@ pub fn kind_boost(kind: &NodeKind) -> f64 {
         NodeKind::Function
         | NodeKind::Method
         | NodeKind::SingletonMethod
+        | NodeKind::Route
         | NodeKind::StructMethod
         | NodeKind::Constructor
         | NodeKind::AbstractMethod

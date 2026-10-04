@@ -326,12 +326,21 @@ impl<'a> ContextBuilder<'a> {
         // case-insensitively exact-matches the repo's `TokenSave` god
         // object, and the API-family supplement then floods the candidate
         // pool with every one of its methods at exact-tier scores.
-        let exact_names: Vec<String> = symbols
+        let mut exact_names: Vec<String> = symbols
             .iter()
             .filter(|s| !s.contains("::") && s.len() >= 3)
             .filter(|s| is_authored_symbol(s, query, &options.extra_keywords))
             .cloned()
             .collect();
+        // Route labels contain URL punctuation that conceptual tokenization removes.
+        if query.split_once(' ').is_some_and(|(verb, path)| {
+            matches!(
+                verb,
+                "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"
+            ) && path.starts_with('/')
+        }) {
+            exact_names.push(query.to_string());
+        }
         // Nodes that arrived through exact-name or exact-source evidence, by
         // id. The diagnostics tier derives `exact` from this provenance, not
         // from the score: multiplicative boosts make the score bands overlap

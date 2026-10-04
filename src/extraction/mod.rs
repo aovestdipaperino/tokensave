@@ -18,6 +18,9 @@ pub mod complexity;
 pub mod ts_provider;
 mod ts_state;
 
+mod rails_inflector;
+pub(crate) mod rails_support;
+
 #[cfg(feature = "lang-bash")]
 mod bash_extractor;
 
@@ -34,6 +37,8 @@ mod php_extractor;
 mod powershell_extractor;
 #[cfg(feature = "lang-protobuf")]
 mod proto_extractor;
+#[cfg(feature = "lang-ruby")]
+mod rails_routes;
 #[cfg(feature = "lang-ruby")]
 mod ruby_extractor;
 #[cfg(feature = "lang-ruby")]

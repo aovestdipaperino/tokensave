@@ -307,7 +307,8 @@ impl<'a> GraphQueryManager<'a> {
                     is_async, branches, loops, returns, max_nesting, unsafe_blocks,
                     unchecked_calls, assertions, updated_at, attrs_start_line
              FROM nodes
-             WHERE name != 'main'
+             WHERE kind != 'route'
+             AND name != 'main'
              AND name != '_bind_methods'
              AND name NOT LIKE 'test%'
              -- Go package-level `init` is invoked implicitly by the runtime at

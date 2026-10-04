@@ -25,6 +25,7 @@ pub(crate) fn kind_tier(kind: &NodeKind) -> u8 {
         // "what is this?" answers a user usually wants when searching by
         // symbol name.
         NodeKind::Function
+        | NodeKind::Route
         | NodeKind::Method
         | NodeKind::SingletonMethod
         | NodeKind::StructMethod
@@ -103,6 +104,7 @@ pub(crate) fn kind_tier(kind: &NodeKind) -> u8 {
 
 pub(crate) fn kind_rank_bonus(kind: &NodeKind) -> f64 {
     match kind {
+        NodeKind::Route => 2.0,
         // Callable definitions
         NodeKind::Function
         | NodeKind::Method

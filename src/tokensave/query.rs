@@ -859,6 +859,11 @@ impl TokenSave {
 /// worse than asking the caller to disambiguate.
 pub(crate) async fn resolve_symbol_for_edit(cg: &TokenSave, symbol: &str) -> Result<Node> {
     let nodes = cg.get_nodes_by_qualified_name(symbol).await?;
+    if nodes.iter().any(|node| node.kind == NodeKind::Route) {
+        return Err(TokenSaveError::Config {
+            message: "route declarations must be edited by source lines".into(),
+        });
+    }
     let mut iter = nodes.into_iter();
     let Some(first) = iter.next() else {
         return Err(TokenSaveError::Config {

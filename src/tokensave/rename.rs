@@ -884,6 +884,7 @@ fn is_unrenameable(kind: &NodeKind) -> bool {
     matches!(
         kind,
         NodeKind::File
+            | NodeKind::Route
             | NodeKind::Doc
             | NodeKind::Use
             | NodeKind::Impl
@@ -1152,6 +1153,10 @@ impl TokenSave {
             }
         }
 
+        if let Some(reason) = self.db.rails_route_rename_blocker(&target).await? {
+            plan.blockers.push(reason);
+        }
+
         let mut files: HashMap<String, FileText> = HashMap::new();
 
         // --- The definitions: the symbol, its overrides, its impl blocks. ---
@@ -1259,6 +1264,17 @@ impl TokenSave {
                 let Some(source) = sources.get(&edge.source) else {
                     continue;
                 };
+                // Exact dispatch does not identify an editable action token inside a route target string.
+                let route_reference = source.kind == NodeKind::Route
+                    || edge.resolved_by == Some(ResolvedBy::RailsRoute);
+                let route_reason = "route target literals cannot be renamed safely yet";
+                if route_reference {
+                    plan.blockers.push(format!(
+                        "{}:{}: {route_reason}",
+                        source.file_path,
+                        edge.line.unwrap_or(source.start_line) + 1
+                    ));
+                }
                 let Some(text) = self
                     .rename_file(
                         &mut files,
@@ -1272,6 +1288,20 @@ impl TokenSave {
                     continue;
                 };
                 let line = edge.line.unwrap_or(source.start_line);
+                if route_reference {
+                    plan.sites.push(make_site(
+                        text,
+                        &source.file_path,
+                        None,
+                        line,
+                        RenameConfidence::Heuristic,
+                        edge.kind.as_str().to_string(),
+                        edge.resolved_by.map(ResolvedBy::as_str),
+                        Some(source.qualified_name.clone()),
+                        Some(route_reason.to_string()),
+                    ));
+                    continue;
+                }
                 let source_end = text.offset(source.end_line, source.end_column);
                 let window_end = text
                     .line_start(line as usize + 1 + REF_LOOKAHEAD_LINES)

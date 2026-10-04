@@ -27,6 +27,9 @@ pub(super) async fn handle_status(
     let mut output: Value = serde_json::to_value(&stats).unwrap_or(json!({}));
     output["project_root"] = json!(cg.project_root().to_string_lossy());
     output["version"] = json!(env!("CARGO_PKG_VERSION"));
+    if let Some(routes) = cg.db().rails_route_status().await? {
+        output["rails_routes"] = routes;
+    }
     if let Some(ss) = server_stats {
         output["server"] = ss;
     }
