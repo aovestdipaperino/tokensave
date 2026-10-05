@@ -95,9 +95,12 @@ pub enum Commands {
     /// Configure agent integration (MCP server, permissions, hooks, prompt rules)
     #[command(name = "install", visible_alias = "claude-install")]
     Install {
-        /// Agent to configure (auto-detects if omitted)
-        #[arg(long, value_parser = agent_value_parser())]
-        agent: Option<String>,
+        /// Agent to configure (auto-detects if omitted, prompts interactively
+        /// when several are detected). Repeat the flag to install several
+        /// agents in a single run, e.g.
+        /// `tokensave install --agent claude --agent cursor` (#640).
+        #[arg(long, value_parser = agent_value_parser(), num_args = 0..)]
+        agent: Vec<String>,
         /// Whether to install git `post-commit` + `post-merge` hooks that run
         /// `tokensave sync` after each commit and after `git pull` (plus a
         /// `post-checkout` hook for fresh clones/branch tracking).
@@ -416,6 +419,79 @@ mod tests {
             }
             _ => panic!("expected Cost command"),
         }
+    }
+
+    /// `#640`: `tokensave install --agent claude --agent cursor` must parse
+    /// into a single Install command holding both agents, in the order the
+    /// user typed them. Single-agent and flagless parses must still work.
+    #[test]
+    fn parse_install_multiple_agents() {
+        let cli = Cli::try_parse_from([
+            "tokensave",
+            "install",
+            "--agent",
+            "claude",
+            "--agent",
+            "cursor",
+        ])
+        .expect("parse failed");
+        match cli.command {
+            Some(Commands::Install {
+                agent,
+                local,
+                git_hook,
+                wildcard_permissions,
+                explicit_permissions,
+            }) => {
+                assert_eq!(agent, vec!["claude".to_string(), "cursor".to_string()]);
+                assert!(!local);
+                assert_eq!(git_hook, tokensave::agents::GitHookMode::Default);
+                assert!(!wildcard_permissions);
+                assert!(!explicit_permissions);
+            }
+            _ => panic!("expected Install command"),
+        }
+    }
+
+    #[test]
+    fn parse_install_single_agent() {
+        let cli = Cli::try_parse_from(["tokensave", "install", "--agent", "claude"])
+            .expect("parse failed");
+        match cli.command {
+            Some(Commands::Install { agent, .. }) => {
+                assert_eq!(agent, vec!["claude".to_string()]);
+            }
+            _ => panic!("expected Install command"),
+        }
+    }
+
+    #[test]
+    fn parse_install_no_agent_still_parses() {
+        let cli = Cli::try_parse_from(["tokensave", "install"]).expect("parse failed");
+        match cli.command {
+            Some(Commands::Install { agent, .. }) => {
+                assert!(agent.is_empty(), "omitted --agent must yield empty Vec");
+            }
+            _ => panic!("expected Install command"),
+        }
+    }
+
+    /// Each `--agent` value is still validated against the known integration
+    /// id list, so a typo or an unknown slug is rejected at parse time rather
+    /// than mid-install.
+    #[test]
+    fn parse_install_unknown_agent_is_rejected() {
+        let err_kind =
+            match Cli::try_parse_from(["tokensave", "install", "--agent", "not-a-real-agent"]) {
+                Ok(_) => panic!("parse should fail for an unknown agent id"),
+                Err(e) => e.kind(),
+            };
+        assert!(
+            err_kind == clap::error::ErrorKind::ValueValidation
+                || err_kind == clap::error::ErrorKind::InvalidValue,
+            "expected a value-validation error, got {:?}",
+            err_kind
+        );
     }
 }
 

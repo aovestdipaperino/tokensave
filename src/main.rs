@@ -1,6 +1,7 @@
 // Rust guideline compliant 2025-10-17
 // Updated 2026-03-23: compact bordered table for status output
 use clap::Parser;
+use std::collections::HashSet;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::process;
 
@@ -765,36 +766,48 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let mut installed_names: Vec<String> = Vec::new();
             let mut removed_names: Vec<String> = Vec::new();
 
-            if let Some(id) = agent {
-                let ag = tokensave::agents::get_integration(&id)?;
-                let name = ag.name().to_string();
-                if local && !ag.supports_local() {
-                    return Err(tokensave::errors::TokenSaveError::Config {
-                        message: format!(
-                            "--local is not supported for \"{}\" — it has no project-scoped config. \
-                             Run a global install instead (omit --local).",
-                            ag.id()
-                        ),
-                    });
-                }
-                let ctx = tokensave::agents::InstallContext {
-                    home: home.clone(),
-                    tokensave_bin: tokensave_bin.clone(),
-                    tool_permissions: tokensave::agents::install_tool_perms(want_wildcard),
-                    scope: scope.clone(),
-                    force_permission_style,
-                };
-                ag.install(&ctx)?;
-                // A --local install is project-scoped; it must not touch the
-                // global installed-agents registry (which `reinstall` replays
-                // as global installs) or persist global user config.
-                if local {
-                    installed_names.push(name);
-                } else {
-                    if !user_cfg.installed_agents.contains(&id) {
-                        user_cfg.installed_agents.push(id);
-                        installed_names.push(name);
+            if !agent.is_empty() {
+                // Repeat `--agent` in a single run installs every named agent
+                // in turn (#640). Collapsing the list into a `HashSet`
+                // de-duplicates a `--agent foo --agent foo` repeat without an
+                // extra allocation.
+                let named_agents: HashSet<String> = agent.into_iter().collect();
+                let mut touched_global_cfg = false;
+                for id in &named_agents {
+                    let ag = tokensave::agents::get_integration(id)?;
+                    let name = ag.name().to_string();
+                    if local && !ag.supports_local() {
+                        return Err(tokensave::errors::TokenSaveError::Config {
+                            message: format!(
+                                "--local is not supported for \"{}\" — it has no project-scoped config. \
+                                 Run a global install instead (omit --local).",
+                                ag.id()
+                            ),
+                        });
                     }
+                    let ctx = tokensave::agents::InstallContext {
+                        home: home.clone(),
+                        tokensave_bin: tokensave_bin.clone(),
+                        tool_permissions: tokensave::agents::install_tool_perms(want_wildcard),
+                        scope: scope.clone(),
+                        force_permission_style,
+                    };
+                    ag.install(&ctx)?;
+                    // A --local install is project-scoped; it must not touch the
+                    // global installed-agents registry (which `reinstall`
+                    // replays as global installs) or persist global user
+                    // config.
+                    if local {
+                        installed_names.push(name);
+                    } else {
+                        if !user_cfg.installed_agents.contains(id) {
+                            user_cfg.installed_agents.push(id.clone());
+                            installed_names.push(name);
+                        }
+                        touched_global_cfg = true;
+                    }
+                }
+                if touched_global_cfg {
                     user_cfg.save();
                 }
             } else {
@@ -2143,7 +2156,7 @@ mod startup_tests {
     #[test]
     fn explicit_agent_config_commands_skip_agent_install_maintenance() {
         assert!(should_skip_agent_install_maintenance(&Commands::Install {
-            agent: Some("kiro".to_string()),
+            agent: vec!["kiro".to_string()],
             git_hook: tokensave::agents::GitHookMode::Default,
             local: false,
             wildcard_permissions: false,
