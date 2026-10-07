@@ -1048,123 +1048,237 @@ pub(super) fn extract_lines(source: &str, start_line: u32, end_line: u32) -> Str
     lines[start..end].join("\n")
 }
 
+/// Default and maximum number of candidates `tokensave_body` lists for an
+/// ambiguous name.
+const BODY_CANDIDATES_DEFAULT: usize = 20;
+const BODY_CANDIDATES_MAX: usize = 50;
+
 /// Handles `tokensave_body` tool calls.
+///
+/// Exactly one definition → its body. More than one equally good definition
+/// → no bodies, only a candidate list the caller narrows with a qualified
+/// name or a node id (#651).
 pub(super) async fn handle_body(
     cg: &TokenSave,
     args: Value,
     scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
-    let symbol =
-        args.get("symbol")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| TokenSaveError::Config {
-                message: "missing required parameter: symbol".to_string(),
-            })?;
-
-    let limit = args
-        .get("limit")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(3, |v| v.clamp(1, 20) as usize);
-
+    // `node_id` is the name every other tool (and the truncated-snippet
+    // handle in `tokensave_context`) uses; `id` matches the candidate field.
+    let id = ["node_id", "id"]
+        .iter()
+        .find_map(|key| args.get(*key).and_then(|v| v.as_str()))
+        .filter(|s| !s.is_empty());
+    let symbol = args.get("symbol").and_then(|v| v.as_str());
     let format = args
         .get("format")
         .and_then(|v| v.as_str())
         .unwrap_or("text");
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(BODY_CANDIDATES_DEFAULT, |v| {
+            usize::try_from(v)
+                .unwrap_or(BODY_CANDIDATES_MAX)
+                .clamp(1, BODY_CANDIDATES_MAX)
+        });
 
-    // First try an exact-name lookup against the DB — this avoids the BM25
-    // ranker's tendency to bury a definition under unrelated noise when the
-    // bare name is common (e.g. `gmres` exists as both a `pub fn` and a
-    // struct field). Falls back to suffix / name match inside
-    // `get_nodes_by_qualified_name`.
-    let exact_nodes = cg.get_nodes_by_qualified_name(symbol).await?;
-    let exact_nodes = super::filter_by_scope(exact_nodes, scope_prefix, |n| &n.file_path);
+    let (label, candidates) = if let Some(id) = id {
+        let node = cg.get_node(id).await?;
+        (
+            format!("with node_id '{id}'"),
+            node.into_iter().collect::<Vec<_>>(),
+        )
+    } else {
+        let symbol = symbol.ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: symbol (or node_id)".to_string(),
+        })?;
+        (
+            format!("named '{symbol}'"),
+            resolve_body_nodes(cg, symbol).await?,
+        )
+    };
+    let mut candidates = super::filter_by_scope(candidates, scope_prefix, |n| &n.file_path);
 
-    // Wrap as SearchResult so the existing scoring/rendering path works.
-    let mut candidates: Vec<crate::types::SearchResult> = exact_nodes
-        .into_iter()
-        .map(|node| crate::types::SearchResult { node, score: 0.0 })
-        .collect();
-
-    // If exact lookup returned nothing, fall back to BM25 search.
-    if candidates.is_empty() {
-        let raw = cg.search(symbol, (limit * 4).max(20)).await?;
-        candidates = super::filter_by_scope(raw, scope_prefix, |r| &r.node.file_path);
+    // Search fallback for a name nothing matched exactly (typos, partial
+    // names). Never for an id: an unknown id is simply not found.
+    if candidates.is_empty() && id.is_none() {
+        if let Some(symbol) = symbol {
+            let raw = cg.search(symbol, 20).await?;
+            candidates = super::filter_by_scope(raw, scope_prefix, |r| &r.node.file_path)
+                .into_iter()
+                .map(|r| r.node)
+                .collect();
+        }
     }
 
-    // Whether the matches came from the exact lookup or the search fallback,
-    // sort by `body_kind_preference` so callable / type definitions surface
-    // above fields, variants, uses, etc. This is the bug-#1 fix: when both a
-    // function and a same-named field exist, the function wins.
-    candidates.sort_by_key(|r| body_kind_preference(&r.node.kind));
-    let chosen: Vec<_> = candidates.iter().take(limit).collect();
+    // Keep only the best kind tier, so a function beats a same-named field
+    // (bug #1) while two same-named methods stay ambiguous (#651).
+    let mut seen: HashSet<String> = HashSet::new();
+    candidates.retain(|n| seen.insert(n.id.clone()));
+    if let Some(best) = candidates
+        .iter()
+        .map(|n| body_kind_preference(&n.kind))
+        .min()
+    {
+        candidates.retain(|n| body_kind_preference(&n.kind) == best);
+    }
 
-    if chosen.is_empty() {
-        return Ok(ToolResult {
+    Ok(match candidates.as_slice() {
+        [] => ToolResult {
             value: json!({
-                "content": [{ "type": "text", "text": format!("No symbol named '{symbol}' found.") }]
+                "content": [{ "type": "text", "text": format!("No symbol {label} found.") }]
             }),
             touched_files: vec![],
+        },
+        [only] => body_result(cg, only, format),
+        many => candidates_result(many, limit, format, symbol.unwrap_or_default()),
+    })
+}
+
+/// Resolves `symbol` to nodes: the literal qualified-name / name lookup
+/// first, then a member-path match that treats `.` and `::` alike, so
+/// `Type.Member`, `Ns.Type.Member` and `Type::Member` all work regardless of
+/// whether the language stores a namespace as `App.Tests` or `App::Tests`.
+async fn resolve_body_nodes(cg: &TokenSave, symbol: &str) -> Result<Vec<crate::types::Node>> {
+    let literal = cg.get_nodes_by_qualified_name(symbol).await?;
+    if !literal.is_empty() {
+        return Ok(literal);
+    }
+    let wanted = member_path_segments(symbol);
+    let Some(last) = wanted.last().filter(|_| wanted.len() >= 2) else {
+        return Ok(literal);
+    };
+    let by_name = cg.get_nodes_by_name(last).await?;
+    Ok(by_name
+        .into_iter()
+        .filter(|n| member_path_segments(&n.qualified_name).ends_with(&wanted))
+        .collect())
+}
+
+/// Splits a qualified name on both `::` and `.` into non-empty segments.
+fn member_path_segments(name: &str) -> Vec<&str> {
+    name.split("::")
+        .flat_map(|part| part.split('.'))
+        .filter(|seg| !seg.is_empty())
+        .collect()
+}
+
+/// A node's qualified name without the leading file-path segment(s) the
+/// extractors prepend, e.g. `src/A.cs::src/A.cs::App::A::Run` → `App::A::Run`.
+fn display_qualified_name(n: &crate::types::Node) -> &str {
+    let prefix = format!("{}::", n.file_path);
+    let mut qn = n.qualified_name.as_str();
+    while let Some(rest) = qn.strip_prefix(prefix.as_str()) {
+        qn = rest;
+    }
+    qn
+}
+
+/// Renders the single-match response: the node's full body.
+fn body_result(cg: &TokenSave, n: &crate::types::Node, format: &str) -> ToolResult {
+    let abs_path = cg.project_root().join(&n.file_path);
+    let body = match crate::sync::read_source_file(&abs_path) {
+        Ok(source) => extract_lines(&source, n.start_line, n.end_line),
+        Err(_) => String::from("<file unreadable>"),
+    };
+    let start = n.start_line.saturating_add(1);
+    let end = n.end_line.saturating_add(1);
+    let text = if format == "text" {
+        format!(
+            "match_count: 1\n\nfile: {}:{start}-{end}: {} ({})\n{body}\n\n",
+            n.file_path,
+            n.name,
+            n.kind.as_str()
+        )
+    } else {
+        let output = json!({
+            "match_count": 1,
+            "matches": [{
+                "id": n.id,
+                "name": n.name,
+                "qualified_name": n.qualified_name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "start_line": start,
+                "end_line": end,
+                "signature": n.signature,
+                "body": body,
+            }],
         });
+        serde_json::to_string_pretty(&output).unwrap_or_default()
+    };
+    ToolResult {
+        value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
+        touched_files: vec![n.file_path.clone()],
     }
+}
 
-    let project_root = cg.project_root();
-    let mut matches: Vec<Value> = Vec::new();
-    let mut touched: Vec<String> = Vec::new();
-
-    for result in &chosen {
-        let n = &result.node;
-        let abs_path = project_root.join(&n.file_path);
-        let body = match crate::sync::read_source_file(&abs_path) {
-            Ok(source) => extract_lines(&source, n.start_line, n.end_line),
-            Err(_) => String::from("<file unreadable>"),
-        };
-        if !touched.contains(&n.file_path) {
-            touched.push(n.file_path.clone());
-        }
-        matches.push(json!({
-            "id": n.id,
-            "name": n.name,
-            "qualified_name": n.qualified_name,
-            "kind": n.kind.as_str(),
-            "file": n.file_path,
-            "start_line": n.start_line.saturating_add(1),
-            "end_line": n.end_line.saturating_add(1),
-            "signature": n.signature,
-            "body": body,
-        }));
-    }
-
-    if format == "text" {
-        let mut text = format!("match_count: {}\n\n", matches.len());
-        for m in &matches {
-            let file = m["file"].as_str().unwrap_or_default();
-            let start = m["start_line"].as_u64().unwrap_or(0);
-            let end = m["end_line"].as_u64().unwrap_or(0);
-            let name = m["name"].as_str().unwrap_or_default();
-            let kind = m["kind"].as_str().unwrap_or_default();
-            let body = m["body"].as_str().unwrap_or_default();
-            let _ = write!(
+/// Renders the ambiguous response: a candidate list and no bodies.
+fn candidates_result(
+    nodes: &[crate::types::Node],
+    limit: usize,
+    format: &str,
+    symbol: &str,
+) -> ToolResult {
+    let total = nodes.len();
+    let shown = &nodes[..total.min(limit)];
+    let example = shown.first().map_or_else(String::new, |n| {
+        let segs = member_path_segments(display_qualified_name(n));
+        segs[segs.len().saturating_sub(2)..].join("::")
+    });
+    let hint = format!(
+        "'{symbol}' is ambiguous: {total} symbols match, so no body was returned. \
+         Re-call tokensave_body with a qualified name (e.g. symbol: \"{example}\"; \
+         `Type.Member` also works) or with node_id set to the candidate's id."
+    );
+    let text = if format == "text" {
+        let mut text = format!("match_count: 0\ncandidate_count: {total}\n{hint}\n\n");
+        for n in shown {
+            let _ = writeln!(
                 text,
-                "file: {file}:{start}-{end}: {name} ({kind})\n{body}\n\n"
+                "{} ({}) {}:{}-{} id={}",
+                display_qualified_name(n),
+                n.kind.as_str(),
+                n.file_path,
+                n.start_line.saturating_add(1),
+                n.end_line.saturating_add(1),
+                n.id
             );
         }
-        return Ok(ToolResult {
-            value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
-            touched_files: touched,
+        if total > shown.len() {
+            let _ = writeln!(text, "... {} more (raise `limit`)", total - shown.len());
+        }
+        text
+    } else {
+        let candidates: Vec<Value> = shown
+            .iter()
+            .map(|n| {
+                json!({
+                    "id": n.id,
+                    "name": n.name,
+                    "qualified_name": display_qualified_name(n),
+                    "kind": n.kind.as_str(),
+                    "file": n.file_path,
+                    "start_line": n.start_line.saturating_add(1),
+                    "end_line": n.end_line.saturating_add(1),
+                    "signature": n.signature,
+                })
+            })
+            .collect();
+        let output = json!({
+            "match_count": 0,
+            "ambiguous": true,
+            "candidate_count": total,
+            "candidates": candidates,
+            "hint": hint,
         });
+        serde_json::to_string_pretty(&output).unwrap_or_default()
+    };
+    ToolResult {
+        value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
+        touched_files: vec![],
     }
-
-    let output = json!({
-        "match_count": matches.len(),
-        "matches": matches,
-    });
-    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
-    Ok(ToolResult {
-        value: json!({
-            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
-        }),
-        touched_files: touched,
-    })
 }
 
 /// Ordering key used by `handle_body` to choose between same-named symbols.

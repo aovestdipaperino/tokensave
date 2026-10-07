@@ -2429,25 +2429,32 @@ fn def_body() -> ToolDefinition {
         "Symbol Body",
         "Return the full source body of a symbol by name (function, struct, const, etc.). \
          Collapses search + node lookup + file read into a single call. \
-         When the name is ambiguous, returns multiple matches ranked by relevance.",
+         Returns a body only when exactly one definition matches; when the name is \
+         ambiguous (e.g. several methods named `RefreshAsync`), returns no body but a \
+         candidate list (qualified name, kind, file, line range, node id) — re-call with \
+         a qualified name such as `Type::Member` / `Type.Member`, or with `node_id`. \
+         A function or type definition outranks a same-named field or import.",
         json!({
             "type": "object",
             "properties": {
                 "symbol": {
                     "type": "string",
-                    "description": "Symbol name to look up (e.g. 'resolve_provider_api_key', 'CCH_SEED', 'GraphStats'). Qualified names are also accepted."
+                    "description": "Symbol name to look up (e.g. 'resolve_provider_api_key', 'GraphStats'). Qualify it to disambiguate: 'Coordinator::RefreshAsync', 'Coordinator.RefreshAsync' and 'App.Coordinator.RefreshAsync' all work (trailing segments are matched)."
+                },
+                "node_id": {
+                    "type": "string",
+                    "description": "Node id of the symbol (from a candidate list, tokensave_search, or tokensave_context). Takes precedence over `symbol`."
                 },
                 "limit": {
                     "type": "number",
-                    "description": "Maximum number of matching bodies to return when the name is ambiguous (default: 3, max: 20)"
+                    "description": "Maximum number of candidates listed when the name is ambiguous (default: 20, max: 50)"
                 },
                 "format": {
                     "type": "string",
                     "enum": ["text", "json"],
                     "description": "Output format. 'text' returns raw source with a short header (no JSON escaping); 'json' returns the structured object. Default 'text'."
                 }
-            },
-            "required": ["symbol"]
+            }
         }),
     )
 }
