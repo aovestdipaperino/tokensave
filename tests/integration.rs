@@ -87,6 +87,7 @@ mod hook_451_test;
 mod hook_452_test;
 mod hook_475_test;
 mod hook_480_test;
+mod hook_648_test;
 mod hook_excluded_paths_test;
 mod hook_find_glob_test;
 mod hook_include_glob_test;

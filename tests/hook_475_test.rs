@@ -72,17 +72,22 @@ fn search_followed_by_other_work_passes_through() {
     }
 }
 
+/// Since #648 a search piped into a read-only filter is redirected: `| head`
+/// discards nothing a denial could lose. A pipe into a stage that writes is
+/// still work and still passes through.
 #[test]
-fn piped_search_passes_through() {
+fn piped_search_is_redirected_only_into_read_only_filters() {
     let (_tmp, root) = project();
-    let cmd = format!(
-        "grep -n MySymbol {} | head -5",
-        root.join("src/lib.rs").display()
-    );
-    assert!(
-        !is_blocked(&cmd, &root),
-        "a piped search must not be denied"
-    );
+    let target = root.join("src/lib.rs");
+    let cmd = format!("grep -n MySymbol {} | head -5", target.display());
+    assert!(is_blocked(&cmd, &root), "`| head` is not work: {cmd}");
+    for consumer in ["xargs rm", "tee out.txt", "sort -o out.txt"] {
+        let cmd = format!("grep -n MySymbol {} | {consumer}", target.display());
+        assert!(
+            !is_blocked(&cmd, &root),
+            "a pipe into a writer must not be denied: {cmd}"
+        );
+    }
 }
 
 /// An operator inside quotes is an argument, not a chained command, so the
