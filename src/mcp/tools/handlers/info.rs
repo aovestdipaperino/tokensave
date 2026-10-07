@@ -1457,9 +1457,20 @@ pub(super) async fn handle_todos(
     })
 }
 
-/// Handles `tokensave_read` — mode-aware file read with cross-session cache.
+/// Returns `path` relative to `root` in the form the indexer stores in the
+/// `files`/`nodes` tables: forward slashes regardless of the host separator
+/// (see `TokenSave::accept_file` and the walk in `indexing.rs`). Both paths
+/// should be canonical so they share a prefix form (on Windows both carry the
+/// `\\?\` verbatim prefix). Returns `None` when `path` is not under `root`.
+fn indexed_rel_path(root: &std::path::Path, path: &std::path::Path) -> Option<String> {
+    let rel = path.strip_prefix(root).ok()?;
+    Some(crate::tokensave::normalize_rel_path(&rel.to_string_lossy()))
+}
+
+/// Handles `tokensave_read` — mode-aware file read. The body is always sent
+/// unless the caller's `if_digest` matches the current body's digest (#650).
 pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    use crate::context::read_cache::{self, GLOBAL_SESSION};
+    use crate::context::read_cache;
     use crate::context::read_modes::{
         self, render_full, render_lines, render_map, render_signatures, LineRange, ReadMode,
     };
@@ -1501,7 +1512,6 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
     };
 
     let project_root = cg.project_root().to_path_buf();
-    let project_id = project_root.to_string_lossy().to_string();
     let rel_path = file.trim_start_matches('/').to_string();
     let mut abs_path = if std::path::Path::new(file).is_absolute() {
         std::path::PathBuf::from(file)
@@ -1533,83 +1543,24 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
             ),
         });
     }
+    // Map/signatures look symbols up by this path, so it must be the exact
+    // key the indexer stored: relative to the root, forward slashes (#644).
+    // Derive it from the two canonical paths; the raw `project_root` may be
+    // non-canonical (symlinked temp dir, or no `\\?\` verbatim prefix on
+    // Windows) and the raw `file` may carry `./`, `..` or backslashes.
+    let display_file = indexed_rel_path(&canonical_root, &canonical_path).ok_or_else(|| {
+        TokenSaveError::Config {
+            message: format!(
+                "selected tokensave_read path '{file}' resolves outside selected graph root '{}'; choose a file inside that root",
+                canonical_root.display()
+            ),
+        }
+    })?;
     abs_path = canonical_path;
-    let display_file = if abs_path.starts_with(&project_root) {
-        abs_path
-            .strip_prefix(&project_root)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or(rel_path.clone())
-    } else {
-        rel_path.clone()
-    };
 
     let mtime_ns = read_cache::file_mtime_ns(&abs_path).map_err(|e| TokenSaveError::Config {
         message: format!("cannot read file metadata for '{file}': {e}"),
     })?;
-
-    let last_sync_at = match mode {
-        ReadMode::Map | ReadMode::Signatures => {
-            cg.db().get_metadata("last_sync_at").await.unwrap_or(None)
-        }
-        _ => None,
-    };
-    let hash_input = json!({
-        "lines": args.get("lines").cloned(),
-        "last_sync_at": last_sync_at,
-    });
-    let args_hash = read_cache::args_hash(&hash_input);
-
-    let conn = cg.db().conn();
-    let cache_enabled = !cg.db().is_read_only();
-    // `force: true` bypasses the cross-session cache so a caller that has not
-    // received this file's body in this session can always ask for it (#556).
-    let force = args
-        .get("force")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-
-    let cached = if cache_enabled && !force {
-        read_cache::get(
-            conn,
-            &project_id,
-            GLOBAL_SESSION,
-            &display_file,
-            mode.as_str(),
-            &args_hash,
-            mtime_ns,
-        )
-        .await?
-    } else {
-        None
-    };
-    if let Some(cached) = cached {
-        if format == "text" {
-            let text = format!(
-                "file: {display_file}\nunchanged: true\nmode: {}\ndigest: {}\ntoken_count: {}\n",
-                mode.as_str(),
-                cached.digest,
-                cached.token_count
-            );
-            return Ok(ToolResult {
-                value: json!({ "content": [{ "type": "text", "text": text }] }),
-                touched_files: vec![display_file],
-            });
-        }
-        let stub = json!({
-            "unchanged": true,
-            "file": display_file,
-            "mode": mode.as_str(),
-            "mtime_ns": cached.mtime_ns,
-            "digest": cached.digest,
-            "token_count": cached.token_count,
-        });
-        return Ok(ToolResult {
-            value: json!({
-                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&stub).unwrap_or_default() }]
-            }),
-            touched_files: vec![display_file],
-        });
-    }
 
     let body_text = match mode {
         ReadMode::Full => {
@@ -1642,20 +1593,41 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
     let token_count = read_modes::estimate_tokens(&body_text);
     let digest = read_cache::digest_bytes(body_text.as_bytes());
 
-    if cache_enabled {
-        read_cache::put(
-            conn,
-            &project_id,
-            GLOBAL_SESSION,
-            &display_file,
-            mtime_ns,
-            mode.as_str(),
-            &args_hash,
-            &digest,
-            body_text.as_bytes(),
-            token_count,
-        )
-        .await?;
+    // The server cannot know what the client still holds (context compaction,
+    // rewinds, new sessions, subagents), so a body is always sent unless the
+    // client proves it holds this exact content by echoing its digest back
+    // (#650). `force` predates `if_digest`; it is deprecated and, when set,
+    // only overrides `if_digest` so old callers keep getting bodies (#556).
+    let force = args
+        .get("force")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let held_digest = args.get("if_digest").and_then(|v| v.as_str());
+    if !force && held_digest.is_some_and(|held| held.trim() == digest) {
+        if format == "text" {
+            let text = format!(
+                "file: {display_file}\nunchanged: true\nmode: {}\ndigest: {digest}\ntoken_count: {token_count}\n",
+                mode.as_str()
+            );
+            return Ok(ToolResult {
+                value: json!({ "content": [{ "type": "text", "text": text }] }),
+                touched_files: vec![display_file],
+            });
+        }
+        let stub = json!({
+            "unchanged": true,
+            "file": display_file,
+            "mode": mode.as_str(),
+            "mtime_ns": mtime_ns,
+            "digest": digest,
+            "token_count": token_count,
+        });
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&stub).unwrap_or_default() }]
+            }),
+            touched_files: vec![display_file],
+        });
     }
 
     if format == "text" {
@@ -1713,14 +1685,15 @@ pub(super) async fn handle_outline(cg: &TokenSave, args: Value) -> Result<ToolRe
     } else {
         project_root.join(&rel_path)
     };
-    let display_file = if abs_path.starts_with(project_root) {
-        abs_path
-            .strip_prefix(project_root)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or(rel_path.clone())
-    } else {
-        rel_path.clone()
-    };
+    // Same DB key derivation as `tokensave_read` (#644). This handler only
+    // queries the graph, so a path that cannot be canonicalized (e.g. a file
+    // deleted since the last sync) falls back to the separator-normalized arg.
+    let display_file = project_root
+        .canonicalize()
+        .ok()
+        .zip(abs_path.canonicalize().ok())
+        .and_then(|(root, path)| indexed_rel_path(&root, &path))
+        .unwrap_or_else(|| crate::tokensave::normalize_rel_path(&rel_path));
 
     let kinds_slice: Option<&[String]> = kinds.as_deref();
     let mut value = render_map(cg.db(), &display_file, kinds_slice).await?;
@@ -2225,4 +2198,45 @@ async fn companion_doc_paths(cg: &TokenSave, file: &str) -> Vec<String> {
     }
     paths.sort_unstable();
     paths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::indexed_rel_path;
+    use std::path::Path;
+
+    #[test]
+    fn indexed_rel_path_uses_forward_slashes() {
+        let root = Path::new("/proj");
+        assert_eq!(
+            indexed_rel_path(root, Path::new("/proj/src/x/Service.cs")).as_deref(),
+            Some("src/x/Service.cs")
+        );
+        assert_eq!(indexed_rel_path(root, Path::new("/elsewhere/a.rs")), None);
+    }
+
+    /// #644: a Windows-style relative tail must match the indexer's
+    /// forward-slash key on every host.
+    #[test]
+    fn indexed_rel_path_normalizes_backslashes() {
+        let root = Path::new("root");
+        let path = Path::new("root").join("src\\x\\Service.cs");
+        assert_eq!(
+            indexed_rel_path(root, &path).as_deref(),
+            Some("src/x/Service.cs")
+        );
+    }
+
+    /// #644: on Windows `canonicalize` yields `\\?\` verbatim paths with
+    /// backslash separators; the DB key must still be `src/x/Service.cs`.
+    #[cfg(windows)]
+    #[test]
+    fn indexed_rel_path_handles_verbatim_windows_paths() {
+        let root = Path::new(r"\\?\E:\projects\B");
+        let path = Path::new(r"\\?\E:\projects\B\src\x\Service.cs");
+        assert_eq!(
+            indexed_rel_path(root, path).as_deref(),
+            Some("src/x/Service.cs")
+        );
+    }
 }

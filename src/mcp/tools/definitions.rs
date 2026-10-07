@@ -652,7 +652,7 @@ fn def_search() -> ToolDefinition {
                 },
                 "literal": {
                     "type": "boolean",
-                    "description": "Exact-substring search over source text (for runtime error strings); returns file/line locations instead of ranked symbols. Case-sensitive. Default false."
+                    "description": "Exact-substring search over source text (for runtime error strings); returns file/line locations instead of ranked symbols, plus `total` matches and `truncated` when `limit` cut the list. Case-sensitive. Default false."
                 },
                 "format": {
                     "type": "string",
@@ -661,7 +661,7 @@ fn def_search() -> ToolDefinition {
                 },
                 "ids": {
                     "type": "boolean",
-                    "description": "Include node IDs / enclosing IDs in results. Default false; pass true when you plan a follow-up call."
+                    "description": "Include node IDs / enclosing IDs in results (both formats). Default false; pass true when you plan a follow-up call."
                 }
             },
             "required": ["query"]
@@ -2885,12 +2885,15 @@ fn def_read() -> ToolDefinition {
         "tokensave_read",
         "Read File (mode-aware)",
         "Read a file or its symbol map. Modes: 'full' (entire file), 'lines' \
-         (1-based inclusive byte-range slice via the 'lines' arg, e.g. '120-180'), \
+         (1-based inclusive line-range slice via the 'lines' arg, e.g. '120-180'), \
          'map' (flat list of every top-level symbol from the graph — no source \
          bytes touched), 'signatures' (functions and types with their cached \
-         signature). Cross-session cached: a re-call on an unchanged file returns \
-         a tiny stub with 'unchanged: true'. Pass 'force': true to bypass the \
-         cache and always receive the body.",
+         signature). 'full' and 'lines' number every line like the Read tool: \
+         right-aligned real file line number, a tab, then the line (a 'lines' \
+         slice from 120 starts at 120). The body is always returned, with a \
+         'digest' of it. To skip re-sending content you still hold, pass that \
+         digest as 'if_digest': when it matches the current body for the same \
+         mode and range, a tiny stub with 'unchanged: true' is returned instead.",
         json!({
             "type": "object",
             "properties": {
@@ -2907,9 +2910,13 @@ fn def_read() -> ToolDefinition {
                     "type": "string",
                     "description": "Required when mode='lines'. Format 'A-B' or single 'A' (1-based, inclusive). E.g. '120-180' or '42'."
                 },
+                "if_digest": {
+                    "type": "string",
+                    "description": "Digest from an earlier tokensave_read response with the same mode and range that you still hold. If it matches the current content, an 'unchanged: true' stub is returned instead of the body; otherwise the body is returned. Omit to always get the body."
+                },
                 "force": {
                     "type": "boolean",
-                    "description": "Bypass the cross-session cache and return the body even when an unchanged stub would otherwise be served. Default false."
+                    "description": "Deprecated: the body is now always returned unless 'if_digest' matches. When true, 'if_digest' is ignored. Default false."
                 },
                 "format": {
                     "type": "string",
