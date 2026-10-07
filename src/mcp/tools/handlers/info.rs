@@ -1353,9 +1353,10 @@ fn indexed_rel_path(root: &std::path::Path, path: &std::path::Path) -> Option<St
     Some(crate::tokensave::normalize_rel_path(&rel.to_string_lossy()))
 }
 
-/// Handles `tokensave_read` — mode-aware file read with cross-session cache.
+/// Handles `tokensave_read` — mode-aware file read. The body is always sent
+/// unless the caller's `if_digest` matches the current body's digest (#650).
 pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    use crate::context::read_cache::{self, GLOBAL_SESSION};
+    use crate::context::read_cache;
     use crate::context::read_modes::{
         self, render_full, render_lines, render_map, render_signatures, LineRange, ReadMode,
     };
@@ -1397,7 +1398,6 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
     };
 
     let project_root = cg.project_root().to_path_buf();
-    let project_id = project_root.to_string_lossy().to_string();
     let rel_path = file.trim_start_matches('/').to_string();
     let mut abs_path = if std::path::Path::new(file).is_absolute() {
         std::path::PathBuf::from(file)
@@ -1448,70 +1448,6 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
         message: format!("cannot read file metadata for '{file}': {e}"),
     })?;
 
-    let last_sync_at = match mode {
-        ReadMode::Map | ReadMode::Signatures => {
-            cg.db().get_metadata("last_sync_at").await.unwrap_or(None)
-        }
-        _ => None,
-    };
-    let hash_input = json!({
-        "lines": args.get("lines").cloned(),
-        "last_sync_at": last_sync_at,
-    });
-    let args_hash = read_cache::args_hash(&hash_input);
-
-    let conn = cg.db().conn();
-    let cache_enabled = !cg.db().is_read_only();
-    // `force: true` bypasses the cross-session cache so a caller that has not
-    // received this file's body in this session can always ask for it (#556).
-    let force = args
-        .get("force")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-
-    let cached = if cache_enabled && !force {
-        read_cache::get(
-            conn,
-            &project_id,
-            GLOBAL_SESSION,
-            &display_file,
-            mode.as_str(),
-            &args_hash,
-            mtime_ns,
-        )
-        .await?
-    } else {
-        None
-    };
-    if let Some(cached) = cached {
-        if format == "text" {
-            let text = format!(
-                "file: {display_file}\nunchanged: true\nmode: {}\ndigest: {}\ntoken_count: {}\n",
-                mode.as_str(),
-                cached.digest,
-                cached.token_count
-            );
-            return Ok(ToolResult {
-                value: json!({ "content": [{ "type": "text", "text": text }] }),
-                touched_files: vec![display_file],
-            });
-        }
-        let stub = json!({
-            "unchanged": true,
-            "file": display_file,
-            "mode": mode.as_str(),
-            "mtime_ns": cached.mtime_ns,
-            "digest": cached.digest,
-            "token_count": cached.token_count,
-        });
-        return Ok(ToolResult {
-            value: json!({
-                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&stub).unwrap_or_default() }]
-            }),
-            touched_files: vec![display_file],
-        });
-    }
-
     let body_text = match mode {
         ReadMode::Full => {
             let source =
@@ -1543,20 +1479,41 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
     let token_count = read_modes::estimate_tokens(&body_text);
     let digest = read_cache::digest_bytes(body_text.as_bytes());
 
-    if cache_enabled {
-        read_cache::put(
-            conn,
-            &project_id,
-            GLOBAL_SESSION,
-            &display_file,
-            mtime_ns,
-            mode.as_str(),
-            &args_hash,
-            &digest,
-            body_text.as_bytes(),
-            token_count,
-        )
-        .await?;
+    // The server cannot know what the client still holds (context compaction,
+    // rewinds, new sessions, subagents), so a body is always sent unless the
+    // client proves it holds this exact content by echoing its digest back
+    // (#650). `force` predates `if_digest`; it is deprecated and, when set,
+    // only overrides `if_digest` so old callers keep getting bodies (#556).
+    let force = args
+        .get("force")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let held_digest = args.get("if_digest").and_then(|v| v.as_str());
+    if !force && held_digest.is_some_and(|held| held.trim() == digest) {
+        if format == "text" {
+            let text = format!(
+                "file: {display_file}\nunchanged: true\nmode: {}\ndigest: {digest}\ntoken_count: {token_count}\n",
+                mode.as_str()
+            );
+            return Ok(ToolResult {
+                value: json!({ "content": [{ "type": "text", "text": text }] }),
+                touched_files: vec![display_file],
+            });
+        }
+        let stub = json!({
+            "unchanged": true,
+            "file": display_file,
+            "mode": mode.as_str(),
+            "mtime_ns": mtime_ns,
+            "digest": digest,
+            "token_count": token_count,
+        });
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&stub).unwrap_or_default() }]
+            }),
+            touched_files: vec![display_file],
+        });
     }
 
     if format == "text" {
