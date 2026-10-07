@@ -116,6 +116,7 @@ impl CSharpExtractor {
             "method_declaration" => Self::visit_method(state, node),
             "constructor_declaration" => Self::visit_constructor(state, node),
             "property_declaration" => Self::visit_property(state, node),
+            "indexer_declaration" => Self::visit_indexer(state, node),
             "field_declaration" => Self::visit_field(state, node),
             "record_declaration" | "record_struct_declaration" => Self::visit_record(state, node),
             "delegate_declaration" => Self::visit_delegate(state, node),
@@ -786,6 +787,38 @@ impl CSharpExtractor {
     /// Extract a property declaration.
     fn visit_property(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::extract_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
+        let type_str = node
+            .child_by_field_name("type")
+            .map(|n| state.node_text(n))
+            .unwrap_or_default();
+        let sig = format!("{type_str} {name}");
+        Self::push_property_node(state, node, name, sig);
+    }
+
+    /// Extract an indexer declaration (`T this[int i] { get; set; }`) as a
+    /// `CSharpProperty` named `this`, so calls in its accessors have a
+    /// caller (#637).
+    fn visit_indexer(state: &mut ExtractionState, node: TsNode<'_>) {
+        let type_str = node
+            .child_by_field_name("type")
+            .map(|n| state.node_text(n))
+            .unwrap_or_default();
+        let params = node
+            .child_by_field_name("parameters")
+            .map(|n| state.node_text(n))
+            .unwrap_or_default();
+        let sig = format!("{type_str} this{params}");
+        Self::push_property_node(state, node, "this".to_string(), sig);
+    }
+
+    /// Push a `CSharpProperty` node for a property or indexer declaration,
+    /// its `Contains` edge, and the call sites in its accessor bodies.
+    fn push_property_node(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        name: String,
+        sig: String,
+    ) {
         let visibility = Self::extract_csharp_visibility(node, state);
         let docstring = Self::extract_xml_docstring(state, node);
         let start_line = node.start_position().row as u32;
@@ -799,13 +832,6 @@ impl CSharpExtractor {
             &name,
             start_line,
         );
-
-        // Extract the type from the type field
-        let type_str = node
-            .child_by_field_name("type")
-            .map(|n| state.node_text(n))
-            .unwrap_or_default();
-        let sig = format!("{type_str} {name}");
 
         let graph_node = Node {
             id: id.clone(),
@@ -843,12 +869,14 @@ impl CSharpExtractor {
         if let Some(parent_id) = state.parent_node_id() {
             state.edges.push(Edge {
                 source: parent_id.to_string(),
-                target: id,
+                target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
                 resolved_by: None,
             });
         }
+
+        Self::extract_member_call_sites(state, node, &id);
     }
 
     /// Extract field declarations.
@@ -1149,12 +1177,16 @@ impl CSharpExtractor {
         if let Some(parent_id) = state.parent_node_id() {
             state.edges.push(Edge {
                 source: parent_id.to_string(),
-                target: id,
+                target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
                 resolved_by: None,
             });
         }
+
+        // Calls in `add`/`remove` accessor bodies (#637). An
+        // `event_field_declaration` has no accessors, so this is a no-op there.
+        Self::extract_member_call_sites(state, node, &id);
     }
 
     /// Extract attribute lists as `AnnotationUsage` nodes with Annotates edges.
@@ -1469,7 +1501,14 @@ impl CSharpExtractor {
                         || child.kind() == "generic_name"
                         || child.kind() == "qualified_name")
                 {
-                    let type_name = state.node_text(child);
+                    // `IProducer<TRecord>` names the type `IProducer`; the
+                    // type arguments would keep the ref from ever matching
+                    // the declaration (#643).
+                    let type_name = strip_type_arguments(&state.node_text(child));
+                    // A class's first base may be a class or an interface;
+                    // the syntax cannot tell them apart, so it is recorded as
+                    // `Extends` and the resolver turns it into `Implements`
+                    // when the target is an interface (#643).
                     let edge_kind = if is_class && is_first {
                         is_first = false;
                         EdgeKind::Extends
@@ -1675,47 +1714,76 @@ impl CSharpExtractor {
         None
     }
 
-    /// Recursively find `invocation_expression` nodes and create unresolved Calls references.
+    /// Record call sites in the bodies of a property, indexer, or event (#637).
+    ///
+    /// Walks each accessor's body (`get`/`set`/`init`/`add`/`remove`, block or
+    /// expression-bodied) and the declaration's `value` (an expression-bodied
+    /// member's `=> expr`, or a property initializer `= expr`), attributing
+    /// every call to `member_id`. Attributes and the declared type are left
+    /// out, so `[Display(Name = nameof(X))]` is not recorded as a call.
+    fn extract_member_call_sites(state: &mut ExtractionState, node: TsNode<'_>, member_id: &str) {
+        if let Some(accessors) = node.child_by_field_name("accessors") {
+            let mut cursor = accessors.walk();
+            for accessor in accessors.named_children(&mut cursor) {
+                if accessor.kind() != "accessor_declaration" {
+                    continue;
+                }
+                if let Some(body) = accessor.child_by_field_name("body") {
+                    Self::scan_call_site(state, body, member_id);
+                }
+            }
+        }
+        if let Some(value) = node.child_by_field_name("value") {
+            Self::scan_call_site(state, value, member_id);
+        }
+    }
+
+    /// Recursively find `invocation_expression` nodes among `node`'s
+    /// descendants and create unresolved Calls references.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
-                let child = cursor.node();
-                match child.kind() {
-                    "invocation_expression" => {
-                        let callee_name = Self::extract_invocation_name(state, child);
-                        state.unresolved_refs.push(UnresolvedRef {
-                            from_node_id: fn_node_id.to_string(),
-                            reference_name: callee_name,
-                            reference_kind: EdgeKind::Calls,
-                            line: child.start_position().row as u32,
-                            column: child.start_position().column as u32,
-                            file_path: state.file_path.clone(),
-                        });
-                        // Recurse for nested calls inside arguments.
-                        Self::extract_call_sites(state, child, fn_node_id);
-                    }
-                    "object_creation_expression" => {
-                        let type_name = Self::extract_object_creation_type(state, child);
-                        state.unresolved_refs.push(UnresolvedRef {
-                            from_node_id: fn_node_id.to_string(),
-                            reference_name: format!("new {type_name}"),
-                            reference_kind: EdgeKind::Calls,
-                            line: child.start_position().row as u32,
-                            column: child.start_position().column as u32,
-                            file_path: state.file_path.clone(),
-                        });
-                        Self::extract_call_sites(state, child, fn_node_id);
-                    }
-                    // Skip nested declarations.
-                    "method_declaration" | "constructor_declaration" | "class_declaration" => {}
-                    _ => {
-                        Self::extract_call_sites(state, child, fn_node_id);
-                    }
-                }
+                Self::scan_call_site(state, cursor.node(), fn_node_id);
                 if !cursor.goto_next_sibling() {
                     break;
                 }
+            }
+        }
+    }
+
+    /// Record `node` itself if it is a call site, then recurse into it.
+    fn scan_call_site(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
+        match node.kind() {
+            "invocation_expression" => {
+                let callee_name = Self::extract_invocation_name(state, node);
+                state.unresolved_refs.push(UnresolvedRef {
+                    from_node_id: fn_node_id.to_string(),
+                    reference_name: callee_name,
+                    reference_kind: EdgeKind::Calls,
+                    line: node.start_position().row as u32,
+                    column: node.start_position().column as u32,
+                    file_path: state.file_path.clone(),
+                });
+                // Recurse for nested calls inside arguments.
+                Self::extract_call_sites(state, node, fn_node_id);
+            }
+            "object_creation_expression" => {
+                let type_name = Self::extract_object_creation_type(state, node);
+                state.unresolved_refs.push(UnresolvedRef {
+                    from_node_id: fn_node_id.to_string(),
+                    reference_name: format!("new {type_name}"),
+                    reference_kind: EdgeKind::Calls,
+                    line: node.start_position().row as u32,
+                    column: node.start_position().column as u32,
+                    file_path: state.file_path.clone(),
+                });
+                Self::extract_call_sites(state, node, fn_node_id);
+            }
+            // Skip nested declarations.
+            "method_declaration" | "constructor_declaration" | "class_declaration" => {}
+            _ => {
+                Self::extract_call_sites(state, node, fn_node_id);
             }
         }
     }
@@ -2132,4 +2200,21 @@ impl crate::extraction::LanguageExtractor for CSharpExtractor {
     fn extract(&self, file_path: &str, source: &str) -> ExtractionResult {
         CSharpExtractor::extract_csharp(file_path, source)
     }
+}
+
+/// Drops every `<...>` type-argument list from a C# type name, so
+/// `App.IProducer<int>` becomes `App.IProducer` and `Outer<T>.Inner` becomes
+/// `Outer.Inner`. Nested lists (`IMap<K, List<V>>`) are handled by depth.
+fn strip_type_arguments(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut depth = 0usize;
+    for c in name.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 && !c.is_whitespace() => out.push(c),
+            _ => {}
+        }
+    }
+    out
 }
