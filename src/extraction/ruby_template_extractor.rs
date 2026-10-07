@@ -103,17 +103,16 @@ impl<'a> Projection<'a> {
         for node in &mut result.nodes {
             if node.kind == NodeKind::File {
                 node.end_line = self.source.lines().count().saturating_sub(1) as u32;
+                // end_column stays 0, as on every RubyExtractor file node.
                 continue;
             }
             (node.attrs_start_line, _) = position(node.attrs_start_line, 0);
             (node.start_line, node.start_column) = position(node.start_line, node.start_column);
             (node.end_line, node.end_column) = position(node.end_line, node.end_column);
-            let id = generate_node_id(
-                &node.file_path,
-                &node.kind,
-                &node.qualified_name,
-                node.start_line,
-            );
+            // Same key RubyExtractor hashes (short name, not qualified name),
+            // so a template node's id follows the convention of every other
+            // Ruby node.
+            let id = generate_node_id(&node.file_path, &node.kind, &node.name, node.start_line);
             ids.insert(node.id.clone(), id.clone());
             node.id = id;
         }
@@ -377,6 +376,12 @@ fn interpolation(projection: &mut Projection<'_>, range: Range<usize>) {
 }
 
 fn balanced_end(bytes: &[u8], start: usize, limit: usize) -> usize {
+    find_balanced_end(bytes, start, limit).unwrap_or(limit)
+}
+
+/// The offset just past the delimiter that closes the one at `start`, or
+/// `None` when nothing before `limit` closes it.
+fn find_balanced_end(bytes: &[u8], start: usize, limit: usize) -> Option<usize> {
     let mut stack = vec![match bytes[start] {
         b'(' => b')',
         b'[' => b']',
@@ -403,7 +408,7 @@ fn balanced_end(bytes: &[u8], start: usize, limit: usize) -> usize {
                 _ if stack.last() == Some(&byte) => {
                     stack.pop();
                     if stack.is_empty() {
-                        return i + 1;
+                        return Some(i + 1);
                     }
                 }
                 _ => {}
@@ -411,7 +416,7 @@ fn balanced_end(bytes: &[u8], start: usize, limit: usize) -> usize {
         }
         i += 1;
     }
-    limit
+    None
 }
 
 fn skip_space(bytes: &[u8], mut i: usize, end: usize) -> usize {
@@ -453,7 +458,9 @@ fn slim_tag(
         None
     };
     if outer.is_some() {
-        let close = balanced_end(bytes, i, bytes.len());
+        // A wrapper may span lines, but an unclosed one must not swallow the
+        // rest of the template: it stays on its own line.
+        let close = find_balanced_end(bytes, i, bytes.len()).unwrap_or(end);
         if close > end {
             end = projection.source[close..]
                 .find('\n')
@@ -630,7 +637,23 @@ fn collect_identifiers<'a>(
             || (matches!(node.kind(), "in_clause" | "match_pattern" | "test_pattern")
                 && node.child_by_field_name("pattern") == Some(child))
             || (node.kind() == "rescue" && node.child_by_field_name("variable") == Some(child));
+        // A bare identifier used only as a receiver (`item.title`, `item&.x`,
+        // `item[0]`) is far more often a partial local or an instance-less
+        // view variable than a helper call. Partial locals are never bound in
+        // the template's own source, so emitting it would let the resolver
+        // tie it to any same-named method in the project.
+        if !is_binding && child.kind() == "identifier" && is_receiver(node, child) {
+            continue;
+        }
         collect_identifiers(state, child, is_binding, locals, identifiers);
+    }
+}
+
+fn is_receiver(parent: TsNode<'_>, child: TsNode<'_>) -> bool {
+    match parent.kind() {
+        "call" => parent.child_by_field_name("receiver") == Some(child),
+        "element_reference" => parent.child_by_field_name("object") == Some(child),
+        _ => false,
     }
 }
 

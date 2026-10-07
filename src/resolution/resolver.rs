@@ -367,6 +367,47 @@ fn is_gdscript_ident(s: &str) -> bool {
         && chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
+/// Whether `path` is an ERB or Slim template, indexed as Ruby.
+fn is_ruby_template(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("erb") || ext.eq_ignore_ascii_case("slim"))
+}
+
+/// Whether a Ruby callable is something a view template can call bare.
+/// See `try_ruby_template_helper_match` for the rationale.
+fn is_ruby_template_helper(node: &Node) -> bool {
+    if lang_from_path(&node.file_path) != "ruby" {
+        return false;
+    }
+    match node.kind {
+        NodeKind::Function => true,
+        NodeKind::Method => {
+            if node
+                .file_path
+                .split('/')
+                .any(|segment| segment == "helpers")
+            {
+                return true;
+            }
+            // Qualified names start with the file path, sometimes twice.
+            let mut scope = node.qualified_name.as_str();
+            while let Some(rest) = scope
+                .strip_prefix(node.file_path.as_str())
+                .and_then(|rest| rest.strip_prefix("::"))
+            {
+                scope = rest;
+            }
+            let mut segments: Vec<&str> = scope.split("::").collect();
+            segments.pop();
+            segments
+                .iter()
+                .any(|s| s.ends_with("Helper") || *s == "ApplicationController")
+        }
+        _ => false,
+    }
+}
+
 /// Callable node kinds a `GDScript` method lookup accepts.
 fn is_gdscript_callable(kind: &NodeKind) -> bool {
     matches!(
@@ -955,8 +996,54 @@ impl<'a> ReferenceResolver<'a> {
             return None;
         }
 
+        // A bare name in an ERB/Slim template binds to view helpers only.
+        if uref.reference_kind == EdgeKind::Calls && is_ruby_template(&uref.file_path) {
+            return self.try_ruby_template_helper_match(uref);
+        }
+
         // Strategy 2: exact name match
         self.try_exact_name_match(uref)
+    }
+
+    /// Resolves a bare call in an ERB or Slim template.
+    ///
+    /// A template's bare names are mostly not calls the template source can
+    /// prove: partial locals (`render "row", item: x` makes `item` a local the
+    /// partial never binds), controller-assigned variables and the view
+    /// context's own methods. Matching them by name alone binds a partial's
+    /// `item` to whatever `def item` the project happens to have. A view
+    /// calls helpers, so only helper-shaped targets are candidates: a method
+    /// in a `helpers/` directory (Rails' `app/helpers`, engines included), a
+    /// method of a `*Helper` module, a method of `ApplicationController`
+    /// (where `helper_method` exposures conventionally live), a top-level
+    /// `def` (a private method of `Object`, callable everywhere), or a method
+    /// defined in the template itself.
+    fn try_ruby_template_helper_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
+        let blocklisted = CROSS_FILE_BLOCKLIST.contains(&uref.reference_name.as_str());
+        let candidates: Vec<&Node> = self
+            .name_cache
+            .get(uref.reference_name.as_str())?
+            .iter()
+            .copied()
+            .filter(|n| kind_compatible(uref, &n.kind))
+            .filter(|n| {
+                if n.file_path == uref.file_path {
+                    return true;
+                }
+                !blocklisted && is_ruby_template_helper(n)
+            })
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        resolve_from_filtered_named(
+            uref,
+            &candidates,
+            "ruby-template-helper",
+            &self.import_index,
+            false,
+            &self.node_id_cache,
+        )
     }
 
     /// Returns true if a reference name could plausibly resolve to a known symbol.
@@ -1953,10 +2040,16 @@ impl<'a> ReferenceResolver<'a> {
         }
         let simple_name = simple_ref_name(&uref.reference_name);
         let raw = self.name_cache.get(simple_name)?;
+        // A template's bare call only ever competes among helpers; a tie
+        // among unrelated same-named methods is not an ambiguity it has.
+        let template_bare = is_ruby_template(&uref.file_path) && simple_name == uref.reference_name;
         let candidates: Vec<&Node> = raw
             .iter()
             .copied()
             .filter(|n| kind_compatible(uref, &n.kind))
+            .filter(|n| {
+                !template_bare || n.file_path == uref.file_path || is_ruby_template_helper(n)
+            })
             .collect();
 
         let winners = Self::find_best_matches(uref, &candidates, &self.import_index);

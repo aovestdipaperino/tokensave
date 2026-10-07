@@ -440,3 +440,127 @@ fn template_pattern_guards_pins_and_interpolation_still_call_helpers() {
         assert!(!calls(&result).contains(&name), "unexpected {name}");
     }
 }
+
+#[test]
+fn template_receivers_are_not_helper_calls() {
+    let erb = "<%= item.title %><%= item&.name %><%= item[0] %><%= item.price.round(2) %>";
+    let slim = "p = item.title\np = item&.name\n= item[0]\n";
+    for (path, source) in [("_row.html.erb", erb), ("_row.html.slim", slim)] {
+        let result = extract(path, source);
+        assert!(
+            !calls(&result).contains(&"item"),
+            "{path}: {:?}",
+            calls(&result)
+        );
+        assert!(calls(&result).contains(&"item.title"), "{path}");
+    }
+}
+
+/// Resolve a template's references against some Ruby files plus itself,
+/// returning every node and each resolved (reference name, target id).
+async fn resolve_template(
+    ruby: &[(&str, &str)],
+    template: (&str, &str),
+) -> (Vec<tokensave::types::Node>, Vec<(String, String)>) {
+    use tokensave::resolution::ReferenceResolver;
+    let dir = tempfile::tempdir().unwrap();
+    let (db, _) = tokensave::db::Database::initialize(&dir.path().join("test.db"))
+        .await
+        .unwrap();
+    let mut nodes = Vec::new();
+    for (path, source) in ruby {
+        nodes.extend(RubyExtractor.extract(path, source).nodes);
+    }
+    let extracted = extract(template.0, template.1);
+    nodes.extend(extracted.nodes.clone());
+    let resolver = ReferenceResolver::from_nodes(&db, &nodes);
+    let resolution = resolver.resolve_all(&extracted.unresolved_refs);
+    let edges = resolution
+        .resolved
+        .iter()
+        .map(|r| (r.original.reference_name.clone(), r.target_node_id.clone()))
+        .collect();
+    (nodes, edges)
+}
+
+#[tokio::test]
+async fn template_partial_locals_do_not_bind_to_unrelated_methods() {
+    let ruby = [
+        (
+            "app/models/order.rb",
+            "class Order\n  def item\n  end\nend\n",
+        ),
+        (
+            "app/helpers/application_helper.rb",
+            "module ApplicationHelper\n  def format_price(value)\n  end\nend\n",
+        ),
+    ];
+    for template in [
+        (
+            "app/views/orders/_row.html.erb",
+            "<%= item.title %>\n<%= item %>\n<%= format_price(item.price) %>\n",
+        ),
+        (
+            "app/views/orders/_row.html.slim",
+            "p = item.title\np = item\np = format_price(item.price)\n",
+        ),
+    ] {
+        let (nodes, edges) = resolve_template(&ruby, template).await;
+        let id_of = |name: &str| {
+            nodes
+                .iter()
+                .find(|n| n.name == name && n.kind != NodeKind::File)
+                .unwrap()
+                .id
+                .clone()
+        };
+        let order_item = id_of("item");
+        assert!(
+            edges.iter().all(|(_, target)| *target != order_item),
+            "{}: partial local bound to Order#item: {edges:?}",
+            template.0
+        );
+        let helper = id_of("format_price");
+        assert!(
+            edges
+                .iter()
+                .any(|(name, target)| name == "format_price" && *target == helper),
+            "{}: helper call unresolved: {edges:?}",
+            template.0
+        );
+    }
+}
+
+#[tokio::test]
+async fn template_bare_calls_reach_helper_shaped_targets_only() {
+    let ruby = [
+        (
+            "lib/formatting_helper.rb",
+            "module FormattingHelper\n  def money(value)\n  end\nend\n",
+        ),
+        (
+            "app/controllers/application_controller.rb",
+            "class ApplicationController\n  helper_method :current_user\n  def current_user\n  end\nend\n",
+        ),
+        (
+            "app/models/report.rb",
+            "class Report\n  def summary\n  end\nend\n",
+        ),
+    ];
+    let (nodes, edges) = resolve_template(
+        &ruby,
+        (
+            "app/views/reports/show.html.erb",
+            "<%= money(1) %><%= current_user %><%= summary %>",
+        ),
+    )
+    .await;
+    let resolved: Vec<&str> = edges.iter().map(|(name, _)| name.as_str()).collect();
+    assert!(resolved.contains(&"money"), "{resolved:?}");
+    assert!(resolved.contains(&"current_user"), "{resolved:?}");
+    let summary = nodes.iter().find(|n| n.name == "summary").unwrap();
+    assert!(
+        edges.iter().all(|(_, target)| *target != summary.id),
+        "{resolved:?}"
+    );
+}
