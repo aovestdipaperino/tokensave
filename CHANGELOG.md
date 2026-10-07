@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+
+## [7.15.0] - 2026-10-07
+
 ### Added
 - **`tokensave_read` takes an `if_digest` argument (#650).** Every response that carries a body also carries its `digest`. A client that still holds that content passes the digest back as `if_digest`; when it matches the current body for the same mode and range, the short `unchanged: true` stub is returned instead of the body, and otherwise the body is. Requested by @xorets.
 
@@ -2082,3 +2085,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [7.13.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.13.0
 [7.14.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.14.0
 [7.14.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.14.1
+[7.15.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.15.0

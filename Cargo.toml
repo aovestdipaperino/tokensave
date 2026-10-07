@@ -1,6 +1,6 @@
 [package]
 name = "tokensave"
-version = "7.14.1"
+version = "7.15.0"
 edition = "2021"
 rust-version = "1.95.0"
 # Integration tests are declared explicitly below: see tests/integration.rs.
