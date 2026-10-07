@@ -7,6 +7,11 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+- **Git hooks shell-quote the tokensave binary path (#636).** The post-commit, post-merge and post-checkout sections put the path into the `sh` script unquoted, so an install path with a space split into two words and the hook did nothing, and a `;`, `$(...)` or backtick in it would run as a command on every git operation. The path is now single-quoted, which turns off every shell expansion. Existing sections are rewritten in place by `install`, `reinstall`, `githooks on` and the upgrade resync, and the post-checkout block's version stamp goes to v3.
+- **The MCP server caps a request line at 64 MiB (#636).** Its stdin reader buffered a line of any length, so a host that never sent a newline could make the server use all available memory. A longer line is now discarded and answered with a JSON-RPC parse error, and the server keeps serving.
+- **Name lookups no longer read `_` and `%` in a name as wildcards.** The `LIKE` fallback of `search_nodes` and the `::` suffix scan of `get_nodes_by_qualified_name` passed the query to SQL unescaped, so `my_function` also matched `myXfunction`.
+
 
 ## [7.14.1] - 2026-10-02
 
