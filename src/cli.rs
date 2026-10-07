@@ -1,4 +1,4 @@
-use clap::{builder::PossibleValuesParser, Parser, Subcommand};
+use clap::{builder::PossibleValuesParser, ArgAction, Parser, Subcommand};
 
 fn agent_value_parser() -> PossibleValuesParser {
     PossibleValuesParser::new(tokensave::agents::available_integrations())
@@ -99,7 +99,7 @@ pub enum Commands {
         /// when several are detected). Repeat the flag to install several
         /// agents in a single run, e.g.
         /// `tokensave install --agent claude --agent cursor` (#640).
-        #[arg(long, value_parser = agent_value_parser(), num_args = 0..)]
+        #[arg(long, value_parser = agent_value_parser(), action = ArgAction::Append, num_args = 1)]
         agent: Vec<String>,
         /// Whether to install git `post-commit` + `post-merge` hooks that run
         /// `tokensave sync` after each commit and after `git pull` (plus a
@@ -474,6 +474,23 @@ mod tests {
             }
             _ => panic!("expected Install command"),
         }
+    }
+
+    /// A bare `--agent` with no value must be rejected rather than silently
+    /// falling back to auto-detection.
+    #[test]
+    fn parse_install_bare_agent_flag_is_rejected() {
+        let err_kind = match Cli::try_parse_from(["tokensave", "install", "--agent"]) {
+            Ok(_) => panic!("parse should fail for --agent without a value"),
+            Err(e) => e.kind(),
+        };
+        assert!(
+            err_kind == clap::error::ErrorKind::InvalidValue
+                || err_kind == clap::error::ErrorKind::WrongNumberOfValues
+                || err_kind == clap::error::ErrorKind::TooFewValues,
+            "expected a missing-value error, got {:?}",
+            err_kind
+        );
     }
 
     /// Each `--agent` value is still validated against the known integration

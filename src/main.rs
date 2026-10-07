@@ -1,7 +1,6 @@
 // Rust guideline compliant 2025-10-17
 // Updated 2026-03-23: compact bordered table for status output
 use clap::Parser;
-use std::collections::HashSet;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::process;
 
@@ -768,14 +767,20 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             if !agent.is_empty() {
                 // Repeat `--agent` in a single run installs every named agent
-                // in turn (#640). Collapsing the list into a `HashSet`
-                // de-duplicates a `--agent foo --agent foo` repeat without an
-                // extra allocation.
-                let named_agents: HashSet<String> = agent.into_iter().collect();
-                let mut touched_global_cfg = false;
+                // in turn (#640), in the order the user typed them. A repeated
+                // id (`--agent foo --agent foo`) is installed once.
+                let mut named_agents: Vec<String> = Vec::with_capacity(agent.len());
+                for id in agent {
+                    if !named_agents.contains(&id) {
+                        named_agents.push(id);
+                    }
+                }
+                // Resolve and validate every agent before installing any, so a
+                // `--local` run naming an agent without project-scoped config
+                // fails up front instead of after earlier agents were installed.
+                let mut integrations = Vec::with_capacity(named_agents.len());
                 for id in &named_agents {
                     let ag = tokensave::agents::get_integration(id)?;
-                    let name = ag.name().to_string();
                     if local && !ag.supports_local() {
                         return Err(tokensave::errors::TokenSaveError::Config {
                             message: format!(
@@ -785,6 +790,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                             ),
                         });
                     }
+                    integrations.push(ag);
+                }
+                let mut touched_global_cfg = false;
+                for (id, ag) in named_agents.iter().zip(integrations) {
+                    let name = ag.name().to_string();
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
