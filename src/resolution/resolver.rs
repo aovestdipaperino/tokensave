@@ -956,7 +956,7 @@ impl<'a> ReferenceResolver<'a> {
             .map(|r| Edge {
                 source: r.original.from_node_id.clone(),
                 target: r.target_node_id.clone(),
-                kind: r.original.reference_kind,
+                kind: self.edge_kind_for(r),
                 line: Some(r.original.line),
                 resolved_by: ResolvedBy::from_name(&r.resolved_by),
             })
@@ -986,6 +986,27 @@ impl<'a> ReferenceResolver<'a> {
     // ------------------------------------------------------------------
     // Private helpers
     // ------------------------------------------------------------------
+
+    /// The edge kind to store for a resolved reference.
+    ///
+    /// A C# base list (`class A : X, IY`) cannot syntactically distinguish a
+    /// base class from an interface, so the extractor records a class's
+    /// first base as `Extends`. Once the target is known, an `Extends` that
+    /// lands on an interface is really an `Implements`, which is what
+    /// `tokensave_implementations` reads (#643).
+    fn edge_kind_for(&self, r: &ResolvedRef) -> EdgeKind {
+        let kind = r.original.reference_kind;
+        if kind == EdgeKind::Extends
+            && lang_from_path(&r.original.file_path) == "csharp"
+            && self
+                .node_id_cache
+                .get(r.target_node_id.as_str())
+                .is_some_and(|n| n.kind == NodeKind::Interface)
+        {
+            return EdgeKind::Implements;
+        }
+        kind
+    }
 
     /// Strategy 1: try matching the reference name against qualified names.
     fn try_qualified_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
