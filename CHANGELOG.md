@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+
+- **`tokensave_read` in `map` and `signatures` mode finds a file's symbols again on Windows and for non-plain paths (#644).** The mode looks symbols up by the file's path relative to the project, but that path was cut from the canonical file path with the separators of the host, so on Windows a `graph_root` read of `src/x/Service.cs` looked up `src\x\Service.cs`, which the indexer (it stores forward slashes) never wrote, and returned `symbol_count: 0`. The served project could miss too: when its root was not in canonical form (a symlinked directory, or no `\\?\` prefix on Windows) the raw argument was used as given, so `./src/x.rs`, `src/../src/x.rs` or an absolute path found nothing. The lookup key, the echoed `file` and the read-cache key are now always derived from the canonical root and file and use forward slashes. `tokensave_entities` uses the same key. The containment check from #636 is unchanged. Reported on Windows 11.
+
 
 ## [7.14.1] - 2026-10-02
 
