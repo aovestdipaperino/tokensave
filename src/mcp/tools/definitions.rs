@@ -652,7 +652,7 @@ fn def_search() -> ToolDefinition {
                 },
                 "literal": {
                     "type": "boolean",
-                    "description": "Exact-substring search over source text (for runtime error strings); returns file/line locations instead of ranked symbols. Case-sensitive. Default false."
+                    "description": "Exact-substring search over source text (for runtime error strings); returns file/line locations instead of ranked symbols, plus `total` matches and `truncated` when `limit` cut the list. Case-sensitive. Default false."
                 },
                 "format": {
                     "type": "string",
@@ -661,7 +661,7 @@ fn def_search() -> ToolDefinition {
                 },
                 "ids": {
                     "type": "boolean",
-                    "description": "Include node IDs / enclosing IDs in results. Default false; pass true when you plan a follow-up call."
+                    "description": "Include node IDs / enclosing IDs in results (both formats). Default false; pass true when you plan a follow-up call."
                 }
             },
             "required": ["query"]

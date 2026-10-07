@@ -1343,6 +1343,16 @@ pub(super) async fn handle_todos(
     })
 }
 
+/// Returns `path` relative to `root` in the form the indexer stores in the
+/// `files`/`nodes` tables: forward slashes regardless of the host separator
+/// (see `TokenSave::accept_file` and the walk in `indexing.rs`). Both paths
+/// should be canonical so they share a prefix form (on Windows both carry the
+/// `\\?\` verbatim prefix). Returns `None` when `path` is not under `root`.
+fn indexed_rel_path(root: &std::path::Path, path: &std::path::Path) -> Option<String> {
+    let rel = path.strip_prefix(root).ok()?;
+    Some(crate::tokensave::normalize_rel_path(&rel.to_string_lossy()))
+}
+
 /// Handles `tokensave_read` — mode-aware file read. The body is always sent
 /// unless the caller's `if_digest` matches the current body's digest (#650).
 pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResult> {
@@ -1419,15 +1429,20 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
             ),
         });
     }
+    // Map/signatures look symbols up by this path, so it must be the exact
+    // key the indexer stored: relative to the root, forward slashes (#644).
+    // Derive it from the two canonical paths; the raw `project_root` may be
+    // non-canonical (symlinked temp dir, or no `\\?\` verbatim prefix on
+    // Windows) and the raw `file` may carry `./`, `..` or backslashes.
+    let display_file = indexed_rel_path(&canonical_root, &canonical_path).ok_or_else(|| {
+        TokenSaveError::Config {
+            message: format!(
+                "selected tokensave_read path '{file}' resolves outside selected graph root '{}'; choose a file inside that root",
+                canonical_root.display()
+            ),
+        }
+    })?;
     abs_path = canonical_path;
-    let display_file = if abs_path.starts_with(&project_root) {
-        abs_path
-            .strip_prefix(&project_root)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or(rel_path.clone())
-    } else {
-        rel_path.clone()
-    };
 
     let mtime_ns = read_cache::file_mtime_ns(&abs_path).map_err(|e| TokenSaveError::Config {
         message: format!("cannot read file metadata for '{file}': {e}"),
@@ -1556,14 +1571,15 @@ pub(super) async fn handle_outline(cg: &TokenSave, args: Value) -> Result<ToolRe
     } else {
         project_root.join(&rel_path)
     };
-    let display_file = if abs_path.starts_with(project_root) {
-        abs_path
-            .strip_prefix(project_root)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or(rel_path.clone())
-    } else {
-        rel_path.clone()
-    };
+    // Same DB key derivation as `tokensave_read` (#644). This handler only
+    // queries the graph, so a path that cannot be canonicalized (e.g. a file
+    // deleted since the last sync) falls back to the separator-normalized arg.
+    let display_file = project_root
+        .canonicalize()
+        .ok()
+        .zip(abs_path.canonicalize().ok())
+        .and_then(|(root, path)| indexed_rel_path(&root, &path))
+        .unwrap_or_else(|| crate::tokensave::normalize_rel_path(&rel_path));
 
     let kinds_slice: Option<&[String]> = kinds.as_deref();
     let mut value = render_map(cg.db(), &display_file, kinds_slice).await?;
@@ -2068,4 +2084,45 @@ async fn companion_doc_paths(cg: &TokenSave, file: &str) -> Vec<String> {
     }
     paths.sort_unstable();
     paths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::indexed_rel_path;
+    use std::path::Path;
+
+    #[test]
+    fn indexed_rel_path_uses_forward_slashes() {
+        let root = Path::new("/proj");
+        assert_eq!(
+            indexed_rel_path(root, Path::new("/proj/src/x/Service.cs")).as_deref(),
+            Some("src/x/Service.cs")
+        );
+        assert_eq!(indexed_rel_path(root, Path::new("/elsewhere/a.rs")), None);
+    }
+
+    /// #644: a Windows-style relative tail must match the indexer's
+    /// forward-slash key on every host.
+    #[test]
+    fn indexed_rel_path_normalizes_backslashes() {
+        let root = Path::new("root");
+        let path = Path::new("root").join("src\\x\\Service.cs");
+        assert_eq!(
+            indexed_rel_path(root, &path).as_deref(),
+            Some("src/x/Service.cs")
+        );
+    }
+
+    /// #644: on Windows `canonicalize` yields `\\?\` verbatim paths with
+    /// backslash separators; the DB key must still be `src/x/Service.cs`.
+    #[cfg(windows)]
+    #[test]
+    fn indexed_rel_path_handles_verbatim_windows_paths() {
+        let root = Path::new(r"\\?\E:\projects\B");
+        let path = Path::new(r"\\?\E:\projects\B\src\x\Service.cs");
+        assert_eq!(
+            indexed_rel_path(root, path).as_deref(),
+            Some("src/x/Service.cs")
+        );
+    }
 }

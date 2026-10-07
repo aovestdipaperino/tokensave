@@ -1143,6 +1143,85 @@ async fn primary_read_rejects_paths_outside_project_root() {
     assert!(response_text(&inside).contains("local_only"), "{inside}");
 }
 
+async fn setup_nested_project() -> (TempDir, TokenSave) {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src/x")).unwrap();
+    fs::write(
+        project.join("src/x/service.rs"),
+        "pub fn nested_alpha() -> i32 { 1 }\npub fn nested_beta() -> i32 { 2 }\n",
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    (dir, cg)
+}
+
+/// Asserts that a `tokensave_read` map/signatures response found the indexed
+/// symbols and echoes the indexer's path form (`src/x/service.rs`).
+fn assert_nested_symbols(response: &Value, label: &str) {
+    assert!(response["error"].is_null(), "{label}: {response}");
+    let text = response_text(response);
+    assert!(
+        text.lines().any(|line| line == "file: src/x/service.rs"),
+        "{label}: echoed path is not the indexed form: {text}"
+    );
+    assert!(
+        text.contains("nested_alpha") && text.contains("nested_beta"),
+        "{label}: indexed symbols missing: {text}"
+    );
+}
+
+/// #644: `tokensave_read` map/signatures look symbols up in the DB by the
+/// displayed relative path. It was derived by stripping the (possibly
+/// non-canonical) root from the canonical path and formatting it with OS
+/// separators, so `./`, `..`, absolute paths through a symlinked temp dir and
+/// (on Windows) every nested path under a graph_root missed the indexer's
+/// forward-slash key and returned `symbol_count: 0`.
+#[tokio::test]
+async fn read_map_and_signatures_use_indexed_path_form() {
+    let (local_dir, local) = setup_nested_project().await;
+    let (selected_dir, selected) = setup_nested_project().await;
+    drop(selected);
+    let server = McpServer::new(local, None).await;
+    let graph_root = selected_dir.path().display().to_string();
+
+    let file_forms = |root: &Path| {
+        vec![
+            "src/x/service.rs".to_string(),
+            "./src/x/service.rs".to_string(),
+            "src/../src/x/service.rs".to_string(),
+            root.join("src/x/service.rs").display().to_string(),
+        ]
+    };
+
+    let mut id = 70;
+    for mode in ["map", "signatures"] {
+        for file in file_forms(selected_dir.path()) {
+            id += 1;
+            let response = call_server(
+                &server,
+                id,
+                "tokensave_read",
+                json!({ "file": file, "mode": mode, "graph_root": graph_root, "force": true }),
+            )
+            .await;
+            assert_nested_symbols(&response, &format!("graph_root {mode} {file}"));
+        }
+        for file in file_forms(local_dir.path()) {
+            id += 1;
+            let response = call_server(
+                &server,
+                id,
+                "tokensave_read",
+                json!({ "file": file, "mode": mode, "force": true }),
+            )
+            .await;
+            assert_nested_symbols(&response, &format!("primary {mode} {file}"));
+        }
+    }
+}
+
 #[tokio::test]
 async fn selected_context_qualifies_ids_without_rewriting_source_literals() {
     let (_local_dir, local) = setup_named_project("local_only").await;
