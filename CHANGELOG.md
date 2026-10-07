@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Changed
+- **`tokensave_body` lists candidates for an ambiguous name instead of returning every body, and accepts `Type.Member` (#651).** A bare name shared by several definitions, such as three `RefreshAsync` methods, used to return up to three full bodies, the wanted one possibly last. When more than one definition of the best kind matches (a function or type still outranks a same-named field or import), the tool now returns no body but a candidate list with each candidate's qualified name without its file prefix (`App::Coordinator::RefreshAsync`), kind, file, 1-based line range and node id, plus a hint to re-call with a qualified name or the id. Exactly one match returns its body as before. `.` is now accepted as a member separator alongside `::`: `Coordinator.RefreshAsync` and `App.Coordinator.RefreshAsync` resolve by matching trailing segments, and the literal name is tried first so names that really contain dots still match. The match treats `.` and `::` alike on both sides, so C# namespaces stored as `App.Tests` match `Tests::FakeCoordinator::RefreshAsync` too. A new `node_id` parameter (alias `id`) fetches one node's body directly; the truncated-snippet handle `tokensave_body node_id=…` that `tokensave_context` emits now works as written. `limit` now caps the candidate list (default 20, max 50), and `symbol` is no longer a schema-required field since `node_id` can replace it. Reported in #651.
+
 
 ## [7.14.1] - 2026-10-02
 
