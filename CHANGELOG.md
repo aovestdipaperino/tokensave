@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+- **A C# call resolves through its receiver's static type (#642, follow-up to #634).** `coordinator.RefreshAsync(...)` was matched on the method name alone, so a primary-constructor parameter or a `var` local gave no edge as soon as a second `RefreshAsync` existed, and inside the class that declared one the same-file bonus bound the call to the caller's own method. The extractor now records the receiver's type next to the call, from the enclosing type's fields, properties and primary-constructor parameters, the method's parameters, explicitly typed locals, and `var` locals initialised by `new T(...)`, a cast, `as`, or a call or member read (`writerFactory.CreateWriter<T>(...)`, `await opener.OpenAsync()`); a class name used as a receiver (`Factory.Create()`) types a static call. The resolver looks the method up on that type, reading declared return, field and property types from the signatures, unwrapping `Task<T>`/`ValueTask<T>` after `await`, and walking the base list for an inherited member. When the type is not indexed or lacks the member (an extension method, for instance), the name-based match decides as before, except that a call on a receiver other than `this`/`base` no longer binds to a method of the caller's own class. Type arguments are dropped from callee names, so `f.Create<T>(x)` now reaches `Create`. A `sync -f` is needed to pick this up for files already indexed. Reported by @xorets and @t-macabee.
+
 
 ## [7.14.1] - 2026-10-02
 
