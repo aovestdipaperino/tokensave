@@ -491,11 +491,14 @@ pub enum ResolvedBy {
     PathTailMatch = 12,
     /// The trailing segment of a `::` path, best of several by scoring.
     PathTailMatchScored = 13,
+    /// A relative JavaScript / TypeScript import specifier bound to the file
+    /// it names, with TypeScript's `.js` to `.ts` mapping applied (#647).
+    RelativeImport = 14,
 }
 
 impl ResolvedBy {
     /// Every variant, in code order.
-    pub const ALL: [ResolvedBy; 13] = [
+    pub const ALL: [ResolvedBy; 14] = [
         ResolvedBy::ExactMatch,
         ResolvedBy::ExactMatchScored,
         ResolvedBy::QualifiedMatch,
@@ -509,6 +512,7 @@ impl ResolvedBy {
         ResolvedBy::BuildVariant,
         ResolvedBy::PathTailMatch,
         ResolvedBy::PathTailMatchScored,
+        ResolvedBy::RelativeImport,
     ];
 
     /// The resolver's name for this path, as `ResolvedRef::resolved_by` holds it.
@@ -528,6 +532,7 @@ impl ResolvedBy {
             ResolvedBy::BuildVariant => "build-variant",
             ResolvedBy::PathTailMatch => "path-tail-match",
             ResolvedBy::PathTailMatchScored => "path-tail-match-scored",
+            ResolvedBy::RelativeImport => "relative-import",
         }
     }
 
@@ -569,6 +574,7 @@ impl ResolvedBy {
                 | ResolvedBy::RubySelfReceiver
                 | ResolvedBy::RubyConstantReceiver
                 | ResolvedBy::GdscriptTypedReceiver
+                | ResolvedBy::RelativeImport
         )
     }
 }

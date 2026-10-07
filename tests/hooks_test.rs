@@ -339,7 +339,7 @@ fn test_kiro_allows_invalid_json() {
 
 // ============================================================================
 // Grep tool redirect — symbol-shaped patterns against code files should
-// redirect to tokensave_search / _signature_search / _callers.
+// redirect to tokensave_search (by name, or literal for call sites).
 // ============================================================================
 
 #[test]
@@ -612,12 +612,25 @@ fn test_bash_blocks_rtk_grep_prefix() {
 }
 
 #[test]
-fn test_bash_allows_git_grep() {
-    let input = r#"{"command": "git grep -n FooBar"}"#;
+fn test_bash_allows_git_grep_of_a_revision() {
+    // A revision makes git grep a search of history, which the index does not
+    // hold. Without a revision it searches the working tree and is redirected
+    // like any other grep (#648, see `hook_648_test.rs`).
+    let input = r#"{"command": "git grep -n FooBar HEAD~3"}"#;
     let result = evaluate_hook_decision_with_env(input, &env_indexed());
     assert!(
         result.is_empty(),
-        "git grep searches history — pass through"
+        "git grep of a revision searches history — pass through"
+    );
+}
+
+#[test]
+fn test_bash_redirects_git_grep_of_the_working_tree() {
+    let input = r#"{"command": "git grep -n FooBar"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env_indexed());
+    assert!(
+        is_blocked(&result),
+        "git grep of the working tree is a code search"
     );
 }
 
@@ -1070,11 +1083,11 @@ fn test_droid_allows_terminal_launched_tools() {
 }
 
 #[test]
-fn test_droid_allows_git_grep() {
-    // git grep searches history, which tokensave does not index.
+fn test_droid_allows_git_grep_of_a_revision() {
+    // git grep of a revision searches history, which tokensave does not index.
     let input = r#"{
         "tool_name": "Execute",
-        "tool_input": {"command": "git grep FooBar"}
+        "tool_input": {"command": "git grep FooBar HEAD~1"}
     }"#;
     assert!(evaluate_droid_pre_tool_use_with_env(input, &env_indexed()).is_none());
 }
