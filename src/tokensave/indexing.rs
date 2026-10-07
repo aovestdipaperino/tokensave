@@ -4,10 +4,37 @@ use super::*;
 
 const RUBY_SINGLETON_KIND_METADATA: &str = "ruby_singleton_method_kind_v1";
 
+/// Ruby source whose every change rebuilds the reopening table. ERB and
+/// Slim templates are Ruby too, but they almost never declare a class or
+/// module, so they go through `template_changes_reopenings` instead of
+/// rebuilding the whole table on every view save.
 fn is_ruby_source(path: &str) -> bool {
     std::path::Path::new(path)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("rb") || ext.eq_ignore_ascii_case("rake"))
+}
+
+fn is_ruby_template(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("erb") || ext.eq_ignore_ascii_case("slim"))
+}
+
+fn declares_ruby_namespace<'a>(mut kinds: impl Iterator<Item = &'a NodeKind>) -> bool {
+    kinds.any(|kind| matches!(kind, NodeKind::Class | NodeKind::Module))
+}
+
+/// Whether re-indexing or removing a template can change the Ruby reopening
+/// table: only when it declared a class or module before the change (`old`,
+/// read before its rows are deleted) or declares one after it (`new`).
+fn template_changes_reopenings(
+    path: &str,
+    old: &[crate::resolution::TouchedNode],
+    new: &[Node],
+) -> bool {
+    is_ruby_template(path)
+        && (declares_ruby_namespace(old.iter().map(|n| &n.kind))
+            || declares_ruby_namespace(new.iter().map(|n| &n.kind)))
 }
 
 fn legacy_ruby_repair_complete(
@@ -921,7 +948,7 @@ impl TokenSave {
         // in case a future internal caller skips the wrappers. The DB's
         // canonical form is forward-slash (#87).
         let file_paths = normalize_rel_paths(file_paths);
-        let ruby_changed = file_paths.iter().any(|path| is_ruby_source(path));
+        let mut ruby_changed = file_paths.iter().any(|path| is_ruby_source(path));
 
         // Files deleted from disk produce no extraction, so the replace-on-
         // reindex path below would never drop their rows — prune them here,
@@ -931,6 +958,10 @@ impl TokenSave {
             if project_root.join(&path).exists() {
                 existing.push(path);
             } else {
+                if is_ruby_template(&path) {
+                    let old = self.db.touched_nodes_by_file(&path).await?;
+                    ruby_changed |= template_changes_reopenings(&path, &old, &[]);
+                }
                 self.db.delete_file(&path).await?;
             }
         }
@@ -967,7 +998,9 @@ impl TokenSave {
         let mut touched = TouchedSet::new();
         for (file_path, result, hash, size, mtime) in &sync_extractions {
             touched.touch_file(file_path);
-            touched.touch_nodes(&self.db.touched_nodes_by_file(file_path).await?);
+            let old_nodes = self.db.touched_nodes_by_file(file_path).await?;
+            ruby_changed |= template_changes_reopenings(file_path, &old_nodes, &result.nodes);
+            touched.touch_nodes(&old_nodes);
             touched.touch_nodes(&node_touch_records(&result.nodes));
             self.db.delete_nodes_by_file(file_path).await?;
             self.db.insert_nodes(&result.nodes).await?;
@@ -1285,12 +1318,21 @@ impl TokenSave {
         // much as insertions: removing a file takes the edges pointing *into*
         // it with them, and only the touched-name set brings those back.
         let mut touched = TouchedSet::new();
+        // Whether this sync can change the Ruby reopening table; templates
+        // join it below only when they declare a class or module.
+        let mut ruby_changed = removed
+            .iter()
+            .chain(stale.iter())
+            .chain(new_files.iter())
+            .any(|path| is_ruby_source(path));
 
         // Remove deleted files
         for path in &removed {
             on_progress(0, 0, &format!("removing {path}"));
             touched.touch_file(path);
-            touched.touch_nodes(&self.db.touched_nodes_by_file(path).await?);
+            let old_nodes = self.db.touched_nodes_by_file(path).await?;
+            ruby_changed |= template_changes_reopenings(path, &old_nodes, &[]);
+            touched.touch_nodes(&old_nodes);
             self.db.delete_file(path).await?;
         }
 
@@ -1346,7 +1388,9 @@ impl TokenSave {
             total_edges += result.edges.len();
 
             touched.touch_file(file_path);
-            touched.touch_nodes(&self.db.touched_nodes_by_file(file_path).await?);
+            let old_nodes = self.db.touched_nodes_by_file(file_path).await?;
+            ruby_changed |= template_changes_reopenings(file_path, &old_nodes, &result.nodes);
+            touched.touch_nodes(&old_nodes);
             touched.touch_nodes(&node_touch_records(&result.nodes));
             self.db.delete_nodes_by_file(file_path).await?;
             self.db.insert_nodes(&result.nodes).await?;
@@ -1462,11 +1506,7 @@ impl TokenSave {
             ));
         }
 
-        if removed
-            .iter()
-            .chain(to_index.iter())
-            .any(|path| is_ruby_source(path))
-        {
+        if ruby_changed {
             self.db.rebuild_ruby_reopenings().await?;
         }
         self.db.rebuild_trait_dispatch_callers().await?;
@@ -2278,6 +2318,13 @@ impl TokenSave {
         let size = source.len() as u64;
         let mtime = sync::file_stat(&abs_path).map_or_else(current_timestamp, |(m, _)| m);
 
+        let ruby_changed = is_ruby_source(file_path)
+            || (is_ruby_template(file_path)
+                && template_changes_reopenings(
+                    file_path,
+                    &self.db.touched_nodes_by_file(file_path).await?,
+                    &result.nodes,
+                ));
         self.db.delete_nodes_by_file(file_path).await?;
         self.db.insert_nodes(&result.nodes).await?;
         let body_documents = build_executable_body_documents(file_path, &source, &result.nodes);
@@ -2301,7 +2348,7 @@ impl TokenSave {
             kind: FileKind::Code,
         };
         self.db.upsert_file(&file_record).await?;
-        if is_ruby_source(file_path) {
+        if ruby_changed {
             self.db.rebuild_ruby_reopenings().await?;
         }
         self.db.rebuild_trait_dispatch_callers().await?;

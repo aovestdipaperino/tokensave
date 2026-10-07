@@ -29,8 +29,8 @@ const CODE_EXTENSIONS: &[&str] = &[
     "rs", "go", "java", "scala", "sc", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py",
     "pyi", "pyw", "c", "h", "cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++", "inl", "ipp",
     "tcc", "kt", "kts", "cs", "csx", "swift", // Medium tier
-    "dart", "pas", "pp", "dpr", "php", "phtml", "rb", "rake", "gemspec", "sh", "bash", "zsh",
-    "proto", "ps1", "psm1", "psd1", "nix", "vb", "vbs", // Full tier
+    "dart", "pas", "pp", "dpr", "php", "phtml", "rb", "rake", "erb", "slim", "gemspec", "sh",
+    "bash", "zsh", "proto", "ps1", "psm1", "psd1", "nix", "vb", "vbs", // Full tier
     "lua", "zig", "m", "mm", "pl", "pm", "bat", "cmd", "f", "f90", "f95", "f03", "for", "ftn",
     "cbl", "cob", "cpy", "bas", // HDL
     "v", "vh", "sv", "svh", "vhd", "vhdl",

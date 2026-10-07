@@ -879,12 +879,16 @@ Always compiled. The smallest binary for the most popular languages, plus Svelte
 | Dart | `.dart` | `lang-dart` |
 | Pascal | `.pas`, `.pp`, `.dpr` | `lang-pascal` |
 | PHP | `.php` | `lang-php` |
-| Ruby | `.rb`, `.rake` | `lang-ruby` |
+| Ruby (including ERB and Slim templates) | `.rb`, `.rake`, `.erb`, `.slim` | `lang-ruby` |
 | Bash | `.sh`, `.bash` | `lang-bash` |
 | Protobuf | `.proto` | `lang-protobuf` |
 | PowerShell | `.ps1`, `.psm1` | `lang-powershell` |
 | Nix | `.nix` | `lang-nix` |
 | VB.NET | `.vb` | `lang-vbnet` |
+
+ERB and Slim templates use the Ruby grammar without requiring Ruby or template gems at indexing time. Template calls belong to the file node and retain their original line and byte column. ERB supports code/output tags, trim markers, comments, and escaped tags. Slim supports control/output lines, indentation-based blocks, attributes (including multiline attribute lists), text interpolation, and `ruby:` blocks.
+
+Custom Slim shortcuts and embedded-language compilation are not supported. Locals supplied by Rails at render time cannot be distinguished from bare helper calls; names assigned or bound in the template are excluded conservatively. Controller-to-view and partial-render relationships require separate Rails semantic wiring.
 
 ### Full (Medium + everything else) -- default
 

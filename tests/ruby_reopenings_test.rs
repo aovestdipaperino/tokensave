@@ -169,3 +169,87 @@ async fn ruby_reopenings_link_rake_declarations() {
         .iter()
         .any(|e| e.source == rake.id && e.target == rb.id));
 }
+
+#[tokio::test]
+async fn ruby_reopenings_follow_template_declarations_and_edits() {
+    for (file, original, changed) in [
+        (
+            "view.html.erb",
+            "<% class Entry; end %>",
+            "<% class Other; end %>",
+        ),
+        (
+            "view.html.slim",
+            "ruby:\n  class Entry; end\n",
+            "ruby:\n  class Other; end\n",
+        ),
+    ] {
+        let root = tempdir().unwrap();
+        std::fs::write(root.path().join("a.rb"), "class Entry; end\n").unwrap();
+        std::fs::write(root.path().join(file), original).unwrap();
+        let graph = TokenSave::init(root.path()).await.unwrap();
+        graph.sync().await.unwrap();
+        let (nodes, edges) = declarations_and_reopenings(&graph).await;
+        let template = nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Class && node.file_path == file)
+            .unwrap_or_else(|| panic!("{file}: missing declaration"));
+        let canonical = nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Class && node.file_path == "a.rb")
+            .unwrap();
+        assert_eq!(edges.len(), 1, "{file}");
+        assert_eq!(edges[0].source, template.id);
+        assert_eq!(edges[0].target, canonical.id);
+
+        std::fs::write(root.path().join(file), changed).unwrap();
+        graph.sync().await.unwrap();
+        let (_, edges) = declarations_and_reopenings(&graph).await;
+        assert!(edges.is_empty(), "{file}: stale reopening after edit");
+
+        std::fs::write(root.path().join(file), original).unwrap();
+        graph.sync().await.unwrap();
+        let (_, edges) = declarations_and_reopenings(&graph).await;
+        assert_eq!(edges.len(), 1, "{file}: missing reopening after edit");
+    }
+}
+
+#[tokio::test]
+async fn ruby_reopenings_rebuild_when_a_canonical_template_declaration_goes_away() {
+    // The template sorts first, so it holds the canonical declaration both
+    // Ruby files reopen. Dropping it, by edit or by deletion, must promote
+    // b.rb, which needs the rebuild even though no `.rb` file changed.
+    let edit: fn(&Path) =
+        |root| std::fs::write(root.join("a.html.erb"), "<%= helper() %>").unwrap();
+    let delete: fn(&Path) = |root| std::fs::remove_file(root.join("a.html.erb")).unwrap();
+    for remove in [edit, delete] {
+        let root = tempdir().unwrap();
+        std::fs::write(root.path().join("a.html.erb"), "<% class Entry; end %>").unwrap();
+        std::fs::write(root.path().join("b.rb"), "class Entry; end\n").unwrap();
+        std::fs::write(root.path().join("c.rb"), "class Entry; end\n").unwrap();
+        let graph = TokenSave::init(root.path()).await.unwrap();
+        graph.sync().await.unwrap();
+        let (nodes, edges) = declarations_and_reopenings(&graph).await;
+        let template = nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Class && n.file_path == "a.html.erb")
+            .unwrap();
+        assert_eq!(edges.len(), 2, "{edges:?}");
+        assert!(edges.iter().all(|e| e.target == template.id));
+
+        remove(root.path());
+        graph.sync().await.unwrap();
+        let (nodes, edges) = declarations_and_reopenings(&graph).await;
+        let class_in = |file: &str| {
+            nodes
+                .iter()
+                .find(|n| n.kind == NodeKind::Class && n.file_path == file)
+                .unwrap()
+                .id
+                .clone()
+        };
+        assert_eq!(edges.len(), 1, "{edges:?}");
+        assert_eq!(edges[0].source, class_in("c.rb"));
+        assert_eq!(edges[0].target, class_in("b.rb"));
+    }
+}

@@ -156,6 +156,7 @@ mod resolution_test;
 mod resolved_by_test;
 mod ruby_extraction_test;
 mod ruby_reopenings_test;
+mod ruby_template_extraction_test;
 mod rust_extraction_test;
 mod scala_extraction_test;
 mod search_ids_truncation_test;
