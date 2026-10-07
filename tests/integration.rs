@@ -154,6 +154,7 @@ mod ruby_extraction_test;
 mod ruby_reopenings_test;
 mod rust_extraction_test;
 mod scala_extraction_test;
+mod search_ids_truncation_test;
 mod serve_disable_test;
 mod serve_idle_timeout_test;
 mod serve_sigterm_test;
