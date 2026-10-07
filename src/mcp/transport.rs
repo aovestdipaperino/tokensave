@@ -140,17 +140,108 @@ pub trait McpTransport {
     fn flush(&mut self) -> impl std::future::Future<Output = std::io::Result<()>> + Send;
 }
 
+/// Longest request line the stdio transport buffers, in bytes (#636).
+///
+/// Generous enough for any real request (the largest are `tokensave_*_edit`
+/// payloads carrying file content), but bounded so a runaway or hostile
+/// host cannot make the server buffer an unterminated line until it runs out
+/// of memory.
+pub const MAX_LINE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Reads newline-terminated lines with a per-line size cap.
+///
+/// A line longer than the cap is discarded through its newline and reported
+/// as a JSON string literal naming the limit: it is valid JSON but not a
+/// request, so the server answers it with a parse error and keeps serving.
+///
+/// All partial-line state lives in the struct and every await point is
+/// `fill_buf`, so [`Self::next_line`] is cancel-safe like
+/// [`tokio::io::Lines::next_line`] — the server races it in `select!`.
+pub struct BoundedLines<R> {
+    reader: R,
+    buf: Vec<u8>,
+    max: usize,
+    discarding: bool,
+}
+
+impl<R: tokio::io::AsyncBufRead + Unpin> BoundedLines<R> {
+    pub fn new(reader: R, max: usize) -> Self {
+        Self {
+            reader,
+            buf: Vec::new(),
+            max,
+            discarding: false,
+        }
+    }
+
+    pub async fn next_line(&mut self) -> std::io::Result<Option<String>> {
+        use tokio::io::AsyncBufReadExt;
+        loop {
+            let chunk = self.reader.fill_buf().await?;
+            if chunk.is_empty() {
+                // EOF: flush a final unterminated line, as `Lines` does.
+                if self.discarding {
+                    self.discarding = false;
+                    return Ok(Some(self.oversize_line()));
+                }
+                if self.buf.is_empty() {
+                    return Ok(None);
+                }
+                return self.take_line().map(Some);
+            }
+            let newline = chunk.iter().position(|&b| b == b'\n');
+            let take = newline.map_or(chunk.len(), |i| i + 1);
+            if !self.discarding {
+                let room = self.max.saturating_sub(self.buf.len());
+                let body = newline.unwrap_or(chunk.len());
+                if body > room {
+                    self.buf.clear();
+                    self.discarding = true;
+                } else {
+                    self.buf.extend_from_slice(&chunk[..take]);
+                }
+            }
+            self.reader.consume(take);
+            if newline.is_some() {
+                if self.discarding {
+                    self.discarding = false;
+                    return Ok(Some(self.oversize_line()));
+                }
+                return self.take_line().map(Some);
+            }
+        }
+    }
+
+    fn take_line(&mut self) -> std::io::Result<String> {
+        let mut bytes = std::mem::take(&mut self.buf);
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+        }
+        String::from_utf8(bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+
+    fn oversize_line(&self) -> String {
+        format!("\"request line exceeds the {} byte limit\"", self.max)
+    }
+}
+
 /// Real stdio transport — reads from stdin, writes to stdout.
 pub struct StdioTransport {
-    reader: tokio::io::Lines<tokio::io::BufReader<tokio::io::Stdin>>,
+    reader: BoundedLines<tokio::io::BufReader<tokio::io::Stdin>>,
     writer: tokio::io::Stdout,
 }
 
 impl Default for StdioTransport {
     fn default() -> Self {
-        use tokio::io::AsyncBufReadExt;
         Self {
-            reader: tokio::io::BufReader::new(tokio::io::stdin()).lines(),
+            reader: BoundedLines::new(
+                tokio::io::BufReader::new(tokio::io::stdin()),
+                MAX_LINE_BYTES,
+            ),
             writer: tokio::io::stdout(),
         }
     }
@@ -285,6 +376,40 @@ mod tests {
         assert!(json.contains("-32601"));
         assert!(json.contains("Method not found"));
         assert!(!json.contains("\"result\""));
+    }
+
+    async fn read_all(input: &[u8], max: usize) -> Vec<String> {
+        let mut lines = BoundedLines::new(tokio::io::BufReader::with_capacity(4, input), max);
+        let mut out = Vec::new();
+        while let Some(line) = lines.next_line().await.unwrap() {
+            out.push(line);
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn bounded_lines_splits_like_lines() {
+        let got = read_all(b"{\"a\":1}\r\n\nsecond line\nlast", 64).await;
+        assert_eq!(got, vec!["{\"a\":1}", "", "second line", "last"]);
+    }
+
+    #[tokio::test]
+    async fn bounded_lines_drops_an_oversized_line_and_keeps_reading() {
+        let got = read_all(b"ok\n0123456789abcdef\nafter\n0123456789abcdef", 10).await;
+        assert_eq!(got.len(), 4);
+        assert_eq!(got[0], "ok");
+        assert_eq!(got[2], "after");
+        for oversized in [&got[1], &got[3]] {
+            let v: serde_json::Value = serde_json::from_str(oversized).unwrap();
+            assert!(v.as_str().unwrap().contains("10 byte limit"), "{oversized}");
+            assert!(serde_json::from_str::<JsonRpcRequest>(oversized).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_lines_accepts_a_line_exactly_at_the_limit() {
+        let got = read_all(b"0123456789\n", 10).await;
+        assert_eq!(got, vec!["0123456789"]);
     }
 
     #[test]

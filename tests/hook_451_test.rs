@@ -171,17 +171,18 @@ fn error_suppression_after_the_search_still_passes_through() {
 }
 
 #[test]
-fn a_second_search_segment_is_real_work_too() {
+fn a_second_search_segment_is_read_only_not_work() {
     let (_tmp, root) = project();
-    // The sibling grep is not symbol-shaped, so tokensave cannot replace it.
-    // Denying on the other segment's account would discard it.
+    // This asserted pass-through until #648. The sibling grep is not
+    // symbol-shaped, but it only reads: a denial costs the caller a re-run of
+    // it, not lost work, and allowing the batch let the symbol search through.
     for command in [
         r#"grep -rn "some prose pattern" src/ && grep -n MySymbol src/lib.rs"#,
         r#"grep -n MySymbol src/lib.rs && grep -rn "some prose pattern" src/"#,
     ] {
         assert!(
-            !is_blocked(command, &root),
-            "a search the hook cannot replace is work: {command}"
+            is_blocked(command, &root),
+            "a read-only sibling search must not hide the symbol search: {command}"
         );
     }
 }

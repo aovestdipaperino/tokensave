@@ -266,7 +266,7 @@ impl Database {
         }
 
         // Fallback: LIKE query
-        let like_pattern = format!("%{query}%");
+        let like_pattern = format!("%{}%", escape_like(query));
         let mut rows = self
             .conn()
             .query(
@@ -274,7 +274,7 @@ impl Database {
                     start_line, end_line, start_column, end_column,
                     docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes
-                 WHERE name LIKE ?1 OR qualified_name LIKE ?1 OR docstring LIKE ?1 OR signature LIKE ?1
+                 WHERE name LIKE ?1 ESCAPE '\\' OR qualified_name LIKE ?1 ESCAPE '\\' OR docstring LIKE ?1 ESCAPE '\\' OR signature LIKE ?1 ESCAPE '\\'
                  LIMIT ?2",
                 params![like_pattern.as_str(), limit as i64],
             )
