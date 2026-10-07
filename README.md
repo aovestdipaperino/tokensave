@@ -163,6 +163,14 @@ Global OMP installs target the profile reported by bare `omp config path`, writi
 
 All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered global git post-commit and post-checkout hooks. `tokensave uninstall` removes those hooks along with the agent integrations; pass `--keep-git-hooks` to leave them, or manage them on their own with `tokensave githooks`.
 
+### Install for several agents at once
+
+Repeat `--agent` to install several agents in a single run. The permission grant, git-hook offer, and global config write each happen once, no matter how many agents you list:
+
+```bash
+tokensave install --agent claude --agent cursor --agent droid
+```
+
 ### Project-local install
 
 By default `tokensave install` registers the MCP server in your **global** agent config (e.g. `~/.claude.json`). To register tokensave for just the current project instead, add `--local`:
