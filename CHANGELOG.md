@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Changed
+- **The installed agent rules now say what `tokensave_search` with `literal: true` finds, and when grep is the right tool (#653).** The rules named `tokensave_search` only for a known symbol, and never said when grep fits, so agents reached for grep to find call sites. A new "Searching code" section in the shared rules text says that by default `tokensave_search` returns where a name is defined, ranked, with its kind and signature, and that with `literal: true` it finds exact text: `.Name(` for calls through an object, `Name(` for every call, `: IName` for implementers. Grep is for a regex, or a file type the index skips. Claude's "When the hook denies a search" section now offers `{"query": ".Name(", "literal": true}` next to `tokensave_callers` for a symbol's uses, and the MCP server's `initialize` instructions carry the same two points in one sentence. Every agent that installs rules text gets the new section (Claude, Augment, Codex, Copilot, Droid, Gemini, Grok, Kimi, Kiro, OMP, OpenCode, Pi, Qwen, Vibe), and existing installs pick it up on the next `tokensave install` or `reinstall`, or the silent resync after a minor upgrade. In the reporter's A/B test the two lines cut tool calls by about 25% and lowered cost. Suggested by @xorets.
+
 
 ## [7.14.1] - 2026-10-02
 
