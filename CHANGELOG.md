@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+- **TypeScript imports written with a `.js` specifier now link to the `.ts` source (#647).** Under `"module": "NodeNext"` (and the `bundler` resolution mode) TypeScript requires relative imports to name the emitted file, so `src/lib/hash.ts` is imported as `../../src/lib/hash.js`. The import's `uses` edge never resolved, because the specifier was matched as a symbol name (its trailing segment, `js`), and the reachability gate on JS/TS calls compared the callee's module stem (`hash`) against that same segment, so a call into another directory was dropped as unreachable. `tokensave_affected` therefore reported no tests for the module, and `file_dependents`, `impact` and the module import graph missed the dependency. A relative import from a JS/TS/Vue/Svelte/Astro file now binds to the `File` node of the file it names, applying TypeScript's mapping (`.js` to `.ts`/`.tsx`/`.d.ts`, `.jsx` to `.tsx`, `.mjs` to `.mts`, `.cjs` to `.cts`; extensionless specifiers try each source extension and then the directory's `index` file), with the new `relative-import` provenance. A TypeScript importer prefers the TypeScript source when a same-named `.js` file also exists; a JavaScript importer prefers the file it names. A relative specifier that names no indexed file no longer falls through to a bare-name match on its last dotted segment. Calls into an imported file now pass the reachability gate, and incremental sync re-resolves an import when the file it names is added or re-extracted. Reported in #647.
+
 
 ## [7.14.1] - 2026-10-02
 

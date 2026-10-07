@@ -141,6 +141,10 @@ impl TouchedSet {
     /// A `GDScript` typed-receiver ref (`Bus::again()::subscribe`, #597) also
     /// depends on every class and member it steps through, so any of its
     /// segments being touched re-attempts it.
+    ///
+    /// A relative JS/TS import (`./hash.js`) resolves to a `File` node, whose
+    /// name is its path, so it is re-attempted when any file it may name was
+    /// added or removed (#647).
     pub fn needs_resolve(&self, file_path: &str, reference_name: &str) -> bool {
         self.files.contains(file_path)
             || self.names.contains(reference_name)
@@ -150,6 +154,9 @@ impl TouchedSet {
                 && reference_name
                     .split("::")
                     .any(|seg| self.names.contains(seg.trim_end_matches("()"))))
+            || super::relative_module_candidates(file_path, reference_name)
+                .iter()
+                .any(|candidate| self.names.contains(candidate))
     }
 
     /// The files whose references were re-extracted this sync.

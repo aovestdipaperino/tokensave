@@ -172,6 +172,7 @@ mod tokensave_test;
 mod toml_extraction_test;
 mod toolset_test;
 mod ts_abstract_and_ctor_param_test;
+mod ts_js_specifier_647_test;
 mod ts_phantom_call_edges_test;
 mod types_test;
 mod typescript_extraction_test;

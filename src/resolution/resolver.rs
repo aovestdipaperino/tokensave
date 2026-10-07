@@ -356,6 +356,17 @@ fn is_gdscript_callable(kind: &NodeKind) -> bool {
     )
 }
 
+/// The indexed `File` node a relative JS/TS import specifier names, if any.
+fn first_indexed_candidate<'n>(
+    file_nodes: &HashMap<&str, &'n Node>,
+    importer: &str,
+    specifier: &str,
+) -> Option<&'n Node> {
+    super::js_specifier::relative_module_candidates(importer, specifier)
+        .iter()
+        .find_map(|path| file_nodes.get(path.as_str()).copied())
+}
+
 /// Infer a coarse language tag from a file path extension.
 fn lang_from_path(path: &str) -> &'static str {
     match path.rsplit('.').next().unwrap_or("") {
@@ -483,6 +494,9 @@ pub struct ReferenceResolver<'a> {
     /// the qualifier refers to, so same-named packages don't collide (#149
     /// Bug 1).
     go_import_qualifiers: HashMap<String, HashMap<String, String>>,
+    /// `File` nodes keyed by their path, for binding a relative JS/TS import
+    /// specifier to the file it names (#647).
+    file_nodes: HashMap<&'a str, &'a Node>,
 }
 
 /// References paired with their position in the slice `resolve_all` was given,
@@ -497,9 +511,13 @@ impl<'a> ReferenceResolver<'a> {
         let mut node_id_cache: HashMap<&'a str, &'a Node> = HashMap::new();
         let mut ruby_constant_bindings: HashMap<&'a str, Vec<&'a Node>> = HashMap::new();
         let mut suffix_cache: HashMap<&'a str, Vec<&'a str>> = HashMap::new();
+        let mut file_nodes: HashMap<&'a str, &'a Node> = HashMap::new();
 
         for node in all_nodes {
             node_id_cache.insert(node.id.as_str(), node);
+            if node.kind == NodeKind::File {
+                file_nodes.insert(node.file_path.as_str(), node);
+            }
             // Skip Use nodes — they represent import statements, not definitions.
             // Including them causes false cross-file edges when two files share
             // the same `use std::path::Path` import.
@@ -562,6 +580,18 @@ impl<'a> ReferenceResolver<'a> {
                         .or_default()
                         .insert(imported.to_string());
                 }
+                // A relative JS/TS import names a file, not a symbol. Record
+                // the file it resolves to (by its path, which cannot collide
+                // with an identifier) so the reachability gate sees that the
+                // importer can reach that file's exports (#647).
+                if let Some(target) =
+                    first_indexed_candidate(&file_nodes, &node.file_path, &node.name)
+                {
+                    import_index
+                        .entry(node.file_path.clone())
+                        .or_default()
+                        .insert(target.file_path.clone());
+                }
             }
         }
 
@@ -602,6 +632,7 @@ impl<'a> ReferenceResolver<'a> {
             known_names,
             import_index,
             go_import_qualifiers,
+            file_nodes,
         }
     }
 
@@ -643,6 +674,28 @@ impl<'a> ReferenceResolver<'a> {
             {
                 return None;
             }
+        }
+
+        // A relative JS/TS import specifier names a file. Bind it to that
+        // file's `File` node, applying TypeScript's `.js` -> `.ts` mapping, or
+        // to nothing: its trailing dotted segment (`js` in `./hash.js`) is not
+        // a symbol name, so the name-based strategies below can only produce a
+        // phantom edge (#647).
+        if uref.reference_kind == EdgeKind::Uses
+            && super::js_specifier::is_js_family_importer(&uref.file_path)
+            && super::js_specifier::is_relative_specifier(&uref.reference_name)
+        {
+            return first_indexed_candidate(
+                &self.file_nodes,
+                &uref.file_path,
+                &uref.reference_name,
+            )
+            .map(|target| ResolvedRef {
+                original: uref.clone(),
+                target_node_id: target.id.clone(),
+                confidence: 0.95,
+                resolved_by: ResolvedBy::RelativeImport.as_str().to_string(),
+            });
         }
 
         // GDScript typed-receiver calls (#597) carry the receiver's static
@@ -736,6 +789,14 @@ impl<'a> ReferenceResolver<'a> {
     /// Returns true if a reference name could plausibly resolve to a known symbol.
     fn is_known_name(&self, name: &str) -> bool {
         self.known_names.contains(name)
+    }
+
+    /// Whether `uref` is a relative JS/TS import whose specifier names an
+    /// indexed file. Such a ref is never a known *name* (#647).
+    fn is_relative_import(&self, uref: &UnresolvedRef) -> bool {
+        uref.reference_kind == EdgeKind::Uses
+            && first_indexed_candidate(&self.file_nodes, &uref.file_path, &uref.reference_name)
+                .is_some()
     }
 
     /// Every key the name pre-filter admits, for the equivalence test that
@@ -844,6 +905,7 @@ impl<'a> ReferenceResolver<'a> {
             refs.iter().enumerate().partition(|(_, uref)| {
                 self.is_known_name(&uref.reference_name)
                     || self.is_known_name(simple_ref_name(&uref.reference_name))
+                    || self.is_relative_import(uref)
             });
 
         let results: Vec<_> = candidates
@@ -1744,6 +1806,12 @@ fn is_plausibly_reachable(
     let Some(imports) = import_index.get(&uref.file_path) else {
         return false;
     };
+
+    // A relative JS/TS import of the candidate's file, recorded by path when
+    // the index was built (#647).
+    if imports.contains(&candidate.file_path) {
+        return true;
+    }
 
     // The index keys each import on the last `::` segment, which for a Python
     // or JS import is the whole dotted path — `headroom.perf.analyzer` is one
