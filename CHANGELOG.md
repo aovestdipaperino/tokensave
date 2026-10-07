@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+- **The grep hook's denial now gives the call to make, with the symbol filled in (#649, #654).** It used to send usages to `tokensave_callers_for`, which takes node ids and is not a core tool, so agents that followed it failed. A denied symbol search now spells out copyable calls for the symbol taken from the command: `tokensave_search {"query": "MySymbol"}` for the definition, `tokensave_search {"query": ".MySymbol(", "literal": true}` for method-call uses, and `tokensave_search {"query": "MySymbol(", "literal": true}` for every call. A `def`/`class`/`fn`-anchored pattern gets the definition call only, and an alternation gets one call per name. Reported by @xorets.
+- **More shell shapes that search for a symbol are redirected (#648).** `git grep` is now treated as the working-tree search it is, unless it names a revision (`git grep Sym HEAD~3`, or any positional before `--` that is not an existing path), which still passes through as a history search. A search batched beside a read-only command is redirected: `sed -n 1,20p notes.md; grep -rn Sym src`, and a prose grep next to a symbol grep, where the prose grep used to count as work. A search piped into read-only filters (`| head`, `| sort | uniq`, `| wc -l`) is redirected too; a pipe into anything that writes (`| xargs`, `| tee`, `sort -o`) still passes through, as does any chain with a side-effecting segment (#475). An alternation is a symbol search when any branch is symbol-shaped (`MySymbol\|throw new Error`), and a call pattern may carry text after the paren (`MySymbol(name`), though not when the paren follows a space or a control keyword (`if (x`). Non-code targets (`--include='*.md'`, `docs/`) and `TOKENSAVE_DISABLE_GREP_HOOK` behave as before. Reported by @xorets.
+
 
 ## [7.14.1] - 2026-10-02
 

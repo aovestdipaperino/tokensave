@@ -418,8 +418,8 @@ fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
     if !target_looks_like_code(path, &[glob], ty, env) {
         return None;
     }
-    let shape = classify_symbol_pattern(pattern)?;
-    Some(redirect_message("Grep", pattern, shape))
+    let found = classify_symbol_pattern(pattern)?;
+    Some(redirect_message("Grep", pattern, &found))
 }
 
 /// Inspect a `Bash` tool command. Returns `Some(reason)` to redirect.
@@ -434,21 +434,79 @@ fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
 fn is_inert_command(segment: &str, before_search: bool) -> bool {
     // Deliberately short and conservative: anything unrecognised counts as
     // having side effects, so the unknown case allows rather than eating work.
-    const INERT: [&str; 5] = ["echo", "pwd", "ls", "cat", "printf"];
+    // Every entry only reads, so a denial costs the caller nothing but a
+    // re-run (#648): `sed -n 1,20p notes.md; grep -rn Sym src` and a prose
+    // grep batched beside a symbol grep both lose nothing.
+    const INERT: [&str; 11] = [
+        "echo", "pwd", "ls", "cat", "printf", "head", "tail", "wc", "grep", "rg", "ag",
+    ];
     const EXIT_STATUS_ONLY: [&str; 2] = ["true", ":"];
     let rest = strip_command_prefixes(segment.trim()).rest;
     let head = rest.split_whitespace().next().unwrap_or("");
-    INERT.contains(&head) || (before_search && EXIT_STATUS_ONLY.contains(&head))
+    INERT.contains(&head)
+        || strip_git_grep(rest).is_some()
+        || is_read_only_sed(rest)
+        || (before_search && EXIT_STATUS_ONLY.contains(&head))
 }
 
-/// Split a command on top-level `&&`, `||` and `;`, keeping each segment
-/// verbatim so it can be re-classified on its own.
+/// `sed` that only prints or deletes lines by address — `sed -n 1,20p f` — and
+/// so cannot write anything. An in-place flag, or any script beyond addresses
+/// and `p`/`d`/`q` (which could hide a `w` or `e` command), is treated as work.
+fn is_read_only_sed(rest: &str) -> bool {
+    let Some(args) = rest.strip_prefix("sed ") else {
+        return false;
+    };
+    let tokens = shell_split(args);
+    let mut saw_script = false;
+    for tok in &tokens {
+        if tok.starts_with("-i") || tok.starts_with("--in-place") || tok.starts_with("-e") {
+            return false;
+        }
+        if tok.starts_with('-') {
+            continue;
+        }
+        if !saw_script {
+            saw_script = true;
+            let address_only = tok.chars().all(|c| {
+                c.is_ascii_digit() || matches!(c, ',' | '$' | ';' | 'p' | 'd' | 'q' | '!' | ' ')
+            });
+            if !address_only {
+                return false;
+            }
+        }
+    }
+    saw_script
+}
+
+/// A pipeline stage that only filters what flows through it, so dropping it
+/// with a denial loses nothing. Writers (`tee`, `xargs`, `sort -o`, …) and
+/// anything unrecognised are work.
+fn is_read_only_filter(stage: &str) -> bool {
+    const FILTERS: [&str; 10] = [
+        "head", "tail", "wc", "cat", "grep", "rg", "cut", "tr", "nl", "column",
+    ];
+    let rest = strip_command_prefixes(stage.trim()).rest;
+    let mut words = rest.split_whitespace();
+    let head = words.next().unwrap_or("");
+    match head {
+        // `sort -o FILE` writes; `uniq IN OUT` writes its second operand.
+        "sort" => !words.any(|w| w == "-o" || w.starts_with("--output")),
+        "uniq" => words.all(|w| w.starts_with('-')),
+        _ => FILTERS.contains(&head) || is_read_only_sed(rest),
+    }
+}
+
+/// Split a command on top-level `&&`, `||` and `;` into segments, and each
+/// segment on `|` into pipeline stages, keeping every piece verbatim so it can
+/// be re-classified on its own.
 ///
-/// Returns `None` for a single segment, for unbalanced quotes, and for the
-/// shapes this hook deliberately does not model: subshells, command
-/// substitution, newlines, pipes, redirects and background jobs. Not modeled means not
-/// blocked — the caller falls through and allows.
-fn split_top_level_segments(command: &str) -> Option<Vec<&str>> {
+/// Returns `None` for a single plain command, for unbalanced quotes, and for
+/// the shapes this hook deliberately does not model: subshells, command
+/// substitution, newlines, redirects and background jobs. Not modeled means
+/// not blocked — the caller falls through and allows. `2>`/`2>>` is the one
+/// redirect allowed, as in `has_chained_command`: it only discards the search's
+/// own stderr (#480).
+fn split_top_level_segments(command: &str) -> Option<Vec<Vec<&str>>> {
     // Command substitution is unmodeled wherever it sits, and quoting does not
     // make it inert: `echo "$(curl -X POST …)"` runs the POST. The scan below
     // skips quoted spans, so this has to be caught before it starts.
@@ -459,7 +517,8 @@ fn split_top_level_segments(command: &str) -> Option<Vec<&str>> {
         return None;
     }
 
-    let mut segments: Vec<&str> = Vec::new();
+    let mut segments: Vec<Vec<&str>> = Vec::new();
+    let mut stages: Vec<&str> = Vec::new();
     let mut start = 0usize;
     let mut in_single = false;
     let mut in_double = false;
@@ -489,19 +548,44 @@ fn split_top_level_segments(command: &str) -> Option<Vec<&str>> {
             '\\' if !cfg!(windows) => {
                 chars.next();
             }
+            '2' if chars.peek().map(|&(_, next)| next) == Some('>') => {
+                chars.next();
+                if chars.peek().map(|&(_, next)| next) == Some('>') {
+                    chars.next();
+                }
+                // `2>&1` merges streams into a pipe or file we do not model.
+                if chars.peek().map(|&(_, next)| next) == Some('&') {
+                    return None;
+                }
+            }
             '(' | ')' | '`' | '<' | '>' => return None,
-            // A lone `&` backgrounds and a lone `|` pipes; only the doubled
-            // forms are sequencing operators.
-            '&' | '|' => {
-                if chars.peek().map(|&(_, next)| next) != Some(c) {
+            // A lone `&` backgrounds; only `&&` sequences.
+            '&' => {
+                if chars.peek().map(|&(_, next)| next) != Some('&') {
                     return None;
                 }
                 chars.next();
-                segments.push(&command[start..i]);
+                stages.push(&command[start..i]);
+                segments.push(std::mem::take(&mut stages));
                 start = i + 2;
             }
+            '|' => match chars.peek().map(|&(_, next)| next) {
+                Some('|') => {
+                    chars.next();
+                    stages.push(&command[start..i]);
+                    segments.push(std::mem::take(&mut stages));
+                    start = i + 2;
+                }
+                // `|&` pipes stderr too; not modeled.
+                Some('&') => return None,
+                _ => {
+                    stages.push(&command[start..i]);
+                    start = i + 1;
+                }
+            },
             ';' => {
-                segments.push(&command[start..i]);
+                stages.push(&command[start..i]);
+                segments.push(std::mem::take(&mut stages));
                 start = i + 1;
             }
             _ => {}
@@ -511,17 +595,26 @@ fn split_top_level_segments(command: &str) -> Option<Vec<&str>> {
     if in_single || in_double {
         return None;
     }
-    segments.push(&command[start..]);
+    stages.push(&command[start..]);
+    segments.push(stages);
 
-    let segments: Vec<&str> = segments
-        .into_iter()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
-    if segments.len() < 2 {
+    let mut out: Vec<Vec<&str>> = Vec::new();
+    for segment in segments {
+        let stages: Vec<&str> = segment.into_iter().map(str::trim).collect();
+        // An empty pipeline stage (`a | | b`, a trailing `|`) is a syntax
+        // error, not something to classify.
+        if stages.len() > 1 && stages.iter().any(|s| s.is_empty()) {
+            return None;
+        }
+        if stages.iter().all(|s| s.is_empty()) {
+            continue;
+        }
+        out.push(stages);
+    }
+    if out.len() < 2 && out.first().is_none_or(|stages| stages.len() < 2) {
         None
     } else {
-        Some(segments)
+        Some(out)
     }
 }
 
@@ -538,12 +631,21 @@ fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {
     // #451: batching a search behind other commands is an ordinary shape, not
     // an attempt to slip past the hook. Redirect the search only when every
     // other segment is inert, so a denial can never discard real work.
+    //
+    // #648: every segment is evaluated, and so is each pipeline. Only the
+    // head of a pipeline can be a code search — a grep further down reads its
+    // stdin, not the tree — and every stage after it must be a read-only
+    // filter (`| head`, `| sort | uniq`), or the pipeline is work.
     let segments = split_top_level_segments(command)?;
     let mut reason = None;
-    for segment in &segments {
-        if let Some(found) = evaluate_bash_segment(segment, env) {
+    for stages in &segments {
+        let (first, filters) = stages.split_first()?;
+        if !filters.iter().all(|stage| is_read_only_filter(stage)) {
+            return None;
+        }
+        if let Some(found) = evaluate_bash_segment(first, env) {
             reason.get_or_insert(found);
-        } else if !is_inert_command(segment, reason.is_none()) {
+        } else if !is_inert_command(first, reason.is_none() && filters.is_empty()) {
             return None;
         }
     }
@@ -558,9 +660,25 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
     if stripped.disables_hook {
         return None;
     }
-    let inv = extract_grep_invocation(command)?;
+    let mut inv = extract_grep_invocation(command)?;
     if inv.pattern.is_empty() || inv.pattern.len() > MAX_PATTERN_LEN {
         return None;
+    }
+    if !inv.git_trees.is_empty() {
+        // `git grep Sym main` searches a revision, `git grep Sym src` a path:
+        // git itself decides by whether the revision exists, so the closest
+        // stand-in is whether the path does. Without a base to resolve
+        // against the answer is unknown, and unknown passes through.
+        let base = env.base()?;
+        let base = match stripped.cd_target {
+            Some(cd) => base.join(unescape_shell_backslashes(unquote(cd)).as_ref()),
+            None => base.to_path_buf(),
+        };
+        if !inv.git_trees.iter().all(|t| base.join(t).exists()) {
+            return None;
+        }
+        let trees = std::mem::take(&mut inv.git_trees);
+        inv.targets.splice(0..0, trees);
     }
     let target = inv.targets.first().map_or("", String::as_str);
     let target =
@@ -606,8 +724,8 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
     ) {
         return None;
     }
-    let shape = classify_symbol_pattern(&inv.pattern)?;
-    Some(redirect_message("Bash grep", &inv.pattern, shape))
+    let found = classify_symbol_pattern(&inv.pattern)?;
+    Some(redirect_message("Bash grep", &inv.pattern, &found))
 }
 
 /// Inspect a `Bash` `find`/`fd` command. Returns `Some(reason)` to redirect.
@@ -732,27 +850,73 @@ fn files_redirect_message(tool_label: &str, pattern: &str) -> String {
     )
 }
 
-fn redirect_message(tool_label: &str, pattern: &str, shape: PatternShape) -> String {
-    let suggestion = match shape {
-        PatternShape::BareSymbol | PatternShape::WordBoundary => {
-            "tokensave_search (definition) or tokensave_callers_for (usages)"
+/// A redirectable grep pattern: its shape and the symbol names it searches for,
+/// in the order they appear. The names feed the concrete replacement calls the
+/// denial spells out (#654).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SymbolMatch {
+    shape: PatternShape,
+    symbols: Vec<String>,
+}
+
+/// One `tokensave_search` call spelled the way an agent would type it, so the
+/// denial can be copied verbatim (#654). `serde_json` quotes the query, which
+/// keeps the call valid JSON whatever the symbol contains.
+fn search_call(query: &str, literal: bool) -> String {
+    let query = Value::String(query.to_string());
+    if literal {
+        format!("tokensave_search {{\"query\": {query}, \"literal\": true}}")
+    } else {
+        format!("tokensave_search {{\"query\": {query}}}")
+    }
+}
+
+/// The replacement calls for one symbol: where it is defined, where it is
+/// called as a method, and every call site. Uses go to a literal search, never
+/// to `tokensave_callers_for`, which takes node ids and is not a core tool
+/// (#649).
+fn symbol_suggestions(symbol: &str) -> String {
+    // A qualified name (`Type::method`) is called as `.method(` on a value.
+    let short = symbol.rsplit("::").next().unwrap_or(symbol);
+    format!(
+        "{} for the definition, {} for method-call uses, or {} for every call",
+        search_call(symbol, false),
+        search_call(&format!(".{short}("), true),
+        search_call(&format!("{symbol}("), true),
+    )
+}
+
+fn redirect_message(tool_label: &str, pattern: &str, found: &SymbolMatch) -> String {
+    let suggestion = match (found.shape, found.symbols.as_slice()) {
+        (PatternShape::Definition, [symbol, ..]) => {
+            format!("{} to find the definition", search_call(symbol, false))
         }
-        PatternShape::Definition => "tokensave_search (definition)",
-        PatternShape::Alternation => {
-            "tokensave_signature_search (multiple names at once) or repeated tokensave_search calls"
+        (PatternShape::Alternation, symbols) if symbols.len() > 1 => {
+            let calls: Vec<String> = symbols.iter().map(|s| search_call(s, false)).collect();
+            format!(
+                "one call per name: {}. For call sites, search `Name(` with \"literal\": true",
+                calls.join(", ")
+            )
         }
+        (_, [symbol, ..]) => symbol_suggestions(symbol),
+        // Not produced by the classifier: a match always carries a symbol.
+        (_, []) => "tokensave_search".to_string(),
     };
     format!(
         "STOP: This {tool_label} targets a code file in a tokensave-indexed project and the \
-         pattern `{pattern}` looks like a symbol name. Use {suggestion} instead — symbol-indexed \
-         lookups are faster and more accurate than text grep. To override for this one call, set \
-         TOKENSAVE_DISABLE_GREP_HOOK=1 in the shell."
+         pattern `{pattern}` looks like a symbol search. Use {suggestion}. Symbol-indexed \
+         lookups are faster and more accurate than text grep. To override for this one call, \
+         set TOKENSAVE_DISABLE_GREP_HOOK=1 in the shell."
     )
 }
 
 /// Classify the pattern. Returns `None` for anything that contains regex
 /// metacharacters we don't understand — the caller passes those through.
-fn classify_symbol_pattern(pattern: &str) -> Option<PatternShape> {
+///
+/// An alternation is a symbol search when *any* branch is symbol-shaped
+/// (#648): `MySymbol\|throw new Error` still hunts for `MySymbol`, and the
+/// prose branch beside it does not change that.
+fn classify_symbol_pattern(pattern: &str) -> Option<SymbolMatch> {
     let mut p = pattern;
     let mut had_wb = false;
     if let Some(rest) = p.strip_prefix("\\b") {
@@ -767,20 +931,56 @@ fn classify_symbol_pattern(pattern: &str) -> Option<PatternShape> {
     // behind, which `is_pure_identifier` will reject.
     let normalized = p.replace("\\|", "|");
     let parts: Vec<&str> = normalized.split('|').collect();
-    if !parts.iter().all(|s| is_pure_identifier(s)) {
-        // Not a bare identifier (or alternation of them). Before passing it
-        // through, check whether it is the idiomatic way to grep for a
-        // *definition* — `def foo`, `class MyError`, `foo(` (#452). Those are
-        // the highest-value redirects, not the least: the intent is exactly a
-        // declaration lookup.
-        return classify_definition_pattern(p);
+
+    if let [only] = parts.as_slice() {
+        if is_pure_identifier(only) {
+            let shape = if had_wb {
+                PatternShape::WordBoundary
+            } else {
+                PatternShape::BareSymbol
+            };
+            return Some(SymbolMatch {
+                shape,
+                symbols: vec![(*only).to_string()],
+            });
+        }
+        // Not a bare identifier. Before passing it through, check whether it
+        // is the idiomatic way to grep for a *definition* or a call — `def
+        // foo`, `class MyError`, `foo(` (#452). Those are the highest-value
+        // redirects, not the least.
+        let (shape, symbol) = classify_definition_pattern(p)?;
+        return Some(SymbolMatch {
+            shape,
+            symbols: vec![symbol.to_string()],
+        });
     }
 
-    match (parts.len(), had_wb) {
-        (1, true) => Some(PatternShape::WordBoundary),
-        (1, false) => Some(PatternShape::BareSymbol),
-        _ => Some(PatternShape::Alternation),
+    let mut symbols: Vec<String> = Vec::new();
+    let mut single_shape = PatternShape::BareSymbol;
+    for (shape, symbol) in parts.iter().filter_map(|part| classify_branch(part)) {
+        if !symbols.iter().any(|s| s == symbol) {
+            symbols.push(symbol.to_string());
+            single_shape = shape;
+        }
     }
+    let shape = match symbols.len() {
+        0 => return None,
+        1 => single_shape,
+        _ => PatternShape::Alternation,
+    };
+    Some(SymbolMatch { shape, symbols })
+}
+
+/// Classify one branch of an alternation, accepting a per-branch `\b…\b`.
+fn classify_branch(part: &str) -> Option<(PatternShape, &str)> {
+    let part = part
+        .strip_prefix("\\b")
+        .and_then(|rest| rest.strip_suffix("\\b"))
+        .unwrap_or(part);
+    if is_pure_identifier(part) {
+        return Some((PatternShape::BareSymbol, part));
+    }
+    classify_definition_pattern(part)
 }
 
 /// Definition-anchor keywords that may precede a symbol name in a grep pattern.
@@ -802,13 +1002,21 @@ const DEFINITION_KEYWORDS: &[&str] = &[
     "package",
 ];
 
+/// Control-flow keywords that read like a call when followed by `(` — `if (`,
+/// `while(` — but name no symbol, so a pattern starting with one is not a
+/// call-site search.
+const CALL_LIKE_KEYWORDS: &[&str] = &[
+    "if", "for", "while", "switch", "return", "catch", "sizeof", "typeof", "elif", "match",
+];
+
 /// Recognize a definition-anchored spelling of a single symbol: an optional
-/// leading declaration keyword, the identifier, and an optional trailing `(`.
+/// leading declaration keyword, the identifier, and an optional `(`.
 ///
-/// Conservative by construction — exactly one identifier may survive the strip,
-/// and anything else left over (extra words, regex metacharacters, a trailing
-/// `)`, an argument list) returns `None` so the call passes through.
-fn classify_definition_pattern(pattern: &str) -> Option<PatternShape> {
+/// Conservative by construction — exactly one identifier may survive the strip.
+/// Text *after* the `(` is allowed (#648: `MySymbol(name` still hunts for calls
+/// of `MySymbol`), but only when the `(` hugs the identifier, so prose such as
+/// `if (x > 0` is not mistaken for a call. Returns the shape and the symbol.
+fn classify_definition_pattern(pattern: &str) -> Option<(PatternShape, &str)> {
     let mut rest = pattern.trim();
     // Anchors are noise for this purpose: `^def foo` is the same intent.
     rest = rest.strip_prefix('^').unwrap_or(rest);
@@ -827,9 +1035,15 @@ fn classify_definition_pattern(pattern: &str) -> Option<PatternShape> {
         }
     }
 
-    // A trailing `(` (bare or escaped) marks a call or definition site.
-    if let Some(head) = rest.strip_suffix('(') {
-        rest = head.strip_suffix('\\').unwrap_or(head);
+    // A `(` (bare or escaped) marks a call or definition site.
+    if let Some(idx) = rest.find('(') {
+        let trailing = &rest[idx + 1..];
+        let head = &rest[..idx];
+        let head = head.strip_suffix('\\').unwrap_or(head);
+        if !trailing.is_empty() && head.ends_with(char::is_whitespace) {
+            return None;
+        }
+        rest = head;
         had_paren = true;
     }
     rest = rest.trim_end();
@@ -839,13 +1053,16 @@ fn classify_definition_pattern(pattern: &str) -> Option<PatternShape> {
     if !(had_keyword || had_paren) || !is_pure_identifier(rest) {
         return None;
     }
-    // A declaration keyword pins the intent to the definition. A bare trailing
-    // paren does not — `foo(` is as often a hunt for call sites — so it gets
-    // the same both-ways suggestion a bare identifier gets.
+    if !had_keyword && CALL_LIKE_KEYWORDS.contains(&rest) {
+        return None;
+    }
+    // A declaration keyword pins the intent to the definition. A bare paren
+    // does not — `foo(` is as often a hunt for call sites — so it gets the
+    // same both-ways suggestion a bare identifier gets.
     if had_keyword {
-        Some(PatternShape::Definition)
+        Some((PatternShape::Definition, rest))
     } else {
-        Some(PatternShape::BareSymbol)
+        Some((PatternShape::BareSymbol, rest))
     }
 }
 
@@ -1269,6 +1486,11 @@ struct GrepInvocation {
     globs: Vec<String>,
     /// rg/ag's `-t`/`--type` file-type filter, if given.
     ty: Option<String>,
+    /// `git grep` positionals ahead of `--`. Git reads each as a revision
+    /// first and a path only when no such revision exists, so the caller
+    /// settles which it is against the filesystem: a revision means a search
+    /// of history, which the index cannot answer.
+    git_trees: Vec<String>,
 }
 
 /// A `find`/`fd` invocation reduced to what the policy needs: the name globs
@@ -1424,19 +1646,42 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
         return None;
     }
 
-    // Identify the tool. `git grep` is intentionally excluded — it searches
-    // git history, which tokensave does not index.
-    let after_tool = ["grep ", "rg ", "ag "]
-        .iter()
-        .find_map(|prefix| rest.strip_prefix(prefix))?;
+    // Identify the tool. `git grep` searches the working tree unless it is
+    // given a revision (#648); which positionals are revisions is settled by
+    // the caller from `git_trees`.
+    let (is_git, after_tool) = match strip_git_grep(rest) {
+        Some(after) => (true, after),
+        None => (
+            false,
+            ["grep ", "rg ", "ag "]
+                .iter()
+                .find_map(|prefix| rest.strip_prefix(prefix))?,
+        ),
+    };
 
     let tokens = shell_split(after_tool);
     let mut pattern: Option<String> = None;
     let mut targets: Vec<String> = Vec::new();
+    let mut git_trees: Vec<String> = Vec::new();
+    let mut after_dashdash = false;
     let mut globs: Vec<String> = Vec::new();
     let mut ty: Option<String> = None;
     let mut iter = tokens.into_iter().peekable();
     while let Some(tok) = iter.next() {
+        // After `--` nothing is a flag: grep's next token may still be the
+        // pattern, and git grep's are pathspecs, never revisions.
+        if after_dashdash {
+            if pattern.is_none() {
+                pattern = Some(tok);
+            } else {
+                targets.push(tok);
+            }
+            continue;
+        }
+        if tok == "--" {
+            after_dashdash = true;
+            continue;
+        }
         if tok.starts_with('-') {
             if (tok == "-e" || tok == "--regexp") && pattern.is_none() {
                 if let Some(p) = iter.next() {
@@ -1475,6 +1720,15 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
                 || tok == "--exclude-dir"
                 || tok == "-T"
                 || tok == "--type-not"
+                // Context and count flags take a number as a separate token
+                // in every one of these tools; left unconsumed, `-A 3 Sym`
+                // would read `3` as the pattern.
+                || tok == "-A"
+                || tok == "-B"
+                || tok == "-C"
+                || tok == "-m"
+                || tok == "--max-count"
+                || (is_git && (tok == "--max-depth" || tok == "--threads" || tok == "-f"))
             {
                 iter.next();
             }
@@ -1482,6 +1736,8 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
         }
         if pattern.is_none() {
             pattern = Some(tok);
+        } else if is_git {
+            git_trees.push(tok);
         } else {
             targets.push(tok);
         }
@@ -1492,7 +1748,18 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
         targets,
         globs,
         ty,
+        git_trees,
     })
+}
+
+/// If `rest` is a `git grep` invocation (optionally `git --no-pager grep`),
+/// return what follows `grep`.
+fn strip_git_grep(rest: &str) -> Option<&str> {
+    let after_git = rest.strip_prefix("git ")?.trim_start();
+    let after_git = after_git
+        .strip_prefix("--no-pager ")
+        .map_or(after_git, str::trim_start);
+    after_git.strip_prefix("grep ")
 }
 
 /// Result of peeling leading noise off a command. `rest` is the command with
