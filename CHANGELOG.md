@@ -7,6 +7,11 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+
+- **`tokensave_search` with `ids: true` prints the ids in the default text format (#646).** The ids only appeared with `format: "json"`, so a text answer could not feed `tokensave_callers`, `tokensave_callees`, `tokensave_impact` or `tokensave_node`. A ranked hit now reads `file:line: Foo (interface) [id: <id>] — signature`, and a literal match appends `[in <enclosing>, id: <enclosing_id>]` when it falls inside a symbol. Without `ids`, the text is unchanged.
+- **A literal `tokensave_search` says when `limit` cut its matches (#645).** The scan stopped at `limit` and reported `count: <limit>` with nothing to say that 70 more matches existed. It now keeps counting past the limit (a substring test per line, without building the extra matches), and the JSON carries `total` and `truncated` beside `count`; the text header reads `count: 5 of 73 (truncated; raise `limit` to see more)`. The ranked search fetches one result past `limit`, and when that one survives the filters its text header reads `count: 10 (truncated: more matches exist; raise `limit` to see them)`; its JSON stays a bare array.
+
 
 ## [7.14.1] - 2026-10-02
 
