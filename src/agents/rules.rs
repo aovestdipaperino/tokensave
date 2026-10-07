@@ -104,6 +104,12 @@ To read a file's contents, use `tokensave_read`: it reads any path, indexed or \
 not, and slices with `mode: \"lines\"` or maps a file's symbols with \
 `mode: \"map\"` instead of pulling in the whole body. Use the harness's own \
 file-read tool for a file you are about to edit.\n\n\
+### Searching code\n\n\
+Search code with `tokensave_search`. By default it returns where a name is \
+defined, ranked, with its kind and signature. With `literal: true` it finds \
+exact text: `.Name(` for calls through an object, `Name(` for every call, \
+`: IName` for implementers. Grep when you need a regex, or a file type the \
+index skips.\n\n\
 ### Check freshness before relying on the graph\n\n\
 Call the `tokensave_status` MCP tool (not the `tokensave status` CLI, which \
 indexes a folder that has no index) to see when the index was last synced. Run \
@@ -154,8 +160,10 @@ prompt:\n\n\
 ### When the hook denies a search\n\n\
 A denied grep, glob, or find means the search looked like a code-symbol lookup \
 and a tokensave tool answers it better. It is not an obstacle to route around. \
-Use `tokensave_search` for a symbol by name, `tokensave_callers` or \
-`tokensave_impact` for its uses, `tokensave_context` for a concept, and \
+Use `tokensave_search` for a symbol by name, `tokensave_search` with \
+`literal: true` (e.g. `{\"query\": \".Name(\", \"literal\": true}`) or \
+`tokensave_callers` for its uses, `tokensave_impact` for what depends on it, \
+`tokensave_context` for a concept, and \
 `tokensave_files` for files by path. A search that is not about code (logs, \
 docs, config) passes when it names the file type, e.g. `--include='*.md'` or a \
 `*.md` glob. Set `TOKENSAVE_DISABLE_GREP_HOOK=1` only for a search that is \
@@ -864,6 +872,17 @@ mod tests {
         assert!(body.contains("graph_root"));
         assert!(body.contains("branch-meta.json"));
         assert!(body.contains("filesystem"));
+    }
+
+    /// #653: the rules say what `literal: true` finds and when grep is the
+    /// right tool, so agents stop falling back to grep for call sites.
+    #[test]
+    fn canonical_rules_cover_literal_search_and_when_to_grep() {
+        let body = canonical_rules_markdown();
+        assert!(body.contains("### Searching code"));
+        assert!(body.contains("`literal: true`"));
+        assert!(body.contains("`.Name(`"));
+        assert!(body.contains("Grep when you need a regex"));
     }
 
     /// The core toolset is the default (#576), so a tool the rules name that

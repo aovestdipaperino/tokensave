@@ -799,9 +799,9 @@ impl Database {
                         start_line, end_line, start_column, end_column,
                         docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes
-                 WHERE qualified_name LIKE ?1
+                 WHERE qualified_name LIKE ?1 ESCAPE '\\'
                  LIMIT 50",
-                format!("%::{qname}"),
+                format!("%::{}", escape_like(qname)),
             )
         } else {
             (

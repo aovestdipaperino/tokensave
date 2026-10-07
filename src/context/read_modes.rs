@@ -3,8 +3,9 @@
 //!
 //! Four modes are implemented in 5.0:
 //!
-//! - `full` — verbatim file content (parity with the raw `Read` tool)
-//! - `lines` — explicit byte-range slice (`A-B`, 1-based, inclusive)
+//! - `full` — whole file, line-numbered like the raw `Read` tool (#652)
+//! - `lines` — explicit line-range slice (`A-B`, 1-based, inclusive),
+//!   numbered with the real file line numbers
 //! - `map` — flat list of every top-level symbol in the file, sourced from
 //!   the code graph (cheap; no source bytes touched)
 //! - `signatures` — `map` filtered to function/type kinds, with the cached
@@ -12,6 +13,8 @@
 //!
 //! Each function returns the rendered body as a `String`. Token-counting and
 //! cache I/O happen one layer up, in the MCP handler.
+
+use std::fmt::Write as _;
 
 use serde_json::{json, Value};
 
@@ -80,9 +83,29 @@ impl LineRange {
     }
 }
 
-/// Renders the `full` mode body — entire file content as UTF-8 text.
+/// Width of the right-aligned line-number column, matching `cat -n` and
+/// Claude Code's `Read` tool (numbers wider than this simply widen the row).
+const LINE_NUMBER_WIDTH: usize = 6;
+
+/// Prefixes each line with its 1-based number, right-aligned, then a tab —
+/// the format agents already parse from the raw `Read` tool (#652). `first`
+/// is the real file line number of the first item.
+fn number_lines<'a>(lines: impl Iterator<Item = &'a str>, first: usize) -> String {
+    let mut out = String::new();
+    for (i, line) in lines.enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let n = first + i;
+        // Writing into a `String` cannot fail.
+        let _ = write!(out, "{n:>LINE_NUMBER_WIDTH$}\t{line}");
+    }
+    out
+}
+
+/// Renders the `full` mode body — the entire file, line-numbered.
 pub fn render_full(source: &str) -> String {
-    source.to_string()
+    number_lines(source.lines(), 1)
 }
 
 /// Approximates the token count of a UTF-8 string. Uses the ~4-chars-per-token
@@ -94,7 +117,8 @@ pub fn estimate_tokens(s: &str) -> u32 {
 }
 
 /// Renders the `lines` mode body — slices `range.start..=range.end` (1-based,
-/// inclusive). Out-of-range lines are silently clamped.
+/// inclusive), numbered with the real file line numbers. Out-of-range lines
+/// are silently clamped.
 pub fn render_lines(source: &str, range: LineRange) -> String {
     let lines: Vec<&str> = source.lines().collect();
     let start = (range.start.saturating_sub(1)) as usize;
@@ -102,7 +126,7 @@ pub fn render_lines(source: &str, range: LineRange) -> String {
     if start >= lines.len() || start >= end {
         return String::new();
     }
-    lines[start..end].join("\n")
+    number_lines(lines[start..end].iter().copied(), start + 1)
 }
 
 /// Renders the `map` mode body — JSON list of every top-level symbol in the
@@ -237,14 +261,14 @@ mod tests {
     fn render_lines_clamps_out_of_range() {
         let src = "alpha\nbeta\ngamma\n";
         let r = LineRange { start: 2, end: 99 };
-        assert_eq!(render_lines(src, r), "beta\ngamma");
+        assert_eq!(render_lines(src, r), "     2\tbeta\n     3\tgamma");
     }
 
     #[test]
     fn render_lines_single_line() {
         let src = "alpha\nbeta\ngamma\n";
         let r = LineRange { start: 2, end: 2 };
-        assert_eq!(render_lines(src, r), "beta");
+        assert_eq!(render_lines(src, r), "     2\tbeta");
     }
 
     #[test]
@@ -255,8 +279,23 @@ mod tests {
     }
 
     #[test]
-    fn render_full_returns_input() {
+    fn render_full_numbers_lines() {
         let src = "hello\nworld\n";
-        assert_eq!(render_full(src), src);
+        assert_eq!(render_full(src), "     1\thello\n     2\tworld");
+    }
+
+    #[test]
+    fn render_full_empty_file_is_empty() {
+        assert_eq!(render_full(""), "");
+    }
+
+    #[test]
+    fn wide_line_numbers_widen_the_column() {
+        let src = "x\n".repeat(1_000_001);
+        let r = LineRange {
+            start: 1_000_000,
+            end: 1_000_000,
+        };
+        assert_eq!(render_lines(&src, r), "1000000\tx");
     }
 }

@@ -6,9 +6,9 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 impl Database {
-    /// The `GDScript` typed-receiver call refs (`Bus::again()::subscribe`,
-    /// #597): `calls` refs from `.gd` files whose name holds a `::` type
-    /// expression. A small slice of the table, read before an incremental
+    /// The typed-receiver call refs (`Bus::again()::subscribe`, #597;
+    /// `Factory::Create()::Write`, #642): `calls` refs from `.gd` and `.cs`
+    /// files whose name holds a `::` type expression. A small slice of the table, read before an incremental
     /// resolution to find the call sites whose existing edges may be stale.
     pub async fn get_gdscript_typed_refs(&self) -> Result<Vec<UnresolvedRef>> {
         let mut rows = self
@@ -17,13 +17,13 @@ impl Database {
                 "SELECT from_node_id, reference_name, line, col, file_path
                  FROM unresolved_refs
                  WHERE reference_kind = 'calls'
-                   AND file_path LIKE '%.gd'
+                   AND (file_path LIKE '%.gd' OR file_path LIKE '%.cs')
                    AND instr(reference_name, '::') > 0",
                 (),
             )
             .await
             .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to query GDScript typed refs: {e}"),
+                message: format!("failed to query typed-receiver refs: {e}"),
                 operation: "get_gdscript_typed_refs".to_string(),
             })?;
         let mut out = Vec::new();

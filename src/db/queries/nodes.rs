@@ -1036,6 +1036,8 @@ impl Database {
     /// the `extends` base of a class, the `-> Type` of a method, the `: Type` of
     /// a field (#597). The extractor stores one declaration line there (a
     /// function's up to its body), so the column is bounded for these rows.
+    /// C# type declarations, methods, fields and properties keep theirs for
+    /// the same reason (#642): base lists, return types and member types.
     pub async fn get_all_nodes_for_resolution(&self) -> Result<Vec<Node>> {
         let mut rows = self
             .conn()
@@ -1045,6 +1047,10 @@ impl Database {
                     NULL AS docstring,
                     CASE WHEN file_path LIKE '%.gd'
                               AND kind IN ('class', 'inner_class', 'function', 'method', 'field')
+                         THEN signature
+                         WHEN file_path LIKE '%.cs'
+                              AND kind IN ('class', 'inner_class', 'struct', 'interface', 'record',
+                                           'function', 'method', 'field', 'csharp_property')
                          THEN signature END AS signature,
                     visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes",

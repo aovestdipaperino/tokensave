@@ -856,19 +856,19 @@ Expected: Returns `{status: "no_baseline", message: "No session baseline found. 
 
 ## tokensave_read
 
-> Read a file with mode-aware compression. Modes: `full`, `lines`, `map`, `signatures`. Cross-session cached.
+> Read a file with mode-aware compression. Modes: `full`, `lines`, `map`, `signatures`. `full` and `lines` are line-numbered. Pass a held `digest` back as `if_digest` to get an `unchanged` stub.
 
 Test full content:
 ```
 tokensave_read(file="src/sync.rs", mode="full")
 ```
-Expected: Returns the entire file body, plus `mtime_ns`, `digest`, and `token_count`.
+Expected: Returns the entire file body, each line prefixed with its right-aligned line number and a tab, plus `mtime_ns`, `digest`, and `token_count`.
 
 Test line slice:
 ```
 tokensave_read(file="src/sync.rs", mode="lines", lines="120-180")
 ```
-Expected: Returns only the requested 1-based inclusive range.
+Expected: Returns only the requested 1-based inclusive range, numbered from 120.
 
 Test map (graph-only, no source bytes touched):
 ```
@@ -882,12 +882,13 @@ tokensave_read(file="src/sync.rs", mode="signatures")
 ```
 Expected: Functions and types with their cached signature strings.
 
-Test cache hit (call the same query twice):
+Test digest revalidation:
 ```
-tokensave_read(file="src/sync.rs", mode="full")  # populates cache
-tokensave_read(file="src/sync.rs", mode="full")  # second call
+tokensave_read(file="src/sync.rs", mode="full")                        # note the digest
+tokensave_read(file="src/sync.rs", mode="full")                        # body again
+tokensave_read(file="src/sync.rs", mode="full", if_digest="<digest>")  # stub
 ```
-Expected: The second call returns `{"unchanged": true, "digest": ..., "mtime_ns": ..., "token_count": ...}` — a small stub instead of the full body.
+Expected: The second call returns the full body again. The third returns `unchanged: true` with the same `digest` and `token_count` — a small stub instead of the full body. After the file is edited, the same `if_digest` returns the new body.
 
 ---
 
