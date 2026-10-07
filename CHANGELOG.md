@@ -7,6 +7,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+- **C# property, indexer and event accessors now record the calls they make (#637).** The C# extractor walked method and constructor bodies for call sites but not property bodies, so a call inside a `get`/`set`/`init` accessor, an expression-bodied accessor (`get => ...`), an expression-bodied property (`string Short => Helper.Format(Id);`) or a property initializer (`= new Holder()`) produced no `calls` edge and no unresolved reference, and its callee could look dead. These calls are now attributed to the `csharp_property` node. Indexers (`T this[int i] { ... }`), which were not extracted at all, are now `csharp_property` nodes named `this` (signature `T this[int i]`) with their accessor calls attributed to them, and calls in an event's `add`/`remove` accessors are attributed to the event. Attributes on the declaration are not walked, so `nameof(...)` inside one is not recorded as a call. A read of a property from another member (`h.Label`) still produces no edge. Existing C# projects pick the new edges up on their next full reindex (`tokensave sync --force`) or as files change.
 
 ## [7.14.1] - 2026-10-02
 
