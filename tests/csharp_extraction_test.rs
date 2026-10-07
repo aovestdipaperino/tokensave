@@ -603,3 +603,178 @@ namespace MyApp
         methods[0].qualified_name
     );
 }
+
+/// Calls refs recorded from the node(s) named `from` of kind `kind`.
+fn call_refs_from(result: &ExtractionResult, kind: &NodeKind, from: &str) -> Vec<String> {
+    let ids: Vec<&str> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == *kind && n.name == from)
+        .map(|n| n.id.as_str())
+        .collect();
+    result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Calls && ids.contains(&r.from_node_id.as_str()))
+        .map(|r| r.reference_name.clone())
+        .collect()
+}
+
+/// #637: calls inside property accessors (block-bodied get/set/init,
+/// expression-bodied accessors, expression-bodied properties, and property
+/// initializers) are recorded with the property as the caller.
+#[test]
+fn test_cs_property_accessor_call_sites_637() {
+    let source = r#"
+namespace Demo {
+    public class Holder {
+        public int Id { get; set; }
+        public string Label { get { return Helper.Format(Id); } }
+        public string Short => Helper.Short(Id);
+        public int Width { set { Helper.Store(value); } }
+        public int Height { init { Helper.Init(value); } }
+        public int Depth { get => Helper.Depth(); set => Helper.SetDepth(value); }
+        public Holder Self { get; } = new Holder();
+    }
+}
+"#;
+    let result = CSharpExtractor.extract("Holder.cs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let p = &NodeKind::CSharpProperty;
+    assert_eq!(call_refs_from(&result, p, "Label"), vec!["Helper.Format"]);
+    assert_eq!(call_refs_from(&result, p, "Short"), vec!["Helper.Short"]);
+    assert_eq!(call_refs_from(&result, p, "Width"), vec!["Helper.Store"]);
+    assert_eq!(call_refs_from(&result, p, "Height"), vec!["Helper.Init"]);
+    assert_eq!(
+        call_refs_from(&result, p, "Depth"),
+        vec!["Helper.Depth", "Helper.SetDepth"]
+    );
+    assert_eq!(call_refs_from(&result, p, "Self"), vec!["new Holder"]);
+    assert!(call_refs_from(&result, p, "Id").is_empty());
+}
+
+/// #637: an attribute on a property is not part of its accessor bodies, so
+/// `nameof(...)` inside it is not recorded as a call.
+#[test]
+fn test_cs_property_attribute_is_not_a_call_site_637() {
+    let source = r#"
+public class Holder {
+    [Obsolete(nameof(Other))]
+    public int Value { get { return Compute(); } }
+}
+"#;
+    let result = CSharpExtractor.extract("Holder.cs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert_eq!(
+        call_refs_from(&result, &NodeKind::CSharpProperty, "Value"),
+        vec!["Compute"]
+    );
+}
+
+/// #637: indexers become `CSharpProperty` nodes named `this`, and calls in
+/// their accessors (or expression body) are recorded from that node.
+#[test]
+fn test_cs_indexer_call_sites_637() {
+    let source = r#"
+public class Bag {
+    public int this[int i] { get { return Lookup(i); } set { Store(i, value); } }
+    public string this[string k] => Find(k);
+}
+"#;
+    let result = CSharpExtractor.extract("Bag.cs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let indexers: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::CSharpProperty && n.name == "this")
+        .collect();
+    assert_eq!(indexers.len(), 2, "indexers: {indexers:?}");
+    assert!(
+        indexers[0].qualified_name.ends_with("Bag::this"),
+        "qualified_name: {}",
+        indexers[0].qualified_name
+    );
+    assert_eq!(
+        indexers[0].signature.as_deref(),
+        Some("int this[int i]"),
+        "signature"
+    );
+    assert!(
+        result
+            .edges
+            .iter()
+            .any(|e| e.kind == EdgeKind::Contains && e.target == indexers[0].id),
+        "indexer must be contained by its class"
+    );
+    let mut calls = call_refs_from(&result, &NodeKind::CSharpProperty, "this");
+    calls.sort();
+    assert_eq!(calls, vec!["Find", "Lookup", "Store"]);
+}
+
+/// #637: calls in event `add`/`remove` accessors are recorded from the event.
+#[test]
+fn test_cs_event_accessor_call_sites_637() {
+    let source = r#"
+public class Button {
+    public event EventHandler Click { add { Subscribe(value); } remove { Unsubscribe(value); } }
+}
+"#;
+    let result = CSharpExtractor.extract("Button.cs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert_eq!(
+        call_refs_from(&result, &NodeKind::Event, "Click"),
+        vec!["Subscribe", "Unsubscribe"]
+    );
+}
+
+/// #637 end to end: the issue's repro produces `calls` edges from each
+/// property to `Helper.Format`, just like the method control case.
+#[tokio::test]
+async fn test_cs_property_accessor_calls_resolve_637() {
+    use tokensave::tokensave::TokenSave;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::write(
+        root.join("Helper.cs"),
+        "namespace Demo { public static class Helper { public static string Format(int id) { return id.ToString(); } } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("Holder.cs"),
+        r#"namespace Demo {
+    public class Holder {
+        public int Id { get; set; }
+        public string LabelViaMethod() { return Helper.Format(Id); }
+        public string Label { get { return Helper.Format(Id); } }
+        public string Short => Helper.Format(Id);
+        public int Width { set { Helper.Format(value); } }
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(root).await.unwrap();
+    cg.sync().await.unwrap();
+
+    let nodes = cg.db().get_all_nodes().await.unwrap();
+    let edges = cg.db().get_all_edges().await.unwrap();
+    let id_of = |name: &str| {
+        nodes
+            .iter()
+            .find(|n| n.name == name)
+            .map(|n| n.id.clone())
+            .unwrap()
+    };
+    let format_id = id_of("Format");
+    for caller in ["LabelViaMethod", "Label", "Short", "Width"] {
+        let caller_id = id_of(caller);
+        assert!(
+            edges.iter().any(|e| e.kind == EdgeKind::Calls
+                && e.source == caller_id
+                && e.target == format_id),
+            "expected a calls edge {caller} -> Helper.Format"
+        );
+    }
+}
