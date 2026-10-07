@@ -442,16 +442,15 @@ fn template_pattern_guards_pins_and_interpolation_still_call_helpers() {
 }
 
 #[test]
-fn template_receivers_are_not_helper_calls() {
+fn template_receivers_are_recorded_for_the_helper_filter() {
+    // Receivers stay in the extraction (a helper like `current_user` is often
+    // one); the resolver's helper-only filter is what keeps partial locals off
+    // unrelated methods.
     let erb = "<%= item.title %><%= item&.name %><%= item[0] %><%= item.price.round(2) %>";
     let slim = "p = item.title\np = item&.name\n= item[0]\n";
     for (path, source) in [("_row.html.erb", erb), ("_row.html.slim", slim)] {
         let result = extract(path, source);
-        assert!(
-            !calls(&result).contains(&"item"),
-            "{path}: {:?}",
-            calls(&result)
-        );
+        assert!(calls(&result).contains(&"item"), "{path}");
         assert!(calls(&result).contains(&"item.title"), "{path}");
     }
 }
@@ -498,11 +497,11 @@ async fn template_partial_locals_do_not_bind_to_unrelated_methods() {
     for template in [
         (
             "app/views/orders/_row.html.erb",
-            "<%= item.title %>\n<%= item %>\n<%= format_price(item.price) %>\n",
+            "<%= item.title %>\n<%= item&.name %>\n<%= item[0] %>\n<%= item %>\n<%= format_price(item.price) %>\n",
         ),
         (
             "app/views/orders/_row.html.slim",
-            "p = item.title\np = item\np = format_price(item.price)\n",
+            "p = item.title\np = item&.name\np = item[0]\np = item\np = format_price(item.price)\n",
         ),
     ] {
         let (nodes, edges) = resolve_template(&ruby, template).await;
@@ -563,4 +562,35 @@ async fn template_bare_calls_reach_helper_shaped_targets_only() {
         edges.iter().all(|(_, target)| *target != summary.id),
         "{resolved:?}"
     );
+}
+
+#[tokio::test]
+async fn template_helper_receivers_resolve_to_the_helper() {
+    let ruby = [(
+        "app/controllers/application_controller.rb",
+        "class ApplicationController\n  helper_method :current_user\n  def current_user\n  end\nend\n",
+    )];
+    for template in [
+        (
+            "app/views/layouts/application.html.erb",
+            "<%= current_user.name %>",
+        ),
+        (
+            "app/views/layouts/application.html.slim",
+            "p = current_user.name\n",
+        ),
+    ] {
+        let (nodes, edges) = resolve_template(&ruby, template).await;
+        let current_user = nodes
+            .iter()
+            .find(|n| n.name == "current_user" && n.kind == NodeKind::Method)
+            .unwrap();
+        assert!(
+            edges
+                .iter()
+                .any(|(name, target)| name == "current_user" && *target == current_user.id),
+            "{}: {edges:?}",
+            template.0
+        );
+    }
 }

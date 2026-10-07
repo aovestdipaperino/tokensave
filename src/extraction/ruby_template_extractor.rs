@@ -637,23 +637,10 @@ fn collect_identifiers<'a>(
             || (matches!(node.kind(), "in_clause" | "match_pattern" | "test_pattern")
                 && node.child_by_field_name("pattern") == Some(child))
             || (node.kind() == "rescue" && node.child_by_field_name("variable") == Some(child));
-        // A bare identifier used only as a receiver (`item.title`, `item&.x`,
-        // `item[0]`) is far more often a partial local or an instance-less
-        // view variable than a helper call. Partial locals are never bound in
-        // the template's own source, so emitting it would let the resolver
-        // tie it to any same-named method in the project.
-        if !is_binding && child.kind() == "identifier" && is_receiver(node, child) {
-            continue;
-        }
+        // Receivers (`current_user.name`) are emitted too: the resolver binds
+        // a template's bare names to helper-shaped targets only, which keeps
+        // an unbound partial local like `item` off unrelated `def item`s.
         collect_identifiers(state, child, is_binding, locals, identifiers);
-    }
-}
-
-fn is_receiver(parent: TsNode<'_>, child: TsNode<'_>) -> bool {
-    match parent.kind() {
-        "call" => parent.child_by_field_name("receiver") == Some(child),
-        "element_reference" => parent.child_by_field_name("object") == Some(child),
-        _ => false,
     }
 }
 

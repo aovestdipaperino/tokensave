@@ -9,7 +9,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
-- Index embedded Ruby in ERB and Slim templates, including calls to helpers, with locations in the original template. Available with `lang-ruby`; controller-to-view and partial-render relationships are not inferred. A bare name in a template binds only to helper-shaped methods (in a `helpers/` directory, a `*Helper` module, `ApplicationController`, a top-level `def`, or the template itself), and a name used only as a receiver (`item.title`) is not recorded as a call, so partial locals do not become call edges to unrelated same-named methods.
+- Index embedded Ruby in ERB and Slim templates, including calls to helpers, with locations in the original template. Available with `lang-ruby`; controller-to-view and partial-render relationships are not inferred. A bare name in a template binds only to helper-shaped methods (in a `helpers/` directory, a `*Helper` module, `ApplicationController`, a top-level `def`, or the template itself), so partial locals such as `item` in `item.title` do not become call edges to unrelated same-named methods, while helper receivers such as `current_user.name` still do.
 
 ## [7.15.0] - 2026-10-07
 
