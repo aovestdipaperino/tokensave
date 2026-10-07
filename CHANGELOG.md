@@ -7,6 +7,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+- **`tokensave_implementations` finds the implementers of a C# interface, generic or not (#643).** A C# base list (`class A : X, IY`) cannot tell a base class from an interface, so the extractor recorded a class's first base as `extends`, and `tokensave_implementations`, which reads `implements` edges, found nothing for a class whose only or first base was the interface. The resolver now stores that edge as `implements` when its target is an interface; a base class stays `extends`. A generic base (`IProducer<TRecord>`, `App.IProducer<int>`) was also recorded with its type arguments, so it never matched the `IProducer` declaration and neither `tokensave_implementations` nor `tokensave_type_hierarchy` saw it; type arguments are now dropped from base-list names. No schema change: an existing index picks this up for a C# file when that file is next re-indexed, or for the whole project with `tokensave sync --force`.
 
 ## [7.14.1] - 2026-10-02
 

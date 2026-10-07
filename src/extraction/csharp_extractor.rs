@@ -1466,7 +1466,14 @@ impl CSharpExtractor {
                         || child.kind() == "generic_name"
                         || child.kind() == "qualified_name")
                 {
-                    let type_name = state.node_text(child);
+                    // `IProducer<TRecord>` names the type `IProducer`; the
+                    // type arguments would keep the ref from ever matching
+                    // the declaration (#643).
+                    let type_name = strip_type_arguments(&state.node_text(child));
+                    // A class's first base may be a class or an interface;
+                    // the syntax cannot tell them apart, so it is recorded as
+                    // `Extends` and the resolver turns it into `Implements`
+                    // when the target is an interface (#643).
                     let edge_kind = if is_class && is_first {
                         is_first = false;
                         EdgeKind::Extends
@@ -1770,4 +1777,21 @@ impl crate::extraction::LanguageExtractor for CSharpExtractor {
     fn extract(&self, file_path: &str, source: &str) -> ExtractionResult {
         CSharpExtractor::extract_csharp(file_path, source)
     }
+}
+
+/// Drops every `<...>` type-argument list from a C# type name, so
+/// `App.IProducer<int>` becomes `App.IProducer` and `Outer<T>.Inner` becomes
+/// `Outer.Inner`. Nested lists (`IMap<K, List<V>>`) are handled by depth.
+fn strip_type_arguments(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut depth = 0usize;
+    for c in name.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 && !c.is_whitespace() => out.push(c),
+            _ => {}
+        }
+    }
+    out
 }
