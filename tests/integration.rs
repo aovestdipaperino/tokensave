@@ -141,6 +141,7 @@ mod qbasic_extraction_test;
 mod quickbasic_extraction_test;
 mod quint_extraction_test;
 mod rake_support_test;
+mod read_numbering_digest_test;
 mod reinstall_githooks_624_test;
 mod rename_test;
 mod report_savings_test;

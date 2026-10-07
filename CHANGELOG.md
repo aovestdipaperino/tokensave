@@ -7,6 +7,13 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Added
+- **`tokensave_read` takes an `if_digest` argument (#650).** Every response that carries a body also carries its `digest`. A client that still holds that content passes the digest back as `if_digest`; when it matches the current body for the same mode and range, the short `unchanged: true` stub is returned instead of the body, and otherwise the body is. Requested by @xorets.
+
+### Changed
+- **`tokensave_read` numbers the lines it returns (#652).** `full` and `lines` modes now prefix every line with its real file line number, right-aligned, then a tab, as Claude Code's `Read` tool does, so a `lines` slice from 120 starts at 120. `map` and `signatures` are unchanged. Because the body changed, a digest from an earlier release no longer matches. Requested by @xorets.
+- **`tokensave_read` always returns the body unless `if_digest` matches (#650).** The server used to remember every file it had sent, across sessions, and answer a repeat read with an `unchanged: true` stub. It cannot know what the client still holds after a context compaction, a rewind, a new session or a subagent, so the stub could leave an agent with no copy of the file. That server-side record is gone and the `read_cache` table is no longer read or written. `force` is still accepted but deprecated: the body is now the default, and `force: true` only makes the server ignore `if_digest`.
+
 
 ## [7.14.1] - 2026-10-02
 

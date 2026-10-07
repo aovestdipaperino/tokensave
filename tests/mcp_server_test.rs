@@ -2572,11 +2572,11 @@ async fn test_uncached_full_read_baseline_matches_file_weight() {
     );
 }
 
-/// A cache-hit re-read of the same file returns a small `{"unchanged": ...}`
-/// stub, not the file content — its baseline must be capped near that stub,
-/// not the full file. Before the fix, `tokensave_read` was unconditionally
-/// classified `FullFile`, so a cached read of a large file claimed the
-/// entire file as "saved" for a response that carried none of it.
+/// A re-read that echoes back a matching `if_digest` returns a small
+/// `{"unchanged": ...}` stub, not the file content — its baseline must be
+/// capped near that stub, not the full file. Before the fix, `tokensave_read`
+/// was unconditionally classified `FullFile`, so a stub read of a large file
+/// claimed the entire file as "saved" for a response that carried none of it.
 #[tokio::test]
 async fn test_cached_read_baseline_is_capped_not_full_file() {
     let dir = TempDir::new().unwrap();
@@ -2589,21 +2589,46 @@ async fn test_cached_read_baseline_is_capped_not_full_file() {
     fs::write(project.join("src/main.rs"), &padded_source).unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
+    let digest = {
+        let first = tokensave::mcp::handle_tool_call(
+            &cg,
+            "tokensave_read",
+            json!({ "file": "src/main.rs", "mode": "full" }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        // Text format: the file exceeds the response cap, and a truncated
+        // JSON payload would not parse, but the header always survives.
+        first.value["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .lines()
+            .find_map(|l| l.strip_prefix("digest: "))
+            .unwrap()
+            .to_string()
+    };
     let server = McpServer::new(with_report_savings(cg).await, None).await;
 
     let file_tokens = (padded_source.len() / 4) as u64;
-    let read_call = |id: i64| {
-        jsonrpc_request(
-            json!(id),
+    let responses = run_server_with_messages(
+        server,
+        vec![jsonrpc_request(
+            json!(82),
             "tools/call",
             json!({
                 "name": "tokensave_read",
-                "arguments": { "file": "src/main.rs", "mode": "full", "format": "json" }
+                "arguments": {
+                    "file": "src/main.rs",
+                    "mode": "full",
+                    "format": "json",
+                    "if_digest": digest
+                }
             }),
-        )
-    };
-
-    let responses = run_server_with_messages(server, vec![read_call(81), read_call(82)]).await;
+        )],
+    )
+    .await;
 
     let second_resp = responses
         .iter()
@@ -2618,22 +2643,22 @@ async fn test_cached_read_baseline_is_capped_not_full_file() {
     };
     assert!(
         text.contains("\"unchanged\""),
-        "second identical read should be served from the read cache as an \
-         unchanged stub, got: {text}"
+        "a read with a matching if_digest should be an unchanged stub, got: {text}"
     );
 
     let before = extract_metrics_field(second_resp, "before");
     assert!(
         before < file_tokens / 4,
-        "a cache-hit stub must not claim the full file's weight as its \
+        "a stub must not claim the full file's weight as its \
          baseline: before={before} file_tokens={file_tokens}"
     );
 }
 
-/// `force: true` bypasses the cross-session cache, so a caller that has not
-/// received this file's body in this session can always ask for it (#556).
+/// Repeated reads through the server always return the body: the server no
+/// longer decides on its own that the client still holds it (#650). The
+/// deprecated `force` flag is still accepted (#556).
 #[tokio::test]
-async fn test_read_force_bypasses_cache() {
+async fn test_repeated_read_returns_body_and_force_still_accepted() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
@@ -2658,31 +2683,37 @@ async fn test_read_force_bypasses_cache() {
         )
     };
 
-    // First call populates the cache; the second identical call with
-    // `force: true` must still return the body, not an unchanged stub.
-    let responses =
-        run_server_with_messages(server, vec![read_call(91, false), read_call(92, true)]).await;
+    let responses = run_server_with_messages(
+        server,
+        vec![
+            read_call(91, false),
+            read_call(92, false),
+            read_call(93, true),
+        ],
+    )
+    .await;
 
-    let second_resp = responses
-        .iter()
-        .find(|r| parse_response(r)["id"] == 92)
-        .expect("should have a response for id=92");
-    let text = {
-        let resp = parse_response(second_resp);
-        resp["result"]["content"].as_array().unwrap()[0]["text"]
-            .as_str()
-            .unwrap()
-            .to_string()
-    };
-    assert!(
-        text.contains("fn helper"),
-        "forced read must return the body even when the cache holds an \
-         unchanged stub, got: {text}"
-    );
-    assert!(
-        !text.contains("\"unchanged\""),
-        "forced read must not return an unchanged stub, got: {text}"
-    );
+    for id in [91, 92, 93] {
+        let resp = responses
+            .iter()
+            .find(|r| parse_response(r)["id"] == id)
+            .unwrap_or_else(|| panic!("should have a response for id={id}"));
+        let text = {
+            let resp = parse_response(resp);
+            resp["result"]["content"].as_array().unwrap()[0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(
+            text.contains("fn helper"),
+            "read {id} must return the body, got: {text}"
+        );
+        assert!(
+            !text.contains("unchanged"),
+            "read {id} must not return an unchanged stub, got: {text}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
