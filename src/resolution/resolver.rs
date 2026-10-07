@@ -238,10 +238,29 @@ pub fn is_gdscript(path: &str) -> bool {
         .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("gd"))
 }
 
+/// `resolved_by` tag of a C# call resolved through its receiver's type (#642).
+const CSHARP_TYPED: &str = "csharp-typed-receiver";
+
+/// True for a C# source path. Case-insensitive, like [`is_gdscript`].
+pub fn is_csharp(path: &str) -> bool {
+    path.rsplit_once('.')
+        .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("cs"))
+}
+
+/// True when a file's `calls` refs holding `::` are typed-receiver type
+/// expressions (`Type[::step]*::method`): `GDScript` (#597) and C# (#642).
+pub fn has_typed_receiver_refs(path: &str) -> bool {
+    is_gdscript(path) || is_csharp(path)
+}
+
+fn is_typed_receiver_tag(tag: &str) -> bool {
+    tag == GDSCRIPT_TYPED || tag == CSHARP_TYPED
+}
+
 /// A call site: caller, file, line, column, and the method's bare name.
 type CallSite<'r> = (&'r str, &'r str, u32, u32, &'r str);
 
-/// Call sites where a `GDScript` typed ref resolved, keyed like the sibling
+/// Call sites where a typed-receiver ref resolved, keyed like the sibling
 /// refs and ambiguity records they make redundant. The column is part of the
 /// key: the typed ref and its sibling share the call node's position, while a
 /// different same-named call on the same line (`given.subscribe(subscribe(1))`)
@@ -249,7 +268,7 @@ type CallSite<'r> = (&'r str, &'r str, u32, u32, &'r str);
 fn gdscript_typed_sites(resolved: &[ResolvedRef]) -> HashSet<CallSite<'_>> {
     resolved
         .iter()
-        .filter(|r| r.resolved_by == GDSCRIPT_TYPED)
+        .filter(|r| is_typed_receiver_tag(&r.resolved_by))
         .map(|r| {
             (
                 r.original.from_node_id.as_str(),
@@ -280,7 +299,7 @@ fn suppress_gdscript_typed_siblings(resolved: &mut Vec<ResolvedRef>) {
         resolved
             .iter()
             .map(|r| {
-                r.resolved_by == GDSCRIPT_TYPED
+                is_typed_receiver_tag(&r.resolved_by)
                     || r.original.reference_kind != EdgeKind::Calls
                     || !sites.contains(&(
                         r.original.from_node_id.as_str(),
@@ -365,6 +384,143 @@ fn first_indexed_candidate<'n>(
     super::js_specifier::relative_module_candidates(importer, specifier)
         .iter()
         .find_map(|path| file_nodes.get(path.as_str()).copied())
+}
+
+/// Callable node kinds a C# member lookup accepts.
+fn is_csharp_callable(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Method | NodeKind::Function | NodeKind::Constructor
+    )
+}
+
+/// A C# type expression reduced to the class name a lookup can use: no
+/// namespace or alias qualifier, type arguments, array rank or nullability.
+/// `global::A.B.Writer<T>[]?` -> `Writer`. `None` for a tuple, pointer or
+/// anything else that is not a plain name.
+pub fn csharp_type_name(raw: &str) -> Option<&str> {
+    let s = raw.trim();
+    let s = s.strip_prefix("global::").unwrap_or(s);
+    let end = s
+        .find(|c: char| matches!(c, '<' | '[' | '(' | '?' | '*') || c.is_whitespace())
+        .unwrap_or(s.len());
+    let s = s[..end].rsplit(['.', ':']).next()?;
+    let mut chars = s.chars();
+    let ident = chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
+        && chars.all(|c| c.is_alphanumeric() || c == '_');
+    (ident && s != "var").then_some(s)
+}
+
+/// The type written before declaration `name` in a C# signature: a method's
+/// return type, a field's or property's type. The name is found at bracket
+/// depth 0, so attribute arguments and parameter lists cannot match.
+fn csharp_declared_type<'s>(signature: &'s str, name: &str) -> Option<&'s str> {
+    let bytes = signature.as_bytes();
+    let mut depth = 0i32;
+    for i in 0..bytes.len() {
+        match bytes[i] {
+            b'(' | b'[' | b'<' | b'{' => depth += 1,
+            b')' | b']' | b'>' | b'}' => depth -= 1,
+            _ => {}
+        }
+        if depth != 0 || !bytes[i..].starts_with(name.as_bytes()) {
+            continue;
+        }
+        let before_ok = i == 0 || bytes[i - 1].is_ascii_whitespace();
+        let after_ok = bytes.get(i + name.len()).is_none_or(|c| {
+            matches!(c, b'(' | b'<' | b';' | b'=' | b',' | b'{') || c.is_ascii_whitespace()
+        });
+        if before_ok && after_ok {
+            return preceding_type_token(signature.get(..i)?);
+        }
+    }
+    None
+}
+
+/// The last whitespace-separated token of `s`, keeping bracketed type
+/// arguments whole (`Task<Dictionary<string, int>>`).
+fn preceding_type_token(s: &str) -> Option<&str> {
+    let s = s.trim_end();
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut start = bytes.len();
+    for (i, &c) in bytes.iter().enumerate().rev() {
+        match c {
+            b')' | b']' | b'>' => depth += 1,
+            b'(' | b'[' | b'<' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && c.is_ascii_whitespace() {
+            break;
+        }
+        start = i;
+    }
+    s.get(start..).filter(|t| !t.is_empty())
+}
+
+/// The type argument of `Task<T>` / `ValueTask<T>`, the value an `await`
+/// produces.
+fn unwrap_task(ty: &str) -> Option<&str> {
+    if !matches!(csharp_type_name(ty), Some("Task" | "ValueTask")) {
+        return None;
+    }
+    let (_, inner) = ty.split_once('<')?;
+    Some(inner.trim_end().strip_suffix('>')?.trim())
+}
+
+/// The base types named in a C# type declaration signature
+/// (`class A(int x) : Base<T>, IFoo where T : new()` -> `Base`, `IFoo`).
+fn csharp_bases(signature: &str) -> Vec<&str> {
+    let bytes = signature.as_bytes();
+    let mut depth = 0i32;
+    let mut colon = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' | b'[' | b'<' | b'{' => depth += 1,
+            b')' | b']' | b'>' | b'}' => depth -= 1,
+            b':' if bytes.get(i + 1) == Some(&b':') => i += 1,
+            b':' if depth == 0 => {
+                colon = Some(i);
+                break;
+            }
+            b'w' if depth == 0
+                && bytes[i..].starts_with(b"where")
+                && i > 0
+                && bytes[i - 1].is_ascii_whitespace() =>
+            {
+                return Vec::new();
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let Some(colon) = colon else {
+        return Vec::new();
+    };
+    let rest = signature.get(colon + 1..).unwrap_or("");
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    let rb = rest.as_bytes();
+    for (j, &c) in rb.iter().enumerate() {
+        match c {
+            b'(' | b'[' | b'<' => depth += 1,
+            b')' | b']' | b'>' => depth -= 1,
+            _ => {}
+        }
+        let at_where =
+            depth == 0 && rb[j..].starts_with(b"where") && j > 0 && rb[j - 1].is_ascii_whitespace();
+        if depth == 0 && (c == b',' || at_where) {
+            out.extend(rest.get(start..j).and_then(csharp_type_name));
+            start = j + 1;
+            if at_where {
+                return out;
+            }
+        }
+    }
+    out.extend(rest.get(start..).and_then(csharp_type_name));
+    out
 }
 
 /// Infer a coarse language tag from a file path extension.
@@ -709,6 +865,14 @@ impl<'a> ReferenceResolver<'a> {
             return self.try_gdscript_typed_match(uref);
         }
 
+        // C# typed-receiver calls (#642), same contract as GDScript's.
+        if uref.reference_kind == EdgeKind::Calls
+            && is_csharp(&uref.file_path)
+            && uref.reference_name.contains("::")
+        {
+            return self.try_csharp_typed_match(uref);
+        }
+
         // Ruby receiver-qualified calls use only positive receiver and
         // singleton-definition evidence. Unsupported or ambiguous shapes stay
         // unresolved instead of falling back to the trailing method name.
@@ -772,6 +936,15 @@ impl<'a> ReferenceResolver<'a> {
                 .rsplit('.')
                 .next()
                 .unwrap_or(&uref.reference_name);
+            // Only a call has a receiver; a dotted base type or type reference
+            // (`App.Data.IProducer`) is a namespace path and may name a type in
+            // the referrer's own scope (#643).
+            if simple_name != uref.reference_name
+                && uref.reference_kind == EdgeKind::Calls
+                && is_csharp(&uref.file_path)
+            {
+                return self.try_csharp_receiver_fallback(uref, simple_name);
+            }
             if simple_name != uref.reference_name {
                 if let Some(resolved) =
                     self.try_exact_name_match_simple(uref, simple_name, true, SIMPLE_NAME_MATCH)
@@ -1236,6 +1409,204 @@ impl<'a> ReferenceResolver<'a> {
         None
     }
 
+    /// Resolve a C# typed-receiver call `Type[::step]*::Method` (#642).
+    ///
+    /// Steps are `member` (a field's or property's declared type), `Method()`
+    /// (a method's declared return type) and `await Method()` (the same,
+    /// unwrapping `Task<T>`/`ValueTask<T>`), each read from the declaration's
+    /// signature. A member missing from a type is looked up through its base
+    /// list. Several same-named types (partial classes, or one name in two
+    /// namespaces) are all searched; distinct targets are scored and a tie is
+    /// no answer.
+    ///
+    /// Returns `None` whenever the evidence runs out (an unindexed type, an
+    /// extension method, an ambiguous step); the receiver-qualified sibling
+    /// ref then decides.
+    fn try_csharp_typed_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
+        let mut segments = uref.reference_name.split("::");
+        let root = segments.next()?;
+        let mut steps: Vec<&str> = segments.collect();
+        let method = steps.pop()?;
+
+        let mut types = self.csharp_types(root);
+        for step in steps {
+            let (awaited, step) = match step.strip_prefix("await ") {
+                Some(s) => (true, s),
+                None => (false, step),
+            };
+            let members = match step.strip_suffix("()") {
+                Some(name) => self.csharp_members(&types, name, is_csharp_callable),
+                None => self.csharp_members(&types, step, |k| {
+                    matches!(k, NodeKind::Field | NodeKind::CSharpProperty)
+                }),
+            };
+            let mut next: Vec<&str> = members
+                .iter()
+                .filter_map(|m| {
+                    let raw = csharp_declared_type(m.signature.as_deref()?, &m.name)?;
+                    let raw = if awaited { unwrap_task(raw)? } else { raw };
+                    csharp_type_name(raw)
+                })
+                .collect();
+            next.sort_unstable();
+            next.dedup();
+            let [ty] = next.as_slice() else {
+                return None;
+            };
+            types = self.csharp_types(ty);
+        }
+
+        let mut targets = self.csharp_members(&types, method, is_csharp_callable);
+        // Overloads share a qualified name; the first declared stands for them.
+        targets.sort_by(|a, b| {
+            (a.qualified_name.as_str(), a.start_line)
+                .cmp(&(b.qualified_name.as_str(), b.start_line))
+        });
+        targets.dedup_by(|a, b| a.qualified_name == b.qualified_name);
+        let (target_node_id, confidence) = match targets.as_slice() {
+            [] => return None,
+            [one] => (one.id.clone(), 0.95),
+            many => {
+                let winners = Self::find_best_matches(uref, many, &self.import_index);
+                let [best] = winners.as_slice() else {
+                    return None;
+                };
+                (best.id.clone(), 0.9)
+            }
+        };
+        Some(ResolvedRef {
+            original: uref.clone(),
+            target_node_id,
+            confidence,
+            resolved_by: CSHARP_TYPED.to_string(),
+        })
+    }
+
+    /// Every indexed C# type declaration named `name`.
+    fn csharp_types(&self, name: &str) -> Vec<&'a Node> {
+        self.name_cache
+            .get(name)
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .copied()
+                    .filter(|n| {
+                        matches!(
+                            n.kind,
+                            NodeKind::Class
+                                | NodeKind::InnerClass
+                                | NodeKind::Struct
+                                | NodeKind::Interface
+                                | NodeKind::Record
+                        ) && is_csharp(&n.file_path)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The members named `name` of `types`, declared there or, failing that,
+    /// in the nearest base types that declare one.
+    fn csharp_members(
+        &self,
+        types: &[&'a Node],
+        name: &str,
+        kind_ok: impl Fn(&NodeKind) -> bool,
+    ) -> Vec<&'a Node> {
+        // Bounded so a base-list cycle in a broken tree cannot loop.
+        const MAX_DEPTH: usize = 16;
+        let mut seen: HashSet<&str> = types.iter().map(|t| t.id.as_str()).collect();
+        let mut frontier: Vec<&'a Node> = types.to_vec();
+        for _ in 0..MAX_DEPTH {
+            if frontier.is_empty() {
+                break;
+            }
+            let found: Vec<&'a Node> = frontier
+                .iter()
+                .filter_map(|t| {
+                    self.qualified_name_cache
+                        .get(format!("{}::{name}", t.qualified_name).as_str())
+                })
+                .flat_map(|nodes| nodes.iter().copied().filter(|n| kind_ok(&n.kind)))
+                .collect();
+            if !found.is_empty() {
+                return found;
+            }
+            let mut next = Vec::new();
+            for t in &frontier {
+                for base in csharp_bases(t.signature.as_deref().unwrap_or("")) {
+                    for b in self.csharp_types(base) {
+                        if seen.insert(b.id.as_str()) {
+                            next.push(b);
+                        }
+                    }
+                }
+            }
+            frontier = next;
+        }
+        Vec::new()
+    }
+
+    /// The name-based fallback for a C# receiver-qualified call `recv.Method`.
+    ///
+    /// A receiver that is not `this`/`base` is some other object, so the
+    /// caller's own class is no evidence for the target: the same-file bonus
+    /// would otherwise bind `refresher.RefreshAsync()` inside
+    /// `Coordinator.PollAndRefreshAsync` to `Coordinator.RefreshAsync` (#642,
+    /// the C# form of #503). Members of the caller's own type are dropped
+    /// from the candidates before the usual scoring.
+    fn try_csharp_receiver_fallback(
+        &self,
+        uref: &UnresolvedRef,
+        simple_name: &str,
+    ) -> Option<ResolvedRef> {
+        let receiver = uref
+            .reference_name
+            .rsplit_once('.')
+            .map_or("", |(recv, _)| recv);
+        let own_scope = self
+            .node_id_cache
+            .get(uref.from_node_id.as_str())
+            .and_then(|caller| caller.qualified_name.rsplit_once("::"))
+            .map(|(scope, _)| scope);
+        let Some(own_scope) = own_scope.filter(|_| !matches!(receiver, "this" | "base")) else {
+            return self.try_exact_name_match_simple(uref, simple_name, true, SIMPLE_NAME_MATCH);
+        };
+        let in_own_scope = |n: &Node| {
+            n.qualified_name
+                .rsplit_once("::")
+                .is_some_and(|(scope, _)| scope == own_scope)
+        };
+        let compatible: Vec<&Node> = self
+            .name_cache
+            .get(simple_name)?
+            .iter()
+            .copied()
+            .filter(|n| kind_compatible(uref, &n.kind))
+            .collect();
+        if !compatible.iter().any(|n| in_own_scope(n)) {
+            return self.try_exact_name_match_simple(uref, simple_name, true, SIMPLE_NAME_MATCH);
+        }
+        if CROSS_FILE_BLOCKLIST.contains(&simple_name) {
+            return None;
+        }
+        let others: Vec<&Node> = compatible
+            .into_iter()
+            .filter(|n| !in_own_scope(n))
+            .collect();
+        if others.is_empty() {
+            return None;
+        }
+        resolve_from_filtered_named(
+            uref,
+            &others,
+            SIMPLE_NAME_MATCH,
+            &self.import_index,
+            true,
+            &self.node_id_cache,
+        )
+    }
+
     fn ruby_constant_owners_at(&self, constant_path: &str) -> Option<Vec<&Node>> {
         let bindings = self.ruby_constant_bindings.get(constant_path)?;
         bindings
@@ -1577,7 +1948,7 @@ impl<'a> ReferenceResolver<'a> {
         }
         // A GDScript typed ref that did not resolve is not a name tie: its
         // receiver-qualified sibling at the same site explains any tie (#597).
-        if is_gdscript(&uref.file_path) && uref.reference_name.contains("::") {
+        if has_typed_receiver_refs(&uref.file_path) && uref.reference_name.contains("::") {
             return None;
         }
         let simple_name = simple_ref_name(&uref.reference_name);

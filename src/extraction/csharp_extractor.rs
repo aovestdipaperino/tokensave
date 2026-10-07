@@ -1,6 +1,7 @@
 /// Tree-sitter based C# source code extractor.
 ///
 /// Parses C# source files and emits nodes and edges for the code graph.
+use std::collections::HashMap;
 use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
@@ -712,6 +713,7 @@ impl CSharpExtractor {
         // Extract call sites from the method body.
         if let Some(body) = node.child_by_field_name("body") {
             Self::extract_call_sites(state, body, &id);
+            Self::extract_typed_calls(state, node, body, &id);
         }
     }
 
@@ -778,6 +780,7 @@ impl CSharpExtractor {
         // Extract call sites from the constructor body.
         if let Some(body) = node.child_by_field_name("body") {
             Self::extract_call_sites(state, body, &id);
+            Self::extract_typed_calls(state, node, body, &id);
         }
     }
 
@@ -1786,10 +1789,31 @@ impl CSharpExtractor {
     }
 
     /// Extract the name from an `invocation_expression` node.
+    ///
+    /// Type arguments are not part of the name: `f.Create<T>(x)` records
+    /// `f.Create`, so the trailing segment can match the declaration (#642).
     fn extract_invocation_name(state: &ExtractionState, node: TsNode<'_>) -> String {
         // invocation_expression: function + argument_list
         if let Some(func_node) = node.child_by_field_name("function") {
-            return state.node_text(func_node);
+            let name = match func_node.kind() {
+                "member_access_expression" => match (
+                    func_node.child_by_field_name("expression"),
+                    func_node.child_by_field_name("name"),
+                ) {
+                    (Some(recv), Some(name)) => format!(
+                        "{}.{}",
+                        state.node_text(recv),
+                        Self::simple_member_name(state, name)
+                    ),
+                    _ => state.node_text(func_node),
+                },
+                "generic_name" => Self::simple_member_name(state, func_node),
+                _ => state.node_text(func_node),
+            };
+            // `global::A.B()` is a dotted call, not a `::` type expression.
+            return name
+                .strip_prefix("global::")
+                .map_or(name.clone(), str::to_string);
         }
         // Fallback: first child
         if let Some(first) = node.child(0) {
@@ -1823,6 +1847,344 @@ impl CSharpExtractor {
             }
         }
         "<unknown>".to_string()
+    }
+}
+
+/// Variable name to the static type expression of its value: a class name,
+/// optionally followed by `::member` and `::method()` steps that the resolver
+/// evaluates against the indexed declarations (#642).
+type VarTypes = HashMap<String, String>;
+
+/// Steps beyond which a receiver chain is not worth typing.
+const MAX_TYPE_STEPS: usize = 8;
+
+/// Typed-receiver calls (#642).
+///
+/// For `recv.Method(...)` whose receiver has a static type the extractor can
+/// see, a `Type[::step]*::Method` Calls ref is recorded at the same position as
+/// the `recv.Method` ref. The resolver evaluates it against the indexed
+/// classes; when it resolves, the receiver-qualified sibling is dropped, and
+/// when the evidence runs out (an unindexed type, an extension method) the
+/// sibling decides as before.
+///
+/// Receiver types come from the enclosing type's fields, properties and
+/// primary-constructor parameters, the method's parameters, and its locals:
+/// declared types, and for `var` the initializer's type (`new T()`, casts,
+/// `as`, and a call or member read whose declared type the resolver looks up).
+impl CSharpExtractor {
+    fn extract_typed_calls(
+        state: &mut ExtractionState,
+        decl: TsNode<'_>,
+        body: TsNode<'_>,
+        fn_node_id: &str,
+    ) {
+        let owner = Self::enclosing_type_decl(decl);
+        let self_type = owner
+            .and_then(|c| c.child_by_field_name("name"))
+            .map(|n| state.node_text(n));
+        let mut vars = VarTypes::new();
+        if let Some(owner) = owner {
+            Self::collect_member_types(state, owner, &mut vars);
+        }
+        if let Some(params) = decl.child_by_field_name("parameters") {
+            Self::collect_parameter_types(state, params, &mut vars);
+        }
+        Self::collect_local_types(state, body, self_type.as_deref(), &mut vars);
+        Self::emit_typed_calls(state, body, fn_node_id, self_type.as_deref(), &vars);
+    }
+
+    fn enclosing_type_decl(node: TsNode<'_>) -> Option<TsNode<'_>> {
+        let mut cur = node.parent();
+        while let Some(n) = cur {
+            if matches!(
+                n.kind(),
+                "class_declaration"
+                    | "struct_declaration"
+                    | "record_declaration"
+                    | "record_struct_declaration"
+                    | "interface_declaration"
+            ) {
+                return Some(n);
+            }
+            cur = n.parent();
+        }
+        None
+    }
+
+    /// The declared type of a `type` node, as a bare class name.
+    fn declared_type(state: &ExtractionState, ty: TsNode<'_>) -> Option<String> {
+        if ty.kind() == "implicit_type" {
+            return None;
+        }
+        let text = state.node_text(ty);
+        crate::resolution::csharp_type_name(&text).map(str::to_string)
+    }
+
+    /// Fields, properties and primary-constructor parameters of `owner`.
+    fn collect_member_types(state: &ExtractionState, owner: TsNode<'_>, vars: &mut VarTypes) {
+        let mut cursor = owner.walk();
+        for child in owner.children(&mut cursor) {
+            if child.kind() == "parameter_list" {
+                Self::collect_parameter_types(state, child, vars);
+            }
+        }
+        let Some(body) = owner.child_by_field_name("body") else {
+            return;
+        };
+        let mut cursor = body.walk();
+        for member in body.children(&mut cursor) {
+            match member.kind() {
+                "field_declaration" => {
+                    let mut inner = member.walk();
+                    for decl in member.children(&mut inner) {
+                        if decl.kind() == "variable_declaration" {
+                            Self::collect_declaration(state, decl, None, vars);
+                        }
+                    }
+                }
+                "property_declaration" => {
+                    if let (Some(ty), Some(name)) = (
+                        member.child_by_field_name("type"),
+                        member.child_by_field_name("name"),
+                    ) {
+                        if let Some(t) = Self::declared_type(state, ty) {
+                            vars.insert(state.node_text(name), t);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn collect_parameter_types(state: &ExtractionState, params: TsNode<'_>, vars: &mut VarTypes) {
+        let mut cursor = params.walk();
+        for p in params.children(&mut cursor) {
+            if p.kind() != "parameter" {
+                continue;
+            }
+            if let (Some(ty), Some(name)) =
+                (p.child_by_field_name("type"), p.child_by_field_name("name"))
+            {
+                if let Some(t) = Self::declared_type(state, ty) {
+                    vars.insert(state.node_text(name), t);
+                }
+            }
+        }
+    }
+
+    /// One `variable_declaration`: the declared type, or for `var` each
+    /// declarator's initializer type.
+    fn collect_declaration(
+        state: &ExtractionState,
+        decl: TsNode<'_>,
+        self_type: Option<&str>,
+        vars: &mut VarTypes,
+    ) {
+        let declared = decl
+            .child_by_field_name("type")
+            .and_then(|t| Self::declared_type(state, t));
+        let mut cursor = decl.walk();
+        for d in decl.children(&mut cursor) {
+            if d.kind() != "variable_declarator" {
+                continue;
+            }
+            let Some(name) = d.child_by_field_name("name") else {
+                continue;
+            };
+            let ty = declared.clone().or_else(|| {
+                let mut c = d.walk();
+                let init = d
+                    .named_children(&mut c)
+                    .filter(|n| n.id() != name.id())
+                    .last()?;
+                Self::expr_type(state, init, self_type, vars)
+            });
+            if let Some(ty) = ty {
+                vars.insert(state.node_text(name), ty);
+            }
+        }
+    }
+
+    /// Locals declared anywhere in `node`, in source order, skipping nested
+    /// type and member declarations.
+    fn collect_local_types(
+        state: &ExtractionState,
+        node: TsNode<'_>,
+        self_type: Option<&str>,
+        vars: &mut VarTypes,
+    ) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "variable_declaration" => {
+                    Self::collect_declaration(state, child, self_type, vars);
+                }
+                "foreach_statement" => {
+                    if let (Some(ty), Some(left)) = (
+                        child.child_by_field_name("type"),
+                        child.child_by_field_name("left"),
+                    ) {
+                        if left.kind() == "identifier" {
+                            if let Some(t) = Self::declared_type(state, ty) {
+                                vars.insert(state.node_text(left), t);
+                            }
+                        }
+                    }
+                }
+                "method_declaration" | "constructor_declaration" | "class_declaration" => {
+                    continue;
+                }
+                _ => {}
+            }
+            Self::collect_local_types(state, child, self_type, vars);
+        }
+    }
+
+    /// The method name of a member access or generic call, without type
+    /// arguments.
+    fn simple_member_name(state: &ExtractionState, name: TsNode<'_>) -> String {
+        if name.kind() == "generic_name" {
+            let mut cursor = name.walk();
+            let id = name
+                .named_children(&mut cursor)
+                .find(|c| c.kind() == "identifier");
+            if let Some(id) = id {
+                return state.node_text(id);
+            }
+        }
+        state.node_text(name)
+    }
+
+    /// The static type expression of a value expression, when it can be told.
+    fn expr_type(
+        state: &ExtractionState,
+        expr: TsNode<'_>,
+        self_type: Option<&str>,
+        vars: &VarTypes,
+    ) -> Option<String> {
+        let ty = match expr.kind() {
+            "object_creation_expression" | "cast_expression" => {
+                Self::declared_type(state, expr.child_by_field_name("type")?)?
+            }
+            "as_expression" => Self::declared_type(state, expr.child_by_field_name("right")?)?,
+            "parenthesized_expression" => {
+                let mut c = expr.walk();
+                let inner = expr.named_children(&mut c).next()?;
+                Self::expr_type(state, inner, self_type, vars)?
+            }
+            "await_expression" => {
+                let mut c = expr.walk();
+                let inner = expr.named_children(&mut c).next()?;
+                if inner.kind() != "invocation_expression" {
+                    return None;
+                }
+                Self::invocation_type(state, inner, self_type, vars, true)?
+            }
+            "invocation_expression" => Self::invocation_type(state, expr, self_type, vars, false)?,
+            "identifier" => vars.get(&state.node_text(expr))?.clone(),
+            "this" => self_type?.to_string(),
+            "member_access_expression" => {
+                let recv = expr.child_by_field_name("expression")?;
+                let name = expr.child_by_field_name("name")?;
+                let recv_ty = Self::receiver_type(state, recv, self_type, vars)?;
+                format!("{recv_ty}::{}", state.node_text(name))
+            }
+            _ => return None,
+        };
+        (ty.matches("::").count() <= MAX_TYPE_STEPS).then_some(ty)
+    }
+
+    /// The return type expression of a call: `Recv::Method()`, or
+    /// `Recv::await Method()` when the call is awaited.
+    fn invocation_type(
+        state: &ExtractionState,
+        call: TsNode<'_>,
+        self_type: Option<&str>,
+        vars: &VarTypes,
+        awaited: bool,
+    ) -> Option<String> {
+        let func = call.child_by_field_name("function")?;
+        let (recv_ty, name) = match func.kind() {
+            "member_access_expression" => {
+                let recv = func.child_by_field_name("expression")?;
+                let name = func.child_by_field_name("name")?;
+                (
+                    Self::receiver_type(state, recv, self_type, vars)?,
+                    Self::simple_member_name(state, name),
+                )
+            }
+            "identifier" | "generic_name" => (
+                self_type?.to_string(),
+                Self::simple_member_name(state, func),
+            ),
+            _ => return None,
+        };
+        let await_prefix = if awaited { "await " } else { "" };
+        Some(format!("{recv_ty}::{await_prefix}{name}()"))
+    }
+
+    /// The static type expression of a call receiver. An identifier that is
+    /// no known variable and starts upper-case is read as a class name, for a
+    /// static call (`Factory.Create()`).
+    fn receiver_type(
+        state: &ExtractionState,
+        recv: TsNode<'_>,
+        self_type: Option<&str>,
+        vars: &VarTypes,
+    ) -> Option<String> {
+        match recv.kind() {
+            "identifier" => {
+                let name = state.node_text(recv);
+                if let Some(ty) = vars.get(&name) {
+                    return Some(ty.clone());
+                }
+                name.chars()
+                    .next()
+                    .is_some_and(char::is_uppercase)
+                    .then_some(name)
+            }
+            "generic_name" => Self::declared_type(state, recv),
+            _ => Self::expr_type(state, recv, self_type, vars),
+        }
+    }
+
+    fn emit_typed_calls(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        fn_node_id: &str,
+        self_type: Option<&str>,
+        vars: &VarTypes,
+    ) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "method_declaration" | "constructor_declaration" | "class_declaration" => continue,
+                "invocation_expression" => {
+                    let typed = child
+                        .child_by_field_name("function")
+                        .filter(|f| f.kind() == "member_access_expression")
+                        .and_then(|f| {
+                            let recv = f.child_by_field_name("expression")?;
+                            let name = f.child_by_field_name("name")?;
+                            let ty = Self::receiver_type(state, recv, self_type, vars)?;
+                            Some(format!("{ty}::{}", Self::simple_member_name(state, name)))
+                        });
+                    if let Some(reference_name) = typed {
+                        state.unresolved_refs.push(UnresolvedRef {
+                            from_node_id: fn_node_id.to_string(),
+                            reference_name,
+                            reference_kind: EdgeKind::Calls,
+                            line: child.start_position().row as u32,
+                            column: child.start_position().column as u32,
+                            file_path: state.file_path.clone(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+            Self::emit_typed_calls(state, child, fn_node_id, self_type, vars);
+        }
     }
 }
 
