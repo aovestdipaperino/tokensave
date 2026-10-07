@@ -79,8 +79,8 @@ const HOOK_MARKER_CHAIN: &str = "# tokensave: chain-repo-hook";
 /// carrying an older stamp is recognised as stale and rewritten in place
 /// rather than left running the shape it was installed with. v2 replaced the
 /// inline `$1`/`$3` branching with a single delegating line — see
-/// [`post_checkout_snippet`].
-const HOOK_CHECKOUT_VERSION: u32 = 2;
+/// [`post_checkout_snippet`]. v3 shell-quotes the binary path (#636).
+const HOOK_CHECKOUT_VERSION: u32 = 3;
 
 /// Outcome of writing tokensave's block into a hook file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -564,12 +564,22 @@ fn should_chain_repo_hooks(
                 .is_none_or(|c| c.contains(HOOK_MARKER) || c.contains(HOOK_MARKER_CHECKOUT)))
 }
 
+/// Quotes `value` as a single POSIX shell word.
+///
+/// The binary path is interpolated into `sh` hook scripts, so a space, `$`,
+/// backtick or `;` in the install path must not split the word or run a
+/// command (#636). Single quotes disable every expansion; an embedded `'`
+/// closes the quote, emits an escaped `\'`, and reopens it.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 /// The hook snippet appended to (or written as) the post-commit script.
 ///
 /// Fenced by [`HOOK_MARKER`] and [`HOOK_MARKER_END`] since #624, so a changed
 /// binary path is rewritten in place.
 fn post_commit_snippet(tokensave_bin: &str) -> String {
-    let bin = tokensave_bin.replace('\\', "/");
+    let bin = shell_quote(&tokensave_bin.replace('\\', "/"));
     format!(
         "{HOOK_MARKER}\n\
          {bin} sync >/dev/null 2>&1 &\n\
@@ -581,7 +591,7 @@ fn post_commit_snippet(tokensave_bin: &str) -> String {
 ///
 /// Fenced like [`post_commit_snippet`].
 fn post_merge_snippet(tokensave_bin: &str) -> String {
-    let bin = tokensave_bin.replace('\\', "/");
+    let bin = shell_quote(&tokensave_bin.replace('\\', "/"));
     format!(
         "{HOOK_MARKER_MERGE}\n\
          {bin} sync >/dev/null 2>&1 &\n\
@@ -727,10 +737,12 @@ pub fn is_under_temp_dir(path: &Path, system_temp: &Path) -> bool {
 /// hands git's arguments to the binary:
 ///
 /// ```sh
-/// # tokensave: auto-init (v2)
-/// tokensave hook post-checkout "$@" >/dev/null 2>&1 &
+/// # tokensave: auto-init (v3)
+/// '/path/to/tokensave' hook post-checkout "$@" >/dev/null 2>&1 &
 /// # tokensave: end auto-init
 /// ```
+///
+/// v3 only adds the single-quoting of the binary path ([`shell_quote`]).
 ///
 /// The `$1`-is-all-zeros / `$3 == 1` branching that used to live here now
 /// lives in [`crate::commands::hook_post_checkout`]. That means one in-place
@@ -747,7 +759,7 @@ pub fn is_under_temp_dir(path: &Path, system_temp: &Path) -> bool {
 /// is rewritten in place on install/reinstall, preserving anything outside the
 /// fence byte-for-byte.
 fn post_checkout_snippet(tokensave_bin: &str) -> String {
-    let bin = tokensave_bin.replace('\\', "/");
+    let bin = shell_quote(&tokensave_bin.replace('\\', "/"));
     format!(
         "{HOOK_MARKER_CHECKOUT} (v{HOOK_CHECKOUT_VERSION})\n\
          {bin} hook post-checkout \"$@\" >/dev/null 2>&1 &\n\
@@ -2116,9 +2128,45 @@ mod git_hook_tests {
             "must carry its idempotency marker, got: {s}"
         );
         assert!(
-            s.contains("/usr/local/bin/tokensave sync"),
+            s.contains("'/usr/local/bin/tokensave' sync"),
             "must run `sync` with the resolved binary so a `git pull` reindexes teammates' changes, got: {s}"
         );
+    }
+
+    #[test]
+    fn hook_snippets_quote_a_binary_path_containing_a_space() {
+        // A binary installed under a path with a space (e.g. a user directory
+        // named "Enzo Lombardi") must be quoted in the shell snippet; an
+        // unquoted path would split into two words and silently disable the
+        // hook. Regression for the unquoted `{bin}` interpolation.
+        let bin = "/Users/Enzo Lombardi/bin/tokensave";
+        let commit = post_commit_snippet(bin);
+        let merge = post_merge_snippet(bin);
+        let checkout = post_checkout_snippet(bin);
+        assert!(
+            commit.contains("'/Users/Enzo Lombardi/bin/tokensave' sync"),
+            "post-commit snippet must quote the binary path, got: {commit}"
+        );
+        assert!(
+            merge.contains("'/Users/Enzo Lombardi/bin/tokensave' sync"),
+            "post-merge snippet must quote the binary path, got: {merge}"
+        );
+        assert!(
+            checkout.contains("'/Users/Enzo Lombardi/bin/tokensave' hook post-checkout \"$@\""),
+            "post-checkout snippet must quote the binary path, got: {checkout}"
+        );
+    }
+
+    #[test]
+    fn hook_snippets_neutralise_shell_metacharacters_in_the_binary_path() {
+        // Double quotes would still expand `$(...)` and backticks; the path
+        // must reach `sh` as one inert word, including an embedded `'` (#636).
+        let bin = "/opt/my;tools/$(touch pwned)/`id`/it's/tokensave";
+        let quoted = r"'/opt/my;tools/$(touch pwned)/`id`/it'\''s/tokensave'";
+        assert_eq!(shell_quote(bin), quoted);
+        assert!(post_commit_snippet(bin).contains(&format!("{quoted} sync")));
+        assert!(post_merge_snippet(bin).contains(&format!("{quoted} sync")));
+        assert!(post_checkout_snippet(bin).contains(&format!("{quoted} hook post-checkout")));
     }
 
     #[test]
@@ -2129,7 +2177,7 @@ mod git_hook_tests {
             "must carry its idempotency marker, got: {s}"
         );
         assert!(
-            s.contains("/usr/local/bin/tokensave hook post-checkout \"$@\""),
+            s.contains("'/usr/local/bin/tokensave' hook post-checkout \"$@\""),
             "must forward git's arguments to the binary verbatim, got: {s}"
         );
         assert!(
