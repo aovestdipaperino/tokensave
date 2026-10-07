@@ -901,8 +901,9 @@ async fn migrate_v8(conn: &Connection) -> Result<()> {
 
 /// Two changes:
 ///
-/// 1. Creates the `read_cache` table used by `tokensave_read` to serve
-///    unchanged files as a tiny stub across sessions.
+/// 1. Creates the `read_cache` table that `tokensave_read` once used to serve
+///    unchanged files as a tiny stub across sessions (unused since #650; the
+///    stub is now driven by the client's `if_digest`).
 /// 2. Denormalizes `Contains` edges onto a new `nodes.parent_id` column.
 ///    The column is backfilled from existing `Contains` rows, then those
 ///    rows are deleted. After v9, the truth for "who contains node X" is

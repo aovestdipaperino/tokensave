@@ -258,6 +258,13 @@ tokensave install --agent pi          # Pi (pi.dev)
 tokensave install --agent plank       # Plank (macOS only)
 ```
 
+Repeat `--agent` to install several agents in one run — the permission grant
+and the git-hook prompt only fire once per command:
+
+```bash
+tokensave install --agent claude --agent cursor --agent droid
+```
+
 You can also pre-decide the global git `post-commit` hook prompt — useful in
 bash scripts and onboarding playbooks where a `read_line` would otherwise block:
 

@@ -1742,6 +1742,40 @@ async fn test_search_nodes_ranking_order() {
     assert!(results[0].score > 0.0, "score should be positive");
 }
 
+#[tokio::test]
+async fn test_search_nodes_like_fallback_escapes_wildcards() {
+    let (_dir, db) = setup_db().await;
+
+    let mut target = sample_node("t", "my_function", "src/lib.rs");
+    target.qualified_name = "crate::my_function".to_string();
+    let mut x = sample_node("x", "myXfunction", "src/lib.rs");
+    x.qualified_name = "crate::myXfunction".to_string();
+    let mut pct = sample_node("pct", "my%function", "src/lib.rs");
+    pct.qualified_name = "crate::my%function".to_string();
+
+    db.insert_nodes(&[target, x, pct])
+        .await
+        .expect("insert_nodes failed");
+
+    // Wipe FTS so search_nodes falls through to the LIKE fallback.
+    db.conn()
+        .execute_batch("DELETE FROM nodes_fts;")
+        .await
+        .expect("wipe FTS failed");
+
+    let results = db
+        .search_nodes("my_function", 10)
+        .await
+        .expect("search_nodes failed");
+    assert_eq!(
+        results.len(),
+        1,
+        "LIKE fallback must escape `_`/`%` in the query: only `my_function` should match, got {}",
+        results.len()
+    );
+    assert_eq!(results[0].node.id, "t");
+}
+
 // -------------------------------------------------------------------------
 // insert_all — verify all data via get_all_*
 // -------------------------------------------------------------------------
@@ -2455,6 +2489,38 @@ async fn test_get_nodes_by_qualified_name_returns_all_matches() {
         .await
         .expect("query failed");
     assert!(none.is_empty());
+}
+
+#[tokio::test]
+async fn test_get_nodes_by_qualified_name_like_escapes_wildcards() {
+    let (_dir, db) = setup_db().await;
+
+    let mut target = sample_node("t", "bar_baz", "src/foo.rs");
+    target.qualified_name = "crate::foo::bar_baz".to_string();
+    let mut x = sample_node("x", "barXbaz", "src/foo.rs");
+    x.qualified_name = "crate::foo::barXbaz".to_string();
+    let mut pct = sample_node("pct", "bar%baz", "src/foo.rs");
+    pct.qualified_name = "crate::foo::bar%baz".to_string();
+
+    db.insert_nodes(&[target, x, pct])
+        .await
+        .expect("insert_nodes failed");
+
+    // A partial qname (no `crate::` prefix) forces the `::` LIKE fallback:
+    // the exact-match path returns nothing, so the suffix scan runs. A `_` or
+    // `%` in the qname must not act as a wildcard — only the exact `bar_baz`
+    // should match, not the `barXbaz`/`bar%baz` near-misses.
+    let hits = db
+        .get_nodes_by_qualified_name("foo::bar_baz")
+        .await
+        .expect("query failed");
+    assert_eq!(
+        hits.len(),
+        1,
+        "LIKE fallback must escape `_`/`%` in the qname: only `crate::foo::bar_baz` should match, got {}",
+        hits.len()
+    );
+    assert_eq!(hits[0].qualified_name, "crate::foo::bar_baz");
 }
 
 // -------------------------------------------------------------------------

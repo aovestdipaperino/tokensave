@@ -1048,123 +1048,237 @@ pub(super) fn extract_lines(source: &str, start_line: u32, end_line: u32) -> Str
     lines[start..end].join("\n")
 }
 
+/// Default and maximum number of candidates `tokensave_body` lists for an
+/// ambiguous name.
+const BODY_CANDIDATES_DEFAULT: usize = 20;
+const BODY_CANDIDATES_MAX: usize = 50;
+
 /// Handles `tokensave_body` tool calls.
+///
+/// Exactly one definition → its body. More than one equally good definition
+/// → no bodies, only a candidate list the caller narrows with a qualified
+/// name or a node id (#651).
 pub(super) async fn handle_body(
     cg: &TokenSave,
     args: Value,
     scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
-    let symbol =
-        args.get("symbol")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| TokenSaveError::Config {
-                message: "missing required parameter: symbol".to_string(),
-            })?;
-
-    let limit = args
-        .get("limit")
-        .and_then(serde_json::Value::as_u64)
-        .map_or(3, |v| v.clamp(1, 20) as usize);
-
+    // `node_id` is the name every other tool (and the truncated-snippet
+    // handle in `tokensave_context`) uses; `id` matches the candidate field.
+    let id = ["node_id", "id"]
+        .iter()
+        .find_map(|key| args.get(*key).and_then(|v| v.as_str()))
+        .filter(|s| !s.is_empty());
+    let symbol = args.get("symbol").and_then(|v| v.as_str());
     let format = args
         .get("format")
         .and_then(|v| v.as_str())
         .unwrap_or("text");
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(BODY_CANDIDATES_DEFAULT, |v| {
+            usize::try_from(v)
+                .unwrap_or(BODY_CANDIDATES_MAX)
+                .clamp(1, BODY_CANDIDATES_MAX)
+        });
 
-    // First try an exact-name lookup against the DB — this avoids the BM25
-    // ranker's tendency to bury a definition under unrelated noise when the
-    // bare name is common (e.g. `gmres` exists as both a `pub fn` and a
-    // struct field). Falls back to suffix / name match inside
-    // `get_nodes_by_qualified_name`.
-    let exact_nodes = cg.get_nodes_by_qualified_name(symbol).await?;
-    let exact_nodes = super::filter_by_scope(exact_nodes, scope_prefix, |n| &n.file_path);
+    let (label, candidates) = if let Some(id) = id {
+        let node = cg.get_node(id).await?;
+        (
+            format!("with node_id '{id}'"),
+            node.into_iter().collect::<Vec<_>>(),
+        )
+    } else {
+        let symbol = symbol.ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: symbol (or node_id)".to_string(),
+        })?;
+        (
+            format!("named '{symbol}'"),
+            resolve_body_nodes(cg, symbol).await?,
+        )
+    };
+    let mut candidates = super::filter_by_scope(candidates, scope_prefix, |n| &n.file_path);
 
-    // Wrap as SearchResult so the existing scoring/rendering path works.
-    let mut candidates: Vec<crate::types::SearchResult> = exact_nodes
-        .into_iter()
-        .map(|node| crate::types::SearchResult { node, score: 0.0 })
-        .collect();
-
-    // If exact lookup returned nothing, fall back to BM25 search.
-    if candidates.is_empty() {
-        let raw = cg.search(symbol, (limit * 4).max(20)).await?;
-        candidates = super::filter_by_scope(raw, scope_prefix, |r| &r.node.file_path);
+    // Search fallback for a name nothing matched exactly (typos, partial
+    // names). Never for an id: an unknown id is simply not found.
+    if candidates.is_empty() && id.is_none() {
+        if let Some(symbol) = symbol {
+            let raw = cg.search(symbol, 20).await?;
+            candidates = super::filter_by_scope(raw, scope_prefix, |r| &r.node.file_path)
+                .into_iter()
+                .map(|r| r.node)
+                .collect();
+        }
     }
 
-    // Whether the matches came from the exact lookup or the search fallback,
-    // sort by `body_kind_preference` so callable / type definitions surface
-    // above fields, variants, uses, etc. This is the bug-#1 fix: when both a
-    // function and a same-named field exist, the function wins.
-    candidates.sort_by_key(|r| body_kind_preference(&r.node.kind));
-    let chosen: Vec<_> = candidates.iter().take(limit).collect();
+    // Keep only the best kind tier, so a function beats a same-named field
+    // (bug #1) while two same-named methods stay ambiguous (#651).
+    let mut seen: HashSet<String> = HashSet::new();
+    candidates.retain(|n| seen.insert(n.id.clone()));
+    if let Some(best) = candidates
+        .iter()
+        .map(|n| body_kind_preference(&n.kind))
+        .min()
+    {
+        candidates.retain(|n| body_kind_preference(&n.kind) == best);
+    }
 
-    if chosen.is_empty() {
-        return Ok(ToolResult {
+    Ok(match candidates.as_slice() {
+        [] => ToolResult {
             value: json!({
-                "content": [{ "type": "text", "text": format!("No symbol named '{symbol}' found.") }]
+                "content": [{ "type": "text", "text": format!("No symbol {label} found.") }]
             }),
             touched_files: vec![],
+        },
+        [only] => body_result(cg, only, format),
+        many => candidates_result(many, limit, format, symbol.unwrap_or_default()),
+    })
+}
+
+/// Resolves `symbol` to nodes: the literal qualified-name / name lookup
+/// first, then a member-path match that treats `.` and `::` alike, so
+/// `Type.Member`, `Ns.Type.Member` and `Type::Member` all work regardless of
+/// whether the language stores a namespace as `App.Tests` or `App::Tests`.
+async fn resolve_body_nodes(cg: &TokenSave, symbol: &str) -> Result<Vec<crate::types::Node>> {
+    let literal = cg.get_nodes_by_qualified_name(symbol).await?;
+    if !literal.is_empty() {
+        return Ok(literal);
+    }
+    let wanted = member_path_segments(symbol);
+    let Some(last) = wanted.last().filter(|_| wanted.len() >= 2) else {
+        return Ok(literal);
+    };
+    let by_name = cg.get_nodes_by_name(last).await?;
+    Ok(by_name
+        .into_iter()
+        .filter(|n| member_path_segments(&n.qualified_name).ends_with(&wanted))
+        .collect())
+}
+
+/// Splits a qualified name on both `::` and `.` into non-empty segments.
+fn member_path_segments(name: &str) -> Vec<&str> {
+    name.split("::")
+        .flat_map(|part| part.split('.'))
+        .filter(|seg| !seg.is_empty())
+        .collect()
+}
+
+/// A node's qualified name without the leading file-path segment(s) the
+/// extractors prepend, e.g. `src/A.cs::src/A.cs::App::A::Run` → `App::A::Run`.
+fn display_qualified_name(n: &crate::types::Node) -> &str {
+    let prefix = format!("{}::", n.file_path);
+    let mut qn = n.qualified_name.as_str();
+    while let Some(rest) = qn.strip_prefix(prefix.as_str()) {
+        qn = rest;
+    }
+    qn
+}
+
+/// Renders the single-match response: the node's full body.
+fn body_result(cg: &TokenSave, n: &crate::types::Node, format: &str) -> ToolResult {
+    let abs_path = cg.project_root().join(&n.file_path);
+    let body = match crate::sync::read_source_file(&abs_path) {
+        Ok(source) => extract_lines(&source, n.start_line, n.end_line),
+        Err(_) => String::from("<file unreadable>"),
+    };
+    let start = n.start_line.saturating_add(1);
+    let end = n.end_line.saturating_add(1);
+    let text = if format == "text" {
+        format!(
+            "match_count: 1\n\nfile: {}:{start}-{end}: {} ({})\n{body}\n\n",
+            n.file_path,
+            n.name,
+            n.kind.as_str()
+        )
+    } else {
+        let output = json!({
+            "match_count": 1,
+            "matches": [{
+                "id": n.id,
+                "name": n.name,
+                "qualified_name": n.qualified_name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "start_line": start,
+                "end_line": end,
+                "signature": n.signature,
+                "body": body,
+            }],
         });
+        serde_json::to_string_pretty(&output).unwrap_or_default()
+    };
+    ToolResult {
+        value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
+        touched_files: vec![n.file_path.clone()],
     }
+}
 
-    let project_root = cg.project_root();
-    let mut matches: Vec<Value> = Vec::new();
-    let mut touched: Vec<String> = Vec::new();
-
-    for result in &chosen {
-        let n = &result.node;
-        let abs_path = project_root.join(&n.file_path);
-        let body = match crate::sync::read_source_file(&abs_path) {
-            Ok(source) => extract_lines(&source, n.start_line, n.end_line),
-            Err(_) => String::from("<file unreadable>"),
-        };
-        if !touched.contains(&n.file_path) {
-            touched.push(n.file_path.clone());
-        }
-        matches.push(json!({
-            "id": n.id,
-            "name": n.name,
-            "qualified_name": n.qualified_name,
-            "kind": n.kind.as_str(),
-            "file": n.file_path,
-            "start_line": n.start_line.saturating_add(1),
-            "end_line": n.end_line.saturating_add(1),
-            "signature": n.signature,
-            "body": body,
-        }));
-    }
-
-    if format == "text" {
-        let mut text = format!("match_count: {}\n\n", matches.len());
-        for m in &matches {
-            let file = m["file"].as_str().unwrap_or_default();
-            let start = m["start_line"].as_u64().unwrap_or(0);
-            let end = m["end_line"].as_u64().unwrap_or(0);
-            let name = m["name"].as_str().unwrap_or_default();
-            let kind = m["kind"].as_str().unwrap_or_default();
-            let body = m["body"].as_str().unwrap_or_default();
-            let _ = write!(
+/// Renders the ambiguous response: a candidate list and no bodies.
+fn candidates_result(
+    nodes: &[crate::types::Node],
+    limit: usize,
+    format: &str,
+    symbol: &str,
+) -> ToolResult {
+    let total = nodes.len();
+    let shown = &nodes[..total.min(limit)];
+    let example = shown.first().map_or_else(String::new, |n| {
+        let segs = member_path_segments(display_qualified_name(n));
+        segs[segs.len().saturating_sub(2)..].join("::")
+    });
+    let hint = format!(
+        "'{symbol}' is ambiguous: {total} symbols match, so no body was returned. \
+         Re-call tokensave_body with a qualified name (e.g. symbol: \"{example}\"; \
+         `Type.Member` also works) or with node_id set to the candidate's id."
+    );
+    let text = if format == "text" {
+        let mut text = format!("match_count: 0\ncandidate_count: {total}\n{hint}\n\n");
+        for n in shown {
+            let _ = writeln!(
                 text,
-                "file: {file}:{start}-{end}: {name} ({kind})\n{body}\n\n"
+                "{} ({}) {}:{}-{} id={}",
+                display_qualified_name(n),
+                n.kind.as_str(),
+                n.file_path,
+                n.start_line.saturating_add(1),
+                n.end_line.saturating_add(1),
+                n.id
             );
         }
-        return Ok(ToolResult {
-            value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
-            touched_files: touched,
+        if total > shown.len() {
+            let _ = writeln!(text, "... {} more (raise `limit`)", total - shown.len());
+        }
+        text
+    } else {
+        let candidates: Vec<Value> = shown
+            .iter()
+            .map(|n| {
+                json!({
+                    "id": n.id,
+                    "name": n.name,
+                    "qualified_name": display_qualified_name(n),
+                    "kind": n.kind.as_str(),
+                    "file": n.file_path,
+                    "start_line": n.start_line.saturating_add(1),
+                    "end_line": n.end_line.saturating_add(1),
+                    "signature": n.signature,
+                })
+            })
+            .collect();
+        let output = json!({
+            "match_count": 0,
+            "ambiguous": true,
+            "candidate_count": total,
+            "candidates": candidates,
+            "hint": hint,
         });
+        serde_json::to_string_pretty(&output).unwrap_or_default()
+    };
+    ToolResult {
+        value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
+        touched_files: vec![],
     }
-
-    let output = json!({
-        "match_count": matches.len(),
-        "matches": matches,
-    });
-    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
-    Ok(ToolResult {
-        value: json!({
-            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
-        }),
-        touched_files: touched,
-    })
 }
 
 /// Ordering key used by `handle_body` to choose between same-named symbols.
@@ -1343,9 +1457,20 @@ pub(super) async fn handle_todos(
     })
 }
 
-/// Handles `tokensave_read` — mode-aware file read with cross-session cache.
+/// Returns `path` relative to `root` in the form the indexer stores in the
+/// `files`/`nodes` tables: forward slashes regardless of the host separator
+/// (see `TokenSave::accept_file` and the walk in `indexing.rs`). Both paths
+/// should be canonical so they share a prefix form (on Windows both carry the
+/// `\\?\` verbatim prefix). Returns `None` when `path` is not under `root`.
+fn indexed_rel_path(root: &std::path::Path, path: &std::path::Path) -> Option<String> {
+    let rel = path.strip_prefix(root).ok()?;
+    Some(crate::tokensave::normalize_rel_path(&rel.to_string_lossy()))
+}
+
+/// Handles `tokensave_read` — mode-aware file read. The body is always sent
+/// unless the caller's `if_digest` matches the current body's digest (#650).
 pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    use crate::context::read_cache::{self, GLOBAL_SESSION};
+    use crate::context::read_cache;
     use crate::context::read_modes::{
         self, render_full, render_lines, render_map, render_signatures, LineRange, ReadMode,
     };
@@ -1387,7 +1512,6 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
     };
 
     let project_root = cg.project_root().to_path_buf();
-    let project_id = project_root.to_string_lossy().to_string();
     let rel_path = file.trim_start_matches('/').to_string();
     let mut abs_path = if std::path::Path::new(file).is_absolute() {
         std::path::PathBuf::from(file)
@@ -1419,83 +1543,24 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
             ),
         });
     }
+    // Map/signatures look symbols up by this path, so it must be the exact
+    // key the indexer stored: relative to the root, forward slashes (#644).
+    // Derive it from the two canonical paths; the raw `project_root` may be
+    // non-canonical (symlinked temp dir, or no `\\?\` verbatim prefix on
+    // Windows) and the raw `file` may carry `./`, `..` or backslashes.
+    let display_file = indexed_rel_path(&canonical_root, &canonical_path).ok_or_else(|| {
+        TokenSaveError::Config {
+            message: format!(
+                "selected tokensave_read path '{file}' resolves outside selected graph root '{}'; choose a file inside that root",
+                canonical_root.display()
+            ),
+        }
+    })?;
     abs_path = canonical_path;
-    let display_file = if abs_path.starts_with(&project_root) {
-        abs_path
-            .strip_prefix(&project_root)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or(rel_path.clone())
-    } else {
-        rel_path.clone()
-    };
 
     let mtime_ns = read_cache::file_mtime_ns(&abs_path).map_err(|e| TokenSaveError::Config {
         message: format!("cannot read file metadata for '{file}': {e}"),
     })?;
-
-    let last_sync_at = match mode {
-        ReadMode::Map | ReadMode::Signatures => {
-            cg.db().get_metadata("last_sync_at").await.unwrap_or(None)
-        }
-        _ => None,
-    };
-    let hash_input = json!({
-        "lines": args.get("lines").cloned(),
-        "last_sync_at": last_sync_at,
-    });
-    let args_hash = read_cache::args_hash(&hash_input);
-
-    let conn = cg.db().conn();
-    let cache_enabled = !cg.db().is_read_only();
-    // `force: true` bypasses the cross-session cache so a caller that has not
-    // received this file's body in this session can always ask for it (#556).
-    let force = args
-        .get("force")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-
-    let cached = if cache_enabled && !force {
-        read_cache::get(
-            conn,
-            &project_id,
-            GLOBAL_SESSION,
-            &display_file,
-            mode.as_str(),
-            &args_hash,
-            mtime_ns,
-        )
-        .await?
-    } else {
-        None
-    };
-    if let Some(cached) = cached {
-        if format == "text" {
-            let text = format!(
-                "file: {display_file}\nunchanged: true\nmode: {}\ndigest: {}\ntoken_count: {}\n",
-                mode.as_str(),
-                cached.digest,
-                cached.token_count
-            );
-            return Ok(ToolResult {
-                value: json!({ "content": [{ "type": "text", "text": text }] }),
-                touched_files: vec![display_file],
-            });
-        }
-        let stub = json!({
-            "unchanged": true,
-            "file": display_file,
-            "mode": mode.as_str(),
-            "mtime_ns": cached.mtime_ns,
-            "digest": cached.digest,
-            "token_count": cached.token_count,
-        });
-        return Ok(ToolResult {
-            value: json!({
-                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&stub).unwrap_or_default() }]
-            }),
-            touched_files: vec![display_file],
-        });
-    }
 
     let body_text = match mode {
         ReadMode::Full => {
@@ -1528,20 +1593,41 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
     let token_count = read_modes::estimate_tokens(&body_text);
     let digest = read_cache::digest_bytes(body_text.as_bytes());
 
-    if cache_enabled {
-        read_cache::put(
-            conn,
-            &project_id,
-            GLOBAL_SESSION,
-            &display_file,
-            mtime_ns,
-            mode.as_str(),
-            &args_hash,
-            &digest,
-            body_text.as_bytes(),
-            token_count,
-        )
-        .await?;
+    // The server cannot know what the client still holds (context compaction,
+    // rewinds, new sessions, subagents), so a body is always sent unless the
+    // client proves it holds this exact content by echoing its digest back
+    // (#650). `force` predates `if_digest`; it is deprecated and, when set,
+    // only overrides `if_digest` so old callers keep getting bodies (#556).
+    let force = args
+        .get("force")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let held_digest = args.get("if_digest").and_then(|v| v.as_str());
+    if !force && held_digest.is_some_and(|held| held.trim() == digest) {
+        if format == "text" {
+            let text = format!(
+                "file: {display_file}\nunchanged: true\nmode: {}\ndigest: {digest}\ntoken_count: {token_count}\n",
+                mode.as_str()
+            );
+            return Ok(ToolResult {
+                value: json!({ "content": [{ "type": "text", "text": text }] }),
+                touched_files: vec![display_file],
+            });
+        }
+        let stub = json!({
+            "unchanged": true,
+            "file": display_file,
+            "mode": mode.as_str(),
+            "mtime_ns": mtime_ns,
+            "digest": digest,
+            "token_count": token_count,
+        });
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&stub).unwrap_or_default() }]
+            }),
+            touched_files: vec![display_file],
+        });
     }
 
     if format == "text" {
@@ -1599,14 +1685,15 @@ pub(super) async fn handle_outline(cg: &TokenSave, args: Value) -> Result<ToolRe
     } else {
         project_root.join(&rel_path)
     };
-    let display_file = if abs_path.starts_with(project_root) {
-        abs_path
-            .strip_prefix(project_root)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or(rel_path.clone())
-    } else {
-        rel_path.clone()
-    };
+    // Same DB key derivation as `tokensave_read` (#644). This handler only
+    // queries the graph, so a path that cannot be canonicalized (e.g. a file
+    // deleted since the last sync) falls back to the separator-normalized arg.
+    let display_file = project_root
+        .canonicalize()
+        .ok()
+        .zip(abs_path.canonicalize().ok())
+        .and_then(|(root, path)| indexed_rel_path(&root, &path))
+        .unwrap_or_else(|| crate::tokensave::normalize_rel_path(&rel_path));
 
     let kinds_slice: Option<&[String]> = kinds.as_deref();
     let mut value = render_map(cg.db(), &display_file, kinds_slice).await?;
@@ -2111,4 +2198,45 @@ async fn companion_doc_paths(cg: &TokenSave, file: &str) -> Vec<String> {
     }
     paths.sort_unstable();
     paths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::indexed_rel_path;
+    use std::path::Path;
+
+    #[test]
+    fn indexed_rel_path_uses_forward_slashes() {
+        let root = Path::new("/proj");
+        assert_eq!(
+            indexed_rel_path(root, Path::new("/proj/src/x/Service.cs")).as_deref(),
+            Some("src/x/Service.cs")
+        );
+        assert_eq!(indexed_rel_path(root, Path::new("/elsewhere/a.rs")), None);
+    }
+
+    /// #644: a Windows-style relative tail must match the indexer's
+    /// forward-slash key on every host.
+    #[test]
+    fn indexed_rel_path_normalizes_backslashes() {
+        let root = Path::new("root");
+        let path = Path::new("root").join("src\\x\\Service.cs");
+        assert_eq!(
+            indexed_rel_path(root, &path).as_deref(),
+            Some("src/x/Service.cs")
+        );
+    }
+
+    /// #644: on Windows `canonicalize` yields `\\?\` verbatim paths with
+    /// backslash separators; the DB key must still be `src/x/Service.cs`.
+    #[cfg(windows)]
+    #[test]
+    fn indexed_rel_path_handles_verbatim_windows_paths() {
+        let root = Path::new(r"\\?\E:\projects\B");
+        let path = Path::new(r"\\?\E:\projects\B\src\x\Service.cs");
+        assert_eq!(
+            indexed_rel_path(root, path).as_deref(),
+            Some("src/x/Service.cs")
+        );
+    }
 }
