@@ -157,7 +157,7 @@ fn assert_sync_repointed(path: &Path, end_marker: &str) {
         path.display()
     );
     assert!(
-        after.contains(&format!("{} sync >/dev/null 2>&1 &", current_bin())),
+        after.contains(&format!("'{}' sync >/dev/null 2>&1 &", current_bin())),
         "{} must name the current binary:\n{after}",
         path.display()
     );

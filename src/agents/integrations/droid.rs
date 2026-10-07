@@ -33,8 +33,9 @@ const DROID_PRE_TOOL_EVENT: &str = "PreToolUse";
 /// tool names whose payloads the shared decision core can classify: `Execute`
 /// (shell, a symbol-shaped `grep`/`rg`/`ag` on a code file) and `Grep`
 /// (Droid's native content search, a symbol-shaped `pattern` on a code
-/// target). Both redirect to `tokensave_search`/`tokensave_callers_for`, which
-/// return a compact symbol list instead of raw match lines. `Task` routes the
+/// target). Both redirect to `tokensave_search` (by name for the definition,
+/// literal for call sites), which returns a compact result instead of raw
+/// match lines. `Task` routes the
 /// built-in lowercase `explorer` research subagent to `tokensave_context`,
 /// while every other typed subagent passes through. The pattern is anchored
 /// (`^(...)$`) so it can only match those exact tool names, never a future tool
