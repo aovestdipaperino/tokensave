@@ -199,6 +199,24 @@ impl ExtractionState {
     }
 }
 
+/// Drops every `<...>` type-argument list from a type name, so
+/// `App.IProducer<int>` becomes `App.IProducer` and `Outer<T>.Inner` becomes
+/// `Outer.Inner`. Nested lists (`IMap<K, List<V>>`) are handled by depth.
+/// Used for C# base lists (#643) and TypeScript heritage clauses (#671).
+pub(crate) fn strip_type_arguments(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut depth = 0usize;
+    for c in name.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 && !c.is_whitespace() => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Find the first direct child of a node with a given kind.
 pub(crate) fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
     let mut cursor = node.walk();

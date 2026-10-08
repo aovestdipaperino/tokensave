@@ -7,7 +7,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, TYPESCRIPT_COMPLEXITY};
-use crate::extraction::ts_state::find_child_by_kind;
+use crate::extraction::ts_state::{find_child_by_kind, strip_type_arguments};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -986,6 +986,13 @@ impl TypeScriptExtractor {
             });
         }
 
+        // `interface I extends A, B<T>`: every extended interface is recorded
+        // as `Implements`, like a C# interface's base list, which is what
+        // `tokensave_implementations` reads (#671).
+        if let Some(clause) = find_child_by_kind(node, "extends_type_clause") {
+            Self::extract_heritage_types(state, clause, &id, EdgeKind::Implements);
+        }
+
         // Extract methods from interface body.
         if let Some(body) = find_child_by_kind(node, "interface_body") {
             state.node_stack.push((name, id.clone()));
@@ -1511,26 +1518,12 @@ impl TypeScriptExtractor {
                         }
                         "implements_clause" => {
                             // May implement multiple interfaces.
-                            let mut inner = child.walk();
-                            if inner.goto_first_child() {
-                                loop {
-                                    let iface = inner.node();
-                                    if iface.kind() == "type_identifier" {
-                                        let name = state.node_text(iface);
-                                        state.unresolved_refs.push(UnresolvedRef {
-                                            from_node_id: class_id.to_string(),
-                                            reference_name: name,
-                                            reference_kind: EdgeKind::Implements,
-                                            line: iface.start_position().row as u32,
-                                            column: iface.start_position().column as u32,
-                                            file_path: state.file_path.clone(),
-                                        });
-                                    }
-                                    if !inner.goto_next_sibling() {
-                                        break;
-                                    }
-                                }
-                            }
+                            Self::extract_heritage_types(
+                                state,
+                                child,
+                                class_id,
+                                EdgeKind::Implements,
+                            );
                         }
                         _ => {}
                     }
@@ -1538,6 +1531,45 @@ impl TypeScriptExtractor {
                         break;
                     }
                 }
+            }
+        }
+    }
+
+    /// Records one `kind` reference per type listed in a heritage clause
+    /// (`implements_clause` or an interface's `extends_type_clause`).
+    ///
+    /// A type written with type arguments (`IRenderer<Row>`) is a
+    /// `generic_type` node, and a qualified one (`ns.IRenderer`) is a
+    /// `nested_type_identifier`; both name the declaration without their
+    /// type arguments, or the reference never matches it (#671).
+    fn extract_heritage_types(
+        state: &mut ExtractionState,
+        clause: TsNode<'_>,
+        from_id: &str,
+        kind: EdgeKind,
+    ) {
+        let mut cursor = clause.walk();
+        if !cursor.goto_first_child() {
+            return;
+        }
+        loop {
+            let ty = cursor.node();
+            if matches!(
+                ty.kind(),
+                "type_identifier" | "generic_type" | "nested_type_identifier"
+            ) {
+                let name = strip_type_arguments(&state.node_text(ty));
+                state.unresolved_refs.push(UnresolvedRef {
+                    from_node_id: from_id.to_string(),
+                    reference_name: name,
+                    reference_kind: kind,
+                    line: ty.start_position().row as u32,
+                    column: ty.start_position().column as u32,
+                    file_path: state.file_path.clone(),
+                });
+            }
+            if !cursor.goto_next_sibling() {
+                break;
             }
         }
     }

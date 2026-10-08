@@ -7,7 +7,7 @@ use std::time::Instant;
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, CSHARP_COMPLEXITY};
-use crate::extraction::ts_state::ExtractionState;
+use crate::extraction::ts_state::{strip_type_arguments, ExtractionState};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -2200,21 +2200,4 @@ impl crate::extraction::LanguageExtractor for CSharpExtractor {
     fn extract(&self, file_path: &str, source: &str) -> ExtractionResult {
         CSharpExtractor::extract_csharp(file_path, source)
     }
-}
-
-/// Drops every `<...>` type-argument list from a C# type name, so
-/// `App.IProducer<int>` becomes `App.IProducer` and `Outer<T>.Inner` becomes
-/// `Outer.Inner`. Nested lists (`IMap<K, List<V>>`) are handled by depth.
-fn strip_type_arguments(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    let mut depth = 0usize;
-    for c in name.chars() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth = depth.saturating_sub(1),
-            _ if depth == 0 && !c.is_whitespace() => out.push(c),
-            _ => {}
-        }
-    }
-    out
 }
