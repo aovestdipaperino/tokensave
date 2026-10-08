@@ -107,9 +107,9 @@ file-read tool for a file you are about to edit.\n\n\
 ### Searching code\n\n\
 Search code with `tokensave_search`. By default it returns where a name is \
 defined, ranked, with its kind and signature. With `literal: true` it finds \
-exact text: `.Name(` for calls through an object, `Name(` for every call, \
-`: IName` for implementers. Grep when you need a regex, or a file type the \
-index skips.\n\n\
+exact text. For who calls or implements a name, search the text that construct \
+takes in the file's language, in every form the language allows. Grep when you \
+need a regex, or for the files a literal search reports as `unscanned`.\n\n\
 ### Check freshness before relying on the graph\n\n\
 Call the `tokensave_status` MCP tool (not the `tokensave status` CLI, which \
 indexes a folder that has no index) to see when the index was last synced. Run \
@@ -151,17 +151,21 @@ external APIs).\n\n\
 ### When you spawn an Explore agent in a tokensave-enabled project\n\n\
 When the user asks for an Explore agent, include the following in the agent \
 prompt:\n\n\
-> This project has tokensave initialised (.tokensave/ exists). Use \
-> `tokensave_context` as your ONLY exploration tool. Call it with your \
-> question in plain English. Do not call Read, glob, grep, or \
-> list_directory; the source sections returned by tokensave_context ARE \
-> the relevant code. Follow the call budget in the tool description. \
-> Pass `seen_node_ids` from each response to the next call's `exclude_node_ids`.\n\n\
+> This project has tokensave initialised (.tokensave/ exists). Start with \
+> `tokensave_context`: call it with your question in plain English; the \
+> source sections it returns are the relevant code. Follow the call budget \
+> in the tool description, and pass `seen_node_ids` from each response to \
+> the next call's `exclude_node_ids`. Use `tokensave_search` for a symbol \
+> by name; with `literal: true` it finds exact text, so for who calls or \
+> implements a name, search the text that construct takes in the file's \
+> language, in every form the language allows. Grep only for a regex or \
+> for the files a literal search reports as `unscanned`, and Read only \
+> the ranges a result points to.\n\n\
 ### When the hook denies a search\n\n\
 A denied grep, glob, or find means the search looked like a code-symbol lookup \
 and a tokensave tool answers it better. It is not an obstacle to route around. \
 Use `tokensave_search` for a symbol by name, `tokensave_search` with \
-`literal: true` (e.g. `{\"query\": \".Name(\", \"literal\": true}`) or \
+`literal: true` (searching each form a call takes in the file's language) or \
 `tokensave_callers` for its uses, `tokensave_impact` for what depends on it, \
 `tokensave_context` for a concept, and \
 `tokensave_files` for files by path. A search that is not about code (logs, \
@@ -881,8 +885,22 @@ mod tests {
         let body = canonical_rules_markdown();
         assert!(body.contains("### Searching code"));
         assert!(body.contains("`literal: true`"));
-        assert!(body.contains("`.Name(`"));
+        assert!(body.contains("in every form the language allows"));
+        assert!(body.contains("reports as `unscanned`"));
         assert!(body.contains("Grep when you need a regex"));
+        // #667: a one-form example (`: IName`) misses every other form.
+        assert!(!body.contains("`: IName`"));
+        assert!(!body.contains("a file type the index skips"));
+    }
+
+    /// #667: the subagent brief must not forbid literal search and Read,
+    /// which the "Searching code" section relies on.
+    #[test]
+    fn claude_subagent_brief_allows_literal_search() {
+        let body = expected_rules_markdown("claude").unwrap();
+        assert!(!body.contains("ONLY exploration tool"));
+        assert!(!body.contains("Do not call Read"));
+        assert!(body.contains("in every form the language allows"));
     }
 
     /// The core toolset is the default (#576), so a tool the rules name that

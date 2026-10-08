@@ -2006,8 +2006,9 @@ impl McpServer {
             — it returns relevant symbols, relationships, and code \
             snippets for a natural-language query. Use tokensave_search \
             to find specific symbols by name, or with literal: true to \
-            find exact text such as `.Name(` for call sites; grep only \
-            for a regex or a file type the index skips. Discovery and analysis \
+            find exact text, searching every form a call or implementation \
+            takes in the file's language; grep only for a regex or for the \
+            files a literal search reports as unscanned. Discovery and analysis \
             tools are read-only and safe to call in parallel. Edit \
             and session-memory tools can mutate local project state \
             and declare readOnlyHint=false.";
