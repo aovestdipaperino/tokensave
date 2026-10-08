@@ -604,7 +604,8 @@ namespace MyApp
     );
 }
 
-/// Calls refs recorded from the node(s) named `from` of kind `kind`.
+/// Name-based calls refs recorded from the node(s) named `from` of kind
+/// `kind`. Typed-receiver siblings (`Type::Method`, #642) are left out.
 fn call_refs_from(result: &ExtractionResult, kind: &NodeKind, from: &str) -> Vec<String> {
     let ids: Vec<&str> = result
         .nodes
@@ -616,6 +617,7 @@ fn call_refs_from(result: &ExtractionResult, kind: &NodeKind, from: &str) -> Vec
         .unresolved_refs
         .iter()
         .filter(|r| r.reference_kind == EdgeKind::Calls && ids.contains(&r.from_node_id.as_str()))
+        .filter(|r| !r.reference_name.contains("::"))
         .map(|r| r.reference_name.clone())
         .collect()
 }
