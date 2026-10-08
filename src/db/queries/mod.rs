@@ -14,6 +14,7 @@ mod files;
 mod fingerprints;
 mod metadata;
 mod nodes;
+mod routes;
 pub use nodes::NodeFilter;
 mod search;
 pub(crate) use search::to_fts_match_query;

@@ -45,6 +45,7 @@ fn node_kind_as_str_roundtrip() {
         NodeKind::Function,
         NodeKind::Method,
         NodeKind::SingletonMethod,
+        NodeKind::Route,
         NodeKind::Impl,
         NodeKind::Const,
         NodeKind::Static,

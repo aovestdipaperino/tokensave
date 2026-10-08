@@ -5,6 +5,9 @@ use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
+use super::rails_support::{
+    route_file, RAILS_ISOLATE_NAMESPACE_PREFIX, RUBY_VISIBILITY_REFERENCE_PREFIX,
+};
 use crate::extraction::complexity::{count_complexity, ComplexityMetrics, RUBY_COMPLEXITY};
 use crate::extraction::ts_state::{find_child_by_kind, ExtractionState, SingletonScope};
 use crate::types::{
@@ -190,7 +193,11 @@ impl RubyExtractor {
 
         state.node_stack.pop();
 
-        state.build_result(start)
+        let mut result = state.build_result(start);
+        if !template && route_file(file_path).is_some() {
+            super::rails_routes::extract(root, source, &mut result);
+        }
+        result
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -250,6 +257,8 @@ impl RubyExtractor {
             // of them run.
             "identifier" | "call" | "method_call" => {
                 Self::visit_visibility_directive(state, node);
+                Self::record_unapplied_visibility(state, node);
+                Self::record_isolate_namespace(state, node);
                 Self::visit_mixin_directive(state, node);
                 Self::visit_attribute_directive(state, node);
                 Self::visit_alias_method_directive(state, node, None);
@@ -1136,9 +1145,8 @@ impl RubyExtractor {
                                     visibility.clone(),
                                 );
                             }
-                            "delimited_symbol" => {
-                                // Any symbol argument counts, so the mode isn't switched
-                                // below — even an interpolated one we can't resolve.
+                            "delimited_symbol" | "string" => {
+                                // Any quoted name counts as an argument, including interpolated names that cannot be resolved.
                                 saw_arg = true;
                                 if let Some(symbol_name) =
                                     Self::static_delimited_symbol_name(state, arg)
@@ -1259,6 +1267,7 @@ impl RubyExtractor {
                                     }
                                 }
                             }
+                            "comment" => {}
                             _ => {
                                 // Any other named argument is still an argument: Ruby
                                 // applies the directive to it and returns without switching
@@ -1284,6 +1293,122 @@ impl RubyExtractor {
             }
             _ => {}
         }
+    }
+
+    // Rails 8.1.3.1 excludes private/protected actions after reopening directives; file load order is not indexed.
+    fn record_unapplied_visibility(state: &mut ExtractionState, node: TsNode<'_>) {
+        if !matches!(node.kind(), "call" | "method_call")
+            || state.singleton_scope != SingletonScope::Outside
+        {
+            return;
+        }
+        let Some(owner) = state.ruby_body_call_owner_id.clone() else {
+            return;
+        };
+        // Only a controller's actions are routed, so other classes need no evidence.
+        if !state
+            .node_stack
+            .last()
+            .is_some_and(|(name, _)| name.ends_with("Controller"))
+        {
+            return;
+        }
+        let Some(method) = node.child_by_field_name("method") else {
+            return;
+        };
+        if Self::resolve_visibility_keyword(&state.node_text(method)).is_none() {
+            return;
+        }
+        let receiver = node.child_by_field_name("receiver");
+        if receiver.is_some_and(|n| n.kind() != "self") {
+            return;
+        }
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        for arg in arguments.named_children(&mut arguments.walk()) {
+            if matches!(arg.kind(), "comment" | "method" | "singleton_method") {
+                continue;
+            }
+            let name = match arg.kind() {
+                "simple_symbol" => Some(state.node_text(arg).trim_start_matches(':').to_string()),
+                "delimited_symbol" | "string" => Self::static_delimited_symbol_name(state, arg),
+                _ => None,
+            };
+            if receiver.is_none()
+                && name.as_ref().is_some_and(|name| {
+                    let qualified_name = format!("{}::{name}", state.qualified_prefix());
+                    state.nodes.iter().any(|n| {
+                        n.qualified_name == qualified_name
+                            && Self::matches_visibility_shape(
+                                n,
+                                &state.singleton_method_ids,
+                                &state.foreign_singleton_method_ids,
+                                VisibilityTarget::Instance,
+                            )
+                    })
+                })
+            {
+                continue;
+            }
+            state.unresolved_refs.push(UnresolvedRef {
+                from_node_id: owner.clone(),
+                reference_name: format!(
+                    "{RUBY_VISIBILITY_REFERENCE_PREFIX}{}",
+                    name.as_deref().unwrap_or("*")
+                ),
+                reference_kind: EdgeKind::Uses,
+                line: arg.start_position().row as u32,
+                column: arg.start_position().column as u32,
+                file_path: state.file_path.clone(),
+            });
+        }
+    }
+
+    /// `isolate_namespace Foo` in an engine class body routes the engine's
+    /// controllers under `Foo` (Rails 8.1.3.1 sets the engine's default route
+    /// module to `Foo.name.underscore`). The constant is taken as written.
+    fn record_isolate_namespace(state: &mut ExtractionState, node: TsNode<'_>) {
+        if node.kind() != "call"
+            || node.child_by_field_name("receiver").is_some()
+            || state.singleton_scope != SingletonScope::Outside
+        {
+            return;
+        }
+        let Some(owner) = state.ruby_body_call_owner_id.clone() else {
+            return;
+        };
+        if node
+            .child_by_field_name("method")
+            .is_none_or(|m| state.node_text(m) != "isolate_namespace")
+        {
+            return;
+        }
+        let Some(arguments) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        let args: Vec<TsNode<'_>> = arguments
+            .named_children(&mut arguments.walk())
+            .filter(|n| n.kind() != "comment")
+            .collect();
+        let [arg] = args.as_slice() else {
+            return;
+        };
+        if !matches!(arg.kind(), "constant" | "scope_resolution") {
+            return;
+        }
+        let constant = state.node_text(*arg);
+        state.unresolved_refs.push(UnresolvedRef {
+            from_node_id: owner,
+            reference_name: format!(
+                "{RAILS_ISOLATE_NAMESPACE_PREFIX}{}",
+                constant.trim_start_matches("::")
+            ),
+            reference_kind: EdgeKind::Uses,
+            line: node.start_position().row as u32,
+            column: node.start_position().column as u32,
+            file_path: state.file_path.clone(),
+        });
     }
 
     /// Retroactively mark the method named `name` defined in the *current*

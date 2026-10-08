@@ -144,6 +144,7 @@ mod python_phantom_call_edges_test;
 mod qbasic_extraction_test;
 mod quickbasic_extraction_test;
 mod quint_extraction_test;
+mod rails_routes_test;
 mod rake_support_test;
 mod read_numbering_digest_test;
 mod reinstall_githooks_624_test;

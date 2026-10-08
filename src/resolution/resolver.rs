@@ -867,6 +867,19 @@ impl<'a> ReferenceResolver<'a> {
     ///
     /// Returns `None` if no strategy can resolve the reference.
     pub fn resolve_one(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
+        if uref.reference_kind == EdgeKind::Uses
+            && crate::extraction::rails_support::is_rails_evidence(&uref.reference_name)
+        {
+            return None;
+        }
+        // Route dispatch needs exact public instance ownership and is rebuilt by its own pass.
+        if self
+            .node_id_cache
+            .get(uref.from_node_id.as_str())
+            .is_some_and(|node| node.kind == NodeKind::Route)
+        {
+            return None;
+        }
         // Skip `Uses` edges whose reference name is a stdlib, external crate,
         // or wildcard import path. These create false cross-file edges when
         // two files both `use std::path::Path` — the resolver matches the name
@@ -2092,6 +2105,13 @@ impl<'a> ReferenceResolver<'a> {
     /// outright (in which case the ref failed for some other reason), so the
     /// record stays limited to genuine ties (#412).
     fn explain_ambiguity(&self, uref: &UnresolvedRef) -> Option<AmbiguousCall> {
+        if self
+            .node_id_cache
+            .get(uref.from_node_id.as_str())
+            .is_some_and(|node| node.kind == NodeKind::Route)
+        {
+            return None;
+        }
         if uref.reference_kind != EdgeKind::Calls {
             return None;
         }
