@@ -519,3 +519,119 @@ public class StaticUser
     let inc_from = caller_names(&callers(&inc, "src/RefreshCoordinator.cs", "RefreshAsync").await);
     assert_eq!(inc_from, from, "incremental and full sync disagree");
 }
+
+/// #670 follow-up: a variable the extractor cannot type (a lambda, `out`,
+/// pattern, catch, `foreach` or query variable, or a `var` local with an
+/// opaque initializer) still hides an inherited member of the same name, so
+/// a call on it never binds through that member's type.
+#[tokio::test]
+async fn untyped_locals_hide_inherited_members() {
+    let coordinator = r#"namespace Demo;
+
+public sealed class RefreshCoordinator
+{
+    public Task RefreshAsync(string provider) => Task.CompletedTask;
+}
+"#;
+    let widget = r#"namespace Demo;
+
+public sealed class Widget
+{
+    public Task RefreshAsync(string provider) => Task.CompletedTask;
+}
+"#;
+    let fixture = r#"namespace Demo;
+
+public abstract class RefreshFixture
+{
+    protected RefreshCoordinator item = null!;
+    protected RefreshCoordinator @event = null!;
+}
+"#;
+    let tests = r#"namespace Demo;
+
+public class PollTests : RefreshFixture
+{
+    public void ViaLambda(List<Widget> widgets)
+    {
+        widgets.ForEach(item => item.RefreshAsync("l"));
+    }
+
+    public void ViaOut(Dictionary<string, Widget> map)
+    {
+        if (map.TryGetValue("k", out var item)) { item.RefreshAsync("o"); }
+    }
+
+    public void ViaPattern(object o)
+    {
+        if (o is var item) { item.RefreshAsync("p"); }
+    }
+
+    public void ViaForeach(IEnumerable<Widget> widgets)
+    {
+        foreach (var item in widgets) { item.RefreshAsync("e"); }
+    }
+
+    public void ViaQuery(IEnumerable<Widget> widgets)
+    {
+        var all = from item in widgets select item.RefreshAsync("q");
+    }
+
+    public void ViaOpaqueVar(IEnumerable<Widget> widgets)
+    {
+        var item = widgets.First();
+        item.RefreshAsync("v");
+    }
+
+    public void ViaInherited()
+    {
+        item.RefreshAsync("i");
+    }
+
+    public void ViaVerbatim()
+    {
+        @event.RefreshAsync("verbatim");
+    }
+}
+"#;
+    let refs = CSharpExtractor.extract("tests/PollTests.cs", tests);
+    let typed: Vec<&str> = refs
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Calls)
+        .map(|r| r.reference_name.as_str())
+        .filter(|n| n.starts_with('@'))
+        .collect();
+    assert!(
+        typed.contains(&"@item::RefreshAsync"),
+        "the inherited-member call is still a simple-name root, got {typed:?}"
+    );
+    assert!(
+        typed.contains(&"@event::RefreshAsync"),
+        "the verbatim prefix is not part of the name, got {typed:?}"
+    );
+
+    let (_dir, cg) = index(&[
+        ("src/RefreshCoordinator.cs", coordinator),
+        ("src/Widget.cs", widget),
+        ("tests/RefreshFixture.cs", fixture),
+        ("tests/PollTests.cs", tests),
+    ])
+    .await;
+    let from = caller_names(&callers(&cg, "src/RefreshCoordinator.cs", "RefreshAsync").await);
+    for local in [
+        "ViaLambda",
+        "ViaOut",
+        "ViaPattern",
+        "ViaForeach",
+        "ViaQuery",
+        "ViaOpaqueVar",
+    ] {
+        assert!(
+            !from.contains(local),
+            "{local} calls through a local, not the inherited field, got {from:?}"
+        );
+    }
+    assert!(from.contains("ViaInherited"), "got {from:?}");
+    assert!(from.contains("ViaVerbatim"), "got {from:?}");
+}

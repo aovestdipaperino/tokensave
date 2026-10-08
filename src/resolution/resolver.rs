@@ -1587,7 +1587,12 @@ impl<'a> ReferenceResolver<'a> {
             return Some(self.csharp_types(root));
         };
         let own = self.csharp_caller_types(uref);
-        let members = self.csharp_members(&own, name, is_csharp_data_member);
+        let mut members = self.csharp_members(&own, name, is_csharp_data_member);
+        if members.is_empty() {
+            // The extractor drops C#'s verbatim prefix from receivers, but a
+            // member declared as `@event` is indexed under that spelling.
+            members = self.csharp_members(&own, &format!("@{name}"), is_csharp_data_member);
+        }
         if members.is_empty() {
             return Some(self.csharp_types(name));
         }

@@ -1853,7 +1853,28 @@ impl CSharpExtractor {
 /// Variable name to the static type expression of its value: a class name,
 /// optionally followed by `::member` and `::method()` steps that the resolver
 /// evaluates against the indexed declarations (#642).
-type VarTypes = HashMap<String, String>;
+///
+/// A name maps to `None` when it is declared in scope but its type cannot be
+/// told (a lambda parameter, `out var`, a pattern or catch variable, a `var`
+/// local with an opaque initializer). It still hides an inherited member of
+/// the same name, so a call on it never binds through that member (#670).
+type VarTypes = HashMap<String, Option<String>>;
+
+/// An identifier as a variable name: C#'s verbatim prefix is not part of the
+/// name, so `@class` and `class` are the same variable.
+fn var_name(state: &ExtractionState, ident: TsNode<'_>) -> String {
+    let text = state.node_text(ident);
+    match text.strip_prefix('@') {
+        Some(rest) => rest.to_string(),
+        None => text,
+    }
+}
+
+/// Records `name` as declared with an unknown type, without overwriting a
+/// type already known for the same name elsewhere in the body.
+fn declare_untyped(vars: &mut VarTypes, name: String) {
+    vars.entry(name).or_insert(None);
+}
 
 /// Marks a type-expression root that is a bare identifier the extractor could
 /// not type (#670); see [`crate::resolution::CSHARP_SIMPLE_NAME_ROOT`].
@@ -1953,9 +1974,7 @@ impl CSharpExtractor {
                         member.child_by_field_name("type"),
                         member.child_by_field_name("name"),
                     ) {
-                        if let Some(t) = Self::declared_type(state, ty) {
-                            vars.insert(state.node_text(name), t);
-                        }
+                        vars.insert(var_name(state, name), Self::declared_type(state, ty));
                     }
                 }
                 _ => {}
@@ -1969,12 +1988,11 @@ impl CSharpExtractor {
             if p.kind() != "parameter" {
                 continue;
             }
-            if let (Some(ty), Some(name)) =
-                (p.child_by_field_name("type"), p.child_by_field_name("name"))
-            {
-                if let Some(t) = Self::declared_type(state, ty) {
-                    vars.insert(state.node_text(name), t);
-                }
+            if let Some(name) = p.child_by_field_name("name") {
+                let ty = p
+                    .child_by_field_name("type")
+                    .and_then(|t| Self::declared_type(state, t));
+                vars.insert(var_name(state, name), ty);
             }
         }
     }
@@ -2006,9 +2024,7 @@ impl CSharpExtractor {
                     .last()?;
                 Self::expr_type(state, init, self_type, vars)
             });
-            if let Some(ty) = ty {
-                vars.insert(state.node_text(name), ty);
-            }
+            vars.insert(var_name(state, name), ty);
         }
     }
 
@@ -2027,23 +2043,100 @@ impl CSharpExtractor {
                     Self::collect_declaration(state, child, self_type, vars);
                 }
                 "foreach_statement" => {
-                    if let (Some(ty), Some(left)) = (
-                        child.child_by_field_name("type"),
-                        child.child_by_field_name("left"),
-                    ) {
+                    if let Some(left) = child.child_by_field_name("left") {
                         if left.kind() == "identifier" {
-                            if let Some(t) = Self::declared_type(state, ty) {
-                                vars.insert(state.node_text(left), t);
-                            }
+                            let ty = child
+                                .child_by_field_name("type")
+                                .and_then(|t| Self::declared_type(state, t));
+                            vars.insert(var_name(state, left), ty);
+                        } else {
+                            Self::declare_designations(state, left, vars);
                         }
                     }
                 }
+                // Variables introduced inside an expression: lambda and
+                // local-function parameters, `out` and pattern variables,
+                // catch variables and query range variables. Most have no
+                // type the extractor can tell, but each hides an inherited
+                // member of the same name (#670).
+                "lambda_expression" => match child.child_by_field_name("parameters") {
+                    Some(p) if p.kind() == "parameter_list" => {
+                        Self::collect_scoped_parameters(state, p, vars);
+                    }
+                    Some(p) => declare_untyped(vars, var_name(state, p)),
+                    None => {}
+                },
+                "anonymous_method_expression" | "local_function_statement" => {
+                    if let Some(p) = child.child_by_field_name("parameters") {
+                        Self::collect_scoped_parameters(state, p, vars);
+                    }
+                }
+                "catch_declaration"
+                | "declaration_expression"
+                | "declaration_pattern"
+                | "recursive_pattern"
+                | "from_clause" => {
+                    if let Some(name) = child.child_by_field_name("name") {
+                        match child
+                            .child_by_field_name("type")
+                            .and_then(|t| Self::declared_type(state, t))
+                        {
+                            Some(t) => {
+                                vars.insert(var_name(state, name), Some(t));
+                            }
+                            None => declare_untyped(vars, var_name(state, name)),
+                        }
+                    }
+                }
+                "var_pattern"
+                | "parenthesized_variable_designation"
+                | "let_clause"
+                | "join_clause"
+                | "join_into_clause" => Self::declare_designations(state, child, vars),
                 "method_declaration" | "constructor_declaration" | "class_declaration" => {
                     continue;
                 }
                 _ => {}
             }
             Self::collect_local_types(state, child, self_type, vars);
+        }
+    }
+
+    /// Parameters of a lambda, anonymous method or local function: a typed one
+    /// is recorded, an implicit one only hides a same-named member.
+    fn collect_scoped_parameters(state: &ExtractionState, params: TsNode<'_>, vars: &mut VarTypes) {
+        let mut cursor = params.walk();
+        for p in params.children(&mut cursor) {
+            if p.kind() != "parameter" {
+                continue;
+            }
+            let Some(name) = p.child_by_field_name("name") else {
+                continue;
+            };
+            match p
+                .child_by_field_name("type")
+                .and_then(|t| Self::declared_type(state, t))
+            {
+                Some(t) => {
+                    vars.insert(var_name(state, name), Some(t));
+                }
+                None => declare_untyped(vars, var_name(state, name)),
+            }
+        }
+    }
+
+    /// Every identifier directly under a designation or clause, and under
+    /// its nested designations and tuple patterns, as an untyped variable.
+    fn declare_designations(state: &ExtractionState, node: TsNode<'_>, vars: &mut VarTypes) {
+        let mut cursor = node.walk();
+        for c in node.children(&mut cursor) {
+            match c.kind() {
+                "identifier" => declare_untyped(vars, var_name(state, c)),
+                "parenthesized_variable_designation" | "tuple_pattern" => {
+                    Self::declare_designations(state, c, vars);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -2088,7 +2181,7 @@ impl CSharpExtractor {
                 Self::invocation_type(state, inner, self_type, vars, true)?
             }
             "invocation_expression" => Self::invocation_type(state, expr, self_type, vars, false)?,
-            "identifier" => vars.get(&state.node_text(expr))?.clone(),
+            "identifier" => vars.get(&var_name(state, expr))?.clone()?,
             "this" => self_type?.to_string(),
             "member_access_expression" => {
                 let recv = expr.child_by_field_name("expression")?;
@@ -2143,9 +2236,11 @@ impl CSharpExtractor {
     ) -> Option<String> {
         match recv.kind() {
             "identifier" => {
-                let name = state.node_text(recv);
+                let name = var_name(state, recv);
                 if let Some(ty) = vars.get(&name) {
-                    return Some(ty.clone());
+                    // A variable in scope, typed or not, hides any inherited
+                    // member of the same name (#670).
+                    return ty.clone();
                 }
                 Some(format!("{SIMPLE_NAME_ROOT}{name}"))
             }
