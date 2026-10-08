@@ -154,6 +154,9 @@ impl TouchedSet {
                 && reference_name.contains("::")
                 && reference_name.split("::").any(|seg| {
                     let seg = seg.strip_prefix("await ").unwrap_or(seg);
+                    let seg = seg
+                        .strip_prefix(super::CSHARP_SIMPLE_NAME_ROOT)
+                        .unwrap_or(seg);
                     self.names.contains(seg.trim_end_matches("()"))
                 }))
             || super::relative_module_candidates(file_path, reference_name)

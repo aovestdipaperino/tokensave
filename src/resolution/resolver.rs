@@ -241,6 +241,12 @@ pub fn is_gdscript(path: &str) -> bool {
 /// `resolved_by` tag of a C# call resolved through its receiver's type (#642).
 const CSHARP_TYPED: &str = "csharp-typed-receiver";
 
+/// Prefix of a C# typed-receiver root that is a bare identifier the
+/// extractor could not type (`@Coordinator::RefreshAsync`, #670). The
+/// resolver reads it as C# reads a simple name: a field or property of the
+/// caller's type, inherited ones included, and failing that a class name.
+pub const CSHARP_SIMPLE_NAME_ROOT: &str = "@";
+
 /// True for a C# source path. Case-insensitive, like [`is_gdscript`].
 pub fn is_csharp(path: &str) -> bool {
     path.rsplit_once('.')
@@ -433,6 +439,23 @@ fn is_csharp_callable(kind: &NodeKind) -> bool {
         kind,
         NodeKind::Method | NodeKind::Function | NodeKind::Constructor
     )
+}
+
+/// Field and property node kinds a C# member-step lookup accepts.
+fn is_csharp_data_member(kind: &NodeKind) -> bool {
+    matches!(kind, NodeKind::Field | NodeKind::CSharpProperty)
+}
+
+/// True for a C# type declaration a typed-receiver lookup can step into.
+fn is_csharp_type(node: &Node) -> bool {
+    matches!(
+        node.kind,
+        NodeKind::Class
+            | NodeKind::InnerClass
+            | NodeKind::Struct
+            | NodeKind::Interface
+            | NodeKind::Record
+    ) && is_csharp(&node.file_path)
 }
 
 /// A C# type expression reduced to the class name a lookup can use: no
@@ -1515,7 +1538,7 @@ impl<'a> ReferenceResolver<'a> {
         let mut steps: Vec<&str> = segments.collect();
         let method = steps.pop()?;
 
-        let mut types = self.csharp_types(root);
+        let mut types = self.csharp_root_types(uref, root)?;
         for step in steps {
             let (awaited, step) = match step.strip_prefix("await ") {
                 Some(s) => (true, s),
@@ -1523,24 +1546,9 @@ impl<'a> ReferenceResolver<'a> {
             };
             let members = match step.strip_suffix("()") {
                 Some(name) => self.csharp_members(&types, name, is_csharp_callable),
-                None => self.csharp_members(&types, step, |k| {
-                    matches!(k, NodeKind::Field | NodeKind::CSharpProperty)
-                }),
+                None => self.csharp_members(&types, step, is_csharp_data_member),
             };
-            let mut next: Vec<&str> = members
-                .iter()
-                .filter_map(|m| {
-                    let raw = csharp_declared_type(m.signature.as_deref()?, &m.name)?;
-                    let raw = if awaited { unwrap_task(raw)? } else { raw };
-                    csharp_type_name(raw)
-                })
-                .collect();
-            next.sort_unstable();
-            next.dedup();
-            let [ty] = next.as_slice() else {
-                return None;
-            };
-            types = self.csharp_types(ty);
+            types = self.csharp_member_types(&members, awaited)?;
         }
 
         let mut targets = self.csharp_members(&types, method, is_csharp_callable);
@@ -1569,6 +1577,64 @@ impl<'a> ReferenceResolver<'a> {
         })
     }
 
+    /// The types a typed-receiver root stands for. A plain root is a class
+    /// name. A simple-name root (`@Name`, #670) is first a field or property
+    /// of the caller's own type or one it inherits, wherever declared, since
+    /// C# finds a member before a type; only when there is none is it a class
+    /// name. `None` when a member is found but its type cannot be told.
+    fn csharp_root_types(&self, uref: &UnresolvedRef, root: &str) -> Option<Vec<&'a Node>> {
+        let Some(name) = root.strip_prefix(CSHARP_SIMPLE_NAME_ROOT) else {
+            return Some(self.csharp_types(root));
+        };
+        let own = self.csharp_caller_types(uref);
+        let members = self.csharp_members(&own, name, is_csharp_data_member);
+        if members.is_empty() {
+            return Some(self.csharp_types(name));
+        }
+        self.csharp_member_types(&members, false)
+    }
+
+    /// The type declarations (every partial) enclosing the caller of `uref`.
+    fn csharp_caller_types(&self, uref: &UnresolvedRef) -> Vec<&'a Node> {
+        let Some((scope, _)) = self
+            .node_id_cache
+            .get(uref.from_node_id.as_str())
+            .and_then(|caller| caller.qualified_name.rsplit_once("::"))
+        else {
+            return Vec::new();
+        };
+        self.qualified_name_cache
+            .get(scope)
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .copied()
+                    .filter(|n| is_csharp_type(n))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The one type declared for `members` (a field's or property's type, a
+    /// method's return type, `Task<T>` unwrapped when `awaited`), as its
+    /// indexed declarations. `None` when the members disagree or declare none.
+    fn csharp_member_types(&self, members: &[&'a Node], awaited: bool) -> Option<Vec<&'a Node>> {
+        let mut next: Vec<&str> = members
+            .iter()
+            .filter_map(|m| {
+                let raw = csharp_declared_type(m.signature.as_deref()?, &m.name)?;
+                let raw = if awaited { unwrap_task(raw)? } else { raw };
+                csharp_type_name(raw)
+            })
+            .collect();
+        next.sort_unstable();
+        next.dedup();
+        let [ty] = next.as_slice() else {
+            return None;
+        };
+        Some(self.csharp_types(ty))
+    }
+
     /// Every indexed C# type declaration named `name`.
     fn csharp_types(&self, name: &str) -> Vec<&'a Node> {
         self.name_cache
@@ -1577,16 +1643,7 @@ impl<'a> ReferenceResolver<'a> {
                 nodes
                     .iter()
                     .copied()
-                    .filter(|n| {
-                        matches!(
-                            n.kind,
-                            NodeKind::Class
-                                | NodeKind::InnerClass
-                                | NodeKind::Struct
-                                | NodeKind::Interface
-                                | NodeKind::Record
-                        ) && is_csharp(&n.file_path)
-                    })
+                    .filter(|n| is_csharp_type(n))
                     .collect()
             })
             .unwrap_or_default()

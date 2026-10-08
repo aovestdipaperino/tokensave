@@ -414,3 +414,108 @@ fn typed_call_refs_are_recorded() {
         "type arguments are not part of the callee name, got {names:?}"
     );
 }
+
+/// #670: a call through a field or property inherited from a base class
+/// resolves through the member's declared type when that type lives in
+/// another file than the call.
+#[tokio::test]
+async fn inherited_member_with_type_in_another_file_resolves() {
+    let coordinator = r#"namespace Demo;
+
+public sealed class RefreshCoordinator
+{
+    public Task RefreshAsync(string provider) => Task.CompletedTask;
+}
+"#;
+    let tests = r#"namespace Demo;
+
+public abstract class RefreshFixture
+{
+    protected RefreshCoordinator Coordinator { get; private set; } = null!;
+    protected RefreshCoordinator _coordinator = null!;
+    protected RefreshCoordinator FieldCoordinator = null!;
+}
+
+public class PollTests : RefreshFixture
+{
+    public async Task Polls()
+    {
+        await Coordinator.RefreshAsync("c");
+    }
+
+    public async Task PollsThroughField()
+    {
+        await _coordinator.RefreshAsync("f");
+    }
+
+    public async Task PollsThroughUpperField()
+    {
+        await FieldCoordinator.RefreshAsync("F");
+    }
+}
+"#;
+    // A class named like the inherited property: the member wins, as in C#.
+    // A static call through a class name still resolves to the class.
+    let shadow = r#"namespace Demo;
+
+public static class Coordinator
+{
+    public static Task RefreshAsync(string provider) => Task.CompletedTask;
+}
+
+public class StaticUser
+{
+    public Task Use() => Coordinator.RefreshAsync("s");
+}
+"#;
+    let files = [
+        ("src/RefreshCoordinator.cs", coordinator),
+        ("src/Coordinator.cs", shadow),
+        ("tests/PollTests.cs", tests),
+    ];
+
+    let refs = CSharpExtractor.extract("tests/PollTests.cs", tests);
+    let names: Vec<&str> = refs
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Calls)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"@Coordinator::RefreshAsync"),
+        "an untyped identifier receiver is a simple-name root, got {names:?}"
+    );
+
+    let (_dir, cg) = index(&files).await;
+    let from = caller_names(&callers(&cg, "src/RefreshCoordinator.cs", "RefreshAsync").await);
+    for caller in ["Polls", "PollsThroughField", "PollsThroughUpperField"] {
+        assert!(
+            from.contains(caller),
+            "{caller} calls RefreshCoordinator.RefreshAsync through an inherited member, got {from:?}"
+        );
+    }
+    assert!(!from.contains("Use"), "got {from:?}");
+    let static_from = caller_names(&callers(&cg, "src/Coordinator.cs", "RefreshAsync").await);
+    assert_eq!(
+        static_from,
+        BTreeSet::from(["Use".to_string()]),
+        "only the static call reaches the Coordinator class"
+    );
+
+    // An incremental sync that adds the base class's file agrees with a full
+    // index: the inherited member's file is what the edge depends on.
+    let (base, derived) = tests.split_at(tests.find("public class PollTests").unwrap());
+    let (inc_dir, inc) = index(&[
+        ("src/RefreshCoordinator.cs", coordinator),
+        ("src/Coordinator.cs", shadow),
+        (
+            "tests/PollTests.cs",
+            &format!("namespace Demo;\n\n{derived}"),
+        ),
+    ])
+    .await;
+    write(inc_dir.path(), "tests/RefreshFixture.cs", base);
+    inc.sync().await.unwrap();
+    let inc_from = caller_names(&callers(&inc, "src/RefreshCoordinator.cs", "RefreshAsync").await);
+    assert_eq!(inc_from, from, "incremental and full sync disagree");
+}

@@ -1855,6 +1855,10 @@ impl CSharpExtractor {
 /// evaluates against the indexed declarations (#642).
 type VarTypes = HashMap<String, String>;
 
+/// Marks a type-expression root that is a bare identifier the extractor could
+/// not type (#670); see [`crate::resolution::CSHARP_SIMPLE_NAME_ROOT`].
+const SIMPLE_NAME_ROOT: &str = crate::resolution::CSHARP_SIMPLE_NAME_ROOT;
+
 /// Steps beyond which a receiver chain is not worth typing.
 const MAX_TYPE_STEPS: usize = 8;
 
@@ -1871,6 +1875,8 @@ const MAX_TYPE_STEPS: usize = 8;
 /// primary-constructor parameters, the method's parameters, and its locals:
 /// declared types, and for `var` the initializer's type (`new T()`, casts,
 /// `as`, and a call or member read whose declared type the resolver looks up).
+/// Any other identifier receiver is left for the resolver to look up as an
+/// inherited member or a class name (#670).
 impl CSharpExtractor {
     fn extract_typed_calls(
         state: &mut ExtractionState,
@@ -2125,8 +2131,10 @@ impl CSharpExtractor {
     }
 
     /// The static type expression of a call receiver. An identifier that is
-    /// no known variable and starts upper-case is read as a class name, for a
-    /// static call (`Factory.Create()`).
+    /// no known variable becomes a simple-name root `@Name`: the resolver
+    /// reads it as a field or property the enclosing type inherits, which may
+    /// be declared in another file (#670), and failing that as a class name,
+    /// for a static call (`Factory.Create()`).
     fn receiver_type(
         state: &ExtractionState,
         recv: TsNode<'_>,
@@ -2139,10 +2147,7 @@ impl CSharpExtractor {
                 if let Some(ty) = vars.get(&name) {
                     return Some(ty.clone());
                 }
-                name.chars()
-                    .next()
-                    .is_some_and(char::is_uppercase)
-                    .then_some(name)
+                Some(format!("{SIMPLE_NAME_ROOT}{name}"))
             }
             "generic_name" => Self::declared_type(state, recv),
             _ => Self::expr_type(state, recv, self_type, vars),
