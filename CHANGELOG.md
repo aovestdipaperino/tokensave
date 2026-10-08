@@ -10,6 +10,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ### Added
 
 - Index embedded Ruby in ERB and Slim templates, including calls to helpers, with locations in the original template. Available with `lang-ruby`; controller-to-view and partial-render relationships are not inferred. A bare name in a template binds only to helper-shaped methods (in a `helpers/` directory, a `*Helper` module, `ApplicationController`, a top-level `def`, or the template itself), so partial locals such as `item` in `item.title` do not become call edges to unrelated same-named methods, while helper receivers such as `current_user.name` still do.
+- **`tokensave_callers` lists every line where a caller calls the target (#672).** A caller that invokes the target several times was listed once, with `line` set to its first call, so a rename or signature change still needed a read of the method or a text search to find the others. Each result now also carries `lines`, every call line in ascending order (`[12, 13]`); `line` and the other fields are unchanged, and `line` is always among `lines`. The index already stored one edge per call site, so no reindex is needed. `tokensave_callers_for` is unchanged. Requested by @xorets.
 
 ## [7.15.0] - 2026-10-07
 

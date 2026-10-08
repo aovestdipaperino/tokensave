@@ -417,6 +417,53 @@ async fn test_callers() {
     assert!(!text.is_empty());
 }
 
+/// #672: a caller that invokes the target on several lines is listed once,
+/// with `line` (the first call) unchanged and `lines` carrying every call line.
+#[tokio::test]
+async fn test_callers_lists_every_call_line() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        r#"pub fn refresh(_key: &str) {}
+
+pub fn poll() {
+    refresh("a");
+    refresh("b");
+}
+
+pub fn once() {
+    refresh("c");
+}
+"#,
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let node_id = find_node_id(&cg, "refresh").await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_callers",
+        json!({"node_id": node_id}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let items: Vec<Value> = serde_json::from_str(extract_text(&result.value)).unwrap();
+
+    let poll: Vec<&Value> = items.iter().filter(|i| i["name"] == "poll").collect();
+    assert_eq!(poll.len(), 1, "poll is listed once: {items:?}");
+    assert_eq!(poll[0]["line"], 4, "line stays the first call line");
+    assert_eq!(poll[0]["lines"], json!([4, 5]), "{items:?}");
+
+    let once = items.iter().find(|i| i["name"] == "once").unwrap();
+    assert_eq!(once["line"], 9);
+    assert_eq!(once["lines"], json!([9]));
+}
+
 #[tokio::test]
 async fn test_callers_nonexistent_node_id_errors() {
     let (_dir, cg) = setup_project().await;

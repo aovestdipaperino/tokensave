@@ -922,7 +922,9 @@ fn def_callers() -> ToolDefinition {
          callers by default; pass max_depth > 1 to also follow the chain \
          transitively. Each result includes `depth` (1 = direct caller, 2+ = \
          transitive), `line` (the call-site line where the caller invokes the \
-         target), and `def_line` (the caller's own declaration line). Generic \
+         target), `lines` (every line where the caller invokes the target, \
+         ascending; a caller is listed once even when it calls the target \
+         several times), and `def_line` (the caller's own declaration line). Generic \
          callers through a trait are included for concrete impl methods and \
          tagged with `dispatch_via_trait: true`; pass `resolve_dispatch: false` \
          to disable reverse dispatch resolution.",
