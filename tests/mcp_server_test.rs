@@ -1374,7 +1374,7 @@ async fn cross_project_selected_queries_leave_both_projects_unchanged() {
 }
 
 #[tokio::test]
-async fn selected_truncated_structured_output_returns_clear_error() {
+async fn selected_truncated_structured_output_stays_qualified() {
     let (_local_dir, local) = setup_named_project("local_only").await;
     let foreign_dir = TempDir::new().unwrap();
     fs::create_dir_all(foreign_dir.path().join("src")).unwrap();
@@ -1404,11 +1404,23 @@ async fn selected_truncated_structured_output_returns_clear_error() {
     )
     .await;
 
-    assert_eq!(response["error"]["code"], -32603, "{response}");
-    let message = response["error"]["message"].as_str().unwrap();
-    assert!(message.contains("truncated"), "{message}");
-    assert!(message.contains("lower limit"), "{message}");
-    assert!(message.contains("narrow scope"), "{message}");
+    // Since #673 an oversized JSON result sheds whole items and stays valid
+    // JSON, so no node ID is cut in half and every one can be qualified. The
+    // refusal is kept for text cut mid-ID (graph_scope unit tests).
+    assert!(response["error"].is_null(), "{response}");
+    let payload = response["result"]["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item["text"].as_str())
+        .filter_map(|text| serde_json::from_str::<Value>(text).ok())
+        .find(|value| value.get("results").is_some())
+        .unwrap_or_else(|| panic!("no wrapped search payload: {response}"));
+    assert_eq!(payload["truncated"], true, "{payload}");
+    assert!(payload["omitted"].as_u64().unwrap_or(0) > 0, "{payload}");
+    let ids = response_structured_ids(&response);
+    assert!(!ids.is_empty(), "{response}");
+    assert!(ids.iter().all(|id| id.starts_with("graph:")), "{ids:?}");
 }
 
 #[tokio::test]
