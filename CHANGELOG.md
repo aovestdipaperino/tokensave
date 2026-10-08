@@ -11,6 +11,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 - Index embedded Ruby in ERB and Slim templates, including calls to helpers, with locations in the original template. Available with `lang-ruby`; controller-to-view and partial-render relationships are not inferred. A bare name in a template binds only to helper-shaped methods (in a `helpers/` directory, a `*Helper` module, `ApplicationController`, a top-level `def`, or the template itself), so partial locals such as `item` in `item.title` do not become call edges to unrelated same-named methods, while helper receivers such as `current_user.name` still do.
 
+### Fixed
+
+- **`tokensave_implementations` and `tokensave_type_hierarchy` find TypeScript implementers written with type arguments (#671).** The extractor only read a plain name in an `implements` clause, so `implements IRenderer<Row>` and `implements IRenderer<R, V>`, which tree-sitter parses as a generic type, recorded nothing, and only `implements IRenderer` produced an edge. An interface's `extends` clause was not read at all, so `interface IValidatingRenderer<R, V> extends IRenderer<R, V>` was invisible too. Heritage types are now recorded with their type arguments dropped, as for C# in #643, qualified names (`ns.IRenderer`) included, and each interface an interface extends is recorded as `implements`, as a C# interface's base list is. This applies to `.ts`, `.tsx`, `.mts` and `.cts` files and to TypeScript embedded in Svelte and Astro components. No schema change: an existing index picks this up for a file when it is next re-indexed, or for the whole project with `tokensave sync --force`. Reported by @xorets.
+
 ## [7.15.0] - 2026-10-07
 
 ### Added
