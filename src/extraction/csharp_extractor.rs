@@ -1730,11 +1730,13 @@ impl CSharpExtractor {
                 }
                 if let Some(body) = accessor.child_by_field_name("body") {
                     Self::scan_call_site(state, body, member_id);
+                    Self::extract_typed_calls(state, node, body, member_id);
                 }
             }
         }
         if let Some(value) = node.child_by_field_name("value") {
             Self::scan_call_site(state, value, member_id);
+            Self::extract_typed_calls(state, node, value, member_id);
         }
     }
 
@@ -2249,6 +2251,16 @@ impl CSharpExtractor {
         }
     }
 
+    /// True when `member` is the function an invocation calls (`h.Run` in
+    /// `h.Run()`), as opposed to a value it reads.
+    fn is_invoked(member: TsNode<'_>) -> bool {
+        member.parent().is_some_and(|p| {
+            p.kind() == "invocation_expression"
+                && p.child_by_field_name("function")
+                    .is_some_and(|f| f.id() == member.id())
+        })
+    }
+
     fn emit_typed_calls(
         state: &mut ExtractionState,
         node: TsNode<'_>,
@@ -2275,6 +2287,32 @@ impl CSharpExtractor {
                             from_node_id: fn_node_id.to_string(),
                             reference_name,
                             reference_kind: EdgeKind::Calls,
+                            line: child.start_position().row as u32,
+                            column: child.start_position().column as u32,
+                            file_path: state.file_path.clone(),
+                        });
+                    }
+                }
+                // A member read through a typed receiver (`h.Label`), recorded
+                // as `Type::Member` with `Uses` (#637). The resolver binds it to
+                // a field or property of that type only, never by name alone,
+                // so `x.Count` cannot link to an unrelated `Count`. The callee
+                // of an invocation is a call, recorded above, not a read.
+                "member_access_expression" if !Self::is_invoked(child) => {
+                    let read = (|| {
+                        let recv = child.child_by_field_name("expression")?;
+                        let name = child.child_by_field_name("name")?;
+                        if name.kind() != "identifier" {
+                            return None;
+                        }
+                        let ty = Self::receiver_type(state, recv, self_type, vars)?;
+                        Some(format!("{ty}::{}", state.node_text(name)))
+                    })();
+                    if let Some(reference_name) = read {
+                        state.unresolved_refs.push(UnresolvedRef {
+                            from_node_id: fn_node_id.to_string(),
+                            reference_name,
+                            reference_kind: EdgeKind::Uses,
                             line: child.start_position().row as u32,
                             column: child.start_position().column as u32,
                             file_path: state.file_path.clone(),

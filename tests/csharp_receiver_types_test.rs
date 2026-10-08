@@ -635,3 +635,144 @@ public class PollTests : RefreshFixture
     assert!(from.contains("ViaInherited"), "got {from:?}");
     assert!(from.contains("ViaVerbatim"), "got {from:?}");
 }
+
+/// Incoming `uses` edges of `file::name`, as (caller name, line).
+async fn readers(cg: &TokenSave, file: &str, name: &str) -> BTreeSet<(String, u32)> {
+    let nodes = cg.get_all_nodes().await.unwrap();
+    let target = node(&nodes, file, name).id.clone();
+    cg.get_incoming_edges(&target)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == EdgeKind::Uses)
+        .map(|e| {
+            let src = nodes
+                .iter()
+                .find(|n| n.id == e.source)
+                .map_or_else(|| e.source.clone(), |n| n.name.clone());
+            (src, e.line.unwrap_or(0))
+        })
+        .collect()
+}
+
+/// #637: a property or field read through a receiver whose static type is
+/// known produces a `uses` edge to that member; a read on a receiver of
+/// unknown or external type produces none, even when a project member shares
+/// the name.
+#[tokio::test]
+async fn property_reads_through_typed_receivers_record_uses_edges() {
+    let holder = r#"namespace Demo
+{
+    public class Holder
+    {
+        public int Id { get; set; }
+        public string Label { get { return Id.ToString(); } }
+        public int Count;
+        public Holder Next { get; set; }
+    }
+
+    public abstract class HolderBase
+    {
+        protected Holder Shared { get; set; }
+    }
+}
+"#;
+    let consumer = r#"namespace Demo
+{
+    public class Consumer : HolderBase
+    {
+        private readonly Holder _field = new Holder();
+
+        public string ViaParameter(Holder h) { return h.Label; }
+
+        public string ViaLocal()
+        {
+            Holder local = new Holder();
+            return local.Label;
+        }
+
+        public string ViaVar()
+        {
+            var made = new Holder();
+            return made.Next.Label;
+        }
+
+        public string ViaField() { return _field.Label; }
+
+        public string ViaInherited() { return Shared.Label; }
+
+        public int ViaFieldMember(Holder h) { return h.Count; }
+
+        public string Short => _field.Label;
+
+        public void Write(Holder h) { h.Id = 3; }
+
+        public int External(System.Collections.Generic.List<int> xs) { return xs.Count; }
+
+        public string Untyped(System.Func<Holder> f)
+        {
+            return System.Linq.Enumerable.Empty<int>().Count() > 0 ? "" : f().Label;
+        }
+
+        public string NotARead(Holder h) { return h.ToString(); }
+    }
+}
+"#;
+    let refs = CSharpExtractor.extract("src/Consumer.cs", consumer);
+    let uses: Vec<&str> = refs
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Uses)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    assert!(uses.contains(&"Holder::Label"), "got {uses:?}");
+    assert!(
+        uses.contains(&"Holder::Next"),
+        "a chained read records each step, got {uses:?}"
+    );
+    assert!(
+        !uses.iter().any(|u| u.ends_with("::ToString")),
+        "an invoked member is a call, not a read: {uses:?}"
+    );
+
+    let (_dir, cg) = index(&[("src/Holder.cs", holder), ("src/Consumer.cs", consumer)]).await;
+
+    let label = caller_names(&readers(&cg, "src/Holder.cs", "Label").await);
+    for reader in [
+        "ViaParameter",
+        "ViaLocal",
+        "ViaVar",
+        "ViaField",
+        "ViaInherited",
+        "Short",
+    ] {
+        assert!(
+            label.contains(reader),
+            "{reader} reads Holder.Label, got {label:?}"
+        );
+    }
+    assert!(
+        !label.contains("Untyped"),
+        "f() has no known type here, got {label:?}"
+    );
+
+    let next = caller_names(&readers(&cg, "src/Holder.cs", "Next").await);
+    assert_eq!(next, BTreeSet::from(["ViaVar".to_string()]));
+
+    let count = caller_names(&readers(&cg, "src/Holder.cs", "Count").await);
+    assert_eq!(
+        count,
+        BTreeSet::from(["ViaFieldMember".to_string()]),
+        "List<int>.Count must not link to Holder.Count"
+    );
+
+    let id = caller_names(&readers(&cg, "src/Holder.cs", "Id").await);
+    assert!(
+        id.contains("Write"),
+        "an assignment references the property too, got {id:?}"
+    );
+
+    // A read is not a call: callers of the property stay empty.
+    let label_callers = callers(&cg, "src/Holder.cs", "Label").await;
+    assert!(label_callers.is_empty(), "got {label_callers:?}");
+}

@@ -274,7 +274,9 @@ type CallSite<'r> = (&'r str, &'r str, u32, u32, &'r str);
 fn gdscript_typed_sites(resolved: &[ResolvedRef]) -> HashSet<CallSite<'_>> {
     resolved
         .iter()
-        .filter(|r| is_typed_receiver_tag(&r.resolved_by))
+        .filter(|r| {
+            is_typed_receiver_tag(&r.resolved_by) && r.original.reference_kind == EdgeKind::Calls
+        })
         .map(|r| {
             (
                 r.original.from_node_id.as_str(),
@@ -947,7 +949,21 @@ impl<'a> ReferenceResolver<'a> {
             && is_csharp(&uref.file_path)
             && uref.reference_name.contains("::")
         {
-            return self.try_csharp_typed_match(uref);
+            return self.try_csharp_typed_match(uref, is_csharp_callable);
+        }
+
+        // C# member reads through a typed receiver (#637): `Type::Member`
+        // binds to a field or property of that type, or to nothing. A
+        // `using` directive's ref (`global::A.B`) is not a read.
+        if uref.reference_kind == EdgeKind::Uses
+            && is_csharp(&uref.file_path)
+            && uref.reference_name.contains("::")
+            && self
+                .node_id_cache
+                .get(uref.from_node_id.as_str())
+                .is_some_and(|from| from.kind != NodeKind::Use)
+        {
+            return self.try_csharp_typed_match(uref, is_csharp_data_member);
         }
 
         // Ruby receiver-qualified calls use only positive receiver and
@@ -1545,7 +1561,14 @@ impl<'a> ReferenceResolver<'a> {
     /// Returns `None` whenever the evidence runs out (an unindexed type, an
     /// extension method, an ambiguous step); the receiver-qualified sibling
     /// ref then decides.
-    fn try_csharp_typed_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
+    ///
+    /// `target_ok` picks what the last segment names: a callable for a call,
+    /// a field or property for a member read (#637).
+    fn try_csharp_typed_match(
+        &self,
+        uref: &UnresolvedRef,
+        target_ok: impl Fn(&NodeKind) -> bool,
+    ) -> Option<ResolvedRef> {
         let mut segments = uref.reference_name.split("::");
         let root = segments.next()?;
         let mut steps: Vec<&str> = segments.collect();
@@ -1564,7 +1587,7 @@ impl<'a> ReferenceResolver<'a> {
             types = self.csharp_member_types(&members, awaited)?;
         }
 
-        let mut targets = self.csharp_members(&types, method, is_csharp_callable);
+        let mut targets = self.csharp_members(&types, method, target_ok);
         // Overloads share a qualified name; the first declared stands for them.
         targets.sort_by(|a, b| {
             (a.qualified_name.as_str(), a.start_line)

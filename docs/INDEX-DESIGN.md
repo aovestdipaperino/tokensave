@@ -80,7 +80,7 @@ CREATE TABLE edges (
 |---|---|---|---|
 | `contains` | parent entity | child entity | Structural nesting: module contains struct, struct contains method |
 | `calls` | function/method | function/method | Call site at a specific line |
-| `uses` | function/method | type/struct/enum | Type reference (parameter, return, field type) |
+| `uses` | function/method | type/struct/enum, or field/property | Type reference (parameter, return, field type); in C#, also a field or property read through a receiver of known type (`h.Label`, #637). Followed by `impact` and file dependents, not by `callers` |
 | `implements` | impl/class | trait/interface | Implementation relationship |
 | `extends` | class/struct | class/struct | Inheritance |
 | `annotates` | annotation/decorator | target entity | Decorator/annotation applied to a declaration |
