@@ -780,18 +780,50 @@ pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolRe
             .collect()
     };
 
+    // The traversal keeps one edge per caller, but the graph stores one edge
+    // per call site. Fetch every edge into the targets the callers were
+    // reached through, so each caller can list all of its call lines (#672).
+    let reached_targets: Vec<String> = results
+        .iter()
+        .map(|(_, edge, _, _)| edge.target.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let mut call_lines: HashMap<(String, String, EdgeKind), Vec<u32>> = HashMap::new();
+    if !reached_targets.is_empty() {
+        for e in cg.get_incoming_edges_bulk(&reached_targets, &[]).await? {
+            if let Some(line) = e.line {
+                call_lines
+                    .entry((e.source, e.target, e.kind))
+                    .or_default()
+                    .push(line);
+            }
+        }
+    }
+
     let items: Vec<Value> = results
         .iter()
         .map(|(node, edge, depth, dispatch_from)| {
+            // The call-site line (where the caller invokes the target),
+            // taken from the edge. Older edges predating call-site tracking
+            // have no line; fall back to the caller's declaration line.
+            let line = super::display_line(edge.line.unwrap_or(node.start_line));
+            let mut lines: Vec<u32> = call_lines
+                .get(&(edge.source.clone(), edge.target.clone(), edge.kind))
+                .map(|ls| ls.iter().map(|&l| super::display_line(l)).collect())
+                .unwrap_or_default();
+            lines.push(line);
+            lines.sort_unstable();
+            lines.dedup();
             json!({
                 "node_id": node.id,
                 "name": node.name,
                 "kind": node.kind.as_str(),
                 "file": node.file_path,
-                // The call-site line (where the caller invokes the target),
-                // taken from the edge. Older edges predating call-site tracking
-                // have no line; fall back to the caller's declaration line.
-                "line": super::display_line(edge.line.unwrap_or(node.start_line)),
+                "line": line,
+                // Every line where this caller invokes the target, ascending.
+                // `line` is always among them (#672).
+                "lines": lines,
                 // The caller's own declaration line, kept so both are available.
                 "def_line": super::display_line(node.start_line),
                 // BFS hop count: 1 = direct caller, 2+ = transitive.
