@@ -10,7 +10,7 @@ mod variants;
 pub use js_specifier::relative_module_candidates;
 pub use resolver::{
     csharp_type_name, has_typed_receiver_refs, is_csharp, is_gdscript, simple_ref_name,
-    ReferenceResolver,
+    ReferenceResolver, CSHARP_SIMPLE_NAME_ROOT,
 };
 pub use touched::{index_keys_for_test, AmbiguityRefKey, TouchedNode, TouchedSet};
 pub use variants::{
