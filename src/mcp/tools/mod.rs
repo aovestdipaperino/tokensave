@@ -8,6 +8,8 @@ mod accounting;
 mod definitions;
 mod handlers;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -26,6 +28,28 @@ pub use handlers::{handle_tool_call, handle_tool_call_with_session, SessionState
 
 /// Maximum character length for a tool response before truncation.
 const MAX_RESPONSE_CHARS: usize = 15_000;
+
+/// Set once by `tokensave tool` so the CLI prints whole results (#673).
+static RESPONSE_LIMIT_DISABLED: AtomicBool = AtomicBool::new(false);
+
+/// Lifts the tool response size cap for the rest of this process.
+///
+/// The cap exists to protect an agent's context window. `tokensave tool` on
+/// the CLI is read by a script or a person, so it calls this before
+/// dispatching; the MCP server never does.
+pub fn disable_response_limit() {
+    RESPONSE_LIMIT_DISABLED.store(true, Ordering::Relaxed);
+}
+
+/// The response size cap in effect: [`MAX_RESPONSE_CHARS`], or unlimited
+/// after [`disable_response_limit`].
+fn response_limit() -> usize {
+    if RESPONSE_LIMIT_DISABLED.load(Ordering::Relaxed) {
+        usize::MAX
+    } else {
+        MAX_RESPONSE_CHARS
+    }
+}
 
 /// A tool definition exposed by the MCP server.
 #[derive(Debug, Clone, Serialize, Deserialize)]

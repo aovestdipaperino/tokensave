@@ -11,6 +11,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 - Index embedded Ruby in ERB and Slim templates, including calls to helpers, with locations in the original template. Available with `lang-ruby`; controller-to-view and partial-render relationships are not inferred. A bare name in a template binds only to helper-shaped methods (in a `helpers/` directory, a `*Helper` module, `ApplicationController`, a top-level `def`, or the template itself), so partial locals such as `item` in `item.title` do not become call edges to unrelated same-named methods, while helper receivers such as `current_user.name` still do.
 
+### Fixed
+- **A JSON tool result that exceeds the 15,000-character cap still parses (#673).** The cap cut every result at 15,000 characters and appended `[... truncated at 15000 chars]`, so `format: "json"` output (`tokensave_search`, `tokensave_read` `map`, and any tool that returns JSON) ended in the middle of an object. An oversized JSON result is now cut down structurally instead: its largest array loses whole trailing items, or its largest string is cut at a line break, until the result fits, and the top-level object gets `"truncated": true` plus `"omitted": N` (items dropped) or `"omitted_chars": N` (string bytes dropped). A bare top-level array, as `tokensave_search` returns, keeps its shape when it fits; when it has to be cut it is wrapped as `{"results": [...], "truncated": true, "omitted": N}`. If nothing can be cut far enough, the result is a short JSON object with `"truncated": true` and an error. Text results are cut as before. `tokensave tool` on the CLI no longer applies the cap at all, since a script or a terminal reads its output, not a context window. Reported by @xorets.
+
 ## [7.15.0] - 2026-10-07
 
 ### Added

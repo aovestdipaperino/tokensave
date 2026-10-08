@@ -10,6 +10,9 @@
 //! - `-h` / `--help` — print the tool's parameters and exit.
 //! - `--json` — print the raw JSON-RPC `result.value`; default is the
 //!   human-readable text inside `content[0].text`.
+//!
+//! Unlike the MCP server, the CLI does not cap a result at 15,000 characters:
+//! its output goes to a script or a terminal, not a context window (#673).
 //! - `--project <path>` — project root to open. Defaults to cwd. We use
 //!   `--project` (not `-p`) because several MCP tools have a `path` argument
 //!   that filters files within the project.
@@ -26,7 +29,9 @@ use std::path::PathBuf;
 use serde_json::{Map, Value};
 
 use tokensave::errors::{Result, TokenSaveError};
-use tokensave::mcp::tools::{get_tool_definitions, handle_tool_call, ToolDefinition};
+use tokensave::mcp::tools::{
+    disable_response_limit, get_tool_definitions, handle_tool_call, ToolDefinition,
+};
 
 use crate::serve;
 
@@ -74,6 +79,9 @@ pub(crate) async fn run(name: Option<String>, args: Vec<String>) -> Result<()> {
 
     let project_path = tokensave::config::resolve_path(parsed.project.clone());
     let cg = serve::ensure_initialized(&project_path).await?;
+    // The 15,000-character cap protects an agent's context window; the CLI's
+    // reader is a script or a person, so it gets the whole result (#673).
+    disable_response_limit();
     let result = handle_tool_call(&cg, &def.name, parsed.tool_args, None, None).await?;
 
     if parsed.raw_json {

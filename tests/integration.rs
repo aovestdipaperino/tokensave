@@ -177,6 +177,7 @@ mod systemverilog_extraction_test;
 mod terraform_extraction_test;
 mod tokensave_test;
 mod toml_extraction_test;
+mod tool_cli_json_limit_673_test;
 mod toolset_test;
 mod ts_abstract_and_ctor_param_test;
 mod ts_js_specifier_647_test;

@@ -24,7 +24,9 @@ use serde_json::{json, Value};
 use crate::errors::{Result, TokenSaveError};
 use crate::tokensave::TokenSave;
 
-use super::{ToolResult, MAX_RESPONSE_CHARS};
+#[cfg(test)]
+use super::MAX_RESPONSE_CHARS;
+use super::{response_limit, ToolResult};
 
 /// Session-scoped state shared across tool calls in one MCP server session.
 ///
@@ -236,17 +238,205 @@ pub(crate) async fn sibling_note(
 /// which killed the whole server in a debug build while a release build
 /// returned an empty text block, so the two profiles disagreed on a request
 /// that was never invalid (#499).
+///
+/// A response that is a JSON document is never sliced: it is cut down
+/// structurally by [`truncate_json_to`] so it still parses (#673). Only text
+/// that is not JSON gets the `[... truncated at N chars]` notice.
 pub(crate) fn truncate_response(s: &str) -> String {
-    if s.len() <= MAX_RESPONSE_CHARS {
-        s.to_string()
-    } else {
-        // Find a valid UTF-8 character boundary at or before MAX_RESPONSE_CHARS
-        let mut end = MAX_RESPONSE_CHARS;
-        while !s.is_char_boundary(end) && end > 0 {
-            end -= 1;
-        }
-        format!("{}\n\n[... truncated at {} chars]", &s[..end], end)
+    truncate_response_to(s, response_limit())
+}
+
+/// [`truncate_response`] with an explicit limit.
+fn truncate_response_to(s: &str, limit: usize) -> String {
+    if s.len() <= limit {
+        return s.to_string();
     }
+    if let Some(json) = truncate_json_to(s, limit) {
+        return json;
+    }
+    // Find a valid UTF-8 character boundary at or before the limit
+    let mut end = limit;
+    while !s.is_char_boundary(end) && end > 0 {
+        end -= 1;
+    }
+    format!("{}\n\n[... truncated at {} chars]", &s[..end], end)
+}
+
+/// Cuts an oversized JSON document down to `limit` bytes while keeping it
+/// valid JSON (#673). Returns `None` when `s` is not a JSON object or array,
+/// so the caller falls back to plain text truncation.
+///
+/// The largest array or string reachable from the root through objects is
+/// shrunk first: an array loses whole trailing elements, a string is cut at
+/// its last line break (or whitespace) that fits, so a node id inside it is
+/// never split. If emptying that field is not enough, the next largest one
+/// is shrunk, and so on. The result records what was cut at the top level:
+/// `"truncated": true`, plus `"omitted": N` (array elements dropped) and/or
+/// `"omitted_chars": N` (string bytes dropped).
+///
+/// A bare top-level array is returned as-is when it fits. Only when it has
+/// to be cut is it wrapped as `{"results": [...], "truncated": true,
+/// "omitted": N}`, the same `results` key the empty-result sibling note
+/// uses, so a consumer checks for an object to detect a cut.
+///
+/// When nothing left can be shrunk and the document still does not fit (for
+/// example an object with thousands of scalar keys), a small JSON object
+/// describing the problem is returned instead.
+fn truncate_json_to(s: &str, limit: usize) -> Option<String> {
+    let trimmed = s.trim_start();
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return None;
+    }
+    let parsed: Value = serde_json::from_str(s).ok()?;
+    let mut root = match parsed {
+        Value::Array(items) => json!({ "results": items }),
+        Value::Object(_) => parsed,
+        _ => return None,
+    };
+
+    let render = |v: &Value| serde_json::to_string_pretty(v).unwrap_or_default();
+    let mut omitted_items = 0usize;
+    let mut omitted_chars = 0usize;
+    // Paths already shrunk to nothing; never picked again.
+    let mut exhausted: Vec<Vec<String>> = Vec::new();
+
+    while let Some(path) = largest_shrinkable(&root, &exhausted) {
+        let field = value_at(&root, &path).cloned().unwrap_or(Value::Null);
+        // Try every cut size on a scratch copy; binary search for the
+        // largest that fits.
+        let attempt = |keep: usize, root: &mut Value| -> (usize, usize) {
+            let (shrunk, items, chars) = match &field {
+                Value::Array(arr) => {
+                    let keep = keep.min(arr.len());
+                    (Value::Array(arr[..keep].to_vec()), arr.len() - keep, 0)
+                }
+                Value::String(text) => {
+                    let cut = string_cut(text, keep);
+                    (Value::String(text[..cut].to_string()), 0, text.len() - cut)
+                }
+                other => (other.clone(), 0, 0),
+            };
+            if let Some(slot) = value_at_mut(root, &path) {
+                *slot = shrunk;
+            }
+            set_truncation_markers(root, omitted_items + items, omitted_chars + chars);
+            (items, chars)
+        };
+        let full_len = match &field {
+            Value::Array(arr) => arr.len(),
+            Value::String(text) => text.len(),
+            _ => 0,
+        };
+
+        // Largest `keep` in [0, full_len) whose rendering fits.
+        let (mut lo, mut hi) = (0usize, full_len);
+        let mut best: Option<usize> = None;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let mut scratch = root.clone();
+            attempt(mid, &mut scratch);
+            if render(&scratch).len() <= limit {
+                best = Some(mid);
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+
+        if let Some(keep) = best {
+            attempt(keep, &mut root);
+            return Some(render(&root));
+        }
+        let (items, chars) = attempt(0, &mut root);
+        omitted_items += items;
+        omitted_chars += chars;
+        exhausted.push(path);
+    }
+
+    let note = json!({
+        "truncated": true,
+        "error": "JSON result exceeds the response limit even with every list and string emptied; narrow the request",
+        "limit_chars": limit,
+    });
+    Some(render(&note))
+}
+
+/// Byte offset at which to cut `text` so at most `max` bytes remain, preferring
+/// the end of a line, then whitespace, then any character boundary.
+fn string_cut(text: &str, max: usize) -> usize {
+    if max >= text.len() {
+        return text.len();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &text[..end];
+    if let Some(i) = head.rfind('\n') {
+        return i + 1;
+    }
+    if let Some(i) = head.rfind(char::is_whitespace) {
+        return i;
+    }
+    end
+}
+
+/// Sets `truncated`/`omitted`/`omitted_chars` on the root object.
+fn set_truncation_markers(root: &mut Value, omitted_items: usize, omitted_chars: usize) {
+    let Some(map) = root.as_object_mut() else {
+        return;
+    };
+    map.insert("truncated".to_string(), Value::Bool(true));
+    if omitted_items > 0 {
+        map.insert("omitted".to_string(), json!(omitted_items));
+    }
+    if omitted_chars > 0 {
+        map.insert("omitted_chars".to_string(), json!(omitted_chars));
+    }
+}
+
+/// Path (object keys from the root) of the non-empty array or string with the
+/// largest serialized size, reached through objects only, skipping
+/// `exhausted` paths and the truncation markers themselves.
+fn largest_shrinkable(root: &Value, exhausted: &[Vec<String>]) -> Option<Vec<String>> {
+    fn walk(
+        v: &Value,
+        path: &mut Vec<String>,
+        exhausted: &[Vec<String>],
+        best: &mut Option<(usize, Vec<String>)>,
+    ) {
+        let Some(map) = v.as_object() else {
+            return;
+        };
+        for (key, child) in map {
+            path.push(key.clone());
+            let shrinkable = match child {
+                Value::Array(a) => !a.is_empty(),
+                Value::String(s) => !s.is_empty(),
+                _ => false,
+            };
+            if shrinkable && !exhausted.contains(path) {
+                let size = serde_json::to_string(child).map_or(0, |s| s.len());
+                if best.as_ref().is_none_or(|(b, _)| size > *b) {
+                    *best = Some((size, path.clone()));
+                }
+            } else if child.is_object() {
+                walk(child, path, exhausted, best);
+            }
+            path.pop();
+        }
+    }
+    let mut best = None;
+    walk(root, &mut Vec::new(), exhausted, &mut best);
+    best.map(|(_, path)| path)
+}
+
+fn value_at<'a>(root: &'a Value, path: &[String]) -> Option<&'a Value> {
+    path.iter().try_fold(root, |cur, key| cur.get(key))
+}
+
+fn value_at_mut<'a>(root: &'a mut Value, path: &[String]) -> Option<&'a mut Value> {
+    path.iter().try_fold(root, |cur, key| cur.get_mut(key))
 }
 
 /// Serializes a structured payload for a tool response without ever emitting
@@ -265,7 +455,7 @@ pub(crate) fn truncate_response(s: &str) -> String {
 pub(crate) fn serialize_bounded_json(value: &Value, shedable: &[&str]) -> String {
     let fits = |v: &Value| -> Option<String> {
         let s = serde_json::to_string_pretty(v).unwrap_or_default();
-        (s.len() <= MAX_RESPONSE_CHARS).then_some(s)
+        (s.len() <= response_limit()).then_some(s)
     };
     if let Some(s) = fits(value) {
         return s;
@@ -310,7 +500,7 @@ pub(crate) fn serialize_bounded_json(value: &Value, shedable: &[&str]) -> String
     let note = json!({
         "truncated": {
             "error": "payload exceeds the response limit even with every list emptied",
-            "limit_chars": MAX_RESPONSE_CHARS,
+            "limit_chars": response_limit(),
             "totals": totals.iter().map(|(p, n)| json!({"field": p, "total": n})).collect::<Vec<_>>(),
         }
     });
@@ -371,7 +561,8 @@ fn array_at_mut<'a>(root: &'a mut Value, path: &str) -> Option<&'a mut Vec<Value
 /// code block must not defeat the response limit).
 pub(crate) fn truncate_response_keep_tail(s: &str, marker: &str) -> String {
     const MAX_TAIL_CHARS: usize = 2_000;
-    if s.len() <= MAX_RESPONSE_CHARS {
+    let limit = response_limit();
+    if s.len() <= limit {
         return s.to_string();
     }
     let Some(idx) = s.rfind(marker) else {
@@ -381,7 +572,7 @@ pub(crate) fn truncate_response_keep_tail(s: &str, marker: &str) -> String {
     if tail.len() > MAX_TAIL_CHARS {
         return truncate_response(s);
     }
-    let budget = MAX_RESPONSE_CHARS - tail.len();
+    let budget = limit - tail.len();
     let mut end = budget.min(idx);
     while !s.is_char_boundary(end) && end > 0 {
         end -= 1;
@@ -946,6 +1137,114 @@ mod tests {
         let result = truncate_response(&long);
         assert!(result.len() < 20_000);
         assert!(result.contains("[... truncated at 15000 chars]"));
+    }
+
+    fn search_item(i: usize) -> Value {
+        json!({
+            "id": format!("function:{i:032x}"),
+            "name": format!("handler_{i}"),
+            "file": format!("src/module_{i}.rs"),
+            "line": i,
+            "signature": "x".repeat(300),
+        })
+    }
+
+    #[test]
+    fn oversized_top_level_array_stays_valid_json() {
+        let items: Vec<Value> = (0..200).map(search_item).collect();
+        let s = serde_json::to_string_pretty(&Value::Array(items)).unwrap();
+        assert!(s.len() > MAX_RESPONSE_CHARS);
+
+        let out = truncate_response(&s);
+        assert!(out.len() <= MAX_RESPONSE_CHARS, "{}", out.len());
+        let v: Value = serde_json::from_str(&out).expect("truncated output must parse");
+        let kept = v["results"].as_array().expect("wrapped under results");
+        assert!(!kept.is_empty(), "some items must survive");
+        assert_eq!(v["truncated"], json!(true));
+        assert_eq!(v["omitted"].as_u64().unwrap() as usize + kept.len(), 200);
+        // Whole leading items survive, in order.
+        assert_eq!(kept[0], search_item(0));
+        assert_eq!(kept[kept.len() - 1], search_item(kept.len() - 1));
+    }
+
+    #[test]
+    fn small_top_level_array_is_not_wrapped() {
+        let items: Vec<Value> = (0..3).map(search_item).collect();
+        let s = serde_json::to_string_pretty(&Value::Array(items)).unwrap();
+        assert_eq!(truncate_response(&s), s);
+    }
+
+    #[test]
+    fn oversized_object_sheds_its_primary_array() {
+        let items: Vec<Value> = (0..200).map(search_item).collect();
+        let payload = json!({"query": "handler", "count": 200, "matches": items});
+        let s = serde_json::to_string_pretty(&payload).unwrap();
+
+        let out = truncate_response(&s);
+        assert!(out.len() <= MAX_RESPONSE_CHARS);
+        let v: Value = serde_json::from_str(&out).expect("truncated output must parse");
+        assert_eq!(v["query"], json!("handler"));
+        assert_eq!(v["count"], json!(200));
+        let kept = v["matches"].as_array().unwrap().len();
+        assert!(kept > 0);
+        assert_eq!(v["truncated"], json!(true));
+        assert_eq!(v["omitted"].as_u64().unwrap() as usize + kept, 200);
+    }
+
+    #[test]
+    fn oversized_string_field_is_shortened_at_a_line_boundary() {
+        // `tokensave_read` in JSON format carries its content as one string.
+        use std::fmt::Write as _;
+        let body: String = (0..2_000).fold(String::new(), |mut acc, i| {
+            let _ = writeln!(acc, "{i:>5}\tfn symbol_{i}()");
+            acc
+        });
+        let payload = json!({"file": "src/lib.rs", "mode": "map", "body": body});
+        let s = serde_json::to_string_pretty(&payload).unwrap();
+        assert!(s.len() > MAX_RESPONSE_CHARS);
+
+        let out = truncate_response(&s);
+        assert!(out.len() <= MAX_RESPONSE_CHARS);
+        let v: Value = serde_json::from_str(&out).expect("truncated output must parse");
+        assert_eq!(v["file"], json!("src/lib.rs"));
+        let kept = v["body"].as_str().unwrap();
+        assert!(!kept.is_empty(), "some text must survive");
+        assert!(body.starts_with(kept));
+        assert!(kept.ends_with('\n'), "cut must land on a line boundary");
+        assert_eq!(v["truncated"], json!(true));
+        assert_eq!(
+            v["omitted_chars"].as_u64().unwrap() as usize,
+            body.len() - kept.len()
+        );
+        assert!(v.get("omitted").is_none());
+    }
+
+    #[test]
+    fn unshrinkable_json_still_parses() {
+        // Many scalar keys: no array or long string to cut.
+        let map: serde_json::Map<String, Value> =
+            (0..2_000).map(|i| (format!("key_{i}"), json!(i))).collect();
+        let s = serde_json::to_string_pretty(&Value::Object(map)).unwrap();
+        assert!(s.len() > MAX_RESPONSE_CHARS);
+
+        let out = truncate_response(&s);
+        assert!(out.len() <= MAX_RESPONSE_CHARS);
+        let v: Value = serde_json::from_str(&out).expect("fallback must parse");
+        assert_eq!(v["truncated"], json!(true));
+    }
+
+    #[test]
+    fn non_json_text_keeps_the_text_notice() {
+        let text = format!("[not json {}", "y".repeat(20_000));
+        let out = truncate_response(&text);
+        assert!(out.ends_with("[... truncated at 15000 chars]"));
+    }
+
+    #[test]
+    fn unlimited_response_limit_returns_input_unchanged() {
+        let items: Vec<Value> = (0..200).map(search_item).collect();
+        let s = serde_json::to_string_pretty(&Value::Array(items)).unwrap();
+        assert_eq!(truncate_response_to(&s, usize::MAX), s);
     }
 
     #[test]
