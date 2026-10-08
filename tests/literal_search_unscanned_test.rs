@@ -299,5 +299,9 @@ async fn unscanned_detail_once_per_root() {
         "second search must carry only the compact count: {second:#}"
     );
     assert_eq!(second["unscanned"]["files"], 3);
-    assert_eq!(second["unscanned"]["hint"], "tokensave_files --unscanned");
+    let hint = second["unscanned"]["hint"].as_str().expect("compact hint");
+    assert!(
+        !hint.contains("--unscanned"),
+        "hint must not name an option tokensave_files lacks (#667): {hint}"
+    );
 }

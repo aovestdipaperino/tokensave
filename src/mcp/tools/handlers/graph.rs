@@ -295,7 +295,10 @@ fn unscanned_report(
                    not searched and this result may be incomplete.",
         "remedy": "Literal search covers any file the index tracks, parsed or not. To include \
                    one of these formats, add its extension to `artifact_extensions` in \
-                   .tokensave/config.json and run `tokensave sync -f`.",
+                   .tokensave/config.json and run `tokensave sync -f`. Files skipped for \
+                   their path (a hidden directory, an `exclude` glob) need the path in \
+                   `include[]` instead, as `tokensave init` suggests. Until then, grep \
+                   reaches them.",
     });
     if more > 0 {
         if let Some(object) = report.as_object_mut() {
@@ -304,6 +307,12 @@ fn unscanned_report(
     }
     Some(report)
 }
+
+/// Pointer carried by the compact `unscanned` block on repeat literal searches.
+/// It used to name a `tokensave_files --unscanned` option that does not exist
+/// (#667); the full breakdown is in the first literal search of the session.
+const UNSCANNED_COMPACT_HINT: &str =
+    "breakdown and remedy shown by this session's first literal search; grep reaches these files";
 
 /// Upper bound on the size of a single source file scanned in literal mode.
 /// Files larger than this are skipped defensively — they are almost always
@@ -444,7 +453,7 @@ async fn handle_literal_search(
         unscanned_report(cg, &indexed_paths, scope_prefix, path_include, path_exclude)
     {
         let files = unscanned["files"].as_u64().unwrap_or(0);
-        let compact = json!({ "files": files, "hint": "tokensave_files --unscanned" });
+        let compact = json!({ "files": files, "hint": UNSCANNED_COMPACT_HINT });
         let should_compact = session.is_some_and(|session| {
             let root = cg.project_root().to_string_lossy().to_string();
             let mut shown = session
@@ -502,10 +511,7 @@ async fn handle_literal_search(
                     let _ = writeln!(text, "remedy: {remedy}");
                 }
             } else {
-                let _ = writeln!(
-                    text,
-                    "unscanned: {files} files (tokensave_files --unscanned)"
-                );
+                let _ = writeln!(text, "unscanned: {files} files ({UNSCANNED_COMPACT_HINT})");
             }
         }
         return Ok(ToolResult {
