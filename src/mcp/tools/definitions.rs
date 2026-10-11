@@ -924,7 +924,7 @@ fn def_callers() -> ToolDefinition {
          transitive), `line` (the call-site line where the caller invokes the \
          target), `lines` (every line where the caller invokes the target, \
          ascending; a caller is listed once even when it calls the target \
-         several times), and `def_line` (the caller's own declaration line). Generic \
+         several times), and `def_line`/`end_line` (the caller's own span). Generic \
          callers through a trait are included for concrete impl methods and \
          tagged with `dispatch_via_trait: true`; pass `resolve_dispatch: false` \
          to disable reverse dispatch resolution.",
@@ -2830,11 +2830,12 @@ fn def_implementations() -> ToolDefinition {
     def(
         "tokensave_implementations",
         "Trait / Method Implementations",
-        "Find every type implementing a given trait, or every body of a given \
-         method name. The 'trait' form returns each implementing type plus the \
-         methods on its impl block. The 'method' form returns every function/ \
-         method named X across the project, grouped by enclosing type when \
-         present. Each result includes file, signature, and the method body.",
+        "Find every type implementing a given trait, or every implementation of \
+         a given method name. The 'trait' form returns each implementing type \
+         plus the methods on its impl block. The 'method' form returns every \
+         function/method named X across the project. Each result is a location: \
+         file, line..end_line and signature, without code; fetch a body with \
+         tokensave_body, or pass bodies=true to inline every body.",
         json!({
             "type": "object",
             "properties": {
@@ -2849,6 +2850,10 @@ fn def_implementations() -> ToolDefinition {
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of implementations to return (default: 20, max: 200)"
+                },
+                "bodies": {
+                    "type": "boolean",
+                    "description": "Include each method's source body in the result. Default false: locations and signatures only."
                 }
             }
         }),

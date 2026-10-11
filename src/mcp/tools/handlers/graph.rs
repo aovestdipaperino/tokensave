@@ -151,6 +151,7 @@ pub(super) async fn handle_search(
                 "kind": r.node.kind.as_str(),
                 "file": r.node.file_path,
                 "line": super::display_line(r.node.start_line),
+                "end_line": super::display_line(r.node.end_line),
                 "signature": r.node.signature.as_deref().map(crate::context::compact_signature),
                 "score": r.score,
             });
@@ -176,6 +177,7 @@ pub(super) async fn handle_search(
         for item in &items {
             let file = item["file"].as_str().unwrap_or_default();
             let line = item["line"].as_u64().unwrap_or(0);
+            let end_line = item["end_line"].as_u64().unwrap_or(line);
             let name = item["name"].as_str().unwrap_or_default();
             let kind = item["kind"].as_str().unwrap_or_default();
             // `ids: true` must reach the default text format too, so the id
@@ -187,10 +189,13 @@ pub(super) async fn handle_search(
                 .unwrap_or_default();
             match item["signature"].as_str() {
                 Some(sig) => {
-                    let _ = writeln!(text, "{file}:{line}: {name} ({kind}){id} — {sig}");
+                    let _ = writeln!(
+                        text,
+                        "{file}:{line}-{end_line}: {name} ({kind}){id} — {sig}"
+                    );
                 }
                 None => {
-                    let _ = writeln!(text, "{file}:{line}: {name} ({kind}){id}");
+                    let _ = writeln!(text, "{file}:{line}-{end_line}: {name} ({kind}){id}");
                 }
             }
         }
@@ -826,6 +831,9 @@ pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolRe
                 "lines": lines,
                 // The caller's own declaration line, kept so both are available.
                 "def_line": super::display_line(node.start_line),
+                // Last line of the caller's own span (#674), so
+                // `def_line..=end_line` locates it without fetching a body.
+                "end_line": super::display_line(node.end_line),
                 // BFS hop count: 1 = direct caller, 2+ = transitive.
                 "depth": depth,
                 "edge_kind": edge.kind.as_str(),
@@ -885,6 +893,7 @@ pub(super) async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolRe
                 "kind": node.kind.as_str(),
                 "file": node.file_path,
                 "line": super::display_line(node.start_line),
+                "end_line": super::display_line(node.end_line),
                 "edge_kind": edge.kind.as_str(),
                 "dispatch_via_trait": false,
             })
@@ -904,6 +913,7 @@ pub(super) async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolRe
                     "kind": impl_method.kind.as_str(),
                     "file": impl_method.file_path,
                     "line": super::display_line(impl_method.start_line),
+                    "end_line": super::display_line(impl_method.end_line),
                     "edge_kind": "calls",
                     "dispatch_via_trait": true,
                     "dispatch_from": callee.id.clone(),
@@ -1098,6 +1108,7 @@ pub(super) async fn handle_impact(cg: &TokenSave, args: Value) -> Result<ToolRes
                 "kind": n.kind.as_str(),
                 "file": n.file_path,
                 "line": super::display_line(n.start_line),
+                "end_line": super::display_line(n.end_line),
             })
         })
         .collect();
@@ -1697,6 +1708,14 @@ pub(super) async fn handle_implementations(
         .and_then(serde_json::Value::as_u64)
         .map_or(20, |v| v.clamp(1, 200) as usize);
 
+    // Bodies are opt-in (#674): by default every result is a location —
+    // file, `line..=end_line`, signature — and the caller fetches only the
+    // bodies it needs with tokensave_body / tokensave_read.
+    let bodies = args
+        .get("bodies")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
     let project_root = cg.project_root().to_path_buf();
     let mut entries: Vec<Value> = Vec::new();
     let mut touched: Vec<String> = Vec::new();
@@ -1736,7 +1755,7 @@ pub(super) async fn handle_implementations(
                 if scope_prefix.is_some_and(|p| !impl_node.file_path.starts_with(p)) {
                     continue;
                 }
-                let methods = collect_method_bodies(cg, &impl_node, &project_root).await?;
+                let methods = collect_methods(cg, &impl_node, &project_root, bodies).await?;
                 if !touched.contains(&impl_node.file_path) {
                     touched.push(impl_node.file_path.clone());
                 }
@@ -1746,6 +1765,7 @@ pub(super) async fn handle_implementations(
                     "kind": impl_node.kind.as_str(),
                     "file": impl_node.file_path,
                     "line": super::display_line(impl_node.start_line),
+                    "end_line": super::display_line(impl_node.end_line),
                     "trait": trait_node.qualified_name,
                     "methods": methods,
                 }));
@@ -1782,15 +1802,10 @@ pub(super) async fn handle_implementations(
             });
         }
         for n in method_nodes {
-            let abs_path = project_root.join(&n.file_path);
-            let body = match crate::sync::read_source_file(&abs_path) {
-                Ok(source) => super::info::extract_lines(&source, n.start_line, n.end_line),
-                Err(_) => String::from("<file unreadable>"),
-            };
             if !touched.contains(&n.file_path) {
                 touched.push(n.file_path.clone());
             }
-            entries.push(json!({
+            let mut entry = json!({
                 "name": n.name,
                 "qualified_name": n.qualified_name,
                 "kind": n.kind.as_str(),
@@ -1798,8 +1813,11 @@ pub(super) async fn handle_implementations(
                 "line": super::display_line(n.start_line),
                 "end_line": super::display_line(n.end_line),
                 "signature": n.signature.as_deref().map(crate::context::compact_signature),
-                "body": body,
-            }));
+            });
+            if bodies {
+                entry["body"] = json!(read_body(&project_root, n));
+            }
+            entries.push(entry);
         }
     }
 
@@ -1817,10 +1835,13 @@ pub(super) async fn handle_implementations(
     })
 }
 
-async fn collect_method_bodies(
+/// Lists the methods on an implementing type's body, each with its
+/// `line..=end_line` span and signature; `bodies` adds the source text.
+async fn collect_methods(
     cg: &TokenSave,
     impl_node: &crate::types::Node,
     project_root: &std::path::Path,
+    bodies: bool,
 ) -> Result<Vec<Value>> {
     let children = cg.db().get_children_of(&impl_node.id).await?;
     let mut out: Vec<Value> = Vec::new();
@@ -1831,18 +1852,26 @@ async fn collect_method_bodies(
         ) {
             continue;
         }
-        let abs_path = project_root.join(&child.file_path);
-        let body = match crate::sync::read_source_file(&abs_path) {
-            Ok(source) => super::info::extract_lines(&source, child.start_line, child.end_line),
-            Err(_) => String::from("<file unreadable>"),
-        };
-        out.push(json!({
+        let mut method = json!({
             "name": child.name,
             "kind": child.kind.as_str(),
             "line": super::display_line(child.start_line),
+            "end_line": super::display_line(child.end_line),
             "signature": child.signature,
-            "body": body,
-        }));
+        });
+        if bodies {
+            method["body"] = json!(read_body(project_root, &child));
+        }
+        out.push(method);
     }
     Ok(out)
+}
+
+/// Source text of `node`'s span, read from disk.
+fn read_body(project_root: &std::path::Path, node: &crate::types::Node) -> String {
+    let abs_path = project_root.join(&node.file_path);
+    match crate::sync::read_source_file(&abs_path) {
+        Ok(source) => super::info::extract_lines(&source, node.start_line, node.end_line),
+        Err(_) => String::from("<file unreadable>"),
+    }
 }
