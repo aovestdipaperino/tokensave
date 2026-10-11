@@ -146,6 +146,7 @@ mod quickbasic_extraction_test;
 mod quint_extraction_test;
 mod rails_routes_test;
 mod rake_support_test;
+mod ranges_not_code_674_test;
 mod read_numbering_digest_test;
 mod reinstall_githooks_624_test;
 mod rename_test;

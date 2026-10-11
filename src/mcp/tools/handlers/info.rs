@@ -977,11 +977,12 @@ pub(super) async fn handle_type_hierarchy(cg: &TokenSave, args: Value) -> Result
         })?;
 
     let mut output = format!(
-        "{} ({}) -- {}:{}\n",
+        "{} ({}) -- {}:{}-{}\n",
         root.name,
         root.kind.as_str(),
         root.file_path,
-        super::display_line(root.start_line)
+        super::display_line(root.start_line),
+        super::display_line(root.end_line)
     );
     let mut all_files: Vec<String> = vec![root.file_path.clone()];
 
@@ -1022,13 +1023,14 @@ fn build_type_tree<'a>(
             if let Ok(Some(child)) = cg.get_node(&edge.source).await {
                 let _ = writeln!(
                     output,
-                    "{}|- {} {} ({}) -- {}:{}",
+                    "{}|- {} {} ({}) -- {}:{}-{}",
                     pad,
                     edge.kind.as_str(),
                     child.name,
                     child.kind.as_str(),
                     child.file_path,
                     super::display_line(child.start_line),
+                    super::display_line(child.end_line),
                 );
                 all_files.push(child.file_path.clone());
                 build_type_tree(cg, &child.id, max_depth, depth + 1, output, all_files).await;
