@@ -15,6 +15,7 @@ pub mod info;
 pub mod memory;
 pub mod receiver_type;
 pub mod redundancy;
+mod symbol_target;
 pub mod workflow;
 
 use std::collections::HashSet;
@@ -695,9 +696,9 @@ pub async fn handle_tool_call_with_session(
     match tool_name {
         "tokensave_search" => graph::handle_search(cg, args, scope_prefix, session).await,
         "tokensave_context" => graph::handle_context(cg, args, scope_prefix).await,
-        "tokensave_callers" => graph::handle_callers(cg, args).await,
-        "tokensave_callees" => graph::handle_callees(cg, args).await,
-        "tokensave_impact" => graph::handle_impact(cg, args).await,
+        "tokensave_callers" => graph::handle_callers(cg, args, scope_prefix).await,
+        "tokensave_callees" => graph::handle_callees(cg, args, scope_prefix).await,
+        "tokensave_impact" => graph::handle_impact(cg, args, scope_prefix).await,
         "tokensave_node" => graph::handle_node(cg, args).await,
         "tokensave_status" => {
             info::handle_status(cg, server_stats, scope_prefix, selected_graph).await
@@ -737,7 +738,7 @@ pub async fn handle_tool_call_with_session(
         "tokensave_pr_context" => git::handle_pr_context(cg, args).await,
         "tokensave_simplify_scan" => info::handle_simplify_scan(cg, args, scope_prefix).await,
         "tokensave_test_map" => health::handle_test_map(cg, args, scope_prefix).await,
-        "tokensave_type_hierarchy" => info::handle_type_hierarchy(cg, args).await,
+        "tokensave_type_hierarchy" => info::handle_type_hierarchy(cg, args, scope_prefix).await,
         "tokensave_branch_search" => git::handle_branch_search(cg, args).await,
         "tokensave_branch_diff" => git::handle_branch_diff(cg, args).await,
         "tokensave_branch_list" => Ok(git::handle_branch_list(cg)),

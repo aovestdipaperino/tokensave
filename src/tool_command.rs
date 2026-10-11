@@ -218,9 +218,21 @@ fn parse_invocation(def: &ToolDefinition, args: &[String]) -> Result<ParsedInvoc
 
     // Bind positionals to required string properties, in the order they appear
     // in the schema's `required` array, skipping any that were already set.
+    // A tool that takes `symbol` or `node_id` without requiring either
+    // (`body`, `callers`, ... since #669) binds one positional to `symbol`,
+    // which also accepts a node id.
     if !positionals.is_empty() {
         let mut positional_iter = positionals.into_iter();
-        for req in &required {
+        let symbol_slot = [String::from("symbol")];
+        let slots: &[String] = if required.is_empty()
+            && schema_properties.contains_key("symbol")
+            && !collected.contains_key("node_id")
+        {
+            &symbol_slot
+        } else {
+            &required
+        };
+        for req in slots {
             if collected.contains_key(req) {
                 continue;
             }
@@ -632,6 +644,24 @@ mod tests {
         let d = def("search");
         let parsed = parse_invocation(&d, &["foo".to_string()]).unwrap();
         assert_eq!(parsed.tool_args, json!({ "query": "foo" }));
+    }
+
+    #[test]
+    fn positional_binds_symbol_when_nothing_is_required() {
+        // `callers` takes `symbol` or `node_id`, neither required (#669).
+        let d = def("callers");
+        let parsed = parse_invocation(&d, &["Helper".to_string()]).unwrap();
+        assert_eq!(parsed.tool_args, json!({ "symbol": "Helper" }));
+        let err = parse_invocation(
+            &d,
+            &[
+                "--node-id".to_string(),
+                "fn:1".to_string(),
+                "Helper".to_string(),
+            ],
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("unexpected positional"), "{err}");
     }
 
     #[test]

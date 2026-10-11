@@ -13,6 +13,7 @@ use crate::tokensave::TokenSave;
 use crate::types::{BuildContextOptions, EdgeKind, Node, NodeKind, Visibility};
 
 use super::super::ToolResult;
+use super::symbol_target::{self, KindRanking, Target};
 use super::{
     effective_path, filter_by_path_lists, filter_by_scope, parse_string_array, require_node_id,
     truncate_response, truncate_response_keep_tail, unique_file_paths, SessionState,
@@ -756,10 +757,15 @@ pub(super) async fn handle_context(
 }
 
 /// Handles `tokensave_callers` tool calls.
-pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    let node_id = require_node_id(&args)?;
-    let _target = require_existing_node(cg, node_id).await?;
-
+///
+/// Takes a `node_id`, or a `symbol` answered for each of up to
+/// `max_matches` matches, overloads together (#669). At most `limit`
+/// callers are listed per match, with `total` and `truncated` (#645).
+pub(super) async fn handle_callers(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
     // Default to direct callers only. `get_callers` is a transitive BFS, so a
     // larger default silently mixed 2-/3-hop callers into the same flat list
     // with no way to tell them apart (#171). Callers who want transitive
@@ -773,7 +779,111 @@ pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolRe
         .get("resolve_dispatch")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(true);
+    let limit = symbol_target::result_limit(&args, Some(symbol_target::RESULT_LIMIT_DEFAULT))
+        .unwrap_or(symbol_target::RESULT_LIMIT_DEFAULT);
 
+    let target =
+        symbol_target::resolve_target(cg, &args, scope_prefix, KindRanking::Definition).await?;
+    let (output, touched_files) = match target {
+        Target::NodeId(node_id) => {
+            let _target = require_existing_node(cg, &node_id).await?;
+            let items = caller_items(cg, &[node_id], max_depth, resolve_dispatch).await?;
+            single_node_list("callers", items, limit)
+        }
+        Target::Symbol(matches) => {
+            let mut bodies = Vec::with_capacity(matches.answered.len());
+            let mut files = Vec::new();
+            for group in &matches.answered {
+                let items = caller_items(cg, &group.ids(), max_depth, resolve_dispatch).await?;
+                let body = symbol_target::capped_list("callers", items, limit);
+                push_item_files(body.get("callers"), &mut files);
+                bodies.push(body);
+            }
+            let files = unique_file_paths(files.iter().map(String::as_str));
+            (matches.to_json(bodies), files)
+        }
+    };
+
+    let output = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Today's single-node list output: the bare array when it fits `limit`,
+/// otherwise `{count, total, truncated, <key>: [...]}` (#669).
+fn single_node_list(key: &str, items: Vec<Value>, limit: usize) -> (Value, Vec<String>) {
+    let output = if items.len() > limit {
+        Value::Object(symbol_target::capped_list(key, items, limit))
+    } else {
+        Value::Array(items)
+    };
+    let mut files = Vec::new();
+    push_item_files(output.get(key).or(Some(&output)), &mut files);
+    (output, unique_file_paths(files.iter().map(String::as_str)))
+}
+
+/// Appends the `file` of every item in `items` to `files`.
+fn push_item_files(items: Option<&Value>, files: &mut Vec<String>) {
+    let items = items
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    files.extend(
+        items
+            .iter()
+            .filter_map(|item| item.get("file").and_then(Value::as_str))
+            .map(str::to_string),
+    );
+}
+
+/// Callers of every node in `node_ids` (one node, or a group of overloads),
+/// merged so a caller of several overloads is listed once with all its call
+/// lines and its smallest depth.
+async fn caller_items(
+    cg: &TokenSave,
+    node_ids: &[String],
+    max_depth: usize,
+    resolve_dispatch: bool,
+) -> Result<Vec<Value>> {
+    let mut items: Vec<Value> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for node_id in node_ids {
+        for item in caller_items_for(cg, node_id, max_depth, resolve_dispatch).await? {
+            let id = item["node_id"].as_str().unwrap_or_default().to_string();
+            let Some(&at) = index.get(&id) else {
+                index.insert(id, items.len());
+                items.push(item);
+                continue;
+            };
+            let existing = &mut items[at];
+            let mut lines: Vec<u64> = existing["lines"]
+                .as_array()
+                .into_iter()
+                .chain(item["lines"].as_array())
+                .flatten()
+                .filter_map(Value::as_u64)
+                .collect();
+            lines.sort_unstable();
+            lines.dedup();
+            existing["lines"] = json!(lines);
+            if item["depth"].as_u64() < existing["depth"].as_u64() {
+                existing["depth"] = item["depth"].clone();
+            }
+        }
+    }
+    Ok(items)
+}
+
+/// Callers of one node, as `tokensave_callers` lists them.
+async fn caller_items_for(
+    cg: &TokenSave,
+    node_id: &str,
+    max_depth: usize,
+    resolve_dispatch: bool,
+) -> Result<Vec<Value>> {
     let results = if resolve_dispatch && cg.has_trait_dispatch_callers(node_id) {
         cg.get_callers_with_dispatch_depth(node_id, max_depth)
             .await?
@@ -806,7 +916,7 @@ pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolRe
         }
     }
 
-    let items: Vec<Value> = results
+    Ok(results
         .iter()
         .map(|(node, edge, depth, dispatch_from)| {
             // The call-site line (where the caller invokes the target),
@@ -841,20 +951,7 @@ pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolRe
                 "dispatch_from": dispatch_from,
             })
         })
-        .collect();
-
-    let touched_files = unique_file_paths(
-        items
-            .iter()
-            .filter_map(|item| item.get("file").and_then(Value::as_str)),
-    );
-    let output = serde_json::to_string_pretty(&items).unwrap_or_default();
-    Ok(ToolResult {
-        value: json!({
-            "content": [{ "type": "text", "text": truncate_response(&output) }]
-        }),
-        touched_files,
-    })
+        .collect())
 }
 
 /// Handles `tokensave_callees` tool calls.
@@ -867,10 +964,14 @@ pub(super) async fn handle_callers(cg: &TokenSave, args: Value) -> Result<ToolRe
 /// they statically called.
 ///
 /// Dispatch resolution skipped when `resolve_dispatch=false` is passed.
-pub(super) async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    let node_id = require_node_id(&args)?;
-    let _target = require_existing_node(cg, node_id).await?;
-
+///
+/// Takes a `node_id` or a `symbol`, and caps each match at `limit`, as
+/// `tokensave_callers` does (#669).
+pub(super) async fn handle_callees(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
     let max_depth = args
         .get("max_depth")
         .and_then(serde_json::Value::as_u64)
@@ -880,7 +981,68 @@ pub(super) async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolRe
         .get("resolve_dispatch")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(true);
+    let limit = symbol_target::result_limit(&args, Some(symbol_target::RESULT_LIMIT_DEFAULT))
+        .unwrap_or(symbol_target::RESULT_LIMIT_DEFAULT);
 
+    let target =
+        symbol_target::resolve_target(cg, &args, scope_prefix, KindRanking::Definition).await?;
+    let (output, touched_files) = match target {
+        Target::NodeId(node_id) => {
+            let _target = require_existing_node(cg, &node_id).await?;
+            let items = callee_items(cg, &[node_id], max_depth, resolve_dispatch).await?;
+            single_node_list("callees", items, limit)
+        }
+        Target::Symbol(matches) => {
+            let mut bodies = Vec::with_capacity(matches.answered.len());
+            let mut files = Vec::new();
+            for group in &matches.answered {
+                let items = callee_items(cg, &group.ids(), max_depth, resolve_dispatch).await?;
+                let body = symbol_target::capped_list("callees", items, limit);
+                push_item_files(body.get("callees"), &mut files);
+                bodies.push(body);
+            }
+            let files = unique_file_paths(files.iter().map(String::as_str));
+            (matches.to_json(bodies), files)
+        }
+    };
+
+    let output = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Callees of every node in `node_ids` (one node, or a group of overloads),
+/// each callee listed once.
+async fn callee_items(
+    cg: &TokenSave,
+    node_ids: &[String],
+    max_depth: usize,
+    resolve_dispatch: bool,
+) -> Result<Vec<Value>> {
+    let mut items: Vec<Value> = Vec::new();
+    let mut listed: HashSet<String> = HashSet::new();
+    for node_id in node_ids {
+        for item in callee_items_for(cg, node_id, max_depth, resolve_dispatch).await? {
+            let id = item["node_id"].as_str().unwrap_or_default().to_string();
+            if listed.insert(id) {
+                items.push(item);
+            }
+        }
+    }
+    Ok(items)
+}
+
+/// Callees of one node, as `tokensave_callees` lists them.
+async fn callee_items_for(
+    cg: &TokenSave,
+    node_id: &str,
+    max_depth: usize,
+    resolve_dispatch: bool,
+) -> Result<Vec<Value>> {
     let results = cg.get_callees(node_id, max_depth).await?;
     let mut seen: HashSet<String> = results.iter().map(|(n, _)| n.id.clone()).collect();
 
@@ -921,20 +1083,7 @@ pub(super) async fn handle_callees(cg: &TokenSave, args: Value) -> Result<ToolRe
             }
         }
     }
-
-    let touched_files = unique_file_paths(
-        items
-            .iter()
-            .filter_map(|v| v.get("file").and_then(Value::as_str)),
-    );
-
-    let output = serde_json::to_string_pretty(&items).unwrap_or_default();
-    Ok(ToolResult {
-        value: json!({
-            "content": [{ "type": "text", "text": truncate_response(&output) }]
-        }),
-        touched_files,
-    })
+    Ok(items)
 }
 
 /// Handles `tokensave_find_exact_symbol` tool calls. Bare-name lookup against
@@ -1086,20 +1235,81 @@ pub(super) async fn handle_file_dependents(cg: &TokenSave, args: Value) -> Resul
 }
 
 /// Handles `tokensave_impact` tool calls.
-pub(super) async fn handle_impact(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    let node_id = require_node_id(&args)?;
-
+///
+/// Takes a `node_id` or a `symbol` (#669). At most `limit` nodes are listed
+/// per match; `node_count` stays the full count, and `count`, `total` and
+/// `truncated` report the cut (#645).
+pub(super) async fn handle_impact(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
     let max_depth = args
         .get("max_depth")
         .and_then(serde_json::Value::as_u64)
         .map_or(3, |v| v.min(10) as usize);
+    let limit = symbol_target::result_limit(&args, Some(symbol_target::RESULT_LIMIT_DEFAULT))
+        .unwrap_or(symbol_target::RESULT_LIMIT_DEFAULT);
 
-    let subgraph = cg.get_impact_radius(node_id, max_depth).await?;
+    let target =
+        symbol_target::resolve_target(cg, &args, scope_prefix, KindRanking::Definition).await?;
+    let mut files = Vec::new();
+    let output = match target {
+        Target::NodeId(node_id) => {
+            let body = impact_body(cg, &[node_id], max_depth, limit).await?;
+            push_item_files(body.get("nodes"), &mut files);
+            Value::Object(body)
+        }
+        Target::Symbol(matches) => {
+            let mut bodies = Vec::with_capacity(matches.answered.len());
+            for group in &matches.answered {
+                let body = impact_body(cg, &group.ids(), max_depth, limit).await?;
+                push_item_files(body.get("nodes"), &mut files);
+                bodies.push(body);
+            }
+            matches.to_json(bodies)
+        }
+    };
+    let touched_files = unique_file_paths(files.iter().map(String::as_str));
 
-    let touched_files = unique_file_paths(subgraph.nodes.iter().map(|n| n.file_path.as_str()));
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
 
-    let nodes: Vec<Value> = subgraph
-        .nodes
+/// The impact radius of every node in `node_ids` (one node, or a group of
+/// overloads), with nodes and edges merged across them.
+async fn impact_body(
+    cg: &TokenSave,
+    node_ids: &[String],
+    max_depth: usize,
+    limit: usize,
+) -> Result<serde_json::Map<String, Value>> {
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut node_seen: HashSet<String> = HashSet::new();
+    // Overloads can share dependents, so their edges are counted once each;
+    // a single node's count is the traversal's, as before.
+    let mut edge_keys: HashSet<(String, String, EdgeKind, Option<u32>)> = HashSet::new();
+    let mut edge_count = 0usize;
+    for node_id in node_ids {
+        let subgraph = cg.get_impact_radius(node_id, max_depth).await?;
+        for n in subgraph.nodes {
+            if node_seen.insert(n.id.clone()) {
+                nodes.push(n);
+            }
+        }
+        for e in subgraph.edges {
+            if node_ids.len() == 1 || edge_keys.insert((e.source, e.target, e.kind, e.line)) {
+                edge_count += 1;
+            }
+        }
+    }
+
+    let items: Vec<Value> = nodes
         .iter()
         .map(|n| {
             json!({
@@ -1113,19 +1323,11 @@ pub(super) async fn handle_impact(cg: &TokenSave, args: Value) -> Result<ToolRes
         })
         .collect();
 
-    let output = json!({
-        "node_count": subgraph.nodes.len(),
-        "edge_count": subgraph.edges.len(),
-        "nodes": nodes,
-    });
-
-    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
-    Ok(ToolResult {
-        value: json!({
-            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
-        }),
-        touched_files,
-    })
+    let mut body = serde_json::Map::new();
+    body.insert("node_count".to_string(), json!(nodes.len()));
+    body.insert("edge_count".to_string(), json!(edge_count));
+    body.extend(symbol_target::capped_list("nodes", items, limit));
+    Ok(body)
 }
 
 /// Handles `tokensave_node` tool calls.

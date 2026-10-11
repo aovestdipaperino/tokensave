@@ -11,10 +11,11 @@ use crate::tokensave::TokenSave;
 use crate::types::{FileKind, NodeKind, Visibility};
 
 use super::super::ToolResult;
-use super::{
-    effective_path, require_node_id, sibling_projects, truncate_response, unique_file_paths,
-    SIBLING_HINT,
+use super::symbol_target::{
+    self, body_kind_preference, display_qualified_name, member_path_segments, resolve_symbol_nodes,
+    KindRanking, Target,
 };
+use super::{effective_path, sibling_projects, truncate_response, unique_file_paths, SIBLING_HINT};
 
 /// Handles `tokensave_status` tool calls.
 pub(super) async fn handle_status(
@@ -962,20 +963,66 @@ pub(super) async fn handle_simplify_scan(
 }
 
 /// Handles `tokensave_type_hierarchy` tool calls.
-pub(super) async fn handle_type_hierarchy(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    let node_id = require_node_id(&args)?;
+///
+/// Takes a `node_id`, or a `symbol` answered for each of up to
+/// `max_matches` matching types under a `## <heading>` per match (#669).
+pub(super) async fn handle_type_hierarchy(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
     let max_depth = args
         .get("max_depth")
         .and_then(serde_json::Value::as_u64)
         .map_or(5, |v| v.min(10) as usize);
+    // Unlike callers/callees/impact, no limit unless the caller sets one:
+    // a hierarchy prints one short line per type.
+    let limit = symbol_target::result_limit(&args, None);
 
-    let root = cg
-        .get_node(node_id)
-        .await?
-        .ok_or_else(|| TokenSaveError::Config {
-            message: format!("node not found: {node_id}"),
-        })?;
+    let target =
+        symbol_target::resolve_target(cg, &args, scope_prefix, KindRanking::TypeFirst).await?;
+    let (output, all_files) = match target {
+        Target::NodeId(node_id) => {
+            let root = cg
+                .get_node(&node_id)
+                .await?
+                .ok_or_else(|| TokenSaveError::Config {
+                    message: format!("node not found: {node_id}"),
+                })?;
+            type_tree(cg, &root, max_depth, limit).await
+        }
+        Target::Symbol(matches) => {
+            let mut bodies = Vec::with_capacity(matches.answered.len());
+            let mut all_files = Vec::new();
+            for group in &matches.answered {
+                let mut body = String::new();
+                for root in &group.nodes {
+                    let (tree, files) = type_tree(cg, root, max_depth, limit).await;
+                    body.push_str(&tree);
+                    all_files.extend(files);
+                }
+                bodies.push(body);
+            }
+            (matches.to_text(bodies), all_files)
+        }
+    };
 
+    let touched_files = unique_file_paths(all_files.iter().map(std::string::String::as_str));
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&output)}]}),
+        touched_files,
+    })
+}
+
+/// Renders one type's hierarchy: its own line, then implementors and
+/// extenders recursively. With a `limit`, at most that many lines below the
+/// root are printed and a `count: N of M` line reports the rest (#645).
+async fn type_tree(
+    cg: &TokenSave,
+    root: &crate::types::Node,
+    max_depth: usize,
+    limit: Option<usize>,
+) -> (String, Vec<String>) {
     let mut output = format!(
         "{} ({}) -- {}:{}-{}\n",
         root.name,
@@ -985,18 +1032,42 @@ pub(super) async fn handle_type_hierarchy(cg: &TokenSave, args: Value) -> Result
         super::display_line(root.end_line)
     );
     let mut all_files: Vec<String> = vec![root.file_path.clone()];
+    let mut budget = TreeBudget {
+        limit: limit.unwrap_or(usize::MAX),
+        shown: 0,
+        total: 0,
+    };
 
     // Recursively build the hierarchy
-    build_type_tree(cg, &root.id, max_depth, 0, &mut output, &mut all_files).await;
-
-    let touched_files = unique_file_paths(all_files.iter().map(std::string::String::as_str));
-    Ok(ToolResult {
-        value: json!({"content": [{"type": "text", "text": truncate_response(&output)}]}),
-        touched_files,
-    })
+    build_type_tree(
+        cg,
+        &root.id,
+        max_depth,
+        0,
+        &mut output,
+        &mut all_files,
+        &mut budget,
+    )
+    .await;
+    if budget.total > budget.shown {
+        let _ = writeln!(
+            output,
+            "count: {} of {} (truncated; raise `limit` to see more)",
+            budget.shown, budget.total
+        );
+    }
+    (output, all_files)
 }
 
-/// Recursively appends type hierarchy lines to the output string.
+/// Lines a type tree may still print, and how many it found.
+struct TreeBudget {
+    limit: usize,
+    shown: usize,
+    total: usize,
+}
+
+/// Recursively appends type hierarchy lines to the output string. Past the
+/// budget's limit it keeps walking, counting lines without printing them.
 fn build_type_tree<'a>(
     cg: &'a TokenSave,
     node_id: &'a str,
@@ -1004,6 +1075,7 @@ fn build_type_tree<'a>(
     depth: usize,
     output: &'a mut String,
     all_files: &'a mut Vec<String>,
+    budget: &'a mut TreeBudget,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
     Box::pin(async move {
         if depth >= max_depth {
@@ -1021,19 +1093,32 @@ fn build_type_tree<'a>(
                 continue;
             }
             if let Ok(Some(child)) = cg.get_node(&edge.source).await {
-                let _ = writeln!(
+                budget.total += 1;
+                if budget.shown < budget.limit {
+                    budget.shown += 1;
+                    let _ = writeln!(
+                        output,
+                        "{}|- {} {} ({}) -- {}:{}-{}",
+                        pad,
+                        edge.kind.as_str(),
+                        child.name,
+                        child.kind.as_str(),
+                        child.file_path,
+                        super::display_line(child.start_line),
+                        super::display_line(child.end_line),
+                    );
+                    all_files.push(child.file_path.clone());
+                }
+                build_type_tree(
+                    cg,
+                    &child.id,
+                    max_depth,
+                    depth + 1,
                     output,
-                    "{}|- {} {} ({}) -- {}:{}-{}",
-                    pad,
-                    edge.kind.as_str(),
-                    child.name,
-                    child.kind.as_str(),
-                    child.file_path,
-                    super::display_line(child.start_line),
-                    super::display_line(child.end_line),
-                );
-                all_files.push(child.file_path.clone());
-                build_type_tree(cg, &child.id, max_depth, depth + 1, output, all_files).await;
+                    all_files,
+                    budget,
+                )
+                .await;
             }
         }
     })
@@ -1100,7 +1185,7 @@ pub(super) async fn handle_body(
         })?;
         (
             format!("named '{symbol}'"),
-            resolve_body_nodes(cg, symbol).await?,
+            resolve_symbol_nodes(cg, symbol).await?,
         )
     };
     let mut candidates = super::filter_by_scope(candidates, scope_prefix, |n| &n.file_path);
@@ -1139,45 +1224,6 @@ pub(super) async fn handle_body(
         [only] => body_result(cg, only, format),
         many => candidates_result(many, limit, format, symbol.unwrap_or_default()),
     })
-}
-
-/// Resolves `symbol` to nodes: the literal qualified-name / name lookup
-/// first, then a member-path match that treats `.` and `::` alike, so
-/// `Type.Member`, `Ns.Type.Member` and `Type::Member` all work regardless of
-/// whether the language stores a namespace as `App.Tests` or `App::Tests`.
-async fn resolve_body_nodes(cg: &TokenSave, symbol: &str) -> Result<Vec<crate::types::Node>> {
-    let literal = cg.get_nodes_by_qualified_name(symbol).await?;
-    if !literal.is_empty() {
-        return Ok(literal);
-    }
-    let wanted = member_path_segments(symbol);
-    let Some(last) = wanted.last().filter(|_| wanted.len() >= 2) else {
-        return Ok(literal);
-    };
-    let by_name = cg.get_nodes_by_name(last).await?;
-    Ok(by_name
-        .into_iter()
-        .filter(|n| member_path_segments(&n.qualified_name).ends_with(&wanted))
-        .collect())
-}
-
-/// Splits a qualified name on both `::` and `.` into non-empty segments.
-fn member_path_segments(name: &str) -> Vec<&str> {
-    name.split("::")
-        .flat_map(|part| part.split('.'))
-        .filter(|seg| !seg.is_empty())
-        .collect()
-}
-
-/// A node's qualified name without the leading file-path segment(s) the
-/// extractors prepend, e.g. `src/A.cs::src/A.cs::App::A::Run` → `App::A::Run`.
-fn display_qualified_name(n: &crate::types::Node) -> &str {
-    let prefix = format!("{}::", n.file_path);
-    let mut qn = n.qualified_name.as_str();
-    while let Some(rest) = qn.strip_prefix(prefix.as_str()) {
-        qn = rest;
-    }
-    qn
 }
 
 /// Renders the single-match response: the node's full body.
@@ -1283,48 +1329,6 @@ fn candidates_result(
     ToolResult {
         value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
         touched_files: vec![],
-    }
-}
-
-/// Ordering key used by `handle_body` to choose between same-named symbols.
-/// Lower number = higher preference (sorted ascending). Callable kinds rank
-/// best because the user almost always asks for "show me the body of X"
-/// expecting a function or method; type definitions are next; fields,
-/// variants, use statements come last.
-fn body_kind_preference(kind: &NodeKind) -> u8 {
-    match kind {
-        NodeKind::Function
-        | NodeKind::Method
-        | NodeKind::SingletonMethod
-        | NodeKind::StructMethod
-        | NodeKind::Constructor
-        | NodeKind::AbstractMethod
-        | NodeKind::ArrowFunction
-        | NodeKind::Procedure => 0,
-        NodeKind::Struct
-        | NodeKind::Enum
-        | NodeKind::Trait
-        | NodeKind::Class
-        | NodeKind::InnerClass
-        | NodeKind::Interface
-        | NodeKind::InterfaceType
-        | NodeKind::Record
-        | NodeKind::CaseClass
-        | NodeKind::DataClass
-        | NodeKind::SealedClass
-        | NodeKind::TypeAlias
-        | NodeKind::Union
-        | NodeKind::Typedef => 1,
-        NodeKind::Impl => 2,
-        NodeKind::Const | NodeKind::Static | NodeKind::Macro | NodeKind::PreprocessorDef => 3,
-        NodeKind::Field
-        | NodeKind::ValField
-        | NodeKind::VarField
-        | NodeKind::Property
-        | NodeKind::CSharpProperty
-        | NodeKind::EnumVariant => 4,
-        NodeKind::Use | NodeKind::Include => 5,
-        _ => 6,
     }
 }
 

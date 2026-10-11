@@ -173,6 +173,7 @@ mod staleness_out_of_root_test;
 mod strict_tree_mismatch_test;
 mod svelte_extraction_test;
 mod swift_extraction_test;
+mod symbol_target_669_test;
 mod symlink_walk_scope_test;
 mod sync_test;
 mod systemverilog_extraction_test;
