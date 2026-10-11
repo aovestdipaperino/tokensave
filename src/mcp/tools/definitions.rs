@@ -868,13 +868,28 @@ fn def_callees() -> ToolDefinition {
          concrete impl methods reachable through that trait are also \
          returned, tagged with `dispatch_via_trait: true` and a `dispatch_from` \
          pointing at the trait method. Pass `resolve_dispatch: false` to \
-         disable this behaviour and get only direct call edges.",
+         disable this behaviour and get only direct call edges. Pass `node_id`, \
+         or `symbol` to name the target directly: each match is answered in its \
+         own group (`symbol`, `match_count`, `matches[]` with the callees under \
+         `callees`), up to `max_matches`.",
         json!({
             "type": "object",
             "properties": {
                 "node_id": {
                     "type": "string",
-                    "description": "The unique node ID to find callees for"
+                    "description": "The unique node ID to find callees for. Takes precedence over `symbol`; one of the two is required."
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name to find callees for instead of node_id (e.g. 'RefreshAsync'). Resolved as tokensave_body resolves it: 'Coordinator.RefreshAsync', 'Coordinator::RefreshAsync' and 'App.Coordinator.RefreshAsync' all work (trailing segments are matched), and a function or type outranks a same-named field or import. Overloads are answered together."
+                },
+                "max_matches": {
+                    "type": "number",
+                    "description": "When `symbol` matches several symbols, answer up to this many, each in its own group headed by qualified name, kind, file, line, end_line and node_id (default: 3, max: 20). Further matches are listed without results, in tokensave_search rank order, for a follow-up call by node_id."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum callees listed per match (default: 50, max: 500). When more exist, the result reports `count`, `total` and `truncated: true` (with node_id alone, the list is then wrapped as `{count, total, truncated, callees}`)."
                 },
                 "max_depth": {
                     "type": "number",
@@ -884,8 +899,7 @@ fn def_callees() -> ToolDefinition {
                     "type": "boolean",
                     "description": "If true (default), append concrete impl methods for any trait-method callee."
                 }
-            },
-            "required": ["node_id"]
+            }
         }),
     )
 }
@@ -894,20 +908,34 @@ fn def_impact() -> ToolDefinition {
     def_always_load(
         "tokensave_impact",
         "Impact Radius",
-        "Compute the impact radius of a node: all symbols that directly or indirectly depend on it.",
+        "Compute the impact radius of a node: all symbols that directly or indirectly depend on it. \
+         Pass `node_id`, or `symbol` to name the target directly: each match is answered in its \
+         own group (`symbol`, `match_count`, `matches[]`), up to `max_matches`. `node_count` is \
+         the full radius; `nodes` lists at most `limit` of them.",
         json!({
             "type": "object",
             "properties": {
                 "node_id": {
                     "type": "string",
-                    "description": "The unique node ID to compute impact for"
+                    "description": "The unique node ID to compute impact for. Takes precedence over `symbol`; one of the two is required."
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name to compute impact for instead of node_id (e.g. 'RefreshAsync'). Resolved as tokensave_body resolves it: 'Coordinator.RefreshAsync', 'Coordinator::RefreshAsync' and 'App.Coordinator.RefreshAsync' all work (trailing segments are matched), and a function or type outranks a same-named field or import. Overloads are answered together."
+                },
+                "max_matches": {
+                    "type": "number",
+                    "description": "When `symbol` matches several symbols, answer up to this many, each in its own group headed by qualified name, kind, file, line, end_line and node_id (default: 3, max: 20). Further matches are listed without results, in tokensave_search rank order, for a follow-up call by node_id."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum nodes listed per match (default: 50, max: 500). When more exist, the result reports `count`, `total` and `truncated: true`."
                 },
                 "max_depth": {
                     "type": "number",
                     "description": "Maximum traversal depth (default: 3)"
                 }
-            },
-            "required": ["node_id"]
+            }
         }),
     )
 }
@@ -927,13 +955,28 @@ fn def_callers() -> ToolDefinition {
          several times), and `def_line`/`end_line` (the caller's own span). Generic \
          callers through a trait are included for concrete impl methods and \
          tagged with `dispatch_via_trait: true`; pass `resolve_dispatch: false` \
-         to disable reverse dispatch resolution.",
+         to disable reverse dispatch resolution. Pass `node_id`, or `symbol` to \
+         name the target directly: each match is answered in its own group \
+         (`symbol`, `match_count`, `matches[]` with the callers under `callers`), \
+         up to `max_matches`.",
         json!({
             "type": "object",
             "properties": {
                 "node_id": {
                     "type": "string",
-                    "description": "The unique node ID to find callers for"
+                    "description": "The unique node ID to find callers for. Takes precedence over `symbol`; one of the two is required."
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name to find callers for instead of node_id (e.g. 'RefreshAsync'). Resolved as tokensave_body resolves it: 'Coordinator.RefreshAsync', 'Coordinator::RefreshAsync' and 'App.Coordinator.RefreshAsync' all work (trailing segments are matched), and a function or type outranks a same-named field or import. Overloads are answered together."
+                },
+                "max_matches": {
+                    "type": "number",
+                    "description": "When `symbol` matches several symbols, answer up to this many, each in its own group headed by qualified name, kind, file, line, end_line and node_id (default: 3, max: 20). Further matches are listed without results, in tokensave_search rank order, for a follow-up call by node_id."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum callers listed per match (default: 50, max: 500). When more exist, the result reports `count`, `total` and `truncated: true` (with node_id alone, the list is then wrapped as `{count, total, truncated, callers}`)."
                 },
                 "max_depth": {
                     "type": "number",
@@ -943,8 +986,7 @@ fn def_callers() -> ToolDefinition {
                     "type": "boolean",
                     "description": "If true (default), include generic callers that invoke the corresponding trait method."
                 }
-            },
-            "required": ["node_id"]
+            }
         }),
     )
 }
@@ -1727,20 +1769,33 @@ fn def_type_hierarchy() -> ToolDefinition {
     def(
         "tokensave_type_hierarchy",
         "Type Hierarchy",
-        "Show the full type hierarchy for a trait/interface/class: all implementors and extenders, recursively.",
+        "Show the full type hierarchy for a trait/interface/class: all implementors and extenders, recursively. \
+         Pass `node_id`, or `symbol` to name the type directly: each match is answered under its own \
+         `## <qualified name> (<kind>) <file>:<line>-<end_line> id=<node_id>` heading, up to `max_matches`.",
         json!({
             "type": "object",
             "properties": {
                 "node_id": {
                     "type": "string",
-                    "description": "The type node ID to build the hierarchy for"
+                    "description": "The type node ID to build the hierarchy for. Takes precedence over `symbol`; one of the two is required."
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name to build the hierarchy for instead of node_id (e.g. 'RefreshAsync'). Resolved as tokensave_body resolves it: 'Coordinator.RefreshAsync', 'Coordinator::RefreshAsync' and 'App.Coordinator.RefreshAsync' all work (trailing segments are matched), and a type outranks a same-named function, field or import. Overloads are answered together."
+                },
+                "max_matches": {
+                    "type": "number",
+                    "description": "When `symbol` matches several symbols, answer up to this many, each in its own group headed by qualified name, kind, file, line, end_line and node_id (default: 3, max: 20). Further matches are listed without results, in tokensave_search rank order, for a follow-up call by node_id."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum implementor/extender lines listed per type (default: no limit, max: 500). When more exist, a `count: N of M (truncated; ...)` line follows the tree."
                 },
                 "max_depth": {
                     "type": "number",
                     "description": "Maximum inheritance depth to traverse (default: 5)"
                 }
-            },
-            "required": ["node_id"]
+            }
         }),
     )
 }
