@@ -81,13 +81,24 @@ impl ExtractionState {
 impl CppExtractor {
     /// Extract code graph nodes and edges from a C++ source file.
     pub fn extract_source(file_path: &str, source: &str) -> ExtractionResult {
+        Self::extract_source_with_key(file_path, source, "cpp")
+    }
+
+    /// Same as [`extract_source`](Self::extract_source) but parses with the
+    /// given grammar key. Used by the CUDA extractor with the `cuda` grammar,
+    /// a superset of the C++ grammar whose extra nodes the visitor skips.
+    pub(crate) fn extract_source_with_key(
+        file_path: &str,
+        source: &str,
+        key: &str,
+    ) -> ExtractionResult {
         let start = Instant::now();
         // Space-for-byte, so every offset below still addresses the real file.
         let blanked = crate::extraction::c_api_macro::blank_declaration_macros(source);
         let source = blanked.as_deref().unwrap_or(source);
         let mut state = ExtractionState::new(file_path, source);
 
-        let tree = match Self::parse_source(source) {
+        let tree = match Self::parse_source_with_key(source, key) {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
@@ -139,13 +150,13 @@ impl CppExtractor {
         Self::build_result(state, start)
     }
 
-    /// Parse source code into a tree-sitter AST.
-    fn parse_source(source: &str) -> Result<Tree, String> {
+    /// Parse source code into a tree-sitter AST with the given grammar key.
+    fn parse_source_with_key(source: &str, key: &str) -> Result<Tree, String> {
         let mut parser = Parser::new();
-        let language = crate::extraction::ts_provider::language("cpp");
+        let language = crate::extraction::ts_provider::language(key);
         parser
             .set_language(&language)
-            .map_err(|e| format!("failed to load C++ grammar: {e}"))?;
+            .map_err(|e| format!("failed to load {key} grammar: {e}"))?;
         parser
             .parse(source, None)
             .ok_or_else(|| "tree-sitter parse returned None".to_string())

@@ -332,6 +332,7 @@ pub(crate) fn display_language_for_path(path: &str) -> &'static str {
         "as" => "ActionScript",
         "c" | "h" => "C",
         "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" | "inl" | "ipp" | "tcc" => "C++",
+        "cu" | "cuh" => "CUDA",
         "cs" => "C#",
         "fs" | "fsi" | "fsx" => "F#",
         "fst" | "fsti" => "F*",
@@ -367,6 +368,11 @@ pub(crate) fn display_language_for_path(path: &str) -> &'static str {
         "qnt" => "Quint",
         "gd" => "GDScript",
         "vhd" | "vhdl" => "VHDL",
+        "awk" => "AWK",
+        "wl" | "wls" | "wlt" => "Wolfram",
+        "lisp" | "lsp" | "cl" | "asd" => "Common Lisp",
+        "scm" | "ss" => "Scheme",
+        "fbs" => "FlatBuffers",
         _ => "Other",
     }
 }

@@ -49,6 +49,8 @@ mod vbnet_extractor;
 // Full
 #[cfg(feature = "lang-actionscript")]
 mod actionscript_extractor;
+#[cfg(feature = "lang-awk")]
+mod awk_extractor;
 #[cfg(feature = "lang-batch")]
 mod batch_extractor;
 #[cfg(feature = "lang-canvas")]
@@ -57,6 +59,8 @@ mod canvas_extractor;
 mod clojure_extractor;
 #[cfg(feature = "lang-cobol")]
 mod cobol_extractor;
+#[cfg(feature = "lang-commonlisp")]
+mod commonlisp_extractor;
 #[cfg(feature = "lang-css")]
 mod css_extractor;
 #[cfg(feature = "lang-cuda")]
@@ -67,6 +71,8 @@ mod dockerfile_extractor;
 mod elixir_extractor;
 #[cfg(feature = "lang-erlang")]
 mod erlang_extractor;
+#[cfg(feature = "lang-flatbuffers")]
+mod flatbuffers_extractor;
 #[cfg(feature = "lang-fortran")]
 mod fortran_extractor;
 #[cfg(feature = "lang-fsharp")]
@@ -113,6 +119,8 @@ mod quickbasic_extractor;
 mod quint_extractor;
 #[cfg(feature = "lang-r")]
 mod r_extractor;
+#[cfg(feature = "lang-scheme")]
+mod scheme_extractor;
 #[cfg(feature = "lang-sql")]
 mod sql_extractor;
 #[cfg(feature = "lang-systemverilog")]
@@ -125,6 +133,8 @@ mod toml_extractor;
 mod vhdl_extractor;
 #[cfg(feature = "lang-wgsl")]
 mod wgsl_extractor;
+#[cfg(feature = "lang-wolfram")]
+mod wolfram_extractor;
 #[cfg(feature = "lang-xaml")]
 mod xaml_extractor;
 #[cfg(feature = "lang-zig")]
@@ -170,6 +180,8 @@ pub use vbnet_extractor::VbNetExtractor;
 // Full
 #[cfg(feature = "lang-actionscript")]
 pub use actionscript_extractor::ActionScriptExtractor;
+#[cfg(feature = "lang-awk")]
+pub use awk_extractor::AwkExtractor;
 #[cfg(feature = "lang-batch")]
 pub use batch_extractor::BatchExtractor;
 #[cfg(feature = "lang-canvas")]
@@ -178,6 +190,8 @@ pub use canvas_extractor::CanvasExtractor;
 pub use clojure_extractor::ClojureExtractor;
 #[cfg(feature = "lang-cobol")]
 pub use cobol_extractor::CobolExtractor;
+#[cfg(feature = "lang-commonlisp")]
+pub use commonlisp_extractor::CommonLispExtractor;
 #[cfg(feature = "lang-css")]
 pub use css_extractor::CssExtractor;
 #[cfg(feature = "lang-cuda")]
@@ -188,6 +202,8 @@ pub use dockerfile_extractor::DockerfileExtractor;
 pub use elixir_extractor::ElixirExtractor;
 #[cfg(feature = "lang-erlang")]
 pub use erlang_extractor::ErlangExtractor;
+#[cfg(feature = "lang-flatbuffers")]
+pub use flatbuffers_extractor::FlatBuffersExtractor;
 #[cfg(feature = "lang-fortran")]
 pub use fortran_extractor::FortranExtractor;
 #[cfg(feature = "lang-fsharp")]
@@ -234,6 +250,8 @@ pub use quickbasic_extractor::QuickBasicExtractor;
 pub use quint_extractor::QuintExtractor;
 #[cfg(feature = "lang-r")]
 pub use r_extractor::RExtractor;
+#[cfg(feature = "lang-scheme")]
+pub use scheme_extractor::SchemeExtractor;
 #[cfg(feature = "lang-sql")]
 pub use sql_extractor::SqlExtractor;
 #[cfg(feature = "lang-systemverilog")]
@@ -246,6 +264,8 @@ pub use toml_extractor::TomlExtractor;
 pub use vhdl_extractor::VhdlExtractor;
 #[cfg(feature = "lang-wgsl")]
 pub use wgsl_extractor::WgslExtractor;
+#[cfg(feature = "lang-wolfram")]
+pub use wolfram_extractor::WolframExtractor;
 #[cfg(feature = "lang-xaml")]
 pub use xaml_extractor::XamlExtractor;
 #[cfg(feature = "lang-zig")]
@@ -403,6 +423,16 @@ impl LanguageRegistry {
         extractors.push(Box::new(GdScriptExtractor));
         #[cfg(feature = "lang-mcfunction")]
         extractors.push(Box::new(McFunctionExtractor));
+        #[cfg(feature = "lang-awk")]
+        extractors.push(Box::new(AwkExtractor));
+        #[cfg(feature = "lang-wolfram")]
+        extractors.push(Box::new(WolframExtractor));
+        #[cfg(feature = "lang-commonlisp")]
+        extractors.push(Box::new(CommonLispExtractor));
+        #[cfg(feature = "lang-scheme")]
+        extractors.push(Box::new(SchemeExtractor));
+        #[cfg(feature = "lang-flatbuffers")]
+        extractors.push(Box::new(FlatBuffersExtractor));
 
         let detection_languages = extractors
             .iter()
