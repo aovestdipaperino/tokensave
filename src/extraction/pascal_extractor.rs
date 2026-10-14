@@ -1500,7 +1500,7 @@ impl PascalExtractor {
 
 impl crate::extraction::LanguageExtractor for PascalExtractor {
     fn extensions(&self) -> &[&str] {
-        &["pas", "pp", "dpr", "lpr"]
+        &["pas", "pp", "dpr", "dpk", "lpr", "inc"]
     }
 
     fn language_name(&self) -> &'static str {

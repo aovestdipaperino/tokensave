@@ -1140,6 +1140,8 @@ fn test_pascal_extractor_extensions() {
     assert!(exts.contains(&"pp"));
     assert!(exts.contains(&"dpr"));
     assert!(exts.contains(&"lpr"));
+    assert!(exts.contains(&"dpk"));
+    assert!(exts.contains(&"inc"));
 }
 
 #[test]
