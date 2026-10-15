@@ -1,11 +1,14 @@
-// Rust guideline compliant 2026-06-16
+// Rust guideline compliant 2026-10-15
 //! Pi coding agent integration.
 //!
-//! Handles registration of the tokensave MCP server in Pi's MCP config
-//! (`$PI_CODING_AGENT_DIR/mcp.json`, or `$HOME/.pi/agent/mcp.json` when the
-//! env var is unset) under the `mcpServers.tokensave` key. Pi uses the
-//! standard MCP JSON shape, so the server entry matches the other
-//! JSON-based integrations (Cursor, Cline): `{ "command", "args": ["serve"] }`.
+//! Handles registration of the tokensave MCP server and the tokensave rules
+//! block inside Pi's agent directory. Per the Pi configuration docs, the
+//! agent directory is `$PI_CODING_AGENT_DIR` when set, or `<home>/.pi/agent`
+//! otherwise; the MCP config lives at `<agent-dir>/mcp.json` and the user
+//! instructions at `<agent-dir>/AGENTS.md` (alongside `AGENTS.override.md`,
+//! `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD`). Pi uses the standard MCP JSON
+//! shape, so the server entry matches the other JSON-based integrations
+//! (Cursor, Cline): `{ "command", "args": ["serve"] }`.
 //!
 //! Pi has no documented project-scoped config, so `--local` is not supported.
 
@@ -20,17 +23,29 @@ use super::*;
 /// Pi coding agent.
 pub struct PiIntegration;
 
-/// Returns the Pi MCP config path.
+/// Resolves the Pi agent directory.
 ///
-/// Honors `$PI_CODING_AGENT_DIR` when set (`$PI_CODING_AGENT_DIR/mcp.json`),
-/// otherwise falls back to `<home>/.pi/agent/mcp.json`.
-fn pi_config_path(home: &Path) -> PathBuf {
+/// Honors `$PI_CODING_AGENT_DIR` when set, otherwise falls back to
+/// `<home>/.pi/agent`. This is the directory every per-user Pi file lives
+/// in (mcp.json, AGENTS.md, settings.json, ...), so both the MCP config and
+/// the rules block derive from it.
+fn pi_agent_dir(home: &Path) -> PathBuf {
     if let Ok(dir) = std::env::var("PI_CODING_AGENT_DIR") {
         if !dir.trim().is_empty() {
-            return PathBuf::from(dir).join("mcp.json");
+            return PathBuf::from(dir);
         }
     }
-    home.join(".pi/agent/mcp.json")
+    home.join(".pi/agent")
+}
+
+/// Returns the Pi MCP config path (`<agent-dir>/mcp.json`).
+fn pi_config_path(home: &Path) -> PathBuf {
+    pi_agent_dir(home).join("mcp.json")
+}
+
+/// Returns the path to Pi's global instructions file (`<agent-dir>/AGENTS.md`).
+fn pi_rules_path(home: &Path) -> PathBuf {
+    pi_agent_dir(home).join("AGENTS.md")
 }
 
 impl AgentIntegration for PiIntegration {
@@ -203,11 +218,6 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
             mcp_path.display()
         ));
     }
-}
-
-/// Path to the shared Pi global rules file.
-fn pi_rules_path(home: &Path) -> PathBuf {
-    home.join(".agents/AGENTS.md")
 }
 
 /// Write or refresh the tokensave rules block in Pi's global AGENTS.md.
