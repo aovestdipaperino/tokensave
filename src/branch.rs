@@ -1,5 +1,8 @@
 //! Git branch resolution utilities for multi-branch indexing.
 
+mod gc;
+pub use gc::{collect_if_enabled, collect_stale_indexes};
+
 use std::path::{Path, PathBuf};
 
 use crate::branch_meta::BranchMeta;
@@ -160,7 +163,8 @@ fn local_branches_gix(project_root: &Path) -> Option<std::collections::HashSet<S
     let platform = repo.references().ok()?;
     let iter = platform.local_branches().ok()?;
     let mut out = std::collections::HashSet::new();
-    for reference in iter.flatten() {
+    for reference in iter {
+        let reference = reference.ok()?;
         let name = reference.name().as_bstr().to_string();
         if let Some(short) = name.strip_prefix("refs/heads/") {
             out.insert(short.to_string());

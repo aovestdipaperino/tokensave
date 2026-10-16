@@ -147,6 +147,10 @@ pub struct TokenSaveConfig {
     /// switch when `tokensave install` set it up.
     #[serde(default)]
     pub auto_track: bool,
+    /// Automatically collect indexes for deleted Git branches on open and
+    /// MCP freshness checks. Opt-in; TOKENSAVE_AUTO_GC overrides per run.
+    #[serde(default)]
+    pub auto_gc: bool,
     /// Refuse `tokensave_*` MCP calls when the index describes a different
     /// working tree than the one you are in, instead of answering with a
     /// warning attached (#372 §2). Defaults to `false`.
@@ -301,6 +305,7 @@ impl Default for TokenSaveConfig {
             docs_dir: default_docs_dir(),
             last_indexed_version: String::new(),
             auto_track: false,
+            auto_gc: false,
             strict_tree: false,
             max_auto_sync_files: default_max_auto_sync_files(),
             report_savings: default_report_savings(),
