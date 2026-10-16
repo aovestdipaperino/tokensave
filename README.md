@@ -273,6 +273,17 @@ Once multi-branch mode is bootstrapped (a first manual `tokensave branch add` cr
 
 **Open-time auto-track (opt-in).** When `TokenSave::open` runs — CLI command or MCP server start — and the active branch is untracked, tokensave can track it on the spot by copying the nearest tracked ancestor's DB and recording it in the branch metadata. This is gated by the `auto_track` config field (default `false`) or the `TOKENSAVE_AUTO_TRACK` environment variable, which overrides the config per-run (any value enables it except `0`, `false`, `no`, `off`, or empty). The copy is the same near-instant ancestor-DB copy a manual `branch add` performs; no sync runs at that moment — the `post-commit` hook keeps the new branch DB fresh as you commit, or run `tokensave sync` to refresh immediately. Auto-tracking is strictly best-effort: any failure is reported as a warning and `open()` proceeds with the usual ancestor fallback, so it can never break a tool call.
 
+**Automatic cleanup (opt-in).** Set `"auto_gc": true` in `.tokensave/config.json`
+(or `TOKENSAVE_AUTO_GC=1` for one run) to collect indexes whose local Git branches
+have been deleted. Cleanup runs when a project opens and during the MCP server's
+normal freshness checks. It uses the same collector as `tokensave branch gc`,
+preserving the default branch, existing branches, branches used by any Git
+worktree, and databases served by running TokenSave servers. Failed Git queries
+or busy sync locks skip automatic cleanup without failing the command. The
+default is `false`, so older projects retain their indexes until explicitly
+cleaned. `TOKENSAVE_AUTO_GC=0` overrides an enabled project setting; an explicit
+`tokensave branch gc` runs regardless of this setting.
+
 In short: with the hook installed, checking out a new feature branch — including the branch a fresh clone or worktree starts on — transparently gives it its own per-branch graph; with `auto_track` enabled, even a branch created outside a checkout is picked up the first time tokensave opens the project on it.
 
 See [docs/BRANCHING-USER-GUIDE.md](docs/BRANCHING-USER-GUIDE.md) for the full guide.
