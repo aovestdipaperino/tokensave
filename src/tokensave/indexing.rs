@@ -359,6 +359,7 @@ impl TokenSave {
         let _lock = try_acquire_sync_lock(&self.project_root)?;
         // Fail loudly on a broken project.json (unknown language, bad glob)
         // instead of silently indexing without the manifest (#194).
+        self.ensure_current_checkout()?;
         self.validate_manifest()?;
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
@@ -399,6 +400,7 @@ impl TokenSave {
         // partial graph that looks complete.
         crate::cancel::check("index")?;
 
+        self.ensure_current_checkout()?;
         // 4. Collect all data
         let mut all_nodes = Vec::new();
         let mut all_edges = Vec::new();
@@ -944,6 +946,7 @@ impl TokenSave {
     pub(crate) async fn sync_single_files(&self, file_paths: &[String]) -> Result<()> {
         use crate::sync as sync_mod;
 
+        self.ensure_current_checkout()?;
         let start = Instant::now();
         let project_root = &self.project_root;
         let registry = &self.registry;
@@ -994,6 +997,7 @@ impl TokenSave {
         let (sync_extractions, _skipped_extractions) =
             extract_files_isolated(project_root, registry, file_paths.clone());
 
+        self.ensure_current_checkout()?;
         // Phase 1: insert all nodes (and metadata) so cross-file edges
         // can reference them. Edges are queued for phase 2 (#58).
         let mut queued_edges: Vec<&Edge> = Vec::new();
@@ -1139,6 +1143,27 @@ impl TokenSave {
         F: Fn(usize, usize, &str),
         V: Fn(&str),
     {
+        self.sync_with_progress_internal(on_progress, on_verbose, false)
+            .await
+    }
+
+    /// Checkout transitions must compare content even when Git restores the
+    /// same timestamp and size. Extraction remains limited to changed files.
+    pub(crate) async fn sync_branch_context(&self) -> Result<SyncResult> {
+        self.sync_with_progress_internal(|_, _, _| {}, |_| {}, true)
+            .await
+    }
+
+    async fn sync_with_progress_internal<F, V>(
+        &self,
+        on_progress: F,
+        on_verbose: V,
+        branch_transition: bool,
+    ) -> Result<SyncResult>
+    where
+        F: Fn(usize, usize, &str),
+        V: Fn(&str),
+    {
         debug_assert!(
             self.project_root.exists(),
             "sync: project root does not exist"
@@ -1148,6 +1173,7 @@ impl TokenSave {
             "sync: project root is not a directory"
         );
         let _lock = try_acquire_sync_lock(&self.project_root)?;
+        self.ensure_current_checkout()?;
         self.validate_manifest()?;
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
@@ -1213,7 +1239,7 @@ impl TokenSave {
             match db_map.get(path) {
                 None => new_files.push(path.clone()),
                 Some(record) => {
-                    if record.modified_at != *mtime || record.size != *size {
+                    if branch_transition || record.modified_at != *mtime || record.size != *size {
                         stat_changed.push(path.clone());
                     }
                 }
@@ -1286,6 +1312,16 @@ impl TokenSave {
                 }
             }
         }
+        if branch_transition {
+            let count = new_files.len() + stale.len() + removed.len();
+            if self.max_auto_sync_files > 0 && count > self.max_auto_sync_files {
+                clear_dirty_sentinel(&self.project_root);
+                return Err(TokenSaveError::Config {
+                    message: format!("branch context has {count} changed files, exceeding max_auto_sync_files={}; run `tokensave sync`", self.max_auto_sync_files),
+                });
+            }
+        }
+        self.ensure_current_checkout()?;
         let legacy_ruby_files: Vec<String> = if repair_legacy_ruby_singletons {
             db_map
                 .keys()
