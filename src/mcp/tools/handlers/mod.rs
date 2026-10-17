@@ -73,6 +73,15 @@ pub(crate) fn require_node_id(args: &Value) -> Result<&str> {
         })
 }
 
+/// Extracts the `file` parameter from tool arguments, accepting `path` as an
+/// alias. Most tools name their file argument `path`, so LLMs send `path` to
+/// the few tools that name it `file`.
+pub(crate) fn file_arg(args: &Value) -> Option<&str> {
+    args.get("file")
+        .or_else(|| args.get("path"))
+        .and_then(|v| v.as_str())
+}
+
 /// Returns the user-provided `path` argument, falling back to the scope
 /// prefix when the argument is absent. This makes listing tools
 /// automatically scoped to the subdirectory the server was launched from.
