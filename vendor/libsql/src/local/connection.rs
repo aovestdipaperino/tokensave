@@ -33,6 +33,9 @@ pub struct Connection {
     pub(crate) writer: Option<crate::replication::Writer>,
 
     authorizer: Arc<RwLock<Option<AuthHook>>>,
+    // Own the callback allocation across connection and statement clones.
+    // SQLite's update-hook API has no destructor for its context pointer.
+    update_hook: Arc<RwLock<Option<Box<Container>>>>,
 }
 
 impl Drop for Connection {
@@ -76,6 +79,7 @@ impl Connection {
             #[cfg(feature = "replication")]
             writer: db.writer()?,
             authorizer: Arc::new(RwLock::new(None)),
+            update_hook: Arc::new(RwLock::new(None)),
         };
         #[cfg(feature = "sync")]
         if let Some(_) = db.sync_ctx {
@@ -101,6 +105,7 @@ impl Connection {
             #[cfg(feature = "replication")]
             writer: None,
             authorizer: Arc::new(RwLock::new(None)),
+            update_hook: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -119,6 +124,12 @@ impl Connection {
     /// no-op. Remove this patch once the upstream fix ships.
     pub fn disconnect(&mut self) {
         if Arc::get_mut(&mut self.drop_ref).is_some() && !self.raw.is_null() {
+            let owned_hook = self.update_hook.write().take();
+            if owned_hook.is_some() {
+                // Stop SQLite using our context before releasing its owner.
+                unsafe { ffi::sqlite3_update_hook(self.raw, None, std::ptr::null_mut()) };
+            }
+            drop(owned_hook);
             unsafe { libsql_sys::ffi::sqlite3_close_v2(self.raw) };
             self.raw = std::ptr::null_mut();
         }
@@ -422,20 +433,21 @@ impl Connection {
 
     /// Installs update hook
     pub fn add_update_hook(&self, cb: Box<UpdateHook>) {
-        let c = Box::new(Container { cb });
-        let ptr: *mut Container = std::ptr::from_mut(Box::leak(c));
-
-        let old_data = unsafe {
+        let mut c = Box::new(Container { cb });
+        let ptr: *mut Container = &mut *c;
+        let mut owner = self.update_hook.write();
+        unsafe {
             ffi::sqlite3_update_hook(
                 self.raw,
                 Some(update_hook_cb),
                 ptr as *mut ::std::os::raw::c_void,
-            )
-        };
-
-        if !old_data.is_null() {
-            let _ = unsafe { Box::from_raw(old_data as *mut Container) };
+            );
         }
+        // Free only allocations installed through this wrapper, never an
+        // arbitrary context installed by a caller through the raw handle.
+        let previous = owner.replace(c);
+        drop(owner);
+        drop(previous);
     }
 
     pub fn enable_load_extension(&self, onoff: bool) -> Result<()> {
@@ -830,6 +842,81 @@ mod tests {
         params::Params,
         OpenFlags,
     };
+
+    #[test]
+    fn update_hook_replacement_and_final_disconnect_drop_captures() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        struct Capture(Arc<AtomicUsize>);
+        impl Drop for Capture {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let drops = Arc::new(AtomicUsize::new(0));
+        let db = Database::new(":memory:".to_string(), OpenFlags::default());
+        let conn = Connection::connect(&db).unwrap();
+        let first = Capture(drops.clone());
+        conn.add_update_hook(Box::new(move |_, _, _, _| {
+            let _ = &first;
+        }));
+        let second = Capture(drops.clone());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = calls.clone();
+        conn.add_update_hook(Box::new(move |_, _, _, _| {
+            let _ = &second;
+            callback_calls.fetch_add(1, Ordering::SeqCst);
+        }));
+        conn.execute("CREATE TABLE t(x)", Params::None).unwrap();
+        conn.execute("INSERT INTO t VALUES (1)", Params::None)
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            1,
+            "replaced hook must be released"
+        );
+        let mut last = conn.clone();
+        drop(conn);
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            1,
+            "clones retain the active hook"
+        );
+        last.execute("INSERT INTO t VALUES (2)", Params::None)
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        last.disconnect();
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            2,
+            "disconnect releases the final hook"
+        );
+        last.disconnect();
+        drop(last);
+        assert_eq!(drops.load(Ordering::SeqCst), 2, "cleanup is idempotent");
+    }
+
+    #[test]
+    fn prepared_statement_retains_update_hook_until_final_drop() {
+        use std::sync::Arc;
+        let db = Database::new(":memory:".to_string(), OpenFlags::default());
+        let conn = Connection::connect(&db).unwrap();
+        conn.execute("CREATE TABLE t(x)", Params::None).unwrap();
+        let held = Arc::new(());
+        let weak = Arc::downgrade(&held);
+        conn.add_update_hook(Box::new(move |_, _, _, _| {
+            let _ = &held;
+        }));
+        let statement = conn.prepare("INSERT INTO t VALUES (1)").unwrap();
+        drop(conn);
+        assert!(weak.upgrade().is_some());
+        statement.execute(&Params::None).unwrap();
+        drop(statement);
+        assert!(weak.upgrade().is_none());
+    }
 
     #[tokio::test]
     pub async fn test_kek() {
