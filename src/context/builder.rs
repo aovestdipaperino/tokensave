@@ -125,39 +125,39 @@ impl<'a> ContextBuilder<'a> {
             return None;
         }
 
-        let content = if let Some(slot) = cache.get(&node.file_path) {
-            slot.clone()
-        } else {
-            let file_path = self.project_root.join(&node.file_path);
-            // Prevent path traversal: ensure the resolved path stays within
-            // the project root. If either side fails to canonicalize (e.g.
-            // file missing on disk) fall through to the read attempt so the
-            // pre-existing missing-file path still returns `None` naturally.
-            let allowed = match (file_path.canonicalize(), self.project_root.canonicalize()) {
-                (Ok(canonical), Ok(root)) => canonical.starts_with(&root),
-                _ => true,
-            };
-            let loaded = if allowed {
-                fs::read_to_string(&file_path).ok()
-            } else {
-                None
-            };
-            cache.insert(node.file_path.clone(), loaded.clone());
-            loaded
-        };
-        let content = content?;
+        let content = cache
+            .entry(node.file_path.clone())
+            .or_insert_with(|| {
+                let file_path = self.project_root.join(&node.file_path);
+                // Prevent path traversal: ensure the resolved path stays within
+                // the project root. If either side fails to canonicalize (e.g.
+                // file missing on disk) fall through to the read attempt so the
+                // pre-existing missing-file path still returns `None` naturally.
+                let allowed = match (file_path.canonicalize(), self.project_root.canonicalize()) {
+                    (Ok(canonical), Ok(root)) => canonical.starts_with(&root),
+                    _ => true,
+                };
+                if allowed {
+                    fs::read_to_string(&file_path).ok()
+                } else {
+                    None
+                }
+            })
+            .as_deref()?;
 
-        let lines: Vec<&str> = content.lines().collect();
+        // Borrow the cached body; allocate line pointers only for the requested
+        // span, rather than cloning and splitting the entire file per node.
         // 0-based inclusive span -> slice [start, end] (#203). The previous
         // 1-based interpretation shifted every snippet up a line: it pulled
         // in the line above the symbol and dropped the closing line.
         let start = node.start_line as usize;
         let end = (node.end_line as usize).saturating_add(1);
-        if start >= lines.len() {
-            return None;
-        }
-        let end = end.min(lines.len());
-        let snippet: String = lines[start..end].join("\n");
+        let snippet = content
+            .lines()
+            .skip(start)
+            .take(end - start)
+            .collect::<Vec<_>>()
+            .join("\n");
         if snippet.is_empty() {
             None
         } else {
@@ -1461,6 +1461,79 @@ fn with_body_handle(body: &str, node_id: &str) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cached_snippets_preserve_snapshot_and_line_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, _) = Database::initialize(&dir.path().join("graph.db"))
+            .await
+            .unwrap();
+        let builder = ContextBuilder::new(&db, dir.path());
+        let registry = crate::extraction::LanguageRegistry::new();
+        let mut node = registry
+            .extractor_for_file("sample.rs")
+            .unwrap()
+            .extract("sample.rs", "fn sample() {}")
+            .nodes
+            .into_iter()
+            .find(|n| n.name == "sample")
+            .unwrap();
+        let source = "first\r\nαβ\r\n\r\nlast\r\n";
+        std::fs::write(dir.path().join("sample.rs"), source).unwrap();
+        let mut cache = HashMap::new();
+        node.start_line = 1;
+        node.end_line = 2;
+        assert_eq!(
+            builder.get_code_cached(&node, &mut cache).as_deref(),
+            Some("αβ\n")
+        );
+        std::fs::remove_file(dir.path().join("sample.rs")).unwrap();
+        node.end_line = 100;
+        assert_eq!(
+            builder.get_code_cached(&node, &mut cache).as_deref(),
+            Some("αβ\n\nlast")
+        );
+        node.start_line = 100;
+        assert!(builder.get_code_cached(&node, &mut cache).is_none());
+        node.start_line = 3;
+        node.end_line = 1;
+        assert!(builder.get_code_cached(&node, &mut cache).is_none());
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "manual allocation/CPU benchmark; run with --ignored --nocapture"]
+    async fn benchmark_cached_short_snippets() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, _) = Database::initialize(&dir.path().join("graph.db"))
+            .await
+            .unwrap();
+        let builder = ContextBuilder::new(&db, dir.path());
+        let registry = crate::extraction::LanguageRegistry::new();
+        let node = registry
+            .extractor_for_file("sample.rs")
+            .unwrap()
+            .extract("sample.rs", "fn sample() {}")
+            .nodes
+            .into_iter()
+            .find(|n| n.name == "sample")
+            .unwrap();
+        let mut cache = HashMap::from([(
+            "sample.rs".to_string(),
+            Some(format!(
+                "fn sample() {{}}\n{}",
+                "// padding\n".repeat(100_000)
+            )),
+        )]);
+        let start = std::time::Instant::now();
+        for _ in 0..500 {
+            std::hint::black_box(builder.get_code_cached(&node, &mut cache));
+        }
+        eprintln!(
+            "500 cached snippets from 1 MiB source: {:?}",
+            start.elapsed()
+        );
+    }
 
     #[test]
     fn test_spaced_words_generate_camel_bigrams() {
