@@ -3,7 +3,7 @@
 use serde_json::{json, Value};
 
 use super::super::ToolResult;
-use super::truncate_response;
+use super::{file_arg, truncate_response};
 use crate::blame_engine::{self, BlameOptions};
 use crate::errors::{Result, TokenSaveError};
 use crate::tokensave::TokenSave;
@@ -23,7 +23,7 @@ async fn resolve_target(
             .ok_or_else(|| TokenSaveError::Config {
                 message: "missing required parameter: symbol".to_string(),
             })?;
-    let file_filter = args.get("file").and_then(|v| v.as_str());
+    let file_filter = file_arg(args);
 
     let candidates = cg.get_nodes_by_qualified_name(symbol).await?;
     let candidates: Vec<_> = match file_filter {

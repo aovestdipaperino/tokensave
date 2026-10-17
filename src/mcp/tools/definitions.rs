@@ -1754,7 +1754,7 @@ fn def_test_map() -> ToolDefinition {
             "properties": {
                 "file": {
                     "type": "string",
-                    "description": "Source file path to find test coverage for"
+                    "description": "Source file path to find test coverage for. Alias: `path`."
                 },
                 "node_id": {
                     "type": "string",
@@ -1844,7 +1844,7 @@ fn def_branch_diff() -> ToolDefinition {
                 },
                 "file": {
                     "type": "string",
-                    "description": "Optional file path filter — only show diffs for symbols in this file"
+                    "description": "Optional file path filter — only show diffs for symbols in this file. Alias: `path`."
                 },
                 "kind": {
                     "type": "string",
@@ -2236,7 +2236,7 @@ fn def_annotations() -> ToolDefinition {
                 },
                 "file": {
                     "type": "string",
-                    "description": "Restrict to target nodes in this file or under this directory."
+                    "description": "Restrict to target nodes in this file or under this directory. Alias: `path`."
                 },
                 "target_kind": {
                     "type": "string",
@@ -2321,7 +2321,7 @@ fn def_test_coverage() -> ToolDefinition {
             "properties": {
                 "file": {
                     "type": "string",
-                    "description": "Source file path. Returns per-symbol coverage + file rollup."
+                    "description": "Source file path. Returns per-symbol coverage + file rollup. Alias: `path`."
                 },
                 "symbol": {
                     "type": "string",
@@ -2531,7 +2531,7 @@ fn def_doc() -> ToolDefinition {
             "properties": {
                 "file": {
                     "type": "string",
-                    "description": "Project-relative path of a source file whose documentation you want (e.g. 'src/BigClass.cs')."
+                    "description": "Project-relative path of a source file whose documentation you want (e.g. 'src/BigClass.cs'). Alias: `path`."
                 },
                 "include_content": {
                     "type": "boolean",
@@ -2929,7 +2929,7 @@ fn def_entities() -> ToolDefinition {
             "properties": {
                 "file": {
                     "type": "string",
-                    "description": "Project-relative path to the file (e.g. 'src/sync.rs')."
+                    "description": "Project-relative path to the file (e.g. 'src/sync.rs'). Alias: `path`."
                 },
                 "kinds": {
                     "type": "array",
@@ -2961,7 +2961,7 @@ fn def_read() -> ToolDefinition {
             "properties": {
                 "file": {
                     "type": "string",
-                    "description": "Project-relative or absolute path to the file (e.g. 'src/sync.rs')."
+                    "description": "Project-relative or absolute path to the file (e.g. 'src/sync.rs'). Alias: `path`."
                 },
                 "mode": {
                     "type": "string",
@@ -2970,7 +2970,7 @@ fn def_read() -> ToolDefinition {
                 },
                 "lines": {
                     "type": "string",
-                    "description": "Required when mode='lines'. Format 'A-B' or single 'A' (1-based, inclusive). E.g. '120-180' or '42'."
+                    "description": "Required when mode='lines'. Format 'A-B' or single 'A' (1-based, inclusive). E.g. '120-180' or '42'. Or pass `start` and `end` (1-based line numbers; `end` defaults to the end of the file)."
                 },
                 "if_digest": {
                     "type": "string",
@@ -2985,8 +2985,7 @@ fn def_read() -> ToolDefinition {
                     "enum": ["text", "json"],
                     "description": "Output format. 'text' returns raw source with a short header (no JSON escaping); 'json' returns the structured object. Default 'text'."
                 }
-            },
-            "required": ["file"]
+            }
         }),
     )
 }
@@ -3033,7 +3032,7 @@ fn def_file_dependents() -> ToolDefinition {
             "properties": {
                 "file": {
                     "type": "string",
-                    "description": "Path to the file (relative to project root)."
+                    "description": "Path to the file (relative to project root). Alias: `path`."
                 }
             },
             "required": ["file"]
