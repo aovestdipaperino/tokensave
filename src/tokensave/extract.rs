@@ -59,8 +59,11 @@ pub(crate) fn extract_files_isolated(
     registry: &crate::extraction::LanguageRegistry,
     files: Vec<String>,
 ) -> (Vec<ExtractTuple>, Vec<(String, String)>) {
+    if files.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
     if should_use_subprocess() {
-        let workers = worker_count();
+        let workers = worker_count(files.len());
         let timeout = std::time::Duration::from_secs(
             crate::user_config::UserConfig::load().extraction_timeout_secs,
         );
@@ -124,17 +127,22 @@ pub(crate) fn extract_files_in_process(
 /// Defaults to `available_parallelism()` (all cores). `TOKENSAVE_WORKERS=N`
 /// caps it, clamped to `1..=available_parallelism()`, so users on a loaded box
 /// can keep syncs polite (#183). An unset or unparseable value keeps the
-/// all-cores default.
-fn worker_count() -> usize {
+/// all-cores default, capped by the number of files waiting for extraction.
+fn worker_count(file_count: usize) -> usize {
     let cores = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
-    clamp_workers(std::env::var("TOKENSAVE_WORKERS").ok().as_deref(), cores)
+    clamp_workers(
+        std::env::var("TOKENSAVE_WORKERS").ok().as_deref(),
+        cores,
+        file_count,
+    )
 }
 
 /// Pure resolution of the worker count from a raw `TOKENSAVE_WORKERS` value.
 ///
-/// `None` (unset) → `cores`. A positive integer clamps to `1..=cores`. Anything
-/// else warns and falls back to `cores`.
-fn clamp_workers(raw: Option<&str>, cores: usize) -> usize {
+/// `None` (unset) uses available cores, capped by pending files. A positive
+/// integer further limits concurrency. Invalid values use the same default.
+fn clamp_workers(raw: Option<&str>, cores: usize, file_count: usize) -> usize {
+    let cores = cores.min(file_count);
     match raw {
         None => cores,
         Some(v) => match v.trim().parse::<usize>() {
@@ -165,27 +173,47 @@ mod worker_count_tests {
     use super::clamp_workers;
 
     #[test]
+    fn empty_batch_returns_no_extractions_or_skips() {
+        let registry = crate::extraction::LanguageRegistry::new();
+        let (results, skipped) =
+            super::extract_files_isolated(std::path::Path::new("."), &registry, Vec::new());
+        assert!(results.is_empty());
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn small_batches_never_spawn_idle_workers() {
+        for raw in [None, Some("100"), Some("0"), Some("garbage"), Some("2")] {
+            assert_eq!(clamp_workers(raw, 64, 0), 0);
+            assert_eq!(clamp_workers(raw, 64, 1), 1);
+            assert_eq!(clamp_workers(raw, 64, 2), 2);
+        }
+        assert_eq!(clamp_workers(Some("1"), 64, 2), 1);
+        assert_eq!(clamp_workers(None, 4, 100), 4);
+    }
+
+    #[test]
     fn unset_uses_all_cores() {
-        assert_eq!(clamp_workers(None, 8), 8);
+        assert_eq!(clamp_workers(None, 8, 100), 8);
     }
 
     #[test]
     fn valid_value_is_honored() {
-        assert_eq!(clamp_workers(Some("3"), 8), 3);
-        assert_eq!(clamp_workers(Some("  2 "), 8), 2);
+        assert_eq!(clamp_workers(Some("3"), 8, 100), 3);
+        assert_eq!(clamp_workers(Some("  2 "), 8, 100), 2);
     }
 
     #[test]
     fn value_is_clamped_to_cores() {
-        assert_eq!(clamp_workers(Some("100"), 8), 8);
+        assert_eq!(clamp_workers(Some("100"), 8, 100), 8);
     }
 
     #[test]
     fn zero_and_garbage_fall_back_to_cores() {
-        assert_eq!(clamp_workers(Some("0"), 8), 8);
-        assert_eq!(clamp_workers(Some("-1"), 8), 8);
-        assert_eq!(clamp_workers(Some("abc"), 8), 8);
-        assert_eq!(clamp_workers(Some(""), 8), 8);
+        assert_eq!(clamp_workers(Some("0"), 8, 100), 8);
+        assert_eq!(clamp_workers(Some("-1"), 8, 100), 8);
+        assert_eq!(clamp_workers(Some("abc"), 8, 100), 8);
+        assert_eq!(clamp_workers(Some(""), 8, 100), 8);
     }
 }
 
