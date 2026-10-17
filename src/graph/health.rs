@@ -59,92 +59,7 @@ pub fn gini_label(gini: f64) -> &'static str {
 // Task 3: Tarjan's SCC / Acyclicity Score
 // ---------------------------------------------------------------------------
 
-struct TarjanState<'a> {
-    adj: &'a HashMap<String, HashSet<String>>,
-    index_counter: usize,
-    stack: Vec<String>,
-    on_stack: HashSet<String>,
-    index: HashMap<String, usize>,
-    lowlink: HashMap<String, usize>,
-    sccs: Vec<Vec<String>>,
-}
-
-impl<'a> TarjanState<'a> {
-    fn new(adj: &'a HashMap<String, HashSet<String>>) -> Self {
-        TarjanState {
-            adj,
-            index_counter: 0,
-            stack: Vec::new(),
-            on_stack: HashSet::new(),
-            index: HashMap::new(),
-            lowlink: HashMap::new(),
-            sccs: Vec::new(),
-        }
-    }
-
-    fn strongconnect(&mut self, v: &str) {
-        let v = v.to_string();
-        self.index.insert(v.clone(), self.index_counter);
-        self.lowlink.insert(v.clone(), self.index_counter);
-        self.index_counter += 1;
-        self.stack.push(v.clone());
-        self.on_stack.insert(v.clone());
-
-        // Collect neighbors first to avoid borrow conflicts
-        let neighbors: Vec<String> = self
-            .adj
-            .get(&v)
-            .map(|s| s.iter().cloned().collect())
-            .unwrap_or_default();
-
-        for w in neighbors {
-            if !self.index.contains_key(&w) {
-                self.strongconnect(&w.clone());
-                let w_low = self.lowlink[&w];
-                let v_low = self.lowlink[&v];
-                self.lowlink.insert(v.clone(), v_low.min(w_low));
-            } else if self.on_stack.contains(&w) {
-                let w_idx = self.index[&w];
-                let v_low = self.lowlink[&v];
-                self.lowlink.insert(v.clone(), v_low.min(w_idx));
-            }
-        }
-
-        // If v is a root node, pop the stack and generate an SCC
-        if self.lowlink[&v] == self.index[&v] {
-            let mut scc = Vec::new();
-            while let Some(w) = self.stack.pop() {
-                self.on_stack.remove(&w);
-                let is_v = w == v;
-                scc.push(w);
-                if is_v {
-                    break;
-                }
-            }
-            self.sccs.push(scc);
-        }
-    }
-}
-
-/// Runs Tarjan's SCC algorithm on the adjacency map.
-/// Returns a list of strongly connected components (each is a list of node IDs).
-fn tarjan_scc(adj: &HashMap<String, HashSet<String>>) -> Vec<Vec<String>> {
-    let mut state = TarjanState::new(adj);
-
-    // Collect all nodes (both keys and targets) so isolated nodes are included
-    let mut all_nodes: HashSet<String> = adj.keys().cloned().collect();
-    for targets in adj.values() {
-        all_nodes.extend(targets.iter().cloned());
-    }
-
-    for node in all_nodes {
-        if !state.index.contains_key(&node) {
-            state.strongconnect(&node);
-        }
-    }
-
-    state.sccs
-}
+use super::scc::tarjan_scc;
 
 /// Computes the acyclicity score for a directed graph.
 /// Uses Tarjan's SCC algorithm. Score = 1.0 - (`edges_in_nontrivial_SCCs` / `total_edges`).
@@ -158,13 +73,7 @@ pub fn acyclicity_score<S1: BuildHasher, S2: BuildHasher>(
         return (1.0, 0);
     }
 
-    // Build a plain HashMap for tarjan_scc (which uses default hasher)
-    let plain_adj: HashMap<String, HashSet<String>> = adj
-        .iter()
-        .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
-        .collect();
-
-    let sccs = tarjan_scc(&plain_adj);
+    let sccs = tarjan_scc(adj);
 
     // Build a set of nodes in nontrivial SCCs (size > 1)
     let mut in_cycle: HashSet<&str> = HashSet::new();
@@ -238,14 +147,8 @@ pub fn dependency_depth<S1: BuildHasher, S2: BuildHasher>(
         (file_count as f64).log2().ceil() as usize
     };
 
-    // Build a plain HashMap for tarjan_scc
-    let plain_adj: HashMap<String, HashSet<String>> = adj
-        .iter()
-        .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
-        .collect();
-
-    // Step 1: Run Tarjan's SCC, map each node to its SCC index
-    let sccs = tarjan_scc(&plain_adj);
+    // Step 1: Run iterative Tarjan directly on the caller's graph.
+    let sccs = tarjan_scc(adj);
     let mut node_to_scc: HashMap<String, usize> = HashMap::new();
     for (idx, scc) in sccs.iter().enumerate() {
         for node in scc {
@@ -506,4 +409,42 @@ pub fn compute_composite_health(dims: &HealthDimensions) -> u32 {
     // Low-weight penalty: skip-test-coverage overuse reduces score by up to 2%.
     let penalized = base * (0.98 + 0.02 * dims.coverage_discipline);
     penalized.round() as u32
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod performance_tests {
+    use super::*;
+
+    #[test]
+    fn deep_health_graph_fits_small_thread_stack() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let adj: HashMap<String, HashSet<String>> = (0..20_000)
+                    .map(|i| (i.to_string(), HashSet::from([(i + 1).to_string()])))
+                    .collect();
+                assert_eq!(acyclicity_score(&adj), (1.0, 0));
+                let result = dependency_depth(&adj, 1);
+                assert_eq!(result.max_depth, 20_000);
+                assert_eq!(result.chains.len(), 1);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    #[ignore = "manual scaling benchmark; run with --ignored --nocapture"]
+    fn benchmark_health_graph_scaling() {
+        for size in [1_000, 5_000, 20_000] {
+            let adj: HashMap<String, HashSet<String>> = (0..size)
+                .map(|i| (i.to_string(), HashSet::from([(i + 1).to_string()])))
+                .collect();
+            let start = std::time::Instant::now();
+            let result = dependency_depth(std::hint::black_box(&adj), 1);
+            assert_eq!(result.max_depth, size);
+            eprintln!("health chain {size}: {:?}", start.elapsed());
+        }
+    }
 }
