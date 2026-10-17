@@ -65,6 +65,11 @@ impl Connection {
         match err {
             ffi::SQLITE_OK => {}
             _ => {
+                // SQLite can return an allocated handle even when opening
+                // fails (for example SQLITE_CANTOPEN). It still needs closing.
+                if !raw.is_null() {
+                    unsafe { ffi::sqlite3_close_v2(raw) };
+                }
                 return Err(Error::ConnectionFailed(format!(
                     "Unable to open connection to local database {db_path}: {err}",
                 )));
@@ -74,8 +79,15 @@ impl Connection {
             raw,
             drop_ref: Arc::new(()),
             #[cfg(feature = "replication")]
-            writer: db.writer()?,
+            writer: None,
             authorizer: Arc::new(RwLock::new(None)),
+        };
+        // Put the handle under Drop ownership before any fallible setup.
+        #[cfg(feature = "replication")]
+        let conn = {
+            let mut conn = conn;
+            conn.writer = db.writer()?;
+            conn
         };
         #[cfg(feature = "sync")]
         if let Some(_) = db.sync_ctx {
@@ -830,6 +842,18 @@ mod tests {
         params::Params,
         OpenFlags,
     };
+
+    /// Run alone under Valgrind with --leak-check=full --error-exitcode=99
+    /// to check the native SQLite allocations as well as the error result.
+    #[test]
+    fn failed_connections_release_native_handles() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing").join("database.db");
+        let db = Database::new(missing.to_str().unwrap().to_string(), OpenFlags::default());
+        for _ in 0..100 {
+            assert!(Connection::connect(&db).is_err());
+        }
+    }
 
     #[tokio::test]
     pub async fn test_kek() {
