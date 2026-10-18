@@ -7158,3 +7158,34 @@ async fn doc_staleness_flags_code_committed_after_the_doc() {
         "code committed after the doc must flag drift: {parsed:?}"
     );
 }
+
+#[tokio::test]
+async fn entities_accepts_path_as_an_alias_for_file() {
+    // The shared `file_arg` helper: every tool whose argument is named `file`
+    // also takes `path`, the name most other tools use.
+    let (_dir, cg) = setup_project().await;
+    let by_file = handle_tool_call(
+        &cg,
+        "tokensave_entities",
+        json!({"file": "src/main.rs"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let by_path = handle_tool_call(
+        &cg,
+        "tokensave_entities",
+        json!({"path": "src/main.rs"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        extract_text(&by_path.value),
+        extract_text(&by_file.value),
+        "{}",
+        extract_text(&by_path.value)
+    );
+}

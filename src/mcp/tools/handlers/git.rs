@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{json, Value};
 
 use super::super::ToolResult;
-use super::{serialize_bounded_json, truncate_response, unique_file_paths};
+use super::{file_arg, serialize_bounded_json, truncate_response, unique_file_paths};
 use crate::errors::{Result, TokenSaveError};
 use crate::tokensave::TokenSave;
 
@@ -1141,7 +1141,7 @@ pub(super) async fn handle_branch_diff(cg: &TokenSave, args: Value) -> Result<To
         });
     }
 
-    let file_filter = args.get("file").and_then(|v| v.as_str());
+    let file_filter = file_arg(&args);
     let kind_filter = args.get("kind").and_then(|v| v.as_str());
 
     let base_cg = TokenSave::open_branch(project_root, base_name).await?;
