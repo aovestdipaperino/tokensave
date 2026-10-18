@@ -2291,11 +2291,6 @@ impl TokenSave {
             .collect()
     }
 
-    /// Gets the absolute path for a relative path.
-    pub(crate) fn absolute_path(&self, relative_path: &str) -> PathBuf {
-        self.project_root.join(relative_path)
-    }
-
     /// Resolves an edit tool's `path` (or a symbol's DB-recorded relative
     /// path) to the absolute filesystem location that should actually be
     /// read/written, plus — when that location falls under the *indexed*
@@ -2356,69 +2351,15 @@ impl TokenSave {
     }
 
     /// Re-indexes a single file after an edit.
+    ///
+    /// Goes through `sync_single_files`, the path `sync` takes for a changed
+    /// file: extract, then resolve what the file touched. Deleting the file's
+    /// nodes drops every edge into them, including calls from other files, so
+    /// re-inserting nodes and unresolved refs without resolving them left the
+    /// file's symbols with no callers, and a later `sync` saw the new hash and
+    /// never brought them back (the cause #633 fixed for `tokensave_rename`).
     pub(crate) async fn reindex_file(&self, file_path: &str) -> Result<()> {
-        let abs_path = self.absolute_path(file_path);
-        let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
-            message: format!("failed to read file {file_path}: {e}"),
-        })?;
-
-        let Some(extractor) = crate::project_manifest::resolve_extractor_for_source(
-            &self.registry,
-            &self.project_root,
-            file_path,
-            &source,
-        ) else {
-            return Ok(());
-        };
-
-        let mut result =
-            safe_extract(extractor, file_path, &source).ok_or_else(|| TokenSaveError::Config {
-                message: format!("extraction panicked for {file_path}"),
-            })?;
-        result.sanitize();
-
-        let hash = sync::content_hash(&source);
-        let size = source.len() as u64;
-        let mtime = sync::file_stat(&abs_path).map_or_else(current_timestamp, |(m, _)| m);
-
-        let ruby_changed = is_ruby_source(file_path)
-            || (is_ruby_template(file_path)
-                && template_changes_reopenings(
-                    file_path,
-                    &self.db.touched_nodes_by_file(file_path).await?,
-                    &result.nodes,
-                ));
-        self.db.delete_nodes_by_file(file_path).await?;
-        self.db.insert_nodes(&result.nodes).await?;
-        let body_documents = build_executable_body_documents(file_path, &source, &result.nodes);
-        self.db
-            .insert_executable_body_documents(&body_documents)
-            .await?;
-        self.db.insert_edges(&result.edges).await?;
-        if !result.unresolved_refs.is_empty() {
-            self.db
-                .insert_unresolved_refs(&result.unresolved_refs)
-                .await?;
-        }
-
-        let file_record = FileRecord {
-            path: file_path.to_string(),
-            content_hash: hash,
-            size,
-            modified_at: mtime,
-            indexed_at: current_timestamp(),
-            node_count: result.nodes.len() as u32,
-            kind: FileKind::Code,
-        };
-        self.db.upsert_file(&file_record).await?;
-        if ruby_changed {
-            self.db.rebuild_ruby_reopenings().await?;
-        }
-        self.rebuild_rails_routes_best_effort(is_ruby_source(file_path))
-            .await;
-        self.db.rebuild_trait_dispatch_callers().await?;
-
-        Ok(())
+        self.sync_single_files(&[file_path.to_string()]).await
     }
 
     /// 1-based inclusive line range covered by a byte span in `source`.
