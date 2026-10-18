@@ -177,6 +177,36 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         None => return commands::handle_no_command().await,
     };
 
+    // Verification must bypass config saves, telemetry and agent maintenance.
+    if let Commands::Verify {
+        path,
+        deep,
+        repair,
+        json,
+    } = &command
+    {
+        let root = match path {
+            Some(path) => std::path::PathBuf::from(path),
+            None => std::env::current_dir()?,
+        };
+        let report = tokensave::verify::verify(&root, *deep, *repair).await;
+        if *json {
+            println!("{}", serde_json::to_string(&report)?);
+        } else {
+            println!(
+                "Checked {} files; {} findings ({} omitted); completed: {}",
+                report.checked_files, report.findings, report.omitted, report.completed
+            );
+            for diagnostic in &report.diagnostics {
+                println!(
+                    "{} [{}] {}: {}",
+                    diagnostic.code, diagnostic.severity, diagnostic.entity, diagnostic.action
+                );
+            }
+        }
+        process::exit(report.exit_code());
+    }
+
     // Worker mode bypasses every normal startup path (no config load, no
     // worldwide-counter ping, no agent checks). The token handshake inside
     // run_worker is the only authentication; this dispatch must happen
@@ -537,6 +567,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
+        Commands::Verify { .. } => unreachable!("verify is dispatched before startup"),
         Commands::Status {
             path,
             json,
