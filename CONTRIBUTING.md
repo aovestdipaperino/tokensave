@@ -114,6 +114,69 @@ All `tests/*.rs` files are modules of one test binary, `tests/integration.rs`, b
 
 Tests in the shared binary run concurrently with every other test file, so a test must not mutate process-global state: environment variables (`std::env::set_var`), the current directory, or the `tokensave::cancel` flag. Such a file gets its own `[[test]]` target in `Cargo.toml` instead, next to the existing isolated ones. A test that re-runs its own binary with `--exact` must pass the module-qualified name from `common::qualified_test_name(module_path!(), "...")`.
 
+### Analysis-result stability tests
+
+Run the small metamorphic fixtures with:
+
+```bash
+cargo test --locked --test integration analysis_stability_test::
+```
+
+`tests/common/stability.rs` captures production `TokenSave` queries, rather than
+reimplementing analyzers. The Rust and Python fixtures exercise blank lines,
+consistent indentation changes, ordinary comment insertion/removal, CRLF, and
+moving independent function declarations within a file. Rust also covers a
+controlled rename (including updated call references), independent function
+insertion, repeated full indexing, no-op syncs, and bounded concurrent readers.
+Every transformed fixture is compared with a fresh full index, then restored
+where applicable. Existing `incremental_resolution_test` retains the broader
+incremental-versus-full-resolution edit-sequence coverage.
+
+There are four distinct comparison contracts:
+
+- **Exact output:** repeated node reads without writes retain every field;
+  sorting by ID only accounts for unspecified query ordering.
+- **Normalized findings:** compare sorted vectors of dead-code entities,
+  file-cycle components, coupling counts, and structural complexity metrics.
+  Vectors retain duplicates. Temporary roots, timestamps, source coordinates,
+  and raw IDs are outside this projection. Function signatures retain their
+  contents with whitespace runs collapsed; rename cases explicitly map the
+  renamed declaration signatures to their original signatures.
+- **Semantic graph:** compare every stored relationship by semantic endpoints,
+  edge kind, and resolver provenance. Source line numbers are excluded;
+  relationship multiplicity is preserved.
+- **Finding correspondence:** `(relative path, kind, qualified name)` identifies
+  an entity. A controlled rename supplies an explicit mapping back to the old
+  entity. Unchanged inputs additionally require identical raw IDs; line edits
+  may change line-derived IDs without introducing new semantic findings.
+
+Structural complexity includes all stored branch, loop, early-exit, nesting,
+unsafe, unchecked-call, assertion, cognitive and Halstead counts. The composite
+complexity ranking includes physical line span, so its score and order are
+intentionally outside formatting equivalence. Coupling preserves both fan-in
+and fan-out counts. External compiler diagnostics and their severity are not
+captured by these fixtures; no diagnostic severity or confidence field is
+silently discarded. Resolver provenance is retained.
+
+To add coverage, create a small valid fixture with nonempty baseline assertions,
+apply a language-safe transformation, call `sync`, and compare the snapshot with
+both its baseline and a new `Project` containing the transformed source. Include
+a negative control for any newly captured analyzer. `assert_equivalent` reports
+an analyzer, fixture/transformation, and complete before/after rows on failure;
+`assert_same_identities` reports raw identity correspondence separately. Avoid
+fuzzy matching, set/subset comparisons that hide duplicates, process-global
+configuration, and timing-based synchronization. `Project` owns its temporary
+directory and closes the database before cleanup, including on test failure.
+
+The cases are deterministic and bounded; no property-testing dependency or
+random seed is needed. This first version does not promise arbitrary file-move,
+overload, class/member, suppression-directive, documentation-comment, or
+cross-language equivalence. Python indentation changes preserve nesting; only
+independent definitions are reordered. Concurrent reads do not test simultaneous
+writers or establish a public output-order guarantee. Repeated small full
+indexes exercise the production parallel extraction path, without timing
+assertions or a large repository stress test.
+
 ## Environment Variables
 
 Tokensave-owned environment variables must start with `TOKENSAVE_`. Runtime Rust sources are checked by `tests/env_var_namespace_test.rs`; operating-system, Cargo, Git, and agent-owned variables require an explicit allowlist rationale. Use qualified environment APIs such as `std::env::var` so the policy check can identify accesses. Keep variable names as string literals at their access site unless a shared constant is required, and never print environment-variable values because some carry authentication material.

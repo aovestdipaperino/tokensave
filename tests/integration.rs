@@ -14,6 +14,7 @@ mod actionscript_extraction_test;
 mod agent_maintenance_env_test;
 mod agent_test;
 mod ambiguous_calls_test;
+mod analysis_stability_test;
 mod artifact_indexing_test;
 mod astro_extraction_test;
 mod augment_agent_test;
