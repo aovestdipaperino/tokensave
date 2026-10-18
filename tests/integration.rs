@@ -128,7 +128,6 @@ mod multi_mcp_coordination_test;
 mod nix_extraction_test;
 mod node_filter_test;
 mod objc_extraction_test;
-mod opencode_agent_test;
 mod pascal_extraction_test;
 mod path_prefix_like_escape_test;
 mod perl_extraction_test;
