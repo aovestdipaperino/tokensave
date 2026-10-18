@@ -2562,12 +2562,18 @@ impl McpServer {
             // Notification-free freshness: walk the local tree and resync any
             // stale files, gated by a 30 s cooldown. Explicitly selected
             // graphs are read-only snapshots and never run local repair.
-            self.maybe_sync_if_stale().await;
+            let quality_comparison = tool_name == "tokensave_branch_diff"
+                && arguments.get("quality").and_then(Value::as_bool) == Some(true);
+            if !quality_comparison {
+                self.maybe_sync_if_stale().await;
+            }
 
             // Evaluate the local project's version-aware reindex on every
             // local path. The atomic once-gate keeps this at most once per
             // session without letting a selected call consume the check.
-            self.maybe_reindex_on_version_bump();
+            if !quality_comparison {
+                self.maybe_reindex_on_version_bump();
+            }
         }
 
         eprintln!("[tokensave] dispatch: {tool_name}");
