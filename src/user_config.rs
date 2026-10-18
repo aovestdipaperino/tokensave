@@ -129,6 +129,14 @@ pub struct UserConfig {
     #[serde(default = "default_true")]
     pub manage_rules: bool,
 
+    /// When false, `install`, `reinstall`, the upgrade resync and the
+    /// post-upgrade hook backfill skip writing the Claude Code hooks
+    /// (`PreToolUse`/`UserPromptSubmit`/`Stop`) into settings.json, and
+    /// `doctor` reports them as disabled instead of repairing them. The MCP
+    /// server, permissions and git hooks are unaffected (#693).
+    #[serde(default = "default_true")]
+    pub claude_hooks: bool,
+
     /// Snapshot of the config-owned fields (see `ConfigFile`) as last seen
     /// on disk by this instance -- either at `load()` time, or as of its own
     /// most recent successful `save()`. `save()` compares against this to
@@ -204,6 +212,7 @@ impl Default for UserConfig {
             extraction_timeout_secs: default_extraction_timeout_secs(),
             wildcard_permissions: false,
             manage_rules: true,
+            claude_hooks: true,
             loaded_config: Mutex::new(None),
             loaded_state: Mutex::new(None),
             loaded_legacy_state: AtomicBool::new(false),
@@ -225,6 +234,8 @@ pub(crate) struct ConfigFile {
     wildcard_permissions: bool,
     #[serde(default = "default_true")]
     manage_rules: bool,
+    #[serde(default = "default_true")]
+    claude_hooks: bool,
 }
 
 impl ConfigFile {
@@ -236,6 +247,7 @@ impl ConfigFile {
             extraction_timeout_secs: c.extraction_timeout_secs,
             wildcard_permissions: c.wildcard_permissions,
             manage_rules: c.manage_rules,
+            claude_hooks: c.claude_hooks,
         }
     }
 }
@@ -1021,7 +1033,8 @@ impl UserConfig {
             || self.watcher_debounce != base.watcher_debounce
             || self.extraction_timeout_secs != base.extraction_timeout_secs
             || self.wildcard_permissions != base.wildcard_permissions
-            || self.manage_rules != base.manage_rules;
+            || self.manage_rules != base.manage_rules
+            || self.claude_hooks != base.claude_hooks;
         if !changed && !self.loaded_legacy_state.load(Ordering::Relaxed) {
             return Ok(None);
         }
@@ -1060,6 +1073,11 @@ impl UserConfig {
                 on_disk.manage_rules
             } else {
                 self.manage_rules
+            },
+            claude_hooks: if self.claude_hooks == base.claude_hooks {
+                on_disk.claude_hooks
+            } else {
+                self.claude_hooks
             },
         }))
     }
@@ -1185,6 +1203,7 @@ mod tests {
             extraction_timeout_secs: 30,
             wildcard_permissions: true,
             manage_rules: false,
+            claude_hooks: false,
             loaded_config: Mutex::new(None),
             loaded_state: Mutex::new(None),
             loaded_legacy_state: AtomicBool::new(false),

@@ -953,3 +953,87 @@ fn test_has_tokensave_without_install() {
         "has_tokensave should return false without install"
     );
 }
+
+// ===========================================================================
+// #693: claude_hooks = false opt-out
+// ===========================================================================
+
+fn home_with_hooks_disabled(home: &std::path::Path) {
+    std::fs::create_dir_all(home.join(".tokensave")).unwrap();
+    std::fs::write(
+        home.join(".tokensave").join("config.toml"),
+        "claude_hooks = false\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_693_hooks_disabled_skips_hook_install_keeps_mcp_and_permissions() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    home_with_hooks_disabled(home);
+    let ctx = make_install_ctx(home);
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let settings = read_json(&home.join(".claude/settings.json"));
+    let settings_text = serde_json::to_string(&settings).unwrap();
+    assert!(
+        !settings_text.contains("hook-pre-tool-use")
+            && !settings_text.contains("hook-prompt-submit")
+            && !settings_text.contains("hook-stop"),
+        "claude_hooks = false must not write hooks, got: {settings_text}"
+    );
+    assert!(
+        settings_text.contains("mcp__tokensave"),
+        "permissions must still be written, got: {settings_text}"
+    );
+    assert!(
+        read_json(&home.join(".claude.json"))["mcpServers"]["tokensave"].is_object(),
+        "MCP server must still be registered"
+    );
+}
+
+#[test]
+fn test_693_doctor_reports_disabled_and_does_not_repair() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    home_with_hooks_disabled(home);
+    // Real (fake but existing) bin path so doctor's binary-existence check
+    // passes and `issues` reflects only the hook opt-out behavior.
+    let ctx = make_install_ctx_with_real_bin(home);
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let settings_path = home.join(".claude/settings.json");
+    let before = std::fs::read_to_string(&settings_path).unwrap();
+
+    let mut dc = DoctorCounters::new();
+    let hctx = HealthcheckContext {
+        home: home.to_path_buf(),
+        project_path: home.to_path_buf(),
+    };
+    ClaudeIntegration.healthcheck(&mut dc, &hctx);
+    assert_eq!(
+        dc.issues, 0,
+        "hooks disabled by config must not fail doctor"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).unwrap(),
+        before,
+        "doctor must not rewrite settings.json when hooks are disabled"
+    );
+}
+
+#[test]
+fn test_693_hooks_enabled_by_default_writes_hooks() {
+    // No config.toml at all: the default stays hooks-on, so existing installs
+    // and the hermetic temp-home tests are unaffected.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+    ClaudeIntegration.install(&ctx).unwrap();
+    let settings_text = std::fs::read_to_string(home.join(".claude/settings.json")).unwrap();
+    assert!(
+        settings_text.contains("hook-pre-tool-use"),
+        "default install must still write hooks"
+    );
+}
