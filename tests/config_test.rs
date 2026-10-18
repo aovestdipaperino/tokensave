@@ -468,3 +468,50 @@ fn test_discover_project_root_at_root_itself() {
     let found = tokensave::config::discover_project_root(root);
     assert_eq!(found, Some(root.to_path_buf()));
 }
+
+#[test]
+fn cpu_usage_defaults_and_legacy_configs() {
+    use tokensave::cpu::CpuUsage;
+    assert_eq!(TokenSaveConfig::default().cpu_usage, CpuUsage::Balanced);
+    let mut legacy = serde_json::to_value(TokenSaveConfig::default()).unwrap();
+    legacy.as_object_mut().unwrap().remove("cpu_usage");
+    let config: TokenSaveConfig = serde_json::from_value(legacy).unwrap();
+    assert_eq!(config.cpu_usage, CpuUsage::Balanced);
+}
+
+#[test]
+fn cpu_usage_profiles_round_trip_through_existing_config() {
+    use tokensave::cpu::CpuUsage;
+    for profile in [CpuUsage::Low, CpuUsage::Balanced, CpuUsage::Performance] {
+        let dir = TempDir::new().unwrap();
+        let config = TokenSaveConfig {
+            cpu_usage: profile,
+            ..Default::default()
+        };
+        save_config(dir.path(), &config).unwrap();
+        assert_eq!(load_config(dir.path()).unwrap().cpu_usage, profile);
+    }
+}
+
+#[test]
+fn invalid_cpu_usage_reports_valid_choices_and_config_path() {
+    let dir = TempDir::new().unwrap();
+    save_config(dir.path(), &TokenSaveConfig::default()).unwrap();
+    let path = dir.path().join(".tokensave/config.json");
+    for invalid in [
+        serde_json::json!("turbo"),
+        serde_json::json!(null),
+        serde_json::json!(2),
+    ] {
+        let mut config = serde_json::to_value(TokenSaveConfig::default()).unwrap();
+        config["cpu_usage"] = invalid;
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let error = load_config(dir.path()).unwrap_err().to_string();
+        assert!(error.contains("config.json"), "{error}");
+        if config["cpu_usage"].is_string() {
+            for choice in ["low", "balanced", "performance"] {
+                assert!(error.contains(choice), "{error}");
+            }
+        }
+    }
+}

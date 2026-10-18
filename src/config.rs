@@ -84,6 +84,9 @@ pub fn resolve_report_savings(configured: bool) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenSaveConfig {
+    /// CPU concurrency profile, applied when the project is opened.
+    #[serde(default)]
+    pub cpu_usage: crate::cpu::CpuUsage,
     /// Schema version of the configuration.
     pub version: u32,
     /// Root directory of the project being indexed.
@@ -266,6 +269,7 @@ pub fn env_bool_override(var: &str, config_value: bool) -> bool {
 impl Default for TokenSaveConfig {
     fn default() -> Self {
         Self {
+            cpu_usage: crate::cpu::CpuUsage::default(),
             version: CONFIG_VERSION,
             root_dir: String::new(),
             exclude: vec![

@@ -25,6 +25,7 @@ pub mod cancel;
 pub mod cloud;
 pub mod config;
 pub mod context;
+pub mod cpu;
 pub mod db;
 pub mod derive_table;
 pub mod diagnose;

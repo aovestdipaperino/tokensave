@@ -392,8 +392,12 @@ impl TokenSave {
         let phase_start = Instant::now();
         crate::memstats::record("index:extract");
         let (files, artifact_files) = Self::partition_artifacts(files, &self.artifact_extensions());
-        let (extractions, _skipped) =
-            extract_files_isolated(&project_root, registry, files.clone());
+        let (extractions, _skipped) = extract_files_isolated(
+            &project_root,
+            registry,
+            files.clone(),
+            self.config.cpu_usage,
+        )?;
         // Extraction stops early on a shutdown, so a short result here means
         // abandoned work, not an empty project. Committing it would write a
         // partial graph that looks complete.
@@ -482,7 +486,10 @@ impl TokenSave {
             // `all_nodes` itself (#306).
             let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
             crate::memstats::record("index:resolve:build_caches");
-            let resolution = resolver.resolve_all(&all_unresolved);
+            let resolution = self
+                .config
+                .cpu_usage
+                .run(|| resolver.resolve_all(&all_unresolved))?;
             crate::memstats::record("index:resolve:refs");
             // Ties are recorded rather than dropped, so a caller can pick the
             // intended target and `dead_code` can tell "referenced, target
@@ -531,7 +538,7 @@ impl TokenSave {
         });
         // Artifacts contribute a `files` row and nothing else — no nodes, no
         // edges, no body documents (#323).
-        file_records.extend(self.artifact_file_records(&artifact_files));
+        file_records.extend(self.artifact_file_records(&artifact_files)?);
         file_records.sort_unstable_by(|a, b| a.path.cmp(&b.path));
         let total_edges = all_edges.len();
 
@@ -776,7 +783,11 @@ impl TokenSave {
             if touched.is_some() {
                 attempted_refs.extend(refs.iter().map(AmbiguityRefKey::from));
             }
-            let (batch_resolved, batch_ambiguous) = resolver.resolve_batch(&refs);
+            crate::cancel::check("resolve")?;
+            let (batch_resolved, batch_ambiguous) = self
+                .config
+                .cpu_usage
+                .run(|| resolver.resolve_batch(&refs))?;
             resolved.extend(batch_resolved);
             ambiguous.extend(batch_ambiguous);
         }
@@ -991,8 +1002,12 @@ impl TokenSave {
         // Extract graph data from the files in parallel (subprocess-isolated)
         let _ = stat_map; // worker re-stats internally; map kept for potential future use
         crate::memstats::record("sync:extract");
-        let (sync_extractions, _skipped_extractions) =
-            extract_files_isolated(project_root, registry, file_paths.clone());
+        let (sync_extractions, _skipped_extractions) = extract_files_isolated(
+            project_root,
+            registry,
+            file_paths.clone(),
+            self.config.cpu_usage,
+        )?;
 
         // Phase 1: insert all nodes (and metadata) so cross-file edges
         // can reference them. Edges are queued for phase 2 (#58).
@@ -1167,14 +1182,16 @@ impl TokenSave {
         on_progress(0, 0, "checking file timestamps");
         let phase_start = Instant::now();
         let project_root = &self.project_root;
-        let file_stats: Vec<(String, i64, u64)> = current_files
-            .par_iter()
-            .filter_map(|path| {
-                let abs_path = project_root.join(path);
-                let (mtime, size) = sync::file_stat(&abs_path)?;
-                Some((path.clone(), mtime, size))
-            })
-            .collect();
+        let file_stats: Vec<(String, i64, u64)> = self.config.cpu_usage.run(|| {
+            current_files
+                .par_iter()
+                .filter_map(|path| {
+                    let abs_path = project_root.join(path);
+                    let (mtime, size) = sync::file_stat(&abs_path)?;
+                    Some((path.clone(), mtime, size))
+                })
+                .collect()
+        })?;
         on_verbose(&format!(
             "stat-checked {} files in {:.1}s",
             file_stats.len(),
@@ -1239,16 +1256,18 @@ impl TokenSave {
         on_progress(0, 0, "hashing changed files");
         let phase_start = Instant::now();
         let needs_read: Vec<&String> = new_files.iter().chain(stat_changed.iter()).collect();
-        let hash_results: Vec<_> = needs_read
-            .par_iter()
-            .map(|path| {
-                let abs_path = project_root.join(path.as_str());
-                match sync::read_source_file(&abs_path) {
-                    Ok(source) => Ok(((*path).clone(), sync::content_hash(&source))),
-                    Err(e) => Err(((*path).clone(), e.to_string())),
-                }
-            })
-            .collect();
+        let hash_results: Vec<_> = self.config.cpu_usage.run(|| {
+            needs_read
+                .par_iter()
+                .map(|path| {
+                    let abs_path = project_root.join(path.as_str());
+                    match sync::read_source_file(&abs_path) {
+                        Ok(source) => Ok(((*path).clone(), sync::content_hash(&source))),
+                        Err(e) => Err(((*path).clone(), e.to_string())),
+                    }
+                })
+                .collect()
+        })?;
 
         let mut skipped: Vec<(String, String)> = Vec::new();
         let mut hash_map: HashMap<String, String> = HashMap::new();
@@ -1379,7 +1398,7 @@ impl TokenSave {
         // extraction entirely; their row is the whole record (#323).
         let (to_index, changed_artifacts) =
             Self::partition_artifacts(to_index, &self.artifact_extensions());
-        for record in self.artifact_file_records(&changed_artifacts) {
+        for record in self.artifact_file_records(&changed_artifacts)? {
             self.db.upsert_file(&record).await?;
         }
         let registry = &self.registry;
@@ -1387,8 +1406,12 @@ impl TokenSave {
         let phase_start = Instant::now();
         let _ = stat_map; // worker re-stats internally
         crate::memstats::record("sync:extract");
-        let (sync_extractions, sync_skipped): (Vec<_>, Vec<_>) =
-            extract_files_isolated(project_root, registry, to_index.clone());
+        let (sync_extractions, sync_skipped): (Vec<_>, Vec<_>) = extract_files_isolated(
+            project_root,
+            registry,
+            to_index.clone(),
+            self.config.cpu_usage,
+        )?;
         let extracted_paths: HashSet<&str> = sync_extractions
             .iter()
             .map(|(path, _, _, _, _)| path.as_str())
@@ -2284,11 +2307,16 @@ impl TokenSave {
     }
 
     /// Builds `files` rows for every artifact path, in parallel.
-    fn artifact_file_records(&self, paths: &[String]) -> Vec<FileRecord> {
-        paths
-            .par_iter()
-            .filter_map(|path| self.artifact_file_record(path))
-            .collect()
+    fn artifact_file_records(&self, paths: &[String]) -> Result<Vec<FileRecord>> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.config.cpu_usage.run(|| {
+            paths
+                .par_iter()
+                .filter_map(|path| self.artifact_file_record(path))
+                .collect()
+        })
     }
 
     /// Gets the absolute path for a relative path.

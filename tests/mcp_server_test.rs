@@ -4126,3 +4126,52 @@ async fn selected_status_omits_unverifiable_stale_file_count() {
         "selected read-only graphs must not compare commits against the current HEAD: {text}"
     );
 }
+
+/// Profile pools must allow independent interactive sessions to keep working
+/// while another project indexes. This does not change same-server ordering.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cpu_usage_profiles_allow_mcp_queries_during_indexing() {
+    use tokensave::cpu::CpuUsage;
+    let (_interactive_dir, server) = setup_server().await;
+    for profile in [CpuUsage::Low, CpuUsage::Balanced, CpuUsage::Performance] {
+        let dir = TempDir::new().unwrap();
+        for i in 0..80 {
+            fs::write(
+                dir.path().join(format!("m{i}.rs")),
+                format!("fn helper{i}() {{}}\nfn caller{i}() {{ helper{i}(); }}\n"),
+            )
+            .unwrap();
+        }
+        drop(TokenSave::init(dir.path()).await.unwrap());
+        let mut config = tokensave::config::load_config(dir.path()).unwrap();
+        config.cpu_usage = profile;
+        tokensave::config::save_config(dir.path(), &config).unwrap();
+        let cg = TokenSave::open(dir.path()).await.unwrap();
+        // Announce entry into graph assembly before sending interactive requests,
+        // rather than relying on scheduling or a fixed sleep.
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let started = std::sync::Mutex::new(Some(started));
+        let indexing = tokio::spawn(async move {
+            cg.index_all_with_progress(|_, _, _| {
+                if let Some(sender) = started.lock().unwrap().take() {
+                    let _ = sender.send(());
+                }
+            })
+            .await
+        });
+        waiting.await.unwrap();
+        for id in 0..5 {
+            let response = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                call_server(&server, id, "tokensave_search", json!({"query":"helper"})),
+            )
+            .await
+            .expect("MCP query must finish during independent indexing");
+            assert!(response.get("error").is_none(), "{response}");
+            assert_ne!(response["result"]["isError"], json!(true), "{response}");
+            assert!(response_text(&response).contains("helper"), "{response}");
+        }
+        let result = indexing.await.unwrap().unwrap();
+        assert_eq!(result.file_count, 80);
+    }
+}

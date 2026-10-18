@@ -102,32 +102,56 @@ async fn a_cancelled_sync_stops_and_leaves_the_index_marked_stale() {
         )
         .expect("write src");
     }
-    let cg = TokenSave::init(project).await.expect("init");
+    drop(TokenSave::init(project).await.expect("init"));
+    for profile in [
+        tokensave::cpu::CpuUsage::Low,
+        tokensave::cpu::CpuUsage::Balanced,
+        tokensave::cpu::CpuUsage::Performance,
+    ] {
+        let mut config = tokensave::config::load_config(project).expect("config");
+        config.cpu_usage = profile;
+        tokensave::config::save_config(project, &config).expect("save");
+        let cg = TokenSave::open(project).await.expect("open");
 
-    tokensave::cancel::request();
-    let result = cg.index_all().await;
-    tokensave::cancel::reset();
+        tokensave::cancel::request();
+        let result = cg.index_all().await;
+        tokensave::cancel::reset();
 
-    let err = match result {
-        Ok(_) => panic!("a cancelled index must not report success"),
-        Err(err) => err.to_string(),
-    };
-    assert!(
-        err.contains("interrupted by shutdown signal"),
-        "the error must name the cause, got: {err}"
-    );
-    assert!(
-        project.join(".tokensave").join("dirty").exists(),
-        "the dirty sentinel must survive, so the next sync redoes the work"
-    );
-    // The lock is RAII, so a later sync must be able to run at all — the
-    // observable form of "the lock was released".
-    tokensave::cancel::reset();
-    cg.index_all()
-        .await
-        .expect("a sync after a cancelled one must be able to take the lock");
-    assert!(
-        !project.join(".tokensave").join("dirty").exists(),
-        "the completing sync must clear the sentinel"
-    );
+        let err = match result {
+            Ok(_) => panic!("a cancelled index must not report success"),
+            Err(err) => err.to_string(),
+        };
+        assert!(
+            err.contains("interrupted by shutdown signal"),
+            "the error must name the cause, got: {err}"
+        );
+        assert!(
+            project.join(".tokensave").join("dirty").exists(),
+            "the dirty sentinel must survive, so the next sync redoes the work"
+        );
+        // The lock is RAII, so a later sync must be able to run at all — the
+        // observable form of "the lock was released".
+        tokensave::cancel::reset();
+        cg.index_all()
+            .await
+            .expect("a sync after a cancelled one must be able to take the lock");
+        assert!(
+            !project.join(".tokensave").join("dirty").exists(),
+            "the completing sync must clear the sentinel"
+        );
+        // Also cancel after extraction has actually run under this profile.
+        let result = cg
+            .index_all_with_progress(|_, _, _| tokensave::cancel::request())
+            .await;
+        tokensave::cancel::reset();
+        assert!(
+            result.is_err(),
+            "in-flight cancellation must not publish a graph"
+        );
+        assert!(project.join(".tokensave/dirty").exists());
+        cg.index_all()
+            .await
+            .expect("recovery after in-flight cancellation");
+        assert!(!project.join(".tokensave/dirty").exists());
+    }
 }

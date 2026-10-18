@@ -42,6 +42,8 @@ pub(crate) fn safe_extract(
 
 /// Tuple shape produced per file by both extraction paths.
 type ExtractTuple = (String, ExtractionResult, String, u64, i64);
+/// Successful extractions and per-file failures from either execution path.
+type ExtractBatch = (Vec<ExtractTuple>, Vec<(String, String)>);
 
 /// Extract every file in `files`, isolating each extraction in a subprocess
 /// when possible. Subprocess isolation contains C/C++ grammar aborts that
@@ -58,16 +60,17 @@ pub(crate) fn extract_files_isolated(
     project_root: &Path,
     registry: &crate::extraction::LanguageRegistry,
     files: Vec<String>,
-) -> (Vec<ExtractTuple>, Vec<(String, String)>) {
+    cpu_usage: crate::cpu::CpuUsage,
+) -> Result<ExtractBatch> {
     if should_use_subprocess() {
-        let workers = worker_count();
+        let workers = worker_count(cpu_usage);
         let timeout = std::time::Duration::from_secs(
             crate::user_config::UserConfig::load().extraction_timeout_secs,
         );
         match crate::extraction_worker::WorkerPool::new(workers, project_root.to_path_buf()) {
             Ok(pool) => {
                 let outcome = pool.extract_files(files, |_, _, _| {}, timeout);
-                return (outcome.results, outcome.skipped);
+                return Ok((outcome.results, outcome.skipped));
             }
             Err(e) => eprintln!(
                 "[tokensave] could not spawn extraction worker pool ({e}), \
@@ -75,10 +78,12 @@ pub(crate) fn extract_files_isolated(
             ),
         }
     }
-    (
-        extract_files_in_process(project_root, registry, &files),
-        Vec::new(),
-    )
+    cpu_usage.run(|| {
+        (
+            extract_files_in_process(project_root, registry, &files),
+            Vec::new(),
+        )
+    })
 }
 
 pub(crate) fn extract_files_in_process(
@@ -121,12 +126,10 @@ pub(crate) fn extract_files_in_process(
 /// transparently fall back to in-process extraction.
 /// Number of subprocess extraction workers to spawn.
 ///
-/// Defaults to `available_parallelism()` (all cores). `TOKENSAVE_WORKERS=N`
-/// caps it, clamped to `1..=available_parallelism()`, so users on a loaded box
-/// can keep syncs polite (#183). An unset or unparseable value keeps the
-/// all-cores default.
-fn worker_count() -> usize {
-    let cores = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+/// The CPU profile sets the ceiling. `TOKENSAVE_WORKERS=N` can further
+/// reduce subprocess concurrency (#183); it cannot raise the profile limit.
+fn worker_count(profile: crate::cpu::CpuUsage) -> usize {
+    let cores = profile.workers();
     clamp_workers(std::env::var("TOKENSAVE_WORKERS").ok().as_deref(), cores)
 }
 
