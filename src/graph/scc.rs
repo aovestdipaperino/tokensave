@@ -13,7 +13,7 @@
 //! first, which is exactly the order needed for port ranking.
 
 use std::collections::{HashMap, HashSet};
-use std::hash::Hash;
+use std::hash::{BuildHasher, Hash};
 
 /// Computes the strongly-connected components of the directed graph
 /// described by `adj`. Every node that appears as a key OR as a value
@@ -23,7 +23,9 @@ use std::hash::Hash;
 /// if SCC `A` depends on SCC `B`, `B` appears in the result before `A`.
 /// This matches Tarjan's natural emission order.
 #[allow(clippy::implicit_hasher)]
-pub fn tarjan_scc<N>(adj: &HashMap<N, HashSet<N>>) -> Vec<Vec<N>>
+pub fn tarjan_scc<N>(
+    adj: &HashMap<N, HashSet<N, impl BuildHasher>, impl BuildHasher>,
+) -> Vec<Vec<N>>
 where
     N: Eq + Hash + Clone,
 {
@@ -165,6 +167,20 @@ mod tests {
 
     fn edge<N: Eq + Hash + Clone>(adj: &mut HashMap<N, HashSet<N>>, from: N, to: N) {
         adj.entry(from).or_default().insert(to);
+    }
+
+    #[test]
+    fn custom_hashers_preserve_explicit_node_type_calls() {
+        type Hasher = std::hash::BuildHasherDefault<std::collections::hash_map::DefaultHasher>;
+        let mut adj: HashMap<String, HashSet<String, Hasher>, Hasher> = HashMap::default();
+        adj.entry("a".to_string())
+            .or_default()
+            .insert("b".to_string());
+        adj.entry("b".to_string())
+            .or_default()
+            .insert("a".to_string());
+        assert_eq!(tarjan_scc::<String>(&adj).len(), 1);
+        assert_eq!(super::super::health::acyclicity_score(&adj), (0.0, 2));
     }
 
     #[test]
