@@ -17,6 +17,9 @@ async fn profiles_preserve_full_and_incremental_graphs() {
         let mut config = load_config(dir.path()).unwrap();
         config.cpu_usage = profile;
         save_config(dir.path(), &config).unwrap();
+        // Reinitializing must honor the same on-disk selection as opening.
+        drop(TokenSave::init(dir.path()).await.unwrap());
+        assert_eq!(load_config(dir.path()).unwrap().cpu_usage, profile);
         let cg = TokenSave::open(dir.path()).await.unwrap();
         cg.index_all().await.unwrap();
         assert_eq!(cg.db().get_all_files().await.unwrap().len(), 3);
