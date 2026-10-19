@@ -84,6 +84,9 @@ pub fn resolve_report_savings(configured: bool) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenSaveConfig {
+    /// Opt-in fallback for files without a registered extension or manifest language.
+    #[serde(default)]
+    pub language_detection: crate::language_detection::DetectionConfig,
     /// CPU concurrency profile, applied when the project is opened.
     #[serde(default)]
     pub cpu_usage: crate::cpu::CpuUsage,
@@ -273,6 +276,7 @@ pub fn env_bool_override(var: &str, config_value: bool) -> bool {
 impl Default for TokenSaveConfig {
     fn default() -> Self {
         Self {
+            language_detection: crate::language_detection::DetectionConfig::default(),
             cpu_usage: crate::cpu::CpuUsage::default(),
             version: CONFIG_VERSION,
             root_dir: String::new(),
