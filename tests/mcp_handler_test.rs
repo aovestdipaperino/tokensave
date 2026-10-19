@@ -464,6 +464,81 @@ pub fn once() {
     assert_eq!(once["lines"], json!([9]));
 }
 
+/// An edit through an edit tool re-indexes the file, and the file's symbols
+/// must keep their callers: the ones in the same file and the ones in other
+/// files. `reindex_file` used to drop them, and `sync` saw the new hash and
+/// never brought them back.
+#[tokio::test]
+async fn test_edit_keeps_callers_of_symbols_in_the_edited_file() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("pkg")).unwrap();
+    fs::write(project.join("pkg/__init__.py"), "").unwrap();
+    fs::write(
+        project.join("pkg/util.py"),
+        "def helper(x):\n    return x + 1\n\n\ndef unused():\n    return 0\n\n\ndef add(x):\n    return helper(x)\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("pkg/app.py"),
+        "from pkg.util import helper\n\n\ndef main():\n    return helper(1)\n",
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    async fn caller_names(cg: &TokenSave) -> Vec<String> {
+        let node_id = find_node_id(cg, "helper").await;
+        let result = handle_tool_call(
+            cg,
+            "tokensave_callers",
+            json!({"node_id": node_id}),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let items: Vec<Value> = serde_json::from_str(extract_text(&result.value)).unwrap();
+        let mut names: Vec<String> = items
+            .iter()
+            .map(|i| i["name"].as_str().unwrap().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+    assert_eq!(caller_names(&cg).await, ["add", "main"]);
+
+    handle_tool_call(
+        &cg,
+        "tokensave_str_replace",
+        json!({
+            "path": "pkg/util.py",
+            "old_str": "    return 0",
+            "new_str": "    return 1"
+        }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        caller_names(&cg).await,
+        ["add", "main"],
+        "after str_replace"
+    );
+
+    handle_tool_call(
+        &cg,
+        "tokensave_insert_at",
+        json!({"path": "pkg/util.py", "anchor": "1", "content": "# note", "before": true}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(caller_names(&cg).await, ["add", "main"], "after insert_at");
+}
+
 #[tokio::test]
 async fn test_callers_nonexistent_node_id_errors() {
     let (_dir, cg) = setup_project().await;
@@ -7156,5 +7231,36 @@ async fn doc_staleness_flags_code_committed_after_the_doc() {
     assert_eq!(
         parsed["docs"][0]["doc_stale"], true,
         "code committed after the doc must flag drift: {parsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn entities_accepts_path_as_an_alias_for_file() {
+    // The shared `file_arg` helper: every tool whose argument is named `file`
+    // also takes `path`, the name most other tools use.
+    let (_dir, cg) = setup_project().await;
+    let by_file = handle_tool_call(
+        &cg,
+        "tokensave_entities",
+        json!({"file": "src/main.rs"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let by_path = handle_tool_call(
+        &cg,
+        "tokensave_entities",
+        json!({"path": "src/main.rs"}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        extract_text(&by_path.value),
+        extract_text(&by_file.value),
+        "{}",
+        extract_text(&by_path.value)
     );
 }

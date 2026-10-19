@@ -9,8 +9,11 @@ use sha2::{Digest, Sha256};
 /// Returns an IO error only when the file cannot be read or BOM-marked UTF-16
 /// cannot be decoded.
 pub fn read_source_file(path: &Path) -> std::io::Result<String> {
-    let bytes = std::fs::read(path)?;
+    decode_source_bytes(&std::fs::read(path)?)
+}
 
+/// Shared indexer/verifier decoding; callers own the input read and its bounds.
+pub(crate) fn decode_source_bytes(bytes: &[u8]) -> std::io::Result<String> {
     // UTF-16 LE BOM: FF FE
     if bytes.starts_with(&[0xFF, 0xFE]) {
         let (pairs, _) = bytes[2..].as_chunks::<2>();

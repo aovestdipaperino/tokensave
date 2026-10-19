@@ -181,3 +181,120 @@ async fn map_mode_body_carries_digest_and_honours_if_digest() {
     .await;
     assert_eq!(stub["unchanged"], json!(true), "{stub}");
 }
+
+// ---------------------------------------------------------------------------
+// Argument aliases: `path` for `file`, `start`/`end` for `lines`. Most tools
+// take `path`, and `tokensave_replace_lines` takes `path`/`start`/`end` for
+// the same line-range concept, so agents send that shape here too.
+// ---------------------------------------------------------------------------
+
+async fn read_err(cg: &TokenSave, args: Value) -> String {
+    match handle_tool_call(cg, "tokensave_read", args, None, None).await {
+        Ok(_) => panic!("expected an error"),
+        Err(e) => e.to_string(),
+    }
+}
+
+#[tokio::test]
+async fn path_alias_reads_file() {
+    let (_dir, cg) = setup().await;
+    let by_file = read_json(&cg, json!({ "file": "src/main.rs" })).await;
+    let by_path = read_json(&cg, json!({ "path": "src/main.rs" })).await;
+    assert_eq!(by_path["body"], by_file["body"], "{by_path}");
+}
+
+#[tokio::test]
+async fn start_end_strings_slice_lines() {
+    // Regression: the exact argument shape a session sent ten times and got
+    // two errors per call for.
+    let (_dir, cg) = setup().await;
+    let by_lines = read_json(
+        &cg,
+        json!({ "file": "src/main.rs", "mode": "lines", "lines": "5-6" }),
+    )
+    .await;
+    let by_start_end = read_json(
+        &cg,
+        json!({ "path": "src/main.rs", "mode": "lines", "start": "5", "end": "6" }),
+    )
+    .await;
+    assert_eq!(by_start_end["body"], by_lines["body"], "{by_start_end}");
+    assert_eq!(by_start_end["digest"], by_lines["digest"], "{by_start_end}");
+}
+
+#[tokio::test]
+async fn start_end_numbers_slice_lines() {
+    let (_dir, cg) = setup().await;
+    let v = read_json(
+        &cg,
+        json!({ "file": "src/main.rs", "mode": "lines", "start": 5, "end": 6 }),
+    )
+    .await;
+    assert_eq!(
+        v["body"].as_str().unwrap(),
+        "     5\tfn helper() -> i32 {\n     6\t    42"
+    );
+}
+
+#[tokio::test]
+async fn start_without_end_reads_to_end_of_file() {
+    let (_dir, cg) = setup().await;
+    let v = read_json(
+        &cg,
+        json!({ "file": "src/main.rs", "mode": "lines", "start": 6 }),
+    )
+    .await;
+    assert_eq!(v["body"].as_str().unwrap(), "     6\t    42\n     7\t}");
+}
+
+#[tokio::test]
+async fn range_argument_infers_lines_mode() {
+    let (_dir, cg) = setup().await;
+    let v = read_json(&cg, json!({ "file": "src/main.rs", "lines": "6-7" })).await;
+    assert_eq!(v["body"].as_str().unwrap(), "     6\t    42\n     7\t}");
+    assert_eq!(v["mode"], json!("lines"), "{v}");
+    let v = read_json(&cg, json!({ "file": "src/main.rs", "start": 6, "end": 7 })).await;
+    assert_eq!(v["body"].as_str().unwrap(), "     6\t    42\n     7\t}");
+    // An explicit mode still wins.
+    let v = read_json(
+        &cg,
+        json!({ "file": "src/main.rs", "mode": "full", "start": 6 }),
+    )
+    .await;
+    assert!(
+        v["body"].as_str().unwrap().starts_with("     1\tfn main()"),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn invalid_start_end_is_reported_like_an_invalid_lines_value() {
+    let (_dir, cg) = setup().await;
+    let msg = read_err(
+        &cg,
+        json!({ "file": "src/main.rs", "mode": "lines", "start": 0 }),
+    )
+    .await;
+    assert!(msg.contains("invalid"), "{msg}");
+    let msg = read_err(
+        &cg,
+        json!({ "file": "src/main.rs", "mode": "lines", "start": 6, "end": 5 }),
+    )
+    .await;
+    assert!(msg.contains("invalid"), "{msg}");
+    let msg = read_err(
+        &cg,
+        json!({ "file": "src/main.rs", "mode": "lines", "start": "six" }),
+    )
+    .await;
+    assert!(msg.contains("invalid"), "{msg}");
+}
+
+#[tokio::test]
+async fn missing_arguments_name_both_spellings() {
+    let (_dir, cg) = setup().await;
+    let msg = read_err(&cg, json!({ "mode": "full" })).await;
+    assert!(msg.contains("file") && msg.contains("path"), "{msg}");
+    let msg = read_err(&cg, json!({ "file": "src/main.rs", "mode": "lines" })).await;
+    assert!(msg.contains("lines") && msg.contains("start"), "{msg}");
+}

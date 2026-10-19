@@ -359,6 +359,7 @@ impl TokenSave {
         let _lock = try_acquire_sync_lock(&self.project_root)?;
         // Fail loudly on a broken project.json (unknown language, bad glob)
         // instead of silently indexing without the manifest (#194).
+        self.ensure_current_checkout()?;
         self.validate_manifest()?;
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
@@ -399,6 +400,7 @@ impl TokenSave {
         // partial graph that looks complete.
         crate::cancel::check("index")?;
 
+        self.ensure_current_checkout()?;
         // 4. Collect all data
         let mut all_nodes = Vec::new();
         let mut all_edges = Vec::new();
@@ -407,35 +409,38 @@ impl TokenSave {
         let mut body_documents = Vec::new();
         let mut total_nodes = 0;
 
-        for (idx, (file_path, result, hash, size, mtime)) in extractions.iter().enumerate() {
-            on_file(idx + 1, total, file_path);
+        let extraction_count = extractions.len();
+        for (idx, (file_path, result, hash, size, mtime)) in extractions.into_iter().enumerate() {
+            on_file(idx + 1, total, &file_path);
             total_nodes += result.nodes.len();
-            all_nodes.extend_from_slice(&result.nodes);
-            all_edges.extend_from_slice(&result.edges);
-            all_unresolved.extend_from_slice(&result.unresolved_refs);
-            if let Ok(source) = sync::read_source_file(&project_root.join(file_path)) {
+            if let Ok(source) = sync::read_source_file(&project_root.join(&file_path)) {
                 body_documents.extend(build_executable_body_documents(
-                    file_path,
+                    &file_path,
                     &source,
                     &result.nodes,
                 ));
             }
             file_records.push(FileRecord {
-                path: file_path.clone(),
-                content_hash: hash.clone(),
-                size: *size,
-                modified_at: *mtime,
+                path: file_path,
+                content_hash: hash,
+                size,
+                modified_at: mtime,
                 indexed_at: current_timestamp(),
                 node_count: result.nodes.len() as u32,
                 kind: FileKind::Code,
             });
+            // Transfer ownership instead of retaining a second, deep-cloned
+            // graph through resolution and database insertion.
+            all_nodes.extend(result.nodes);
+            all_edges.extend(result.edges);
+            all_unresolved.extend(result.unresolved_refs);
         }
 
         on_verbose(&format!(
             "extracted {} nodes, {} edges from {} files in {:.1}s",
             total_nodes,
             all_edges.len(),
-            extractions.len(),
+            extraction_count,
             phase_start.elapsed().as_secs_f64()
         ));
 
@@ -944,6 +949,7 @@ impl TokenSave {
     pub(crate) async fn sync_single_files(&self, file_paths: &[String]) -> Result<()> {
         use crate::sync as sync_mod;
 
+        self.ensure_current_checkout()?;
         let start = Instant::now();
         let project_root = &self.project_root;
         let registry = &self.registry;
@@ -994,30 +1000,31 @@ impl TokenSave {
         let (sync_extractions, _skipped_extractions) =
             extract_files_isolated(project_root, registry, file_paths.clone());
 
+        self.ensure_current_checkout()?;
         // Phase 1: insert all nodes (and metadata) so cross-file edges
         // can reference them. Edges are queued for phase 2 (#58).
-        let mut queued_edges: Vec<&Edge> = Vec::new();
+        let mut queued_edges: Vec<Edge> = Vec::new();
         let mut body_documents = Vec::new();
         // Which files and names this sync touched, so resolution can skip the
         // references it provably cannot have changed (#484). The deleted half
         // has to be read before `delete_nodes_by_file` removes the rows.
         let mut touched = TouchedSet::new();
-        for (file_path, result, hash, size, mtime) in &sync_extractions {
-            touched.touch_file(file_path);
-            let old_nodes = self.db.touched_nodes_by_file(file_path).await?;
-            ruby_changed |= template_changes_reopenings(file_path, &old_nodes, &result.nodes);
+        for (file_path, result, hash, size, mtime) in sync_extractions {
+            touched.touch_file(&file_path);
+            let old_nodes = self.db.touched_nodes_by_file(&file_path).await?;
+            ruby_changed |= template_changes_reopenings(&file_path, &old_nodes, &result.nodes);
             touched.touch_nodes(&old_nodes);
             touched.touch_nodes(&node_touch_records(&result.nodes));
-            self.db.delete_nodes_by_file(file_path).await?;
+            self.db.delete_nodes_by_file(&file_path).await?;
             self.db.insert_nodes(&result.nodes).await?;
-            if let Ok(source) = sync::read_source_file(&project_root.join(file_path)) {
+            if let Ok(source) = sync::read_source_file(&project_root.join(&file_path)) {
                 body_documents.extend(build_executable_body_documents(
-                    file_path,
+                    &file_path,
                     &source,
                     &result.nodes,
                 ));
             }
-            queued_edges.extend(&result.edges);
+            queued_edges.extend(result.edges);
             if !result.unresolved_refs.is_empty() {
                 self.db
                     .insert_unresolved_refs(&result.unresolved_refs)
@@ -1025,10 +1032,10 @@ impl TokenSave {
             }
 
             let file_record = FileRecord {
-                path: (*file_path).clone(),
-                content_hash: (*hash).clone(),
-                size: *size,
-                modified_at: *mtime,
+                path: file_path,
+                content_hash: hash,
+                size,
+                modified_at: mtime,
                 indexed_at: current_timestamp(),
                 node_count: result.nodes.len() as u32,
                 kind: FileKind::Code,
@@ -1043,8 +1050,7 @@ impl TokenSave {
         // The conditional INSERT in `insert_edges` silently skips edges
         // whose endpoints are truly missing (e.g. unindexed files).
         if !queued_edges.is_empty() {
-            let owned: Vec<Edge> = queued_edges.into_iter().cloned().collect();
-            self.db.insert_edges(&owned).await?;
+            self.db.insert_edges(&queued_edges).await?;
         }
 
         crate::cancel::check_partial("sync")?;
@@ -1139,6 +1145,27 @@ impl TokenSave {
         F: Fn(usize, usize, &str),
         V: Fn(&str),
     {
+        self.sync_with_progress_internal(on_progress, on_verbose, false)
+            .await
+    }
+
+    /// Checkout transitions must compare content even when Git restores the
+    /// same timestamp and size. Extraction remains limited to changed files.
+    pub(crate) async fn sync_branch_context(&self) -> Result<SyncResult> {
+        self.sync_with_progress_internal(|_, _, _| {}, |_| {}, true)
+            .await
+    }
+
+    async fn sync_with_progress_internal<F, V>(
+        &self,
+        on_progress: F,
+        on_verbose: V,
+        branch_transition: bool,
+    ) -> Result<SyncResult>
+    where
+        F: Fn(usize, usize, &str),
+        V: Fn(&str),
+    {
         debug_assert!(
             self.project_root.exists(),
             "sync: project root does not exist"
@@ -1148,6 +1175,7 @@ impl TokenSave {
             "sync: project root is not a directory"
         );
         let _lock = try_acquire_sync_lock(&self.project_root)?;
+        self.ensure_current_checkout()?;
         self.validate_manifest()?;
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
@@ -1213,7 +1241,7 @@ impl TokenSave {
             match db_map.get(path) {
                 None => new_files.push(path.clone()),
                 Some(record) => {
-                    if record.modified_at != *mtime || record.size != *size {
+                    if branch_transition || record.modified_at != *mtime || record.size != *size {
                         stat_changed.push(path.clone());
                     }
                 }
@@ -1286,6 +1314,16 @@ impl TokenSave {
                 }
             }
         }
+        if branch_transition {
+            let count = new_files.len() + stale.len() + removed.len();
+            if self.max_auto_sync_files > 0 && count > self.max_auto_sync_files {
+                clear_dirty_sentinel(&self.project_root);
+                return Err(TokenSaveError::Config {
+                    message: format!("branch context has {count} changed files, exceeding max_auto_sync_files={}; run `tokensave sync`", self.max_auto_sync_files),
+                });
+            }
+        }
+        self.ensure_current_checkout()?;
         let legacy_ruby_files: Vec<String> = if repair_legacy_ruby_singletons {
             db_map
                 .keys()
@@ -1411,34 +1449,36 @@ impl TokenSave {
         let total = sync_extractions.len();
         let mut total_nodes = 0usize;
         let mut total_edges = 0usize;
-        let mut queued_edges: Vec<&Edge> = Vec::new();
+        let mut queued_edges: Vec<Edge> = Vec::new();
         let mut body_documents = Vec::new();
-        for (idx, (file_path, result, hash, size, mtime)) in sync_extractions.iter().enumerate() {
+        for (idx, (file_path, result, hash, size, mtime)) in
+            sync_extractions.into_iter().enumerate()
+        {
             // Past this point rows are being written per file, so an
             // interruption leaves a partially updated index rather than an
             // untouched one — reported as such (#450). Checked per file
             // because on a large tree this loop is minutes of work.
             crate::cancel::check_partial("sync")?;
-            on_progress(idx + 1, total, file_path);
+            on_progress(idx + 1, total, &file_path);
 
             total_nodes += result.nodes.len();
             total_edges += result.edges.len();
 
-            touched.touch_file(file_path);
-            let old_nodes = self.db.touched_nodes_by_file(file_path).await?;
-            ruby_changed |= template_changes_reopenings(file_path, &old_nodes, &result.nodes);
+            touched.touch_file(&file_path);
+            let old_nodes = self.db.touched_nodes_by_file(&file_path).await?;
+            ruby_changed |= template_changes_reopenings(&file_path, &old_nodes, &result.nodes);
             touched.touch_nodes(&old_nodes);
             touched.touch_nodes(&node_touch_records(&result.nodes));
-            self.db.delete_nodes_by_file(file_path).await?;
+            self.db.delete_nodes_by_file(&file_path).await?;
             self.db.insert_nodes(&result.nodes).await?;
-            if let Ok(source) = sync::read_source_file(&project_root.join(file_path)) {
+            if let Ok(source) = sync::read_source_file(&project_root.join(&file_path)) {
                 body_documents.extend(build_executable_body_documents(
-                    file_path,
+                    &file_path,
                     &source,
                     &result.nodes,
                 ));
             }
-            queued_edges.extend(&result.edges);
+            queued_edges.extend(result.edges);
             if !result.unresolved_refs.is_empty() {
                 self.db
                     .insert_unresolved_refs(&result.unresolved_refs)
@@ -1446,10 +1486,10 @@ impl TokenSave {
             }
 
             let file_record = FileRecord {
-                path: file_path.clone(),
-                content_hash: hash.clone(),
-                size: *size,
-                modified_at: *mtime,
+                path: file_path,
+                content_hash: hash,
+                size,
+                modified_at: mtime,
                 indexed_at: current_timestamp(),
                 node_count: result.nodes.len() as u32,
                 kind: FileKind::Code,
@@ -1462,8 +1502,7 @@ impl TokenSave {
 
         // Phase 2: insert all queued edges now that every node is present.
         if !queued_edges.is_empty() {
-            let owned: Vec<Edge> = queued_edges.into_iter().cloned().collect();
-            self.db.insert_edges(&owned).await?;
+            self.db.insert_edges(&queued_edges).await?;
         }
 
         if !to_index.is_empty() {
@@ -2291,11 +2330,6 @@ impl TokenSave {
             .collect()
     }
 
-    /// Gets the absolute path for a relative path.
-    pub(crate) fn absolute_path(&self, relative_path: &str) -> PathBuf {
-        self.project_root.join(relative_path)
-    }
-
     /// Resolves an edit tool's `path` (or a symbol's DB-recorded relative
     /// path) to the absolute filesystem location that should actually be
     /// read/written, plus — when that location falls under the *indexed*
@@ -2356,69 +2390,15 @@ impl TokenSave {
     }
 
     /// Re-indexes a single file after an edit.
+    ///
+    /// Goes through `sync_single_files`, the path `sync` takes for a changed
+    /// file: extract, then resolve what the file touched. Deleting the file's
+    /// nodes drops every edge into them, including calls from other files, so
+    /// re-inserting nodes and unresolved refs without resolving them left the
+    /// file's symbols with no callers, and a later `sync` saw the new hash and
+    /// never brought them back (the cause #633 fixed for `tokensave_rename`).
     pub(crate) async fn reindex_file(&self, file_path: &str) -> Result<()> {
-        let abs_path = self.absolute_path(file_path);
-        let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
-            message: format!("failed to read file {file_path}: {e}"),
-        })?;
-
-        let Some(extractor) = crate::project_manifest::resolve_extractor_for_source(
-            &self.registry,
-            &self.project_root,
-            file_path,
-            &source,
-        ) else {
-            return Ok(());
-        };
-
-        let mut result =
-            safe_extract(extractor, file_path, &source).ok_or_else(|| TokenSaveError::Config {
-                message: format!("extraction panicked for {file_path}"),
-            })?;
-        result.sanitize();
-
-        let hash = sync::content_hash(&source);
-        let size = source.len() as u64;
-        let mtime = sync::file_stat(&abs_path).map_or_else(current_timestamp, |(m, _)| m);
-
-        let ruby_changed = is_ruby_source(file_path)
-            || (is_ruby_template(file_path)
-                && template_changes_reopenings(
-                    file_path,
-                    &self.db.touched_nodes_by_file(file_path).await?,
-                    &result.nodes,
-                ));
-        self.db.delete_nodes_by_file(file_path).await?;
-        self.db.insert_nodes(&result.nodes).await?;
-        let body_documents = build_executable_body_documents(file_path, &source, &result.nodes);
-        self.db
-            .insert_executable_body_documents(&body_documents)
-            .await?;
-        self.db.insert_edges(&result.edges).await?;
-        if !result.unresolved_refs.is_empty() {
-            self.db
-                .insert_unresolved_refs(&result.unresolved_refs)
-                .await?;
-        }
-
-        let file_record = FileRecord {
-            path: file_path.to_string(),
-            content_hash: hash,
-            size,
-            modified_at: mtime,
-            indexed_at: current_timestamp(),
-            node_count: result.nodes.len() as u32,
-            kind: FileKind::Code,
-        };
-        self.db.upsert_file(&file_record).await?;
-        if ruby_changed {
-            self.db.rebuild_ruby_reopenings().await?;
-        }
-        self.rebuild_rails_routes_best_effort(is_ruby_source(file_path))
-            .await;
-        self.db.rebuild_trait_dispatch_callers().await?;
-
-        Ok(())
+        self.sync_single_files(&[file_path.to_string()]).await
     }
 
     /// 1-based inclusive line range covered by a byte span in `source`.
@@ -3355,5 +3335,79 @@ mod walk_scope_tests {
         let missing = root.join("tokensave-327-does-not-exist");
         assert!(!missing.exists(), "the fixture path must not exist");
         assert!(!reenters_project_root(&missing, Some(&root)));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod extraction_ownership_tests {
+    use super::*;
+
+    async fn fixture(files: usize) -> (tempfile::TempDir, TokenSave) {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..files {
+            std::fs::write(dir.path().join(format!("file_{i}.rs")), format!(
+                "/// Documentation for target {i}.\npub fn target_{i}() -> u32 {{ {i} }}\n\npub fn caller_{i}() -> u32 {{ target_{i}() }}\n"
+            )).unwrap();
+        }
+        let cg = TokenSave::init(dir.path()).await.unwrap();
+        (dir, cg)
+    }
+
+    #[tokio::test]
+    async fn moved_extractions_preserve_full_and_incremental_graphs() {
+        let (_dir, cg) = fixture(8).await;
+        let indexed = cg.index_all().await.unwrap();
+        assert_eq!(indexed.file_count, 8);
+        let nodes = cg.db().get_all_nodes().await.unwrap();
+        assert_eq!(
+            nodes
+                .iter()
+                .filter(|n| n.name.starts_with("target_"))
+                .count(),
+            8
+        );
+        assert!(nodes
+            .iter()
+            .filter(|n| n.name.starts_with("target_"))
+            .all(|n| n
+                .docstring
+                .as_deref()
+                .is_some_and(|d| d.contains("Documentation"))));
+        let refs = cg.db().get_unresolved_refs().await.unwrap();
+        assert!(!refs.is_empty());
+        let edges = cg.db().get_all_edges().await.unwrap();
+        let calls = edges.iter().filter(|e| e.kind == EdgeKind::Calls).count();
+        assert!(calls >= 8);
+        cg.sync_single_files(&(0..8).map(|i| format!("file_{i}.rs")).collect::<Vec<_>>())
+            .await
+            .unwrap();
+        let updated = cg.db().get_all_edges().await.unwrap();
+        assert_eq!(
+            updated.iter().filter(|e| e.kind == EdgeKind::Calls).count(),
+            calls
+        );
+        assert_eq!(
+            cg.db().get_unresolved_refs().await.unwrap().len(),
+            refs.len()
+        );
+        let reindexed = cg.index_all().await.unwrap();
+        assert_eq!(reindexed.node_count, indexed.node_count);
+        assert_eq!(reindexed.edge_count, indexed.edge_count);
+    }
+
+    #[tokio::test]
+    #[ignore = "manual index CPU/RSS benchmark; run alone with --ignored --nocapture"]
+    async fn benchmark_owned_extraction_indexing() {
+        let (_dir, cg) = fixture(200).await;
+        let start = Instant::now();
+        let result = cg.index_all().await.unwrap();
+        eprintln!(
+            "index {} nodes: {:?}, RSS {} bytes",
+            result.node_count,
+            start.elapsed(),
+            crate::memstats::current_rss_bytes()
+        );
+        assert_eq!(result.file_count, 200);
     }
 }

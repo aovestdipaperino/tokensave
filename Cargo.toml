@@ -171,6 +171,10 @@ tree-sitter-html = { version = "0.23", optional = true }
 tree-sitter-css = { version = "0.25", optional = true }
 tree-sitter-vhdl = { version = "1.4", optional = true }
 
+[target.'cfg(unix)'.dependencies]
+# Its self-pipe falls back to write when a sandbox denies socket sends.
+signal-hook = "0.3"
+
 [target.'cfg(not(windows))'.dependencies]
 flate2 = "1"
 tar = "0.4"
@@ -252,6 +256,11 @@ path = "tests/omp_agent_test.rs"
 [[test]]
 name = "pi_agent_test"
 path = "tests/pi_agent_test.rs"
+
+# sets TOKENSAVE_OPENCODE_VERSION
+[[test]]
+name = "opencode_agent_test"
+path = "tests/opencode_agent_test.rs"
 
 # sets SSL_CERT_FILE/SSL_CERT_DIR
 [[test]]

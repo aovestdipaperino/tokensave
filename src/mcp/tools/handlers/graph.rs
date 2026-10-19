@@ -15,8 +15,9 @@ use crate::types::{BuildContextOptions, EdgeKind, Node, NodeKind, Visibility};
 use super::super::ToolResult;
 use super::symbol_target::{self, KindRanking, Target};
 use super::{
-    effective_path, filter_by_path_lists, filter_by_scope, parse_string_array, require_node_id,
-    truncate_response, truncate_response_keep_tail, unique_file_paths, SessionState,
+    effective_path, file_arg, filter_by_path_lists, filter_by_scope, parse_string_array,
+    require_node_id, truncate_response, truncate_response_keep_tail, unique_file_paths,
+    SessionState,
 };
 
 /// Rounds a derived health metric to two decimal places for compact JSON.
@@ -390,11 +391,19 @@ async fn handle_literal_search(
                 continue;
             }
         }
-        // Skip oversized/binary-likely files defensively.
-        if file.size > LITERAL_SCAN_MAX_FILE_BYTES {
+        // #685: the indexed size is stale — a file that grew after indexing
+        // (logs, generated blobs) would be read in full, and a path that
+        // became a FIFO or device would block the read forever. Stat fresh,
+        // skip non-regular files, and bound the read by the current size.
+        // shortcut: a file swapped in between stat and read still races;
+        // close it with open+fstat+take if that ever bites.
+        let abs_path = project_root.join(&file.path);
+        let Ok(meta) = std::fs::metadata(&abs_path) else {
+            continue;
+        };
+        if !meta.file_type().is_file() || meta.len() > LITERAL_SCAN_MAX_FILE_BYTES {
             continue;
         }
-        let abs_path = project_root.join(&file.path);
         let Ok(source) = crate::sync::read_source_file(&abs_path) else {
             continue;
         };
@@ -1211,12 +1220,9 @@ pub(super) async fn handle_call_chain(cg: &TokenSave, args: Value) -> Result<Too
 
 /// Handles `tokensave_file_dependents` tool calls.
 pub(super) async fn handle_file_dependents(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    let file = args
-        .get("file")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: file".to_string(),
-        })?;
+    let file = file_arg(&args).ok_or_else(|| TokenSaveError::Config {
+        message: "missing required parameter: file (alias: path)".to_string(),
+    })?;
 
     let dependents = cg.get_file_dependents(file).await?;
     let touched_files = dependents.clone();
@@ -1799,7 +1805,7 @@ pub(super) async fn handle_derives(cg: &TokenSave, args: Value) -> Result<ToolRe
 ///   edge, filtered by `name` / `file` / `target_kind`.
 pub(super) async fn handle_annotations(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let name = args.get("name").and_then(|v| v.as_str());
-    let file = args.get("file").and_then(|v| v.as_str());
+    let file = file_arg(&args);
     let target_kind = args.get("target_kind").and_then(|v| v.as_str());
     let limit = args
         .get("limit")

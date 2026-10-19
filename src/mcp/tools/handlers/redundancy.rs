@@ -14,7 +14,7 @@
 //!    [`composite_similarity`](crate::redundancy::composite_similarity).
 //! 4. Filter by threshold, sort by score desc, return the top N pairs.
 
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap};
 
 use serde_json::{json, Value};
 
@@ -370,6 +370,35 @@ fn quick_body_hash(body: &str) -> String {
 // 3. Pairwise comparison + ranking
 // ---------------------------------------------------------------------------
 
+// The heap root is the worst retained pair: lowest score, then latest
+// encounter. Keeping encounter order makes ties match the old stable sort.
+struct RankedPair {
+    score: f64,
+    a: usize,
+    b: usize,
+    kind: &'static str,
+}
+
+impl PartialEq for RankedPair {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+impl Eq for RankedPair {}
+impl PartialOrd for RankedPair {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for RankedPair {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .score
+            .total_cmp(&self.score)
+            .then_with(|| (self.a, self.b).cmp(&(other.a, other.b)))
+    }
+}
+
 fn find_redundant_pairs(
     nodes: &[Node],
     fingerprints: &HashMap<String, Fingerprint>,
@@ -377,6 +406,9 @@ fn find_redundant_pairs(
     include_naming: bool,
     max_pairs: usize,
 ) -> Vec<Value> {
+    if max_pairs == 0 {
+        return Vec::new();
+    }
     // Pair each node with its fingerprint (skip nodes that failed to
     // produce one).
     let scope: Vec<(&Node, &Fingerprint)> = nodes
@@ -388,11 +420,11 @@ fn find_redundant_pairs(
     let mut sorted = scope;
     sorted.sort_by_key(|(_, fp)| fp.body_tokens);
 
-    let mut found: Vec<(f64, &str, &Node, &Node, &Fingerprint, &Fingerprint)> = Vec::new();
-    for (i, (node_a, fp_a)) in sorted.iter().enumerate() {
+    let mut found: BinaryHeap<RankedPair> = BinaryHeap::new();
+    for (i, (_, fp_a)) in sorted.iter().enumerate() {
         let lo = (fp_a.body_tokens as f64 * 0.75).floor() as usize;
         let hi = (fp_a.body_tokens as f64 * 1.25).ceil() as usize;
-        for (node_b, fp_b) in sorted.iter().skip(i + 1) {
+        for (j, (_, fp_b)) in sorted.iter().enumerate().skip(i + 1) {
             if fp_b.body_tokens > hi {
                 break; // sorted, no need to scan further
             }
@@ -407,16 +439,28 @@ fn find_redundant_pairs(
             if !include_naming && kind == "naming" {
                 continue;
             }
-            found.push((score, kind, node_a, node_b, fp_a, fp_b));
+            let pair = RankedPair {
+                score,
+                a: i,
+                b: j,
+                kind,
+            };
+            if found.len() < max_pairs {
+                found.push(pair);
+            } else if let Some(mut worst) = found.peek_mut() {
+                if pair < *worst {
+                    *worst = pair;
+                }
+            }
         }
     }
 
-    found.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    found.truncate(max_pairs);
-
     found
+        .into_sorted_vec()
         .into_iter()
-        .map(|(score, kind, na, nb, fp_a, fp_b)| {
+        .map(|RankedPair { score, a, b, kind }| {
+            let (na, fp_a) = sorted[a];
+            let (nb, fp_b) = sorted[b];
             let shingle_jaccard = jaccard_similarity(&fp_a.shingles, &fp_b.shingles);
             let severity = severity_bucket(score, kind);
             json!({
@@ -556,7 +600,7 @@ mod tests {
     use crate::types::{Node, NodeKind, Visibility};
 
     /// Build a minimal `Node` for a function at the given position.
-    fn function_node(
+    pub(super) fn function_node(
         id: &str,
         name: &str,
         file_path: &str,
@@ -1021,5 +1065,96 @@ mod tests {
             fp.call_seq_hash, expected_fp.call_seq_hash,
             "call_seq_hash must come from function_item, not source_file"
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod bounded_ranking_tests {
+    use super::*;
+
+    fn fixture(count: usize) -> (Vec<Node>, HashMap<String, Fingerprint>) {
+        let nodes: Vec<_> = (0..count)
+            .map(|i| {
+                tests::function_node(&format!("n{i}"), &format!("f{i}"), "fixture.rs", 0, 9, 0, 1)
+            })
+            .collect();
+        let fingerprints = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                (
+                    n.id.clone(),
+                    Fingerprint {
+                        ast_hash: (i % 3).to_string(),
+                        cfg_hash: (i % 2).to_string(),
+                        call_seq_hash: "calls".into(),
+                        shingles: vec![1, 2, 3],
+                        body_tokens: 100,
+                        source_hash: "source".into(),
+                    },
+                )
+            })
+            .collect();
+        (nodes, fingerprints)
+    }
+
+    #[test]
+    fn bounded_ranking_matches_exhaustive_stable_ranking() {
+        let (nodes, fps) = fixture(60);
+        // Independent oracle: enumerate all pairs, then use the original
+        // stable descending sort. IDs and scores must agree, including ties.
+        let mut oracle = Vec::new();
+        for (i, a) in nodes.iter().enumerate() {
+            for b in nodes.iter().skip(i + 1) {
+                oracle.push((composite_similarity(&fps[&a.id], &fps[&b.id]), &a.id, &b.id));
+            }
+        }
+        oracle.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let exhaustive = find_redundant_pairs(&nodes, &fps, 0.0, true, usize::MAX);
+        for limit in [0, 1, 7, 20, 500, 2000] {
+            let actual = find_redundant_pairs(&nodes, &fps, 0.0, true, limit);
+            let ids: Vec<_> = actual
+                .iter()
+                .map(|p| {
+                    (
+                        p["a"]["id"].as_str().unwrap(),
+                        p["b"]["id"].as_str().unwrap(),
+                    )
+                })
+                .collect();
+            let expected: Vec<_> = oracle
+                .iter()
+                .take(limit)
+                .map(|(_, a, b)| (a.as_str(), b.as_str()))
+                .collect();
+            assert_eq!(ids, expected);
+        }
+        let scores: Vec<_> = exhaustive
+            .iter()
+            .map(|p| p["similarity"].as_f64().unwrap())
+            .collect();
+        assert!(scores.windows(2).all(|w| w[0] >= w[1]));
+        let tied: Vec<_> = exhaustive
+            .iter()
+            .filter(|p| p["similarity"] == exhaustive[0]["similarity"])
+            .collect();
+        assert_eq!(tied[0]["a"]["id"], "n0");
+        assert_eq!(tied[0]["b"]["id"], "n6");
+    }
+
+    #[test]
+    #[ignore = "manual scaling benchmark; run with --ignored --nocapture"]
+    fn benchmark_bounded_redundancy_ranking() {
+        for size in [200, 500, 1000] {
+            let (nodes, fps) = fixture(size);
+            let start = std::time::Instant::now();
+            let pairs = find_redundant_pairs(std::hint::black_box(&nodes), &fps, 0.0, true, 20);
+            assert_eq!(pairs.len(), 20);
+            eprintln!(
+                "redundancy {size} candidates, top 20: {:?}",
+                start.elapsed()
+            );
+        }
     }
 }

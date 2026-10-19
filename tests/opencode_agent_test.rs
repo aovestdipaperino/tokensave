@@ -1,11 +1,31 @@
 use std::path::Path;
+use std::sync::Mutex;
 
 use tempfile::TempDir;
 use tokensave::agents::{
-    AgentIntegration, DoctorCounters, HealthcheckContext, OpenCodeIntegration,
+    AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext, InstallScope,
+    OpenCodeIntegration,
 };
 
-use crate::common::{make_install_ctx as make_ctx, read_json};
+mod common;
+use common::{make_install_ctx as make_ctx, read_json};
+
+// `TOKENSAVE_OPENCODE_VERSION` is a process-global env var that
+// `opencode_major_version` reads (#689). Cargo runs tests in parallel within
+// a binary, so every test here holds this lock while pinning the version.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn env_v1() -> std::sync::MutexGuard<'static, ()> {
+    let guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("TOKENSAVE_OPENCODE_VERSION", "1");
+    guard
+}
+
+fn env_v2() -> std::sync::MutexGuard<'static, ()> {
+    let guard = ENV_LOCK.lock().unwrap();
+    std::env::set_var("TOKENSAVE_OPENCODE_VERSION", "2.0.28");
+    guard
+}
 
 fn opencode_config_path(home: &Path) -> std::path::PathBuf {
     home.join(".config/opencode/opencode.json")
@@ -34,6 +54,7 @@ fn opencode_rules_path(home: &Path) -> std::path::PathBuf {
 
 #[test]
 fn test_install_creates_opencode_json() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_ctx(home);
@@ -83,6 +104,7 @@ fn test_install_creates_opencode_json() {
 
 #[test]
 fn test_install_creates_managed_rules_file() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_ctx(home);
@@ -111,6 +133,7 @@ fn test_install_creates_managed_rules_file() {
 
 #[test]
 fn test_install_preserves_existing_opencode_json() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
@@ -144,6 +167,7 @@ fn test_install_preserves_existing_opencode_json() {
 
 #[test]
 fn test_install_idempotent_opencode_json() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_ctx(home);
@@ -159,6 +183,7 @@ fn test_install_idempotent_opencode_json() {
 
 #[test]
 fn test_install_idempotent_managed_rules_file() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_ctx(home);
@@ -185,6 +210,7 @@ fn test_install_idempotent_managed_rules_file() {
 
 #[test]
 fn test_install_does_not_touch_existing_agents_md() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
@@ -215,6 +241,7 @@ fn test_install_does_not_touch_existing_agents_md() {
 
 #[test]
 fn test_install_migrates_legacy_agents_md_block() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
@@ -255,6 +282,7 @@ fn test_install_migrates_legacy_agents_md_block() {
 
 #[test]
 fn test_uninstall_removes_mcp_from_config() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_ctx(home);
@@ -273,6 +301,7 @@ fn test_uninstall_removes_mcp_from_config() {
 
 #[test]
 fn test_uninstall_removes_empty_config_file() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_ctx(home);
@@ -290,6 +319,7 @@ fn test_uninstall_removes_empty_config_file() {
 
 #[test]
 fn test_uninstall_preserves_other_mcp_servers() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
@@ -321,6 +351,7 @@ fn test_uninstall_preserves_other_mcp_servers() {
 
 #[test]
 fn test_uninstall_removes_managed_rules_file() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_ctx(home);
@@ -339,6 +370,7 @@ fn test_uninstall_removes_managed_rules_file() {
 
 #[test]
 fn test_uninstall_removes_instructions_entry() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
@@ -371,6 +403,7 @@ fn test_uninstall_removes_instructions_entry() {
 
 #[test]
 fn test_uninstall_preserves_other_agents_md_content() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
@@ -402,6 +435,7 @@ fn test_uninstall_preserves_other_agents_md_content() {
 
 #[test]
 fn test_uninstall_without_install_does_not_crash() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_ctx(home);
@@ -411,6 +445,7 @@ fn test_uninstall_without_install_does_not_crash() {
 
 #[test]
 fn test_uninstall_config_with_no_tokensave_is_noop() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
@@ -437,6 +472,7 @@ fn test_uninstall_config_with_no_tokensave_is_noop() {
 
 #[test]
 fn test_healthcheck_clean_install_no_issues() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_ctx(home);
@@ -453,6 +489,7 @@ fn test_healthcheck_clean_install_no_issues() {
 
 #[test]
 fn test_healthcheck_missing_config_produces_warnings() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
@@ -470,6 +507,7 @@ fn test_healthcheck_missing_config_produces_warnings() {
 
 #[test]
 fn test_healthcheck_detects_missing_mcp_entry() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
@@ -489,6 +527,7 @@ fn test_healthcheck_detects_missing_mcp_entry() {
 
 #[test]
 fn test_healthcheck_detects_missing_serve_arg() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
@@ -522,6 +561,7 @@ fn test_healthcheck_detects_missing_serve_arg() {
 
 #[test]
 fn test_healthcheck_detects_missing_managed_rules_file() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_ctx(home);
@@ -543,6 +583,7 @@ fn test_healthcheck_detects_missing_managed_rules_file() {
 
 #[test]
 fn test_healthcheck_detects_missing_tokensave_rules_in_managed_file() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_ctx(home);
@@ -569,6 +610,7 @@ fn test_healthcheck_detects_missing_tokensave_rules_in_managed_file() {
 
 #[test]
 fn test_healthcheck_detects_missing_instructions_entry() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_ctx(home);
@@ -599,6 +641,7 @@ fn test_healthcheck_detects_missing_instructions_entry() {
 
 #[test]
 fn test_is_detected_empty_home() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     assert!(
@@ -609,6 +652,7 @@ fn test_is_detected_empty_home() {
 
 #[test]
 fn test_is_detected_with_opencode_dir() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     std::fs::create_dir_all(home.join(".config/opencode")).unwrap();
@@ -620,6 +664,7 @@ fn test_is_detected_with_opencode_dir() {
 
 #[test]
 fn test_has_tokensave_before_install() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     assert!(
@@ -630,6 +675,7 @@ fn test_has_tokensave_before_install() {
 
 #[test]
 fn test_has_tokensave_after_install() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_ctx(home);
@@ -642,6 +688,7 @@ fn test_has_tokensave_after_install() {
 
 #[test]
 fn test_has_tokensave_after_uninstall() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_ctx(home);
@@ -655,6 +702,7 @@ fn test_has_tokensave_after_uninstall() {
 
 #[test]
 fn test_has_tokensave_with_config_but_no_mcp() {
+    let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
@@ -675,12 +723,14 @@ fn test_has_tokensave_with_config_but_no_mcp() {
 
 #[test]
 fn test_name_and_id() {
+    let _env = env_v1();
     assert_eq!(OpenCodeIntegration.name(), "OpenCode");
     assert_eq!(OpenCodeIntegration.id(), "opencode");
 }
 
 #[test]
 fn test_opencode_v2_servers_install_and_healthcheck() {
+    let _env = env_v2();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
@@ -716,4 +766,143 @@ fn test_opencode_v2_servers_install_and_healthcheck() {
     let config_after = read_json(&config_path);
     assert!(config_after["mcp"]["servers"]["other"].is_object());
     assert!(config_after["mcp"]["servers"].get("tokensave").is_none());
+}
+
+// ===========================================================================
+// #689: OpenCode V2 config shape
+// ===========================================================================
+
+#[test]
+fn test_689_v2_install_writes_servers_and_agents_block() {
+    let _env = env_v2();
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_ctx(home);
+    OpenCodeIntegration.install(&ctx).unwrap();
+
+    let config = read_json(&opencode_config_path(home));
+    assert!(
+        config["mcp"]["servers"]["tokensave"].is_object(),
+        "V2 install must register under mcp.servers"
+    );
+    assert!(
+        config["mcp"].get("tokensave").is_none(),
+        "V2 install must not leave a V1 mcp.tokensave entry"
+    );
+    assert!(
+        config.get("instructions").is_none(),
+        "V2 ignores the instructions array; do not write it"
+    );
+    assert!(
+        !opencode_rules_path(home).exists(),
+        "V2 rules live in AGENTS.md; the managed tokensave.md must not be written"
+    );
+
+    let agents_md = std::fs::read_to_string(opencode_prompt_path(home)).unwrap();
+    assert!(
+        agents_md.contains("tokensave"),
+        "AGENTS.md must carry the managed rules block"
+    );
+
+    let mut dc = DoctorCounters::new();
+    let hctx = HealthcheckContext {
+        home: home.to_path_buf(),
+        project_path: home.to_path_buf(),
+    };
+    OpenCodeIntegration.healthcheck(&mut dc, &hctx);
+    assert_eq!(dc.issues, 0, "V2 install should healthcheck clean");
+
+    OpenCodeIntegration.uninstall(&ctx).unwrap();
+    assert!(
+        !std::fs::read_to_string(opencode_prompt_path(home))
+            .unwrap_or_default()
+            .contains("tokensave"),
+        "uninstall must remove the managed AGENTS.md block"
+    );
+}
+
+#[test]
+fn test_689_v2_install_migrates_v1_shape() {
+    let _env = env_v2();
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let config_path = opencode_config_path(home);
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    let rules_path = opencode_rules_path(home);
+    std::fs::write(&rules_path, "# rules\n").unwrap();
+    let seed = serde_json::json!({
+        "mcp": {"tokensave": {"type": "local", "command": ["/usr/local/bin/tokensave", "serve"]}},
+        "instructions": [rules_path.to_string_lossy()],
+    });
+    std::fs::write(&config_path, serde_json::to_string(&seed).unwrap()).unwrap();
+
+    let ctx = make_ctx(home);
+    OpenCodeIntegration.install(&ctx).unwrap();
+
+    let config = read_json(&config_path);
+    assert!(
+        config["mcp"]["servers"]["tokensave"].is_object(),
+        "re-install on V2 must move the entry under mcp.servers"
+    );
+    assert!(
+        config["mcp"].get("tokensave").is_none(),
+        "the stale V1 entry must be removed"
+    );
+    assert!(
+        config.get("instructions").is_none(),
+        "the inert instructions entry must be removed"
+    );
+}
+
+#[test]
+fn test_689_v2_healthcheck_fails_on_v1_shape() {
+    let _env = env_v2();
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let config_path = opencode_config_path(home);
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config_path,
+        r#"{"mcp": {"tokensave": {"type": "local", "command": ["/usr/local/bin/tokensave", "serve"]}}}"#,
+    )
+    .unwrap();
+
+    let mut dc = DoctorCounters::new();
+    let hctx = HealthcheckContext {
+        home: home.to_path_buf(),
+        project_path: home.to_path_buf(),
+    };
+    OpenCodeIntegration.healthcheck(&mut dc, &hctx);
+    assert!(
+        dc.issues > 0,
+        "a V1-shaped config on V2 must not report healthy"
+    );
+}
+
+#[test]
+fn opencode_local_writes_project_config() {
+    let _env = env_v1();
+    let home = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    let ctx = InstallContext {
+        home: home.path().to_path_buf(),
+        tokensave_bin: "/usr/bin/tokensave".to_string(),
+        tool_permissions: vec![],
+        scope: InstallScope::Local {
+            project_path: proj.path().to_path_buf(),
+        },
+        force_permission_style: false,
+    };
+    OpenCodeIntegration.install(&ctx).unwrap();
+    let cfg = read_json(&proj.path().join("opencode.json"));
+    assert!(cfg["mcp"]["tokensave"].is_object());
+    assert!(
+        !proj.path().join("AGENTS.md").exists(),
+        "local V1 install should not create/touch project AGENTS.md"
+    );
+    assert!(proj.path().join("tokensave.md").exists());
+    let instructions = cfg["instructions"].as_array().unwrap();
+    assert!(instructions
+        .iter()
+        .any(|v| v.as_str() == Some("tokensave.md")));
 }

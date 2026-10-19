@@ -15,7 +15,9 @@ use super::symbol_target::{
     self, body_kind_preference, display_qualified_name, member_path_segments, resolve_symbol_nodes,
     KindRanking, Target,
 };
-use super::{effective_path, sibling_projects, truncate_response, unique_file_paths, SIBLING_HINT};
+use super::{
+    effective_path, file_arg, sibling_projects, truncate_response, unique_file_paths, SIBLING_HINT,
+};
 
 /// Handles `tokensave_status` tool calls.
 pub(super) async fn handle_status(
@@ -1476,26 +1478,67 @@ fn indexed_rel_path(root: &std::path::Path, path: &std::path::Path) -> Option<St
     Some(crate::tokensave::normalize_rel_path(&rel.to_string_lossy()))
 }
 
+/// Reads the `lines` mode range from the tool arguments: `lines: "A-B"`, or
+/// `start`/`end` as `tokensave_replace_lines` takes them, each a number or a
+/// numeric string. `end` absent means the end of the file. Agents copy the
+/// `start`/`end` shape from the edit tool, so rejecting it cost a round trip.
+fn read_line_range(args: &Value) -> Result<crate::context::read_modes::LineRange> {
+    use crate::context::read_modes::LineRange;
+
+    if let Some(raw) = args.get("lines").and_then(|v| v.as_str()) {
+        return LineRange::parse(raw).ok_or_else(|| TokenSaveError::Config {
+            message: format!("invalid 'lines' value '{raw}'; expected 'A' or 'A-B'"),
+        });
+    }
+    let Some(start_value) = args.get("start") else {
+        return Err(TokenSaveError::Config {
+            message: "mode='lines' requires 'lines' (e.g. '120-180') or 'start'/'end'".to_string(),
+        });
+    };
+    let end_value = args.get("end");
+    let line_number = |v: &Value| -> Option<u32> {
+        match v {
+            Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()),
+            Value::String(s) => s.trim().parse().ok(),
+            _ => None,
+        }
+    };
+    let invalid = || {
+        TokenSaveError::Config {
+        message: format!(
+            "invalid 'start'/'end' values {start_value}/{}; expected 1-based line numbers with end >= start",
+            end_value.map_or_else(|| "<end of file>".to_string(), Value::to_string)
+        ),
+    }
+    };
+    let start = line_number(start_value)
+        .filter(|&s| s > 0)
+        .ok_or_else(invalid)?;
+    let end = match end_value {
+        Some(v) => line_number(v).filter(|&e| e >= start).ok_or_else(invalid)?,
+        None => u32::MAX,
+    };
+    Ok(LineRange { start, end })
+}
+
 /// Handles `tokensave_read` — mode-aware file read. The body is always sent
 /// unless the caller's `if_digest` matches the current body's digest (#650).
 pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     use crate::context::read_cache;
     use crate::context::read_modes::{
-        self, render_full, render_lines, render_map, render_signatures, LineRange, ReadMode,
+        self, render_full, render_lines, render_map, render_signatures, ReadMode,
     };
 
-    let file = args.get("file").and_then(|v| v.as_str()).ok_or_else(|| {
-        let hint = if args.get("path").is_some() {
-            " (got 'path' — use 'file')"
-        } else {
-            ""
-        };
-        TokenSaveError::Config {
-            message: format!("missing required parameter: file{hint}"),
-        }
+    let file = file_arg(&args).ok_or_else(|| TokenSaveError::Config {
+        message: "missing required parameter: file (alias: path)".to_string(),
     })?;
 
-    let mode_str = args.get("mode").and_then(|v| v.as_str()).unwrap_or("full");
+    // A range argument without a mode means `lines`; an explicit mode wins.
+    let has_range = args.get("lines").is_some() || args.get("start").is_some();
+    let mode_str = args
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or(if has_range { "lines" } else { "full" });
     let mode = ReadMode::parse(mode_str).ok_or_else(|| TokenSaveError::Config {
         message: format!("unknown mode '{mode_str}'; expected one of full, lines, map, signatures"),
     })?;
@@ -1506,16 +1549,7 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
         .unwrap_or("text");
 
     let line_range = if mode == ReadMode::Lines {
-        let raw =
-            args.get("lines")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| TokenSaveError::Config {
-                    message: "mode='lines' requires the 'lines' argument (e.g. '120-180')"
-                        .to_string(),
-                })?;
-        Some(LineRange::parse(raw).ok_or_else(|| TokenSaveError::Config {
-            message: format!("invalid 'lines' value '{raw}'; expected 'A' or 'A-B'"),
-        })?)
+        Some(read_line_range(&args)?)
     } else {
         None
     };
@@ -1674,12 +1708,9 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
 pub(super) async fn handle_outline(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     use crate::context::read_modes::render_map;
 
-    let file = args
-        .get("file")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: file".to_string(),
-        })?;
+    let file = file_arg(&args).ok_or_else(|| TokenSaveError::Config {
+        message: "missing required parameter: file (alias: path)".to_string(),
+    })?;
 
     let kinds: Option<Vec<String>> = args.get("kinds").and_then(|v| v.as_array()).map(|arr| {
         arr.iter()
@@ -2074,12 +2105,9 @@ pub(super) async fn handle_doc(
     args: Value,
     scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
-    let file = args
-        .get("file")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: file".to_string(),
-        })?;
+    let file = file_arg(&args).ok_or_else(|| TokenSaveError::Config {
+        message: "missing required parameter: file (alias: path)".to_string(),
+    })?;
     let include_content = args
         .get("include_content")
         .and_then(serde_json::Value::as_bool)

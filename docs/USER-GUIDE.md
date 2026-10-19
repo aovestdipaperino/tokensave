@@ -1375,6 +1375,46 @@ state fields are read from your existing file once and then migrated into
 
 ## Troubleshooting
 
+### Checking index integrity
+
+Run `tokensave verify [path]` before attempting recovery. Verification bypasses
+agent maintenance, telemetry, migrations and automatic indexing. It opens the
+selected database read-only and checks one committed SQLite snapshot. Concurrent
+uncommitted writes are invisible; source files and branch metadata are not part
+of that snapshot, so rerun after a writer or editor finishes if necessary.
+
+`tokensave verify --deep` adds SQLite `integrity_check` and content hashes using
+the indexer's BOM/legacy text decoding. The default uses `quick_check` and source
+modification times. `SOURCE_STALE` and `SOURCE_MISSING` are normal source drift,
+not evidence of corruption; use ordinary incremental `tokensave sync` after
+confirming those changes. Structural findings include incompatible schema,
+invalid SHA-256 fingerprints, dangling edges/references/parents, orphan symbols
+and vectors, and dispatch records with missing endpoints. Branch metadata is
+checked for malformed JSON, missing default entries/databases and unsafe paths.
+An untracked current branch produces `BRANCH_FALLBACK` and stops verification
+rather than comparing another branch's database against the current source.
+
+Use `--json` for a report with `completed`, `checked_files`, `findings`, `omitted`
+and `diagnostics`. Each diagnostic has a stable `code`, `severity`, `entity`,
+`action` and `repair_status`. Relationship findings aggregate affected record
+counts. Exit codes: **0** clean, **1** completed with findings (including source
+warnings), **2** incomplete or unsupported. At most 1,000 diagnostics are retained;
+`findings` still counts all findings, and `omitted` reports the excess. Deep reads
+are limited to 16 MiB per source file; skipped/unreadable files produce warnings.
+Branch metadata is limited to 1 MiB. SQLite's page cache is capped at 8 MiB;
+SQLite integrity checks can require additional engine-managed memory and CPU.
+The read snapshot can delay WAL truncation while a concurrent writer commits;
+run deep checks during a quiet period for very large or busy indexes.
+
+This initial implementation is a read-only foundation. `--repair` returns
+`REPAIR_UNSUPPORTED` and exit 2 without opening the database or making changes.
+Targeted repair, operation-journal/interrupted-sync detection, discovery of
+unindexed source files, full-text index consistency, and semantic validation of
+relationships/ambiguous-call candidates are deferred. No automatic full rebuild
+or index deletion occurs. Preserve a backup before manually recovering structural
+corruption. Symlink targets outside the project are reported without reading them;
+filesystem changes during verification can require a second run.
+
 ### "tokensave not initialized"
 
 The `.tokensave/` directory doesn't exist in your current project. Run:

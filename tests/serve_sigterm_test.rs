@@ -20,7 +20,7 @@
 
 #![cfg(unix)]
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -68,6 +68,8 @@ fn a_server_that_has_served_a_request_still_exits_on_sigterm() {
         String::from_utf8_lossy(&init.stderr)
     );
 
+    // A file captures shutdown diagnostics without risking a full stderr pipe.
+    let mut stderr = tempfile::tempfile().expect("stderr file");
     let mut child = Command::new(env!("CARGO_BIN_EXE_tokensave"))
         .args(["serve", "--path"])
         .arg(project.path())
@@ -76,7 +78,7 @@ fn a_server_that_has_served_a_request_still_exits_on_sigterm() {
         .env("USERPROFILE", home.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(stderr.try_clone().expect("clone stderr file"))
         .spawn()
         .expect("spawn tokensave serve");
 
@@ -102,13 +104,26 @@ fn a_server_that_has_served_a_request_still_exits_on_sigterm() {
     sigterm(&child);
 
     let status = wait_for_exit(&mut child, Duration::from_secs(20));
-    let Some(status) = status else {
+    if status.is_none() {
         let _ = child.kill();
-        panic!("server ignored SIGTERM and was still running after 20s");
-    };
+        let _ = child.wait();
+    }
+    stderr.rewind().expect("rewind stderr");
+    let mut diagnostics = String::new();
+    stderr
+        .read_to_string(&mut diagnostics)
+        .expect("read stderr");
+    let status = status.unwrap_or_else(|| {
+        panic!("server ignored SIGTERM and was still running after 20s: {diagnostics}")
+    });
     assert!(
-        status.success() || status.code().is_none(),
-        "server should leave through graceful shutdown, got {status:?}"
+        status.success(),
+        "server should leave through graceful shutdown, got {status:?}: {diagnostics}"
+    );
+
+    assert!(
+        diagnostics.contains("[tokensave] shutdown:"),
+        "server exited without completing graceful shutdown: {diagnostics}"
     );
 
     // Keep stdin alive until after the assertions so closing it cannot be

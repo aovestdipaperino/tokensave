@@ -2038,3 +2038,131 @@ fn test_relative_target_climbing_out_of_the_project_is_left_alone() {
         "a target outside the indexed tree is not this guardrail's concern: {result}"
     );
 }
+
+// --- #686: plain-text searches must not be denied -------------------------
+
+/// An indexed project with a real index db whose `nodes` table holds `names`.
+/// The returned `TempDir` must stay alive for the whole test.
+fn indexed_project_with_nodes(names: &[&str]) -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("project");
+    std::fs::create_dir_all(root.join(".tokensave")).expect("create .tokensave");
+    let db_path = root.join(".tokensave").join("tokensave.db");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let db = libsql::Builder::new_local(&db_path)
+            .build()
+            .await
+            .expect("create db");
+        let conn = db.connect().expect("connect");
+        conn.execute("CREATE TABLE nodes (name TEXT)", ())
+            .await
+            .expect("create table");
+        for name in names {
+            conn.execute(
+                "INSERT INTO nodes (name) VALUES (?)",
+                libsql::params![*name],
+            )
+            .await
+            .expect("insert");
+        }
+    });
+    (tmp, root)
+}
+
+fn grep_input(pattern: &str) -> String {
+    format!(r#"{{"pattern": "{pattern}", "path": "src/main.rs", "output_mode": "content"}}"#,)
+}
+
+#[test]
+fn test_686_keyword_not_in_index_passes_through() {
+    let (_tmp, root) = indexed_project_with_nodes(&["MySymbol"]);
+    let env = env_rooted_at(&root);
+    let result = evaluate_hook_decision_with_env(&grep_input("catch"), &env);
+    assert!(
+        result.is_empty(),
+        "`catch` is not an indexed symbol: {result}"
+    );
+}
+
+#[test]
+fn test_686_indexed_symbol_still_denied() {
+    let (_tmp, root) = indexed_project_with_nodes(&["MySymbol"]);
+    let env = env_rooted_at(&root);
+    let result = evaluate_hook_decision_with_env(&grep_input("MySymbol"), &env);
+    assert!(
+        is_blocked(&result),
+        "an indexed symbol should still redirect: {result}"
+    );
+}
+
+#[test]
+fn test_686_alternation_of_unindexed_names_passes_through() {
+    let (_tmp, root) = indexed_project_with_nodes(&["MySymbol"]);
+    let env = env_rooted_at(&root);
+    let result = evaluate_hook_decision_with_env(&grep_input("etag|mangled"), &env);
+    assert!(
+        result.is_empty(),
+        "no branch is an indexed symbol: {result}"
+    );
+}
+
+#[test]
+fn test_686_alternation_with_indexed_branch_denied() {
+    let (_tmp, root) = indexed_project_with_nodes(&["MySymbol"]);
+    let env = env_rooted_at(&root);
+    let result = evaluate_hook_decision_with_env(&grep_input("MySymbol|throw new Error"), &env);
+    assert!(
+        is_blocked(&result),
+        "an indexed branch should still redirect: {result}"
+    );
+}
+
+#[test]
+fn test_686_version_string_passes_through() {
+    let (_tmp, root) = indexed_project_with_nodes(&["MySymbol"]);
+    let env = env_rooted_at(&root);
+    let result = evaluate_hook_decision_with_env(&grep_input("7.15.0"), &env);
+    assert!(
+        result.is_empty(),
+        "a version string is not a symbol: {result}"
+    );
+}
+
+#[test]
+fn test_686_search_outside_project_passes_through() {
+    let (_tmp, root) = indexed_project_with_nodes(&["MySymbol"]);
+    let env = env_rooted_at(&root);
+    let input = r#"{"pattern": "MySymbol", "path": "/tmp/other-repo", "output_mode": "content"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env);
+    assert!(
+        result.is_empty(),
+        "a target outside the indexed tree is not this guardrail's concern: {result}"
+    );
+}
+
+#[test]
+fn test_686_bash_grep_keyword_not_in_index_passes_through() {
+    let (_tmp, root) = indexed_project_with_nodes(&["MySymbol"]);
+    let env = env_rooted_at(&root);
+    let input = r#"{"command": "grep -rn catch src/lib.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env);
+    assert!(
+        result.is_empty(),
+        "`catch` is not an indexed symbol: {result}"
+    );
+}
+
+#[test]
+fn test_686_bash_grep_indexed_symbol_denied() {
+    let (_tmp, root) = indexed_project_with_nodes(&["MySymbol"]);
+    let env = env_rooted_at(&root);
+    let input = r#"{"command": "grep -rn MySymbol src/lib.rs"}"#;
+    let result = evaluate_hook_decision_with_env(input, &env);
+    assert!(
+        is_blocked(&result),
+        "an indexed symbol should still redirect: {result}"
+    );
+}

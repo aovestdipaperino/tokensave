@@ -27,6 +27,7 @@ mod indexing;
 mod memory;
 mod query;
 mod rename;
+mod runtime;
 mod staleness;
 mod util;
 
@@ -37,6 +38,7 @@ pub use guard::{
 };
 pub use indexing::detect_skipped_hidden_dirs;
 pub use rename::{validate_identifier, RenameConfidence, RenameOutcome, RenamePlan, RenameSite};
+pub use runtime::BranchRuntime;
 pub use staleness::{AutoSyncScope, BranchDrift, DEFAULT_MAX_AUTO_SYNC_FILES};
 pub use util::is_test_file;
 pub(crate) use util::*;
@@ -52,6 +54,8 @@ pub struct TokenSave {
     registry: LanguageRegistry,
     /// The active git branch (None if detached HEAD or not a git repo).
     active_branch: Option<String>,
+    /// Explicit branch snapshots keep their historical independence from HEAD.
+    tracks_checkout: bool,
     /// The branch whose DB is actually being served (may differ from `active_branch` on fallback).
     serving_branch: Option<String>,
     /// Set when serving from a fallback (ancestor) DB instead of the exact branch.
@@ -178,6 +182,7 @@ impl TokenSave {
             config,
             project_root: project_root.to_path_buf(),
             registry: LanguageRegistry::new(),
+            tracks_checkout: true,
             active_branch,
             serving_branch: None,
             fallback_warning: None,
@@ -318,6 +323,7 @@ impl TokenSave {
                     config,
                     project_root: project_root.to_path_buf(),
                     registry: LanguageRegistry::new(),
+                    tracks_checkout: true,
                     active_branch: active_branch.clone(),
                     serving_branch: serving_branch.clone(),
                     fallback_warning: fallback_warning.clone(),
@@ -348,6 +354,7 @@ impl TokenSave {
                     config,
                     project_root: project_root.to_path_buf(),
                     registry: LanguageRegistry::new(),
+                    tracks_checkout: true,
                     active_branch: active_branch.clone(),
                     serving_branch: serving_branch.clone(),
                     fallback_warning: fallback_warning.clone(),
@@ -382,6 +389,7 @@ impl TokenSave {
             config,
             project_root: project_root.to_path_buf(),
             registry: LanguageRegistry::new(),
+            tracks_checkout: true,
             active_branch,
             serving_branch,
             fallback_warning,
@@ -534,6 +542,7 @@ impl TokenSave {
             config,
             project_root: project_root.to_path_buf(),
             registry: LanguageRegistry::new(),
+            tracks_checkout: false,
             active_branch,
             serving_branch,
             fallback_warning,
@@ -579,6 +588,7 @@ impl TokenSave {
             config,
             project_root: project_root.to_path_buf(),
             registry: LanguageRegistry::new(),
+            tracks_checkout: false,
             active_branch: Some(branch_name.to_string()),
             serving_branch: Some(branch_name.to_string()),
             fallback_warning: None,

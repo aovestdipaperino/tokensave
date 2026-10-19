@@ -354,7 +354,7 @@ pub(crate) fn display_language_for_path(path: &str) -> &'static str {
         "m" | "mm" => "Objective-C",
         "f" | "f90" | "f95" | "f03" | "f08" | "for" => "Fortran",
         "cbl" | "cob" | "cpy" => "COBOL",
-        "pas" | "pp" | "dpr" => "Pascal",
+        "pas" | "pp" | "dpr" | "dpk" | "lpr" | "inc" => "Pascal",
         "vb" => "VB.NET",
         "bas" => "BASIC",
         "bat" | "cmd" => "Batch",

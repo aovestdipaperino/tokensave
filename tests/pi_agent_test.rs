@@ -22,6 +22,15 @@ fn pi_config_path(home: &Path) -> PathBuf {
     home.join(".pi/agent/mcp.json")
 }
 
+/// Default (no env override) Pi rules path under a fake home.
+///
+/// Pi reads instructions from `<agent-dir>/AGENTS.md`; the integration writes
+/// the tokensave rules block there. Kept in sync with the production path
+/// helper in `src/agents/integrations/pi.rs`.
+fn pi_rules_path(home: &Path) -> PathBuf {
+    home.join(".pi/agent/AGENTS.md")
+}
+
 // ===========================================================================
 // Install content verification
 // ===========================================================================
@@ -109,6 +118,65 @@ fn test_install_idempotent() {
     assert_eq!(ts_count, 1, "tokensave should appear exactly once");
 }
 
+/// The rules block must end up in `<home>/.pi/agent/AGENTS.md`, the file Pi
+/// actually reads, not in the unrelated `~/.agents/AGENTS.md` path the
+/// integration used to write to (#691).
+#[test]
+fn test_install_writes_rules_to_pi_agent_dir() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_ctx(home);
+    PiIntegration.install(&ctx).unwrap();
+
+    let rules_path = pi_rules_path(home);
+    assert!(
+        rules_path.exists(),
+        "install should write rules to {}",
+        rules_path.display()
+    );
+
+    // The legacy wrong path must not be touched.
+    let legacy_path = home.join(".agents/AGENTS.md");
+    assert!(
+        !legacy_path.exists(),
+        "install should NOT write rules to {} (Pi does not read it)",
+        legacy_path.display()
+    );
+
+    let contents = std::fs::read_to_string(&rules_path).unwrap();
+    assert!(
+        contents.contains("tokensave rules begin"),
+        "AGENTS.md should carry the tokensave rules block"
+    );
+}
+
+/// Uninstall removes the tokensave rules block from the agent directory
+/// AGENTS.md, in the same way the mcp.json entry is removed.
+#[test]
+fn test_uninstall_removes_rules_from_pi_agent_dir() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_ctx(home);
+    PiIntegration.install(&ctx).unwrap();
+    PiIntegration.uninstall(&ctx).unwrap();
+
+    let rules_path = pi_rules_path(home);
+    assert!(
+        !rules_path.exists()
+            || !std::fs::read_to_string(&rules_path)
+                .unwrap()
+                .contains("tokensave rules begin"),
+        "tokensave rules block should be gone from {} after uninstall",
+        rules_path.display()
+    );
+}
+
 #[test]
 fn test_primary_config_path_matches_install_target() {
     let _guard = ENV_LOCK.lock().unwrap();
@@ -163,6 +231,25 @@ fn test_pi_coding_agent_dir_override_is_honored() {
 
     let config = read_json(&override_path);
     assert!(config["mcpServers"]["tokensave"].is_object());
+
+    // The rules block follows the same override: it has to land in
+    // <agent-dir>/AGENTS.md, not in the unrelated ~/.agents/AGENTS.md path
+    // (which Pi does not read). Without this assertion the install would
+    // silently write the rules somewhere Pi will never load them.
+    let override_rules = override_dir.path().join("AGENTS.md");
+    assert!(
+        override_rules.exists(),
+        "install should write rules to $PI_CODING_AGENT_DIR/AGENTS.md"
+    );
+    assert!(
+        !pi_rules_path(home).exists(),
+        "default ~/.pi/agent/AGENTS.md should NOT be written when env override is set"
+    );
+    let rules_contents = std::fs::read_to_string(&override_rules).unwrap();
+    assert!(
+        rules_contents.contains("tokensave rules begin"),
+        "AGENTS.md should carry the tokensave rules block"
+    );
 
     std::env::remove_var("PI_CODING_AGENT_DIR");
 }

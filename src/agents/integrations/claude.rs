@@ -72,6 +72,18 @@ impl AgentIntegration for ClaudeIntegration {
     }
 }
 
+/// #693: `claude_hooks = false` in `~/.tokensave/config.toml` keeps the
+/// Claude Code hooks out of settings.json across install, reinstall, the
+/// upgrade resync, the post-upgrade backfill and doctor. Read from `home`'s
+/// config file so tests with temp homes stay hermetic; an absent or
+/// unreadable config means hooks on (the default).
+fn claude_hooks_disabled(home: &Path) -> bool {
+    std::fs::read_to_string(home.join(".tokensave").join("config.toml"))
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+        .is_some_and(|v| v.get("claude_hooks").and_then(toml::Value::as_bool) == Some(false))
+}
+
 /// Resolves Claude Code's user-level config directory (normally `~/.claude`).
 ///
 /// Claude Code honors `CLAUDE_CONFIG_DIR` to relocate its entire user-level
@@ -146,7 +158,13 @@ fn install_global(ctx: &InstallContext) -> Result<()> {
     std::fs::create_dir_all(&claude_dir).ok();
     let mut settings = load_json_file_strict(&settings_path)?;
     install_migrate_old_mcp(&mut settings, &settings_path);
-    install_hook(&mut settings, &ctx.tokensave_bin);
+    if claude_hooks_disabled(&ctx.home) {
+        crate::agent_note!(
+            "  Claude Code hooks disabled in config (claude_hooks = false), skipping"
+        );
+    } else {
+        install_hook(&mut settings, &ctx.tokensave_bin);
+    }
     install_permissions(
         &mut settings,
         &ctx.tool_permissions,
@@ -182,7 +200,15 @@ fn install_local(ctx: &InstallContext, project: &Path) -> Result<()> {
 
     std::fs::create_dir_all(&claude_dir).ok();
     let mut settings = load_json_file_strict(&settings_path)?;
-    install_hook(&mut settings, &ctx.tokensave_bin);
+    // The opt-out is a user-level preference and covers project-scoped hook
+    // files too (#693).
+    if claude_hooks_disabled(&ctx.home) {
+        crate::agent_note!(
+            "  Claude Code hooks disabled in config (claude_hooks = false), skipping"
+        );
+    } else {
+        install_hook(&mut settings, &ctx.tokensave_bin);
+    }
     install_permissions(
         &mut settings,
         &ctx.tool_permissions,
@@ -860,8 +886,13 @@ fn doctor_check_settings_json(dc: &mut DoctorCounters, home: &Path) {
     };
 
     dc.pass(&format!("Settings: {}", settings_path.display()));
-    doctor_check_hook(dc, &settings);
-    doctor_fix_hooks(dc, &settings_path, &settings);
+    if claude_hooks_disabled(home) {
+        // #693: the opt-out is honored, not repaired.
+        dc.pass("Claude Code hooks disabled in config (claude_hooks = false)");
+    } else {
+        doctor_check_hook(dc, &settings);
+        doctor_fix_hooks(dc, &settings_path, &settings);
+    }
     doctor_check_permissions(dc, &settings);
 }
 
@@ -1230,6 +1261,10 @@ pub fn check_install_stale() {
         if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&contents) {
             warn_missing_permissions(&settings);
         }
+    }
+    // #693: with the opt-out on, the silent backfill must not re-add hooks.
+    if claude_hooks_disabled(&home) {
+        return;
     }
     normalize_and_backfill_settings_file(&user_settings_path);
 

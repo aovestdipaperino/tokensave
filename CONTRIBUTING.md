@@ -83,6 +83,88 @@ cargo test --locked --no-default-features --features lite
    cargo clippy --workspace --all-targets --locked
    ```
 
+## Memory and Resource Management
+
+These requirements apply to contributors and AI coding agents. **MUST** and
+**MUST NOT** are mandatory; **SHOULD** indicates a recommendation whose omission
+should be explained in the PR. Apply them to indexing, synchronization, repeated
+MCP requests, and long-running server workloads, including error paths.
+
+### Memory management
+
+- Changes MUST NOT introduce known memory leaks or unbounded memory growth.
+- Caches, queues, buffers, and collections MUST have growth limits appropriate
+  to their workload and a defined eviction, draining, or release lifecycle.
+  Document input-proportional storage and its scope rather than imposing an
+  arbitrary fixed cap on all workloads.
+- Code MUST avoid unnecessary allocations, cloning, and prolonged retention of
+  large objects. Release processed batches and temporary graph data when their
+  consumers finish.
+- Shared ownership through `Arc` and `Rc` MUST avoid strong-reference cycles and
+  unintended retention; use `Weak` or explicit ownership boundaries where needed.
+- Resources MUST be released during normal operation, errors, cancellation, and
+  shutdown. Intentionally retained process-lifetime data MUST have a documented
+  bound and rationale; this does not permit new known leaks.
+
+### CPU efficiency
+
+- Code MUST NOT introduce busy-wait loops or uncontrolled polling. Necessary
+  polling MUST have a justified interval or backoff and a termination condition.
+- Changes MUST avoid unnecessary filesystem scans, database queries, and repeated
+  computations. Preserve existing scope filters and automatic-sync bounds.
+- Parallel work MUST use bounded concurrency and appropriate backpressure;
+  limiting workers alone is insufficient if queued work can grow without bound.
+- Background operations MUST terminate when no longer required, including when
+  their owning request or server ends.
+- Code SHOULD favor incremental processing and bounded batches, and MUST avoid
+  unnecessary lock contention, including holding locks across unrelated I/O.
+
+### Resource lifecycle
+
+- File handles, database connections and transactions, subprocesses, threads,
+  and asynchronous tasks MUST have explicit owners and cleanup paths. Use Rust
+  ownership and RAII where appropriate.
+- Code MUST prevent orphaned background tasks and unintended resource retention.
+  Dropping a task or subprocess handle alone MUST NOT be assumed to stop its work;
+  arrange cancellation and joining or reaping as appropriate.
+- Error, cancellation, and shutdown paths MUST release resources correctly.
+  Cleanup that needs asynchronous work MUST have an explicit completion path
+  rather than relying solely on `Drop`.
+
+### Regression prevention
+
+- Resource-sensitive changes MUST evaluate potential memory and CPU regressions
+  and record the workload, checks, results, and limitations in the PR.
+- Validation SHOULD exercise repeated execution and representative long-running
+  workloads, including idle periods and cancellation or shutdown where relevant.
+- Memory checks SHOULD confirm stabilization after warm-up for a fixed workload,
+  allowing for bounded caches and allocator retention. Compare equivalent inputs
+  and concurrency; a single RSS sample cannot establish the absence of a leak.
+- Intentional, significant increases in resource consumption MUST be documented
+  with their rationale and expected scaling.
+- Contributors and agents MUST NOT claim code is leak-free without supporting
+  evidence, and MUST qualify conclusions by the paths and workloads checked.
+
+Use the existing [memory diagnostics](README.md#memory-diagnostics) for sampled
+RSS and phase attribution, the [automatic-sync and server lifecycle guide](docs/USER-GUIDE.md#how-the-mcp-server-refreshes-the-index)
+for operational constraints, and [query optimization notes](docs/QUERY-OPTIMIZATIONS.md)
+for existing database strategies. These describe specific mechanisms; the policy
+above governs new development. Existing test artifact and process-global-state
+requirements remain in [Test layout](#test-layout).
+
+### Resource review checklist
+
+For resource-sensitive changes, contributors and AI coding agents MUST review:
+
+- [ ] Growth bounds, scaling with input, and release or eviction points are defined.
+- [ ] Ownership, shared references, and cleanup cover success, errors, cancellation,
+      and shutdown, including background work and subprocesses.
+- [ ] Scans, queries, polling, concurrency, queues, and lock scope avoid unnecessary
+      work and provide backpressure where needed.
+- [ ] Memory and CPU regression risks, validation evidence, and untested paths are
+      recorded; repeated and long-running checks are considered.
+- [ ] Significant resource increases are justified and claims match the evidence.
+
 ## Adding a New Language Extractor
 
 1. Add a tree-sitter grammar dependency (or vendor it under `vendor/`).
@@ -113,6 +195,69 @@ cargo test-lite
 All `tests/*.rs` files are modules of one test binary, `tests/integration.rs`, because every test binary statically links all tree-sitter grammars and SQLite: 180 separate binaries took hundreds of gigabytes of `target/`. `Cargo.toml` sets `autotests = false`, so a new test file must be declared as a `mod` in `tests/integration.rs`, and helpers are shared through `crate::common`.
 
 Tests in the shared binary run concurrently with every other test file, so a test must not mutate process-global state: environment variables (`std::env::set_var`), the current directory, or the `tokensave::cancel` flag. Such a file gets its own `[[test]]` target in `Cargo.toml` instead, next to the existing isolated ones. A test that re-runs its own binary with `--exact` must pass the module-qualified name from `common::qualified_test_name(module_path!(), "...")`.
+
+### Analysis-result stability tests
+
+Run the small metamorphic fixtures with:
+
+```bash
+cargo test --locked --test integration analysis_stability_test::
+```
+
+`tests/common/stability.rs` captures production `TokenSave` queries, rather than
+reimplementing analyzers. The Rust and Python fixtures exercise blank lines,
+consistent indentation changes, ordinary comment insertion/removal, CRLF, and
+moving independent function declarations within a file. Rust also covers a
+controlled rename (including updated call references), independent function
+insertion, repeated full indexing, no-op syncs, and bounded concurrent readers.
+Every transformed fixture is compared with a fresh full index, then restored
+where applicable. Existing `incremental_resolution_test` retains the broader
+incremental-versus-full-resolution edit-sequence coverage.
+
+There are four distinct comparison contracts:
+
+- **Exact output:** repeated node reads without writes retain every field;
+  sorting by ID only accounts for unspecified query ordering.
+- **Normalized findings:** compare sorted vectors of dead-code entities,
+  file-cycle components, coupling counts, and structural complexity metrics.
+  Vectors retain duplicates. Temporary roots, timestamps, source coordinates,
+  and raw IDs are outside this projection. Function signatures retain their
+  contents with whitespace runs collapsed; rename cases explicitly map the
+  renamed declaration signatures to their original signatures.
+- **Semantic graph:** compare every stored relationship by semantic endpoints,
+  edge kind, and resolver provenance. Source line numbers are excluded;
+  relationship multiplicity is preserved.
+- **Finding correspondence:** `(relative path, kind, qualified name)` identifies
+  an entity. A controlled rename supplies an explicit mapping back to the old
+  entity. Unchanged inputs additionally require identical raw IDs; line edits
+  may change line-derived IDs without introducing new semantic findings.
+
+Structural complexity includes all stored branch, loop, early-exit, nesting,
+unsafe, unchecked-call, assertion, cognitive and Halstead counts. The composite
+complexity ranking includes physical line span, so its score and order are
+intentionally outside formatting equivalence. Coupling preserves both fan-in
+and fan-out counts. External compiler diagnostics and their severity are not
+captured by these fixtures; no diagnostic severity or confidence field is
+silently discarded. Resolver provenance is retained.
+
+To add coverage, create a small valid fixture with nonempty baseline assertions,
+apply a language-safe transformation, call `sync`, and compare the snapshot with
+both its baseline and a new `Project` containing the transformed source. Include
+a negative control for any newly captured analyzer. `assert_equivalent` reports
+an analyzer, fixture/transformation, and complete before/after rows on failure;
+`assert_same_identities` reports raw identity correspondence separately. Avoid
+fuzzy matching, set/subset comparisons that hide duplicates, process-global
+configuration, and timing-based synchronization. `Project` owns its temporary
+directory and closes the database before cleanup, including on test failure.
+
+The cases are deterministic and bounded; no property-testing dependency or
+random seed is needed. This first version does not promise arbitrary file-move,
+overload, class/member, suppression-directive, documentation-comment, or
+cross-language equivalence. Python indentation changes preserve nesting; only
+independent definitions are reordered. Concurrent reads do not test simultaneous
+writers or establish a public output-order guarantee. Repeated small full
+indexes exercise the production parallel extraction path, without timing
+assertions or a large repository stress test.
 
 ## Environment Variables
 

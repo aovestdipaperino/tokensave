@@ -158,33 +158,6 @@ fn zed_local_writes_project_settings() {
 }
 
 #[test]
-fn opencode_local_writes_project_config() {
-    let home = TempDir::new().unwrap();
-    let proj = TempDir::new().unwrap();
-    let ctx = InstallContext {
-        home: home.path().to_path_buf(),
-        tokensave_bin: "/usr/bin/tokensave".to_string(),
-        tool_permissions: vec![],
-        scope: InstallScope::Local {
-            project_path: proj.path().to_path_buf(),
-        },
-        force_permission_style: false,
-    };
-    get_integration("opencode").unwrap().install(&ctx).unwrap();
-    let cfg = read_json(&proj.path().join("opencode.json"));
-    assert!(cfg["mcp"]["tokensave"].is_object());
-    assert!(
-        !proj.path().join("AGENTS.md").exists(),
-        "local install should not create/touch project AGENTS.md"
-    );
-    assert!(proj.path().join("tokensave.md").exists());
-    let instructions = cfg["instructions"].as_array().unwrap();
-    assert!(instructions
-        .iter()
-        .any(|v| v.as_str() == Some("tokensave.md")));
-}
-
-#[test]
 fn roo_local_writes_project_mcp() {
     let home = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();

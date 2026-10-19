@@ -460,25 +460,6 @@ fn test_cursor_uninstall_removes_only_tokensave_hooks() {
 }
 
 #[test]
-fn test_opencode_install_creates_config() {
-    let dir = TempDir::new().unwrap();
-    let home = dir.path();
-    // OpenCode uses ~/.config/opencode/opencode.json
-    // Create the parent dir so install can discover it
-    let ctx = make_install_ctx(home);
-    OpenCodeIntegration.install(&ctx).unwrap();
-
-    let config_path = home.join(".config/opencode/opencode.json");
-    assert!(
-        config_path.exists(),
-        "opencode.json should exist after install"
-    );
-    let content: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-    assert!(content["mcp"]["tokensave"].is_object());
-}
-
-#[test]
 fn test_zed_install_creates_config() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();

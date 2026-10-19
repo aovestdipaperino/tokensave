@@ -366,6 +366,7 @@ pub struct McpServer {
     /// server still starts so `graph_root` reaches the registered projects,
     /// and a call without one is refused with the list of them.
     cg: Option<TokenSave>,
+    branch_runtime: crate::tokensave::BranchRuntime,
     /// The registered projects, snapshotted at startup when there is no
     /// default project and named in the `initialize` instructions and in
     /// the refusal of a call without `graph_root` (#606). Empty otherwise.
@@ -741,6 +742,7 @@ impl McpServer {
         let has_project = cg.is_some();
         let server = Arc::new(Self {
             cg,
+            branch_runtime: crate::tokensave::BranchRuntime::default(),
             registered_projects,
             graph_scoped_tools,
             selectorless_local_graph_tools,
@@ -845,8 +847,7 @@ impl McpServer {
     ///
     /// The message names both trees or branches and the setting responsible, so
     /// the refusal is actionable without reading the docs.
-    fn strict_tree_refusal(&self, tool_name: &str) -> Option<String> {
-        let cg = self.cg.as_ref()?;
+    fn strict_tree_refusal(&self, cg: &TokenSave, tool_name: &str) -> Option<String> {
         if !cg.get_config().strict_tree {
             return None;
         }
@@ -887,7 +888,7 @@ impl McpServer {
     /// tools: `tokensave_status` stays callable for diagnosis, tools without
     /// graph reads are unaffected, and explicit external `graph_root`
     /// selections never reach this gate.
-    fn branch_drift_refusal(&self, tool_name: &str) -> Option<String> {
+    fn branch_drift_refusal(&self, cg: &TokenSave, tool_name: &str) -> Option<String> {
         if tool_name == "tokensave_status"
             || (!self.graph_scoped_tools.contains(tool_name)
                 && !self.selectorless_local_graph_tools.contains(tool_name))
@@ -895,7 +896,7 @@ impl McpServer {
             return None;
         }
 
-        let drift = self.cg.as_ref()?.branch_drift()?;
+        let drift = cg.branch_drift()?;
         Some(format!(
             "refusing: MCP server serves branch '{}' while the working tree is on '{}'. \
              Restart the MCP server to serve this branch, or reopen it for the working branch.",
@@ -1147,13 +1148,10 @@ impl McpServer {
     /// overhead-inclusive) to the running saved-tokens counter and persists
     /// it to the database. No-op when `net` is 0 (nothing was saved, or the
     /// call cost more than its baseline).
-    async fn add_tokens_saved(&self, net: u64) {
+    async fn add_tokens_saved(&self, cg: &TokenSave, net: u64) {
         if net == 0 {
             return;
         }
-        let Some(cg) = self.cg.as_ref() else {
-            return;
-        };
         let new_total = self.tokens_saved.fetch_add(net, Ordering::Relaxed) + net;
         // Persist to DB (best-effort, don't block on failure)
         let _ = cg.set_tokens_saved(new_total).await;
@@ -2193,6 +2191,17 @@ impl McpServer {
         let Some(cg) = self.cg.as_ref() else {
             return self.no_default_project_error(id);
         };
+        let lease = match self.branch_runtime.lease(cg).await {
+            Ok(lease) => lease,
+            Err(error) => {
+                return JsonRpcResponse::error(
+                    id,
+                    ErrorCode::InternalError,
+                    format!("branch context switch failed: {error}"),
+                )
+            }
+        };
+        let cg = lease.as_deref().unwrap_or(cg);
         match uri {
             "tokensave://status" => Self::read_resource_status(cg, id).await,
             "tokensave://files" => Self::read_resource_files(cg, id).await,
@@ -2537,6 +2546,32 @@ impl McpServer {
             None
         };
 
+        // A local operation holds its branch lease through dispatch. This
+        // serializes transitions with concurrent calls without mutating handles
+        // retained by startup/background tasks or explicit graph selections.
+        let runtime_lease = if selected.is_none() {
+            if let Some(initial) = self.cg.as_ref() {
+                match self.branch_runtime.lease(initial).await {
+                    Ok(lease) => Some(lease),
+                    Err(error) => {
+                        return JsonRpcResponse::error(
+                            id,
+                            ErrorCode::InternalError,
+                            format!("branch context switch failed: {error}"),
+                        )
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let local_graph = runtime_lease
+            .as_ref()
+            .and_then(|lease| lease.as_deref())
+            .or(self.cg.as_ref());
+
         if selected.is_none() {
             // #606: with no default project, only `graph_root` can answer —
             // except `tokensave_status`, the diagnostic tool, which reports
@@ -2547,7 +2582,10 @@ impl McpServer {
                 }
                 return self.no_default_project_error(id);
             }
-            if let Some(reason) = self.branch_drift_refusal(tool_name) {
+            let Some(cg) = local_graph else {
+                return self.no_default_project_error(id);
+            };
+            if let Some(reason) = self.branch_drift_refusal(cg, tool_name) {
                 return JsonRpcResponse::error(id, ErrorCode::InvalidRequest, reason);
             }
 
@@ -2556,19 +2594,23 @@ impl McpServer {
             // a refused call does no work. Selected graphs are exempt — naming
             // `graph_root` is an explicit request for another project's
             // snapshot, so "this isn't your working tree" is the point.
-            if let Some(reason) = self.strict_tree_refusal(tool_name) {
+            if let Some(reason) = self.strict_tree_refusal(cg, tool_name) {
                 return JsonRpcResponse::error(id, ErrorCode::InvalidRequest, reason);
             }
 
             // Notification-free freshness: walk the local tree and resync any
             // stale files, gated by a 30 s cooldown. Explicitly selected
             // graphs are read-only snapshots and never run local repair.
-            self.maybe_sync_if_stale().await;
+            if runtime_lease.as_ref().is_some_and(|lease| lease.is_none()) {
+                self.maybe_sync_if_stale().await;
+            }
 
             // Evaluate the local project's version-aware reindex on every
             // local path. The atomic once-gate keeps this at most once per
             // session without letting a selected call consume the check.
-            self.maybe_reindex_on_version_bump();
+            if runtime_lease.as_ref().is_some_and(|lease| lease.is_none()) {
+                self.maybe_reindex_on_version_bump();
+            }
         }
 
         eprintln!("[tokensave] dispatch: {tool_name}");
@@ -2585,11 +2627,18 @@ impl McpServer {
         } else {
             None
         };
-        let (dispatch_graph, scope_prefix) = match (selected.as_ref(), self.cg.as_ref()) {
+        let (dispatch_graph, scope_prefix) = match (selected.as_ref(), local_graph) {
             (Some(selected), _) => (&selected.cg, None),
             (None, Some(cg)) => (cg, self.scope_prefix()),
             (None, None) => return self.no_default_project_error(id),
         };
+        if selected.is_none() && runtime_lease.as_ref().is_some_and(|lease| lease.is_some()) {
+            if let Ok(fresh) = dispatch_graph.get_file_token_map().await {
+                if let Ok(mut map) = self.file_token_map.lock() {
+                    *map = fresh;
+                }
+            }
+        }
         let baseline = baseline_policy(tool_name, &arguments);
         let dispatch_outcome = handle_tool_call_with_session(
             dispatch_graph,
@@ -3012,7 +3061,7 @@ impl McpServer {
                 // surplus first. See `settle_against_session_debt`.
                 let raw_delta = before_tokens as i64 - after_tokens as i64;
                 let credited = self.settle_against_session_debt(raw_delta);
-                self.add_tokens_saved(credited).await;
+                self.add_tokens_saved(dispatch_graph, credited).await;
                 crate::monitor::write_entry(
                     cg.project_root(),
                     "tokensave",

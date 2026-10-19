@@ -26,7 +26,7 @@ use crate::tokensave::TokenSave;
 use crate::types::{EdgeKind, NodeKind};
 
 use super::super::ToolResult;
-use super::{effective_path, truncate_response, unique_file_paths};
+use super::{effective_path, file_arg, truncate_response, unique_file_paths};
 
 // ---------------------------------------------------------------------------
 // Shared health computation helper
@@ -976,7 +976,7 @@ pub(super) async fn handle_test_map(
     args: Value,
     _scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
-    let source_nodes = if let Some(file) = args.get("file").and_then(|v| v.as_str()) {
+    let source_nodes = if let Some(file) = file_arg(&args) {
         cg.get_nodes_by_file(file).await?
     } else if let Some(node_id) = args
         .get("node_id")
@@ -1092,7 +1092,7 @@ fn classify_test_nodes(
 /// - `symbol`: list of test functions that transitively cover the symbol.
 /// - `test_fn`: list of source symbols a specific test transitively exercises.
 pub(super) async fn handle_test_coverage(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    let file = args.get("file").and_then(|v| v.as_str());
+    let file = file_arg(&args);
     let symbol = args.get("symbol").and_then(|v| v.as_str());
     let test_fn = args.get("test_fn").and_then(|v| v.as_str());
     let max_depth = args

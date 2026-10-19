@@ -29,8 +29,9 @@ const CODE_EXTENSIONS: &[&str] = &[
     "rs", "go", "java", "scala", "sc", "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "py",
     "pyi", "pyw", "c", "h", "cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++", "inl", "ipp",
     "tcc", "kt", "kts", "cs", "csx", "swift", // Medium tier
-    "dart", "pas", "pp", "dpr", "php", "phtml", "rb", "rake", "erb", "slim", "gemspec", "sh",
-    "bash", "zsh", "proto", "ps1", "psm1", "psd1", "nix", "vb", "vbs", // Full tier
+    "dart", "pas", "pp", "dpr", "dpk", "lpr", "inc", "php", "phtml", "rb", "rake", "erb", "slim",
+    "gemspec", "sh", "bash", "zsh", "proto", "ps1", "psm1", "psd1", "nix", "vb",
+    "vbs", // Full tier
     "lua", "zig", "m", "mm", "pl", "pm", "bat", "cmd", "f", "f90", "f95", "f03", "for", "ftn",
     "cbl", "cob", "cpy", "bas", // HDL
     "v", "vh", "sv", "svh", "vhd", "vhdl",
@@ -392,6 +393,52 @@ fn build_block_message(reason: &str) -> String {
     .to_string()
 }
 
+/// #686: deny only when the index actually defines one of the names the
+/// pattern searches for. Keywords (`catch`), version strings and prose that
+/// merely look identifier-shaped are not symbols, and redirecting them to
+/// `tokensave_search` would return nothing.
+///
+/// Fails closed: an index that cannot be opened or queried keeps the
+/// pre-#686 deny, and so does a missing `project_root` (hermetic tests).
+fn any_symbol_indexed(env: &HookEnv, symbols: &[String]) -> bool {
+    let Some(root) = env.project_root.as_deref() else {
+        return true;
+    };
+    if symbols.is_empty() {
+        return true;
+    }
+    let db_path = root.join(".tokensave").join("tokensave.db");
+    let placeholders = vec!["?"; symbols.len()].join(",");
+    let sql = format!("SELECT 1 FROM nodes WHERE LOWER(name) IN ({placeholders}) LIMIT 1");
+    let params: Vec<libsql::Value> = symbols
+        .iter()
+        .map(|s| libsql::Value::Text(s.to_lowercase()))
+        .collect();
+    let probe = async move {
+        let db = libsql::Builder::new_local(&db_path)
+            .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .build()
+            .await?;
+        let conn = db.connect()?;
+        let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+        Ok::<bool, libsql::Error>(rows.next().await?.is_some())
+    };
+    // The hook runs inside `#[tokio::main]`'s multi-thread runtime (main.rs),
+    // where block_in_place + the ambient handle is the house pattern
+    // (monitor.rs); outside a runtime (sync tests) use a throwaway
+    // current-thread runtime.
+    // shortcut: a current-thread ambient runtime would panic here; no caller
+    // runs the hook on one.
+    let ran = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(probe)).ok(),
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .build()
+            .ok()
+            .and_then(|rt| rt.block_on(probe).ok()),
+    };
+    ran.unwrap_or(true)
+}
+
 /// Inspect a `Grep` tool input. Returns `Some(reason)` to redirect.
 fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
     if !env.in_tokensave_project || env.disable_grep_hook {
@@ -419,6 +466,9 @@ fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
         return None;
     }
     let found = classify_symbol_pattern(pattern)?;
+    if !any_symbol_indexed(env, &found.symbols) {
+        return None;
+    }
     Some(redirect_message("Grep", pattern, &found))
 }
 
@@ -725,6 +775,9 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
         return None;
     }
     let found = classify_symbol_pattern(&inv.pattern)?;
+    if !any_symbol_indexed(env, &found.symbols) {
+        return None;
+    }
     Some(redirect_message("Bash grep", &inv.pattern, &found))
 }
 

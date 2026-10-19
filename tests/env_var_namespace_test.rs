@@ -23,6 +23,12 @@ const EXTERNAL_ENV_VARS: &[&str] = &[
     "GIT_CONFIG_COUNT",
     "GIT_CONFIG_KEY_0",
     "GIT_CONFIG_VALUE_0",
+    // Deterministic commit identity for the git test helper in
+    // src/tokensave/runtime.rs (#694).
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
 ];
 const EXTERNAL_PREFIXES: &[&str] = &["CARGO_"];
 const LEGACY_TOKENSAVE_ENV_VARS: &[&str] = &["DISABLE_TOKENSAVE"];

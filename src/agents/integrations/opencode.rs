@@ -37,15 +37,34 @@ impl AgentIntegration for OpenCodeIntegration {
         let config_path = opencode_config_path_for(ctx);
         let rules_path = opencode_rules_path(&config_path);
         let instructions_entry = instructions_entry_for(&ctx.scope, &rules_path);
-        install_mcp_server(&config_path, &ctx.tokensave_bin, &instructions_entry)?;
+        let v2 = opencode_is_v2();
+        install_mcp_server(&config_path, &ctx.tokensave_bin, &instructions_entry, v2)?;
 
-        // Migration: strip any pre-#256 inline block from AGENTS.md, then write
-        // the managed rules file referenced from opencode.json's
-        // "instructions". A migration failure must fail the install rather
-        // than be swallowed — silently succeeding here would report install
-        // as complete while stale rules text stays stuck in AGENTS.md.
-        uninstall_prompt_rules(&opencode_prompt_path_for(ctx))?;
-        write_managed_rules_file(&rules_path, &rules_for_agent("opencode")?).map(|_| ())?;
+        // Resolved after the config write: on a fresh install that is what
+        // creates the config directory, and the V2 rules block must land in
+        // `<config-dir>/AGENTS.md`, the file OpenCode actually reads.
+        let prompt_path = opencode_prompt_path_for(ctx);
+
+        // Managed-block removal runs before the legacy strip: the strip is
+        // heading-based and the managed body carries the same heading, so
+        // stripping first would gut the block and strand its markers.
+        remove_rules_block(&prompt_path).ok();
+        // Migration: strip any pre-#256 inline block from AGENTS.md, then
+        // write the rules for the detected OpenCode major. A migration
+        // failure must fail the install rather than be swallowed — silently
+        // succeeding here would report install as complete while stale rules
+        // text stays stuck in AGENTS.md.
+        uninstall_prompt_rules(&prompt_path)?;
+        let rules = rules_for_agent("opencode")?;
+        if v2 {
+            // #689: V2 accepts the `instructions` array but never resolves
+            // it; persistent instructions must live in AGENTS.md.
+            write_rules_block(&prompt_path, "opencode", &rules).map(|_| ())?;
+        } else {
+            // V1 (or unknown): managed tokensave.md referenced from
+            // opencode.json's "instructions".
+            write_managed_rules_file(&rules_path, &rules).map(|_| ())?;
+        }
 
         crate::agent_note!();
         crate::agent_note!("Setup complete. Next steps:");
@@ -60,7 +79,10 @@ impl AgentIntegration for OpenCodeIntegration {
         let rules_path = opencode_rules_path(&config_path);
         let instructions_entry = instructions_entry_for(&ctx.scope, &rules_path);
         uninstall_mcp_server(&config_path, &instructions_entry);
-        uninstall_prompt_rules(&opencode_prompt_path_for(ctx)).ok(); // legacy pre-#256 installs, best-effort like the rest of uninstall
+        // #689 V2 managed block before the legacy strip (same heading-gutting
+        // order as install), both best-effort like the rest of uninstall.
+        remove_rules_block(&opencode_prompt_path_for(ctx)).ok();
+        uninstall_prompt_rules(&opencode_prompt_path_for(ctx)).ok(); // legacy pre-#256 installs
         remove_managed_rules_file(&rules_path);
 
         crate::agent_note!();
@@ -71,8 +93,9 @@ impl AgentIntegration for OpenCodeIntegration {
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mOpenCode integration\x1b[0m");
-        doctor_check_config(dc, &ctx.home);
-        doctor_check_prompt(dc, &ctx.home);
+        let v2 = opencode_is_v2();
+        doctor_check_config(dc, &ctx.home, v2);
+        doctor_check_prompt(dc, &ctx.home, v2);
     }
 
     fn is_detected(&self, home: &Path) -> bool {
@@ -92,6 +115,50 @@ impl AgentIntegration for OpenCodeIntegration {
         json.get("mcp").and_then(|v| v.get("tokensave")).is_some()
             || json.pointer("/mcp/servers/tokensave").is_some()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Version detection (#689)
+// ---------------------------------------------------------------------------
+
+/// `OpenCode` major version. `TOKENSAVE_OPENCODE_VERSION` overrides the binary
+/// probe (tests, hosts without the binary on PATH); otherwise ask
+/// `opencode --version` ("opencode v2.0.28"). `None` when neither answers —
+/// callers treat that as V1, the shape installs wrote before V2 existed.
+///
+/// shortcut: `output()` waits unbounded; `--version` is a trivial flag, and
+/// the bounded-wait pattern (omp.rs) is only warranted for commands that do
+/// real work. Revisit if a hung `opencode --version` is ever observed.
+fn opencode_major_version() -> Option<u64> {
+    if let Ok(v) = std::env::var("TOKENSAVE_OPENCODE_VERSION") {
+        return parse_opencode_major(&v);
+    }
+    let out = std::process::Command::new("opencode")
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_opencode_major(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Extract the major version from `opencode --version` output or a bare
+/// version string; `None` for empty or unparseable input.
+fn parse_opencode_major(output: &str) -> Option<u64> {
+    let digits = output
+        .trim()
+        .trim_start_matches(|c: char| !c.is_ascii_digit());
+    digits.split('.').next()?.parse().ok()
+}
+
+/// True when the target `OpenCode` reads the native V2 config shape: servers
+/// under `mcp.servers`, rules from `AGENTS.md` (the `instructions` array is
+/// accepted but never resolved).
+fn opencode_is_v2() -> bool {
+    opencode_major_version().is_some_and(|major| major >= 2)
 }
 
 // ---------------------------------------------------------------------------
@@ -194,6 +261,7 @@ fn install_mcp_server(
     config_path: &Path,
     tokensave_bin: &str,
     instructions_entry: &str,
+    v2: bool,
 ) -> Result<()> {
     let backup = backup_config_file(config_path)?;
     let mut config = match load_json_file_strict(config_path) {
@@ -216,12 +284,31 @@ fn install_mcp_server(
         "type": "local",
         "command": [bin, "serve"]
     });
-    if config.pointer("/mcp/servers").is_some() {
+    // #689: V2 reads servers only under `mcp.servers` and never resolves the
+    // `instructions` array. Write the shape the detected major reads, and
+    // drop the tokensave entry from the other shape so a version change does
+    // not leave a stale duplicate. An unknown version keeps the existing
+    // shape (V2 config already using `mcp.servers` stays there).
+    let use_servers = v2 || config.pointer("/mcp/servers").is_some();
+    if use_servers {
         config["mcp"]["servers"]["tokensave"] = mcp_server;
+        if let Some(mcp) = config.get_mut("mcp").and_then(|v| v.as_object_mut()) {
+            mcp.remove("tokensave");
+        }
     } else {
         config["mcp"]["tokensave"] = mcp_server;
+        if let Some(servers) = config
+            .pointer_mut("/mcp/servers")
+            .and_then(|v| v.as_object_mut())
+        {
+            servers.remove("tokensave");
+        }
     }
-    add_instructions_entry(&mut config, instructions_entry);
+    if v2 {
+        remove_instructions_entry(&mut config, instructions_entry);
+    } else {
+        add_instructions_entry(&mut config, instructions_entry);
+    }
 
     safe_write_json_file(config_path, &config, backup.as_deref())?;
     crate::agent_note!(
@@ -342,8 +429,10 @@ fn uninstall_prompt_rules(prompt_path: &Path) -> Result<()> {
 // Healthcheck helpers
 // ---------------------------------------------------------------------------
 
-/// Check opencode.json has tokensave registered.
-fn doctor_check_config(dc: &mut DoctorCounters, home: &Path) {
+/// Check opencode.json has tokensave registered, in the shape the detected
+/// `OpenCode` major reads (#689: a V1-shaped entry on V2 is silently ignored,
+/// so doctor must not call it healthy).
+fn doctor_check_config(dc: &mut DoctorCounters, home: &Path, v2: bool) {
     let config_path = opencode_config_path(home);
     if !config_path.exists() {
         dc.warn(&format!(
@@ -354,10 +443,22 @@ fn doctor_check_config(dc: &mut DoctorCounters, home: &Path) {
     }
 
     let config = load_json_file(&config_path);
-    let mcp_entry = config
-        .pointer("/mcp/servers/tokensave")
-        .or_else(|| config.pointer("/mcp/tokensave"));
+    let mcp_entry = if v2 {
+        config.pointer("/mcp/servers/tokensave")
+    } else {
+        config
+            .pointer("/mcp/servers/tokensave")
+            .or_else(|| config.pointer("/mcp/tokensave"))
+    };
     let Some(mcp_entry) = mcp_entry else {
+        if v2 && config.pointer("/mcp/tokensave").is_some() {
+            dc.fail(
+                "MCP server registered in the V1 shape (mcp.tokensave), which OpenCode 2 \
+                 ignores — run `tokensave install --agent opencode` to rewrite it under \
+                 mcp.servers",
+            );
+            return;
+        }
         dc.fail(&format!(
             "MCP server NOT registered in {} — run `tokensave install --agent opencode`",
             config_path.display()
@@ -385,10 +486,14 @@ fn doctor_check_config(dc: &mut DoctorCounters, home: &Path) {
     }
 }
 
-/// Check the managed tokensave rules file is up to date and wired into
-/// opencode.json's `"instructions"` array (issue #256: rules live in a
-/// tokensave-owned `tokensave.md`, not appended to the user's AGENTS.md).
-fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
+/// Check the rules surface the detected major actually reads: the managed
+/// tokensave.md wired into opencode.json's `"instructions"` for V1 (issue
+/// #256), or the managed AGENTS.md block for V2 (#689).
+fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path, v2: bool) {
+    if v2 {
+        check_shared_rules_block(dc, &opencode_prompt_path(home), "opencode");
+        return;
+    }
     let config_path = opencode_config_path(home);
     let rules_path = opencode_rules_path(&config_path);
     check_managed_rules_file(dc, &rules_path, "opencode");
@@ -405,5 +510,24 @@ fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
         dc.fail(
             "opencode.json \"instructions\" missing tokensave.md — run `tokensave install --agent opencode`",
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_opencode_major;
+
+    #[test]
+    fn parses_version_command_output() {
+        assert_eq!(parse_opencode_major("opencode v2.0.28\n"), Some(2));
+        assert_eq!(parse_opencode_major("1.14.20"), Some(1));
+        assert_eq!(parse_opencode_major("v10.0"), Some(10));
+    }
+
+    #[test]
+    fn rejects_unparseable_output() {
+        assert_eq!(parse_opencode_major(""), None);
+        assert_eq!(parse_opencode_major("opencode"), None);
+        assert_eq!(parse_opencode_major("not-a-version"), None);
     }
 }
