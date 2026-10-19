@@ -119,36 +119,50 @@ pub fn check_partial(what: &str) -> crate::errors::Result<()> {
 
 /// Installs the process-wide signal handlers that set the flag.
 ///
-/// Spawns one task that lives for the process. Unlike a stream polled inside a
-/// `select!`, this observes a signal the moment it is delivered, whatever the
-/// main task is doing — which is the whole point for a signal that arrives
-/// mid-sync.
+/// A dedicated Unix signal thread observes signals even while the async
+/// runtime is busy with a sync. Its self-pipe also works in sandboxes that
+/// reject `send` on Unix sockets: Tokio's signal wake-up uses that syscall
+/// and silently loses the wake-up when it fails with EPERM.
 ///
 /// Safe to call more than once; only the first call installs anything.
 pub fn install_signal_handlers() {
     use std::sync::Once;
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        tokio::spawn(async {
-            #[cfg(unix)]
-            {
-                // Nothing to fall back to, and a server that cannot register
-                // a handler must still serve.
-                let Ok(mut sigterm) =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                else {
-                    return;
-                };
-                tokio::select! {
-                    _ = sigterm.recv() => request(),
-                    _ = tokio::signal::ctrl_c() => request(),
-                }
+        #[cfg(unix)]
+        {
+            use signal_hook::consts::{SIGINT, SIGTERM};
+            use std::io::Read;
+            use std::os::unix::net::UnixStream;
+
+            // Use the low-level self-pipe registration: unlike the iterator
+            // API, it probes send and falls back to write on EPERM. Register
+            // synchronously so signals cannot beat the listener's startup.
+            let Ok((mut reader, writer)) = UnixStream::pair() else {
+                return;
+            };
+            let Ok(interrupt_writer) = writer.try_clone() else {
+                return;
+            };
+            let Ok(interrupt) = signal_hook::low_level::pipe::register(SIGINT, interrupt_writer)
+            else {
+                return;
+            };
+            if signal_hook::low_level::pipe::register(SIGTERM, writer).is_err() {
+                signal_hook::low_level::unregister(interrupt);
+                return;
             }
-            #[cfg(not(unix))]
-            {
-                if tokio::signal::ctrl_c().await.is_ok() {
+            std::thread::spawn(move || {
+                // Keep the read end alive for every subsequent signal too.
+                while reader.read_exact(&mut [0]).is_ok() {
                     request();
                 }
+            });
+        }
+        #[cfg(not(unix))]
+        tokio::spawn(async {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                request();
             }
         });
     });
