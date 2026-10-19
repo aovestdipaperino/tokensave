@@ -49,6 +49,7 @@ pub mod monitor;
 pub mod project_manifest;
 pub mod redundancy;
 pub mod resolution;
+pub mod resources;
 pub mod runtime_telemetry;
 pub mod servers;
 pub mod sync;

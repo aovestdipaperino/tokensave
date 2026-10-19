@@ -8,17 +8,22 @@ use tokensave::tokensave::TokenSave;
 #[tokio::test]
 async fn profiles_preserve_full_and_incremental_graphs() {
     let mut expected = None;
-    for (profile, memory) in [CpuUsage::Low, CpuUsage::Balanced, CpuUsage::Performance]
-        .into_iter()
-        .flat_map(|cpu| {
-            [
-                tokensave::memory::MemoryUsage::Low,
-                tokensave::memory::MemoryUsage::Balanced,
-                tokensave::memory::MemoryUsage::Performance,
-            ]
-            .map(|memory| (cpu, memory))
-        })
-    {
+    for (profile, memory) in [
+        CpuUsage::Auto,
+        CpuUsage::Low,
+        CpuUsage::Balanced,
+        CpuUsage::Performance,
+    ]
+    .into_iter()
+    .flat_map(|cpu| {
+        [
+            tokensave::memory::MemoryUsage::Auto,
+            tokensave::memory::MemoryUsage::Low,
+            tokensave::memory::MemoryUsage::Balanced,
+            tokensave::memory::MemoryUsage::Performance,
+        ]
+        .map(|memory| (cpu, memory))
+    }) {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("a.rs"), "pub fn a() -> u32 { 1 }\n").unwrap();
         fs::write(dir.path().join("b.rs"), "pub fn b() -> u32 { a() }\n").unwrap();

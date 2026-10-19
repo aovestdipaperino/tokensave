@@ -32,6 +32,19 @@ pub(crate) fn adaptive_cache_sizes(db_file_size: u64) -> (u64, u64) {
     (cache_kb, mmap)
 }
 
+/// Applies the host-memory caps from `plan` to [`adaptive_cache_sizes`].
+///
+/// Caps only bind below roughly 4 GiB of capacity; unknown capacity keeps
+/// the DB-size policy unchanged.
+pub(crate) fn capped_cache_sizes(db_file_size: u64, plan: &crate::resources::Plan) -> (u64, u64) {
+    let (cache_kb, mmap) = adaptive_cache_sizes(db_file_size);
+    (
+        plan.sqlite_cache_bytes
+            .map_or(cache_kb, |cap| cache_kb.min(cap / 1024)),
+        plan.sqlite_mmap_bytes.map_or(mmap, |cap| mmap.min(cap)),
+    )
+}
+
 /// Max attempts to establish a fresh libsql connection before giving up.
 ///
 /// libsql's local driver intermittently fails while opening a connection under
@@ -432,9 +445,10 @@ impl Database {
     /// Applies performance-oriented `SQLite` pragmas.
     ///
     /// `cache_size` and `mmap_size` are scaled to the on-disk DB size so
-    /// small projects don't pay the 320 MB baseline of a large project.
+    /// small projects don't pay the 320 MB baseline of a large project, and
+    /// capped by host memory so low-RAM devices keep their headroom.
     async fn apply_pragmas(conn: &Connection, db_file_size: u64) -> Result<()> {
-        let (cache_kb, mmap) = adaptive_cache_sizes(db_file_size);
+        let (cache_kb, mmap) = capped_cache_sizes(db_file_size, &crate::resources::Plan::current());
         let busy_ms = busy_timeout_ms();
         conn.execute_batch(&format!(
             "PRAGMA page_size = 8192;
@@ -598,6 +612,36 @@ mod tests {
         let (cache_kb, mmap) = adaptive_cache_sizes(2 * 1024 * MB);
         assert_eq!(cache_kb, 64 * MB / KB);
         assert_eq!(mmap, 256 * MB);
+    }
+
+    #[test]
+    fn low_memory_hosts_cap_cache_and_mmap() {
+        use crate::resources::{Hardware, Plan};
+        let plan = |memory_bytes| {
+            Plan::for_hardware(Hardware {
+                cpus: Some(4),
+                memory_bytes,
+            })
+        };
+        // 1 GiB device: cache 16 MiB, mmap 64 MiB.
+        assert_eq!(
+            capped_cache_sizes(2 * 1024 * MB, &plan(Some(1024 * MB))),
+            (16 * MB / KB, 64 * MB)
+        );
+        // 512 MiB container: cache 8 MiB, mmap 32 MiB.
+        assert_eq!(
+            capped_cache_sizes(2 * 1024 * MB, &plan(Some(512 * MB))),
+            (8 * MB / KB, 32 * MB)
+        );
+        // 4 GiB or more, or unknown capacity: unchanged.
+        for memory in [Some(4 * 1024 * MB), Some(64 * 1024 * MB), None] {
+            for db in [0, 5 * MB, 500 * MB, 2 * 1024 * MB] {
+                assert_eq!(
+                    capped_cache_sizes(db, &plan(memory)),
+                    adaptive_cache_sizes(db)
+                );
+            }
+        }
     }
 
     #[test]

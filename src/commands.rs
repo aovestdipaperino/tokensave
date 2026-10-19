@@ -531,6 +531,13 @@ pub(crate) async fn init_and_index(
     } else {
         let cg = TokenSave::init(project_path).await?;
         eprintln!("Initialized TokenSave at {}", project_path.display());
+        // Limits are recomputed on every open; this only reports them.
+        if let Ok(config) = tokensave::config::load_config(project_path) {
+            eprintln!(
+                "{}",
+                tokensave::resources::summary(config.cpu_usage, config.memory_usage)
+            );
+        }
         // Offer to exclude .tokensave from git if it isn't already. Default to
         // the local, untracked .git/info/exclude so we don't leave a committable
         // diff; offer the tracked .gitignore as an explicit opt-in.

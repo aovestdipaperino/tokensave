@@ -472,17 +472,22 @@ fn test_discover_project_root_at_root_itself() {
 #[test]
 fn cpu_usage_defaults_and_legacy_configs() {
     use tokensave::cpu::CpuUsage;
-    assert_eq!(TokenSaveConfig::default().cpu_usage, CpuUsage::Balanced);
+    assert_eq!(TokenSaveConfig::default().cpu_usage, CpuUsage::Auto);
     let mut legacy = serde_json::to_value(TokenSaveConfig::default()).unwrap();
     legacy.as_object_mut().unwrap().remove("cpu_usage");
     let config: TokenSaveConfig = serde_json::from_value(legacy).unwrap();
-    assert_eq!(config.cpu_usage, CpuUsage::Balanced);
+    assert_eq!(config.cpu_usage, CpuUsage::Auto);
 }
 
 #[test]
 fn cpu_usage_profiles_round_trip_through_existing_config() {
     use tokensave::cpu::CpuUsage;
-    for profile in [CpuUsage::Low, CpuUsage::Balanced, CpuUsage::Performance] {
+    for profile in [
+        CpuUsage::Auto,
+        CpuUsage::Low,
+        CpuUsage::Balanced,
+        CpuUsage::Performance,
+    ] {
         let dir = TempDir::new().unwrap();
         let config = TokenSaveConfig {
             cpu_usage: profile,
@@ -509,7 +514,7 @@ fn invalid_cpu_usage_reports_valid_choices_and_config_path() {
         let error = load_config(dir.path()).unwrap_err().to_string();
         assert!(error.contains("config.json"), "{error}");
         if config["cpu_usage"].is_string() {
-            for choice in ["low", "balanced", "performance"] {
+            for choice in ["auto", "low", "balanced", "performance"] {
                 assert!(error.contains(choice), "{error}");
             }
         }
@@ -519,20 +524,18 @@ fn invalid_cpu_usage_reports_valid_choices_and_config_path() {
 #[test]
 fn memory_usage_defaults_and_legacy_configs() {
     use tokensave::memory::MemoryUsage;
-    assert_eq!(
-        TokenSaveConfig::default().memory_usage,
-        MemoryUsage::Balanced
-    );
+    assert_eq!(TokenSaveConfig::default().memory_usage, MemoryUsage::Auto);
     let mut legacy = serde_json::to_value(TokenSaveConfig::default()).unwrap();
     legacy.as_object_mut().unwrap().remove("memory_usage");
     let config: TokenSaveConfig = serde_json::from_value(legacy).unwrap();
-    assert_eq!(config.memory_usage, MemoryUsage::Balanced);
+    assert_eq!(config.memory_usage, MemoryUsage::Auto);
 }
 
 #[test]
 fn memory_usage_profiles_round_trip_through_existing_config() {
     use tokensave::memory::MemoryUsage;
     for profile in [
+        MemoryUsage::Auto,
         MemoryUsage::Low,
         MemoryUsage::Balanced,
         MemoryUsage::Performance,
@@ -563,7 +566,7 @@ fn invalid_memory_usage_reports_valid_choices_and_config_path() {
         let error = load_config(dir.path()).unwrap_err().to_string();
         assert!(error.contains("config.json"), "{error}");
         if config["memory_usage"].is_string() {
-            for choice in ["low", "balanced", "performance"] {
+            for choice in ["auto", "low", "balanced", "performance"] {
                 assert!(error.contains(choice), "{error}");
             }
         }

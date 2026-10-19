@@ -10,10 +10,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryUsage {
+    /// Parsers budgeted from detected memory capacity (default); see
+    /// [`crate::resources::Plan`].
+    #[default]
+    Auto,
     /// At most one live parser or extraction subprocess.
     Low,
     /// At most two live parsers or extraction subprocesses.
-    #[default]
     Balanced,
     /// No additional limit beyond the CPU policy and pending files.
     Performance,
@@ -23,6 +26,7 @@ impl MemoryUsage {
     /// Reduce a CPU worker ceiling without ever raising it.
     pub fn workers(self, cpu_workers: usize) -> usize {
         cpu_workers.min(match self {
+            Self::Auto => crate::resources::Plan::current().parser_workers,
             Self::Low => 1,
             Self::Balanced => 2,
             Self::Performance => usize::MAX,
@@ -79,6 +83,7 @@ mod tests {
             assert_eq!(MemoryUsage::Low.workers(cpu), cpu.min(1));
             assert_eq!(MemoryUsage::Balanced.workers(cpu), cpu.min(2));
             assert_eq!(MemoryUsage::Performance.workers(cpu), cpu);
+            assert!(MemoryUsage::Auto.workers(cpu) <= cpu);
         }
     }
 
@@ -105,6 +110,7 @@ mod tests {
     #[test]
     fn pressure_never_raises_profile_or_cpu_ceiling() {
         for profile in [
+            MemoryUsage::Auto,
             MemoryUsage::Low,
             MemoryUsage::Balanced,
             MemoryUsage::Performance,

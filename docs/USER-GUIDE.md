@@ -1251,11 +1251,67 @@ override matching config values when set. This is especially relevant for
 `TOKENSAVE_AUTO_TRACK`, `TOKENSAVE_REPORT_SAVINGS`, and
 `TOKENSAVE_UPDATE_CHECK`.
 
+### Automatic resource detection
+
+`cpu_usage` and `memory_usage` default to `auto`, including configs that omit
+them. On first use in each process, tokensave reads the effective capacity
+available to it and derives its limits; `tokensave init` prints them:
+
+```text
+Resources: 8 CPUs, 15.5 GiB RAM (capacity tier: high)
+  index workers: 4 (cpu_usage: auto)
+  parsers:       4 (memory_usage: auto)
+  SQLite cache:  up to 64 MiB per connection
+```
+
+Only the word `auto` is stored. Limits are recomputed on every run, so a
+project copied to another machine adapts without edits. Detection never fails
+`init`; an unavailable probe falls back as described below.
+
+**Detection.** Effective CPUs come from the operating system's available
+parallelism, which on Linux already accounts for process affinity and cgroup
+CPU quotas. Memory capacity is physical RAM, or a stricter cgroup v1/v2 memory
+limit when one is visible. Windows job-object limits and per-process rlimits are
+not read. Physical-core counts are not used.
+
+**Tiers.** CPUs and memory are each classified, and the stricter class wins:
+
+| Tier | Effective CPUs | Memory capacity | `auto` CPU workers |
+| --- | --- | --- | --- |
+| minimal | 1–2 | under 2 GiB | 1 |
+| low | 3–4 | 2–4 GiB | half the CPUs, at most 2 |
+| balanced | 5–7 | 4–8 GiB | half the CPUs, at most 4 |
+| high | 8–11 | 8–16 GiB | half the CPUs, at most 8 |
+| performance | 12+ | over 16 GiB | three quarters of the CPUs, at most 16 |
+
+`auto` parsers come from a memory budget of 15% of capacity (at most 4 GiB)
+divided into 128 MiB parser estimates, never more than the CPU workers and
+never fewer than one. Below 4 GiB of capacity, each SQLite connection's page
+cache is capped at 1/64 of capacity and its memory map at 1/16; larger hosts
+keep the DB-size policy. If the CPU probe fails, one worker is used; if the
+memory probe fails, memory does not lower the tier and parsers fall back to
+two, the `balanced` limit.
+
+Examples: a 1 GB Raspberry Pi uses one worker and one parser; a 4 GB Pi two
+and two; an 8-CPU, 16 GB machine four and four; a container limited to two
+CPUs and 512 MiB one and one.
+
+**Runtime.** The automatic RAM safeguard below still samples available memory
+before each extraction and can only lower these limits. No hardware polling or
+background monitor runs.
+
+**Overrides.** Set `cpu_usage` or `memory_usage` to `low`, `balanced` or
+`performance` to replace the automatic value for that dimension;
+`TOKENSAVE_WORKERS` can further lower subprocess extraction. Configs that
+already name a profile keep it. These thresholds are starting heuristics, not
+benchmarked optima, and are **not CPU-percentage or RSS caps**.
+
 ### RAM usage profiles
 
 Add `"memory_usage": "balanced"` to your existing `.tokensave/config.json`.
-The accepted values are `low`, `balanced` (default, including legacy configs),
-and `performance`. Invalid values report the supported choices. Settings apply
+The accepted values are `auto` (default, including legacy configs; see
+[Automatic resource detection](#automatic-resource-detection)), `low`,
+`balanced` and `performance`. Invalid values report the supported choices. Settings apply
 when the project opens; restart the MCP server after editing them.
 
 | Profile | Simultaneous extraction parsers | Tradeoff |
@@ -1278,8 +1334,8 @@ scale with the indexed project; they are released by the existing request
 lifecycle. A single large source file can still require substantial memory.
 Hashing, database caches and resolution retain their existing policies. Choose
 `performance` to preserve the previous parser concurrency when RAM headroom
-permits; the new `balanced` default may slow indexing on machines with more
-than two extraction workers.
+permits; `balanced` may slow indexing on machines with more than two
+extraction workers.
 
 Compare equivalent original/candidate builds using the resource harness below
 with `--profile-field memory_usage`. It fixes `cpu_usage` to `performance` for
@@ -1330,13 +1386,14 @@ Add `"cpu_usage": "balanced"` to the existing `.tokensave/config.json`:
 ```
 
 This snippet is a field to add to your existing file, not a replacement for
-its required fields. Missing `cpu_usage` defaults to `balanced`; invalid values
+its required fields. Missing `cpu_usage` defaults to `auto` (see
+[Automatic resource detection](#automatic-resource-detection)); invalid values
 are rejected with the supported choices.
 
 | Profile | Worker ceiling | Choose it when |
 | --- | --- | --- |
 | `low` | One worker | Other applications need CPU capacity, or several servers run together. |
-| `balanced` | Half the available CPUs, rounded up | Everyday interactive use (default). |
+| `balanced` | Half the available CPUs, rounded up | Everyday interactive use. |
 | `performance` | All available CPUs | Index completion time matters most and spare capacity is available. |
 
 The OS reports available parallelism; failure to query it falls back to one
