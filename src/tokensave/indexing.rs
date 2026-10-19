@@ -1303,8 +1303,11 @@ impl TokenSave {
             self.config.language_detection,
             self.registry.supported_extensions()
         );
-        let detection_changed = self.db.get_metadata("language_detection").await?.as_deref()
-            != Some(detection_fingerprint.as_str());
+        let previous_detection = self.db.get_metadata("language_detection").await?;
+        // A legacy index with detection disabled needs no reclassification.
+        let detection_changed = previous_detection.as_deref()
+            != Some(detection_fingerprint.as_str())
+            && (self.config.language_detection.enabled || previous_detection.is_some());
 
         // Partition files by comparing (mtime, size) against stored values
         let mut new_files: Vec<String> = Vec::new();

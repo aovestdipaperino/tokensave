@@ -360,3 +360,33 @@ async fn targeted_mcp_refresh_removes_symbols_after_detection_stops_matching() {
     assert!(!cg.sync_if_stale(&["script.custom".into()]).await.unwrap());
     assert!(cg.search("detected_name", 10).await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn legacy_indexes_do_not_reprocess_artifacts_when_detection_is_disabled() {
+    let (dir, cg) = project(false).await;
+    let source = "{\"fixture\": true}\n";
+    let path = dir.path().join("fixture.json");
+    fs::write(&path, source).unwrap();
+    let (modified_at, size) = tokensave::sync::file_stat(&path).unwrap();
+    cg.db()
+        .upsert_file(&tokensave::types::FileRecord {
+            path: "fixture.json".into(),
+            content_hash: tokensave::sync::content_hash(source),
+            modified_at,
+            size,
+            indexed_at: tokensave::tokensave::current_timestamp(),
+            node_count: 0,
+            kind: tokensave::types::FileKind::Artifact,
+        })
+        .await
+        .unwrap();
+    assert!(cg
+        .db()
+        .get_metadata("language_detection")
+        .await
+        .unwrap()
+        .is_none());
+    let result = cg.sync().await.unwrap();
+    assert_eq!(result.files_modified, 0);
+    assert_eq!(result.files_added, 0);
+}
