@@ -25,6 +25,20 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Check index integrity without changing it
+    Verify {
+        /// Project path (default: current directory)
+        path: Option<String>,
+        /// Check SQLite integrity and source content hashes
+        #[arg(long)]
+        deep: bool,
+        /// Reserved: incremental repair is not yet implemented
+        #[arg(long)]
+        repair: bool,
+        /// Output stable JSON diagnostics
+        #[arg(long)]
+        json: bool,
+    },
     /// Initialize a new TokenSave project (full index)
     Init {
         /// Project path (default: current directory)

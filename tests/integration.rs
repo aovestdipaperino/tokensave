@@ -14,6 +14,7 @@ mod actionscript_extraction_test;
 mod agent_maintenance_env_test;
 mod agent_test;
 mod ambiguous_calls_test;
+mod analysis_stability_test;
 mod artifact_indexing_test;
 mod astro_extraction_test;
 mod augment_agent_test;
@@ -197,3 +198,5 @@ mod walk_up_test;
 mod warn_skipped_hidden_dirs_test;
 mod xaml_extraction_test;
 mod zig_extraction_test;
+
+mod verify_test;
