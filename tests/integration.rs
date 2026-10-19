@@ -26,6 +26,7 @@ mod batch_extraction_test;
 mod bench_test;
 mod body_candidates_651_test;
 mod branch_add_if_enabled_test;
+mod branch_auto_gc_test;
 mod branch_drift_test;
 mod branch_gc_and_add_test;
 mod branch_last_synced_test;

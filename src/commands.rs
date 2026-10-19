@@ -236,54 +236,20 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
         BranchAction::Gc { path } => {
             let project_path = tokensave::config::resolve_path(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
-            let Some(mut meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
+            if branch_meta::load_branch_meta(&tokensave_dir).is_none() {
                 eprintln!("No branch tracking configured.");
                 return Ok(());
-            };
-
-            // Ask git which branches exist rather than probing for
-            // `.git/refs/heads/<name>` on disk (#501). That probe finds
-            // nothing inside a linked worktree, where `.git` is a file, and
-            // nothing in a `reftable` repository, which keeps no loose refs —
-            // so every tracked branch looked stale and its live DB was
-            // deleted. Refuse to delete anything when the refs cannot be
-            // read: not knowing is not the same as knowing they are gone.
-            let Some(live) = branch::local_branches(&project_path) else {
-                return Err(tokensave::errors::TokenSaveError::Config {
-                    message: format!(
-                        "cannot list branches in '{}' — refusing to delete any branch DB",
-                        project_path.display()
-                    ),
-                });
-            };
-
-            // Find branches in metadata that no longer exist in git
-            let stale: Vec<String> = meta
-                .branches
-                .keys()
-                .filter(|name| *name != &meta.default_branch)
-                .filter(|name| !live.contains(name.as_str()))
-                .cloned()
-                .collect();
-
-            if stale.is_empty() {
+            }
+            let removed = branch::collect_stale_indexes(&project_path, &[]).await?;
+            if removed.is_empty() {
                 eprintln!("No stale branches to clean up.");
             } else {
-                for name in &stale {
-                    if let Some(entry) = meta.remove_branch(name) {
-                        let db_path = tokensave_dir.join(&entry.db_file);
-                        if db_path.exists() {
-                            std::fs::remove_file(&db_path)?;
-                            let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-                            let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-                        }
-                        eprintln!("  removed '{name}'");
-                    }
+                for name in &removed {
+                    eprintln!("  removed '{name}'");
                 }
-                branch_meta::save_branch_meta(&tokensave_dir, &meta)?;
                 eprintln!(
                     "\x1b[32m✔\x1b[0m Cleaned up {} stale branch(es).",
-                    stale.len()
+                    removed.len()
                 );
             }
         }

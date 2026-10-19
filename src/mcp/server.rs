@@ -1358,6 +1358,7 @@ impl McpServer {
         let Some(cg) = self.cg.as_ref() else {
             return;
         };
+        crate::branch::collect_if_enabled(cg.project_root(), &[cg.db_path()]).await;
         let stale = match cg.find_stale_files_bounded().await {
             crate::tokensave::AutoSyncScope::Sync(stale) => stale,
             scope => {
