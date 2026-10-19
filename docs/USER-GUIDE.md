@@ -1294,7 +1294,14 @@ Rust/Python files, debug builds, three repeats), letting the memory budget
 raise parsers from two to four made median full indexing slower (25.5 s vs
 21.2 s) and raised sampled peak RSS (214 MiB vs 150 MiB), and the CPU-profile
 measurements above show `performance` was not consistently faster. Choose
-`performance` explicitly where your own measurements favor it. Below 4 GiB of capacity, each SQLite connection's page
+`performance` explicitly where your own measurements favor it.
+
+Under a 1 GiB cgroup memory limit on the same host (8 CPUs visible, no
+competing processes), `auto` selected one worker and one parser instead of four
+and two. Median full indexing took 14.9 s instead of 12.7 s, with sampled peak
+CPU of 113% instead of 409% and peak RSS of 114 MiB instead of 149 MiB; graphs
+were identical. Incremental and unchanged sync times were within about 15%.
+These are sampled, workload-specific results, not guarantees. Below 4 GiB of capacity, each SQLite connection's page
 cache is capped at 1/64 of capacity and its memory map at 1/16; larger hosts
 keep the DB-size policy. If the CPU probe fails, one worker is used; if the
 memory probe fails, memory does not lower the tier and parsers fall back to
