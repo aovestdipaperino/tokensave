@@ -205,6 +205,8 @@ def main():
         help='Project resource policy to compare; the other policy is fixed at performance')
     parser.add_argument('--baseline-profile', choices=('low', 'balanced', 'performance'),
         help='Explicit baseline profile for comparing another implementation of the same policy')
+    parser.add_argument('--compare-defaults', action='store_true',
+        help='Omit both cpu_usage and memory_usage so each build runs its own defaults')
     args = parser.parse_args()
     if min(args.files, args.functions, args.repeats) < 1 or args.contenders < 0 or args.changed_files < 0:
         parser.error('files, functions and repeats must be positive; contenders and changed-files must be nonnegative')
@@ -253,7 +255,10 @@ def main():
         config_path = project / '.tokensave/config.json'
         config = json.loads(config_path.read_text())
         other_field = 'memory_usage' if args.profile_field == 'cpu_usage' else 'cpu_usage'
-        config[other_field] = 'performance'
+        if args.compare_defaults:
+            config.pop(other_field, None)
+        else:
+            config[other_field] = 'performance'
         with sqlite3.connect(project / '.tokensave/tokensave.db') as db:
             file_count = db.execute('SELECT COUNT(*) FROM files').fetchone()[0]
             graph_counts = [db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
@@ -271,6 +276,8 @@ def main():
         results['graph_counts'] = graph_counts
         # Alternate execution order to reduce systematic thermal/cache bias.
         cases = [('baseline', args.baseline_profile)] + [('candidate', p) for p in ('low', 'balanced', 'performance')]
+        if args.compare_defaults:
+            cases = [('baseline', None), ('candidate', None)]
         for repeat in range(args.repeats):
             for build, profile in (cases if repeat % 2 == 0 else reversed(cases)):
                 if profile:
