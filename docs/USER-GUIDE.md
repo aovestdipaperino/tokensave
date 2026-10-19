@@ -1251,6 +1251,75 @@ override matching config values when set. This is especially relevant for
 `TOKENSAVE_AUTO_TRACK`, `TOKENSAVE_REPORT_SAVINGS`, and
 `TOKENSAVE_UPDATE_CHECK`.
 
+### CPU usage profiles
+
+Add `"cpu_usage": "balanced"` to the existing `.tokensave/config.json`:
+
+```json
+{
+  "cpu_usage": "balanced"
+}
+```
+
+This snippet is a field to add to your existing file, not a replacement for
+its required fields. Missing `cpu_usage` defaults to `balanced`; invalid values
+are rejected with the supported choices.
+
+| Profile | Worker ceiling | Choose it when |
+| --- | --- | --- |
+| `low` | One worker | Other applications need CPU capacity, or several servers run together. |
+| `balanced` | Half the available CPUs, rounded up | Everyday interactive use (default). |
+| `performance` | All available CPUs | Index completion time matters most and spare capacity is available. |
+
+The OS reports available parallelism; failure to query it falls back to one
+worker. On small machines profiles can have the same limit. These are worker
+concurrency limits, **not strict CPU-percentage caps**: one worker can fully
+occupy a CPU. Single-threaded scanning, graph assembly and database work remain
+single-threaded. There are no artificial delays or polling loops.
+
+The policy covers subprocess and in-process extraction, parallel file-stat
+checks, changed-file hashing, artifact hashing, and reference resolution in
+full indexing, explicit sync, and automatic MCP sync. `TOKENSAVE_WORKERS=N`
+can further lower the subprocess extraction limit; it cannot raise the profile
+ceiling. Shared lazy Rayon pools keep project handles from each creating their
+own indexing threads; interactive MCP work keeps its existing runtime.
+
+Settings are captured when a project is opened. Restart `tokensave serve` after
+editing this field; the next CLI invocation reads it automatically. No config
+watcher is installed. Existing on-demand sync cooldowns and file-count bounds
+remain in effect. A profile does not make same-project tool calls concurrent
+with a server's own synchronous sync; resource availability for other requests
+and processes still depends on workload and scheduling.
+
+For reproducible Linux resource measurements, build the original and candidate
+with identical Cargo flags and run:
+
+```bash
+python3 benchmarks/cpu_profiles.py \
+  --baseline /path/to/original/target/debug/tokensave \
+  --candidate target/debug/tokensave --output /tmp/cpu-results.json
+```
+
+Both executables must retain the name `tokensave` so subprocess isolation stays
+enabled. The standard-library-only harness measures process-tree CPU and sampled
+aggregate RSS for full indexing, changed-file sync and unchanged sync on a
+repeatable mixed Rust/Python workload. It also measures MCP search latency from
+an independent session during each run, measures two competing CPU-bound
+processes, and compares node, edge and file-content hashes against the original
+for each operation. Changed-file sync edits 16 Rust/Python source files by default;
+`--changed-files 0` measures a whole-tree change. `--repo PATH`
+uses a copy of an existing source tree instead. Sampled peaks can miss short
+spikes, aggregate RSS double-counts shared pages, and warm caches affect timings;
+results are workload-specific rather than universal performance guarantees.
+The resource sampler requires Linux; runtime profiles use portable Rust
+facilities. Debug-build timings do not predict release throughput.
+
+The benchmark acceptance checks are identical graph hashes for every profile
+and operation, successful concurrent MCP requests, and lower sampled peak CPU
+for `low` on a multicore host. Competing-process throughput provides a direct
+contention comparison. Throughput and latency remain descriptive rather than
+flaky CI timing assertions.
+
 ### Per-project: `.tokensave/`
 
 Created inside each project you index. Contains:
