@@ -9,6 +9,10 @@
 //! sysinfo (host RAM, or a stricter visible cgroup limit). Short-term pressure
 //! is handled separately by the per-extraction headroom check in
 //! [`crate::memory`]. There is no background monitor or polling.
+//!
+//! `auto` never exceeds the `balanced` profiles: measurements showed no
+//! consistent gain from more workers or parsers (see the user guide), so the
+//! policy only lowers limits on constrained hosts.
 use std::sync::OnceLock;
 
 const MIB: u64 = 1024 * 1024;
@@ -16,14 +20,10 @@ const GIB: u64 = 1024 * MIB;
 
 /// Share of memory capacity budgeted for concurrent parsers.
 const PARSER_BUDGET_PERCENT: u64 = 15;
-/// Absolute ceiling for the parser budget, however large the host.
-const MAX_PARSER_BUDGET: u64 = 4 * GIB;
 /// Estimated memory per live parser or extraction subprocess.
 const PARSER_ESTIMATE: u64 = 128 * MIB;
-/// Parser limit when memory capacity is unknown (the fixed `balanced` limit).
-const UNKNOWN_MEMORY_PARSERS: usize = 2;
-/// Hard ceiling on automatic CPU workers, however many CPUs are visible.
-const MAX_AUTO_WORKERS: usize = 16;
+/// The `balanced` parser limit: the ceiling, and the value for unknown memory.
+const BALANCED_PARSERS: usize = 2;
 
 /// Effective capacity visible to this process. `None` means the probe failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,10 +56,53 @@ impl Hardware {
 fn memory_capacity() -> Option<u64> {
     let mut system = sysinfo::System::new();
     system.refresh_memory_specifics(sysinfo::MemoryRefreshKind::new().with_ram());
-    capacity(
-        system.total_memory(),
+    // sysinfo reads only the root cgroup's limit (enough inside a container
+    // namespace); a nested cgroup such as a systemd scope needs the walk.
+    let cgroup = [
         system.cgroup_limits().map(|limits| limits.total_memory),
-    )
+        nested_cgroup_memory_limit(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|&l| l > 0)
+    .min();
+    capacity(system.total_memory(), cgroup)
+}
+
+/// Strictest cgroup v2 `memory.max` from this process's cgroup up to the root.
+#[cfg(target_os = "linux")]
+fn nested_cgroup_memory_limit() -> Option<u64> {
+    let membership = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    strictest_memory_max(&membership, |dir| {
+        std::fs::read_to_string(format!("/sys/fs/cgroup{dir}/memory.max")).ok()
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn nested_cgroup_memory_limit() -> Option<u64> {
+    None
+}
+
+/// Parses the unified (`0::`) entry of `/proc/self/cgroup` and returns the
+/// smallest numeric `memory.max` along the path; `max` means unlimited.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn strictest_memory_max(membership: &str, read: impl Fn(&str) -> Option<String>) -> Option<u64> {
+    let path = membership
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))?
+        .trim_end_matches('/');
+    let mut dir = path;
+    let mut strictest: Option<u64> = None;
+    loop {
+        if let Some(limit) = read(dir).and_then(|v| v.trim().parse::<u64>().ok()) {
+            strictest = Some(strictest.map_or(limit, |s| s.min(limit)));
+        }
+        match dir.rfind('/') {
+            Some(i) if !dir.is_empty() => dir = &dir[..i],
+            _ => break,
+        }
+    }
+    strictest
 }
 
 /// The stricter of host RAM and a nonzero container limit.
@@ -139,24 +182,20 @@ impl Plan {
         let tier = hardware
             .memory_bytes
             .map_or(cpu_tier, |bytes| cpu_tier.min(Tier::from_memory(bytes)));
+        // `balanced` is half the CPUs; constrained tiers cap it further.
         let half = cpus.div_ceil(2);
-        // Leave at least half the CPUs (a quarter at the top tier) for others.
         let cpu_workers = match tier {
             Tier::Minimal => 1,
             Tier::Low => half.min(2),
             Tier::Balanced => half.min(4),
-            Tier::High => half.min(8),
-            Tier::Performance => (cpus * 3 / 4).max(half),
-        }
-        .clamp(1, MAX_AUTO_WORKERS);
-        let parser_workers = hardware
-            .memory_bytes
-            .map_or(UNKNOWN_MEMORY_PARSERS, |bytes| {
-                let budget = (bytes / 100 * PARSER_BUDGET_PERCENT).min(MAX_PARSER_BUDGET);
-                usize::try_from(budget / PARSER_ESTIMATE)
-                    .unwrap_or(usize::MAX)
-                    .max(1)
-            });
+            Tier::High | Tier::Performance => half,
+        };
+        let parser_workers = hardware.memory_bytes.map_or(BALANCED_PARSERS, |bytes| {
+            let budget = bytes / 100 * PARSER_BUDGET_PERCENT;
+            usize::try_from(budget / PARSER_ESTIMATE)
+                .unwrap_or(usize::MAX)
+                .clamp(1, BALANCED_PARSERS)
+        });
         // Below 4 GiB, cap SQLite's per-connection cache at 1/64 and its
         // memory map at 1/16 of capacity; larger hosts keep the DB-size policy.
         let sqlite_cache_bytes = hardware.memory_bytes.map(|bytes| (bytes / 64).max(2 * MIB));
@@ -250,44 +289,38 @@ mod tests {
         // (name, cpus, memory, tier, cpu workers, parsers)
         let cases = [
             ("single core VM", Some(1), mib(1024), Tier::Minimal, 1, 1),
-            ("two-core VM", Some(2), mib(4096), Tier::Minimal, 1, 4),
+            ("two-core VM", Some(2), mib(4096), Tier::Minimal, 1, 2),
+            ("Raspberry Pi 4 1GB", Some(4), mib(906), Tier::Minimal, 1, 1),
+            ("Raspberry Pi 4 4GB", Some(4), mib(3796), Tier::Low, 2, 2),
+            ("4-core laptop 8GB", Some(4), mib(7782), Tier::Low, 2, 2),
             (
-                "Raspberry Pi 4 (1 GB)",
-                Some(4),
-                mib(906),
-                Tier::Minimal,
-                1,
-                1,
-            ),
-            ("Raspberry Pi 4 (4 GB)", Some(4), mib(3796), Tier::Low, 2, 4),
-            ("4-core laptop, 8 GB", Some(4), mib(7782), Tier::Low, 2, 9),
-            (
-                "8-core dev box, 16 GB",
+                "8-core dev box 16GB",
                 Some(8),
                 mib(15_884),
                 Tier::High,
                 4,
-                18,
+                2,
             ),
             (
-                "12-core, 32 GB",
+                "12 CPUs, 32GB",
                 Some(12),
                 mib(32_000),
                 Tier::Performance,
-                9,
-                32,
+                6,
+                2,
             ),
             (
                 "64-core workstation",
                 Some(64),
                 mib(262_144),
                 Tier::Performance,
-                16,
                 32,
+                2,
             ),
+            ("32 CPUs, 6GB", Some(32), mib(6144), Tier::Balanced, 4, 2),
             // Containers: quotas and limits arrive already applied.
             (
-                "container 2 CPU / 512 MiB",
+                "container 2 CPU/512MiB",
                 Some(2),
                 mib(512),
                 Tier::Minimal,
@@ -295,20 +328,20 @@ mod tests {
                 1,
             ),
             (
-                "container 16 CPU / 3 GiB",
+                "container 16 CPU/3GiB",
                 Some(16),
                 mib(3072),
                 Tier::Low,
                 2,
-                3,
+                2,
             ),
             (
-                "affinity 3 of 32 CPUs, 64 GB",
+                "affinity 3 of 32 CPUs",
                 Some(3),
                 mib(65_536),
                 Tier::Low,
                 2,
-                32,
+                2,
             ),
             ("probes unavailable", None, None, Tier::Minimal, 1, 2),
         ];
@@ -320,6 +353,31 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn nested_cgroup_limits_use_the_strictest_ancestor() {
+        let files = |dir: &str| match dir {
+            "/user.slice/app.scope" => Some("1073741824\n".to_string()),
+            "/user.slice" => Some("max\n".to_string()),
+            "" => None,
+            _ => Some("4294967296".to_string()),
+        };
+        let membership = "1:name=systemd:/x\n0::/user.slice/app.scope\n";
+        assert_eq!(strictest_memory_max(membership, files), Some(GIB));
+        // Parent stricter than the child.
+        let parent = |dir: &str| (dir == "/a").then(|| "536870912".to_string());
+        assert_eq!(strictest_memory_max("0::/a/b/c\n", parent), Some(512 * MIB));
+        // Unlimited everywhere, root cgroup, cgroup v1 only.
+        assert_eq!(
+            strictest_memory_max("0::/a\n", |_| Some("max".into())),
+            None
+        );
+        assert_eq!(strictest_memory_max("0::/\n", |_| None), None);
+        assert_eq!(
+            strictest_memory_max("3:memory:/a\n", |_| Some("1".into())),
+            None
+        );
     }
 
     #[test]
@@ -345,8 +403,9 @@ mod tests {
         for cpus in 1..=256 {
             for gib in [0, 1, 2, 4, 8, 16, 32, 1024] {
                 let plan = Plan::for_hardware(hw(cpus, gib));
-                assert!((1..=MAX_AUTO_WORKERS.min(cpus)).contains(&plan.cpu_workers));
-                assert!(plan.parser_workers >= 1);
+                // Never above the `balanced` profiles.
+                assert!((1..=cpus.div_ceil(2)).contains(&plan.cpu_workers));
+                assert!((1..=BALANCED_PARSERS).contains(&plan.parser_workers));
                 let more_cpus = Plan::for_hardware(hw(cpus + 1, gib));
                 assert!(more_cpus.cpu_workers >= plan.cpu_workers);
                 let more_ram = Plan::for_hardware(hw(cpus, gib * 2 + 1));
@@ -363,7 +422,7 @@ mod tests {
             memory_bytes: None,
         });
         assert_eq!(unknown.cpu_workers, 1);
-        assert_eq!(unknown.parser_workers, UNKNOWN_MEMORY_PARSERS);
+        assert_eq!(unknown.parser_workers, BALANCED_PARSERS);
         assert_eq!(unknown.sqlite_cache_bytes, None);
         let cpus_only = Plan::for_hardware(Hardware {
             cpus: Some(8),
@@ -374,12 +433,15 @@ mod tests {
     }
 
     #[test]
-    fn parser_budget_has_an_absolute_cap() {
-        let huge = Plan::for_hardware(hw(64, 4096));
-        assert_eq!(
-            huge.parser_workers,
-            usize::try_from(MAX_PARSER_BUDGET / PARSER_ESTIMATE).unwrap_or(0)
-        );
-        assert_eq!(huge.cpu_workers, MAX_AUTO_WORKERS);
+    fn large_hosts_match_the_balanced_profiles() {
+        use crate::{cpu::CpuUsage, memory::MemoryUsage};
+        for cpus in [8, 12, 64, 256] {
+            let plan = Plan::for_hardware(hw(cpus, 4096));
+            assert_eq!(plan.cpu_workers, CpuUsage::Balanced.workers_for(cpus));
+            assert_eq!(
+                plan.parser_workers,
+                MemoryUsage::Balanced.workers(plan.cpu_workers)
+            );
+        }
     }
 }

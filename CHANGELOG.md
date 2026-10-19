@@ -9,7 +9,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
-- Automatic resource detection: `cpu_usage` and `memory_usage` default to `auto`, which derives index workers and extraction parsers from the effective CPUs (affinity and cgroup quotas) and memory capacity (host RAM or a visible cgroup limit) detected at run time, using the stricter of the two. Below 4 GiB, SQLite's per-connection cache and memory map are also capped. `init` prints the selected limits; nothing machine-specific is persisted, and explicit profiles still override. Heuristic limits, not CPU-percentage or RSS caps.
+- Automatic resource detection: `cpu_usage` and `memory_usage` default to `auto`, which derives index workers and extraction parsers from the effective CPUs (affinity and cgroup quotas) and memory capacity (host RAM or a visible cgroup limit) detected at run time, using the stricter of the two. `auto` never exceeds the `balanced` limits; it lowers them on constrained hosts such as Raspberry Pi-class devices and small containers. Below 4 GiB, SQLite's per-connection cache and memory map are also capped. `init` prints the selected limits; nothing machine-specific is persisted, and explicit profiles still override. Heuristic limits, not CPU-percentage or RSS caps.
 
 - Automatic extraction RAM safeguards complement project profiles: sample physical RAM (and visible Linux cgroup headroom) before parallel extraction and reduce concurrency using a conservative parser allowance. Applies to subprocess and in-process paths, including `performance`; no background polling or hard RSS guarantee.
 

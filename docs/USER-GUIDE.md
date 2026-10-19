@@ -1260,7 +1260,7 @@ available to it and derives its limits; `tokensave init` prints them:
 ```text
 Resources: 8 CPUs, 15.5 GiB RAM (capacity tier: high)
   index workers: 4 (cpu_usage: auto)
-  parsers:       4 (memory_usage: auto)
+  parsers:       2 (memory_usage: auto)
   SQLite cache:  up to 64 MiB per connection
 ```
 
@@ -1281,20 +1281,28 @@ not read. Physical-core counts are not used.
 | minimal | 1–2 | under 2 GiB | 1 |
 | low | 3–4 | 2–4 GiB | half the CPUs, at most 2 |
 | balanced | 5–7 | 4–8 GiB | half the CPUs, at most 4 |
-| high | 8–11 | 8–16 GiB | half the CPUs, at most 8 |
-| performance | 12+ | over 16 GiB | three quarters of the CPUs, at most 16 |
+| high | 8–11 | 8–16 GiB | half the CPUs (same as `balanced`) |
+| performance | 12+ | over 16 GiB | half the CPUs (same as `balanced`) |
 
-`auto` parsers come from a memory budget of 15% of capacity (at most 4 GiB)
-divided into 128 MiB parser estimates, never more than the CPU workers and
-never fewer than one. Below 4 GiB of capacity, each SQLite connection's page
+`auto` parsers come from a memory budget of 15% of capacity divided into
+128 MiB parser estimates, between one and two (the `balanced` limit) and
+never more than the CPU workers.
+
+`auto` never exceeds the `balanced` profiles; it only lowers limits on
+constrained hosts. On an 8-CPU, 7.6 GiB Linux/WSL2 host (240 generated
+Rust/Python files, debug builds, three repeats), letting the memory budget
+raise parsers from two to four made median full indexing slower (25.5 s vs
+21.2 s) and raised sampled peak RSS (214 MiB vs 150 MiB), and the CPU-profile
+measurements above show `performance` was not consistently faster. Choose
+`performance` explicitly where your own measurements favor it. Below 4 GiB of capacity, each SQLite connection's page
 cache is capped at 1/64 of capacity and its memory map at 1/16; larger hosts
 keep the DB-size policy. If the CPU probe fails, one worker is used; if the
 memory probe fails, memory does not lower the tier and parsers fall back to
 two, the `balanced` limit.
 
 Examples: a 1 GB Raspberry Pi uses one worker and one parser; a 4 GB Pi two
-and two; an 8-CPU, 16 GB machine four and four; a container limited to two
-CPUs and 512 MiB one and one.
+and two; an 8-CPU, 16 GB machine four and two (as `balanced`); a container
+limited to two CPUs and 512 MiB one and one; 32 CPUs with 6 GB four and two.
 
 **Runtime.** The automatic RAM safeguard below still samples available memory
 before each extraction and can only lower these limits. No hardware polling or
