@@ -1277,8 +1277,9 @@ heaps. The file queue, completed extraction results and resolver graph still
 scale with the indexed project; they are released by the existing request
 lifecycle. A single large source file can still require substantial memory.
 Hashing, database caches and resolution retain their existing policies. Choose
-`performance` to preserve the previous parser concurrency; the new `balanced`
-default may slow indexing on machines with more than two extraction workers.
+`performance` to preserve the previous parser concurrency when RAM headroom
+permits; the new `balanced` default may slow indexing on machines with more
+than two extraction workers.
 
 Compare equivalent original/candidate builds using the resource harness below
 with `--profile-field memory_usage`. It fixes `cpu_usage` to `performance` for
@@ -1287,6 +1288,36 @@ The harness records full/incremental/unchanged sync, repeated runs, process-tree
 RSS and CPU, throughput, elapsed time, independent MCP latency and graph equality.
 Sampled RSS can miss brief peaks and counts shared pages multiple times; it is
 not proof of an absence of leaks or a bound on all workloads.
+
+### Automatic RAM safeguards
+
+RAM profiles and automatic safeguards work together. Before each nonempty
+extraction operation that could run more than one parser, tokensave samples
+available physical RAM using its existing system-memory library. On Linux,
+readable cgroup v1/v2 headroom exposed by that library also lowers the available
+budget. No swap allowance is counted. A probe failure keeps the configured
+ceiling; a successfully measured zero is treated as low memory.
+
+The check reserves half the available headroom for the parent and other
+activity, then estimates one parser slot per 128 MiB of the remaining half.
+For example, 512 MiB available permits at most two parsers; 256 MiB permits
+one. The result can only lower the CPU/RAM/file ceilings and the subprocess
+environment limit can lower it further. It applies in `performance` mode too,
+and emits a diagnostic when it reduces the profile ceiling. Both subprocess
+and in-process extraction obey the same snapshot-derived limit. Empty work
+and CPU/RAM/file ceilings of one avoid the probe.
+
+This is a best-effort preflight heuristic, **not a memory reservation or a hard
+RSS limit**. One parser is always allowed to make progress, even with zero
+headroom. A large file can exceed the estimate. Other projects can consume RAM
+following the snapshot, and completed graph data and resolution still grow
+with input size. Only cgroup limits visible to the bundled library are used;
+nested or ancestor limits it cannot expose are not guaranteed to be detected.
+
+There is no background task, idle polling, retry loop or artificial sleep.
+The check runs again at the next extraction operation; it does not resize an
+already-running subprocess pool or monitor pressure that arrives mid-extraction.
+Existing cancellation, reaping and on-demand freshness bounds remain in place.
 
 ### CPU usage profiles
 
