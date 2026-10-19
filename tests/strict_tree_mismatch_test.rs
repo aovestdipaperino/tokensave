@@ -99,91 +99,49 @@ async fn drifted_server(strict: bool) -> (TempDir, Arc<McpServer>) {
     (dir, server)
 }
 
-/// Default behaviour is unchanged: the tools answer, with the advisory warning
-/// #400 added. Strict mode must be something a user opts into, never a silent
-/// change to how a working install behaves.
+/// Branch changes are repaired before either the ordinary or strict gate.
 #[tokio::test]
-async fn branch_drift_refuses_local_graph_tools_by_default() {
-    let (_dir, server) = drifted_server(false).await;
-
-    let response = call(&server, "tokensave_search", json!({"query": "base"})).await;
-    let error = response
-        .get("error")
-        .expect("branch drift must refuse, not answer");
-    assert_eq!(error["code"], -32600);
-    let message = error["message"].as_str().unwrap_or_default();
-    assert!(
-        message.contains("master") && message.contains("feature") && message.contains("Restart"),
-        "refusal must name both branches and the recovery action, got {message:?}"
-    );
-
-    let status = call(&server, "tokensave_status", json!({})).await;
-    assert!(
-        status.get("error").is_none(),
-        "tokensave_status must remain callable under branch drift, got {status:?}"
-    );
-
-    for tool in [
-        "tokensave_affected",
-        "tokensave_diff_context",
-        "tokensave_simplify_scan",
-        "tokensave_redundancy",
-        "tokensave_diagnostics",
-        "tokensave_diagnose",
-    ] {
-        let response = call(&server, tool, json!({})).await;
-        assert_eq!(
-            response["error"]["code"], -32600,
-            "{tool} must refuse local graph work under branch drift: {response:?}"
-        );
-    }
-}
-
-/// With `strict_tree` enabled, a content tool refuses instead of answering
-/// from the wrong tree.
-#[tokio::test]
-async fn strict_mode_refuses_a_content_tool_under_drift() {
-    let (_dir, server) = drifted_server(true).await;
-
-    let response = call(&server, "tokensave_search", json!({"query": "base"})).await;
-    let error = response
-        .get("error")
-        .expect("strict mode must refuse, not answer");
-    let message = error["message"].as_str().unwrap_or_default();
-
-    assert!(
-        message.contains("master") && message.contains("feature"),
-        "the refusal must name both branches so it is actionable, got {message:?}"
-    );
-}
-
-/// The diagnostic tools stay available, so the situation can be investigated
-/// from inside the session that hit it. Refusing everything would leave an
-/// agent unable to find out *why* it was refused.
-#[tokio::test]
-async fn strict_mode_spares_the_diagnostic_tools() {
-    let (_dir, server) = drifted_server(true).await;
-
-    // Exactly one tool is exempt. `tokensave_status` reports the served root
-    // and branch, which is what a refused caller needs to understand why.
-    let response = call(&server, "tokensave_status", json!({})).await;
-    assert!(
-        response.get("error").is_none(),
-        "tokensave_status must remain callable under strict refusal, got {response:?}"
-    );
-
-    // Tools whose names suggest they are diagnostics but which read the graph
-    // must still refuse: under a wrong-tree index `diagnose` and `diagnostics`
-    // would attribute a real compiler error to a node from another tree, and
-    // `config` reports nothing that helps explain a refusal.
-    for tool in ["tokensave_config"] {
-        let response = call(&server, tool, json!({})).await;
-        let message = response["error"]["message"].as_str().unwrap_or_default();
+async fn branch_changes_select_the_new_context_in_both_modes() {
+    for strict in [false, true] {
+        let (_dir, server) = drifted_server(strict).await;
         assert!(
-            message.contains("strict_tree"),
-            "{tool} must be refused by the strict gate, not reach its handler; got {response:?}"
+            server
+                .wait_for_startup_catch_up(std::time::Duration::from_secs(5))
+                .await
         );
+        let response = call(&server, "tokensave_search", json!({"query": "base"})).await;
+        assert!(response.get("error").is_none(), "{response:?}");
+        let status = call(&server, "tokensave_status", json!({})).await;
+        assert!(status.get("error").is_none(), "{status:?}");
+        assert!(status.to_string().contains("feature"), "{status:?}");
     }
+}
+
+#[tokio::test]
+async fn resource_reads_switch_before_any_tool_call() {
+    let (_dir, server) = drifted_server(false).await;
+    assert!(
+        server
+            .wait_for_startup_catch_up(std::time::Duration::from_secs(5))
+            .await
+    );
+    let (mut transport, _sender, mut receiver) = ChannelTransport::new();
+    let request = json!({"jsonrpc": "2.0", "id": 1, "method": "resources/read",
+        "params": {"uri": "tokensave://branches"}})
+    .to_string();
+    server.handle_and_write(&request, &mut transport).await;
+    let raw = receiver.recv().await.unwrap();
+    let response: Value = serde_json::from_str(raw.trim()).unwrap();
+    assert!(response.get("error").is_none(), "{response:?}");
+    let text = response["result"]["contents"][0]["text"].as_str().unwrap();
+    let branches: Value = serde_json::from_str(text).unwrap();
+    let current = branches["branches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|branch| branch["is_current"] == true)
+        .unwrap();
+    assert_eq!(current["name"], "feature");
 }
 
 /// Strict mode must not fire when there is nothing wrong. A project with no

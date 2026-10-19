@@ -1457,5 +1457,7 @@
       }
     }
   },
-  "summary_method": "Each summary value is the median of three per-run values, including medians of per-run sampled peaks and per-run MCP p95 latencies."
+  "summary_method": "Each summary value is the median of three per-run values, including medians of per-run sampled peaks and per-run MCP p95 latencies.",
+  "measured_runtime_revision": "6af32678d2282f32598154f5d4f5e273b315e1bb",
+  "revision_scope": "Measurements predate merging upstream master d35937f. They compare the original revision with the CPU-profile implementation, not the current upstream-merged tip."
 }

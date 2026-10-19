@@ -91,3 +91,6 @@ pub fn json_escaped(value: &str) -> String {
     let quoted = serde_json::to_string(value).unwrap();
     quoted[1..quoted.len() - 1].to_string()
 }
+
+#[allow(dead_code)]
+pub mod stability;

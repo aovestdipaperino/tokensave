@@ -770,6 +770,8 @@ tokensave init [path]              # Initialize a new project (full index)
 tokensave sync [path]              # Incremental sync (must be initialized first)
 tokensave sync --force [path]      # Force a full re-index
 tokensave sync --doctor [path]     # Sync and list added/modified/removed files
+tokensave verify [path]            # Read-only index integrity and source-stat checks
+tokensave verify [path] --deep --json # Full SQLite checks and bounded source hashing
 tokensave status [path]            # Show statistics + cost summary
 tokensave status [path] --json     # Show statistics (JSON output)
 tokensave status --details         # Include node-kind breakdown

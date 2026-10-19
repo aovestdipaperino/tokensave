@@ -391,11 +391,19 @@ async fn handle_literal_search(
                 continue;
             }
         }
-        // Skip oversized/binary-likely files defensively.
-        if file.size > LITERAL_SCAN_MAX_FILE_BYTES {
+        // #685: the indexed size is stale — a file that grew after indexing
+        // (logs, generated blobs) would be read in full, and a path that
+        // became a FIFO or device would block the read forever. Stat fresh,
+        // skip non-regular files, and bound the read by the current size.
+        // shortcut: a file swapped in between stat and read still races;
+        // close it with open+fstat+take if that ever bites.
+        let abs_path = project_root.join(&file.path);
+        let Ok(meta) = std::fs::metadata(&abs_path) else {
+            continue;
+        };
+        if !meta.file_type().is_file() || meta.len() > LITERAL_SCAN_MAX_FILE_BYTES {
             continue;
         }
-        let abs_path = project_root.join(&file.path);
         let Ok(source) = crate::sync::read_source_file(&abs_path) else {
             continue;
         };
