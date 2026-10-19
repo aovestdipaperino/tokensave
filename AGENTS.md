@@ -9,6 +9,11 @@ its mandatory [memory and resource management requirements](CONTRIBUTING.md#memo
 Use the resource review checklist for resource-sensitive changes and report the
 checks actually performed, their results, and any limitations in the pull request.
 
+Follow the [GitHub issue lifecycle rules](CONTRIBUTING.md#github-issue-lifecycle):
+create issues for identified bugs and enhancements, link PRs with "Refs #N" (never
+"Fixes #N" / "Closes #N"), and never close an issue (including via `gh issue close`)
+without explicit permission — issue closure is left to the repository maintainer.
+
 ## Build, lint, and test
 
 - Toolchain is pinned by `rust-toolchain.toml` (Rust 1.98.1, clippy + rustfmt).

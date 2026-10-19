@@ -6,7 +6,7 @@
 
 ## Motivation
 
-<!-- Why is this change needed? Link to an issue if applicable. -->
+<!-- Why is this change needed? Link related issues with "Refs #N" — do not use "Fixes #N" or "Closes #N"; issue closure is left to the maintainer. -->
 
 ## Changes
 

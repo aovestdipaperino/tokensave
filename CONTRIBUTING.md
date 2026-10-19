@@ -283,6 +283,18 @@ Keep the first line under 72 characters. Add a body explaining *why* if the chan
 - Include test coverage for new behavior.
 - Update `CHANGELOG.md` under an `[Unreleased]` section.
 
+## GitHub Issue Lifecycle
+
+These rules apply to every contributor, human or AI agent:
+
+- Create issues for identified bugs and enhancements.
+- Never close an issue immediately after creating it.
+- Never close an issue simply because an implementation is complete.
+- Do not execute `gh issue close` without explicit permission.
+- Do not include "Fixes #N" or "Closes #N" in PR descriptions.
+- Use "Refs #N" to link pull requests to issues without closing them.
+- Leave issue closure to the repository maintainer.
+
 ## Reporting Issues
 
 Open an issue at https://github.com/aovestdipaperino/tokensave/issues with:
