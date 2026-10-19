@@ -673,7 +673,8 @@ MCP tool is exposed. Quality calls skip automatic per-call sync/version reindex;
 other independent activity in an already-running server retains its normal behavior.
 
 Freshness validation hashes indexed files against Git blobs with the same source
-decoder as indexing. A mismatched/deleted file or an unindexed source candidate is
+decoder as indexing, accepting LF/CRLF line-ending conversion from Git checkout
+or commit normalization. A mismatched/deleted file or an unindexed source candidate is
 reported as stale/incomplete. Candidate discovery respects configured exclusion,
 hidden-file and size rules; branch-specific ignore or manifest policies may explain
 a candidate, so it is described as uncertain. `--allow-stale` (MCP

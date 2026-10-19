@@ -225,6 +225,9 @@ async fn stale_missing_invalid_refs_and_mcp() {
 async fn file_rename_remote_ref_divergence_and_deletion() {
     let dir = fixture().await;
     let root = dir.path();
+    // Reproduce Windows checkout conversion on every platform. After switching
+    // back to master, base.rs is CRLF on disk but LF in the committed Git blob.
+    git(root, &["config", "core.autocrlf", "true"]);
     git(root, &["mv", "base.rs", "moved.rs"]);
     git(root, &["commit", "-m", "rename"]);
     let cg = TokenSave::open_branch(root, "feature").await.unwrap();
@@ -262,8 +265,13 @@ async fn file_rename_remote_ref_divergence_and_deletion() {
     cg.index_all().await.unwrap();
     cg.checkpoint().await.unwrap();
     drop(cg);
+    assert!(fs::read(root.join("base.rs"))
+        .unwrap()
+        .windows(2)
+        .any(|bytes| bytes == b"\r\n"));
     let report = compare(root, "master", "feature", &options).await.unwrap();
     assert_eq!(report.baseline, "branch_tips");
+    assert!(report.complete);
     assert!(!report.has_regressions());
     git(root, &["switch", "feature"]);
     git(root, &["rm", "moved.rs"]);
@@ -277,6 +285,48 @@ async fn file_rename_remote_ref_divergence_and_deletion() {
     let report = compare(root, "master", "feature", &options).await.unwrap();
     assert!(report.summary["resolved"] > 0);
     assert!(!report.has_regressions());
+}
+
+#[tokio::test]
+async fn crlf_index_accepts_git_normalization_but_rejects_stale_source() {
+    let dir = fixture().await;
+    let root = dir.path();
+    git(root, &["config", "core.autocrlf", "input"]);
+    // Git commits LF, while the index sees the CRLF source written by an editor.
+    fs::write(root.join("base.rs"), source(20).replace('\n', "\r\n")).unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-m", "normalized source"]);
+    let cg = TokenSave::open_branch(root, "feature").await.unwrap();
+    cg.index_all().await.unwrap();
+    cg.checkpoint().await.unwrap();
+    drop(cg);
+    let options = QualityOptions::default();
+    let report = compare(root, "master", "feature", &options).await.unwrap();
+    assert!(report.complete);
+    assert!(report.summary["worsened"] > 0);
+    let out = cli(
+        root,
+        &["--base", "feature", "--target", "feature", "--json"],
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["complete"],
+        true
+    );
+    // A same-size source edit must still fail, even with equivalent line endings.
+    fs::write(
+        root.join("base.rs"),
+        source(20)
+            .replace("example", "changed")
+            .replace('\n', "\r\n"),
+    )
+    .unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-m", "stale source"]);
+    let err = compare(root, "master", "feature", &options)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("stale indexed contents: base.rs"));
 }
 
 #[tokio::test]

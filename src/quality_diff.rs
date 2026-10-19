@@ -6,6 +6,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::errors::{Result, TokenSaveError};
 use crate::graph::{queries::GraphQueryManager, scc};
@@ -294,12 +295,37 @@ async fn verify(cg: &TokenSave, commit: &str) -> Result<Vec<String>> {
             .read_exact(&mut newline)
             .map_err(|e| error(e.to_string()))?;
         let source = crate::sync::decode_source_bytes(&bytes).map_err(|e| error(e.to_string()))?;
-        if crate::sync::content_hash(&source) != file.content_hash {
+        if !matches_indexed_content(&source, &file.content_hash) {
             stale.push(format!("stale indexed contents: {}", file.path));
         }
     }
     stale.sort();
     Ok(stale)
+}
+
+/// Git can store LF while indexing reads a CRLF checkout (core.autocrlf or
+/// attributes), or vice versa. Accept those line-ending forms without changing
+/// stored hashes or consulting the current working tree. Stream both alternate
+/// hashes so verification does not allocate additional copies of the blob.
+fn matches_indexed_content(source: &str, indexed_hash: &str) -> bool {
+    if crate::sync::content_hash(source) == indexed_hash {
+        return true;
+    }
+    let mut lf = Sha256::new();
+    let mut crlf = Sha256::new();
+    for line in source.split_inclusive('\n') {
+        if let Some(body) = line.strip_suffix('\n') {
+            let body = body.strip_suffix('\r').unwrap_or(body);
+            lf.update(body.as_bytes());
+            lf.update(b"\n");
+            crlf.update(body.as_bytes());
+            crlf.update(b"\r\n");
+        } else {
+            lf.update(line.as_bytes());
+            crlf.update(line.as_bytes());
+        }
+    }
+    hex::encode(lf.finalize()) == indexed_hash || hex::encode(crlf.finalize()) == indexed_hash
 }
 
 #[derive(Clone)]
@@ -625,4 +651,33 @@ pub async fn compare(
         findings,
         limitations,
     })
+}
+
+#[cfg(test)]
+mod content_validation_tests {
+    use super::matches_indexed_content;
+    use crate::sync::content_hash;
+
+    #[test]
+    fn accepts_checkout_line_endings_without_hiding_source_changes() {
+        for (blob, indexed) in [
+            ("a\nb\n", "a\r\nb\r\n"),
+            ("a\r\nb\r\n", "a\nb\n"),
+            ("a\nb", "a\r\nb"),
+            ("a\r\nb", "a\nb"),
+            ("a\r\nb\n", "a\r\nb\n"),
+            ("", ""),
+        ] {
+            assert!(matches_indexed_content(blob, &content_hash(indexed)));
+        }
+        for (blob, indexed) in [
+            ("a\nb\n", "a\r\nc\r\n"),
+            ("a\nb\n", "a\r\nb"),
+            ("a\nb", "a\r\nb\r\n"),
+            ("a\rb", "a\nb"),
+            ("a \nb", "a\r\nb"),
+        ] {
+            assert!(!matches_indexed_content(blob, &content_hash(indexed)));
+        }
+    }
 }
