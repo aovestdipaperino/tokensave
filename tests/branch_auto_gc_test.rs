@@ -270,18 +270,53 @@ async fn mcp_freshness_checks_reload_the_cleanup_setting() {
 
 #[tokio::test]
 async fn gc_preserves_databases_registered_to_a_live_server() {
+    // Use a dedicated process: the registry is keyed by PID, and Windows
+    // resolves its location through the profile API, ignoring HOME/USERPROFILE.
+    // A child owns its entry without racing other tests in this shared binary.
+    if std::env::var_os("TOKENSAVE_TEST_GC_SERVER_CHILD").is_none() {
+        let home = tempdir().unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &crate::common::qualified_test_name(
+                    module_path!(),
+                    "gc_preserves_databases_registered_to_a_live_server",
+                ),
+                "--nocapture",
+            ])
+            .env("TOKENSAVE_TEST_GC_SERVER_CHILD", "1")
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child test failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    struct Registration;
+    impl Drop for Registration {
+        fn drop(&mut self) {
+            tokensave::servers::unregister();
+        }
+    }
+
     let dir = project().await;
     let root = dir.path();
     let db = root.join(".tokensave/branches/gone.db");
-    let registry = root.join(".tokensave/servers");
-    let pid = std::process::id();
-    tokensave::servers::register_at(&registry, pid, root, &db, None);
+    tokensave::servers::register(root, &db, None);
+    let registration = Registration;
+    assert!(tokensave::servers::list()
+        .iter()
+        .any(|entry| entry.pid == std::process::id()));
     let run = || {
         let output = Command::new(env!("CARGO_BIN_EXE_tokensave"))
             .args(["branch", "gc"])
             .current_dir(root)
-            .env("HOME", root)
-            .env("USERPROFILE", root)
             .output()
             .unwrap();
         assert!(
@@ -292,7 +327,7 @@ async fn gc_preserves_databases_registered_to_a_live_server() {
     };
     run();
     assert!(db.exists(), "a live server owns this index");
-    std::fs::remove_file(registry.join(format!("{pid}.json"))).unwrap();
+    drop(registration);
     run();
     assert!(
         !db.exists(),
