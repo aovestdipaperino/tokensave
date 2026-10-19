@@ -361,6 +361,7 @@ impl TokenSave {
         // instead of silently indexing without the manifest (#194).
         self.ensure_current_checkout()?;
         self.validate_manifest()?;
+        let dispatch_revision = self.dispatch_revision();
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
 
@@ -392,7 +393,7 @@ impl TokenSave {
 
         let phase_start = Instant::now();
         crate::memstats::record("index:extract");
-        let (files, artifact_files) = Self::partition_artifacts(files, &self.artifact_extensions());
+        let (files, artifact_files) = self.partition_artifacts(files, &self.artifact_extensions());
         let (extractions, _skipped) = extract_files_isolated(
             &project_root,
             registry,
@@ -605,8 +606,11 @@ impl TokenSave {
                 .await?;
         }
 
+        self.db
+            .set_metadata("language_dispatch_revision", &dispatch_revision)
+            .await?;
         let result = IndexResult {
-            file_count: files.len(),
+            file_count: extraction_count,
             node_count: total_nodes,
             edge_count: total_edges,
             duration_ms,
@@ -672,6 +676,10 @@ impl TokenSave {
     /// didn't update these specific files, or sync failed to acquire lock).
     /// Returns `Err` on sync failure.
     pub async fn sync_if_stale(&self, stale_files: &[String]) -> Result<bool> {
+        if self.dispatch_changed().await? {
+            self.sync().await?;
+            return Ok(false);
+        }
         if stale_files.is_empty() {
             return Ok(false);
         }
@@ -911,6 +919,12 @@ impl TokenSave {
     }
 
     pub async fn sync_if_stale_silent(&self, stale_files: &[String]) -> Result<()> {
+        if self.dispatch_changed().await? {
+            return self
+                .sync_with_progress_internal(|_, _, _| {}, |_| {}, true)
+                .await
+                .map(|_| ());
+        }
         if stale_files.is_empty() {
             return Ok(());
         }
@@ -1192,6 +1206,7 @@ impl TokenSave {
         let _lock = try_acquire_sync_lock(&self.project_root)?;
         self.ensure_current_checkout()?;
         self.validate_manifest()?;
+        let dispatch_revision = self.dispatch_revision();
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
 
@@ -1229,6 +1244,7 @@ impl TokenSave {
         crate::cancel::check("sync")?;
 
         // Load all DB file records into a map for O(1) lookups
+        let dispatch_changed = self.dispatch_changed().await?;
         let db_files = self.db.get_all_files().await?;
         let db_map: HashMap<String, FileRecord> =
             db_files.into_iter().map(|f| (f.path.clone(), f)).collect();
@@ -1258,7 +1274,11 @@ impl TokenSave {
             match db_map.get(path) {
                 None => new_files.push(path.clone()),
                 Some(record) => {
-                    if branch_transition || record.modified_at != *mtime || record.size != *size {
+                    if dispatch_changed
+                        || branch_transition
+                        || record.modified_at != *mtime
+                        || record.size != *size
+                    {
                         stat_changed.push(path.clone());
                     }
                 }
@@ -1323,7 +1343,7 @@ impl TokenSave {
         for path in &stat_changed {
             if let Some(new_hash) = hash_map.get(path) {
                 if let Some(record) = db_map.get(path) {
-                    if record.content_hash == *new_hash {
+                    if !dispatch_changed && record.content_hash == *new_hash {
                         // mtime changed but content identical (e.g. touch) —
                         // update stored mtime so we skip it next time
                         mtime_only_changed.push(path.clone());
@@ -1435,8 +1455,11 @@ impl TokenSave {
         // Artifacts take the same add/modify/remove path as source but skip
         // extraction entirely; their row is the whole record (#323).
         let (to_index, changed_artifacts) =
-            Self::partition_artifacts(to_index, &self.artifact_extensions());
+            self.partition_artifacts(to_index, &self.artifact_extensions());
         for record in self.artifact_file_records(&changed_artifacts)? {
+            touched.touch_file(&record.path);
+            touched.touch_nodes(&self.db.touched_nodes_by_file(&record.path).await?);
+            self.db.delete_file(&record.path).await?;
             self.db.upsert_file(&record).await?;
         }
         let registry = &self.registry;
@@ -1637,6 +1660,9 @@ impl TokenSave {
                 .await?;
         }
 
+        self.db
+            .set_metadata("language_dispatch_revision", &dispatch_revision)
+            .await?;
         clear_dirty_sentinel(&self.project_root);
         crate::memstats::record("sync:done");
         Ok(SyncResult {
@@ -1652,17 +1678,22 @@ impl TokenSave {
         })
     }
 
-    /// Scans the project root for source files in all supported languages,
-    /// respecting the configured exclude patterns and max file size.
-    ///
-    /// When `git_ignore` is enabled in the config, `.gitignore` rules are
-    /// applied via the `ignore` crate. Otherwise, hidden directories and
-    /// `target/` are skipped with a simple name-based filter.
-    ///
-    /// Supported extensions are derived from the `LanguageRegistry` so that
-    /// adding a new extractor automatically picks up its files.
-    /// Validates `.tokensave/project.json` (when present), surfacing parse
-    /// errors, invalid globs, and unknown languages as hard sync errors (#194).
+    /// Revision of project-local extractor dispatch, scoped to this handle's database.
+    pub(crate) fn dispatch_revision(&self) -> String {
+        self.manifest()
+            .map_or_else(String::new, |m| m.fingerprint().to_string())
+    }
+
+    pub(crate) async fn dispatch_changed(&self) -> Result<bool> {
+        Ok(self
+            .db
+            .get_metadata("language_dispatch_revision")
+            .await?
+            .unwrap_or_default()
+            != self.dispatch_revision())
+    }
+
+    /// Validate project patterns and aliases before changing any indexed rows.
     pub(crate) fn validate_manifest(&self) -> Result<()> {
         crate::project_manifest::load_manifest(&self.project_root, &self.registry).map(|_| ())
     }
@@ -1739,6 +1770,10 @@ impl TokenSave {
             "scan_files: no supported extensions registered"
         );
         supported_exts.extend(artifact_exts.iter().map(String::as_str));
+        let manifest = self.manifest();
+        if let Some(m) = &manifest {
+            supported_exts.extend(m.alias_extensions());
+        }
 
         let mut skipped_map: HashMap<String, usize> = HashMap::new();
         let mut files = self.scan_project_files(&supported_exts, &mut skipped_map);
@@ -2083,9 +2118,9 @@ impl TokenSave {
         if !supported_exts.contains(&ext) {
             // Extensionless / oddly-named files are still indexable when a
             // manifest entry explicitly lists them (#194).
-            let manifest_match = self
-                .manifest()
-                .is_some_and(|m| m.matches_local_file(&rel_str));
+            let manifest_match = self.manifest().is_some_and(|m| {
+                m.matches_local_file(&rel_str) || m.language_for(&rel_str).is_some()
+            });
             // Dependency lockfiles are admitted by basename (#497 follow-up):
             // `.terraform.lock.hcl` is tracked as an artifact even though no
             // extractor or artifact extension owns `.hcl`, and it must not
@@ -2312,10 +2347,18 @@ impl TokenSave {
     /// the lockfile's `.hcl` extension is deliberately not an artifact
     /// extension, since that would classify every HCL document as one.
     pub(crate) fn partition_artifacts(
+        &self,
         files: Vec<String>,
         artifact_exts: &[String],
     ) -> (Vec<String>, Vec<String>) {
+        let manifest = self.manifest();
         files.into_iter().partition(|path| {
+            if manifest
+                .as_ref()
+                .is_some_and(|m| m.language_for(path).is_some())
+            {
+                return true;
+            }
             let path_ref = std::path::Path::new(path);
             !crate::config::is_dependency_lockfile(path_ref)
                 && !path_ref
@@ -2332,6 +2375,9 @@ impl TokenSave {
     fn artifact_file_record(&self, rel_path: &str) -> Option<FileRecord> {
         let abs_path = self.project_root.join(rel_path);
         let source = sync::read_source_file(&abs_path).ok()?;
+        if source.contains('\0') {
+            return None;
+        }
         let (modified_at, size) = sync::file_stat(&abs_path)
             .unwrap_or_else(|| (current_timestamp(), source.len() as u64));
         Some(FileRecord {

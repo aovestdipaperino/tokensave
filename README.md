@@ -502,6 +502,22 @@ ignoring it.
 | `tokensave_dependencies` | Package-manifest introspection across 17 ecosystems -- workspace summary, per-package lookup, license surface, version drift |
 | `tokensave_status` | Index status, statistics, tokens saved |
 
+#### Custom source extensions
+
+Map extensions to an enabled extractor in `.tokensave/config.json`:
+
+```json
+"language_aliases": { ".t": "perl", ".ep": "perl" }
+```
+
+This parses legacy Perl tests without renaming them. Keys accept an optional
+leading dot and match case-insensitively; invalid, conflicting, unknown, or
+disabled mappings fail sync with a configuration error. Aliases override built-in
+extension associations and artifact tracking. Use existing `project.json`
+`entries` with `language` for file/glob overrides, which take priority over
+aliases. Run `tokensave sync` after editing mappings (`sync -f` also works).
+See the [configuration guide](docs/USER-GUIDE.md#custom-language-extensions).
+
 #### Non-code artifacts
 
 `tokensave_files` covers more than source. Files whose extension is listed in

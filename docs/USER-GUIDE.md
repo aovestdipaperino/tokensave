@@ -1382,6 +1382,72 @@ either way. Explicit test markers such as `__tests__/`, `*.test.*`, and
 `*.spec.*` still count as tests inside an overridden path. Restart the
 tokensave MCP server after editing the config; no re-index is required.
 
+### Custom language extensions
+
+Add `language_aliases` to the existing `.tokensave/config.json`; keep its other
+settings. For a legacy Perl repository with `lib/Example.pm`, `t/basic.t`, and
+`t/integration.t`:
+
+```json
+"language_aliases": {
+  ".t": "perl",
+  ".ep": "perl"
+}
+```
+
+Both native `.pm` files and aliased `.t`/`.ep` files use the Perl extractor,
+producing symbols for search, context, and file discovery. Perl must be enabled
+in the installed binary (`full` or `lang-perl`). Language names are
+case-insensitive; registered extensions such as `pl` are also accepted.
+Extension keys are trimmed, lowercased, and may start with one dot. Conflicting
+normalized keys (such as `.T` and `t`) are rejected. Use one mapping per extension.
+Aliases may deliberately replace a built-in association.
+
+Use the existing `.tokensave/project.json` for path-specific languages:
+
+```json
+{
+  "version": 1,
+  "entries": [
+    { "path": "legacy/special.t", "language": "python" },
+    { "path": "t/**/*.t", "language": "perl" },
+    { "path": "templates/**/*.ep", "language": "perl" }
+  ]
+}
+```
+
+Dispatch precedence is literal file entries with a language, glob entries with
+a language, extension aliases, built-in detection (including C/C++ header
+routing), artifact tracking, then skipping. Within either entry group the first
+match wins. Paths use forward slashes; backslash inputs are normalized. Globs
+remain case-sensitive, while aliases match extensions case-insensitively.
+A manifest entry without a language retains existing default dispatch semantics.
+
+Run `tokensave sync` after changing mappings; `tokensave sync -f` forces a full
+rebuild. Mapping changes reprocess the current indexed files once, even when
+contents and timestamps are unchanged, and remove files no longer admitted.
+Each branch database records its own dispatch revision. A running MCP server
+picks changes up through its existing freshness checks and automatic-sync
+limits; a large mapping change may require explicit `tokensave sync`.
+Initialization preserves an existing config, so mappings can be supplied before
+`tokensave init`. No separate `language_patterns` setting is needed.
+
+Aliases mean **symbol extraction**; `artifact_extensions` means path and literal
+content search with no symbols. Unknown extensions are never automatically
+assigned a parser. For `.patch`, `.ldif`, `.jsonnet`, or `.libsonnet` with no
+installed extractor, opt into artifact tracking if useful; JSONnet syntax needs
+a dedicated extractor for symbols. `.template` and `.ep` have no universal
+language: choose an appropriate installed extractor or artifact tracking.
+An HTML alias parses HTML only, not embedded template languages.
+
+Keep credentials such as `.pem` excluded rather than making them searchable.
+Mapped source and artifacts containing NUL bytes after decoding are skipped.
+This is a lightweight binary check, not full format detection; do not map binary
+formats to source languages. BOM-marked UTF-16 source remains supported.
+Exclusions, hidden-directory policy, gitignore, and file-size limits still apply. Aliases do not bypass those protections or enable disabled
+language features. `sync --doctor` reports skipped counts and configuration
+options; JSON result fields retain their existing shape.
+
 ### Optional: `.tokensave/project.json` — explicit index entries
 
 Alongside `config.json` (walker policy: excludes, size limits, gitignore), you can add a `project.json` manifest listing files or globs to index explicitly, each with an optional `language` override that forces a specific extractor:

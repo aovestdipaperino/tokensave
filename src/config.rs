@@ -204,6 +204,9 @@ pub struct TokenSaveConfig {
     /// the symbol pass owns those files and records them with their symbols.
     #[serde(default = "default_artifact_extensions")]
     pub artifact_extensions: Vec<String>,
+    /// Project-local extension aliases, resolved before built-in detection (#725).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub language_aliases: std::collections::BTreeMap<String, String>,
     /// Silence the index-scope warning `serve` prints for a home-directory
     /// project or an index past 5 GB (#450). Defaults to `false`.
     ///
@@ -314,6 +317,7 @@ impl Default for TokenSaveConfig {
             max_auto_sync_files: default_max_auto_sync_files(),
             report_savings: default_report_savings(),
             artifact_extensions: default_artifact_extensions(),
+            language_aliases: std::collections::BTreeMap::new(),
             suppress_scope_warning: false,
             tools: None,
         }

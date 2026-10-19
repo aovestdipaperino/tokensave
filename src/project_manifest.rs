@@ -14,7 +14,7 @@
 //! `config.json` stays the walker/policy config (`exclude`, size limits,
 //! `git_ignore`); `project.json` is additive: it never removes files the
 //! normal walk would index.
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -74,6 +74,8 @@ pub struct CompiledManifest {
     local: Vec<CompiledEntry>,
     /// Entries whose path is absolute (including expanded `~/…`).
     external: Vec<CompiledEntry>,
+    aliases: BTreeMap<String, String>,
+    fingerprint: String,
 }
 
 /// Glob options matching the ones used for `config.json` include/exclude.
@@ -150,22 +152,53 @@ impl CompiledManifest {
                 local.push(compiled);
             }
         }
-        Ok(Self { local, external })
+        Ok(Self {
+            local,
+            external,
+            ..Self::default()
+        })
+    }
+
+    /// Normalized alias extensions, compiled once per configuration revision.
+    pub fn alias_extensions(&self) -> impl Iterator<Item = &str> {
+        self.aliases.keys().map(String::as_str)
+    }
+
+    /// Dispatch revision stored in each branch database after successful sync.
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
     }
 
     /// True when the manifest has no effective entries.
     pub fn is_empty(&self) -> bool {
-        self.local.is_empty() && self.external.is_empty()
+        self.local.is_empty() && self.external.is_empty() && self.aliases.is_empty()
     }
 
     /// Language override for a graph path (project-relative for local files,
-    /// absolute for external ones). First matching entry with a language wins.
+    /// absolute for external ones). Literal entries precede globs, then aliases.
     pub fn language_for(&self, path: &str) -> Option<&str> {
-        self.local
-            .iter()
-            .chain(self.external.iter())
-            .find(|e| e.language.is_some() && e.pattern.matches_with(path, MATCH_OPTS))
+        let normalized;
+        let path = if path.contains('\\') {
+            normalized = path.replace('\\', "/");
+            &normalized
+        } else {
+            path
+        };
+        let entries = || self.local.iter().chain(self.external.iter());
+        // Literal file entries outrank globs; within either group, first wins.
+        entries()
+            .find(|e| e.language.is_some() && e.raw == path)
+            .or_else(|| {
+                entries().find(|e| e.language.is_some() && e.pattern.matches_with(path, MATCH_OPTS))
+            })
             .and_then(|e| e.language.as_deref())
+            .or_else(|| {
+                if self.aliases.is_empty() {
+                    return None;
+                }
+                let ext = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
+                self.aliases.get(&ext).map(String::as_str)
+            })
     }
 
     /// True if a project-relative file path is explicitly listed, making it
@@ -230,19 +263,62 @@ pub fn load_manifest(
     registry: &LanguageRegistry,
 ) -> Result<Option<CompiledManifest>> {
     let path = get_manifest_path(project_root);
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        return Ok(None);
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => Some(contents),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(TokenSaveError::Config {
+                message: format!("failed to read '{}': {e}", path.display()),
+            })
+        }
     };
-    let manifest: ProjectManifest =
-        serde_json::from_str(&contents).map_err(|e| TokenSaveError::Config {
-            message: format!("failed to parse '{}': {e}", path.display()),
+    let mut compiled = if let Some(contents) = &contents {
+        let manifest: ProjectManifest =
+            serde_json::from_str(contents).map_err(|e| TokenSaveError::Config {
+                message: format!("failed to parse '{}': {e}", path.display()),
+            })?;
+        CompiledManifest::compile(&manifest, registry)?
+    } else {
+        CompiledManifest::default()
+    };
+    let config = crate::config::load_config(project_root)?;
+    for (extension, language) in &config.language_aliases {
+        let ext = extension
+            .trim()
+            .strip_prefix('.')
+            .unwrap_or(extension.trim())
+            .to_ascii_lowercase();
+        if ext.is_empty()
+            || ext.contains(['.', '/', '\\', '*', '?', '[', ']'])
+            || ext.chars().any(char::is_whitespace)
+        {
+            return Err(TokenSaveError::Config { message: format!("config.json: invalid language_aliases extension '{extension}'; use a single extension such as '.t'; use project.json for globs") });
+        }
+        let extractor = registry.extractor_for_language(language).ok_or_else(|| TokenSaveError::Config {
+            message: format!("config.json: language_aliases '{extension}': language '{language}' is unknown or disabled in this binary; enabled languages: {}", registry.extractors().iter().map(|e| e.language_name()).collect::<Vec<_>>().join(", ")),
         })?;
-    Ok(Some(CompiledManifest::compile(&manifest, registry)?))
+        if compiled
+            .aliases
+            .insert(ext.clone(), extractor.language_name().to_string())
+            .is_some()
+        {
+            return Err(TokenSaveError::Config { message: format!("config.json: conflicting language_aliases keys normalize to '.{ext}'; keep one mapping") });
+        }
+    }
+    if contents.is_none() && compiled.aliases.is_empty() {
+        return Ok(None);
+    }
+    let contents = contents.unwrap_or_default();
+    // Only dispatch settings participate: unrelated config edits do not reparse source.
+    compiled.fingerprint =
+        crate::sync::content_hash(&format!("{:?}\n{contents}", compiled.aliases));
+    Ok(Some(compiled))
 }
 
 /// Cache slot: manifest keyed by file mtime so long-running processes pick
 /// up edits without re-parsing on every file.
-type CacheEntry = (Option<SystemTime>, Option<std::sync::Arc<CompiledManifest>>);
+type CacheEntry = (ConfigStamp, Option<std::sync::Arc<CompiledManifest>>);
+type ConfigStamp = (Option<(SystemTime, u64)>, Option<(SystemTime, u64)>);
 
 // A process may visit arbitrarily many projects (including deleted temporary
 // roots). Keep a bounded FIFO cache; callers holding an Arc remain valid when
@@ -280,7 +356,15 @@ pub fn manifest_for(
     registry: &LanguageRegistry,
 ) -> Option<std::sync::Arc<CompiledManifest>> {
     let path = get_manifest_path(project_root);
-    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let stamp = |p: &Path| {
+        std::fs::metadata(p)
+            .ok()
+            .and_then(|m| Some((m.modified().ok()?, m.len())))
+    };
+    let mtime = (
+        stamp(&path),
+        stamp(&crate::config::get_config_path(project_root)),
+    );
     let mut guard = MANIFEST_CACHE.lock().ok()?;
     let cache = guard.get_or_insert_with(ManifestCache::default);
     if let Some((cached_mtime, cached)) = cache.entries.get(project_root) {
@@ -288,11 +372,14 @@ pub fn manifest_for(
             return cached.clone();
         }
     }
+    // Parsing and filesystem reads must not hold the process-wide cache lock.
+    drop(guard);
     let loaded = load_manifest(project_root, registry)
         .ok()
         .flatten()
-        .filter(|m| !m.is_empty())
         .map(std::sync::Arc::new);
+    let mut guard = MANIFEST_CACHE.lock().ok()?;
+    let cache = guard.get_or_insert_with(ManifestCache::default);
     cache.insert(project_root.to_path_buf(), (mtime, loaded.clone()));
     loaded
 }
@@ -322,6 +409,11 @@ pub fn resolve_extractor_for_source<'r>(
 ) -> Option<&'r dyn crate::extraction::LanguageExtractor> {
     if let Some(manifest) = manifest_for(project_root, registry) {
         if let Some(lang) = manifest.language_for(file_path) {
+            // Decode happens before dispatch, preserving BOM-marked UTF-16.
+            // An explicit mapping must not turn NUL-bearing binary data into source.
+            if source.contains('\0') {
+                return None;
+            }
             return registry.extractor_for_language(lang);
         }
     }
@@ -361,12 +453,18 @@ mod tests {
         let mut cache = ManifestCache::default();
         let manifest = std::sync::Arc::new(compile(vec![entry("*.custom", Some("python"))]));
         let weak = std::sync::Arc::downgrade(&manifest);
-        cache.insert(PathBuf::from("first"), (None, Some(manifest.clone())));
+        cache.insert(
+            PathBuf::from("first"),
+            ((None, None), Some(manifest.clone())),
+        );
         // Replacement must not duplicate the FIFO slot.
-        cache.insert(PathBuf::from("first"), (None, Some(manifest.clone())));
+        cache.insert(
+            PathBuf::from("first"),
+            ((None, None), Some(manifest.clone())),
+        );
         drop(manifest);
         for i in 0..MAX_MANIFEST_CACHE_ENTRIES {
-            cache.insert(PathBuf::from(format!("project-{i}")), (None, None));
+            cache.insert(PathBuf::from(format!("project-{i}")), ((None, None), None));
             assert!(cache.entries.len() <= MAX_MANIFEST_CACHE_ENTRIES);
             assert_eq!(cache.entries.len(), cache.order.len());
         }
@@ -381,12 +479,15 @@ mod tests {
     fn manifest_cache_eviction_preserves_active_readers() {
         let mut cache = ManifestCache::default();
         let manifest = std::sync::Arc::new(compile(vec![entry("*.custom", Some("python"))]));
-        cache.insert(PathBuf::from("first"), (None, Some(manifest.clone())));
+        cache.insert(
+            PathBuf::from("first"),
+            ((None, None), Some(manifest.clone())),
+        );
         for i in 0..MAX_MANIFEST_CACHE_ENTRIES {
-            cache.insert(PathBuf::from(format!("project-{i}")), (None, None));
+            cache.insert(PathBuf::from(format!("project-{i}")), ((None, None), None));
         }
         assert_eq!(manifest.language_for("a.custom"), Some("python"));
-        cache.insert(PathBuf::from("first"), (None, Some(manifest)));
+        cache.insert(PathBuf::from("first"), ((None, None), Some(manifest)));
         assert_eq!(cache.entries.len(), MAX_MANIFEST_CACHE_ENTRIES);
         assert_eq!(cache.order.len(), MAX_MANIFEST_CACHE_ENTRIES);
     }

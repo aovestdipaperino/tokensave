@@ -202,3 +202,5 @@ mod xaml_extraction_test;
 mod zig_extraction_test;
 
 mod verify_test;
+
+mod language_aliases_test;

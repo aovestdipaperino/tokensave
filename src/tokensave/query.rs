@@ -105,7 +105,15 @@ impl TokenSave {
 
     /// Returns aggregate statistics about the code graph.
     pub async fn get_stats(&self) -> Result<GraphStats> {
-        self.db.get_stats().await
+        let manifest = self.manifest();
+        self.db
+            .get_stats_with_languages(|path| {
+                let language = manifest.as_ref()?.language_for(path)?;
+                self.registry
+                    .extractor_for_language(language)
+                    .map(|e| e.language_name().to_string())
+            })
+            .await
     }
 
     /// Retrieves a single node by its unique ID.

@@ -156,12 +156,11 @@ impl TokenSave {
     /// Initializes a new `TokenSave` project at the given root.
     ///
     /// Creates the `.tokensave` directory, writes a default configuration
-    /// (preserving an existing CPU profile), and initializes a fresh `SQLite` database.
+    /// (preserving existing project settings), and initializes a fresh `SQLite` database.
     pub async fn init(project_root: &Path) -> Result<Self> {
         let config = TokenSaveConfig {
-            cpu_usage: load_config(project_root)?.cpu_usage,
             root_dir: project_root.to_string_lossy().to_string(),
-            ..TokenSaveConfig::default()
+            ..load_config(project_root)?
         };
         save_config(project_root, &config)?;
 
