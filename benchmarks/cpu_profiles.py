@@ -101,7 +101,11 @@ class MCP:
             self.process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             self.process.terminate()
-            self.process.wait(timeout=10)
+            try:
+                self.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
         self.log.close()
 
 
@@ -157,7 +161,10 @@ print(count / (time.perf_counter() - start))
         finally:
             if not finished.is_set():
                 process.terminate()
-            waiter.join(timeout=30)
+            waiter.join(timeout=10)
+            if not finished.is_set():
+                process.kill()
+                waiter.join(timeout=10)
             sentinel.touch()
             peer_rates = []
             for peer in peers:

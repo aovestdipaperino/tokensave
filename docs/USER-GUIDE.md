@@ -1320,6 +1320,44 @@ for `low` on a multicore host. Competing-process throughput provides a direct
 contention comparison. Throughput and latency remain descriptive rather than
 flaky CI timing assertions.
 
+Measured example: Linux/WSL2, eight available CPUs, debug builds, three
+repetitions per profile and two competing CPU-bound processes. The tables show
+full-indexing medians; CPU peaks and RSS are sampled, and MCP p95 is the median
+of per-run p95 values. The real-source workload is the extraction subtree at
+revision `2e71033`, not the whole Tokensave repository.
+
+Generated Rust/Python: 240 indexed files, 19680 nodes, 19200 edges.
+
+| Profile | Time (s) | CPU avg / peak (%) | RSS (MiB) | Files/s | MCP p95 (ms) | Competing hashes/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| original | 22.79 | 171 / 648 | 350.6 | 10.5 | 68.0 | 24359 |
+| low | 26.34 | 99 / 116 | 128.6 | 9.1 | 31.4 | 27794 |
+| balanced | 22.70 | 149 / 408 | 239.8 | 10.6 | 37.0 | 25259 |
+| performance | 18.81 | 166 / 667 | 394.0 | 12.8 | 40.9 | 27745 |
+
+
+
+Tokensave extraction sources: 72 indexed files, 3131 nodes, 6390 edges.
+
+| Profile | Time (s) | CPU avg / peak (%) | RSS (MiB) | Files/s | MCP p95 (ms) | Competing hashes/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| original | 5.34 | 182 / 606 | 409.5 | 13.5 | 67.6 | 27787 |
+| low | 8.13 | 81 / 108 | 121.4 | 8.9 | 61.4 | 31896 |
+| balanced | 6.06 | 159 / 419 | 245.7 | 11.9 | 62.2 | 26621 |
+| performance | 6.72 | 165 / 656 | 404.0 | 10.7 | 98.8 | 29159 |
+
+
+
+In these workloads, `low` reduced median sampled peak CPU by about 82% and
+increased competing-work throughput by about 14–15%, while taking longer to
+finish indexing. Higher concurrency did not consistently improve completion
+time: `performance` was slower than the original on the real-source workload.
+These measurements demonstrate resource tradeoffs, not a universal speedup.
+All 72 operation measurements preserved graph hashes and completed concurrent
+MCP searches successfully. [Raw measurements and all sync summaries](../benchmarks/cpu-profile-results.json)
+include full indexing, 16-file edits and unchanged sync. Sequential database
+work can dominate unchanged sync and is unaffected by worker limits.
+
 ### Per-project: `.tokensave/`
 
 Created inside each project you index. Contains:
