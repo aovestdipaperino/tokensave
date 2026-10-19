@@ -1251,6 +1251,43 @@ override matching config values when set. This is especially relevant for
 `TOKENSAVE_AUTO_TRACK`, `TOKENSAVE_REPORT_SAVINGS`, and
 `TOKENSAVE_UPDATE_CHECK`.
 
+### RAM usage profiles
+
+Add `"memory_usage": "balanced"` to your existing `.tokensave/config.json`.
+The accepted values are `low`, `balanced` (default, including legacy configs),
+and `performance`. Invalid values report the supported choices. Settings apply
+when the project opens; restart the MCP server after editing them.
+
+| Profile | Simultaneous extraction parsers | Tradeoff |
+| --- | --- | --- |
+| `low` | At most one | Lowest concurrent parser scratch space and subprocess overhead; slower extraction. |
+| `balanced` | At most two | Limits parser memory on machines with many CPUs. |
+| `performance` | CPU profile ceiling | Existing CPU-selected extraction throughput. |
+
+The effective extraction limit is the minimum of the RAM profile, CPU profile,
+pending files and (for subprocesses) `TOKENSAVE_WORKERS`. The in-process fallback
+processes bounded parallel slices with the same ceiling. Workers are owned and
+reaped by the existing extraction pool; cancellation and freshness bounds are
+unchanged. No memory-pressure polling or artificial sleeps are added.
+
+Limits apply per extraction operation, not as a shared budget across projects.
+These profiles **do not cap total RAM or guarantee against out-of-memory errors**.
+They bound live parsers and their source buffers, syntax trees and subprocess
+heaps. The file queue, completed extraction results and resolver graph still
+scale with the indexed project; they are released by the existing request
+lifecycle. A single large source file can still require substantial memory.
+Hashing, database caches and resolution retain their existing policies. Choose
+`performance` to preserve the previous parser concurrency; the new `balanced`
+default may slow indexing on machines with more than two extraction workers.
+
+Compare equivalent original/candidate builds using the resource harness below
+with `--profile-field memory_usage`. It fixes `cpu_usage` to `performance` for
+both binaries so that CPU policy does not hide the parser-memory tradeoff.
+The harness records full/incremental/unchanged sync, repeated runs, process-tree
+RSS and CPU, throughput, elapsed time, independent MCP latency and graph equality.
+Sampled RSS can miss brief peaks and counts shared pages multiple times; it is
+not proof of an absence of leaks or a bound on all workloads.
+
 ### CPU usage profiles
 
 Add `"cpu_usage": "balanced"` to the existing `.tokensave/config.json`:

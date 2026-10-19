@@ -43,6 +43,7 @@ pub mod graph;
 pub mod hooks;
 pub mod index_scope;
 pub mod mcp;
+pub mod memory;
 pub mod memstats;
 pub mod monitor;
 pub mod project_manifest;

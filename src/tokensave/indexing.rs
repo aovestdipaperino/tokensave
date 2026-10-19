@@ -398,6 +398,7 @@ impl TokenSave {
             registry,
             files.clone(),
             self.config.cpu_usage,
+            self.config.memory_usage,
         )?;
         // Extraction stops early on a shutdown, so a short result here means
         // abandoned work, not an empty project. Committing it would write a
@@ -1013,6 +1014,7 @@ impl TokenSave {
             registry,
             file_paths.clone(),
             self.config.cpu_usage,
+            self.config.memory_usage,
         )?;
 
         self.ensure_current_checkout()?;
@@ -1449,6 +1451,7 @@ impl TokenSave {
             registry,
             to_index.clone(),
             self.config.cpu_usage,
+            self.config.memory_usage,
         )?;
         let extracted_paths: HashSet<&str> = sync_extractions
             .iter()
