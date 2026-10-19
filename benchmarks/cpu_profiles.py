@@ -203,6 +203,8 @@ def main():
     parser.add_argument('--repeats', type=int, default=3)
     parser.add_argument('--profile-field', choices=('cpu_usage', 'memory_usage'), default='cpu_usage',
         help='Project resource policy to compare; the other policy is fixed at performance')
+    parser.add_argument('--baseline-profile', choices=('low', 'balanced', 'performance'),
+        help='Explicit baseline profile for comparing another implementation of the same policy')
     args = parser.parse_args()
     if min(args.files, args.functions, args.repeats) < 1 or args.contenders < 0 or args.changed_files < 0:
         parser.error('files, functions and repeats must be positive; contenders and changed-files must be nonnegative')
@@ -268,7 +270,7 @@ def main():
         results['indexed_files'] = file_count
         results['graph_counts'] = graph_counts
         # Alternate execution order to reduce systematic thermal/cache bias.
-        cases = [('baseline', None)] + [('candidate', p) for p in ('low', 'balanced', 'performance')]
+        cases = [('baseline', args.baseline_profile)] + [('candidate', p) for p in ('low', 'balanced', 'performance')]
         for repeat in range(args.repeats):
             for build, profile in (cases if repeat % 2 == 0 else reversed(cases)):
                 if profile:
