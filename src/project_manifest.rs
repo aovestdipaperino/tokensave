@@ -14,6 +14,7 @@
 //! `config.json` stays the walker/policy config (`exclude`, size limits,
 //! `git_ignore`); `project.json` is additive: it never removes files the
 //! normal walk would index.
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -243,8 +244,32 @@ pub fn load_manifest(
 /// up edits without re-parsing on every file.
 type CacheEntry = (Option<SystemTime>, Option<std::sync::Arc<CompiledManifest>>);
 
-static MANIFEST_CACHE: Mutex<Option<std::collections::HashMap<PathBuf, CacheEntry>>> =
-    Mutex::new(None);
+// A process may visit arbitrarily many projects (including deleted temporary
+// roots). Keep a bounded FIFO cache; callers holding an Arc remain valid when
+// an entry is evicted, and revisiting it reloads the manifest from disk.
+const MAX_MANIFEST_CACHE_ENTRIES: usize = 64;
+
+#[derive(Default)]
+struct ManifestCache {
+    entries: HashMap<PathBuf, CacheEntry>,
+    order: VecDeque<PathBuf>,
+}
+
+impl ManifestCache {
+    fn insert(&mut self, root: PathBuf, entry: CacheEntry) {
+        if !self.entries.contains_key(&root) {
+            if self.entries.len() == MAX_MANIFEST_CACHE_ENTRIES {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.entries.remove(&oldest);
+                }
+            }
+            self.order.push_back(root.clone());
+        }
+        self.entries.insert(root, entry);
+    }
+}
+
+static MANIFEST_CACHE: Mutex<Option<ManifestCache>> = Mutex::new(None);
 
 /// Cached manifest lookup for hot paths (per-file extractor dispatch).
 ///
@@ -257,8 +282,8 @@ pub fn manifest_for(
     let path = get_manifest_path(project_root);
     let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
     let mut guard = MANIFEST_CACHE.lock().ok()?;
-    let cache = guard.get_or_insert_with(std::collections::HashMap::new);
-    if let Some((cached_mtime, cached)) = cache.get(project_root) {
+    let cache = guard.get_or_insert_with(ManifestCache::default);
+    if let Some((cached_mtime, cached)) = cache.entries.get(project_root) {
         if *cached_mtime == mtime {
             return cached.clone();
         }
@@ -329,6 +354,41 @@ mod tests {
             language: language.map(str::to_string),
             comment: None,
         }
+    }
+
+    #[test]
+    fn manifest_cache_bounds_positive_and_negative_entries() {
+        let mut cache = ManifestCache::default();
+        let manifest = std::sync::Arc::new(compile(vec![entry("*.custom", Some("python"))]));
+        let weak = std::sync::Arc::downgrade(&manifest);
+        cache.insert(PathBuf::from("first"), (None, Some(manifest.clone())));
+        // Replacement must not duplicate the FIFO slot.
+        cache.insert(PathBuf::from("first"), (None, Some(manifest.clone())));
+        drop(manifest);
+        for i in 0..MAX_MANIFEST_CACHE_ENTRIES {
+            cache.insert(PathBuf::from(format!("project-{i}")), (None, None));
+            assert!(cache.entries.len() <= MAX_MANIFEST_CACHE_ENTRIES);
+            assert_eq!(cache.entries.len(), cache.order.len());
+        }
+        assert!(!cache.entries.contains_key(Path::new("first")));
+        assert!(
+            weak.upgrade().is_none(),
+            "eviction must release the compiled manifest"
+        );
+    }
+
+    #[test]
+    fn manifest_cache_eviction_preserves_active_readers() {
+        let mut cache = ManifestCache::default();
+        let manifest = std::sync::Arc::new(compile(vec![entry("*.custom", Some("python"))]));
+        cache.insert(PathBuf::from("first"), (None, Some(manifest.clone())));
+        for i in 0..MAX_MANIFEST_CACHE_ENTRIES {
+            cache.insert(PathBuf::from(format!("project-{i}")), (None, None));
+        }
+        assert_eq!(manifest.language_for("a.custom"), Some("python"));
+        cache.insert(PathBuf::from("first"), (None, Some(manifest)));
+        assert_eq!(cache.entries.len(), MAX_MANIFEST_CACHE_ENTRIES);
+        assert_eq!(cache.order.len(), MAX_MANIFEST_CACHE_ENTRIES);
     }
 
     #[test]

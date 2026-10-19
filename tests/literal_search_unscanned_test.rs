@@ -305,3 +305,41 @@ async fn unscanned_detail_once_per_root() {
         "hint must not name an option tokensave_files lacks (#667): {hint}"
     );
 }
+
+/// #685: the scan must stat files fresh. A file that grew past the scan cap
+/// after indexing used to be read in full — the indexed size said it was
+/// small — and a path that became a FIFO would block the read forever. Now
+/// the current size and file type decide.
+#[tokio::test]
+async fn a_file_that_grew_past_the_cap_after_indexing_is_skipped() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    git(&root, &["init", "-b", "master"]);
+    std::fs::write(root.join("index.js"), "const k = 'needleQuery';\n").unwrap();
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-m", "init"]);
+
+    let cg = TokenSave::init(&root).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    // Grow the file past the 2 MiB scan cap without syncing the index.
+    let mut big = std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.join("index.js"))
+        .unwrap();
+    std::io::Write::write_all(&mut big, vec![b'x'; 3 * 1024 * 1024].as_slice()).unwrap();
+    drop(big);
+
+    let payload = literal_search(&cg, "needleQuery").await;
+    let files: Vec<&str> = payload["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["file"].as_str().unwrap())
+        .collect();
+    assert!(
+        !files.contains(&"index.js"),
+        "a file that outgrew the scan cap after indexing must be skipped by a \
+         fresh stat, got matches in: {files:?}"
+    );
+}
