@@ -312,6 +312,22 @@ pub(crate) fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
+impl TokenSave {
+    /// Background tasks can retain a handle across a runtime transition. Never
+    /// let such a task start writing a different checkout into its old index.
+    pub(crate) fn ensure_current_checkout(&self) -> Result<()> {
+        if self.tracks_checkout
+            && branch_meta::load_branch_meta(&get_tokensave_dir(&self.project_root)).is_some()
+            && branch::current_branch(&self.project_root) != self.active_branch
+        {
+            return Err(TokenSaveError::Config {
+                message: "Git branch changed; acquire a fresh branch context before writing".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -350,21 +366,5 @@ mod tests {
             message.contains("timed out"),
             "expected bounded timeout: {message}"
         );
-    }
-}
-
-impl TokenSave {
-    /// Background tasks can retain a handle across a runtime transition. Never
-    /// let such a task start writing a different checkout into its old index.
-    pub(crate) fn ensure_current_checkout(&self) -> Result<()> {
-        if self.tracks_checkout
-            && branch_meta::load_branch_meta(&get_tokensave_dir(&self.project_root)).is_some()
-            && branch::current_branch(&self.project_root) != self.active_branch
-        {
-            return Err(TokenSaveError::Config {
-                message: "Git branch changed; acquire a fresh branch context before writing".into(),
-            });
-        }
-        Ok(())
     }
 }
