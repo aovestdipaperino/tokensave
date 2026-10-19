@@ -42,6 +42,8 @@ pub(crate) fn safe_extract(
 
 /// Tuple shape produced per file by both extraction paths.
 type ExtractTuple = (String, ExtractionResult, String, u64, i64);
+/// Successful extractions and per-file failures from either execution path.
+type ExtractBatch = (Vec<ExtractTuple>, Vec<(String, String)>);
 
 /// Extract every file in `files`, isolating each extraction in a subprocess
 /// when possible. Subprocess isolation contains C/C++ grammar aborts that
@@ -58,19 +60,20 @@ pub(crate) fn extract_files_isolated(
     project_root: &Path,
     registry: &crate::extraction::LanguageRegistry,
     files: Vec<String>,
-) -> (Vec<ExtractTuple>, Vec<(String, String)>) {
+    cpu_usage: crate::cpu::CpuUsage,
+) -> Result<ExtractBatch> {
     if files.is_empty() {
-        return (Vec::new(), Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     if should_use_subprocess() {
-        let workers = worker_count(files.len());
+        let workers = worker_count(files.len(), cpu_usage);
         let timeout = std::time::Duration::from_secs(
             crate::user_config::UserConfig::load().extraction_timeout_secs,
         );
         match crate::extraction_worker::WorkerPool::new(workers, project_root.to_path_buf()) {
             Ok(pool) => {
                 let outcome = pool.extract_files(files, |_, _, _| {}, timeout);
-                return (outcome.results, outcome.skipped);
+                return Ok((outcome.results, outcome.skipped));
             }
             Err(e) => eprintln!(
                 "[tokensave] could not spawn extraction worker pool ({e}), \
@@ -78,10 +81,12 @@ pub(crate) fn extract_files_isolated(
             ),
         }
     }
-    (
-        extract_files_in_process(project_root, registry, &files),
-        Vec::new(),
-    )
+    cpu_usage.run(|| {
+        (
+            extract_files_in_process(project_root, registry, &files),
+            Vec::new(),
+        )
+    })
 }
 
 pub(crate) fn extract_files_in_process(
@@ -124,15 +129,12 @@ pub(crate) fn extract_files_in_process(
 /// transparently fall back to in-process extraction.
 /// Number of subprocess extraction workers to spawn.
 ///
-/// Defaults to `available_parallelism()` (all cores). `TOKENSAVE_WORKERS=N`
-/// caps it, clamped to `1..=available_parallelism()`, so users on a loaded box
-/// can keep syncs polite (#183). An unset or unparseable value keeps the
-/// all-cores default, capped by the number of files waiting for extraction.
-fn worker_count(file_count: usize) -> usize {
-    let cores = std::thread::available_parallelism().map_or(4, std::num::NonZeroUsize::get);
+/// The CPU profile sets the ceiling. `TOKENSAVE_WORKERS=N` can further
+/// reduce subprocess concurrency (#183); pending files cap the pool size.
+fn worker_count(file_count: usize, profile: crate::cpu::CpuUsage) -> usize {
     clamp_workers(
         std::env::var("TOKENSAVE_WORKERS").ok().as_deref(),
-        cores,
+        profile.workers(),
         file_count,
     )
 }
@@ -173,12 +175,17 @@ mod worker_count_tests {
     use super::clamp_workers;
 
     #[test]
-    fn empty_batch_returns_no_extractions_or_skips() {
+    fn empty_batch_returns_no_extractions_or_skips() -> crate::errors::Result<()> {
         let registry = crate::extraction::LanguageRegistry::new();
-        let (results, skipped) =
-            super::extract_files_isolated(std::path::Path::new("."), &registry, Vec::new());
+        let (results, skipped) = super::extract_files_isolated(
+            std::path::Path::new("."),
+            &registry,
+            Vec::new(),
+            crate::cpu::CpuUsage::Low,
+        )?;
         assert!(results.is_empty());
         assert!(skipped.is_empty());
+        Ok(())
     }
 
     #[test]

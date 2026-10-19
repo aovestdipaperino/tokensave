@@ -45,6 +45,7 @@ mod copilot_agent_test;
 mod corruption_test;
 mod cost_cli_test;
 mod cpp_extraction_test;
+mod cpu_usage_test;
 mod csharp_extraction_test;
 mod csharp_interfaces_643_test;
 mod csharp_receiver_types_test;
