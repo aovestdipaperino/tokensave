@@ -261,6 +261,10 @@ impl TokenSave {
         let (db_path, serving_branch, fallback_warning) =
             Self::resolve_db_for_branch(project_root, &tokensave_dir, active_branch.as_deref());
 
+        // Protect the selected DB as well as HEAD: an untracked branch can
+        // be borrowing the index of an ancestor whose Git ref was deleted.
+        branch::collect_if_enabled(project_root, std::slice::from_ref(&db_path)).await;
+
         if !db_path.exists() {
             return Err(TokenSaveError::Config {
                 message: format!(
