@@ -1382,6 +1382,60 @@ either way. Explicit test markers such as `__tests__/`, `*.test.*`, and
 `*.spec.*` still count as tests inside an overridden path. Restart the
 tokensave MCP server after editing the config; no re-index is required.
 
+### Optional: automatic language detection
+
+Unknown extensions and extensionless scripts can be indexed using existing
+extractors when their contents provide strong language evidence. Enable this
+opt-in fallback in `.tokensave/config.json`:
+
+```json
+"language_detection": {
+  "enabled": true,
+  "max_bytes": 4096,
+  "cache_results": true
+}
+```
+
+Restart the MCP server after changing configuration, then run `tokensave sync`.
+Set `enabled` to `false` to restore extension-only discovery. Existing manifest
+language overrides and registered extensions always take precedence and bypass
+this detector. No extension mapping is added.
+
+Detection first recognizes exact interpreter names in absolute shebangs,
+including `/usr/bin/env` and `env -S`: Python, Bash-compatible shells, Node.js,
+and Ruby, when their extractors are installed. Otherwise it requires multiple
+syntax signals for Python, Rust, JavaScript, TypeScript, Go, Ruby, C or C++.
+These evidence rules are heuristic, not calibrated confidence probabilities;
+ambiguous files and unknown shebang interpreters remain unsupported. A short
+valid program may intentionally be left unclassified. No interpreter runs and
+no parser is tried speculatively.
+
+Only a bounded prefix is read for discovery: `max_bytes` defaults to 4096 and
+must be between 128 and 65536. Binary/control bytes, invalid UTF-8 within that
+prefix, and common certificate/private-key formats are rejected. Normal file
+size, exclude, hidden-directory, and gitignore policies still apply. Successful
+detection invokes the actual extractor, making symbols available to search and
+MCP context tools. Unclassified files retain the existing artifact fallback.
+
+A process-local FIFO caches up to 4096 positive and negative decisions, without
+retaining source text. File timestamp (including Unix change time), size,
+settings, extractor availability, and absolute worktree path form its key.
+Eviction or process restart causes another bounded prefix read. Incremental
+indexing still uses the existing file hashes; branch-local metadata records
+settings changes so unchanged unknown files can be reclassified. Forced reindex
+uses the same detector. Discovery reads a prefix before extraction reads the
+source; extraction reuses its existing source buffer for detection. Known
+extensions incur no detection reads. Warm server scans reuse cached decisions;
+a new CLI process starts with an empty detection cache.
+
+`tokensave sync --verbose` reports examined files, shebang/content decisions,
+unsupported counts, cache hits and detection time. Counters are process-local;
+concurrent scans can contribute to the same snapshot. Existing unsupported
+extension summaries remain available. Normal and machine-readable outputs keep
+their existing shape. Benchmark the synthetic 10,000 recognized-file and
+500 unknown-file workloads with `cargo bench --bench language_detection --
+recognized-off` (also `recognized-on`, `unknown-off`, `unknown-on`).
+
 ### Optional: `.tokensave/project.json` — explicit index entries
 
 Alongside `config.json` (walker policy: excludes, size limits, gitignore), you can add a `project.json` manifest listing files or globs to index explicitly, each with an optional `language` override that forces a specific extractor:
