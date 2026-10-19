@@ -325,7 +325,16 @@ pub fn resolve_extractor_for_source<'r>(
             return registry.extractor_for_language(lang);
         }
     }
-    registry.extractor_for_source(file_path, source)
+    registry
+        .extractor_for_source(file_path, source)
+        .or_else(|| {
+            crate::language_detection::extractor_for_source(
+                registry,
+                project_root,
+                file_path,
+                source,
+            )
+        })
 }
 
 #[cfg(test)]

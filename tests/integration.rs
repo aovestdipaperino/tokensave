@@ -8,6 +8,7 @@
 //! be added below (or there) because `autotests = false`.
 
 mod common;
+mod language_detection_test;
 
 mod accounting_test;
 mod actionscript_extraction_test;

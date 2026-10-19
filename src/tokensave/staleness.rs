@@ -129,6 +129,27 @@ impl TokenSave {
                 _ => {
                     // Not in the DB. If it exists on disk, it's new and needs indexing.
                     if file_exists {
+                        // A rejected detection has no row by design. Do not
+                        // repeatedly ask targeted refresh to index it again.
+                        if self.config.language_detection.enabled
+                            && crate::project_manifest::resolve_extractor(
+                                &self.registry,
+                                &self.project_root,
+                                &normalized,
+                            )
+                            .is_none()
+                            && !self.artifact_extensions().iter().any(|ext| {
+                                abs_path.extension().and_then(|s| s.to_str()) == Some(ext.as_str())
+                            })
+                            && crate::language_detection::detect_file(
+                                &self.registry,
+                                &abs_path,
+                                self.config.language_detection,
+                            )
+                            .is_none()
+                        {
+                            continue;
+                        }
                         stale.push(normalized);
                     }
                 }
