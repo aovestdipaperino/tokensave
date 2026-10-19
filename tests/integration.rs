@@ -197,3 +197,5 @@ mod walk_up_test;
 mod warn_skipped_hidden_dirs_test;
 mod xaml_extraction_test;
 mod zig_extraction_test;
+
+mod verify_test;
