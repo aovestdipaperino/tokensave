@@ -83,6 +83,88 @@ cargo test --locked --no-default-features --features lite
    cargo clippy --workspace --all-targets --locked
    ```
 
+## Memory and Resource Management
+
+These requirements apply to contributors and AI coding agents. **MUST** and
+**MUST NOT** are mandatory; **SHOULD** indicates a recommendation whose omission
+should be explained in the PR. Apply them to indexing, synchronization, repeated
+MCP requests, and long-running server workloads, including error paths.
+
+### Memory management
+
+- Changes MUST NOT introduce known memory leaks or unbounded memory growth.
+- Caches, queues, buffers, and collections MUST have growth limits appropriate
+  to their workload and a defined eviction, draining, or release lifecycle.
+  Document input-proportional storage and its scope rather than imposing an
+  arbitrary fixed cap on all workloads.
+- Code MUST avoid unnecessary allocations, cloning, and prolonged retention of
+  large objects. Release processed batches and temporary graph data when their
+  consumers finish.
+- Shared ownership through `Arc` and `Rc` MUST avoid strong-reference cycles and
+  unintended retention; use `Weak` or explicit ownership boundaries where needed.
+- Resources MUST be released during normal operation, errors, cancellation, and
+  shutdown. Intentionally retained process-lifetime data MUST have a documented
+  bound and rationale; this does not permit new known leaks.
+
+### CPU efficiency
+
+- Code MUST NOT introduce busy-wait loops or uncontrolled polling. Necessary
+  polling MUST have a justified interval or backoff and a termination condition.
+- Changes MUST avoid unnecessary filesystem scans, database queries, and repeated
+  computations. Preserve existing scope filters and automatic-sync bounds.
+- Parallel work MUST use bounded concurrency and appropriate backpressure;
+  limiting workers alone is insufficient if queued work can grow without bound.
+- Background operations MUST terminate when no longer required, including when
+  their owning request or server ends.
+- Code SHOULD favor incremental processing and bounded batches, and MUST avoid
+  unnecessary lock contention, including holding locks across unrelated I/O.
+
+### Resource lifecycle
+
+- File handles, database connections and transactions, subprocesses, threads,
+  and asynchronous tasks MUST have explicit owners and cleanup paths. Use Rust
+  ownership and RAII where appropriate.
+- Code MUST prevent orphaned background tasks and unintended resource retention.
+  Dropping a task or subprocess handle alone MUST NOT be assumed to stop its work;
+  arrange cancellation and joining or reaping as appropriate.
+- Error, cancellation, and shutdown paths MUST release resources correctly.
+  Cleanup that needs asynchronous work MUST have an explicit completion path
+  rather than relying solely on `Drop`.
+
+### Regression prevention
+
+- Resource-sensitive changes MUST evaluate potential memory and CPU regressions
+  and record the workload, checks, results, and limitations in the PR.
+- Validation SHOULD exercise repeated execution and representative long-running
+  workloads, including idle periods and cancellation or shutdown where relevant.
+- Memory checks SHOULD confirm stabilization after warm-up for a fixed workload,
+  allowing for bounded caches and allocator retention. Compare equivalent inputs
+  and concurrency; a single RSS sample cannot establish the absence of a leak.
+- Intentional, significant increases in resource consumption MUST be documented
+  with their rationale and expected scaling.
+- Contributors and agents MUST NOT claim code is leak-free without supporting
+  evidence, and MUST qualify conclusions by the paths and workloads checked.
+
+Use the existing [memory diagnostics](README.md#memory-diagnostics) for sampled
+RSS and phase attribution, the [automatic-sync and server lifecycle guide](docs/USER-GUIDE.md#how-the-mcp-server-refreshes-the-index)
+for operational constraints, and [query optimization notes](docs/QUERY-OPTIMIZATIONS.md)
+for existing database strategies. These describe specific mechanisms; the policy
+above governs new development. Existing test artifact and process-global-state
+requirements remain in [Test layout](#test-layout).
+
+### Resource review checklist
+
+For resource-sensitive changes, contributors and AI coding agents MUST review:
+
+- [ ] Growth bounds, scaling with input, and release or eviction points are defined.
+- [ ] Ownership, shared references, and cleanup cover success, errors, cancellation,
+      and shutdown, including background work and subprocesses.
+- [ ] Scans, queries, polling, concurrency, queues, and lock scope avoid unnecessary
+      work and provide backpressure where needed.
+- [ ] Memory and CPU regression risks, validation evidence, and untested paths are
+      recorded; repeated and long-running checks are considered.
+- [ ] Significant resource increases are justified and claims match the evidence.
+
 ## Adding a New Language Extractor
 
 1. Add a tree-sitter grammar dependency (or vendor it under `vendor/`).
