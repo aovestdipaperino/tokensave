@@ -110,6 +110,11 @@ async fn a_cancelled_sync_stops_and_leaves_the_index_marked_stale() {
     ] {
         let mut config = tokensave::config::load_config(project).expect("config");
         config.cpu_usage = profile;
+        config.memory_usage = match profile {
+            tokensave::cpu::CpuUsage::Low => tokensave::memory::MemoryUsage::Low,
+            tokensave::cpu::CpuUsage::Balanced => tokensave::memory::MemoryUsage::Balanced,
+            tokensave::cpu::CpuUsage::Performance => tokensave::memory::MemoryUsage::Performance,
+        };
         tokensave::config::save_config(project, &config).expect("save");
         let cg = TokenSave::open(project).await.expect("open");
 

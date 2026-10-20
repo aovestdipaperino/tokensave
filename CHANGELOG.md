@@ -9,6 +9,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- Project `memory_usage` profiles (`low`, `balanced`, `performance`) limit simultaneous extraction parsers independently of CPU policy, trading throughput for lower parser memory. The default `balanced` caps extraction at two parsers; `performance` retains previous concurrency. These are not total-RAM caps.
+
 - **Pascal: index Delphi package sources (`.dpk`) and include files (`.inc`).** Both are Pascal source, but only `.pas`, `.pp`, `.dpr` and `.lpr` were routed to the Pascal extractor, so a Delphi project reported them as "unsupported extension" and their declarations were missing from the graph. `.lpr` is now also reported as Pascal in language statistics, where it was already extracted but counted as Other. Existing projects pick the files up on their next `tokensave sync --force`.
 - Mandatory contributor and AI agent guidelines for memory bounds, CPU efficiency, resource cleanup, and resource regression review.
 - Add `tokensave verify [path] [--deep] [--json]`, a bounded read-only integrity checker with stable diagnostics and CI exit codes. Incremental repair is deferred; `--repair` explicitly refuses without writes.
