@@ -158,7 +158,17 @@ impl TokenSave {
     /// Creates the `.tokensave` directory, writes a default configuration
     /// (preserving existing project settings), and initializes a fresh `SQLite` database.
     pub async fn init(project_root: &Path) -> Result<Self> {
+        Self::init_with_cpu_usage(project_root, load_config(project_root)?.cpu_usage).await
+    }
+
+    /// Like [`Self::init`], but stores `cpu_usage` instead of the existing
+    /// profile. Used by `tokensave init` after benchmarking the host.
+    pub async fn init_with_cpu_usage(
+        project_root: &Path,
+        cpu_usage: crate::cpu::CpuUsage,
+    ) -> Result<Self> {
         let config = TokenSaveConfig {
+            cpu_usage,
             root_dir: project_root.to_string_lossy().to_string(),
             ..load_config(project_root)?
         };
@@ -192,6 +202,15 @@ impl TokenSave {
     /// Returns a reference to the underlying database.
     pub fn db(&self) -> &Database {
         &self.db
+    }
+
+    /// Returns the CPU profile this project was opened with.
+    ///
+    /// Interactive work (a literal search scan) uses it to bound its own
+    /// parallelism, so it follows the project's configured policy rather than
+    /// a hard-coded thread count.
+    pub fn cpu_usage(&self) -> crate::cpu::CpuUsage {
+        self.config.cpu_usage
     }
 
     /// Overrides the automatic-sync file ceiling for this handle, without

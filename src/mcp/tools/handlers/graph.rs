@@ -4,10 +4,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
+use std::path::Path;
 
 use serde_json::{json, Value};
 
 use crate::context::format_context_as_markdown;
+use crate::cpu::CpuUsage;
 use crate::errors::{Result, TokenSaveError};
 use crate::tokensave::TokenSave;
 use crate::types::{BuildContextOptions, EdgeKind, Node, NodeKind, Visibility};
@@ -102,6 +104,21 @@ pub(super) async fn handle_search(
     let path_exclude = parse_string_array(&args, "path_exclude");
 
     if literal {
+        // Literal mode reads the project's files rather than its symbols, so
+        // it has two options the ranked path does not need (#685): whether to
+        // keep counting past the limit for an exact total, and when to give
+        // up on the scan.
+        let exact_total = args
+            .get("exact_total")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        // `0` turns the budget off: the scan then runs to the end of the
+        // project, however long that takes.
+        let timeout_ms = args
+            .get("timeout_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(LITERAL_SCAN_DEFAULT_TIMEOUT_MS);
+        let timeout = (timeout_ms > 0).then(|| std::time::Duration::from_millis(timeout_ms));
         return handle_literal_search(
             cg,
             query,
@@ -111,6 +128,8 @@ pub(super) async fn handle_search(
             &path_exclude,
             format,
             ids,
+            exact_total,
+            timeout,
             session,
         )
         .await;
@@ -327,6 +346,109 @@ const UNSCANNED_COMPACT_HINT: &str =
 /// budget for no useful runtime-error-string hit.
 const LITERAL_SCAN_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
+/// Files scanned per parallel chunk.
+///
+/// The scan holds a chunk's hits in memory before it materializes them, so
+/// the chunk bounds what one step of the scan can retain: at most one file's
+/// content per worker, plus one file's hit text per file in the chunk. A
+/// chunk is released before the next one is scanned.
+const LITERAL_SCAN_CHUNK: usize = 8;
+
+/// How long a literal scan may run before it answers with what it found.
+///
+/// A scan that reaches the budget says so and reports `total` as a lower
+/// bound, rather than holding the call while the rest of the project is read
+/// (#685). The budget is generous: a parallel scan of a large repository
+/// finishes well inside it, and it only trips on a scan that is pathologically
+/// slow. `timeout_ms: 0` turns it off.
+const LITERAL_SCAN_DEFAULT_TIMEOUT_MS: u64 = 30_000;
+
+/// One file's literal hits.
+struct LiteralScan {
+    /// How many lines in the file matched, including the ones past the cap.
+    count: usize,
+    /// The matching lines kept for materialization: the 0-based line index
+    /// and the trimmed line text.
+    hits: Vec<(u32, String)>,
+}
+
+/// Scans one indexed file for the literal query.
+///
+/// Returns the number of matching lines and the first `budget` of them.
+fn scan_literal_file(project_root: &Path, path: &str, query: &str, budget: usize) -> LiteralScan {
+    // #685: the indexed size is stale — a file that grew after indexing
+    // (logs, generated blobs) would be read in full, and a path that
+    // became a FIFO or device would block the read forever. Stat fresh,
+    // skip non-regular files, and bound the read by the current size.
+    // shortcut: a file swapped in between stat and read still races;
+    // close it with open+fstat+take if that ever bites.
+    let abs_path = project_root.join(path);
+    let Ok(meta) = std::fs::metadata(&abs_path) else {
+        return LiteralScan {
+            count: 0,
+            hits: Vec::new(),
+        };
+    };
+    if !meta.file_type().is_file() || meta.len() > LITERAL_SCAN_MAX_FILE_BYTES {
+        return LiteralScan {
+            count: 0,
+            hits: Vec::new(),
+        };
+    }
+    let Ok(source) = crate::sync::read_source_file(&abs_path) else {
+        return LiteralScan {
+            count: 0,
+            hits: Vec::new(),
+        };
+    };
+
+    let mut count = 0usize;
+    let mut hits = Vec::new();
+    for (idx, line) in source.lines().enumerate() {
+        if !line.contains(query) {
+            continue;
+        }
+        count += 1;
+        if hits.len() < budget {
+            hits.push((idx as u32, line.trim().to_string()));
+        }
+    }
+    LiteralScan { count, hits }
+}
+
+/// Scans one chunk of files for the literal query, in parallel.
+///
+/// The scan is blocking file I/O, so it runs in `spawn_blocking` and inside
+/// the project's CPU profile pool (#685): the pool bounds how many files are
+/// read at once by the configured profile, and the chunk bounds how many hits
+/// are retained. Results come back in the order the paths were given, so the
+/// caller still reports matches in file order.
+async fn scan_literal_chunk(
+    project_root: &Path,
+    paths: &[String],
+    query: &str,
+    budget: usize,
+    cpu: CpuUsage,
+) -> Result<Vec<LiteralScan>> {
+    let project_root = project_root.to_path_buf();
+    let paths = paths.to_vec();
+    let query = query.to_string();
+    let scanned = tokio::task::spawn_blocking(move || {
+        cpu.run(|| {
+            use rayon::prelude::*;
+            paths
+                .par_iter()
+                .map(|path| scan_literal_file(&project_root, path, &query, budget))
+                .collect::<Vec<_>>()
+        })
+    })
+    .await
+    .map_err(|error| TokenSaveError::Config {
+        message: format!("literal search scan failed: {error}"),
+    })??;
+    Ok(scanned)
+}
+
 /// Literal (exact-substring, case-sensitive) search over the source text of the
 /// project's indexed files.
 ///
@@ -335,8 +457,12 @@ const LITERAL_SCAN_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 /// never present in symbol names or signatures. Each match is reported as a
 /// `{ file, line, text, enclosing, enclosing_id }` location. Scanning is
 /// deterministic (files sorted by path). Only the first `limit` matches are
-/// materialized, but the scan keeps counting past them so the response can
-/// report the exact `total` and whether it was `truncated` (#645).
+/// materialized. By default the scan keeps counting past them so the response
+/// can report the exact `total` and whether it was `truncated` (#645); with
+/// `exact_total` off it stops at the limit instead, and a `timeout` ends the
+/// scan early. Either way the response says whether the total is exact
+/// (`total_exact`) rather than passing a partial count off as the whole
+/// project.
 #[allow(clippy::too_many_arguments)]
 async fn handle_literal_search(
     cg: &TokenSave,
@@ -347,6 +473,8 @@ async fn handle_literal_search(
     path_exclude: &[String],
     format: &str,
     ids: bool,
+    exact_total: bool,
+    timeout: Option<std::time::Duration>,
     session: Option<&SessionState>,
 ) -> Result<ToolResult> {
     if query.is_empty() {
@@ -381,77 +509,96 @@ async fn handle_literal_search(
     // Every match in scope, including those past `limit`. Counting the rest is
     // a substring test per line of files the scan would have read anyway on a
     // query with few hits, and it turns a capped `count` into an honest
-    // "showing N of M" (#645).
+    // "showing N of M" (#645). With `exact_total` off the scan stops at the
+    // limit instead, and `total` is then only a lower bound.
     let mut total: usize = 0;
 
-    for file in &files {
-        // Respect the same scope prefix the non-literal path uses.
-        if let Some(prefix) = scope_prefix {
-            if !file.path.starts_with(prefix) {
-                continue;
+    // The scan reads and matches every indexed file, so it is the slow part
+    // of a literal search (#685). It runs in chunks, in parallel, inside the
+    // project's CPU profile pool, and off the async runtime so a long scan
+    // does not block the server's other work. The scope prefix filters the
+    // scan set up front, so a scoped search does not read files it will not
+    // report on.
+    if let Some(prefix) = scope_prefix {
+        files.retain(|f| f.path.starts_with(prefix));
+    }
+    let cpu = cg.cpu_usage();
+    let scan_paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+
+    // A scan that runs past its budget answers with what it found and says so,
+    // rather than holding the call until the whole project has been read.
+    // The deadline is checked between chunks, so the overshoot is bounded by
+    // one chunk.
+    let deadline = timeout.map(|budget| std::time::Instant::now() + budget);
+    // Whether the scan reached the end of the project. A scan that stopped
+    // early cannot report an exact total.
+    let mut complete = true;
+    let mut timed_out = false;
+
+    for chunk in scan_paths.chunks(LITERAL_SCAN_CHUNK) {
+        if let Some(deadline) = deadline {
+            if std::time::Instant::now() >= deadline {
+                complete = false;
+                timed_out = true;
+                break;
             }
         }
-        // #685: the indexed size is stale — a file that grew after indexing
-        // (logs, generated blobs) would be read in full, and a path that
-        // became a FIFO or device would block the read forever. Stat fresh,
-        // skip non-regular files, and bound the read by the current size.
-        // shortcut: a file swapped in between stat and read still races;
-        // close it with open+fstat+take if that ever bites.
-        let abs_path = project_root.join(&file.path);
-        let Ok(meta) = std::fs::metadata(&abs_path) else {
-            continue;
-        };
-        if !meta.file_type().is_file() || meta.len() > LITERAL_SCAN_MAX_FILE_BYTES {
-            continue;
-        }
-        let Ok(source) = crate::sync::read_source_file(&abs_path) else {
-            continue;
-        };
-
-        if matches.len() >= limit {
-            total += source.lines().filter(|line| line.contains(query)).count();
-            continue;
-        }
-
-        let nodes = cg.get_nodes_by_file(&file.path).await.unwrap_or_default();
-
-        for (idx, line) in source.lines().enumerate() {
-            if !line.contains(query) {
+        // Once the response is full the scan still runs to the end of the
+        // project — the exact `total` needs it (#645) — but it stops keeping
+        // hit text it will not report.
+        let budget = limit.saturating_sub(matches.len());
+        let scans = scan_literal_chunk(project_root, chunk, query, budget, cpu).await?;
+        for (path, scan) in chunk.iter().zip(scans) {
+            total += scan.count;
+            if scan.hits.is_empty() {
                 continue;
             }
-            total += 1;
-            if matches.len() >= limit {
-                continue;
-            }
-            let line_no = (idx as u32) + 1;
-            // Innermost node whose [start_line, end_line] covers the match.
-            // Node spans are stored 0-based, so compare with the 0-based index
-            // — comparing the 1-based display line attributed hits to the
-            // *next* adjacent symbol (#203).
-            let line0 = idx as u32;
-            let enclosing = nodes
-                .iter()
-                .filter(|n| n.start_line <= line0 && line0 <= n.end_line)
-                .min_by_key(|n| n.end_line.saturating_sub(n.start_line));
+            // The node lookup is one database round-trip, so it happens only
+            // for the files that matched (#685).
+            let nodes = cg.get_nodes_by_file(path).await.unwrap_or_default();
 
-            let enclosing_name = enclosing.as_ref().map(|n| n.name.clone());
-            let enclosing_id = enclosing.as_ref().map(|n| n.id.clone());
-            let mut match_value = json!({
-                "file": file.path,
-                "line": line_no,
-                "text": line.trim(),
-                "enclosing": enclosing_name,
-            });
-            if ids {
-                match_value["enclosing_id"] = json!(enclosing_id);
+            for (line0, text) in scan.hits {
+                if matches.len() >= limit {
+                    break;
+                }
+                let line_no = line0 + 1;
+                // Innermost node whose [start_line, end_line] covers the match.
+                // Node spans are stored 0-based, so compare with the 0-based index
+                // — comparing the 1-based display line attributed hits to the
+                // *next* adjacent symbol (#203).
+                let enclosing = nodes
+                    .iter()
+                    .filter(|n| n.start_line <= line0 && line0 <= n.end_line)
+                    .min_by_key(|n| n.end_line.saturating_sub(n.start_line));
+
+                let enclosing_name = enclosing.as_ref().map(|n| n.name.clone());
+                let enclosing_id = enclosing.as_ref().map(|n| n.id.clone());
+                let mut match_value = json!({
+                    "file": path,
+                    "line": line_no,
+                    "text": text,
+                    "enclosing": enclosing_name,
+                });
+                if ids {
+                    match_value["enclosing_id"] = json!(enclosing_id);
+                }
+                matches.push(match_value);
+                if !touched.contains(path) {
+                    touched.push(path.clone());
+                }
             }
-            matches.push(match_value);
-            if !touched.contains(&file.path) {
-                touched.push(file.path.clone());
-            }
+        }
+        // The caller asked not to pay for an exact total, so the scan stops
+        // here: the matches found so far are the answer.
+        if !exact_total && matches.len() >= limit {
+            complete = false;
+            break;
         }
     }
-    let truncated = total > matches.len();
+    // A scan that stopped early cannot claim an exact total, and the answer
+    // is a capped one: there are at least as many matches as were counted.
+    let total_exact = complete;
+    let truncated = !total_exact || total > matches.len();
 
     let touched_files = unique_file_paths(touched.iter().map(String::as_str));
     let mut payload = json!({
@@ -459,9 +606,28 @@ async fn handle_literal_search(
         "query": query,
         "count": matches.len(),
         "total": total,
+        // Whether `total` is the exact number of matches in the project. A
+        // scan that stopped at the limit or ran out of time reports a lower
+        // bound instead, and says so rather than passing it off as the whole
+        // project (#442).
+        "total_exact": total_exact,
         "truncated": truncated,
         "matches": matches,
     });
+    if timed_out {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("timed_out".to_string(), json!(true));
+            object.insert(
+                "note".to_string(),
+                json!(
+                    "The scan reached its time budget and stopped early. The matches \
+                     shown are the ones found so far; `total` is a lower bound, not the \
+                     number of matches in the project. Narrow the search with \
+                     `path_include`, or raise `timeout_ms`."
+                ),
+            );
+        }
+    }
     // A literal answer that scanned only part of the project must say so:
     // `count` otherwise reads as "these are all the occurrences" (#442).
     if let Some(unscanned) =
@@ -483,7 +649,19 @@ async fn handle_literal_search(
         }
     }
     if format == "text" {
-        let mut text = if truncated {
+        let mut text = if timed_out {
+            format!(
+                "count: {} of at least {total} (timed out; the scan stopped early, so \
+                 `total` is a lower bound)\n\n",
+                matches.len()
+            )
+        } else if !total_exact {
+            format!(
+                "count: {} of at least {total} (truncated; the scan stopped at the limit, \
+                 so `total` is a lower bound)\n\n",
+                matches.len()
+            )
+        } else if truncated {
             format!(
                 "count: {} of {total} (truncated; raise `limit` to see more)\n\n",
                 matches.len()

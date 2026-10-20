@@ -19,7 +19,7 @@ use tempfile::TempDir;
 use tokensave::config::Toolset;
 use tokensave::mcp::tools::{tool_area, CORE_TOOLS, MORE_TOOL};
 use tokensave::mcp::transport::ChannelTransport;
-use tokensave::mcp::McpServer;
+use tokensave::mcp::{McpServer, McpTransport};
 use tokensave::tokensave::TokenSave;
 
 /// Creates and indexes a project, and sets `tools` before the server opens it.
@@ -224,7 +224,7 @@ async fn run_session(server: Arc<McpServer>, messages: Vec<Value>) -> Vec<Value>
     }
     drop(sender);
     let handle = tokio::spawn(async move {
-        server.run(&mut transport).await.unwrap();
+        server.run(transport).await.unwrap();
     });
     let mut lines = Vec::new();
     while let Some(line) = receiver.recv().await {

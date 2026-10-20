@@ -215,6 +215,62 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         tokensave::extraction_worker::run_worker();
     }
 
+    // Quality comparison bypasses startup maintenance and all persistent writes.
+    if let Commands::QualityDiff {
+        base,
+        target,
+        json,
+        fail_on,
+        cyclomatic,
+        cognitive,
+        function_lines,
+        fan_out,
+        min_increase,
+        allow_stale,
+    } = &command
+    {
+        let root =
+            std::env::current_dir().map_err(|e| tokensave::errors::TokenSaveError::Config {
+                message: e.to_string(),
+            })?;
+        let options = tokensave::quality_diff::QualityOptions {
+            cyclomatic: *cyclomatic,
+            cognitive: *cognitive,
+            function_lines: *function_lines,
+            fan_out: *fan_out,
+            min_increase: *min_increase,
+            allow_stale: *allow_stale,
+        };
+        match tokensave::quality_diff::compare(&root, base, target, &options).await {
+            Ok(report) => {
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).map_err(|e| {
+                            tokensave::errors::TokenSaveError::Config {
+                                message: e.to_string(),
+                            }
+                        })?
+                    );
+                } else {
+                    print!("{}", report.human());
+                }
+                process::exit(report.exit_code(fail_on.is_some()));
+            }
+            Err(e) => {
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"error": e.to_string(), "complete": false})
+                    );
+                } else {
+                    eprintln!("{e}");
+                }
+                process::exit(2);
+            }
+        }
+    }
+
     let skip_agent_install_maintenance = agent_maintenance_disabled_from_env(
         std::env::var("TOKENSAVE_SKIP_AGENT_MAINTENANCE")
             .ok()
@@ -366,6 +422,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             skip_folders,
             git_hook,
             no_git_hook,
+            cpu_usage,
         } => {
             let project_path = tokensave::config::resolve_path(path);
             if TokenSave::is_initialized(&project_path) {
@@ -409,7 +466,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             tokensave::memstats::init("index", &project_path);
             tokensave::memstats::record("start");
 
-            commands::init_and_index(&project_path, &skip_folders, false).await?;
+            commands::init_and_index(&project_path, &skip_folders, false, cpu_usage).await?;
 
             // Offer this repository's own git hooks (#455). Local rather than
             // global, because the global path claims `core.hooksPath` — one
@@ -437,6 +494,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
+        Commands::Tune {
+            path,
+            dry_run,
+            json,
+        } => commands::run_tune(path, dry_run, json)?,
         Commands::Sync {
             path,
             force,
@@ -475,7 +537,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             tokensave::memstats::record("start");
 
             if force {
-                commands::init_and_index(&project_path, &skip_folders, verbose).await?;
+                commands::init_and_index(&project_path, &skip_folders, verbose, None).await?;
             } else {
                 let mut cg = TokenSave::open(&project_path).await?;
                 cg.add_skip_folders(&skip_folders);
@@ -592,7 +654,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 })?;
                 let answer = answer.trim();
                 if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
-                    commands::init_and_index(&project_path, &[], false).await?
+                    commands::init_and_index(&project_path, &[], false, None).await?
                 } else {
                     return Ok(());
                 }
@@ -1826,6 +1888,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 eprintln!("Memory report error: {e}");
             }
         }
+        Commands::QualityDiff { .. } => unreachable!("handled before startup"),
         Commands::Branch { action } => {
             commands::handle_branch_action(action).await?;
         }
@@ -2432,13 +2495,17 @@ async fn run_mcp_server(
     idle_timeout_secs: Option<u64>,
 ) -> tokensave::errors::Result<()> {
     server.set_timings_enabled(timings);
-    let mut transport = tokensave::mcp::StdioTransport::new();
+    let transport = tokensave::mcp::StdioTransport::new();
+    // The server reads the next request while it is still answering the
+    // previous one, so the transport is split into its two halves (#685).
+    let (reader, mut writer) = tokensave::mcp::McpTransport::split(transport);
     if let Some(line) = peeked_line {
-        server.handle_and_write(&line, &mut transport).await;
+        server.handle_and_write(&line, &mut writer).await;
     }
     server
-        .run_with_idle_timeout(
-            &mut transport,
+        .run_with_halves(
+            reader,
+            writer,
             idle_timeout_secs.map(std::time::Duration::from_secs),
         )
         .await?;

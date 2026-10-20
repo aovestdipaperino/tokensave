@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tokensave::mcp::transport::ChannelTransport;
-use tokensave::mcp::McpServer;
+use tokensave::mcp::{McpServer, McpTransport};
 use tokensave::tokensave::TokenSave;
 
 /// The cancellation flag is process-global, and `#[tokio::test]`s in one
@@ -55,7 +55,7 @@ async fn a_cancellation_request_leaves_a_run_loop_whose_stdin_never_closes() {
     let (mut transport2, _held_open2, _out2) = ChannelTransport::new();
 
     let run = tokio::spawn(async move {
-        server.run(&mut transport).await.expect("run");
+        server.run(transport).await.expect("run");
     });
 
     // Nothing has been requested yet, so the loop must still be parked.
@@ -75,7 +75,7 @@ async fn a_cancellation_request_leaves_a_run_loop_whose_stdin_never_closes() {
     // Flag still set: a loop that starts after the request must observe it on
     // its first poll rather than parking forever.
     let run2 = tokio::spawn(async move {
-        server2.run(&mut transport2).await.expect("run");
+        server2.run(transport2).await.expect("run");
     });
     let exited2 = tokio::time::timeout(Duration::from_secs(5), run2).await;
     tokensave::cancel::reset();

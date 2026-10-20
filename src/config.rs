@@ -84,6 +84,9 @@ pub fn resolve_report_savings(configured: bool) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenSaveConfig {
+    /// Opt-in fallback for files without a registered extension or manifest language.
+    #[serde(default)]
+    pub language_detection: crate::language_detection::DetectionConfig,
     /// CPU concurrency profile, applied when the project is opened.
     #[serde(default)]
     pub cpu_usage: crate::cpu::CpuUsage,
@@ -279,6 +282,7 @@ pub fn env_bool_override(var: &str, config_value: bool) -> bool {
 impl Default for TokenSaveConfig {
     fn default() -> Self {
         Self {
+            language_detection: crate::language_detection::DetectionConfig::default(),
             cpu_usage: crate::cpu::CpuUsage::default(),
             memory_usage: crate::memory::MemoryUsage::default(),
             version: CONFIG_VERSION,
@@ -371,6 +375,36 @@ pub fn load_config(project_root: &Path) -> Result<TokenSaveConfig> {
     migrate_config(&mut config);
 
     Ok(config)
+}
+
+/// The `cpu_usage` explicitly present in the project's config file, if any.
+///
+/// Unlike [`load_config`], a missing field is `None` rather than the default,
+/// so `init` can tell a profile the user chose from one it should benchmark.
+pub fn configured_cpu_usage(project_root: &Path) -> Result<Option<crate::cpu::CpuUsage>> {
+    let config_path = get_config_path(project_root);
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    let parse_error = |e: &dyn std::fmt::Display| TokenSaveError::Config {
+        message: format!(
+            "failed to parse config file '{}': {}",
+            config_path.display(),
+            e
+        ),
+    };
+    let contents = fs::read_to_string(&config_path).map_err(|e| TokenSaveError::Config {
+        message: format!(
+            "failed to read config file '{}': {}",
+            config_path.display(),
+            e
+        ),
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&contents).map_err(|e| parse_error(&e))?;
+    value
+        .get("cpu_usage")
+        .map(|v| serde_json::from_value(v.clone()).map_err(|e| parse_error(&e)))
+        .transpose()
 }
 
 /// Brings a config read from disk up to [`CONFIG_VERSION`].

@@ -505,6 +505,18 @@ daemon and the CLI. The on-demand model is its replacement.
 Multiple MCP servers on the same project (e.g. two agents) coordinate via
 a per-project sync lock: only one sync runs at a time.
 
+### Concurrent tool calls
+
+The server answers read-only tool calls side by side, up to four at a time
+(#685). A read-only call only reads the graph, so several of them can run
+without interfering, and a burst of parallel searches no longer queues behind
+each other the way a request-at-a-time server made it.
+
+Calls that change the index — an edit, a rename, a sync — still run alone, in
+the order they arrived, so they never overlap each other or a read-only call.
+Responses carry the id of their request, so a client that sends several
+requests before reading the answers matches them by id, not by order.
+
 ### What an automatic sync will not do
 
 Both refreshes above are *automatic* — you did not ask for them — so they
@@ -902,6 +914,30 @@ Files you excluded yourself are not reported there: config `exclude` globs,
 project query-ignore rules, and the call's own `path_include`/`path_exclude`
 and scope prefix all apply to the report as well as to the scan, so it names
 only files you asked about and the index could not answer for.
+
+Two arguments bound how long a literal scan runs and how much it counts:
+
+- `exact_total` (default `true`) keeps counting past the limit, so `total` is
+  the number of matches in the whole project. Pass `false` to stop the scan
+  as soon as `limit` matches are found: the scan then reads only part of the
+  project and answers sooner.
+- `timeout_ms` (default `30000`, `0` disables it) ends the scan when the
+  budget runs out and answers with the matches found so far.
+
+Either way the response says what it is: `total_exact` is `false` when the
+scan did not reach the end of the project, and `total` is then a lower bound
+rather than the number of matches in the project. A scan that ran out of time
+also carries `timed_out: true` and a note saying so.
+
+```json
+{
+  "literal": true, "query": "someFlag", "count": 10,
+  "total": 10, "total_exact": false, "truncated": true,
+  "timed_out": true,
+  "note": "The scan reached its time budget and stopped early. ...",
+  "matches": [ ... ]
+}
+```
 
 ### Navigating relationships
 
@@ -1321,7 +1357,43 @@ Existing cancellation, reaping and on-demand freshness bounds remain in place.
 
 ### CPU usage profiles
 
-Add `"cpu_usage": "balanced"` to the existing `.tokensave/config.json`:
+`tokensave init` picks a profile for you. Before the first index it benchmarks
+the machine (normally well under a second) and writes `low`, `balanced` or
+`performance` as `cpu_usage` in `.tokensave/config.json`, printing what it
+measured and why it chose that profile:
+
+```text
+Benchmarking this machine to choose a CPU usage profile...
+  8 CPUs, 7.6 GiB memory (5.5 GiB available), 4.3x speedup on 8 threads
+Initialized TokenSave at /path/to/project
+CPU usage profile: balanced (4.3 CPUs of parallel throughput; resources are moderate or shared; run `tokensave tune` to measure again)
+```
+
+The benchmark reads the CPUs this process may use (`available_parallelism`,
+which honors affinity and cgroup CPU quotas) and total and available memory
+(including a visible cgroup memory limit). It then times a fixed CPU-bound
+workload on one thread and on up to 16 threads. The measured speedup gives the
+*effective* CPUs, which can be lower than the CPU count on throttled
+containers, shared vCPUs or a busy machine. The profile is chosen as follows:
+
+| Selected | When |
+| --- | --- |
+| `low` | Total memory under 3 GiB, available memory under 1 GiB, at most 2 CPUs, or under 2.5 effective CPUs. |
+| `performance` | At least 6 effective CPUs, at least 60% parallel efficiency, at least 16 GiB total memory and at least 8 GiB available. |
+| `balanced` | Everything else, and whenever a probe fails. |
+
+The benchmark runs once and its result is stored, so normal runs never measure
+anything. To skip it, pass `tokensave init --cpu-usage <low|balanced|performance>`.
+A `cpu_usage` that is already in the config file is also kept.
+
+Run `tokensave tune` at any time after `init` to measure again, for example
+after a hardware change or when the first benchmark ran on a busy machine. It
+updates `cpu_usage` when the recommendation differs from the stored profile.
+`tokensave tune --dry-run` only prints the recommendation and also works where
+no project is initialized. `--json` gives machine-readable output. Restart
+`tokensave serve` after a change.
+
+To choose a profile by hand, set `"cpu_usage"` in the existing `.tokensave/config.json`:
 
 ```json
 {
@@ -1515,6 +1587,64 @@ formats to source languages. BOM-marked UTF-16 source remains supported.
 Exclusions, hidden-directory policy, gitignore, and file-size limits still apply. Aliases do not bypass those protections or enable disabled
 language features. `sync --doctor` reports skipped counts and configuration
 options; JSON result fields retain their existing shape.
+### Optional: automatic language detection
+
+Unknown extensions and extensionless scripts can be indexed using existing
+extractors when their contents provide strong language evidence. Enable this
+opt-in fallback in `.tokensave/config.json`:
+
+```json
+"language_detection": {
+  "enabled": true,
+  "max_bytes": 4096,
+  "cache_results": true
+}
+```
+
+Restart the MCP server after changing configuration, then run `tokensave sync`.
+Set `enabled` to `false` to restore extension-only discovery. Existing manifest
+language overrides and registered extensions always take precedence and bypass
+this detector. No extension mapping is added.
+
+Detection first recognizes exact interpreter names in absolute shebangs,
+including `/usr/bin/env` and `env -S`: Python, Bash-compatible shells, Node.js,
+and Ruby, when their extractors are installed. Otherwise it requires multiple
+syntax signals for Python, Rust, JavaScript, TypeScript, Go, Ruby, C or C++.
+These evidence rules are heuristic, not calibrated confidence probabilities;
+ambiguous files and unknown shebang interpreters remain unsupported. A short
+valid program may intentionally be left unclassified. No interpreter runs and
+no parser is tried speculatively.
+
+Only a bounded prefix is read for discovery: `max_bytes` defaults to 4096 and
+must be between 128 and 65536. Discovery reads up to four extra bytes to
+recognize a truncated UTF-8 codepoint at the sample boundary; that partial
+codepoint is ignored. A leading UTF-8 BOM is stripped before classification.
+Unknown fields inside `language_detection` are configuration errors and prevent
+the project from opening, so misspelled settings are reported immediately.
+Binary/control bytes, invalid UTF-8 within that
+prefix, and common certificate/private-key formats are rejected. Normal file
+size, exclude, hidden-directory, and gitignore policies still apply. Successful
+detection invokes the actual extractor, making symbols available to search and
+MCP context tools. Unclassified files retain the existing artifact fallback.
+
+A process-local FIFO caches up to 4096 positive and negative decisions, without
+retaining source text. File timestamp (including Unix change time), size,
+settings, extractor availability, and absolute worktree path form its key.
+Eviction or process restart causes another bounded prefix read. Incremental
+indexing still uses the existing file hashes; branch-local metadata records
+settings changes so unchanged unknown files can be reclassified. Forced reindex
+uses the same detector. Discovery reads a prefix before extraction reads the
+source; extraction reuses its existing source buffer for detection. Known
+extensions incur no detection reads. Warm server scans reuse cached decisions;
+a new CLI process starts with an empty detection cache.
+
+`tokensave sync --verbose` reports examined files, shebang/content decisions,
+unsupported counts, cache hits and detection time. Counters are process-local;
+concurrent scans can contribute to the same snapshot. Existing unsupported
+extension summaries remain available. Normal and machine-readable outputs keep
+their existing shape. Benchmark the synthetic 10,000 recognized-file and
+500 unknown-file workloads with `cargo bench --bench language_detection --
+recognized-off` (also `recognized-on`, `unknown-off`, `unknown-on`).
 
 ### Optional: `.tokensave/project.json` — explicit index entries
 
