@@ -65,15 +65,19 @@ async fn project() -> (TempDir, TokenSave) {
 }
 
 async fn literal_search(cg: &TokenSave, query: &str, limit: usize) -> Value {
-    let result = handle_tool_call(
-        cg,
-        "tokensave_search",
-        json!({ "query": query, "literal": true, "format": "json", "limit": limit }),
-        None,
-        None,
-    )
-    .await
-    .expect("literal search must succeed");
+    literal_search_with(cg, query, limit, json!({})).await
+}
+
+async fn literal_search_with(cg: &TokenSave, query: &str, limit: usize, extra: Value) -> Value {
+    let mut args = json!({ "query": query, "literal": true, "format": "json", "limit": limit });
+    if let (Some(object), Some(extra)) = (args.as_object_mut(), extra.as_object()) {
+        for (key, value) in extra {
+            object.insert(key.clone(), value.clone());
+        }
+    }
+    let result = handle_tool_call(cg, "tokensave_search", args, None, None)
+        .await
+        .expect("literal search must succeed");
     let text = result.value["content"][0]["text"]
         .as_str()
         .expect("tool result carries text");
@@ -140,4 +144,114 @@ async fn a_capped_answer_still_reports_the_exact_total() {
         "the total counts the whole project, not only the reported matches"
     );
     assert_eq!(payload["truncated"].as_bool(), Some(true));
+    assert_eq!(
+        payload["total_exact"].as_bool(),
+        Some(true),
+        "the scan reached the end of the project, so the total is exact"
+    );
+}
+
+/// `exact_total: false` trades the exact count for a scan that stops at the
+/// limit. The answer then says the total is a lower bound rather than
+/// passing a partial count off as the number of matches in the project.
+#[tokio::test]
+async fn an_inexact_total_scan_stops_at_the_limit_and_says_so() {
+    let (_tmp, cg) = project().await;
+    let payload = literal_search_with(&cg, "needle", 3, json!({ "exact_total": false })).await;
+
+    assert_eq!(payload["count"].as_u64(), Some(3));
+    assert_eq!(
+        payload["total_exact"].as_bool(),
+        Some(false),
+        "the scan stopped at the limit, so the total is a lower bound"
+    );
+    assert_eq!(payload["truncated"].as_bool(), Some(true));
+    assert!(
+        payload["total"].as_u64().unwrap_or(0) >= 3,
+        "the lower bound still covers the matches that were reported"
+    );
+}
+
+/// A scan that finds fewer matches than the limit still reaches the end of
+/// the project, so its total is exact even with `exact_total: false`.
+#[tokio::test]
+async fn an_inexact_total_scan_that_finishes_is_still_exact() {
+    let (_tmp, cg) = project().await;
+    let payload =
+        literal_search_with(&cg, "needle", FILES * 4, json!({ "exact_total": false })).await;
+
+    assert_eq!(payload["count"].as_u64(), Some(FILES as u64));
+    assert_eq!(payload["total"].as_u64(), Some(FILES as u64));
+    assert_eq!(payload["total_exact"].as_bool(), Some(true));
+    assert_eq!(payload["truncated"].as_bool(), Some(false));
+}
+
+/// A project big enough that a scan cannot finish inside a millisecond.
+///
+/// The files are tracked as artifacts, so they are indexed without a parser
+/// and the fixture stays cheap, but the literal scan still reads their text.
+async fn large_project() -> (TempDir, TokenSave) {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+
+    git(&root, &["init", "-b", "master"]);
+    let filler: String = (0..2_000)
+        .map(|i| format!("  \"field_{i}\": \"filler value for the scan\",\n"))
+        .collect();
+    for i in 0..64 {
+        std::fs::write(
+            root.join(format!("data_{i:02}.json")),
+            format!("{{\n{filler}  \"needle\": true\n}}\n"),
+        )
+        .unwrap();
+    }
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-m", "init"]);
+
+    let cg = TokenSave::init(&root).await.unwrap();
+    cg.index_all().await.unwrap();
+    (tmp, cg)
+}
+
+/// A scan that runs out of time answers with the matches it found and says
+/// the answer is partial, instead of holding the call until the whole project
+/// has been read.
+#[tokio::test]
+async fn a_scan_that_runs_out_of_time_reports_a_partial_answer() {
+    let (_tmp, cg) = large_project().await;
+    let payload = literal_search_with(&cg, "needle", 500, json!({ "timeout_ms": 1 })).await;
+
+    assert_eq!(
+        payload["timed_out"].as_bool(),
+        Some(true),
+        "a scan that cannot finish in a millisecond stops early"
+    );
+    assert_eq!(
+        payload["total_exact"].as_bool(),
+        Some(false),
+        "a scan that stopped early cannot report an exact total"
+    );
+    assert_eq!(payload["truncated"].as_bool(), Some(true));
+    assert!(
+        payload["count"].as_u64().unwrap_or(0) >= 1,
+        "the matches found before the deadline are still reported"
+    );
+    assert!(
+        payload["note"]
+            .as_str()
+            .is_some_and(|note| !note.is_empty()),
+        "a partial answer explains itself"
+    );
+}
+
+/// A scan with the budget turned off runs to the end of the project, so it
+/// reports an exact total even though it took longer than a millisecond.
+#[tokio::test]
+async fn a_scan_without_a_budget_reports_an_exact_total() {
+    let (_tmp, cg) = large_project().await;
+    let payload = literal_search_with(&cg, "needle", 500, json!({ "timeout_ms": 0 })).await;
+
+    assert_eq!(payload["timed_out"].as_bool(), None);
+    assert_eq!(payload["total_exact"].as_bool(), Some(true));
+    assert_eq!(payload["total"].as_u64(), Some(64));
 }

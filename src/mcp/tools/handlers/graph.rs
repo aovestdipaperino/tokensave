@@ -104,6 +104,21 @@ pub(super) async fn handle_search(
     let path_exclude = parse_string_array(&args, "path_exclude");
 
     if literal {
+        // Literal mode reads the project's files rather than its symbols, so
+        // it has two options the ranked path does not need (#685): whether to
+        // keep counting past the limit for an exact total, and when to give
+        // up on the scan.
+        let exact_total = args
+            .get("exact_total")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        // `0` turns the budget off: the scan then runs to the end of the
+        // project, however long that takes.
+        let timeout_ms = args
+            .get("timeout_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(LITERAL_SCAN_DEFAULT_TIMEOUT_MS);
+        let timeout = (timeout_ms > 0).then(|| std::time::Duration::from_millis(timeout_ms));
         return handle_literal_search(
             cg,
             query,
@@ -113,6 +128,8 @@ pub(super) async fn handle_search(
             &path_exclude,
             format,
             ids,
+            exact_total,
+            timeout,
             session,
         )
         .await;
@@ -337,6 +354,15 @@ const LITERAL_SCAN_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 /// chunk is released before the next one is scanned.
 const LITERAL_SCAN_CHUNK: usize = 8;
 
+/// How long a literal scan may run before it answers with what it found.
+///
+/// A scan that reaches the budget says so and reports `total` as a lower
+/// bound, rather than holding the call while the rest of the project is read
+/// (#685). The budget is generous: a parallel scan of a large repository
+/// finishes well inside it, and it only trips on a scan that is pathologically
+/// slow. `timeout_ms: 0` turns it off.
+const LITERAL_SCAN_DEFAULT_TIMEOUT_MS: u64 = 30_000;
+
 /// One file's literal hits.
 struct LiteralScan {
     /// How many lines in the file matched, including the ones past the cap.
@@ -431,8 +457,12 @@ async fn scan_literal_chunk(
 /// never present in symbol names or signatures. Each match is reported as a
 /// `{ file, line, text, enclosing, enclosing_id }` location. Scanning is
 /// deterministic (files sorted by path). Only the first `limit` matches are
-/// materialized, but the scan keeps counting past them so the response can
-/// report the exact `total` and whether it was `truncated` (#645).
+/// materialized. By default the scan keeps counting past them so the response
+/// can report the exact `total` and whether it was `truncated` (#645); with
+/// `exact_total` off it stops at the limit instead, and a `timeout` ends the
+/// scan early. Either way the response says whether the total is exact
+/// (`total_exact`) rather than passing a partial count off as the whole
+/// project.
 #[allow(clippy::too_many_arguments)]
 async fn handle_literal_search(
     cg: &TokenSave,
@@ -443,6 +473,8 @@ async fn handle_literal_search(
     path_exclude: &[String],
     format: &str,
     ids: bool,
+    exact_total: bool,
+    timeout: Option<std::time::Duration>,
     session: Option<&SessionState>,
 ) -> Result<ToolResult> {
     if query.is_empty() {
@@ -477,7 +509,8 @@ async fn handle_literal_search(
     // Every match in scope, including those past `limit`. Counting the rest is
     // a substring test per line of files the scan would have read anyway on a
     // query with few hits, and it turns a capped `count` into an honest
-    // "showing N of M" (#645).
+    // "showing N of M" (#645). With `exact_total` off the scan stops at the
+    // limit instead, and `total` is then only a lower bound.
     let mut total: usize = 0;
 
     // The scan reads and matches every indexed file, so it is the slow part
@@ -492,7 +525,24 @@ async fn handle_literal_search(
     let cpu = cg.cpu_usage();
     let scan_paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
 
+    // A scan that runs past its budget answers with what it found and says so,
+    // rather than holding the call until the whole project has been read.
+    // The deadline is checked between chunks, so the overshoot is bounded by
+    // one chunk.
+    let deadline = timeout.map(|budget| std::time::Instant::now() + budget);
+    // Whether the scan reached the end of the project. A scan that stopped
+    // early cannot report an exact total.
+    let mut complete = true;
+    let mut timed_out = false;
+
     for chunk in scan_paths.chunks(LITERAL_SCAN_CHUNK) {
+        if let Some(deadline) = deadline {
+            if std::time::Instant::now() >= deadline {
+                complete = false;
+                timed_out = true;
+                break;
+            }
+        }
         // Once the response is full the scan still runs to the end of the
         // project — the exact `total` needs it (#645) — but it stops keeping
         // hit text it will not report.
@@ -538,8 +588,17 @@ async fn handle_literal_search(
                 }
             }
         }
+        // The caller asked not to pay for an exact total, so the scan stops
+        // here: the matches found so far are the answer.
+        if !exact_total && matches.len() >= limit {
+            complete = false;
+            break;
+        }
     }
-    let truncated = total > matches.len();
+    // A scan that stopped early cannot claim an exact total, and the answer
+    // is a capped one: there are at least as many matches as were counted.
+    let total_exact = complete;
+    let truncated = !total_exact || total > matches.len();
 
     let touched_files = unique_file_paths(touched.iter().map(String::as_str));
     let mut payload = json!({
@@ -547,9 +606,28 @@ async fn handle_literal_search(
         "query": query,
         "count": matches.len(),
         "total": total,
+        // Whether `total` is the exact number of matches in the project. A
+        // scan that stopped at the limit or ran out of time reports a lower
+        // bound instead, and says so rather than passing it off as the whole
+        // project (#442).
+        "total_exact": total_exact,
         "truncated": truncated,
         "matches": matches,
     });
+    if timed_out {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("timed_out".to_string(), json!(true));
+            object.insert(
+                "note".to_string(),
+                json!(
+                    "The scan reached its time budget and stopped early. The matches \
+                     shown are the ones found so far; `total` is a lower bound, not the \
+                     number of matches in the project. Narrow the search with \
+                     `path_include`, or raise `timeout_ms`."
+                ),
+            );
+        }
+    }
     // A literal answer that scanned only part of the project must say so:
     // `count` otherwise reads as "these are all the occurrences" (#442).
     if let Some(unscanned) =
@@ -571,7 +649,19 @@ async fn handle_literal_search(
         }
     }
     if format == "text" {
-        let mut text = if truncated {
+        let mut text = if timed_out {
+            format!(
+                "count: {} of at least {total} (timed out; the scan stopped early, so \
+                 `total` is a lower bound)\n\n",
+                matches.len()
+            )
+        } else if !total_exact {
+            format!(
+                "count: {} of at least {total} (truncated; the scan stopped at the limit, \
+                 so `total` is a lower bound)\n\n",
+                matches.len()
+            )
+        } else if truncated {
             format!(
                 "count: {} of {total} (truncated; raise `limit` to see more)\n\n",
                 matches.len()

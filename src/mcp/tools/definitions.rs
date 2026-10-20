@@ -349,6 +349,39 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     definitions
 }
 
+/// Whether the named tool only reads the graph.
+///
+/// Mirrors the `readOnlyHint` annotation the definitions publish, so the
+/// server and its clients agree on which tools may run at the same time
+/// (#685). A read-only call does not change the index, so the server can
+/// answer two of them at once; anything else still runs alone.
+pub fn is_read_only_tool(name: &str) -> bool {
+    read_only_tool_names().contains(name)
+}
+
+/// The names of the tools that only read the graph.
+///
+/// Built once from the definitions themselves, so the set cannot drift from
+/// the annotations the server publishes.
+fn read_only_tool_names() -> &'static std::collections::HashSet<String> {
+    static NAMES: std::sync::OnceLock<std::collections::HashSet<String>> =
+        std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        get_tool_definitions()
+            .into_iter()
+            .filter(|definition| {
+                definition
+                    .annotations
+                    .as_ref()
+                    .and_then(|annotations| annotations.get("readOnlyHint"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            })
+            .map(|definition| definition.name)
+            .collect()
+    })
+}
+
 /// The tools that [`Toolset::Core`](crate::config::Toolset::Core) lists (#576).
 ///
 /// Exploration (`context`, `search`, `status`), reading (`read`, `body`,
@@ -662,6 +695,14 @@ fn def_search() -> ToolDefinition {
                 "ids": {
                     "type": "boolean",
                     "description": "Include node IDs / enclosing IDs in results (both formats). Default false; pass true when you plan a follow-up call."
+                },
+                "exact_total": {
+                    "type": "boolean",
+                    "description": "Literal mode only. Count every match in the project, not just the ones shown, so `total` is exact. Default true. Pass false to stop the scan as soon as `limit` matches are found: the scan then reads only part of the project and `total` becomes a lower bound, reported as `total_exact: false`."
+                },
+                "timeout_ms": {
+                    "type": "number",
+                    "description": "Literal mode only. Give up on the scan after this many milliseconds and answer with the matches found so far, marked `timed_out: true` and `total_exact: false`. Default 30000; 0 disables the limit."
                 }
             },
             "required": ["query"]

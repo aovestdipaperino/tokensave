@@ -2495,13 +2495,17 @@ async fn run_mcp_server(
     idle_timeout_secs: Option<u64>,
 ) -> tokensave::errors::Result<()> {
     server.set_timings_enabled(timings);
-    let mut transport = tokensave::mcp::StdioTransport::new();
+    let transport = tokensave::mcp::StdioTransport::new();
+    // The server reads the next request while it is still answering the
+    // previous one, so the transport is split into its two halves (#685).
+    let (reader, mut writer) = tokensave::mcp::McpTransport::split(transport);
     if let Some(line) = peeked_line {
-        server.handle_and_write(&line, &mut transport).await;
+        server.handle_and_write(&line, &mut writer).await;
     }
     server
-        .run_with_idle_timeout(
-            &mut transport,
+        .run_with_halves(
+            reader,
+            writer,
             idle_timeout_secs.map(std::time::Duration::from_secs),
         )
         .await?;

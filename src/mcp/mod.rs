@@ -21,5 +21,6 @@ pub use tools::{
     ToolDefinition,
 };
 pub use transport::{
-    ErrorCode, JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpTransport, StdioTransport,
+    ErrorCode, JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpReader, McpTransport, McpWriter,
+    StdioTransport,
 };

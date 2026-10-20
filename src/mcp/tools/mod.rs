@@ -20,9 +20,9 @@ pub use accounting::{
 pub use definitions::{
     ast_grep_available, core_toolset_instructions, get_always_load_tool_definitions,
     get_installable_tool_definitions, get_listed_tool_definitions, get_tool_definitions,
-    is_graph_scoped_tool, is_hidden_tool, is_selectorless_local_graph_tool, is_tool_area,
-    reachable_tool_name, tool_area, CONTEXT_DESCRIPTION, CORE_TOOLS, GRAPH_SELECTOR_INSTRUCTIONS,
-    MORE_TOOL, RENAME_DESCRIPTION, TOOL_AREAS,
+    is_graph_scoped_tool, is_hidden_tool, is_read_only_tool, is_selectorless_local_graph_tool,
+    is_tool_area, reachable_tool_name, tool_area, CONTEXT_DESCRIPTION, CORE_TOOLS,
+    GRAPH_SELECTOR_INSTRUCTIONS, MORE_TOOL, RENAME_DESCRIPTION, TOOL_AREAS,
 };
 pub use handlers::{handle_tool_call, handle_tool_call_with_session, SessionState};
 
