@@ -276,6 +276,7 @@ pub trait LanguageExtractor: Send + Sync {
 /// Dispatches to the correct extractor based on file extension.
 pub struct LanguageRegistry {
     extractors: Vec<Box<dyn LanguageExtractor>>,
+    detection_languages: std::sync::Arc<str>,
 }
 
 impl LanguageRegistry {
@@ -403,7 +404,16 @@ impl LanguageRegistry {
         #[cfg(feature = "lang-mcfunction")]
         extractors.push(Box::new(McFunctionExtractor));
 
-        Self { extractors }
+        let detection_languages = extractors
+            .iter()
+            .map(|extractor| extractor.language_name())
+            .collect::<Vec<_>>()
+            .join("\0")
+            .into();
+        Self {
+            extractors,
+            detection_languages,
+        }
     }
 
     /// Returns the extractor for a file path based on its extension.
@@ -446,6 +456,11 @@ impl LanguageRegistry {
                     || e.extensions().iter().any(|x| x.eq_ignore_ascii_case(lang))
             })
             .map(std::convert::AsRef::as_ref)
+    }
+
+    /// Shared identity of the installed language set for detection cache keys.
+    pub(crate) fn detection_languages(&self) -> std::sync::Arc<str> {
+        std::sync::Arc::clone(&self.detection_languages)
     }
 
     /// Returns all registered extractors.

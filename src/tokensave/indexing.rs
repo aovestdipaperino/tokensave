@@ -378,6 +378,7 @@ impl TokenSave {
 
         // 2. Scan for source files
         let phase_start = Instant::now();
+        let detection_before = crate::language_detection::statistics();
         let (files, skipped_extensions) = self.scan_files_diagnostics();
         let total = files.len();
         on_verbose(&format!(
@@ -394,6 +395,10 @@ impl TokenSave {
         let phase_start = Instant::now();
         crate::memstats::record("index:extract");
         let (files, artifact_files) = self.partition_artifacts(files, &self.artifact_extensions());
+        if self.config.language_detection.enabled {
+            let d = crate::language_detection::statistics() - detection_before;
+            on_verbose(&format!("automatic language detection: {} examined, {} shebang, {} content, {} unsupported, {} cache hits, {:.3}ms (process-local counters)", d.examined, d.shebang, d.content, d.unsupported, d.cache_hits, d.micros as f64 / 1000.0));
+        }
         let (extractions, _skipped) = extract_files_isolated(
             &project_root,
             registry,
@@ -590,6 +595,16 @@ impl TokenSave {
         let duration_ms = start.elapsed().as_millis() as u64;
         let now_str = current_timestamp().to_string();
         self.db.set_metadata("last_full_sync_at", &now_str).await?;
+        self.db
+            .set_metadata(
+                "language_detection",
+                &format!(
+                    "v2:{:?}:{:?}",
+                    self.config.language_detection,
+                    self.registry.supported_extensions()
+                ),
+            )
+            .await?;
         self.db.set_metadata("last_sync_at", &now_str).await?;
         self.db
             .set_metadata("last_full_index_version", env!("CARGO_PKG_VERSION"))
@@ -991,9 +1006,33 @@ impl TokenSave {
         // Files deleted from disk produce no extraction, so the replace-on-
         // reindex path below would never drop their rows — prune them here,
         // mirroring the removal branch of the full sync (#108).
+        let mut touched = TouchedSet::new();
         let mut existing: Vec<String> = Vec::with_capacity(file_paths.len());
         for path in file_paths {
-            if project_root.join(&path).exists() {
+            let absolute = project_root.join(&path);
+            if absolute.exists() {
+                // A previously detected source can become unsupported. Targeted
+                // MCP refreshes must remove its old symbols as full sync does.
+                if self.config.language_detection.enabled
+                    && crate::project_manifest::resolve_extractor(registry, project_root, &path)
+                        .is_none()
+                    && (!std::fs::metadata(&absolute)
+                        .is_ok_and(|m| m.len() <= self.config.max_file_size)
+                        || crate::language_detection::detect_file(
+                            registry,
+                            &absolute,
+                            self.config.language_detection,
+                        )
+                        .is_none())
+                    && !self.artifact_extensions().iter().any(|ext| {
+                        absolute.extension().and_then(|s| s.to_str()) == Some(ext.as_str())
+                    })
+                {
+                    touched.touch_file(&path);
+                    touched.touch_nodes(&self.db.touched_nodes_by_file(&path).await?);
+                    self.db.delete_file(&path).await?;
+                    continue;
+                }
                 existing.push(path);
             } else {
                 if is_ruby_template(&path) {
@@ -1003,7 +1042,17 @@ impl TokenSave {
                 self.db.delete_file(&path).await?;
             }
         }
-        let file_paths = existing;
+        let (file_paths, artifacts) = if self.config.language_detection.enabled {
+            self.partition_artifacts(existing, &self.artifact_extensions())
+        } else {
+            (existing, Vec::new())
+        };
+        for record in self.artifact_file_records(&artifacts)? {
+            touched.touch_file(&record.path);
+            touched.touch_nodes(&self.db.touched_nodes_by_file(&record.path).await?);
+            self.db.delete_file(&record.path).await?;
+            self.db.upsert_file(&record).await?;
+        }
 
         // Read and hash the files
         let mut hash_map: HashMap<String, String> = HashMap::new();
@@ -1039,7 +1088,6 @@ impl TokenSave {
         // Which files and names this sync touched, so resolution can skip the
         // references it provably cannot have changed (#484). The deleted half
         // has to be read before `delete_nodes_by_file` removes the rows.
-        let mut touched = TouchedSet::new();
         for (file_path, result, hash, size, mtime) in sync_extractions {
             touched.touch_file(&file_path);
             let old_nodes = self.db.touched_nodes_by_file(&file_path).await?;
@@ -1087,7 +1135,7 @@ impl TokenSave {
         crate::cancel::check_partial("sync")?;
 
         // Resolve references for any new/changed unresolved refs
-        if !file_paths.is_empty() {
+        if !file_paths.is_empty() || touched.name_count() > 0 {
             // #253: `from_nodes` borrows rather than clones. #306: the load
             // drops `docstring` and `signature`, which resolution never
             // reads and which are unbounded TEXT — a const's whole
@@ -1215,7 +1263,12 @@ impl TokenSave {
         crate::cancel::check("sync")?;
         on_progress(0, 0, "scanning files");
         let phase_start = Instant::now();
+        let detection_before = crate::language_detection::statistics();
         let (current_files, skipped_extensions) = self.scan_files_diagnostics();
+        if self.config.language_detection.enabled {
+            let d = crate::language_detection::statistics() - detection_before;
+            on_verbose(&format!("automatic language detection: {} examined, {} shebang, {} content, {} unsupported, {} cache hits, {:.3}ms (process-local counters)", d.examined, d.shebang, d.content, d.unsupported, d.cache_hits, d.micros as f64 / 1000.0));
+        }
         on_verbose(&format!(
             "scanned {} files in {:.1}s",
             current_files.len(),
@@ -1263,6 +1316,29 @@ impl TokenSave {
                 .await?
                 .is_none();
 
+        let detection_fingerprint = format!(
+            "v2:{:?}:{:?}",
+            self.config.language_detection,
+            self.registry.supported_extensions()
+        );
+        let previous_detection = self.db.get_metadata("language_detection").await?;
+        // A legacy index with detection disabled needs no reclassification.
+        let detection_changed = previous_detection.as_deref()
+            != Some(detection_fingerprint.as_str())
+            && (self.config.language_detection.enabled || previous_detection.is_some());
+
+        // Settings can change unknown source decisions and artifact promotion,
+        // including artifacts with a registered extension and a manifest override.
+        let artifact_exts = self.artifact_extensions();
+        let detection_can_change = |path: &str| {
+            self.registry.extractor_for_file(path).is_none()
+                || crate::config::is_dependency_lockfile(std::path::Path::new(path))
+                || std::path::Path::new(path)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| artifact_exts.contains(&ext.to_ascii_lowercase()))
+        };
+
         // Partition files by comparing (mtime, size) against stored values
         let mut new_files: Vec<String> = Vec::new();
         let mut stat_changed: Vec<String> = Vec::new();
@@ -1278,6 +1354,7 @@ impl TokenSave {
                 Some(record) => {
                     if dispatch_changed
                         || branch_transition
+                        || (detection_changed && detection_can_change(path))
                         || record.modified_at != *mtime
                         || record.size != *size
                     {
@@ -1345,7 +1422,10 @@ impl TokenSave {
         for path in &stat_changed {
             if let Some(new_hash) = hash_map.get(path) {
                 if let Some(record) = db_map.get(path) {
-                    if !dispatch_changed && record.content_hash == *new_hash {
+                    if !dispatch_changed
+                        && record.content_hash == *new_hash
+                        && !(detection_changed && detection_can_change(path))
+                    {
                         // mtime changed but content identical (e.g. touch) —
                         // update stored mtime so we skip it next time
                         mtime_only_changed.push(path.clone());
@@ -1459,9 +1539,18 @@ impl TokenSave {
         let (to_index, changed_artifacts) =
             self.partition_artifacts(to_index, &self.artifact_extensions());
         for record in self.artifact_file_records(&changed_artifacts)? {
-            touched.touch_file(&record.path);
-            touched.touch_nodes(&self.db.touched_nodes_by_file(&record.path).await?);
-            self.db.delete_file(&record.path).await?;
+            // Only a file that was indexed as source has nodes and edges to
+            // clear. An artifact that was already an artifact is simply
+            // re-stamped with its new hash.
+            if db_map
+                .get(&record.path)
+                .is_some_and(|old| old.kind == FileKind::Code)
+            {
+                touched.touch_file(&record.path);
+                let old_nodes = self.db.touched_nodes_by_file(&record.path).await?;
+                touched.touch_nodes(&old_nodes);
+                self.db.delete_file(&record.path).await?;
+            }
             self.db.upsert_file(&record).await?;
         }
         let registry = &self.registry;
@@ -1645,6 +1734,9 @@ impl TokenSave {
         let duration_ms = start.elapsed().as_millis() as u64;
         self.db
             .set_metadata("last_sync_at", &current_timestamp().to_string())
+            .await?;
+        self.db
+            .set_metadata("language_detection", &detection_fingerprint)
             .await?;
         self.touch_branch_synced();
         self.db
@@ -2129,7 +2221,19 @@ impl TokenSave {
             // extractor or artifact extension owns `.hcl`, and it must not
             // count toward the unsupported-extension summary.
             let lockfile_match = crate::config::is_dependency_lockfile(path);
-            if !manifest_match && !lockfile_match {
+            let detected = !manifest_match
+                && !lockfile_match
+                && self.config.language_detection.enabled
+                && !is_excluded(&rel_str, &self.config)
+                && std::fs::metadata(path)
+                    .is_ok_and(|m| m.is_file() && m.len() <= self.config.max_file_size)
+                && crate::language_detection::detect_file(
+                    &self.registry,
+                    path,
+                    self.config.language_detection,
+                )
+                .is_some();
+            if !manifest_match && !lockfile_match && !detected {
                 if !ext.is_empty() && !is_excluded(&rel_str, &self.config) {
                     let ext_lower = ext.to_ascii_lowercase();
                     if !NON_SOURCE_EXTS.contains(&ext_lower.as_str()) {
@@ -2354,6 +2458,9 @@ impl TokenSave {
         files: Vec<String>,
         artifact_exts: &[String],
     ) -> (Vec<String>, Vec<String>) {
+        // The manifest is consulted whether or not detection is on: an
+        // explicit language override outranks an artifact extension on its
+        // own (#725), independently of the detector (#727).
         let manifest = self.manifest();
         files.into_iter().partition(|path| {
             if manifest
@@ -2363,11 +2470,29 @@ impl TokenSave {
                 return true;
             }
             let path_ref = std::path::Path::new(path);
-            !crate::config::is_dependency_lockfile(path_ref)
-                && !path_ref
+            let artifact = crate::config::is_dependency_lockfile(path_ref)
+                || path_ref
                     .extension()
                     .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| artifact_exts.contains(&ext.to_ascii_lowercase()))
+                    .is_some_and(|ext| artifact_exts.contains(&ext.to_ascii_lowercase()));
+            if !artifact {
+                return true;
+            }
+            // Preserve the old artifact fast path unless detection was opted in.
+            if !self.config.language_detection.enabled {
+                return false;
+            }
+            // The detector only promotes a file the extension registry cannot
+            // handle on its own. A registered extension keeps its artifact
+            // fallback, so enabling detection does not turn every `README.md`
+            // or `.sql` file into indexed source.
+            self.registry.extractor_for_file(path).is_none()
+                && crate::language_detection::detect_file(
+                    &self.registry,
+                    &self.project_root.join(path),
+                    self.config.language_detection,
+                )
+                .is_some()
         })
     }
 

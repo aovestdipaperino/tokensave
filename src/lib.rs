@@ -43,6 +43,7 @@ pub mod graph;
 pub mod hardware;
 pub mod hooks;
 pub mod index_scope;
+pub mod language_detection;
 pub mod mcp;
 pub mod memory;
 pub mod memstats;
