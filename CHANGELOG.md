@@ -10,6 +10,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ### Added
 
 - Project `memory_usage` profiles (`low`, `balanced`, `performance`) limit simultaneous extraction parsers independently of CPU policy, trading throughput for lower parser memory. The default `balanced` caps extraction at two parsers; `performance` retains previous concurrency. These are not total-RAM caps.
+- Configurable `language_aliases` reuse enabled extractors for custom extensions such as Perl `.t` tests (#725). Existing `project.json` file/glob overrides take precedence; mapping edits invalidate unchanged indexed files. Source overrides also take precedence over artifacts, and sync diagnostics describe alias and artifact remedies. `tokensave init` now preserves the existing project settings instead of resetting them to their defaults, so a supplied mapping survives the first index.
 
 - **Pascal: index Delphi package sources (`.dpk`) and include files (`.inc`).** Both are Pascal source, but only `.pas`, `.pp`, `.dpr` and `.lpr` were routed to the Pascal extractor, so a Delphi project reported them as "unsupported extension" and their declarations were missing from the graph. `.lpr` is now also reported as Pascal in language statistics, where it was already extracted but counted as Other. Existing projects pick the files up on their next `tokensave sync --force`.
 - Mandatory contributor and AI agent guidelines for memory bounds, CPU efficiency, resource cleanup, and resource regression review.
