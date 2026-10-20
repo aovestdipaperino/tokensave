@@ -1277,8 +1277,9 @@ heaps. The file queue, completed extraction results and resolver graph still
 scale with the indexed project; they are released by the existing request
 lifecycle. A single large source file can still require substantial memory.
 Hashing, database caches and resolution retain their existing policies. Choose
-`performance` to preserve the previous parser concurrency; the new `balanced`
-default may slow indexing on machines with more than two extraction workers.
+`performance` to preserve the previous parser concurrency when RAM headroom
+permits; the new `balanced` default may slow indexing on machines with more
+than two extraction workers.
 
 Compare equivalent original/candidate builds using the resource harness below
 with `--profile-field memory_usage`. It fixes `cpu_usage` to `performance` for
@@ -1287,6 +1288,36 @@ The harness records full/incremental/unchanged sync, repeated runs, process-tree
 RSS and CPU, throughput, elapsed time, independent MCP latency and graph equality.
 Sampled RSS can miss brief peaks and counts shared pages multiple times; it is
 not proof of an absence of leaks or a bound on all workloads.
+
+### Automatic RAM safeguards
+
+RAM profiles and automatic safeguards work together. Before each nonempty
+extraction operation that could run more than one parser, tokensave samples
+available physical RAM using its existing system-memory library. On Linux,
+readable cgroup v1/v2 headroom exposed by that library also lowers the available
+budget. No swap allowance is counted. A probe failure keeps the configured
+ceiling; a successfully measured zero is treated as low memory.
+
+The check reserves half the available headroom for the parent and other
+activity, then estimates one parser slot per 128 MiB of the remaining half.
+For example, 512 MiB available permits at most two parsers; 256 MiB permits
+one. The result can only lower the CPU/RAM/file ceilings and the subprocess
+environment limit can lower it further. It applies in `performance` mode too,
+and emits a diagnostic when it reduces the profile ceiling. Both subprocess
+and in-process extraction obey the same snapshot-derived limit. Empty work
+and CPU/RAM/file ceilings of one avoid the probe.
+
+This is a best-effort preflight heuristic, **not a memory reservation or a hard
+RSS limit**. One parser is always allowed to make progress, even with zero
+headroom. A large file can exceed the estimate. Other projects can consume RAM
+following the snapshot, and completed graph data and resolution still grow
+with input size. Only cgroup limits visible to the bundled library are used;
+nested or ancestor limits it cannot expose are not guaranteed to be detected.
+
+There is no background task, idle polling, retry loop or artificial sleep.
+The check runs again at the next extraction operation; it does not resize an
+already-running subprocess pool or monitor pressure that arrives mid-extraction.
+Existing cancellation, reaping and on-demand freshness bounds remain in place.
 
 ### CPU usage profiles
 
@@ -1418,6 +1449,72 @@ The override affects test/source classification only; the files are indexed
 either way. Explicit test markers such as `__tests__/`, `*.test.*`, and
 `*.spec.*` still count as tests inside an overridden path. Restart the
 tokensave MCP server after editing the config; no re-index is required.
+
+### Custom language extensions
+
+Add `language_aliases` to the existing `.tokensave/config.json`; keep its other
+settings. For a legacy Perl repository with `lib/Example.pm`, `t/basic.t`, and
+`t/integration.t`:
+
+```json
+"language_aliases": {
+  ".t": "perl",
+  ".ep": "perl"
+}
+```
+
+Both native `.pm` files and aliased `.t`/`.ep` files use the Perl extractor,
+producing symbols for search, context, and file discovery. Perl must be enabled
+in the installed binary (`full` or `lang-perl`). Language names are
+case-insensitive; registered extensions such as `pl` are also accepted.
+Extension keys are trimmed, lowercased, and may start with one dot. Conflicting
+normalized keys (such as `.T` and `t`) are rejected. Use one mapping per extension.
+Aliases may deliberately replace a built-in association.
+
+Use the existing `.tokensave/project.json` for path-specific languages:
+
+```json
+{
+  "version": 1,
+  "entries": [
+    { "path": "legacy/special.t", "language": "python" },
+    { "path": "t/**/*.t", "language": "perl" },
+    { "path": "templates/**/*.ep", "language": "perl" }
+  ]
+}
+```
+
+Dispatch precedence is literal file entries with a language, glob entries with
+a language, extension aliases, built-in detection (including C/C++ header
+routing), artifact tracking, then skipping. Within either entry group the first
+match wins. Paths use forward slashes; backslash inputs are normalized. Globs
+remain case-sensitive, while aliases match extensions case-insensitively.
+A manifest entry without a language retains existing default dispatch semantics.
+
+Run `tokensave sync` after changing mappings; `tokensave sync -f` forces a full
+rebuild. Mapping changes reprocess the current indexed files once, even when
+contents and timestamps are unchanged, and remove files no longer admitted.
+Each branch database records its own dispatch revision. A running MCP server
+picks changes up through its existing freshness checks and automatic-sync
+limits; a large mapping change may require explicit `tokensave sync`.
+Initialization preserves an existing config, so mappings can be supplied before
+`tokensave init`. No separate `language_patterns` setting is needed.
+
+Aliases mean **symbol extraction**; `artifact_extensions` means path and literal
+content search with no symbols. Unknown extensions are never automatically
+assigned a parser. For `.patch`, `.ldif`, `.jsonnet`, or `.libsonnet` with no
+installed extractor, opt into artifact tracking if useful; JSONnet syntax needs
+a dedicated extractor for symbols. `.template` and `.ep` have no universal
+language: choose an appropriate installed extractor or artifact tracking.
+An HTML alias parses HTML only, not embedded template languages.
+
+Keep credentials such as `.pem` excluded rather than making them searchable.
+Mapped source and artifacts containing NUL bytes after decoding are skipped.
+This is a lightweight binary check, not full format detection; do not map binary
+formats to source languages. BOM-marked UTF-16 source remains supported.
+Exclusions, hidden-directory policy, gitignore, and file-size limits still apply. Aliases do not bypass those protections or enable disabled
+language features. `sync --doctor` reports skipped counts and configuration
+options; JSON result fields retain their existing shape.
 
 ### Optional: `.tokensave/project.json` — explicit index entries
 

@@ -66,8 +66,41 @@ pub(crate) fn extract_files_isolated(
     if files.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
+    // One fresh snapshot per extraction operation, not per file or idle tick.
+    crate::cancel::check("extraction")?;
+    let available = if memory_usage.workers(cpu_usage.workers()).min(files.len()) > 1 {
+        crate::memory::available_memory_bytes()
+    } else {
+        None
+    };
+    extract_files_with_headroom(
+        project_root,
+        registry,
+        files,
+        cpu_usage,
+        memory_usage,
+        available,
+    )
+}
+
+fn extract_files_with_headroom(
+    project_root: &Path,
+    registry: &crate::extraction::LanguageRegistry,
+    files: Vec<String>,
+    cpu_usage: crate::cpu::CpuUsage,
+    memory_usage: crate::memory::MemoryUsage,
+    available: Option<u64>,
+) -> Result<ExtractBatch> {
+    if files.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let requested = memory_usage.workers(cpu_usage.workers()).min(files.len());
+    let parser_limit = crate::memory::workers_for_headroom(requested, available);
+    if parser_limit < requested {
+        eprintln!("[tokensave] limited RAM headroom: reducing extraction parsers from {requested} to {parser_limit}");
+    }
     if should_use_subprocess() {
-        let workers = worker_count(files.len(), cpu_usage, memory_usage);
+        let workers = worker_count(files.len(), parser_limit);
         let timeout = std::time::Duration::from_secs(
             crate::user_config::UserConfig::load().extraction_timeout_secs,
         );
@@ -82,7 +115,7 @@ pub(crate) fn extract_files_isolated(
             ),
         }
     }
-    if memory_usage == crate::memory::MemoryUsage::Performance {
+    if parser_limit == requested && memory_usage == crate::memory::MemoryUsage::Performance {
         return cpu_usage.run(|| {
             (
                 extract_files_in_process(project_root, registry, &files),
@@ -91,10 +124,10 @@ pub(crate) fn extract_files_isolated(
         });
     }
     cpu_usage.run(|| {
-        // Each parallel slice has at most the memory-policy parser count.
+        // Each parallel slice obeys both the profile and current headroom ceiling.
         // Reuse the CPU pool without allocating another persistent thread pool.
         let results = files
-            .chunks(memory_usage.workers(cpu_usage.workers()))
+            .chunks(parser_limit)
             .flat_map(|batch| extract_files_in_process(project_root, registry, batch))
             .collect();
         (results, Vec::new())
@@ -143,14 +176,10 @@ pub(crate) fn extract_files_in_process(
 ///
 /// CPU and memory profiles set the ceiling. `TOKENSAVE_WORKERS=N` can further
 /// reduce subprocess concurrency (#183); pending files cap the pool size.
-fn worker_count(
-    file_count: usize,
-    profile: crate::cpu::CpuUsage,
-    memory: crate::memory::MemoryUsage,
-) -> usize {
+fn worker_count(file_count: usize, parser_limit: usize) -> usize {
     clamp_workers(
         std::env::var("TOKENSAVE_WORKERS").ok().as_deref(),
-        memory.workers(profile.workers()),
+        parser_limit,
         file_count,
     )
 }
@@ -202,6 +231,58 @@ mod worker_count_tests {
         )?;
         assert!(results.is_empty());
         assert!(skipped.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn constrained_headroom_preserves_extraction_results(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use crate::{cpu::CpuUsage, memory::MemoryUsage};
+        let root = tempfile::TempDir::new()?;
+        let files: Vec<String> = (0..7).map(|i| format!("m{i}.rs")).collect();
+        for (i, path) in files.iter().enumerate() {
+            std::fs::write(
+                root.path().join(path),
+                format!("fn helper{i}() {{}}\nfn caller{i}() {{ helper{i}(); }}\n"),
+            )?;
+        }
+        let registry = crate::extraction::LanguageRegistry::new();
+        let mut baseline = None;
+        for profile in [
+            MemoryUsage::Low,
+            MemoryUsage::Balanced,
+            MemoryUsage::Performance,
+        ] {
+            for available in [None, Some(0), Some(512 * 1024 * 1024), Some(u64::MAX)] {
+                let (results, skipped) = super::extract_files_with_headroom(
+                    root.path(),
+                    &registry,
+                    files.clone(),
+                    CpuUsage::Performance,
+                    profile,
+                    available,
+                )?;
+                assert!(skipped.is_empty());
+                assert_eq!(results.len(), files.len());
+                let rows = results
+                    .into_iter()
+                    .map(|(path, mut result, hash, size, _mtime)| -> std::result::Result<_, serde_json::Error> {
+                        assert!(!result.nodes.is_empty());
+                        assert!(!result.unresolved_refs.is_empty());
+                        result.duration_ms = 0;
+                        for node in &mut result.nodes {
+                            node.updated_at = 0;
+                        }
+                        Ok((path, serde_json::to_value(result)?, hash, size))
+                    })
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                if let Some(expected) = &baseline {
+                    assert_eq!(&rows, expected);
+                } else {
+                    baseline = Some(rows);
+                }
+            }
+        }
         Ok(())
     }
 

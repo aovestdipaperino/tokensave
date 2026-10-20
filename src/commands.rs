@@ -871,7 +871,7 @@ pub(crate) fn print_skipped_extension_summary(skipped: &[(String, usize)]) {
             // still gets a `files` row when listed there, and a row is what
             // makes it reachable by `tokensave_files` and by literal search.
             "\x1b[2m  No extractor is registered for these extensions, so no symbols were \
-             indexed from them.\n  A text format worth searching by path or content \
+             indexed from them.\n  Map source extensions with \"language_aliases\" in .tokensave/config.json\n  (for example {{\".t\": \"perl\"}}, when Perl is enabled), or use project.json\n  entries with a language for file/glob overrides; then run tokensave sync -f.\n  A text format worth searching by path or content \
              (templates, stylesheets, configs) can be added to \"artifact_extensions\" in \
              .tokensave/config.json — tracked by path, never parsed.\n  Rerun with --doctor \
              (or --verbose) for the full list.\x1b[0m"
@@ -887,7 +887,12 @@ pub(crate) fn print_sync_doctor(result: &tokensave::tokensave::SyncResult) {
     if !result.skipped_extensions.is_empty() {
         eprintln!("\n\x1b[33mSkipped extensions (no registered extractor):\x1b[0m");
         for (ext, count) in &result.skipped_extensions {
-            eprintln!("  .{ext}: {count} file(s)");
+            let hint = match ext.as_str() {
+                "patch" | "ldif" | "jsonnet" | "libsonnet" => "text format: opt into artifact_extensions (no symbols)",
+                "pem" => "credential material: exclude; avoid content indexing",
+                _ => "source: configure language_aliases or project.json with an enabled language; text: artifact_extensions",
+            };
+            eprintln!("  .{ext}: {count} file(s) — {hint}");
         }
     }
     let has_changes = !result.added_paths.is_empty()
