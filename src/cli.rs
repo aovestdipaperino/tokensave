@@ -52,6 +52,26 @@ pub enum Commands {
         /// Do not offer this repository's own git hooks
         #[arg(long = "no-git-hook")]
         no_git_hook: bool,
+        /// CPU usage profile to store, skipping the resource benchmark
+        /// (default: benchmark this machine, or keep a `cpu_usage` already
+        /// in `.tokensave/config.json`)
+        #[arg(long, value_enum)]
+        cpu_usage: Option<tokensave::cpu::CpuUsage>,
+    },
+    /// Benchmark this machine and set the project's CPU usage profile
+    ///
+    /// Measures CPUs, memory and parallel speedup, then stores `low`,
+    /// `balanced` or `performance` as `cpu_usage` in `.tokensave/config.json`.
+    /// `tokensave init` runs the same benchmark.
+    Tune {
+        /// Project path (default: current directory)
+        path: Option<String>,
+        /// Print the recommendation without changing the config
+        #[arg(long)]
+        dry_run: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Incremental sync (project must already be initialized with `tokensave init`)
     Sync {

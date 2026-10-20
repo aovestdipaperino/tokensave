@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::errors::{Result, TokenSaveError};
 
 /// Concurrency policy selected in `.tokensave/config.json` at project open.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum CpuUsage {
     /// One worker, leaving parallel capacity to other workloads.
@@ -28,6 +28,15 @@ static BALANCED: OnceLock<std::result::Result<ThreadPool, String>> = OnceLock::n
 static PERFORMANCE: OnceLock<std::result::Result<ThreadPool, String>> = OnceLock::new();
 
 impl CpuUsage {
+    /// Name as written in `.tokensave/config.json`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Balanced => "balanced",
+            Self::Performance => "performance",
+        }
+    }
+
     /// Pure policy calculation, also defined for a failed/zero CPU probe.
     pub fn workers_for(self, available: usize) -> usize {
         let available = available.max(1);

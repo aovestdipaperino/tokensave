@@ -1321,7 +1321,43 @@ Existing cancellation, reaping and on-demand freshness bounds remain in place.
 
 ### CPU usage profiles
 
-Add `"cpu_usage": "balanced"` to the existing `.tokensave/config.json`:
+`tokensave init` picks a profile for you. Before the first index it benchmarks
+the machine (normally well under a second) and writes `low`, `balanced` or
+`performance` as `cpu_usage` in `.tokensave/config.json`, printing what it
+measured and why it chose that profile:
+
+```text
+Benchmarking this machine to choose a CPU usage profile...
+  8 CPUs, 7.6 GiB memory (5.5 GiB available), 4.3x speedup on 8 threads
+Initialized TokenSave at /path/to/project
+CPU usage profile: balanced (4.3 CPUs of parallel throughput; resources are moderate or shared; run `tokensave tune` to measure again)
+```
+
+The benchmark reads the CPUs this process may use (`available_parallelism`,
+which honors affinity and cgroup CPU quotas) and total and available memory
+(including a visible cgroup memory limit). It then times a fixed CPU-bound
+workload on one thread and on up to 16 threads. The measured speedup gives the
+*effective* CPUs, which can be lower than the CPU count on throttled
+containers, shared vCPUs or a busy machine. The profile is chosen as follows:
+
+| Selected | When |
+| --- | --- |
+| `low` | Total memory under 3 GiB, available memory under 1 GiB, at most 2 CPUs, or under 2.5 effective CPUs. |
+| `performance` | At least 6 effective CPUs, at least 60% parallel efficiency, at least 16 GiB total memory and at least 8 GiB available. |
+| `balanced` | Everything else, and whenever a probe fails. |
+
+The benchmark runs once and its result is stored, so normal runs never measure
+anything. To skip it, pass `tokensave init --cpu-usage <low|balanced|performance>`.
+A `cpu_usage` that is already in the config file is also kept.
+
+Run `tokensave tune` at any time after `init` to measure again, for example
+after a hardware change or when the first benchmark ran on a busy machine. It
+updates `cpu_usage` when the recommendation differs from the stored profile.
+`tokensave tune --dry-run` only prints the recommendation and also works where
+no project is initialized. `--json` gives machine-readable output. Restart
+`tokensave serve` after a change.
+
+To choose a profile by hand, set `"cpu_usage"` in the existing `.tokensave/config.json`:
 
 ```json
 {
