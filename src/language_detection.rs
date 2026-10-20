@@ -94,7 +94,7 @@ struct CacheKey {
     size: u64,
     config: DetectionConfig,
     // Feature availability is part of the key, including negative results.
-    languages: String,
+    languages: std::sync::Arc<str>,
 }
 
 #[derive(Default)]
@@ -178,12 +178,7 @@ pub fn detect_file(
         changed,
         size: metadata.len(),
         config,
-        languages: registry
-            .extractors()
-            .iter()
-            .map(|e| e.language_name())
-            .collect::<Vec<_>>()
-            .join("\0"),
+        languages: registry.detection_languages(),
     };
     if config.cache_results {
         if let Ok(mut cache) = CACHE.lock() {
@@ -193,10 +188,10 @@ pub fn detect_file(
             }
         }
     }
-    let mut bytes = Vec::with_capacity(config.max_bytes);
+    let mut bytes = Vec::with_capacity(config.max_bytes + 4);
     std::fs::File::open(path)
         .ok()?
-        .take(config.max_bytes as u64)
+        .take((config.max_bytes + 4) as u64)
         .read_to_end(&mut bytes)
         .ok()?;
     let result = detect(registry, &bytes, config);
@@ -249,6 +244,7 @@ pub fn detect(
         }
         Err(_) => return None,
     };
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     if text
         .chars()
         .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))

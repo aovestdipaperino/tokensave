@@ -1411,7 +1411,12 @@ valid program may intentionally be left unclassified. No interpreter runs and
 no parser is tried speculatively.
 
 Only a bounded prefix is read for discovery: `max_bytes` defaults to 4096 and
-must be between 128 and 65536. Binary/control bytes, invalid UTF-8 within that
+must be between 128 and 65536. Discovery reads up to four extra bytes to
+recognize a truncated UTF-8 codepoint at the sample boundary; that partial
+codepoint is ignored. A leading UTF-8 BOM is stripped before classification.
+Unknown fields inside `language_detection` are configuration errors and prevent
+the project from opening, so misspelled settings are reported immediately.
+Binary/control bytes, invalid UTF-8 within that
 prefix, and common certificate/private-key formats are rejected. Normal file
 size, exclude, hidden-directory, and gitignore policies still apply. Successful
 detection invokes the actual extractor, making symbols available to search and

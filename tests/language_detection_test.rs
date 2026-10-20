@@ -390,3 +390,113 @@ async fn legacy_indexes_do_not_reprocess_artifacts_when_detection_is_disabled() 
     assert_eq!(result.files_modified, 0);
     assert_eq!(result.files_added, 0);
 }
+
+#[test]
+fn file_sampling_accepts_split_utf8_and_bom_shebangs() {
+    let registry = LanguageRegistry::new();
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("script.custom");
+    let config = DetectionConfig {
+        max_bytes: 128,
+        ..enabled()
+    };
+    for character in ["é", "界", "🦀"] {
+        for split in 1..character.len() {
+            let source = format!("{PY}{}{character}\n", " ".repeat(128 - split - PY.len()));
+            fs::write(&path, &source).unwrap();
+            assert_eq!(
+                detect_file(&registry, &path, config),
+                detect(&registry, source.as_bytes(), config)
+            );
+            assert_eq!(
+                detect_file(&registry, &path, config).unwrap().language,
+                "Python"
+            );
+        }
+    }
+    // A genuinely incomplete codepoint at EOF still fails conservatively.
+    let mut malformed = PY.as_bytes().to_vec();
+    malformed.push(0xc3);
+    fs::write(&path, &malformed).unwrap();
+    assert!(detect_file(&registry, &path, config).is_none());
+    for (interpreter, language, available) in [
+        ("/usr/bin/python3", "Python", true),
+        ("/bin/bash", "Bash", cfg!(feature = "lang-bash")),
+    ] {
+        let source = format!("\u{feff}#!{interpreter}\nf() {{ echo hi; }}\n");
+        fs::write(&path, &source).unwrap();
+        let result = detect_file(&registry, &path, config);
+        assert_eq!(result, detect(&registry, source.as_bytes(), config));
+        assert_eq!(
+            result.map(|d| (d.language, d.method)),
+            available.then_some((language, Method::Shebang))
+        );
+    }
+}
+
+#[tokio::test]
+async fn detection_preserves_registered_formats_and_artifact_override_equivalence() {
+    let (dir, cg) = project(false).await;
+    drop(cg);
+    let mut config = load_config(dir.path()).unwrap();
+    config.artifact_extensions.push("custom".into());
+    save_config(dir.path(), &config).unwrap();
+    let cg = TokenSave::open(dir.path()).await.unwrap();
+    for (path, source) in [
+        ("README.md", "# Readme\n"),
+        ("query.sql", "CREATE TABLE example (id INTEGER);\n"),
+        ("settings.toml", "[example]\nvalue = 1\n"),
+        (
+            "message.proto",
+            "syntax = \"proto3\";\nmessage Example { string name = 1; }\n",
+        ),
+        ("override.custom", PY),
+        ("plain.custom", "ordinary text"),
+    ] {
+        fs::write(dir.path().join(path), source).unwrap();
+    }
+    fs::write(
+        dir.path().join(".tokensave/project.json"),
+        r#"{"entries":[{"path":"override.custom","language":"python"}]}"#,
+    )
+    .unwrap();
+    cg.index_all().await.unwrap();
+    drop(cg);
+    for enabled_detection in [true, false, true] {
+        let mut config = load_config(dir.path()).unwrap();
+        config.language_detection.enabled = enabled_detection;
+        save_config(dir.path(), &config).unwrap();
+        let cg = TokenSave::open(dir.path()).await.unwrap();
+        cg.sync().await.unwrap();
+        let mut incremental: Vec<_> = cg
+            .get_all_files()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.path, f.kind))
+            .collect();
+        incremental.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(incremental.len(), 6);
+        for (path, kind) in &incremental {
+            let expected =
+                if path == "plain.custom" || (path == "override.custom" && !enabled_detection) {
+                    tokensave::types::FileKind::Artifact
+                } else {
+                    // Registered formats were already source before this feature:
+                    // artifact_extensions() excludes installed extractor suffixes.
+                    tokensave::types::FileKind::Code
+                };
+            assert_eq!(*kind, expected, "{path}");
+        }
+        cg.index_all().await.unwrap();
+        let mut full: Vec<_> = cg
+            .get_all_files()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.path, f.kind))
+            .collect();
+        full.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(incremental, full);
+    }
+}

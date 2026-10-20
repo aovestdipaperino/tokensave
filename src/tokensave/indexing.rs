@@ -597,7 +597,7 @@ impl TokenSave {
             .set_metadata(
                 "language_detection",
                 &format!(
-                    "v1:{:?}:{:?}",
+                    "v2:{:?}:{:?}",
                     self.config.language_detection,
                     self.registry.supported_extensions()
                 ),
@@ -1299,7 +1299,7 @@ impl TokenSave {
                 .is_none();
 
         let detection_fingerprint = format!(
-            "v1:{:?}:{:?}",
+            "v2:{:?}:{:?}",
             self.config.language_detection,
             self.registry.supported_extensions()
         );
@@ -1308,6 +1308,18 @@ impl TokenSave {
         let detection_changed = previous_detection.as_deref()
             != Some(detection_fingerprint.as_str())
             && (self.config.language_detection.enabled || previous_detection.is_some());
+
+        // Settings can change unknown source decisions and artifact promotion,
+        // including artifacts with a registered extension and a manifest override.
+        let artifact_exts = self.artifact_extensions();
+        let detection_can_change = |path: &str| {
+            self.registry.extractor_for_file(path).is_none()
+                || crate::config::is_dependency_lockfile(std::path::Path::new(path))
+                || std::path::Path::new(path)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| artifact_exts.contains(&ext.to_ascii_lowercase()))
+        };
 
         // Partition files by comparing (mtime, size) against stored values
         let mut new_files: Vec<String> = Vec::new();
@@ -1323,7 +1335,7 @@ impl TokenSave {
                 None => new_files.push(path.clone()),
                 Some(record) => {
                     if branch_transition
-                        || (detection_changed && self.registry.extractor_for_file(path).is_none())
+                        || (detection_changed && detection_can_change(path))
                         || record.modified_at != *mtime
                         || record.size != *size
                     {
@@ -1392,7 +1404,7 @@ impl TokenSave {
             if let Some(new_hash) = hash_map.get(path) {
                 if let Some(record) = db_map.get(path) {
                     if record.content_hash == *new_hash
-                        && !(detection_changed && self.registry.extractor_for_file(path).is_none())
+                        && !(detection_changed && detection_can_change(path))
                     {
                         // mtime changed but content identical (e.g. touch) —
                         // update stored mtime so we skip it next time
@@ -2410,6 +2422,12 @@ impl TokenSave {
         files: Vec<String>,
         artifact_exts: &[String],
     ) -> (Vec<String>, Vec<String>) {
+        let manifest = self
+            .config
+            .language_detection
+            .enabled
+            .then(|| crate::project_manifest::manifest_for(&self.project_root, &self.registry))
+            .flatten();
         files.into_iter().partition(|path| {
             let path_ref = std::path::Path::new(path);
             let artifact = crate::config::is_dependency_lockfile(path_ref)
@@ -2424,14 +2442,17 @@ impl TokenSave {
             if !self.config.language_detection.enabled {
                 return false;
             }
-            crate::project_manifest::resolve_extractor(&self.registry, &self.project_root, path)
-                .is_some()
-                || crate::language_detection::detect_file(
+            manifest.as_ref().is_some_and(|manifest| {
+                manifest.language_for(path).is_some_and(|language| {
+                    self.registry.extractor_for_language(language).is_some()
+                })
+            }) || (self.registry.extractor_for_file(path).is_none()
+                && crate::language_detection::detect_file(
                     &self.registry,
                     &self.project_root.join(path),
                     self.config.language_detection,
                 )
-                .is_some()
+                .is_some())
         })
     }
 
