@@ -24,8 +24,8 @@ use super::graph_scope::{
     select_graph, validate_local_inputs, GraphSelector, FEDERATABLE_TOOLS,
 };
 use super::tools::{
-    baseline_policy, cap_baseline, get_always_load_tool_definitions, get_listed_tool_definitions,
-    get_tool_definitions, handle_tool_call_with_session, is_graph_scoped_tool, is_hidden_tool,
+    baseline_policy, cap_baseline, get_listed_tool_definitions, get_tool_definitions,
+    handle_tool_call_with_session, is_always_load, is_graph_scoped_tool, is_hidden_tool,
     is_selectorless_local_graph_tool, is_tool_area, request_overhead_tokens,
     schema_overhead_tokens, settle_session_debt, tool_area, SessionState, CORE_TOOLS, MORE_TOOL,
     TOOL_AREAS,
@@ -695,27 +695,32 @@ impl McpServer {
             Some(cg) => cg.get_file_token_map().await.unwrap_or_default(),
             None => HashMap::new(),
         };
-        let graph_scoped_tools = get_tool_definitions()
-            .into_iter()
-            .filter(is_graph_scoped_tool)
-            .map(|definition| definition.name)
-            .collect();
-        // Derived from the same registry pass as `graph_scoped_tools`: any
-        // read-only local-graph tool without selectors is drift-refused, so a
-        // future selector-less tool cannot silently escape the gate.
-        let selectorless_local_graph_tools = get_tool_definitions()
-            .into_iter()
-            .filter(is_selectorless_local_graph_tool)
-            .map(|definition| definition.name)
-            .collect();
-        // Approximates the schema payload the client actually loads into
-        // context up front. Only the `anthropic/alwaysLoad` tools
-        // (`tokensave_search`, `tokensave_context`, `tokensave_status`) are
-        // resident from the start; the other ~80 are deferred and never
-        // enter context unless the client fetches one on demand, so charging
-        // the whole `tools/list` payload here over-stated the up-front cost
-        // by more than an order of magnitude.
-        let schema_overhead = schema_overhead_tokens(&get_always_load_tool_definitions());
+        // Build schemas once and retain only the names and scalar estimate.
+        // All schemas drop before global DB initialization; nothing is cached
+        // or deferred to the first request.
+        let (graph_scoped_tools, selectorless_local_graph_tools, schema_overhead) = {
+            let mut definitions = get_tool_definitions();
+            let graph_scoped_tools = definitions
+                .iter()
+                .filter(|definition| is_graph_scoped_tool(definition))
+                .map(|definition| definition.name.clone())
+                .collect();
+            // Derive this gate from the registry so future selector-less local
+            // graph tools cannot silently escape drift refusal.
+            let selectorless_local_graph_tools = definitions
+                .iter()
+                .filter(|definition| is_selectorless_local_graph_tool(definition))
+                .map(|definition| definition.name.clone())
+                .collect();
+            // Preserve registry order and charge only always-loaded schemas.
+            definitions.retain(is_always_load);
+            let schema_overhead = schema_overhead_tokens(&definitions);
+            (
+                graph_scoped_tools,
+                selectorless_local_graph_tools,
+                schema_overhead,
+            )
+        };
         let persisted = match &cg {
             Some(cg) => cg.get_tokens_saved().await.unwrap_or(0),
             None => 0,
@@ -3494,5 +3499,31 @@ mod idle_timeout_tests {
     #[test]
     fn a_finished_reindex_stops_deferring() {
         assert!(!defer_idle_exit(true, true, true));
+    }
+}
+
+#[cfg(test)]
+mod startup_metadata_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn startup_metadata_preserves_registry_routing_and_schema_cost() {
+        let definitions = get_tool_definitions();
+        let graph: HashSet<_> = definitions
+            .iter()
+            .filter(|d| is_graph_scoped_tool(d))
+            .map(|d| d.name.clone())
+            .collect();
+        let selectorless: HashSet<_> = definitions
+            .iter()
+            .filter(|d| is_selectorless_local_graph_tool(d))
+            .map(|d| d.name.clone())
+            .collect();
+        let cost = schema_overhead_tokens(&crate::mcp::tools::get_always_load_tool_definitions());
+        let server = McpServer::new_without_project(Vec::new()).await;
+        assert_eq!(server.graph_scoped_tools, graph);
+        assert_eq!(server.selectorless_local_graph_tools, selectorless);
+        assert_eq!(server.schema_overhead_tokens, cost);
+        server.shutdown().await;
     }
 }

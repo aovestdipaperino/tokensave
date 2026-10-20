@@ -17,6 +17,7 @@ pub use accounting::{
     baseline_policy, cap_baseline, request_overhead_tokens, schema_overhead_tokens,
     settle_session_debt, BaselinePolicy,
 };
+pub(crate) use definitions::is_always_load;
 pub use definitions::{
     ast_grep_available, core_toolset_instructions, get_always_load_tool_definitions,
     get_installable_tool_definitions, get_listed_tool_definitions, get_tool_definitions,
