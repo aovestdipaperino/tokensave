@@ -1120,6 +1120,41 @@ pub(super) async fn handle_branch_diff(cg: &TokenSave, args: Value) -> Result<To
             message: "cannot determine head branch — specify it explicitly".to_string(),
         })?;
 
+    if args
+        .get("quality")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        if file_arg(&args).is_some() || args.get("kind").is_some() {
+            return Err(TokenSaveError::Config {
+                message: "quality comparison is global; file/kind filters are unsupported".into(),
+            });
+        }
+        let options = serde_json::from_value::<crate::quality_diff::QualityOptions>(
+            args.get("thresholds").cloned().unwrap_or_else(|| json!({})),
+        )
+        .map_err(|e| TokenSaveError::Config {
+            message: format!("invalid quality thresholds: {e}"),
+        })?;
+        let mut report =
+            crate::quality_diff::compare(project_root, base_name, head_name, &options).await?;
+        let total = report.findings.len();
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(20)
+            .min(500) as usize;
+        report
+            .findings
+            .sort_by_key(|f| (f.status == "unchanged", f.code.clone(), f.identity.clone()));
+        report.findings.truncate(limit);
+        let output = json!({"report": report, "total_findings": total, "returned_findings": total.min(limit), "truncated": total > limit});
+        return Ok(ToolResult {
+            value: json!({"content": [{"type": "text", "text": serde_json::to_string(&output).map_err(|e| TokenSaveError::Config { message: e.to_string() })?}]}),
+            touched_files: vec![],
+        });
+    }
+
     if base_name == head_name {
         // pr_context returns empty arrays for the same-ref case; do the same here
         // so callers get a consistent shape and can simply check the summary.
