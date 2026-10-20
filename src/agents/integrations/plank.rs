@@ -59,7 +59,7 @@ fn preserve_primary_tools(previous: Option<&serde_json::Value>) -> serde_json::V
 
 /// Returns Plank's user-scope MCP config path (`<home>/.plank/.mcp.json`).
 fn plank_global_config_path(home: &Path) -> PathBuf {
-    home.join(".plank/.mcp.json")
+    home.join(".plank").join(".mcp.json")
 }
 
 /// Returns Plank's project-scope MCP config path (`<project>/.mcp.json`).

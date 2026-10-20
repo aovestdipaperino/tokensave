@@ -48,7 +48,11 @@ async fn fixture() -> TempDir {
     git(root, &["switch", "-c", "feature"]);
     let td = root.join(".tokensave");
     fs::create_dir_all(td.join("branches")).unwrap();
-    fs::copy(td.join("tokensave.db"), td.join("branches/feature.db")).unwrap();
+    fs::copy(
+        td.join("tokensave.db"),
+        td.join("branches").join("feature.db"),
+    )
+    .unwrap();
     let mut meta = branch_meta::load_branch_meta(&td).unwrap();
     meta.add_branch("feature", "branches/feature.db", "master");
     branch_meta::save_branch_meta(&td, &meta).unwrap();
@@ -91,8 +95,8 @@ async fn baseline_lifecycle_json_read_only_and_ci() {
     .unwrap();
     let before = git(root, &["status", "--porcelain=v1", "--untracked-files=all"]);
     let head = git(root, &["rev-parse", "HEAD"]);
-    let db_before = fs::read(root.join(".tokensave/branches/feature.db")).unwrap();
-    let meta_before = fs::read(root.join(".tokensave/branch-meta.json")).unwrap();
+    let db_before = fs::read(root.join(".tokensave").join("branches").join("feature.db")).unwrap();
+    let meta_before = fs::read(root.join(".tokensave").join("branch-meta.json")).unwrap();
     let report = compare(root, "master", "HEAD", &options).await.unwrap();
     assert!(report.summary["worsened"] > 0);
     assert_eq!(report.exit_code(true), 1);
@@ -129,11 +133,11 @@ async fn baseline_lifecycle_json_read_only_and_ci() {
     );
     assert_eq!(git(root, &["rev-parse", "HEAD"]), head);
     assert_eq!(
-        fs::read(root.join(".tokensave/branches/feature.db")).unwrap(),
+        fs::read(root.join(".tokensave").join("branches").join("feature.db")).unwrap(),
         db_before
     );
     assert_eq!(
-        fs::read(root.join(".tokensave/branch-meta.json")).unwrap(),
+        fs::read(root.join(".tokensave").join("branch-meta.json")).unwrap(),
         meta_before
     );
     assert_eq!(
@@ -541,7 +545,7 @@ async fn missing_analysis_candidates_symbol_rename_and_small_increases() {
         .unwrap_err()
         .to_string()
         .contains("absent at branch tip"));
-    fs::remove_file(root.join(".tokensave/branches/feature.db")).unwrap();
+    fs::remove_file(root.join(".tokensave").join("branches").join("feature.db")).unwrap();
     assert!(compare(root, "master", "feature", &options)
         .await
         .unwrap_err()

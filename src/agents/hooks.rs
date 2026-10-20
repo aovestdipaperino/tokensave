@@ -2381,7 +2381,7 @@ mod git_hook_tests {
         run_git(repo.path(), &["commit", "-qm", "initial"], None);
 
         let sentinel = repo.path().join("hook-fired");
-        let repo_hook = repo.path().join(".git/hooks/pre-commit");
+        let repo_hook = repo.path().join(".git").join("hooks").join("pre-commit");
         std::fs::write(
             &repo_hook,
             format!("#!/bin/sh\nprintf fired > '{}'\n", sentinel.display()),

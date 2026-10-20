@@ -28,7 +28,7 @@ async fn setup_server(report_savings: Option<bool>) -> (TempDir, Arc<McpServer>)
     let project = dir.path();
     std::fs::create_dir_all(project.join("src")).unwrap();
     std::fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "fn main() { let x = helper(); }\nfn helper() -> i32 { 42 }\n",
     )
     .unwrap();

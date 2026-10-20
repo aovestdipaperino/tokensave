@@ -33,26 +33,38 @@ fn fixture() -> TempDir {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     // A nested repo's .gitignore, as in the reported multi-repo workspace.
-    fs::create_dir_all(project.join("repo/generated/api")).unwrap();
-    fs::create_dir_all(project.join("repo/scratch")).unwrap();
-    fs::create_dir_all(project.join("repo/src")).unwrap();
-    fs::create_dir_all(project.join("docs/private")).unwrap();
-    fs::write(project.join("repo/.gitignore"), "generated/\nscratch/\n").unwrap();
-    fs::write(project.join("repo/src/lib.rs"), "pub fn tracked_fn() {}\n").unwrap();
+    fs::create_dir_all(project.join("repo").join("generated").join("api")).unwrap();
+    fs::create_dir_all(project.join("repo").join("scratch")).unwrap();
+    fs::create_dir_all(project.join("repo").join("src")).unwrap();
+    fs::create_dir_all(project.join("docs").join("private")).unwrap();
     fs::write(
-        project.join("repo/generated/api/client.rs"),
+        project.join("repo").join(".gitignore"),
+        "generated/\nscratch/\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("repo").join("src").join("lib.rs"),
+        "pub fn tracked_fn() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project
+            .join("repo")
+            .join("generated")
+            .join("api")
+            .join("client.rs"),
         "pub fn forced_fn() {}\n",
     )
     .unwrap();
     fs::write(
-        project.join("repo/scratch/tmp.rs"),
+        project.join("repo").join("scratch").join("tmp.rs"),
         "pub fn still_ignored_fn() {}\n",
     )
     .unwrap();
     // Gitignored and force-included, but excluded: exclude wins.
     fs::write(project.join(".gitignore"), "docs/\n").unwrap();
     fs::write(
-        project.join("docs/private/secret.rs"),
+        project.join("docs").join("private").join("secret.rs"),
         "pub fn excluded_fn() {}\n",
     )
     .unwrap();

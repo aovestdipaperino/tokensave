@@ -628,11 +628,13 @@ pub fn load_jsonc_file_strict(path: &Path) -> crate::errors::Result<serde_json::
 pub fn vscode_data_dir(home: &Path) -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        home.join("Library/Application Support/Code")
+        home.join("Library")
+            .join("Application Support")
+            .join("Code")
     }
     #[cfg(target_os = "linux")]
     {
-        home.join(".config/Code")
+        home.join(".config").join("Code")
     }
     #[cfg(target_os = "windows")]
     {
@@ -642,11 +644,11 @@ pub fn vscode_data_dir(home: &Path) -> PathBuf {
                 return appdata_path.join("Code");
             }
         }
-        home.join("AppData/Roaming/Code")
+        home.join("AppData").join("Roaming").join("Code")
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
-        home.join(".config/Code")
+        home.join(".config").join("Code")
     }
 }
 
@@ -654,11 +656,13 @@ pub fn vscode_data_dir(home: &Path) -> PathBuf {
 pub fn vscode_insiders_data_dir(home: &Path) -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        home.join("Library/Application Support/Code - Insiders")
+        home.join("Library")
+            .join("Application Support")
+            .join("Code - Insiders")
     }
     #[cfg(target_os = "linux")]
     {
-        home.join(".config/Code - Insiders")
+        home.join(".config").join("Code - Insiders")
     }
     #[cfg(target_os = "windows")]
     {
@@ -668,11 +672,11 @@ pub fn vscode_insiders_data_dir(home: &Path) -> PathBuf {
                 return appdata_path.join("Code - Insiders");
             }
         }
-        home.join("AppData/Roaming/Code - Insiders")
+        home.join("AppData").join("Roaming").join("Code - Insiders")
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
-        home.join(".config/Code - Insiders")
+        home.join(".config").join("Code - Insiders")
     }
 }
 
@@ -693,14 +697,17 @@ pub fn copilot_jetbrains_dir(home: &Path) -> PathBuf {
         if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
             let localappdata_path = PathBuf::from(&localappdata);
             if localappdata_path.starts_with(home) {
-                return localappdata_path.join("github-copilot/intellij");
+                return localappdata_path.join("github-copilot").join("intellij");
             }
         }
-        home.join("AppData/Local/github-copilot/intellij")
+        home.join("AppData")
+            .join("Local")
+            .join("github-copilot")
+            .join("intellij")
     }
     #[cfg(not(target_os = "windows"))]
     {
-        home.join(".config/github-copilot/intellij")
+        home.join(".config").join("github-copilot").join("intellij")
     }
 }
 

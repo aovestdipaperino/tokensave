@@ -36,13 +36,16 @@ impl AgentIntegration for CopilotIntegration {
     }
 
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let vscode_mcp_json_path = super::vscode_data_dir(&ctx.home).join("User/mcp.json");
+        let vscode_mcp_json_path = super::vscode_data_dir(&ctx.home)
+            .join("User")
+            .join("mcp.json");
         let cli_settings_path = super::copilot_cli_dir(&ctx.home).join("mcp-config.json");
 
         install_vscode_mcp_json_server(&vscode_mcp_json_path, &ctx.tokensave_bin)?;
 
-        let insiders_mcp_json_path =
-            super::vscode_insiders_data_dir(&ctx.home).join("User/mcp.json");
+        let insiders_mcp_json_path = super::vscode_insiders_data_dir(&ctx.home)
+            .join("User")
+            .join("mcp.json");
         if insiders_mcp_json_path
             .parent()
             .is_some_and(std::path::Path::exists)
@@ -62,11 +65,15 @@ impl AgentIntegration for CopilotIntegration {
         }
 
         // Install prompt rules
-        let vscode_instructions =
-            super::vscode_data_dir(&ctx.home).join("User/prompts/copilot-instructions.md");
+        let vscode_instructions = super::vscode_data_dir(&ctx.home)
+            .join("User")
+            .join("prompts")
+            .join("copilot-instructions.md");
         install_prompt_rules(&vscode_instructions)?;
-        let insiders_instructions =
-            super::vscode_insiders_data_dir(&ctx.home).join("User/prompts/copilot-instructions.md");
+        let insiders_instructions = super::vscode_insiders_data_dir(&ctx.home)
+            .join("User")
+            .join("prompts")
+            .join("copilot-instructions.md");
         if super::vscode_insiders_data_dir(&ctx.home)
             .join("User")
             .exists()
@@ -95,26 +102,36 @@ impl AgentIntegration for CopilotIntegration {
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let vscode_settings_path = super::vscode_data_dir(&ctx.home).join("User/settings.json");
-        let vscode_mcp_json_path = super::vscode_data_dir(&ctx.home).join("User/mcp.json");
+        let vscode_settings_path = super::vscode_data_dir(&ctx.home)
+            .join("User")
+            .join("settings.json");
+        let vscode_mcp_json_path = super::vscode_data_dir(&ctx.home)
+            .join("User")
+            .join("mcp.json");
         let cli_settings_path = super::copilot_cli_dir(&ctx.home).join("mcp-config.json");
         uninstall_vscode_mcp_json_server(&vscode_mcp_json_path);
         uninstall_vscode_mcp_server(&vscode_settings_path);
-        let insiders_settings_path =
-            super::vscode_insiders_data_dir(&ctx.home).join("User/settings.json");
-        let insiders_mcp_json_path =
-            super::vscode_insiders_data_dir(&ctx.home).join("User/mcp.json");
+        let insiders_settings_path = super::vscode_insiders_data_dir(&ctx.home)
+            .join("User")
+            .join("settings.json");
+        let insiders_mcp_json_path = super::vscode_insiders_data_dir(&ctx.home)
+            .join("User")
+            .join("mcp.json");
         uninstall_vscode_mcp_json_server(&insiders_mcp_json_path);
         uninstall_vscode_mcp_server(&insiders_settings_path);
         uninstall_cli_mcp_server(&cli_settings_path);
         let jetbrains_dir = super::copilot_jetbrains_dir(&ctx.home);
         uninstall_jetbrains_mcp_server(&jetbrains_dir.join("mcp.json"));
 
-        let vscode_instructions =
-            super::vscode_data_dir(&ctx.home).join("User/prompts/copilot-instructions.md");
+        let vscode_instructions = super::vscode_data_dir(&ctx.home)
+            .join("User")
+            .join("prompts")
+            .join("copilot-instructions.md");
         uninstall_prompt_rules(&vscode_instructions);
-        let insiders_instructions =
-            super::vscode_insiders_data_dir(&ctx.home).join("User/prompts/copilot-instructions.md");
+        let insiders_instructions = super::vscode_insiders_data_dir(&ctx.home)
+            .join("User")
+            .join("prompts")
+            .join("copilot-instructions.md");
         uninstall_prompt_rules(&insiders_instructions);
         let cli_instructions = super::copilot_cli_dir(&ctx.home).join("copilot-instructions.md");
         uninstall_prompt_rules(&cli_instructions);
@@ -151,15 +168,20 @@ impl AgentIntegration for CopilotIntegration {
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
-        Some(super::vscode_data_dir(home).join("User/mcp.json"))
+        Some(super::vscode_data_dir(home).join("User").join("mcp.json"))
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {
-        let vscode_mcp_json_path = super::vscode_data_dir(home).join("User/mcp.json");
-        let vscode_settings_path = super::vscode_data_dir(home).join("User/settings.json");
-        let insiders_mcp_json_path = super::vscode_insiders_data_dir(home).join("User/mcp.json");
-        let insiders_settings_path =
-            super::vscode_insiders_data_dir(home).join("User/settings.json");
+        let vscode_mcp_json_path = super::vscode_data_dir(home).join("User").join("mcp.json");
+        let vscode_settings_path = super::vscode_data_dir(home)
+            .join("User")
+            .join("settings.json");
+        let insiders_mcp_json_path = super::vscode_insiders_data_dir(home)
+            .join("User")
+            .join("mcp.json");
+        let insiders_settings_path = super::vscode_insiders_data_dir(home)
+            .join("User")
+            .join("settings.json");
         let cli_settings_path = super::copilot_cli_dir(home).join("mcp-config.json");
 
         let vscode_mcp_json_has_tokensave = if vscode_mcp_json_path.exists() {
@@ -558,8 +580,8 @@ fn report_serve_arg(dc: &mut DoctorCounters, server: &serde_json::Map<String, se
 /// `settings.json` `mcp.servers` entry (issue #266). Passes if either is
 /// valid; warns if both are present since that's a stale duplicate.
 fn doctor_check_vscode_settings(dc: &mut DoctorCounters, vscode_dir: &Path, label: &str) {
-    let mcp_json_path = vscode_dir.join("User/mcp.json");
-    let settings_path = vscode_dir.join("User/settings.json");
+    let mcp_json_path = vscode_dir.join("User").join("mcp.json");
+    let settings_path = vscode_dir.join("User").join("settings.json");
 
     if !mcp_json_path.exists() && !settings_path.exists() {
         dc.warn(&format!(
@@ -698,11 +720,16 @@ fn doctor_check_cli_settings(dc: &mut DoctorCounters, home: &Path) {
 
 /// Check all Copilot instruction files for the up-to-date tokensave rules block.
 fn doctor_check_prompts(dc: &mut DoctorCounters, home: &Path) {
-    let vscode = super::vscode_data_dir(home).join("User/prompts/copilot-instructions.md");
+    let vscode = super::vscode_data_dir(home)
+        .join("User")
+        .join("prompts")
+        .join("copilot-instructions.md");
     check_shared_rules_block(dc, &vscode, "copilot");
 
-    let insiders =
-        super::vscode_insiders_data_dir(home).join("User/prompts/copilot-instructions.md");
+    let insiders = super::vscode_insiders_data_dir(home)
+        .join("User")
+        .join("prompts")
+        .join("copilot-instructions.md");
     check_shared_rules_block(dc, &insiders, "copilot");
 
     let cli = super::copilot_cli_dir(home).join("copilot-instructions.md");

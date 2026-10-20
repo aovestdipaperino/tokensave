@@ -26,7 +26,7 @@ async fn fixture() -> (TempDir, TokenSave) {
     fs::create_dir_all(project.join("src")).unwrap();
 
     fs::write(
-        project.join("src/status-panel.tsx"),
+        project.join("src").join("status-panel.tsx"),
         r#"import { translate } from "./translations";
 
 export function Banner({ busy }: { busy: boolean }): string {
@@ -46,7 +46,7 @@ export function Banner({ busy }: { busy: boolean }): string {
         ));
     }
     catalog.push_str("} as const;\n\nexport function translate(key: string): string {\n  return MESSAGES[key];\n}\n");
-    fs::write(project.join("src/translations.ts"), catalog).unwrap();
+    fs::write(project.join("src").join("translations.ts"), catalog).unwrap();
 
     for file in 0..8 {
         let mut body = String::new();

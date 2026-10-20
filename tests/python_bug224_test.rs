@@ -106,10 +106,14 @@ async fn unused_imports_excludes_init_py_but_still_flags_other_files() {
     let project = dir.path();
     fs::create_dir_all(project.join("pkg")).unwrap();
 
-    fs::write(project.join("pkg/thing.py"), "class Thing:\n    pass\n").unwrap();
+    fs::write(
+        project.join("pkg").join("thing.py"),
+        "class Thing:\n    pass\n",
+    )
+    .unwrap();
     // Re-export: intentionally never referenced within __init__.py itself.
     fs::write(
-        project.join("pkg/__init__.py"),
+        project.join("pkg").join("__init__.py"),
         "from .thing import Thing\n",
     )
     .unwrap();
@@ -159,9 +163,9 @@ async fn dead_code_resolves_cross_file_from_import_call_inside_method() {
     let project = dir.path();
     fs::create_dir_all(project.join("pkg")).unwrap();
 
-    fs::write(project.join("pkg/__init__.py"), "").unwrap();
+    fs::write(project.join("pkg").join("__init__.py"), "").unwrap();
     fs::write(
-        project.join("pkg/mod.py"),
+        project.join("pkg").join("mod.py"),
         "def helper(x):\n    return x + 1\n",
     )
     .unwrap();

@@ -98,21 +98,24 @@ impl AgentIntegration for AugmentIntegration {
 
 /// Global Augment settings path (`~/.augment/settings.json`).
 fn augment_settings_path(home: &Path) -> PathBuf {
-    home.join(".augment/settings.json")
+    home.join(".augment").join("settings.json")
 }
 
 /// settings.json path for this install: `~/.augment/settings.json` globally,
 /// or `<project>/.augment/settings.json` for `--local` (same relative
 /// layout — matches `auggie mcp add --project`).
 fn augment_settings_path_for(ctx: &InstallContext) -> PathBuf {
-    ctx.base_dir().join(".augment/settings.json")
+    ctx.base_dir().join(".augment").join("settings.json")
 }
 
 /// Rules file path for this install: `~/.augment/rules/tokensave.md`
 /// globally, or `<project>/.augment/rules/tokensave.md` for `--local` (same
 /// relative layout).
 fn augment_rules_path_for(ctx: &InstallContext) -> PathBuf {
-    ctx.base_dir().join(".augment/rules/tokensave.md")
+    ctx.base_dir()
+        .join(".augment")
+        .join("rules")
+        .join("tokensave.md")
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +286,6 @@ fn doctor_check_config(dc: &mut DoctorCounters, home: &Path) {
 
 /// Check the dedicated rules file is up to date with the canonical text.
 fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
-    let rules_path = home.join(".augment/rules/tokensave.md");
+    let rules_path = home.join(".augment").join("rules").join("tokensave.md");
     check_managed_rules_file(dc, &rules_path, "auggie");
 }

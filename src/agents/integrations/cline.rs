@@ -16,7 +16,10 @@ pub struct ClineIntegration;
 
 /// Returns the Cline VS Code extension global storage directory.
 fn cline_ext_dir(home: &Path) -> PathBuf {
-    super::vscode_data_dir(home).join("User/globalStorage/saoudrizwan.claude-dev")
+    super::vscode_data_dir(home)
+        .join("User")
+        .join("globalStorage")
+        .join("saoudrizwan.claude-dev")
 }
 
 impl AgentIntegration for ClineIntegration {
@@ -29,7 +32,9 @@ impl AgentIntegration for ClineIntegration {
     }
 
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let settings_path = cline_ext_dir(&ctx.home).join("settings/cline_mcp_settings.json");
+        let settings_path = cline_ext_dir(&ctx.home)
+            .join("settings")
+            .join("cline_mcp_settings.json");
 
         if let Some(parent) = settings_path.parent() {
             std::fs::create_dir_all(parent).ok();
@@ -69,7 +74,9 @@ impl AgentIntegration for ClineIntegration {
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let settings_path = cline_ext_dir(&ctx.home).join("settings/cline_mcp_settings.json");
+        let settings_path = cline_ext_dir(&ctx.home)
+            .join("settings")
+            .join("cline_mcp_settings.json");
         uninstall_mcp_server(&settings_path);
 
         crate::agent_note!();
@@ -88,11 +95,17 @@ impl AgentIntegration for ClineIntegration {
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<PathBuf> {
-        Some(cline_ext_dir(home).join("settings/cline_mcp_settings.json"))
+        Some(
+            cline_ext_dir(home)
+                .join("settings")
+                .join("cline_mcp_settings.json"),
+        )
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {
-        let settings_path = cline_ext_dir(home).join("settings/cline_mcp_settings.json");
+        let settings_path = cline_ext_dir(home)
+            .join("settings")
+            .join("cline_mcp_settings.json");
         if !settings_path.exists() {
             return false;
         }
@@ -165,7 +178,9 @@ fn uninstall_mcp_server(settings_path: &Path) {
 
 /// Check Cline's `cline_mcp_settings.json` has tokensave MCP server registered.
 fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
-    let settings_path = cline_ext_dir(home).join("settings/cline_mcp_settings.json");
+    let settings_path = cline_ext_dir(home)
+        .join("settings")
+        .join("cline_mcp_settings.json");
 
     if !settings_path.exists() {
         dc.warn(&format!(

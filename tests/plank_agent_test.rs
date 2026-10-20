@@ -14,7 +14,7 @@ use crate::common::{make_install_ctx as make_ctx, read_json};
 
 /// Plank's user-scope config path under a fake home.
 fn plank_global_config_path(home: &Path) -> PathBuf {
-    home.join(".plank/.mcp.json")
+    home.join(".plank").join(".mcp.json")
 }
 
 /// Plank's project-scope config path under a fake project root.

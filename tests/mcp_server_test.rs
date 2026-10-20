@@ -30,7 +30,7 @@ async fn setup_server() -> (TempDir, Arc<McpServer>) {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "fn main() { let x = helper(); }\nfn helper() -> i32 { 42 }\n",
     )
     .unwrap();
@@ -59,7 +59,7 @@ async fn setup_named_project(function_name: &str) -> (TempDir, TokenSave) {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         format!("fn {function_name}() -> i32 {{ 42 }}\n"),
     )
     .unwrap();
@@ -73,7 +73,7 @@ async fn setup_fallback_project(function_name: &str) -> (TempDir, TokenSave) {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         format!("fn {function_name}() -> i32 {{ 42 }}\n"),
     )
     .unwrap();
@@ -131,7 +131,11 @@ async fn setup_selected_branch_project() -> TempDir {
     let project = dir.path();
     run_git(project, &["init", "-b", "main"]);
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn main_only() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("lib.rs"),
+        "pub fn main_only() {}\n",
+    )
+    .unwrap();
     run_git(project, &["add", "src/lib.rs"]);
     run_git(project, &["commit", "-m", "main"]);
 
@@ -141,7 +145,11 @@ async fn setup_selected_branch_project() -> TempDir {
     drop(graph);
 
     run_git(project, &["checkout", "-b", "feature"]);
-    fs::write(project.join("src/lib.rs"), "pub fn feature_only() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("lib.rs"),
+        "pub fn feature_only() {}\n",
+    )
+    .unwrap();
     run_git(project, &["add", "src/lib.rs"]);
     run_git(project, &["commit", "-m", "feature"]);
 
@@ -149,7 +157,7 @@ async fn setup_selected_branch_project() -> TempDir {
     fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
     fs::copy(
         tokensave_dir.join("tokensave.db"),
-        tokensave_dir.join("branches/feature.db"),
+        tokensave_dir.join("branches").join("feature.db"),
     )
     .unwrap();
     let mut meta = branch_meta::load_branch_meta(&tokensave_dir).unwrap();
@@ -170,7 +178,7 @@ async fn setup_colliding_project() -> TempDir {
     run_git(project, &["init", "-b", "main"]);
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         "pub fn shared_caller() { shared_target(); }\npub fn shared_target() {}\n",
     )
     .unwrap();
@@ -186,7 +194,7 @@ async fn setup_colliding_project() -> TempDir {
     fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
     fs::copy(
         tokensave_dir.join("tokensave.db"),
-        tokensave_dir.join("branches/feature.db"),
+        tokensave_dir.join("branches").join("feature.db"),
     )
     .unwrap();
     let mut meta = branch_meta::load_branch_meta(&tokensave_dir).unwrap();
@@ -420,14 +428,14 @@ async fn project_snapshot(root: &Path, branch: Option<&str>, source: &str) -> Pr
         source: fs::read(&source_path).unwrap(),
         source_mtime: fs::metadata(source_path).unwrap().modified().unwrap(),
         graph: semantic_graph,
-        config: fs::read(root.join(".tokensave/config.json")).unwrap(),
-        branch_meta: fs::read(root.join(".tokensave/branch-meta.json")).ok(),
+        config: fs::read(root.join(".tokensave").join("config.json")).unwrap(),
+        branch_meta: fs::read(root.join(".tokensave").join("branch-meta.json")).ok(),
         last_sync,
     }
 }
 
 fn monitor_snapshot(home: &Path) -> Option<Vec<u8>> {
-    fs::read(home.join(".tokensave/monitor.mmap")).ok()
+    fs::read(home.join(".tokensave").join("monitor.mmap")).ok()
 }
 
 /// Sends a sequence of JSON-RPC messages to a server, runs it to completion,
@@ -463,7 +471,7 @@ async fn test_scope_prefix_backslashes_normalized() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(project.join("src").join("main.rs"), "fn main() {}\n").unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
     let server = McpServer::new(cg, Some("plugins\\obs\\my-plugin".to_string())).await;
@@ -975,7 +983,7 @@ async fn selected_read_bypasses_cache_and_never_returns_unchanged() {
     drop(foreign);
     let server = McpServer::new(local, None).await;
     let graph_root = foreign_dir.path().display().to_string();
-    let db_path = foreign_dir.path().join(".tokensave/tokensave.db");
+    let db_path = foreign_dir.path().join(".tokensave").join("tokensave.db");
     let db_before = fs::read(&db_path).unwrap();
     let cache_rows_before = read_cache_row_count(&db_path).await;
     assert_eq!(cache_rows_before, 0);
@@ -1010,7 +1018,7 @@ async fn selected_read_rejects_paths_outside_canonical_selected_root() {
     let selected_root = container.path().join("selected");
     fs::create_dir_all(selected_root.join("src")).unwrap();
     fs::write(
-        selected_root.join("src/main.rs"),
+        selected_root.join("src").join("main.rs"),
         "fn selected_inside() {}\n",
     )
     .unwrap();
@@ -1027,7 +1035,7 @@ async fn selected_read_rejects_paths_outside_canonical_selected_root() {
 
     let server = McpServer::new(local, None).await;
     let graph_root = selected_root.display().to_string();
-    let db_path = selected_root.join(".tokensave/tokensave.db");
+    let db_path = selected_root.join(".tokensave").join("tokensave.db");
     let cache_rows_before = read_cache_row_count(&db_path).await;
     let mut paths = vec![
         outside.display().to_string(),
@@ -1066,7 +1074,7 @@ async fn selected_read_rejects_paths_outside_canonical_selected_root() {
         41,
         "tokensave_read",
         json!({
-            "file": selected_root.join("src/main.rs").display().to_string(),
+            "file": selected_root.join("src").join("main.rs").display().to_string(),
             "mode": "full",
             "graph_root": graph_root
         }),
@@ -1094,7 +1102,7 @@ async fn primary_read_rejects_paths_outside_project_root() {
     std::os::unix::fs::symlink(&outside, local_dir.path().join("linked-secret.txt")).unwrap();
 
     let server = McpServer::new(local, None).await;
-    let db_path = local_dir.path().join(".tokensave/tokensave.db");
+    let db_path = local_dir.path().join(".tokensave").join("tokensave.db");
     let cache_rows_before = read_cache_row_count(&db_path).await;
     // Both temp dirs share a parent, so `..` reaches the secret.
     let outside_name = outside_dir
@@ -1146,9 +1154,9 @@ async fn primary_read_rejects_paths_outside_project_root() {
 async fn setup_nested_project() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    fs::create_dir_all(project.join("src/x")).unwrap();
+    fs::create_dir_all(project.join("src").join("x")).unwrap();
     fs::write(
-        project.join("src/x/service.rs"),
+        project.join("src").join("x").join("service.rs"),
         "pub fn nested_alpha() -> i32 { 1 }\npub fn nested_beta() -> i32 { 2 }\n",
     )
     .unwrap();
@@ -1191,7 +1199,11 @@ async fn read_map_and_signatures_use_indexed_path_form() {
             "src/x/service.rs".to_string(),
             "./src/x/service.rs".to_string(),
             "src/../src/x/service.rs".to_string(),
-            root.join("src/x/service.rs").display().to_string(),
+            root.join("src")
+                .join("x")
+                .join("service.rs")
+                .display()
+                .to_string(),
         ]
     };
 
@@ -1245,7 +1257,7 @@ async fn selected_context_qualifies_ids_without_rewriting_source_literals() {
     let raw = raw_graph_id(&qualified);
     let missing = "function:ffffffffffffffffffffffffffffffff";
     fs::write(
-        selected_dir.path().join("src/lib.rs"),
+        selected_dir.path().join("src").join("lib.rs"),
         format!(
             "pub fn shared_caller() {{ shared_target(); }}\n\
              pub fn shared_target() {{ /* real node id: {raw}; nonexistent lookalike: {missing} */ }}\n"
@@ -1381,7 +1393,7 @@ async fn selected_truncated_structured_output_stays_qualified() {
     let source = (0..500)
         .map(|index| format!("fn huge_item_{index:03}() -> usize {{ {index} }}\n"))
         .collect::<String>();
-    fs::write(foreign_dir.path().join("src/lib.rs"), source).unwrap();
+    fs::write(foreign_dir.path().join("src").join("lib.rs"), source).unwrap();
     let foreign = TokenSave::init(foreign_dir.path()).await.unwrap();
     foreign.index_all().await.unwrap();
     drop(foreign);
@@ -1470,7 +1482,7 @@ async fn selectors_are_rejected_for_non_graph_scoped_tools_before_dispatch() {
         );
     }
 
-    let source = fs::read_to_string(local_dir.path().join("src/main.rs")).unwrap();
+    let source = fs::read_to_string(local_dir.path().join("src").join("main.rs")).unwrap();
     assert!(source.contains("before_edit"), "{source}");
     assert!(!source.contains("after_edit"), "{source}");
     let stats = server.server_stats_json().await;
@@ -1500,7 +1512,7 @@ async fn diagnostics_selectors_are_rejected_before_subprocess_or_target_creation
     .unwrap();
     let server = McpServer::new(local, None).await;
     let graph_root = selected_dir.path().display().to_string();
-    let target = selected_dir.path().join(".tokensave/target");
+    let target = selected_dir.path().join(".tokensave").join("target");
 
     for (index, arguments) in [
         json!({ "graph_root": graph_root.clone() }),
@@ -1537,7 +1549,14 @@ async fn selected_invalid_graph_selectors_return_invalid_params() {
     let uninitialized = TempDir::new().unwrap();
     let selected_dir = setup_selected_branch_project().await;
     let missing_db_dir = setup_selected_branch_project().await;
-    fs::remove_file(missing_db_dir.path().join(".tokensave/branches/feature.db")).unwrap();
+    fs::remove_file(
+        missing_db_dir
+            .path()
+            .join(".tokensave")
+            .join("branches")
+            .join("feature.db"),
+    )
+    .unwrap();
     let cases = vec![
         (json!({ "graph_root": "relative" }), "absolute".to_string()),
         (
@@ -1614,7 +1633,7 @@ async fn selected_database_open_failure_returns_internal_error() {
     foreign.checkpoint().await.unwrap();
     drop(foreign);
     fs::write(
-        foreign_dir.path().join(".tokensave/tokensave.db"),
+        foreign_dir.path().join(".tokensave").join("tokensave.db"),
         b"not a sqlite database",
     )
     .unwrap();
@@ -1913,7 +1932,7 @@ async fn qualified_colliding_id_traversal_isolated_by_root_and_branch() {
 async fn selected_graph_ignores_local_scope_and_local_warnings() {
     let (local_dir, local) = setup_named_project("local_only").await;
     fs::write(
-        local_dir.path().join("src/main.rs"),
+        local_dir.path().join("src").join("main.rs"),
         "fn locally_stale() {}\n",
     )
     .unwrap();
@@ -1995,7 +2014,7 @@ async fn test_index_age_warning_dedup_and_zero_hit_suppression() {
         .as_secs() as i64
         - 7200;
 
-    let (db, _migrated) = Database::open(&project.join(".tokensave/tokensave.db"))
+    let (db, _migrated) = Database::open(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
     db.set_metadata("last_sync_at", &two_hours_ago.to_string())
@@ -2407,7 +2426,7 @@ async fn test_search_metrics_are_capped_and_net() {
         "fn main() {{ let x = helper(); }}\n{}\nfn helper() -> i32 {{ 42 }}\n",
         "// padding line to inflate file size\n".repeat(500)
     );
-    fs::write(project.join("src/main.rs"), &padded_source).unwrap();
+    fs::write(project.join("src").join("main.rs"), &padded_source).unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
     let server = McpServer::new(with_report_savings(cg).await, None).await;
@@ -2501,7 +2520,7 @@ async fn test_schema_overhead_survives_a_failed_first_call() {
         "fn main() {{ let x = helper(); }}\n{}\nfn helper() -> i32 {{ 42 }}\n",
         "// padding line to inflate file size\n".repeat(500)
     );
-    fs::write(project.join("src/main.rs"), &padded_source).unwrap();
+    fs::write(project.join("src").join("main.rs"), &padded_source).unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
     let server = McpServer::new(with_report_savings(cg).await, None).await;
@@ -2630,7 +2649,7 @@ async fn test_uncached_full_read_baseline_matches_file_weight() {
         "fn main() {{ let x = helper(); }}\n{}\nfn helper() -> i32 {{ 42 }}\n",
         "// padding line to inflate file size\n".repeat(500)
     );
-    fs::write(project.join("src/main.rs"), &padded_source).unwrap();
+    fs::write(project.join("src").join("main.rs"), &padded_source).unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
     let server = McpServer::new(with_report_savings(cg).await, None).await;
@@ -2677,7 +2696,7 @@ async fn test_cached_read_baseline_is_capped_not_full_file() {
         "fn main() {{ let x = helper(); }}\n{}\nfn helper() -> i32 {{ 42 }}\n",
         "// padding line to inflate file size\n".repeat(500)
     );
-    fs::write(project.join("src/main.rs"), &padded_source).unwrap();
+    fs::write(project.join("src").join("main.rs"), &padded_source).unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
     let digest = {
@@ -2754,7 +2773,7 @@ async fn test_repeated_read_returns_body_and_force_still_accepted() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     let source = "fn main() { let x = helper(); }\nfn helper() -> i32 { 42 }\n";
-    fs::write(project.join("src/main.rs"), source).unwrap();
+    fs::write(project.join("src").join("main.rs"), source).unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
     let server = McpServer::new(cg, None).await;
@@ -2824,7 +2843,7 @@ async fn test_schema_overhead_not_charged_without_tools_list() {
         "fn main() {{ let x = helper(); }}\n{}\nfn helper() -> i32 {{ 42 }}\n",
         "// padding line to inflate file size\n".repeat(500)
     );
-    fs::write(project.join("src/main.rs"), &padded_source).unwrap();
+    fs::write(project.join("src").join("main.rs"), &padded_source).unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
     let server = McpServer::new(with_report_savings(cg).await, None).await;
@@ -2872,7 +2891,7 @@ async fn test_schema_overhead_charged_after_tools_list_call() {
         "fn main() {{ let x = helper(); }}\n{}\nfn helper() -> i32 {{ 42 }}\n",
         "// padding line to inflate file size\n".repeat(500)
     );
-    fs::write(project.join("src/main.rs"), &padded_source).unwrap();
+    fs::write(project.join("src").join("main.rs"), &padded_source).unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
     let server = McpServer::new(with_report_savings(cg).await, None).await;
@@ -2921,7 +2940,7 @@ async fn test_zero_before_call_never_gets_a_metrics_line() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "fn main() { let x = helper(); }\nfn helper() -> i32 { 42 }\n",
     )
     .unwrap();
@@ -2982,7 +3001,7 @@ async fn test_schema_debt_is_paid_down_not_discarded() {
         "fn main() {{ let x = helper(); }}\n{}\nfn helper() -> i32 {{ 42 }}\n",
         "// padding line to inflate file size\n".repeat(500)
     );
-    fs::write(project.join("src/main.rs"), &padded_source).unwrap();
+    fs::write(project.join("src").join("main.rs"), &padded_source).unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
     let server = McpServer::new(with_report_savings(cg).await, None).await;
@@ -3880,7 +3899,7 @@ async fn test_first_tool_call_backfills_last_indexed_version() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "fn main() { let x = helper(); }\nfn helper() -> i32 { 42 }\n",
     )
     .unwrap();
@@ -3934,7 +3953,7 @@ async fn test_first_tool_call_keeps_current_marker() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "fn main() { let x = helper(); }\nfn helper() -> i32 { 42 }\n",
     )
     .unwrap();
@@ -3979,7 +3998,7 @@ async fn test_index_all_records_running_version() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "fn main() { let x = helper(); }\nfn helper() -> i32 { 42 }\n",
     )
     .unwrap();
@@ -4002,7 +4021,7 @@ async fn test_cli_indexed_project_needs_no_forced_reindex() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "fn main() { let x = helper(); }\nfn helper() -> i32 { 42 }\n",
     )
     .unwrap();

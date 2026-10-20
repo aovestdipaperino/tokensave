@@ -176,7 +176,7 @@ pub async fn verify(root: &Path, deep: bool, repair: bool) -> Report {
 }
 
 async fn inspect(root: &Path, deep: bool, report: &mut Report) -> Result<bool> {
-    if !root.join(".tokensave/config.json").is_file() {
+    if !root.join(".tokensave").join("config.json").is_file() {
         report.add(
             "PROJECT_NOT_INITIALIZED",
             "error",

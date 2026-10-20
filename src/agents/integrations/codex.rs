@@ -68,7 +68,7 @@ impl AgentIntegration for CodexIntegration {
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
-        Some(home.join(".codex/config.toml"))
+        Some(home.join(".codex").join("config.toml"))
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {

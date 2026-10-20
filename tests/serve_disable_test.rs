@@ -100,10 +100,11 @@ fn assert_disables_server(name: &str) {
 #[tokio::test]
 async fn server_without_disable_reaches_the_mcp_transport() {
     let project = tempfile::tempdir().expect("temp project");
-    let (db, _) =
-        tokensave::db::Database::initialize(&project.path().join(".tokensave/tokensave.db"))
-            .await
-            .expect("initialize project database");
+    let (db, _) = tokensave::db::Database::initialize(
+        &project.path().join(".tokensave").join("tokensave.db"),
+    )
+    .await
+    .expect("initialize project database");
     drop(db);
 
     let run = run_server(None, project, true);

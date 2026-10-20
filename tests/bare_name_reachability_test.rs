@@ -48,12 +48,12 @@ async fn a_python_bare_name_does_not_bind_to_an_unreachable_sole_candidate() {
     std::fs::create_dir_all(root.join("tests")).unwrap();
 
     std::fs::write(
-        root.join("tests/test_runner.py"),
+        root.join("tests").join("test_runner.py"),
         "import pytest\n\n\n@pytest.fixture\ndef exe(tmp_path):\n    p = tmp_path / \"tool.exe\"\n    p.write_text(\"\", encoding=\"utf-8\")\n    return str(p)\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("src/cli.py"),
+        root.join("src").join("cli.py"),
         "import os\n\n\ndef resolve():\n    exe = (os.environ.get(\"TOOL\") or \"\").strip()\n    if not exe:\n        raise RuntimeError(\"missing\")\n    return exe\n",
     )
     .unwrap();
@@ -76,12 +76,12 @@ async fn a_python_bare_name_still_binds_when_the_caller_imports_it() {
     std::fs::create_dir_all(root.join("pkg")).unwrap();
 
     std::fs::write(
-        root.join("pkg/helpers.py"),
+        root.join("pkg").join("helpers.py"),
         "def shared_helper():\n    return 1\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("pkg/app.py"),
+        root.join("pkg").join("app.py"),
         "from pkg.helpers import shared_helper\n\n\ndef run():\n    return shared_helper()\n",
     )
     .unwrap();
@@ -123,15 +123,15 @@ async fn a_python_bare_name_still_binds_within_one_file() {
 async fn a_rust_bare_name_across_modules_is_not_gated() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
-    std::fs::create_dir_all(root.join("src/deep/nested")).unwrap();
+    std::fs::create_dir_all(root.join("src").join("deep").join("nested")).unwrap();
 
     std::fs::write(
-        root.join("src/deep/nested/util.rs"),
+        root.join("src").join("deep").join("nested").join("util.rs"),
         "pub fn compute_widget_total() -> i32 {\n    7\n}\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("src/lib.rs"),
+        root.join("src").join("lib.rs"),
         "pub mod deep;\n\npub fn run() -> i32 {\n    compute_widget_total()\n}\n",
     )
     .unwrap();
@@ -163,12 +163,12 @@ async fn a_python_bare_name_does_not_bind_to_an_unreachable_production_candidate
     std::fs::create_dir_all(root.join("util")).unwrap();
 
     std::fs::write(
-        root.join("ui/panel.py"),
+        root.join("ui").join("panel.py"),
         "import tkinter as tk\n\n\nclass Panel:\n    def writers(self):\n        t = self._txt\n\n        def p(s):\n            t.insert(tk.END, s + \"\\n\")\n\n        return p\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("util/paths.py"),
+        root.join("util").join("paths.py"),
         "import os\n\n\ndef cache_dir(root):\n    p = os.path.join(root, \".cache\")\n    os.makedirs(p, exist_ok=True)\n    return p\n",
     )
     .unwrap();
@@ -193,12 +193,12 @@ async fn a_python_bare_name_still_binds_across_production_modules_when_imported(
     std::fs::create_dir_all(root.join("util")).unwrap();
 
     std::fs::write(
-        root.join("ui/widgets.py"),
+        root.join("ui").join("widgets.py"),
         "def render_banner():\n    return \"banner\"\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("util/report.py"),
+        root.join("util").join("report.py"),
         "from ui.widgets import render_banner\n\n\ndef build():\n    return render_banner()\n",
     )
     .unwrap();

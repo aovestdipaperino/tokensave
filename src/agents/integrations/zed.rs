@@ -18,11 +18,11 @@ pub struct ZedIntegration;
 fn zed_config_dir(home: &Path) -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        home.join("Library/Application Support/Zed")
+        home.join("Library").join("Application Support").join("Zed")
     }
     #[cfg(not(target_os = "macos"))]
     {
-        home.join(".config/zed")
+        home.join(".config").join("zed")
     }
 }
 
@@ -31,7 +31,7 @@ fn zed_config_dir(home: &Path) -> PathBuf {
 fn zed_settings_path(ctx: &InstallContext) -> PathBuf {
     match &ctx.scope {
         InstallScope::Global => zed_config_dir(&ctx.home).join("settings.json"),
-        InstallScope::Local { project_path } => project_path.join(".zed/settings.json"),
+        InstallScope::Local { project_path } => project_path.join(".zed").join("settings.json"),
     }
 }
 

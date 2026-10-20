@@ -132,20 +132,20 @@ impl AgentIntegration for DroidIntegration {
 
 /// Global Factory Droid MCP config path (`~/.factory/mcp.json`).
 fn droid_mcp_path(home: &Path) -> PathBuf {
-    home.join(".factory/mcp.json")
+    home.join(".factory").join("mcp.json")
 }
 
 /// mcp.json path for this install: `~/.factory/mcp.json` globally, or
 /// `<project>/.factory/mcp.json` for `--local` (same relative layout).
 fn droid_mcp_path_for(ctx: &InstallContext) -> PathBuf {
-    ctx.base_dir().join(".factory/mcp.json")
+    ctx.base_dir().join(".factory").join("mcp.json")
 }
 
 /// AGENTS.md path for this install: `~/.factory/AGENTS.md` globally, or
 /// `<project>/AGENTS.md` for `--local` (Factory reads a repo-root AGENTS.md).
 fn droid_agents_md_for(ctx: &InstallContext) -> PathBuf {
     match &ctx.scope {
-        InstallScope::Global => ctx.home.join(".factory/AGENTS.md"),
+        InstallScope::Global => ctx.home.join(".factory").join("AGENTS.md"),
         InstallScope::Local { project_path } => project_path.join("AGENTS.md"),
     }
 }
@@ -153,14 +153,14 @@ fn droid_agents_md_for(ctx: &InstallContext) -> PathBuf {
 /// Global Factory Droid settings path (`~/.factory/settings.json`) — the file
 /// Factory reads its `hooks` object from.
 fn droid_settings_path(home: &Path) -> PathBuf {
-    home.join(".factory/settings.json")
+    home.join(".factory").join("settings.json")
 }
 
 /// settings.json path for this install: `~/.factory/settings.json` globally,
 /// or `<project>/.factory/settings.json` for `--local` (same relative layout
 /// as `mcp.json`).
 fn droid_settings_path_for(ctx: &InstallContext) -> PathBuf {
-    ctx.base_dir().join(".factory/settings.json")
+    ctx.base_dir().join(".factory").join("settings.json")
 }
 
 // ---------------------------------------------------------------------------
@@ -480,7 +480,7 @@ fn doctor_check_config(dc: &mut DoctorCounters, home: &Path) {
 
 /// Check AGENTS.md contains the up-to-date tokensave rules block.
 fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
-    let agents_md = home.join(".factory/AGENTS.md");
+    let agents_md = home.join(".factory").join("AGENTS.md");
     check_shared_rules_block(dc, &agents_md, "droid");
 }
 

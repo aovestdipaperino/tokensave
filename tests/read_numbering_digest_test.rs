@@ -12,7 +12,7 @@ const SOURCE: &str = "fn main() {\n    let x = helper();\n}\n\nfn helper() -> i3
 async fn setup() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
-    fs::write(dir.path().join("src/main.rs"), SOURCE).unwrap();
+    fs::write(dir.path().join("src").join("main.rs"), SOURCE).unwrap();
     let cg = TokenSave::init(dir.path()).await.unwrap();
     cg.index_all().await.unwrap();
     (dir, cg)
@@ -144,7 +144,11 @@ async fn edited_file_invalidates_held_digest() {
     let v = read_json(&cg, json!({ "file": "src/main.rs" })).await;
     let digest = v["digest"].as_str().unwrap().to_string();
 
-    fs::write(dir.path().join("src/main.rs"), SOURCE.replace("42", "43")).unwrap();
+    fs::write(
+        dir.path().join("src").join("main.rs"),
+        SOURCE.replace("42", "43"),
+    )
+    .unwrap();
 
     let after = read_json(&cg, json!({ "file": "src/main.rs", "if_digest": digest })).await;
     assert!(after.get("unchanged").is_none(), "{after}");

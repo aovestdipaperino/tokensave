@@ -23,7 +23,7 @@ fn test_generated_config_explains_environment_overrides() {
     let dir = TempDir::new().unwrap();
     save_config(dir.path(), &TokenSaveConfig::default()).unwrap();
 
-    let text = std::fs::read_to_string(dir.path().join(".tokensave/config.json")).unwrap();
+    let text = std::fs::read_to_string(dir.path().join(".tokensave").join("config.json")).unwrap();
     assert!(text.contains("\"_comment\""));
     assert!(text.contains("TOKENSAVE_* environment variables override"));
     assert!(serde_json::from_str::<TokenSaveConfig>(&text).is_ok());
@@ -205,7 +205,8 @@ fn test_add_to_git_info_exclude_creates_entry() {
     let dir = TempDir::new().unwrap();
     git_init(dir.path());
     add_to_git_info_exclude(dir.path());
-    let content = std::fs::read_to_string(dir.path().join(".git/info/exclude")).unwrap();
+    let content =
+        std::fs::read_to_string(dir.path().join(".git").join("info").join("exclude")).unwrap();
     assert!(content.contains(".tokensave/"));
     assert!(content.ends_with('\n'));
     // The tracked .gitignore must be left untouched.
@@ -218,7 +219,8 @@ fn test_add_to_git_info_exclude_is_idempotent() {
     git_init(dir.path());
     add_to_git_info_exclude(dir.path());
     add_to_git_info_exclude(dir.path());
-    let content = std::fs::read_to_string(dir.path().join(".git/info/exclude")).unwrap();
+    let content =
+        std::fs::read_to_string(dir.path().join(".git").join("info").join("exclude")).unwrap();
     assert_eq!(content.matches(".tokensave/").count(), 1);
 }
 
@@ -228,7 +230,8 @@ fn test_add_to_git_info_exclude_appends_to_existing() {
     git_init(dir.path());
     // git init already seeds info/exclude with comment lines; append after them.
     add_to_git_info_exclude(dir.path());
-    let exclude = std::fs::read_to_string(dir.path().join(".git/info/exclude")).unwrap();
+    let exclude =
+        std::fs::read_to_string(dir.path().join(".git").join("info").join("exclude")).unwrap();
     assert!(exclude.contains(".tokensave/\n"));
 }
 
@@ -443,8 +446,8 @@ fn test_discover_project_root_finds_parent() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     std::fs::create_dir_all(root.join(".tokensave")).unwrap();
-    std::fs::write(root.join(".tokensave/tokensave.db"), b"fake").unwrap();
-    let child = root.join("src/mcp");
+    std::fs::write(root.join(".tokensave").join("tokensave.db"), b"fake").unwrap();
+    let child = root.join("src").join("mcp");
     std::fs::create_dir_all(&child).unwrap();
 
     let found = tokensave::config::discover_project_root(&child);
@@ -463,7 +466,7 @@ fn test_discover_project_root_at_root_itself() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
     std::fs::create_dir_all(root.join(".tokensave")).unwrap();
-    std::fs::write(root.join(".tokensave/tokensave.db"), b"fake").unwrap();
+    std::fs::write(root.join(".tokensave").join("tokensave.db"), b"fake").unwrap();
 
     let found = tokensave::config::discover_project_root(root);
     assert_eq!(found, Some(root.to_path_buf()));
@@ -497,7 +500,7 @@ fn cpu_usage_profiles_round_trip_through_existing_config() {
 fn invalid_cpu_usage_reports_valid_choices_and_config_path() {
     let dir = TempDir::new().unwrap();
     save_config(dir.path(), &TokenSaveConfig::default()).unwrap();
-    let path = dir.path().join(".tokensave/config.json");
+    let path = dir.path().join(".tokensave").join("config.json");
     for invalid in [
         serde_json::json!("turbo"),
         serde_json::json!(null),
@@ -551,7 +554,7 @@ fn memory_usage_profiles_round_trip_through_existing_config() {
 fn invalid_memory_usage_reports_valid_choices_and_config_path() {
     let dir = TempDir::new().unwrap();
     save_config(dir.path(), &TokenSaveConfig::default()).unwrap();
-    let path = dir.path().join(".tokensave/config.json");
+    let path = dir.path().join(".tokensave").join("config.json");
     for invalid in [
         serde_json::json!("turbo"),
         serde_json::json!(null),

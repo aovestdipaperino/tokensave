@@ -146,9 +146,9 @@ async fn ruby_reopenings_link_rake_declarations() {
         "class Deploy\n  def run; end\nend\n",
     )
     .unwrap();
-    std::fs::create_dir_all(root.path().join("lib/tasks")).unwrap();
+    std::fs::create_dir_all(root.path().join("lib").join("tasks")).unwrap();
     std::fs::write(
-        root.path().join("lib/tasks/deploy.rake"),
+        root.path().join("lib").join("tasks").join("deploy.rake"),
         "class Deploy\n  def task_helper; end\nend\n",
     )
     .unwrap();

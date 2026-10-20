@@ -201,7 +201,12 @@ async fn check_stale_stores(dc: &mut DoctorCounters) {
         .list_project_paths()
         .await
         .into_iter()
-        .filter(|p| !Path::new(p).join(".tokensave/tokensave.db").exists())
+        .filter(|p| {
+            !Path::new(p)
+                .join(".tokensave")
+                .join("tokensave.db")
+                .exists()
+        })
         .collect();
     if stale.is_empty() {
         dc.pass("No stale projects in global DB");

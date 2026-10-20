@@ -98,7 +98,7 @@ fn test_install_creates_settings_with_hook() {
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let settings = read_json(&home.join(".claude/settings.json"));
+    let settings = read_json(&home.join(".claude").join("settings.json"));
     let hooks = settings["hooks"]["PreToolUse"]
         .as_array()
         .expect("PreToolUse should be an array");
@@ -150,7 +150,7 @@ fn test_install_creates_settings_with_permissions() {
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let settings = read_json(&home.join(".claude/settings.json"));
+    let settings = read_json(&home.join(".claude").join("settings.json"));
     let allow = settings["permissions"]["allow"]
         .as_array()
         .expect("permissions.allow should be an array");
@@ -176,7 +176,7 @@ fn test_install_writes_single_wildcard_entry_when_requested() {
     ctx.force_permission_style = true; // represents `--wildcard-permissions`
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let settings = read_json(&home.join(".claude/settings.json"));
+    let settings = read_json(&home.join(".claude").join("settings.json"));
     let allow: Vec<&str> = settings["permissions"]["allow"]
         .as_array()
         .expect("permissions.allow should be an array")
@@ -202,7 +202,7 @@ fn test_reinstall_switching_from_explicit_to_wildcard_prunes_old_entries() {
     wildcard_ctx.force_permission_style = true; // represents `--wildcard-permissions`
     ClaudeIntegration.install(&wildcard_ctx).unwrap();
 
-    let settings = read_json(&home.join(".claude/settings.json"));
+    let settings = read_json(&home.join(".claude").join("settings.json"));
     let allow: Vec<&str> = settings["permissions"]["allow"]
         .as_array()
         .unwrap()
@@ -242,7 +242,7 @@ fn test_silent_reinstall_preserves_user_wildcard_grant() {
     assert!(!ctx.force_permission_style);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let settings = read_json(&home.join(".claude/settings.json"));
+    let settings = read_json(&home.join(".claude").join("settings.json"));
     let allow: Vec<&str> = settings["permissions"]["allow"]
         .as_array()
         .unwrap()
@@ -267,11 +267,12 @@ fn test_install_creates_managed_rules_file() {
     // Issue #256: rules live in a tokensave-owned managed file, not appended
     // to the user's CLAUDE.md.
     assert!(
-        !home.join(".claude/CLAUDE.md").exists(),
+        !home.join(".claude").join("CLAUDE.md").exists(),
         "install should not create/touch CLAUDE.md"
     );
 
-    let rules = std::fs::read_to_string(home.join(".claude/rules/tokensave.md")).unwrap();
+    let rules =
+        std::fs::read_to_string(home.join(".claude").join("rules").join("tokensave.md")).unwrap();
     assert!(
         rules.contains("## MANDATORY: No Explore Agents When Tokensave Is Available"),
         "managed rules file should contain the mandatory rules marker"
@@ -322,7 +323,7 @@ fn test_install_does_not_touch_existing_claude_md() {
         "CLAUDE.md should be left untouched by install"
     );
 
-    let rules = std::fs::read_to_string(claude_dir.join("rules/tokensave.md")).unwrap();
+    let rules = std::fs::read_to_string(claude_dir.join("rules").join("tokensave.md")).unwrap();
     assert!(
         rules.contains("When you spawn an Explore agent"),
         "managed rules file should contain explore agent paragraph"
@@ -368,7 +369,7 @@ fn test_install_migrates_legacy_claude_md_block() {
         "install should preserve unrelated CLAUDE.md content"
     );
 
-    let rules = std::fs::read_to_string(claude_dir.join("rules/tokensave.md")).unwrap();
+    let rules = std::fs::read_to_string(claude_dir.join("rules").join("tokensave.md")).unwrap();
     assert!(
         rules.contains("MANDATORY: No Explore Agents When Tokensave Is Available"),
         "managed rules file should contain the rules (no duplication, no loss)"
@@ -384,7 +385,8 @@ fn test_install_idempotent_managed_rules_file() {
     ClaudeIntegration.install(&ctx).unwrap();
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let rules = std::fs::read_to_string(home.join(".claude/rules/tokensave.md")).unwrap();
+    let rules =
+        std::fs::read_to_string(home.join(".claude").join("rules").join("tokensave.md")).unwrap();
     let marker = "## MANDATORY: No Explore Agents When Tokensave Is Available";
     let count = rules.matches(marker).count();
     assert_eq!(
@@ -563,7 +565,7 @@ fn test_uninstall_removes_hook_from_settings() {
     ClaudeIntegration.install(&ctx).unwrap();
     ClaudeIntegration.uninstall(&ctx).unwrap();
 
-    let settings_path = home.join(".claude/settings.json");
+    let settings_path = home.join(".claude").join("settings.json");
     if settings_path.exists() {
         let settings = read_json(&settings_path);
         let has_hook = settings["hooks"]["PreToolUse"]
@@ -599,7 +601,7 @@ fn test_uninstall_removes_permissions_from_settings() {
     ClaudeIntegration.install(&ctx).unwrap();
     ClaudeIntegration.uninstall(&ctx).unwrap();
 
-    let settings_path = home.join(".claude/settings.json");
+    let settings_path = home.join(".claude").join("settings.json");
     if settings_path.exists() {
         let settings = read_json(&settings_path);
         let has_ts_perm = settings["permissions"]["allow"]
@@ -628,7 +630,7 @@ fn test_uninstall_preserves_other_permissions() {
     ClaudeIntegration.install(&ctx).unwrap();
 
     // Now add a non-tokensave permission to settings.json
-    let settings_path = home.join(".claude/settings.json");
+    let settings_path = home.join(".claude").join("settings.json");
     let mut settings = read_json(&settings_path);
     let allow = settings["permissions"]["allow"].as_array_mut().unwrap();
     allow.push(serde_json::json!("Bash(*)"));
@@ -659,7 +661,7 @@ fn test_uninstall_removes_managed_rules_file() {
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let rules_path = home.join(".claude/rules/tokensave.md");
+    let rules_path = home.join(".claude").join("rules").join("tokensave.md");
     assert!(rules_path.exists());
 
     ClaudeIntegration.uninstall(&ctx).unwrap();
@@ -692,7 +694,8 @@ fn test_uninstall_preserves_other_claude_md_content() {
     assert!(md_content.contains("My Custom Rules"));
     assert!(!md_content.contains("MANDATORY: No Explore Agents"));
 
-    let rules_content = std::fs::read_to_string(claude_dir.join("rules/tokensave.md")).unwrap();
+    let rules_content =
+        std::fs::read_to_string(claude_dir.join("rules").join("tokensave.md")).unwrap();
     assert!(rules_content.contains("MANDATORY: No Explore Agents"));
 
     ClaudeIntegration.uninstall(&ctx).unwrap();
@@ -708,7 +711,7 @@ fn test_uninstall_preserves_other_claude_md_content() {
         "custom content body should be preserved"
     );
     assert!(
-        !claude_dir.join("rules/tokensave.md").exists(),
+        !claude_dir.join("rules").join("tokensave.md").exists(),
         "managed rules file should be removed after uninstall"
     );
 }
@@ -810,7 +813,7 @@ fn test_healthcheck_detects_stale_permissions() {
     ClaudeIntegration.install(&ctx).unwrap();
 
     // Add a stale permission that is not in EXPECTED_TOOL_PERMS
-    let settings_path = home.join(".claude/settings.json");
+    let settings_path = home.join(".claude").join("settings.json");
     let mut settings = read_json(&settings_path);
     let allow = settings["permissions"]["allow"].as_array_mut().unwrap();
     allow.push(serde_json::json!("mcp__tokensave__fake_tool"));
@@ -837,7 +840,7 @@ fn test_healthcheck_detects_missing_claude_md() {
     ClaudeIntegration.install(&ctx).unwrap();
 
     // Delete the managed rules file
-    std::fs::remove_file(home.join(".claude/rules/tokensave.md")).unwrap();
+    std::fs::remove_file(home.join(".claude").join("rules").join("tokensave.md")).unwrap();
 
     let mut dc = DoctorCounters::new();
     let hctx = HealthcheckContext {
@@ -975,7 +978,7 @@ fn test_693_hooks_disabled_skips_hook_install_keeps_mcp_and_permissions() {
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let settings = read_json(&home.join(".claude/settings.json"));
+    let settings = read_json(&home.join(".claude").join("settings.json"));
     let settings_text = serde_json::to_string(&settings).unwrap();
     assert!(
         !settings_text.contains("hook-pre-tool-use")
@@ -1003,7 +1006,7 @@ fn test_693_doctor_reports_disabled_and_does_not_repair() {
     let ctx = make_install_ctx_with_real_bin(home);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let settings_path = home.join(".claude/settings.json");
+    let settings_path = home.join(".claude").join("settings.json");
     let before = std::fs::read_to_string(&settings_path).unwrap();
 
     let mut dc = DoctorCounters::new();
@@ -1031,7 +1034,8 @@ fn test_693_hooks_enabled_by_default_writes_hooks() {
     let home = dir.path();
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
-    let settings_text = std::fs::read_to_string(home.join(".claude/settings.json")).unwrap();
+    let settings_text =
+        std::fs::read_to_string(home.join(".claude").join("settings.json")).unwrap();
     assert!(
         settings_text.contains("hook-pre-tool-use"),
         "default install must still write hooks"

@@ -19,7 +19,7 @@ use tempfile::TempDir;
 fn initialized_project() -> TempDir {
     let dir = TempDir::new().unwrap();
     std::fs::create_dir(dir.path().join("src")).unwrap();
-    std::fs::write(dir.path().join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+    std::fs::write(dir.path().join("src").join("lib.rs"), "pub fn hello() {}\n").unwrap();
     let status = Command::new(env!("CARGO_BIN_EXE_tokensave"))
         .arg("init")
         .arg(dir.path())

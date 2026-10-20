@@ -249,7 +249,7 @@ fn uninstall_global(ctx: &InstallContext) {
 
 fn uninstall_local(project: &Path) {
     uninstall_mcp_server(&project.join(".mcp.json"));
-    uninstall_settings(&project.join(".claude/settings.json"));
+    uninstall_settings(&project.join(".claude").join("settings.json"));
     uninstall_claude_md_rules(&project.join("CLAUDE.md")).ok(); // legacy pre-#256 installs, best-effort like the rest of uninstall
     remove_managed_rules_file(&claude_rules_path(&project.join(".claude")));
 

@@ -38,11 +38,11 @@ fn read_json(path: &Path) -> serde_json::Value {
 }
 
 fn settings_path(home: &Path) -> PathBuf {
-    home.join(".augment/settings.json")
+    home.join(".augment").join("settings.json")
 }
 
 fn rules_path(home: &Path) -> PathBuf {
-    home.join(".augment/rules/tokensave.md")
+    home.join(".augment").join("rules").join("tokensave.md")
 }
 
 // ===========================================================================
@@ -219,11 +219,15 @@ fn test_local_install_targets_project() {
     AugmentIntegration.install(&ctx).unwrap();
 
     assert!(
-        project.join(".augment/settings.json").exists(),
+        project.join(".augment").join("settings.json").exists(),
         "--local should write <project>/.augment/settings.json"
     );
     assert!(
-        project.join(".augment/rules/tokensave.md").exists(),
+        project
+            .join(".augment")
+            .join("rules")
+            .join("tokensave.md")
+            .exists(),
         "--local should write <project>/.augment/rules/tokensave.md"
     );
     assert!(

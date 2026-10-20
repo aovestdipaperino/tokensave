@@ -30,7 +30,7 @@ async fn setup() -> (TempDir, TokenSave) {
 
     // Cross-package + generic targets.
     fs::write(
-        project.join("obs/obs.go"),
+        project.join("obs").join("obs.go"),
         r#"package obs
 
 type Meter struct{}
@@ -45,7 +45,7 @@ func Distinct[T comparable](xs []T) []T { return xs }
     .unwrap();
 
     fs::write(
-        project.join("app/app.go"),
+        project.join("app").join("app.go"),
         r#"package app
 
 import (

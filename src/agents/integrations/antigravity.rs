@@ -23,13 +23,18 @@ use super::*;
 pub struct AntigravityIntegration;
 
 fn mcp_config_path(home: &Path) -> std::path::PathBuf {
-    home.join(".gemini/antigravity/mcp_config.json")
+    home.join(".gemini")
+        .join("antigravity")
+        .join("mcp_config.json")
 }
 
 /// Per-plugin file used by the Antigravity CLI. Holds the same shape as
 /// the IDE config so a future shared loader can read either location.
 fn cli_plugin_path(home: &Path) -> std::path::PathBuf {
-    home.join(".gemini/antigravity-cli/plugins/tokensave.json")
+    home.join(".gemini")
+        .join("antigravity-cli")
+        .join("plugins")
+        .join("tokensave.json")
 }
 
 impl AgentIntegration for AntigravityIntegration {
@@ -120,7 +125,8 @@ impl AgentIntegration for AntigravityIntegration {
     }
 
     fn is_detected(&self, home: &Path) -> bool {
-        home.join(".gemini/antigravity").is_dir() || home.join(".gemini/antigravity-cli").is_dir()
+        home.join(".gemini").join("antigravity").is_dir()
+            || home.join(".gemini").join("antigravity-cli").is_dir()
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {

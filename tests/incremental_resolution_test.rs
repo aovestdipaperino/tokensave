@@ -32,12 +32,12 @@ use tokensave::tokensave::TokenSave;
 fn write_project(root: &Path) {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
-        root.join("src/lib.rs"),
+        root.join("src").join("lib.rs"),
         "pub mod shapes;\npub mod extra;\npub mod render;\npub use shapes::Circle;\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("src/shapes.rs"),
+        root.join("src").join("shapes.rs"),
         r#"
 pub trait Shape {
     fn area(&self) -> f64;
@@ -60,7 +60,7 @@ pub fn unit_circle() -> Circle {
     )
     .unwrap();
     std::fs::write(
-        root.join("src/extra.rs"),
+        root.join("src").join("extra.rs"),
         r#"
 use crate::shapes::Shape;
 
@@ -81,7 +81,7 @@ pub fn unit_square() -> Square {
     )
     .unwrap();
     std::fs::write(
-        root.join("src/render.rs"),
+        root.join("src").join("render.rs"),
         r#"
 use crate::extra::{unit_square, Square};
 use crate::shapes::{unit_circle, Circle, Shape};
@@ -144,7 +144,7 @@ fn edits() -> Vec<Edit> {
             // deleted half of the touched set is what re-resolves the callers.
             name: "remove a definition",
             apply: |root| {
-                let path = root.join("src/shapes.rs");
+                let path = root.join("src").join("shapes.rs");
                 let text = std::fs::read_to_string(&path).unwrap();
                 std::fs::write(
                     &path,
@@ -209,7 +209,7 @@ fn edits() -> Vec<Edit> {
             // name the file defined is touched only via the deleted half.
             name: "delete a file, caller untouched",
             apply: |root| {
-                std::fs::remove_file(root.join("src/extra.rs")).unwrap();
+                std::fs::remove_file(root.join("src").join("extra.rs")).unwrap();
                 replace_in(root, "src/lib.rs", "pub mod extra;\n", "");
             },
         },

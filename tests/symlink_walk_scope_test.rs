@@ -30,17 +30,25 @@ use tokensave::tokensave::TokenSave;
 fn ancestor_layout(tmp: &Path) -> std::path::PathBuf {
     let project = tmp.join("proj");
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/main.rs"), "pub fn inside_symbol() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("main.rs"),
+        "pub fn inside_symbol() {}\n",
+    )
+    .unwrap();
     add_walker_fingerprint(&project);
     fs::create_dir_all(tmp.join("outside")).unwrap();
-    fs::write(tmp.join("outside/lib.rs"), "pub fn outside_symbol() {}\n").unwrap();
+    fs::write(
+        tmp.join("outside").join("lib.rs"),
+        "pub fn outside_symbol() {}\n",
+    )
+    .unwrap();
     project
 }
 
 fn add_walker_fingerprint(project: &Path) {
     fs::create_dir_all(project.join("ignored")).unwrap();
     fs::write(
-        project.join("ignored/skip.rs"),
+        project.join("ignored").join("skip.rs"),
         "pub fn gitignored_symbol() {}\n",
     )
     .unwrap();
@@ -200,7 +208,11 @@ async fn symlinked_project_root_still_scans() {
     let dir = TempDir::new().unwrap();
     let real = dir.path().join("real");
     fs::create_dir_all(real.join("src")).unwrap();
-    fs::write(real.join("src/lib.rs"), "pub fn behind_root_link() {}\n").unwrap();
+    fs::write(
+        real.join("src").join("lib.rs"),
+        "pub fn behind_root_link() {}\n",
+    )
+    .unwrap();
     add_walker_fingerprint(&real);
     let root_link = dir.path().join("proj-link");
     symlink(&real, &root_link).unwrap();
@@ -254,9 +266,9 @@ async fn full_sync_removes_rows_reached_through_an_ancestor_link() {
     let project = ancestor_layout(dir.path());
     // A real directory first, so the pre-fix path `uplink/outside/lib.rs` is
     // genuinely present in the DB before the link replaces it.
-    fs::create_dir_all(project.join("uplink/outside")).unwrap();
+    fs::create_dir_all(project.join("uplink").join("outside")).unwrap();
     fs::write(
-        project.join("uplink/outside/lib.rs"),
+        project.join("uplink").join("outside").join("lib.rs"),
         "pub fn outside_symbol() {}\n",
     )
     .unwrap();

@@ -33,9 +33,9 @@ fn extract_text(value: &Value) -> &str {
 async fn setup_bug1() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    fs::create_dir_all(project.join("internal/obs")).unwrap();
-    fs::create_dir_all(project.join("internal/foo/jobs")).unwrap();
-    fs::create_dir_all(project.join("internal/bar/jobs")).unwrap();
+    fs::create_dir_all(project.join("internal").join("obs")).unwrap();
+    fs::create_dir_all(project.join("internal").join("foo").join("jobs")).unwrap();
+    fs::create_dir_all(project.join("internal").join("bar").join("jobs")).unwrap();
 
     fs::write(
         project.join("go.mod"),
@@ -72,13 +72,17 @@ func wire() {
     .unwrap();
 
     fs::write(
-        project.join("internal/obs/obs.go"),
+        project.join("internal").join("obs").join("obs.go"),
         "package obs\n\nfunc MustCounter(name string) int { return len(name) }\n",
     )
     .unwrap();
 
     fs::write(
-        project.join("internal/foo/jobs/jobs.go"),
+        project
+            .join("internal")
+            .join("foo")
+            .join("jobs")
+            .join("jobs.go"),
         r#"package jobs
 
 func NewCleanupWorker() int { return 1 }
@@ -88,7 +92,11 @@ func NewFooWorker() int     { return 11 }
     .unwrap();
 
     fs::write(
-        project.join("internal/bar/jobs/jobs.go"),
+        project
+            .join("internal")
+            .join("bar")
+            .join("jobs")
+            .join("jobs.go"),
         r#"package jobs
 
 func NewCleanupWorker() int { return 2 }

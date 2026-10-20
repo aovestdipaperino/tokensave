@@ -19,7 +19,7 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Default (no env override) Pi config path under a fake home.
 fn pi_config_path(home: &Path) -> PathBuf {
-    home.join(".pi/agent/mcp.json")
+    home.join(".pi").join("agent").join("mcp.json")
 }
 
 /// Default (no env override) Pi rules path under a fake home.
@@ -28,7 +28,7 @@ fn pi_config_path(home: &Path) -> PathBuf {
 /// the tokensave rules block there. Kept in sync with the production path
 /// helper in `src/agents/integrations/pi.rs`.
 fn pi_rules_path(home: &Path) -> PathBuf {
-    home.join(".pi/agent/AGENTS.md")
+    home.join(".pi").join("agent").join("AGENTS.md")
 }
 
 // ===========================================================================
@@ -139,7 +139,7 @@ fn test_install_writes_rules_to_pi_agent_dir() {
     );
 
     // The legacy wrong path must not be touched.
-    let legacy_path = home.join(".agents/AGENTS.md");
+    let legacy_path = home.join(".agents").join("AGENTS.md");
     assert!(
         !legacy_path.exists(),
         "install should NOT write rules to {} (Pi does not read it)",
@@ -414,7 +414,7 @@ fn test_is_detected_with_pi_dir() {
 
     let dir = TempDir::new().unwrap();
     let home = dir.path();
-    std::fs::create_dir_all(home.join(".pi/agent")).unwrap();
+    std::fs::create_dir_all(home.join(".pi").join("agent")).unwrap();
     assert!(
         PiIntegration.is_detected(home),
         "should be detected when .pi/agent exists"

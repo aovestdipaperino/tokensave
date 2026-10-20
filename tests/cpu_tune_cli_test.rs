@@ -110,13 +110,13 @@ fn tune_dry_run_never_writes() {
     assert!(tokensave(&["init", "--cpu-usage", "low"], dir.path())
         .status
         .success());
-    let before = std::fs::read(dir.path().join(".tokensave/config.json")).unwrap();
+    let before = std::fs::read(dir.path().join(".tokensave").join("config.json")).unwrap();
     let output = tokensave(&["tune", "--dry-run", "--json"], dir.path());
     assert!(output.status.success(), "{}", combined(&output));
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["written"], false);
     assert_eq!(
-        std::fs::read(dir.path().join(".tokensave/config.json")).unwrap(),
+        std::fs::read(dir.path().join(".tokensave").join("config.json")).unwrap(),
         before
     );
 }
