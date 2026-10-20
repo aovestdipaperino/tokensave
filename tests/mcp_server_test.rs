@@ -441,7 +441,7 @@ async fn run_server_with_messages(server: Arc<McpServer>, messages: Vec<String>)
     drop(sender);
 
     let handle = tokio::spawn(async move {
-        server.run(&mut transport).await.unwrap();
+        server.run(transport).await.unwrap();
     });
 
     let mut responses = Vec::new();
@@ -591,7 +591,7 @@ async fn test_replayed_initialize_response_is_newline_terminated() {
         .send(jsonrpc_request(json!(2), "ping", json!({})))
         .unwrap();
     drop(sender);
-    server.run(&mut transport).await.unwrap();
+    server.run(transport).await.unwrap();
 
     let line = receiver.recv().await.expect("expected a ping response");
     let resp = parse_response(line.trim());

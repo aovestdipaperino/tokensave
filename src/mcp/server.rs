@@ -617,6 +617,15 @@ async fn idle_deadline(d: Option<std::time::Duration>) {
     }
 }
 
+/// How many read-only tool calls the server answers at the same time.
+///
+/// A burst of searches used to queue behind each other, so six parallel
+/// searches took six times as long as one (#685). Read-only calls now run
+/// concurrently, but the fan-out is bounded: each call may hold a scan of the
+/// whole project, and an unbounded burst would read the project many times
+/// over at once.
+const MAX_CONCURRENT_READS: usize = 4;
+
 /// Say why the server is leaving. An idle exit is indistinguishable from a
 /// crash in a host's log otherwise, and the whole point of the option is that
 /// an operator turned it on and wants to see it working.
@@ -1640,7 +1649,7 @@ impl McpServer {
     pub async fn handle_and_write(
         self: &Arc<Self>,
         line: &str,
-        transport: &mut impl super::transport::McpTransport,
+        transport: &mut impl super::transport::McpWriter,
     ) {
         let parsed: std::result::Result<super::transport::JsonRpcRequest, _> =
             serde_json::from_str(line);
@@ -1667,7 +1676,7 @@ impl McpServer {
     /// (SIGINT/SIGTERM) is received, then performs graceful cleanup.
     pub async fn run(
         self: &Arc<Self>,
-        transport: &mut impl super::transport::McpTransport,
+        transport: impl super::transport::McpTransport,
     ) -> Result<()> {
         self.run_with_idle_timeout(transport, None).await
     }
@@ -1708,10 +1717,25 @@ impl McpServer {
     /// line, never during request handling: the timer is created fresh each
     /// time the loop parks, so a request that takes longer than the timeout
     /// cannot be interrupted by it, and the window after it starts whole.
-    /// Requests are handled serially, so no in-flight counter is needed.
+    ///
+    /// Requests are answered one at a time, except for read-only tool calls,
+    /// which run concurrently (#685). The deadline therefore watches the
+    /// transport rather than the requests: a server with a request in flight
+    /// is not idle.
     pub async fn run_with_idle_timeout(
         self: &Arc<Self>,
-        transport: &mut impl super::transport::McpTransport,
+        transport: impl super::transport::McpTransport,
+        idle_timeout: Option<std::time::Duration>,
+    ) -> Result<()> {
+        let (reader, writer) = transport.split();
+        self.run_with_halves(reader, writer, idle_timeout).await
+    }
+
+    /// Runs the server over an already-split transport.
+    pub async fn run_with_halves(
+        self: &Arc<Self>,
+        mut reader: impl super::transport::McpReader + 'static,
+        mut writer: impl super::transport::McpWriter + 'static,
         idle_timeout: Option<std::time::Duration>,
     ) -> Result<()> {
         let already_started = self.run_started.swap(true, Ordering::Relaxed);
@@ -1745,6 +1769,37 @@ impl McpServer {
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("failed to register SIGTERM handler");
 
+        // The reader runs in its own task so the loop can answer a request
+        // while the next one is still arriving. `read_line` is not
+        // cancellation-safe — a half-read line would be lost if the future
+        // were dropped — so it must never be polled from a `select!`.
+        let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel();
+        let reader_task = tokio::spawn(async move {
+            while let Ok(Some(line)) = reader.read_line().await {
+                if line_tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Responses come back through a channel so a request handled
+        // concurrently can be written while the loop waits for the next line.
+        let (response_tx, mut response_rx) = tokio::sync::mpsc::unbounded_channel();
+        // Dropped when the client closes the connection, so the channel ends
+        // with the requests still in flight.
+        let mut response_tx = Some(response_tx);
+        // Set when the client closes the connection. The loop then stops
+        // waiting for requests but still answers the ones in flight.
+        let input_closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Bounds how many read-only calls run at once. Each holds its own
+        // scan, so an unbounded fan-out would let a burst of searches read
+        // the whole project several times over.
+        let concurrency = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS));
+        let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // The handles of the requests still running, so the shutdown can wait
+        // for them instead of leaving them against a closing database.
+        let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
         'serve: loop {
             // The inner loop exists only so a deferred idle expiry can re-arm:
             // a deadline that lands while a detached startup job is still
@@ -1754,10 +1809,40 @@ impl McpServer {
                 #[cfg(unix)]
                 {
                     tokio::select! {
-                        result = transport.read_line() => {
-                            match result {
-                                Ok(Some(line)) => break 'wait line,
-                                _ => break 'serve,
+                        line = async {
+                            if input_closed.load(Ordering::Acquire) {
+                                // The client is gone: no more requests will
+                                // arrive, so this waits for nothing.
+                                std::future::pending::<Option<String>>().await
+                            } else {
+                                line_rx.recv().await
+                            }
+                        } => {
+                            match line {
+                                Some(line) => break 'wait line,
+                                // The client closed the connection. The
+                                // requests already in flight are still
+                                // answered, and the server leaves once they
+                                // are.
+                                None => {
+                                    input_closed.store(true, Ordering::Release);
+                                    // Dropping the loop's sender lets the
+                                    // response channel close once the
+                                    // requests in flight have answered, which
+                                    // is what ends the loop.
+                                    response_tx = None;
+                                    continue 'wait;
+                                }
+                            }
+                        }
+                        response = response_rx.recv() => {
+                            match response {
+                                Some(response) => {
+                                    if !self.write_response(&mut writer, response).await {
+                                        break 'serve;
+                                    }
+                                }
+                                None => break 'serve,
                             }
                         }
                         _ = tokio::signal::ctrl_c() => break 'serve,
@@ -1769,7 +1854,9 @@ impl McpServer {
                         // all (#450).
                         () = crate::cancel::cancelled() => break 'serve,
                         () = idle_deadline(idle_timeout) => {
-                            if self.startup_work_in_flight() {
+                            if self.startup_work_in_flight()
+                                || in_flight.load(Ordering::Acquire) > 0
+                            {
                                 continue 'wait;
                             }
                             report_idle_exit(idle_timeout);
@@ -1780,16 +1867,42 @@ impl McpServer {
                 #[cfg(not(unix))]
                 {
                     tokio::select! {
-                        result = transport.read_line() => {
-                            match result {
-                                Ok(Some(line)) => break 'wait line,
-                                _ => break 'serve,
+                        line = async {
+                            if input_closed.load(Ordering::Acquire) {
+                                std::future::pending::<Option<String>>().await
+                            } else {
+                                line_rx.recv().await
+                            }
+                        } => {
+                            match line {
+                                Some(line) => break 'wait line,
+                                None => {
+                                    input_closed.store(true, Ordering::Release);
+                                    // Dropping the loop's sender lets the
+                                    // response channel close once the
+                                    // requests in flight have answered, which
+                                    // is what ends the loop.
+                                    response_tx = None;
+                                    continue 'wait;
+                                }
+                            }
+                        }
+                        response = response_rx.recv() => {
+                            match response {
+                                Some(response) => {
+                                    if !self.write_response(&mut writer, response).await {
+                                        break 'serve;
+                                    }
+                                }
+                                None => break 'serve,
                             }
                         }
                         _ = tokio::signal::ctrl_c() => break 'serve,
                         () = crate::cancel::cancelled() => break 'serve,
                         () = idle_deadline(idle_timeout) => {
-                            if self.startup_work_in_flight() {
+                            if self.startup_work_in_flight()
+                                || in_flight.load(Ordering::Acquire) > 0
+                            {
                                 continue 'wait;
                             }
                             report_idle_exit(idle_timeout);
@@ -1807,53 +1920,146 @@ impl McpServer {
             // Parse the incoming JSON
             let parsed: std::result::Result<JsonRpcRequest, _> = serde_json::from_str(&line);
 
-            let response = match parsed {
-                Ok(request) => self.handle_request(&request).await,
-                Err(e) => Some(JsonRpcResponse::error(
-                    Value::Null,
-                    ErrorCode::ParseError,
-                    format!("failed to parse JSON-RPC request: {e}"),
-                )),
+            let request = match parsed {
+                Ok(request) => request,
+                Err(e) => {
+                    let response = JsonRpcResponse::error(
+                        Value::Null,
+                        ErrorCode::ParseError,
+                        format!("failed to parse JSON-RPC request: {e}"),
+                    );
+                    if !self.write_response(&mut writer, response).await {
+                        break 'serve;
+                    }
+                    continue;
+                }
             };
 
-            // Drain and write any pending notifications (e.g., version warnings).
-            {
-                let notifications: Vec<Value> = self
-                    .pending_notifications
-                    .lock()
-                    .map(|mut p| p.drain(..).collect())
-                    .unwrap_or_default();
-                for notification in notifications {
-                    if let Ok(s) = serde_json::to_string(&notification) {
-                        let _ = transport.write_line(&format!("{s}\n")).await;
-                        let _ = transport.flush().await;
+            // A read-only tool call does not change the index, so it can run
+            // while another request is being answered (#685). Everything else
+            // — an edit, a rename, a sync — still runs alone, in order.
+            if self.can_run_concurrently(&request) {
+                let server = Arc::clone(self);
+                let Some(response_tx) = response_tx.as_ref().cloned() else {
+                    break 'serve;
+                };
+                let concurrency = Arc::clone(&concurrency);
+                let in_flight = Arc::clone(&in_flight);
+                let permit = match concurrency.acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => break 'serve,
+                };
+                in_flight.fetch_add(1, Ordering::AcqRel);
+                tasks.push(tokio::spawn(async move {
+                    let _permit = permit;
+                    let response = server.handle_request(&request).await;
+                    in_flight.fetch_sub(1, Ordering::AcqRel);
+                    if let Some(response) = response {
+                        let _ = response_tx.send(response);
                     }
-                }
+                }));
+                // Reap the finished ones so the list does not grow with every
+                // request of a long session.
+                tasks.retain(|task| !task.is_finished());
+                continue;
             }
+
+            let response = self.handle_request(&request).await;
 
             // Write response (if any) as a single line to stdout
             if let Some(resp) = response {
-                let json_line = match serde_json::to_string(&resp) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("failed to serialize response: {e}");
-                        continue;
-                    }
-                };
-                let output = format!("{json_line}\n");
-                if let Err(e) = transport.write_line(&output).await {
-                    eprintln!("failed to write response: {e}");
-                    break 'serve;
-                }
-                if let Err(e) = transport.flush().await {
-                    eprintln!("failed to flush stdout: {e}");
+                if !self.write_response(&mut writer, resp).await {
                     break 'serve;
                 }
             }
         }
 
+        // The reader is parked on the transport and will never return; the
+        // loop is over, so it must not outlive it.
+        reader_task.abort();
+        // Requests still running are given a moment to finish: they hold the
+        // database, and the shutdown checkpoints it. A request that does not
+        // finish in time is dropped rather than holding the exit open.
+        if !tasks.is_empty() {
+            let drain = async {
+                for task in tasks.drain(..) {
+                    let _ = task.await;
+                }
+            };
+            if tokio::time::timeout(std::time::Duration::from_secs(5), drain)
+                .await
+                .is_err()
+            {
+                eprintln!("[tokensave] shutdown: dropped a request still in flight");
+            }
+        }
         self.shutdown().await;
         Ok(())
+    }
+
+    /// Whether a request may be answered while another one is in flight.
+    ///
+    /// Only a read-only tool call qualifies: it does not change the index, so
+    /// two of them can run at the same time. Everything else — an edit, a
+    /// rename, a sync, the handshake — runs alone, in the order it arrived
+    /// (#685).
+    fn can_run_concurrently(&self, request: &JsonRpcRequest) -> bool {
+        if request.method != "tools/call" {
+            return false;
+        }
+        let Some(params) = request.params.as_ref() else {
+            return false;
+        };
+        let Some(name) = params.get("name").and_then(Value::as_str) else {
+            return false;
+        };
+        crate::mcp::tools::is_read_only_tool(name)
+    }
+
+    /// Writes any pending notifications (e.g., version warnings).
+    async fn write_pending_notifications(&self, writer: &mut impl super::transport::McpWriter) {
+        let notifications: Vec<Value> = self
+            .pending_notifications
+            .lock()
+            .map(|mut p| p.drain(..).collect())
+            .unwrap_or_default();
+        for notification in notifications {
+            if let Ok(s) = serde_json::to_string(&notification) {
+                let _ = writer.write_line(&format!("{s}\n")).await;
+                let _ = writer.flush().await;
+            }
+        }
+    }
+
+    /// Writes one response line. Returns `false` when the transport is gone,
+    /// which ends the serve loop.
+    ///
+    /// Any pending notifications (e.g., version warnings) go out first, so a
+    /// caller that reads one line at a time sees them before the response
+    /// they belong to.
+    async fn write_response(
+        &self,
+        writer: &mut impl super::transport::McpWriter,
+        response: JsonRpcResponse,
+    ) -> bool {
+        self.write_pending_notifications(writer).await;
+        let json_line = match serde_json::to_string(&response) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("failed to serialize response: {e}");
+                return true;
+            }
+        };
+        let output = format!("{json_line}\n");
+        if let Err(e) = writer.write_line(&output).await {
+            eprintln!("failed to write response: {e}");
+            return false;
+        }
+        if let Err(e) = writer.flush().await {
+            eprintln!("failed to flush stdout: {e}");
+            return false;
+        }
+        true
     }
 
     /// Persists the tokens-saved counter, flushes pending tokens to the

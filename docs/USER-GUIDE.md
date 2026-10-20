@@ -505,6 +505,18 @@ daemon and the CLI. The on-demand model is its replacement.
 Multiple MCP servers on the same project (e.g. two agents) coordinate via
 a per-project sync lock: only one sync runs at a time.
 
+### Concurrent tool calls
+
+The server answers read-only tool calls side by side, up to four at a time
+(#685). A read-only call only reads the graph, so several of them can run
+without interfering, and a burst of parallel searches no longer queues behind
+each other the way a request-at-a-time server made it.
+
+Calls that change the index — an edit, a rename, a sync — still run alone, in
+the order they arrived, so they never overlap each other or a read-only call.
+Responses carry the id of their request, so a client that sends several
+requests before reading the answers matches them by id, not by order.
+
 ### What an automatic sync will not do
 
 Both refreshes above are *automatic* — you did not ask for them — so they
@@ -902,6 +914,30 @@ Files you excluded yourself are not reported there: config `exclude` globs,
 project query-ignore rules, and the call's own `path_include`/`path_exclude`
 and scope prefix all apply to the report as well as to the scan, so it names
 only files you asked about and the index could not answer for.
+
+Two arguments bound how long a literal scan runs and how much it counts:
+
+- `exact_total` (default `true`) keeps counting past the limit, so `total` is
+  the number of matches in the whole project. Pass `false` to stop the scan
+  as soon as `limit` matches are found: the scan then reads only part of the
+  project and answers sooner.
+- `timeout_ms` (default `30000`, `0` disables it) ends the scan when the
+  budget runs out and answers with the matches found so far.
+
+Either way the response says what it is: `total_exact` is `false` when the
+scan did not reach the end of the project, and `total` is then a lower bound
+rather than the number of matches in the project. A scan that ran out of time
+also carries `timed_out: true` and a note saying so.
+
+```json
+{
+  "literal": true, "query": "someFlag", "count": 10,
+  "total": 10, "total_exact": false, "truncated": true,
+  "timed_out": true,
+  "note": "The scan reached its time budget and stopped early. ...",
+  "matches": [ ... ]
+}
+```
 
 ### Navigating relationships
 

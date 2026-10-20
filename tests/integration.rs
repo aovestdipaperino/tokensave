@@ -121,6 +121,7 @@ mod lua_extraction_test;
 mod markdown_extraction_test;
 mod markdown_modern_grammar_test;
 mod mcfunction_extraction_test;
+mod mcp_concurrency_test;
 mod mcp_handler_test;
 mod mcp_server_test;
 mod mcp_test;

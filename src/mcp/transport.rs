@@ -125,11 +125,33 @@ impl ErrorCode {
 ///
 /// Implementations are monomorphized at each call site — no dyn dispatch.
 pub trait McpTransport {
+    /// The reading half.
+    type Reader: McpReader + 'static;
+    /// The writing half.
+    type Writer: McpWriter + 'static;
+
+    /// Splits the transport into its two halves.
+    ///
+    /// The server reads the next request while it is still answering the
+    /// previous one, so the two halves have to be independent (#685).
+    fn split(self) -> (Self::Reader, Self::Writer);
+}
+
+/// The reading half of a transport.
+///
+/// Reading is not cancellation-safe: a partially read line is lost if the
+/// future is dropped. A caller that has to select between reading and
+/// something else must move the reader into its own task rather than poll it
+/// from a `select!`.
+pub trait McpReader: Send {
     /// Read the next line from the transport. Returns `None` on EOF.
     fn read_line(
         &mut self,
     ) -> impl std::future::Future<Output = std::io::Result<Option<String>>> + Send;
+}
 
+/// The writing half of a transport.
+pub trait McpWriter: Send {
     /// Write a complete line (including trailing newline) to the transport.
     fn write_line(
         &mut self,
@@ -254,10 +276,52 @@ impl StdioTransport {
 }
 
 impl McpTransport for StdioTransport {
+    type Reader = StdioReader;
+    type Writer = StdioWriter;
+
+    fn split(self) -> (StdioReader, StdioWriter) {
+        (
+            StdioReader {
+                reader: self.reader,
+            },
+            StdioWriter {
+                // A second handle to the same stream. Tokio's stdout locks
+                // internally, so the two halves cannot interleave a line.
+                writer: tokio::io::stdout(),
+            },
+        )
+    }
+}
+
+impl McpWriter for StdioTransport {
+    async fn write_line(&mut self, line: &str) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        self.writer.write_all(line.as_bytes()).await
+    }
+
+    async fn flush(&mut self) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        self.writer.flush().await
+    }
+}
+
+/// The reading half of the stdio transport.
+pub struct StdioReader {
+    reader: BoundedLines<tokio::io::BufReader<tokio::io::Stdin>>,
+}
+
+/// The writing half of the stdio transport.
+pub struct StdioWriter {
+    writer: tokio::io::Stdout,
+}
+
+impl McpReader for StdioReader {
     async fn read_line(&mut self) -> std::io::Result<Option<String>> {
         self.reader.next_line().await
     }
+}
 
+impl McpWriter for StdioWriter {
     async fn write_line(&mut self, line: &str) -> std::io::Result<()> {
         use tokio::io::AsyncWriteExt;
         self.writer.write_all(line.as_bytes()).await
@@ -301,10 +365,57 @@ impl ChannelTransport {
 
 #[cfg(any(test, feature = "test-transport"))]
 impl McpTransport for ChannelTransport {
+    type Reader = ChannelReader;
+    type Writer = ChannelWriter;
+
+    fn split(self) -> (ChannelReader, ChannelWriter) {
+        (
+            ChannelReader { rx: self.rx },
+            ChannelWriter {
+                tx: self.tx.clone(),
+            },
+        )
+    }
+}
+
+#[cfg(any(test, feature = "test-transport"))]
+impl McpWriter for ChannelTransport {
+    // Awaits nothing — a channel send is immediate — but the signature is the
+    // trait's, not ours to narrow.
+    #[allow(clippy::unused_async_trait_impl)]
+    async fn write_line(&mut self, line: &str) -> std::io::Result<()> {
+        self.tx
+            .send(line.to_string())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string()))
+    }
+
+    #[allow(clippy::unused_async_trait_impl)]
+    async fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The reading half of the in-memory transport.
+#[cfg(any(test, feature = "test-transport"))]
+pub struct ChannelReader {
+    rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+}
+
+/// The writing half of the in-memory transport.
+#[cfg(any(test, feature = "test-transport"))]
+pub struct ChannelWriter {
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+}
+
+#[cfg(any(test, feature = "test-transport"))]
+impl McpReader for ChannelReader {
     async fn read_line(&mut self) -> std::io::Result<Option<String>> {
         Ok(self.rx.recv().await)
     }
+}
 
+#[cfg(any(test, feature = "test-transport"))]
+impl McpWriter for ChannelWriter {
     // Awaits nothing — a channel send is immediate — but the signature is the
     // trait's, not ours to narrow.
     #[allow(clippy::unused_async_trait_impl)]

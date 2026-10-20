@@ -38,11 +38,11 @@ fn request(id: u32) -> String {
 #[tokio::test]
 async fn an_idle_server_exits_when_a_deadline_is_set() {
     let (_dir, server) = indexed_server().await;
-    let (mut transport, _tx, _rx) = ChannelTransport::new();
+    let (transport, _tx, _rx) = ChannelTransport::new();
 
     // `_tx` is deliberately held for the whole test — that is the supervisor
     // keeping stdin open.
-    let run = server.run_with_idle_timeout(&mut transport, Some(Duration::from_secs(1)));
+    let run = server.run_with_idle_timeout(transport, Some(Duration::from_secs(1)));
     let finished = tokio::time::timeout(Duration::from_secs(20), run).await;
 
     assert!(
@@ -60,9 +60,9 @@ async fn an_idle_server_exits_when_a_deadline_is_set() {
 #[tokio::test]
 async fn no_deadline_means_the_server_still_waits_indefinitely() {
     let (_dir, server) = indexed_server().await;
-    let (mut transport, _tx, _rx) = ChannelTransport::new();
+    let (transport, _tx, _rx) = ChannelTransport::new();
 
-    let run = server.run_with_idle_timeout(&mut transport, None);
+    let run = server.run_with_idle_timeout(transport, None);
     let finished = tokio::time::timeout(Duration::from_secs(3), run).await;
 
     assert!(
@@ -94,7 +94,7 @@ async fn each_request_restarts_the_window() {
         true
     });
 
-    let run = server.run_with_idle_timeout(&mut transport, Some(Duration::from_secs(1)));
+    let run = server.run_with_idle_timeout(transport, Some(Duration::from_secs(1)));
     let outcome = tokio::time::timeout(Duration::from_secs(20), run).await;
 
     let all_sent = feeder.await.expect("feeder task");
