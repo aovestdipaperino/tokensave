@@ -61,12 +61,13 @@ pub(crate) fn extract_files_isolated(
     registry: &crate::extraction::LanguageRegistry,
     files: Vec<String>,
     cpu_usage: crate::cpu::CpuUsage,
+    memory_usage: crate::memory::MemoryUsage,
 ) -> Result<ExtractBatch> {
     if files.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
     if should_use_subprocess() {
-        let workers = worker_count(files.len(), cpu_usage);
+        let workers = worker_count(files.len(), cpu_usage, memory_usage);
         let timeout = std::time::Duration::from_secs(
             crate::user_config::UserConfig::load().extraction_timeout_secs,
         );
@@ -81,11 +82,22 @@ pub(crate) fn extract_files_isolated(
             ),
         }
     }
+    if memory_usage == crate::memory::MemoryUsage::Performance {
+        return cpu_usage.run(|| {
+            (
+                extract_files_in_process(project_root, registry, &files),
+                Vec::new(),
+            )
+        });
+    }
     cpu_usage.run(|| {
-        (
-            extract_files_in_process(project_root, registry, &files),
-            Vec::new(),
-        )
+        // Each parallel slice has at most the memory-policy parser count.
+        // Reuse the CPU pool without allocating another persistent thread pool.
+        let results = files
+            .chunks(memory_usage.workers(cpu_usage.workers()))
+            .flat_map(|batch| extract_files_in_process(project_root, registry, batch))
+            .collect();
+        (results, Vec::new())
     })
 }
 
@@ -129,12 +141,16 @@ pub(crate) fn extract_files_in_process(
 /// transparently fall back to in-process extraction.
 /// Number of subprocess extraction workers to spawn.
 ///
-/// The CPU profile sets the ceiling. `TOKENSAVE_WORKERS=N` can further
+/// CPU and memory profiles set the ceiling. `TOKENSAVE_WORKERS=N` can further
 /// reduce subprocess concurrency (#183); pending files cap the pool size.
-fn worker_count(file_count: usize, profile: crate::cpu::CpuUsage) -> usize {
+fn worker_count(
+    file_count: usize,
+    profile: crate::cpu::CpuUsage,
+    memory: crate::memory::MemoryUsage,
+) -> usize {
     clamp_workers(
         std::env::var("TOKENSAVE_WORKERS").ok().as_deref(),
-        profile.workers(),
+        memory.workers(profile.workers()),
         file_count,
     )
 }
@@ -182,6 +198,7 @@ mod worker_count_tests {
             &registry,
             Vec::new(),
             crate::cpu::CpuUsage::Low,
+            crate::memory::MemoryUsage::Low,
         )?;
         assert!(results.is_empty());
         assert!(skipped.is_empty());

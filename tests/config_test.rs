@@ -515,3 +515,57 @@ fn invalid_cpu_usage_reports_valid_choices_and_config_path() {
         }
     }
 }
+
+#[test]
+fn memory_usage_defaults_and_legacy_configs() {
+    use tokensave::memory::MemoryUsage;
+    assert_eq!(
+        TokenSaveConfig::default().memory_usage,
+        MemoryUsage::Balanced
+    );
+    let mut legacy = serde_json::to_value(TokenSaveConfig::default()).unwrap();
+    legacy.as_object_mut().unwrap().remove("memory_usage");
+    let config: TokenSaveConfig = serde_json::from_value(legacy).unwrap();
+    assert_eq!(config.memory_usage, MemoryUsage::Balanced);
+}
+
+#[test]
+fn memory_usage_profiles_round_trip_through_existing_config() {
+    use tokensave::memory::MemoryUsage;
+    for profile in [
+        MemoryUsage::Low,
+        MemoryUsage::Balanced,
+        MemoryUsage::Performance,
+    ] {
+        let dir = TempDir::new().unwrap();
+        let config = TokenSaveConfig {
+            memory_usage: profile,
+            ..Default::default()
+        };
+        save_config(dir.path(), &config).unwrap();
+        assert_eq!(load_config(dir.path()).unwrap().memory_usage, profile);
+    }
+}
+
+#[test]
+fn invalid_memory_usage_reports_valid_choices_and_config_path() {
+    let dir = TempDir::new().unwrap();
+    save_config(dir.path(), &TokenSaveConfig::default()).unwrap();
+    let path = dir.path().join(".tokensave/config.json");
+    for invalid in [
+        serde_json::json!("turbo"),
+        serde_json::json!(null),
+        serde_json::json!(2),
+    ] {
+        let mut config = serde_json::to_value(TokenSaveConfig::default()).unwrap();
+        config["memory_usage"] = invalid;
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let error = load_config(dir.path()).unwrap_err().to_string();
+        assert!(error.contains("config.json"), "{error}");
+        if config["memory_usage"].is_string() {
+            for choice in ["low", "balanced", "performance"] {
+                assert!(error.contains(choice), "{error}");
+            }
+        }
+    }
+}

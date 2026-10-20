@@ -201,6 +201,8 @@ def main():
     parser.add_argument('--files', type=int, default=240)
     parser.add_argument('--functions', type=int, default=80)
     parser.add_argument('--repeats', type=int, default=3)
+    parser.add_argument('--profile-field', choices=('cpu_usage', 'memory_usage'), default='cpu_usage',
+        help='Project resource policy to compare; the other policy is fixed at performance')
     args = parser.parse_args()
     if min(args.files, args.functions, args.repeats) < 1 or args.contenders < 0 or args.changed_files < 0:
         parser.error('files, functions and repeats must be positive; contenders and changed-files must be nonnegative')
@@ -248,6 +250,8 @@ def main():
             env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         config_path = project / '.tokensave/config.json'
         config = json.loads(config_path.read_text())
+        other_field = 'memory_usage' if args.profile_field == 'cpu_usage' else 'cpu_usage'
+        config[other_field] = 'performance'
         with sqlite3.connect(project / '.tokensave/tokensave.db') as db:
             file_count = db.execute('SELECT COUNT(*) FROM files').fetchone()[0]
             graph_counts = [db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
@@ -268,9 +272,9 @@ def main():
         for repeat in range(args.repeats):
             for build, profile in (cases if repeat % 2 == 0 else reversed(cases)):
                 if profile:
-                    config['cpu_usage'] = profile
+                    config[args.profile_field] = profile
                 else:
-                    config.pop('cpu_usage', None)
+                    config.pop(args.profile_field, None)
                 config_path.write_text(json.dumps(config))
                 server = MCP(binaries[build], interactive, env)
                 try:

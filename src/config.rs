@@ -87,6 +87,9 @@ pub struct TokenSaveConfig {
     /// CPU concurrency profile, applied when the project is opened.
     #[serde(default)]
     pub cpu_usage: crate::cpu::CpuUsage,
+    /// Extraction parser-memory profile, applied when the project is opened.
+    #[serde(default)]
+    pub memory_usage: crate::memory::MemoryUsage,
     /// Schema version of the configuration.
     pub version: u32,
     /// Root directory of the project being indexed.
@@ -274,6 +277,7 @@ impl Default for TokenSaveConfig {
     fn default() -> Self {
         Self {
             cpu_usage: crate::cpu::CpuUsage::default(),
+            memory_usage: crate::memory::MemoryUsage::default(),
             version: CONFIG_VERSION,
             root_dir: String::new(),
             exclude: vec![
