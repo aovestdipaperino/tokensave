@@ -396,6 +396,29 @@ pub enum Commands {
         #[arg(long)]
         clean: bool,
     },
+    /// Compare code quality at two indexed branch tips without changing files.
+    QualityDiff {
+        #[arg(long)]
+        base: String,
+        #[arg(long, default_value = "HEAD")]
+        target: String,
+        #[arg(long)]
+        json: bool,
+        #[arg(long, value_parser = ["regression"])]
+        fail_on: Option<String>,
+        #[arg(long, default_value_t = 10)]
+        cyclomatic: u32,
+        #[arg(long, default_value_t = 15)]
+        cognitive: u32,
+        #[arg(long, default_value_t = 100)]
+        function_lines: u32,
+        #[arg(long, default_value_t = 10)]
+        fan_out: u32,
+        #[arg(long, default_value_t = 3)]
+        min_increase: u32,
+        #[arg(long)]
+        allow_stale: bool,
+    },
     /// Manage multi-branch indexing
     Branch {
         #[command(subcommand)]
