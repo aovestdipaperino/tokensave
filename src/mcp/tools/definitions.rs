@@ -1830,10 +1830,13 @@ fn def_branch_diff() -> ToolDefinition {
     def(
         "tokensave_branch_diff",
         "Branch Diff",
-        "Compare the code graphs of two branches. Shows symbols added, removed, and changed (signature differs) between base and head.",
+        "Compare the code graphs of two branches. Shows symbols added, removed, and changed (signature differs) between base and head. Set quality=true for read-only baseline-aware quality regressions at branch tips; requires existing fresh indexes.",
         json!({
             "type": "object",
             "properties": {
+                "quality": { "type": "boolean", "description": "Compare quality metrics instead of symbol signatures (default false)." },
+                "thresholds": { "type": "object", "description": "Quality options: cyclomatic (10), cognitive (15), function_lines (100), fan_out (10, also fan-in), min_increase (3), allow_stale (false). Unknown options rejected." },
+                "limit": { "type": "integer", "minimum": 0, "maximum": 500, "description": "Quality finding detail limit (default 20); summary always counts all findings." },
                 "base": {
                     "type": "string",
                     "description": "Base branch name (e.g. 'main'). Defaults to the project's default branch."

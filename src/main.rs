@@ -215,6 +215,62 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         tokensave::extraction_worker::run_worker();
     }
 
+    // Quality comparison bypasses startup maintenance and all persistent writes.
+    if let Commands::QualityDiff {
+        base,
+        target,
+        json,
+        fail_on,
+        cyclomatic,
+        cognitive,
+        function_lines,
+        fan_out,
+        min_increase,
+        allow_stale,
+    } = &command
+    {
+        let root =
+            std::env::current_dir().map_err(|e| tokensave::errors::TokenSaveError::Config {
+                message: e.to_string(),
+            })?;
+        let options = tokensave::quality_diff::QualityOptions {
+            cyclomatic: *cyclomatic,
+            cognitive: *cognitive,
+            function_lines: *function_lines,
+            fan_out: *fan_out,
+            min_increase: *min_increase,
+            allow_stale: *allow_stale,
+        };
+        match tokensave::quality_diff::compare(&root, base, target, &options).await {
+            Ok(report) => {
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).map_err(|e| {
+                            tokensave::errors::TokenSaveError::Config {
+                                message: e.to_string(),
+                            }
+                        })?
+                    );
+                } else {
+                    print!("{}", report.human());
+                }
+                process::exit(report.exit_code(fail_on.is_some()));
+            }
+            Err(e) => {
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"error": e.to_string(), "complete": false})
+                    );
+                } else {
+                    eprintln!("{e}");
+                }
+                process::exit(2);
+            }
+        }
+    }
+
     let skip_agent_install_maintenance = agent_maintenance_disabled_from_env(
         std::env::var("TOKENSAVE_SKIP_AGENT_MAINTENANCE")
             .ok()
@@ -1832,6 +1888,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 eprintln!("Memory report error: {e}");
             }
         }
+        Commands::QualityDiff { .. } => unreachable!("handled before startup"),
         Commands::Branch { action } => {
             commands::handle_branch_action(action).await?;
         }

@@ -48,6 +48,7 @@ pub mod memory;
 pub mod memstats;
 pub mod monitor;
 pub mod project_manifest;
+pub mod quality_diff;
 pub mod redundancy;
 pub mod resolution;
 pub mod runtime_telemetry;
