@@ -40,6 +40,7 @@ pub mod extraction_worker;
 pub mod global_db;
 pub mod go_import;
 pub mod graph;
+pub mod hardware;
 pub mod hooks;
 pub mod index_scope;
 pub mod mcp;

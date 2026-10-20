@@ -507,16 +507,127 @@ pub(crate) async fn handle_no_command() -> tokensave::errors::Result<()> {
     })?;
     let answer = answer.trim();
     if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
-        init_and_index(&project_path, &[], false).await?;
+        init_and_index(&project_path, &[], false, None).await?;
+    }
+    Ok(())
+}
+
+/// Picks the profile for a project being initialized, and a note saying where
+/// it came from. Benchmarks the host only when nothing was chosen explicitly.
+fn select_initial_cpu_usage(
+    project_path: &Path,
+    requested: Option<tokensave::cpu::CpuUsage>,
+) -> tokensave::errors::Result<(tokensave::cpu::CpuUsage, String)> {
+    if let Some(profile) = requested {
+        return Ok((profile, "from --cpu-usage".to_string()));
+    }
+    if let Some(profile) = tokensave::config::configured_cpu_usage(project_path)? {
+        return Ok((profile, "kept from .tokensave/config.json".to_string()));
+    }
+    eprintln!("Benchmarking this machine to choose a CPU usage profile...");
+    let measurement = tokensave::hardware::measure();
+    eprintln!("  {}", measurement.summary());
+    let recommendation = tokensave::hardware::recommend(&measurement);
+    Ok((
+        recommendation.profile,
+        format!(
+            "{}; run `tokensave tune` to measure again",
+            recommendation.reason
+        ),
+    ))
+}
+
+/// Re-runs the resource benchmark and updates `cpu_usage` (#731).
+///
+/// `--dry-run` only reports, so it also works where no project is initialized.
+pub(crate) fn run_tune(
+    path: Option<String>,
+    dry_run: bool,
+    json: bool,
+) -> tokensave::errors::Result<()> {
+    let project_path = tokensave::config::resolve_path_with_discovery(path);
+    let initialized = TokenSave::is_initialized(&project_path);
+    if !dry_run && !initialized {
+        eprintln!(
+            "\x1b[31merror:\x1b[0m no TokenSave index found at '{}'.\n\
+             Run \x1b[1mtokensave init\x1b[0m first, or \x1b[1mtokensave tune --dry-run\x1b[0m \
+             to only see the recommendation.",
+            project_path.display()
+        );
+        std::process::exit(1);
+    }
+    if !json {
+        eprintln!("Benchmarking this machine...");
+    }
+    let measurement = tokensave::hardware::measure();
+    let recommendation = tokensave::hardware::recommend(&measurement);
+
+    let mut config = if initialized {
+        Some(tokensave::config::load_config(&project_path)?)
+    } else {
+        None
+    };
+    let previous = config.as_ref().map(|c| c.cpu_usage);
+    let written = match config.as_mut() {
+        Some(config) if !dry_run && config.cpu_usage != recommendation.profile => {
+            config.cpu_usage = recommendation.profile;
+            tokensave::config::save_config(&project_path, config)?;
+            true
+        }
+        _ => false,
+    };
+
+    if json {
+        let report = serde_json::json!({
+            "project": project_path.display().to_string(),
+            "measurement": measurement,
+            "effective_cpus": measurement.effective_cpus(),
+            "recommended": recommendation.profile,
+            "reason": recommendation.reason,
+            "previous": previous,
+            "dry_run": dry_run,
+            "written": written,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).unwrap_or_else(|_| report.to_string())
+        );
+        return Ok(());
+    }
+
+    println!("Measured:    {}", measurement.summary());
+    println!(
+        "Recommended: {} ({})",
+        recommendation.profile.as_str(),
+        recommendation.reason
+    );
+    match (previous, written) {
+        (Some(prev), true) => println!(
+            "Updated cpu_usage: {} -> {}. Restart `tokensave serve` to apply it to a running server.",
+            prev.as_str(),
+            recommendation.profile.as_str()
+        ),
+        (Some(prev), false) if prev == recommendation.profile => {
+            println!("cpu_usage is already {}.", prev.as_str());
+        }
+        (Some(prev), false) => println!(
+            "Dry run: cpu_usage stays {}. Run without --dry-run to apply.",
+            prev.as_str()
+        ),
+        (None, _) => println!("Dry run: no project is initialized here, nothing written."),
     }
     Ok(())
 }
 
 /// Initializes a new project (if needed) and runs a full index.
+///
+/// For a new project the CPU usage profile is `cpu_usage` when given, else the
+/// `cpu_usage` already in `.tokensave/config.json`, else benchmarked (#731).
 pub(crate) async fn init_and_index(
     project_path: &Path,
     skip_folders: &[String],
     verbose: bool,
+    cpu_usage: Option<tokensave::cpu::CpuUsage>,
 ) -> tokensave::errors::Result<TokenSave> {
     debug_assert!(
         project_path.is_dir(),
@@ -529,8 +640,10 @@ pub(crate) async fn init_and_index(
     let mut cg = if TokenSave::is_initialized(project_path) {
         TokenSave::open_rebuilding_failed_migration(project_path).await?
     } else {
-        let cg = TokenSave::init(project_path).await?;
+        let (cpu_usage, cpu_note) = select_initial_cpu_usage(project_path, cpu_usage)?;
+        let cg = TokenSave::init_with_cpu_usage(project_path, cpu_usage).await?;
         eprintln!("Initialized TokenSave at {}", project_path.display());
+        eprintln!("CPU usage profile: {} ({cpu_note})", cpu_usage.as_str());
         // Offer to exclude .tokensave from git if it isn't already. Default to
         // the local, untracked .git/info/exclude so we don't leave a committable
         // diff; offer the tracked .gitignore as an explicit opt-in.
@@ -1046,7 +1159,7 @@ pub async fn hook_post_checkout(prev_head: Option<&str>, branch_flag: Option<&st
             // `init` on an already-initialised project returns an error;
             // either way tracking still runs, matching the shell's
             // `init || exit 0` followed by the track.
-            let _ = init_and_index(&project_path, &[], false).await;
+            let _ = init_and_index(&project_path, &[], false, None).await;
             track_current_branch_if_enabled(&project_path).await;
         }
         CheckoutAction::TrackOnly => track_current_branch_if_enabled(&project_path).await,

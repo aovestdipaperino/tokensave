@@ -515,3 +515,23 @@ fn invalid_cpu_usage_reports_valid_choices_and_config_path() {
         }
     }
 }
+
+#[test]
+fn test_configured_cpu_usage_distinguishes_missing_from_default() {
+    let dir = TempDir::new().unwrap();
+    assert_eq!(configured_cpu_usage(dir.path()).unwrap(), None);
+
+    let tokensave_dir = get_tokensave_dir(dir.path());
+    std::fs::create_dir_all(&tokensave_dir).unwrap();
+    std::fs::write(get_config_path(dir.path()), r#"{"version": 2}"#).unwrap();
+    assert_eq!(configured_cpu_usage(dir.path()).unwrap(), None);
+
+    std::fs::write(get_config_path(dir.path()), r#"{"cpu_usage": "balanced"}"#).unwrap();
+    assert_eq!(
+        configured_cpu_usage(dir.path()).unwrap(),
+        Some(tokensave::cpu::CpuUsage::Balanced)
+    );
+
+    std::fs::write(get_config_path(dir.path()), r#"{"cpu_usage": "turbo"}"#).unwrap();
+    assert!(configured_cpu_usage(dir.path()).is_err());
+}

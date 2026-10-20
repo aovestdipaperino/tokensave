@@ -366,6 +366,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             skip_folders,
             git_hook,
             no_git_hook,
+            cpu_usage,
         } => {
             let project_path = tokensave::config::resolve_path(path);
             if TokenSave::is_initialized(&project_path) {
@@ -409,7 +410,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             tokensave::memstats::init("index", &project_path);
             tokensave::memstats::record("start");
 
-            commands::init_and_index(&project_path, &skip_folders, false).await?;
+            commands::init_and_index(&project_path, &skip_folders, false, cpu_usage).await?;
 
             // Offer this repository's own git hooks (#455). Local rather than
             // global, because the global path claims `core.hooksPath` — one
@@ -437,6 +438,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
+        Commands::Tune {
+            path,
+            dry_run,
+            json,
+        } => commands::run_tune(path, dry_run, json)?,
         Commands::Sync {
             path,
             force,
@@ -475,7 +481,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             tokensave::memstats::record("start");
 
             if force {
-                commands::init_and_index(&project_path, &skip_folders, verbose).await?;
+                commands::init_and_index(&project_path, &skip_folders, verbose, None).await?;
             } else {
                 let mut cg = TokenSave::open(&project_path).await?;
                 cg.add_skip_folders(&skip_folders);
@@ -592,7 +598,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 })?;
                 let answer = answer.trim();
                 if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
-                    commands::init_and_index(&project_path, &[], false).await?
+                    commands::init_and_index(&project_path, &[], false, None).await?
                 } else {
                     return Ok(());
                 }

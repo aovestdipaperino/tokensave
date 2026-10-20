@@ -365,6 +365,36 @@ pub fn load_config(project_root: &Path) -> Result<TokenSaveConfig> {
     Ok(config)
 }
 
+/// The `cpu_usage` explicitly present in the project's config file, if any.
+///
+/// Unlike [`load_config`], a missing field is `None` rather than the default,
+/// so `init` can tell a profile the user chose from one it should benchmark.
+pub fn configured_cpu_usage(project_root: &Path) -> Result<Option<crate::cpu::CpuUsage>> {
+    let config_path = get_config_path(project_root);
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    let parse_error = |e: &dyn std::fmt::Display| TokenSaveError::Config {
+        message: format!(
+            "failed to parse config file '{}': {}",
+            config_path.display(),
+            e
+        ),
+    };
+    let contents = fs::read_to_string(&config_path).map_err(|e| TokenSaveError::Config {
+        message: format!(
+            "failed to read config file '{}': {}",
+            config_path.display(),
+            e
+        ),
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&contents).map_err(|e| parse_error(&e))?;
+    value
+        .get("cpu_usage")
+        .map(|v| serde_json::from_value(v.clone()).map_err(|e| parse_error(&e)))
+        .transpose()
+}
+
 /// Brings a config read from disk up to [`CONFIG_VERSION`].
 ///
 /// Version 1 (7.13.0) wrote `"tools": "full"` into every config it saved,
