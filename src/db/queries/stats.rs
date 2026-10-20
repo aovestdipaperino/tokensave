@@ -8,6 +8,14 @@ use super::*;
 impl Database {
     /// Returns aggregate statistics about the code graph.
     pub async fn get_stats(&self) -> Result<GraphStats> {
+        self.get_stats_with_languages(|_| None).await
+    }
+
+    /// Aggregate stats using project dispatch labels where configured.
+    pub(crate) async fn get_stats_with_languages(
+        &self,
+        language_override: impl Fn(&str) -> Option<String>,
+    ) -> Result<GraphStats> {
         // Single query for all scalar counts: nodes, edges, files, last_updated, total_source_bytes
         let mut counts_rows = self
             .conn()
@@ -82,8 +90,11 @@ impl Database {
                     message: format!("failed to read file path: {e}"),
                     operation: "get_stats".to_string(),
                 })?;
-                *map.entry(display_language_for_path(&path).to_string())
-                    .or_insert(0) += 1;
+                *map.entry(
+                    language_override(&path)
+                        .unwrap_or_else(|| display_language_for_path(&path).to_string()),
+                )
+                .or_insert(0) += 1;
             }
             map
         };

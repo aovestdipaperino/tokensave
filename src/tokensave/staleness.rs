@@ -157,6 +157,13 @@ impl TokenSave {
             return on_disk;
         };
 
+        if self.dispatch_changed().await.unwrap_or(true) {
+            let mut stale = on_disk;
+            stale.extend(indexed.into_iter().map(|f| f.path));
+            stale.sort();
+            stale.dedup();
+            return stale;
+        }
         let modified_map: HashMap<&str, i64> = indexed
             .iter()
             .map(|f| (f.path.as_str(), f.modified_at))
