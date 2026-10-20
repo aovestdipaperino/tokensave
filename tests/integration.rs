@@ -8,7 +8,6 @@
 //! be added below (or there) because `autotests = false`.
 
 mod common;
-mod quality_diff_test;
 
 mod accounting_test;
 mod actionscript_extraction_test;
@@ -111,6 +110,7 @@ mod java_extraction_test;
 mod julia_extraction_test;
 mod kiro_agent_test;
 mod kotlin_extraction_test;
+mod language_detection_test;
 mod lean_extraction_test;
 mod literal_search_chunk_scan_test;
 mod literal_search_unscanned_test;
@@ -147,6 +147,7 @@ mod python_extraction_test;
 mod python_module_scope_refs_test;
 mod python_phantom_call_edges_test;
 mod qbasic_extraction_test;
+mod quality_diff_test;
 mod quickbasic_extraction_test;
 mod quint_extraction_test;
 mod rails_routes_test;
