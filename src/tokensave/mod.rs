@@ -204,6 +204,15 @@ impl TokenSave {
         &self.db
     }
 
+    /// Returns the CPU profile this project was opened with.
+    ///
+    /// Interactive work (a literal search scan) uses it to bound its own
+    /// parallelism, so it follows the project's configured policy rather than
+    /// a hard-coded thread count.
+    pub fn cpu_usage(&self) -> crate::cpu::CpuUsage {
+        self.config.cpu_usage
+    }
+
     /// Overrides the automatic-sync file ceiling for this handle, without
     /// touching the on-disk config. Lets a caller (and the bound's tests)
     /// exercise the limit without materialising thousands of files.
