@@ -110,6 +110,7 @@ mod julia_extraction_test;
 mod kiro_agent_test;
 mod kotlin_extraction_test;
 mod lean_extraction_test;
+mod literal_search_chunk_scan_test;
 mod literal_search_unscanned_test;
 mod local_git_hooks_test;
 mod local_install_test;
