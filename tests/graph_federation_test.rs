@@ -58,7 +58,7 @@ fn git(root: &Path, args: &[&str]) {
 async fn project(dir: &Path, unique: &str) {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(
-        dir.join("src/lib.rs"),
+        dir.join("src").join("lib.rs"),
         format!("pub fn {unique}() -> i32 {{ 1 }}\npub fn process_batch() -> i32 {{ 2 }}\n"),
     )
     .unwrap();
@@ -182,7 +182,7 @@ async fn worktrees_of_one_repo_collapse_to_a_single_root() {
     // A real repo, then a real linked worktree of it, each indexed.
     std::fs::create_dir_all(main.join("src")).unwrap();
     std::fs::write(
-        main.join("src/lib.rs"),
+        main.join("src").join("lib.rs"),
         "pub fn process_batch() -> i32 { 1 }\n",
     )
     .unwrap();

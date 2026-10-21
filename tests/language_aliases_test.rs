@@ -72,7 +72,7 @@ async fn aliases_patterns_artifacts_and_mapping_revisions() {
     fs::write(root.join("skip.unknown"), "def skipped(): pass\n").unwrap();
     fs::write(root.join("binary.custom"), b"\x00\xff\x00").unwrap();
     fs::write(root.join("ordinary.yaml"), "name: artifact\n").unwrap();
-    fs::write(root.join(".tokensave/project.json"), r#"{"entries":[{"path":"*.custom","language":"rust"},{"path":"a.custom","language":"python"}]}"#).unwrap();
+    fs::write(root.join(".tokensave").join("project.json"), r#"{"entries":[{"path":"*.custom","language":"rust"},{"path":"a.custom","language":"python"}]}"#).unwrap();
     let cg = TokenSave::init(root).await.unwrap();
     cg.index_all().await.unwrap();
     let nodes = cg.get_all_nodes().await.unwrap();
@@ -106,7 +106,7 @@ async fn aliases_patterns_artifacts_and_mapping_revisions() {
         .any(|n| n.name == "native_override"));
     // Removing the literal lets the earlier Rust glob win, without editing the file.
     fs::write(
-        root.join(".tokensave/project.json"),
+        root.join(".tokensave").join("project.json"),
         r#"{"entries":[{"path":"*.custom","language":"rust"}]}"#,
     )
     .unwrap();
@@ -122,7 +122,7 @@ async fn aliases_patterns_artifacts_and_mapping_revisions() {
         .any(|n| n.name == "aliased"));
     // Alias removal converts JSON to artifact, removing the old symbols.
     aliases(root, &[]);
-    fs::remove_file(root.join(".tokensave/project.json")).unwrap();
+    fs::remove_file(root.join(".tokensave").join("project.json")).unwrap();
     cg.sync().await.unwrap();
     let nodes = cg.get_all_nodes().await.unwrap();
     assert!(!nodes.iter().any(|n| n.name == "artifact_override"));
@@ -156,13 +156,19 @@ async fn legacy_perl_fixture_extracts_native_and_aliases_then_updates_and_delete
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::copy(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/legacy_perl")
+                .join("tests")
+                .join("fixtures")
+                .join("legacy_perl")
                 .join(path),
             target,
         )
         .unwrap();
     }
-    fs::write(root.join("t/template.ep"), "sub alias_test { return 1; }\n").unwrap();
+    fs::write(
+        root.join("t").join("template.ep"),
+        "sub alias_test { return 1; }\n",
+    )
+    .unwrap();
     let cg = TokenSave::init(root).await.unwrap();
     let result = cg.index_all().await.unwrap();
     assert!(!result.skipped_extensions.iter().any(|(ext, _)| ext == "t"));
@@ -188,8 +194,12 @@ async fn legacy_perl_fixture_extracts_native_and_aliases_then_updates_and_delete
         .await
         .unwrap();
     assert!(context.entry_points.iter().any(|n| n.name == "basic_test"));
-    fs::write(root.join("t/basic.t"), "sub replacement { return 1; }\n").unwrap();
-    fs::remove_file(root.join("t/integration.t")).unwrap();
+    fs::write(
+        root.join("t").join("basic.t"),
+        "sub replacement { return 1; }\n",
+    )
+    .unwrap();
+    fs::remove_file(root.join("t").join("integration.t")).unwrap();
     cg.sync().await.unwrap();
     let nodes = cg.get_all_nodes().await.unwrap();
     assert!(nodes.iter().any(|n| n.name == "replacement"));

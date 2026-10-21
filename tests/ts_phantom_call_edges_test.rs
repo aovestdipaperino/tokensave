@@ -53,7 +53,7 @@ async fn project_with_two_dispose(
     )
     .unwrap();
     std::fs::write(
-        root.join("src/extension.ts"),
+        root.join("src").join("extension.ts"),
         "import { StatusBar } from './a';\nimport { ProviderManager } from './b';\n\
          export class Extension {\n    private statusBar = new StatusBar();\n\
          \n    deactivate(): void {\n        this.statusBar.dispose();\n    }\n}\n",
@@ -153,17 +153,17 @@ async fn a_call_on_an_untypeable_receiver_resolves_to_nothing() {
     std::fs::create_dir_all(root.join("src")).unwrap();
 
     std::fs::write(
-        root.join("src/a.ts"),
+        root.join("src").join("a.ts"),
         "export class StatusBar {\n    dispose(): void {\n        console.log('bar');\n    }\n}\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("src/b.ts"),
+        root.join("src").join("b.ts"),
         "export class ProviderManager {\n    dispose(): void {\n        console.log('mgr');\n    }\n}\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("src/extension.ts"),
+        root.join("src").join("extension.ts"),
         "export class Extension {\n    deactivate(thing): void {\n        thing.dispose();\n    }\n}\n",
     )
     .unwrap();
@@ -194,12 +194,12 @@ async fn an_unambiguous_receiver_call_still_resolves() {
     std::fs::create_dir_all(root.join("src")).unwrap();
 
     std::fs::write(
-        root.join("src/widget.ts"),
+        root.join("src").join("widget.ts"),
         "export class Widget {\n    render(): void {\n        console.log('w');\n    }\n}\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("src/app.ts"),
+        root.join("src").join("app.ts"),
         "import { Widget } from './widget';\n\
          export class App {\n    private widget = new Widget();\n\
          \n    start(): void {\n        this.widget.render();\n    }\n}\n",
@@ -276,17 +276,17 @@ async fn a_field_with_a_type_annotation_resolves_to_that_class() {
     std::fs::create_dir_all(root.join("src")).unwrap();
 
     std::fs::write(
-        root.join("src/a.ts"),
+        root.join("src").join("a.ts"),
         "export class Alpha {\n    run(): void {\n        console.log('a');\n    }\n}\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("src/b.ts"),
+        root.join("src").join("b.ts"),
         "export class Beta {\n    run(): void {\n        console.log('b');\n    }\n}\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("src/app.ts"),
+        root.join("src").join("app.ts"),
         "import { Alpha } from './a';\nimport { Beta } from './b';\n\
          export class App {\n    private worker: Beta;\n\
          \n    constructor(w: Beta) {\n        this.worker = w;\n    }\n\

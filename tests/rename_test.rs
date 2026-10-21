@@ -37,8 +37,8 @@ async fn rust_project() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
     fs::create_dir_all(root.join("src")).unwrap();
-    fs::write(root.join("src/utils.rs"), UTILS_RS).unwrap();
-    fs::write(root.join("src/main.rs"), MAIN_RS).unwrap();
+    fs::write(root.join("src").join("utils.rs"), UTILS_RS).unwrap();
+    fs::write(root.join("src").join("main.rs"), MAIN_RS).unwrap();
     let cg = TokenSave::init(root).await.unwrap();
     cg.index_all().await.unwrap();
     (dir, cg)

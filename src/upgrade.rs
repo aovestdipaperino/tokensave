@@ -1648,7 +1648,12 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  tokensave-v1.2
         fn homebrew_layout() -> (PathBuf, PathBuf, tempfile::TempDir) {
             let tmp = tempfile::tempdir().unwrap();
             // Cellar/tokensave/4.1.1-beta.1/bin/tokensave
-            let cellar_bin_dir = tmp.path().join("Cellar/tokensave/4.1.1-beta.1/bin");
+            let cellar_bin_dir = tmp
+                .path()
+                .join("Cellar")
+                .join("tokensave")
+                .join("4.1.1-beta.1")
+                .join("bin");
             fs::create_dir_all(&cellar_bin_dir).unwrap();
             let real_binary = cellar_bin_dir.join("tokensave");
             fs::write(&real_binary, b"fake-binary").unwrap();
@@ -1783,7 +1788,7 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  tokensave-v1.2
         fn canonicalize_resolves_symlink_with_dotdot_in_real_path() {
             // Real path contains ".." components — canonicalize normalizes them.
             let tmp = tempfile::tempdir().unwrap();
-            let deep = tmp.path().join("a/b/c");
+            let deep = tmp.path().join("a").join("b").join("c");
             fs::create_dir_all(&deep).unwrap();
             let real = deep.join("tokensave");
             fs::write(&real, b"fake-binary").unwrap();
@@ -1979,9 +1984,9 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  tokensave-v1.2
         #[test]
         fn brew_upgrade_updates_install_receipt() {
             let tmp = tempfile::tempdir().unwrap();
-            let cellar = tmp.path().join("Cellar/tokensave/4.0.3");
+            let cellar = tmp.path().join("Cellar").join("tokensave").join("4.0.3");
             fs::create_dir_all(cellar.join("bin")).unwrap();
-            fs::write(cellar.join("bin/tokensave"), b"binary").unwrap();
+            fs::write(cellar.join("bin").join("tokensave"), b"binary").unwrap();
 
             let receipt_content = r#"{
   "source": {
@@ -1992,7 +1997,7 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  tokensave-v1.2
             fs::write(cellar.join("INSTALL_RECEIPT.json"), receipt_content).unwrap();
 
             // Simulate rename + receipt update
-            let new_dir = tmp.path().join("Cellar/tokensave/4.0.4");
+            let new_dir = tmp.path().join("Cellar").join("tokensave").join("4.0.4");
             fs::rename(&cellar, &new_dir).unwrap();
 
             let text = fs::read_to_string(new_dir.join("INSTALL_RECEIPT.json")).unwrap();

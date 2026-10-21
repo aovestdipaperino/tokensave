@@ -36,7 +36,7 @@ fn vibe_config_path(home: &Path) -> std::path::PathBuf {
 }
 
 fn vibe_prompt_path(home: &Path) -> std::path::PathBuf {
-    vibe_home(home).join("prompts/cli.md")
+    vibe_home(home).join("prompts").join("cli.md")
 }
 
 /// The TOML marker that identifies a tokensave MCP server entry.

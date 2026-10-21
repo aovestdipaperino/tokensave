@@ -16,7 +16,7 @@ use tempfile::TempDir;
 fn initialized_project() -> TempDir {
     let dir = TempDir::new().unwrap();
     std::fs::create_dir(dir.path().join("src")).unwrap();
-    std::fs::write(dir.path().join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+    std::fs::write(dir.path().join("src").join("lib.rs"), "pub fn hello() {}\n").unwrap();
     let status = Command::new(env!("CARGO_BIN_EXE_tokensave"))
         .arg("init")
         .arg(dir.path())
@@ -75,7 +75,7 @@ fn bare_invocation_in_initialized_project_keeps_stdout_empty() {
 fn bare_invocation_uninitialized_with_piped_stdin_does_not_prompt_or_init() {
     let dir = TempDir::new().unwrap();
     std::fs::create_dir(dir.path().join("src")).unwrap();
-    std::fs::write(dir.path().join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+    std::fs::write(dir.path().join("src").join("lib.rs"), "pub fn hello() {}\n").unwrap();
 
     // A piped "y" must not be taken for an interactive answer, so no index is
     // created and stdout stays clean.

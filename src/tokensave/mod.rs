@@ -669,7 +669,7 @@ mod resolve_db_tests {
             TokenSave::resolve_db_for_branch(dir.path(), &tokensave_dir, Some("untracked-branch"));
         assert_eq!(
             path,
-            tokensave_dir.join("branches/master.db"),
+            tokensave_dir.join("branches").join("master.db"),
             "must resolve the default branch's db_file"
         );
         assert_eq!(serving.as_deref(), Some("master"));
@@ -683,7 +683,7 @@ mod resolve_db_tests {
         let (dir, tokensave_dir) = setup("master", "branches/master.db");
         let (path, serving, warning) =
             TokenSave::resolve_db_for_branch(dir.path(), &tokensave_dir, None);
-        assert_eq!(path, tokensave_dir.join("branches/master.db"));
+        assert_eq!(path, tokensave_dir.join("branches").join("master.db"));
         assert_eq!(serving.as_deref(), Some("master"));
         assert!(warning.is_some());
     }
@@ -706,7 +706,7 @@ mod resolve_db_tests {
         let (dir, tokensave_dir) = setup("master", "branches/master.db");
         let (path, serving, warning) =
             TokenSave::resolve_db_for_branch(dir.path(), &tokensave_dir, Some("master"));
-        assert_eq!(path, tokensave_dir.join("branches/master.db"));
+        assert_eq!(path, tokensave_dir.join("branches").join("master.db"));
         assert_eq!(serving.as_deref(), Some("master"));
         assert!(warning.is_none(), "exact match must not warn");
     }

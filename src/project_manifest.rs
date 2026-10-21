@@ -551,7 +551,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".tokensave")).unwrap();
         std::fs::write(
-            dir.path().join(".tokensave/project.json"),
+            dir.path().join(".tokensave").join("project.json"),
             r#"{"version":1,"entries":[{"path":"dotfiles/.bash_profile","language":"python"}]}"#,
         )
         .unwrap();

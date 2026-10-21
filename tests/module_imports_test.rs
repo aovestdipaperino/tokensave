@@ -30,7 +30,7 @@ async fn fixture() -> (TempDir, TokenSave) {
 
     // core -> plugins, from two separate statements, one of them lazy.
     fs::write(
-        project.join("core/engine.py"),
+        project.join("core").join("engine.py"),
         "from plugins.registry import lookup_plugin\n\
          \n\
          def run(name):\n\
@@ -38,7 +38,7 @@ async fn fixture() -> (TempDir, TokenSave) {
     )
     .unwrap();
     fs::write(
-        project.join("core/loader.py"),
+        project.join("core").join("loader.py"),
         "def load(name):\n\
         \x20   from plugins.registry import lookup_plugin\n\
         \x20   return lookup_plugin(name)\n",
@@ -47,18 +47,18 @@ async fn fixture() -> (TempDir, TokenSave) {
 
     // plugins -> core, closing the cycle.
     fs::write(
-        project.join("plugins/registry.py"),
+        project.join("plugins").join("registry.py"),
         "from core.settings import DEFAULTS\n\
          \n\
          def lookup_plugin(name):\n\
         \x20   return DEFAULTS.get(name)\n",
     )
     .unwrap();
-    fs::write(project.join("core/settings.py"), "DEFAULTS = {}\n").unwrap();
+    fs::write(project.join("core").join("settings.py"), "DEFAULTS = {}\n").unwrap();
 
     // cli depends on core but nothing depends on cli.
     fs::write(
-        project.join("cli/main.py"),
+        project.join("cli").join("main.py"),
         "from core.engine import run\n\
          \n\
          def main():\n\

@@ -259,9 +259,9 @@ mod tests {
     /// `.tokensave/` walk can never reach from the worktree.
     fn main_with_sibling_worktree(tmp: &Path) -> (PathBuf, PathBuf) {
         let main = tmp.join("main");
-        fs::create_dir_all(main.join("packages/app")).unwrap();
+        fs::create_dir_all(main.join("packages").join("app")).unwrap();
         run_git(&main, &["init", "--quiet"]);
-        fs::write(main.join("packages/app/README.md"), "hi").unwrap();
+        fs::write(main.join("packages").join("app").join("README.md"), "hi").unwrap();
         run_git(&main, &["add", "."]);
         run_git(
             &main,
@@ -276,7 +276,7 @@ mod tests {
                 "init",
             ],
         );
-        let worktree = tmp.join("elsewhere/wt");
+        let worktree = tmp.join("elsewhere").join("wt");
         run_git(
             &main,
             &["worktree", "add", "--detach", worktree.to_str().unwrap()],
@@ -301,8 +301,13 @@ mod tests {
         let tmp = tempdir().unwrap();
         let (main, worktree) = main_with_sibling_worktree(tmp.path());
         assert_eq!(
-            main_checkout_counterpart(&worktree.join("packages/app")),
-            Some(fs::canonicalize(&main).unwrap().join("packages/app"))
+            main_checkout_counterpart(&worktree.join("packages").join("app")),
+            Some(
+                fs::canonicalize(&main)
+                    .unwrap()
+                    .join("packages")
+                    .join("app")
+            )
         );
     }
 

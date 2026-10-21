@@ -28,13 +28,13 @@ fn env_v2() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn opencode_config_path(home: &Path) -> std::path::PathBuf {
-    home.join(".config/opencode/opencode.json")
+    home.join(".config").join("opencode").join("opencode.json")
 }
 
 fn opencode_prompt_path(home: &Path) -> std::path::PathBuf {
     // Mirrors the logic: if .config/opencode exists, use it
-    let modern = home.join(".config/opencode/AGENTS.md");
-    if modern.exists() || home.join(".config/opencode").exists() {
+    let modern = home.join(".config").join("opencode").join("AGENTS.md");
+    if modern.exists() || home.join(".config").join("opencode").exists() {
         return modern;
     }
     home.join("AGENTS.md")
@@ -215,7 +215,7 @@ fn test_install_does_not_touch_existing_agents_md() {
     let home = dir.path();
 
     // Create AGENTS.md with pre-existing content
-    let config_dir = home.join(".config/opencode");
+    let config_dir = home.join(".config").join("opencode");
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(
         config_dir.join("AGENTS.md"),
@@ -246,7 +246,7 @@ fn test_install_migrates_legacy_agents_md_block() {
     let home = dir.path();
 
     // Pre-populate AGENTS.md with the pre-#256 inline block.
-    let config_dir = home.join(".config/opencode");
+    let config_dir = home.join(".config").join("opencode");
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(
         config_dir.join("AGENTS.md"),
@@ -408,7 +408,7 @@ fn test_uninstall_preserves_other_agents_md_content() {
     let home = dir.path();
 
     // Create AGENTS.md with pre-existing content
-    let config_dir = home.join(".config/opencode");
+    let config_dir = home.join(".config").join("opencode");
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(
         config_dir.join("AGENTS.md"),
@@ -655,7 +655,7 @@ fn test_is_detected_with_opencode_dir() {
     let _env = env_v1();
     let dir = TempDir::new().unwrap();
     let home = dir.path();
-    std::fs::create_dir_all(home.join(".config/opencode")).unwrap();
+    std::fs::create_dir_all(home.join(".config").join("opencode")).unwrap();
     assert!(
         OpenCodeIntegration.is_detected(home),
         "should be detected when .config/opencode exists"

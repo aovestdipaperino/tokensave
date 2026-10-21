@@ -84,7 +84,7 @@ async fn setup() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/renderer.ts"), RENDERER_SRC).unwrap();
+    fs::write(project.join("src").join("renderer.ts"), RENDERER_SRC).unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
     (dir, cg)

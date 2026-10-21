@@ -49,7 +49,11 @@ fn adding_an_unchecked_out_branch_leaves_the_current_db_alone() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(root.join("src/lib.rs"), "pub fn base() -> i32 { 1 }\n").unwrap();
+    std::fs::write(
+        root.join("src").join("lib.rs"),
+        "pub fn base() -> i32 { 1 }\n",
+    )
+    .unwrap();
 
     git(root, &["init", "-b", "main"]);
     git(root, &["add", "-A"]);
@@ -57,14 +61,18 @@ fn adding_an_unchecked_out_branch_leaves_the_current_db_alone() {
     assert!(tokensave(root, &["init", "."]).status.success());
 
     git(root, &["checkout", "-b", "other"]);
-    std::fs::write(root.join("src/other.rs"), "pub fn only_on_other() {}\n").unwrap();
+    std::fs::write(
+        root.join("src").join("other.rs"),
+        "pub fn only_on_other() {}\n",
+    )
+    .unwrap();
     git(root, &["add", "-A"]);
     git(root, &["commit", "-m", "other"]);
     git(root, &["checkout", "main"]);
 
     // A file that exists on no branch at all — the clearest marker of a sync
     // that walked the working directory when it should not have.
-    std::fs::write(root.join("src/stray.rs"), "pub fn stray() {}\n").unwrap();
+    std::fs::write(root.join("src").join("stray.rs"), "pub fn stray() {}\n").unwrap();
 
     let out = tokensave(root, &["branch", "add", "other"]);
     assert!(out.status.success(), "branch add should succeed");
@@ -85,7 +93,11 @@ fn gc_keeps_live_branches_inside_a_worktree() {
     let repo = tmp.path().join("repo");
     let wt = tmp.path().join("wt");
     std::fs::create_dir_all(repo.join("src")).unwrap();
-    std::fs::write(repo.join("src/lib.rs"), "pub fn base() -> i32 { 1 }\n").unwrap();
+    std::fs::write(
+        repo.join("src").join("lib.rs"),
+        "pub fn base() -> i32 { 1 }\n",
+    )
+    .unwrap();
 
     git(&repo, &["init", "-b", "main"]);
     git(&repo, &["add", "-A"]);
@@ -100,7 +112,10 @@ fn gc_keeps_live_branches_inside_a_worktree() {
         .status
         .success());
 
-    let db = wt.join(".tokensave/branches/test-branch.db");
+    let db = wt
+        .join(".tokensave")
+        .join("branches")
+        .join("test-branch.db");
     assert!(db.exists(), "branch DB should exist before gc");
 
     let out = tokensave(&wt, &["branch", "gc"]);
@@ -119,7 +134,11 @@ fn gc_still_removes_a_branch_git_no_longer_has() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(root.join("src/lib.rs"), "pub fn base() -> i32 { 1 }\n").unwrap();
+    std::fs::write(
+        root.join("src").join("lib.rs"),
+        "pub fn base() -> i32 { 1 }\n",
+    )
+    .unwrap();
 
     git(root, &["init", "-b", "main"]);
     git(root, &["add", "-A"]);
@@ -130,7 +149,7 @@ fn gc_still_removes_a_branch_git_no_longer_has() {
     assert!(tokensave(root, &["branch", "add", "doomed"])
         .status
         .success());
-    let db = root.join(".tokensave/branches/doomed.db");
+    let db = root.join(".tokensave").join("branches").join("doomed.db");
     assert!(db.exists());
 
     git(root, &["checkout", "main"]);

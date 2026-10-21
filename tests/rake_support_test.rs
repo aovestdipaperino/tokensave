@@ -31,9 +31,9 @@ fn rake_uses_ruby_extractor() {
 #[tokio::test]
 async fn rake_indexing_resolves_ruby_relationships() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(dir.path().join("lib/tasks")).unwrap();
+    std::fs::create_dir_all(dir.path().join("lib").join("tasks")).unwrap();
     std::fs::write(
-        dir.path().join("lib/tasks/sample.rake"),
+        dir.path().join("lib").join("tasks").join("sample.rake"),
         include_str!("fixtures/sample.rake"),
     )
     .unwrap();

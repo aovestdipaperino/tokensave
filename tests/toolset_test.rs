@@ -35,7 +35,7 @@ async fn setup_project(tools: Option<Toolset>) -> (TempDir, TokenSave) {
     let project = dir.path();
     std::fs::create_dir_all(project.join("src")).unwrap();
     std::fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "fn main() { let x = helper(); }\nfn helper() -> i32 { 42 }\n",
     )
     .unwrap();
@@ -163,7 +163,7 @@ fn write_version_1_config(project: &std::path::Path, tools: &str) {
     value["tools"] = json!(tools);
     std::fs::create_dir_all(project.join(".tokensave")).unwrap();
     std::fs::write(
-        project.join(".tokensave/config.json"),
+        project.join(".tokensave").join("config.json"),
         serde_json::to_string_pretty(&value).unwrap(),
     )
     .unwrap();
@@ -182,7 +182,7 @@ fn a_full_written_by_a_version_1_config_is_read_as_the_old_default() {
     assert_eq!(config.version, tokensave::config::CONFIG_VERSION);
 
     tokensave::config::save_config(dir.path(), &config).unwrap();
-    let text = std::fs::read_to_string(dir.path().join(".tokensave/config.json")).unwrap();
+    let text = std::fs::read_to_string(dir.path().join(".tokensave").join("config.json")).unwrap();
     let saved: Value = serde_json::from_str(&text).unwrap();
     assert!(saved.get("tools").is_none(), "got: {text}");
     assert_eq!(saved["version"], json!(tokensave::config::CONFIG_VERSION));

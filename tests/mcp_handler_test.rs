@@ -23,7 +23,7 @@ async fn setup_project() -> (TempDir, TokenSave) {
     fs::create_dir_all(project.join("src")).unwrap();
 
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         r#"
 use crate::utils::helper;
 mod utils;
@@ -37,7 +37,7 @@ fn main() {
     .unwrap();
 
     fs::write(
-        project.join("src/utils.rs"),
+        project.join("src").join("utils.rs"),
         r#"
 /// Returns a greeting string.
 pub fn helper() -> String {
@@ -54,7 +54,7 @@ fn format_greeting(name: &str) -> String {
     // Test file so affected-tests can find something
     fs::create_dir_all(project.join("tests")).unwrap();
     fs::write(
-        project.join("tests/test_utils.rs"),
+        project.join("tests").join("test_utils.rs"),
         r#"
 use crate::utils::helper;
 
@@ -425,7 +425,7 @@ async fn test_callers_lists_every_call_line() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"pub fn refresh(_key: &str) {}
 
 pub fn poll() {
@@ -473,14 +473,14 @@ async fn test_edit_keeps_callers_of_symbols_in_the_edited_file() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("pkg")).unwrap();
-    fs::write(project.join("pkg/__init__.py"), "").unwrap();
+    fs::write(project.join("pkg").join("__init__.py"), "").unwrap();
     fs::write(
-        project.join("pkg/util.py"),
+        project.join("pkg").join("util.py"),
         "def helper(x):\n    return x + 1\n\n\ndef unused():\n    return 0\n\n\ndef add(x):\n    return helper(x)\n",
     )
     .unwrap();
     fs::write(
-        project.join("pkg/app.py"),
+        project.join("pkg").join("app.py"),
         "from pkg.util import helper\n\n\ndef main():\n    return helper(1)\n",
     )
     .unwrap();
@@ -1304,13 +1304,13 @@ async fn port_status_does_not_match_methods_of_different_parents() {
     fs::create_dir_all(project.join("src_b")).unwrap();
 
     fs::write(
-        project.join("src_a/biquad.rs"),
+        project.join("src_a").join("biquad.rs"),
         "pub struct Biquad;\n\
          impl Biquad {\n    pub fn new() -> Self { Self }\n    pub fn process(&self) {}\n}\n",
     )
     .unwrap();
     fs::write(
-        project.join("src_b/adaa.rs"),
+        project.join("src_b").join("adaa.rs"),
         "pub struct Adaa;\n\
          impl Adaa {\n    pub fn new() -> Self { Self }\n    pub fn process(&self) {}\n}\n",
     )
@@ -1362,13 +1362,13 @@ async fn port_status_matches_methods_with_same_parent_type() {
     fs::create_dir_all(project.join("src_b")).unwrap();
 
     fs::write(
-        project.join("src_a/biquad.rs"),
+        project.join("src_a").join("biquad.rs"),
         "pub struct Biquad;\n\
          impl Biquad { pub fn process(&self) {} }\n",
     )
     .unwrap();
     fs::write(
-        project.join("src_b/biquad_port.rs"),
+        project.join("src_b").join("biquad_port.rs"),
         "pub struct Biquad;\n\
          impl Biquad { pub fn process(&self) {} }\n",
     )
@@ -1708,7 +1708,7 @@ async fn test_changelog_with_real_git() {
         .output()
         .unwrap();
 
-    fs::write(project.join("src/lib.rs"), "pub fn original() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn original() {}\n").unwrap();
     std::process::Command::new("git")
         .args(["add", "."])
         .current_dir(project)
@@ -1722,7 +1722,7 @@ async fn test_changelog_with_real_git() {
 
     // Make a second commit with changes
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         "pub fn original() {}\npub fn added() {}\n",
     )
     .unwrap();
@@ -2074,7 +2074,7 @@ async fn test_str_replace_success() {
     fs::create_dir_all(project.join("src")).unwrap();
 
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "fn hello() {}\nfn world() {}\n",
     )
     .unwrap();
@@ -2104,7 +2104,7 @@ async fn test_str_replace_success() {
     assert!(parsed["matched_str"].is_null());
     assert!(parsed["new_str"].is_null());
 
-    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    let content = fs::read_to_string(project.join("src").join("main.rs")).unwrap();
     assert!(content.contains("fn hello_updated() {}"));
     assert!(!content.contains("fn hello() {}"));
 }
@@ -2115,7 +2115,7 @@ async fn test_str_replace_echo_returns_text() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
 
-    fs::write(project.join("src/main.rs"), "fn hello() {}\n").unwrap();
+    fs::write(project.join("src").join("main.rs"), "fn hello() {}\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -2148,7 +2148,7 @@ async fn test_str_replace_not_found() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
 
-    fs::write(project.join("src/main.rs"), "fn hello() {}\n").unwrap();
+    fs::write(project.join("src").join("main.rs"), "fn hello() {}\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -2179,7 +2179,11 @@ async fn test_str_replace_multiple_matches_fails() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
 
-    fs::write(project.join("src/main.rs"), "fn foo() {}\nfn foo() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("main.rs"),
+        "fn foo() {}\nfn foo() {}\n",
+    )
+    .unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -2214,7 +2218,7 @@ async fn test_multi_str_replace_success() {
     fs::create_dir_all(project.join("src")).unwrap();
 
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "fn foo() {}\nfn bar() {}\nfn baz() {}\n",
     )
     .unwrap();
@@ -2243,7 +2247,7 @@ async fn test_multi_str_replace_success() {
     assert_eq!(parsed["success"], true);
     assert_eq!(parsed["applied_count"], 2);
 
-    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    let content = fs::read_to_string(project.join("src").join("main.rs")).unwrap();
     assert!(content.contains("fn foo_replaced()"));
     assert!(content.contains("fn bar_replaced()"));
     assert!(content.contains("fn baz() {}"));
@@ -2255,7 +2259,11 @@ async fn test_multi_str_replace_atomic_failure() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
 
-    fs::write(project.join("src/main.rs"), "fn foo() {}\nfn baz() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("main.rs"),
+        "fn foo() {}\nfn baz() {}\n",
+    )
+    .unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -2284,7 +2292,7 @@ async fn test_multi_str_replace_atomic_failure() {
         .unwrap()
         .contains("must match exactly once"));
 
-    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    let content = fs::read_to_string(project.join("src").join("main.rs")).unwrap();
     assert!(content.contains("fn foo() {}"));
     assert!(content.contains("fn baz() {}"));
     assert!(!content.contains("fn replaced()"));
@@ -2297,7 +2305,7 @@ async fn test_multi_str_replace_unicode_preview_does_not_panic() {
     fs::create_dir_all(project.join("src")).unwrap();
 
     let original = "fn main() {}\n";
-    fs::write(project.join("src/main.rs"), original).unwrap();
+    fs::write(project.join("src").join("main.rs"), original).unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -2325,7 +2333,7 @@ async fn test_multi_str_replace_unicode_preview_does_not_panic() {
     assert!(message.contains("matches 0 times"));
     assert!(message.contains("must match exactly once"));
 
-    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    let content = fs::read_to_string(project.join("src").join("main.rs")).unwrap();
     assert_eq!(content, original);
 }
 
@@ -2373,7 +2381,7 @@ async fn ast_grep_rewrite_has_literal_fallback_when_binary_missing() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn old_name() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn old_name() {}\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -2391,7 +2399,7 @@ async fn ast_grep_rewrite_has_literal_fallback_when_binary_missing() {
     let output: Value = serde_json::from_str(text).unwrap();
     assert_eq!(output["success"].as_bool(), Some(true), "{output}");
     assert!(
-        fs::read_to_string(project.join("src/lib.rs"))
+        fs::read_to_string(project.join("src").join("lib.rs"))
             .unwrap()
             .contains("new_name"),
         "literal fallback should update the file"
@@ -2407,7 +2415,7 @@ async fn ast_grep_rewrite_uses_current_cli_update_flag() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         "pub fn caller() { old_name(); }\npub fn old_name() {}\n",
     )
     .unwrap();
@@ -2427,7 +2435,7 @@ async fn ast_grep_rewrite_uses_current_cli_update_flag() {
     let text = extract_text(&result.value);
     let output: Value = serde_json::from_str(text).unwrap();
     assert_eq!(output["success"].as_bool(), Some(true), "{output}");
-    let content = fs::read_to_string(project.join("src/lib.rs")).unwrap();
+    let content = fs::read_to_string(project.join("src").join("lib.rs")).unwrap();
     assert!(
         content.contains("new_name();"),
         "ast-grep rewrite should apply with the installed CLI: {content}"
@@ -2486,7 +2494,7 @@ async fn ast_grep_rewrite_surfaces_useful_error_on_empty_stderr() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn foo() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn foo() {}\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -2567,7 +2575,7 @@ async fn test_insert_at_string_anchor_before() {
     fs::create_dir_all(project.join("src")).unwrap();
 
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "line one\nline two\nline three\n",
     )
     .unwrap();
@@ -2596,7 +2604,7 @@ async fn test_insert_at_string_anchor_before() {
     assert_eq!(parsed["lines"], json!([2, 2]));
     assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
-    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    let content = fs::read_to_string(project.join("src").join("main.rs")).unwrap();
     assert!(
         content.ends_with('\n'),
         "trailing newline must be preserved"
@@ -2615,7 +2623,7 @@ async fn test_insert_at_line_number() {
     fs::create_dir_all(project.join("src")).unwrap();
 
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "line one\nline two\nline three\n",
     )
     .unwrap();
@@ -2644,7 +2652,7 @@ async fn test_insert_at_line_number() {
     assert_eq!(parsed["lines"], json!([3, 3]));
     assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
-    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    let content = fs::read_to_string(project.join("src").join("main.rs")).unwrap();
     assert!(
         content.ends_with('\n'),
         "trailing newline must be preserved"
@@ -2662,7 +2670,7 @@ async fn test_insert_at_anchor_not_found() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
 
-    fs::write(project.join("src/main.rs"), "line one\nline two\n").unwrap();
+    fs::write(project.join("src").join("main.rs"), "line one\nline two\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -2695,7 +2703,7 @@ async fn test_insert_at_unicode_anchor_prefix_does_not_panic() {
     fs::create_dir_all(project.join("src")).unwrap();
 
     let original = "line one\nline two\n";
-    fs::write(project.join("src/main.rs"), original).unwrap();
+    fs::write(project.join("src").join("main.rs"), original).unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -2721,7 +2729,7 @@ async fn test_insert_at_unicode_anchor_prefix_does_not_panic() {
     assert_eq!(parsed["ok"], false);
     assert!(parsed["message"].as_str().unwrap().contains("not found"));
 
-    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    let content = fs::read_to_string(project.join("src").join("main.rs")).unwrap();
     assert_eq!(content, original);
 }
 
@@ -2732,7 +2740,7 @@ async fn test_insert_at_ambiguous_anchor() {
     fs::create_dir_all(project.join("src")).unwrap();
 
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "line foo\nline foo\nline bar\n",
     )
     .unwrap();
@@ -2772,7 +2780,7 @@ async fn test_insert_at_preserves_trailing_newline() {
     fs::create_dir_all(project.join("src")).unwrap();
 
     let original = "fn hello() {}\n\nfn world() {}\n";
-    fs::write(project.join("src/lib.rs"), original).unwrap();
+    fs::write(project.join("src").join("lib.rs"), original).unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -2797,7 +2805,7 @@ async fn test_insert_at_preserves_trailing_newline() {
     assert_eq!(parsed["ok"], true);
     assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
-    let content = fs::read_to_string(project.join("src/lib.rs")).unwrap();
+    let content = fs::read_to_string(project.join("src").join("lib.rs")).unwrap();
     assert!(
         content.ends_with('\n'),
         "file must end with newline after insert_at, got: {:?}",
@@ -2812,7 +2820,7 @@ async fn test_delete_symbol_removes_doc_and_function() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "/// docs\nfn hello() {}\nfn world() {}\n",
     )
     .unwrap();
@@ -2836,7 +2844,7 @@ async fn test_delete_symbol_removes_doc_and_function() {
     assert_eq!(parsed["lines"], json!([1, 2]));
     assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
-    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    let content = fs::read_to_string(project.join("src").join("main.rs")).unwrap();
     assert!(!content.contains("hello"));
     assert!(!content.contains("docs"));
     assert!(content.contains("fn world() {}"));
@@ -2848,7 +2856,7 @@ async fn test_replace_lines_success() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "fn a() {}\nfn b() {}\nfn c() {}\n",
     )
     .unwrap();
@@ -2877,7 +2885,7 @@ async fn test_replace_lines_success() {
     assert_eq!(parsed["lines"], json!([2, 2]));
     assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
-    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    let content = fs::read_to_string(project.join("src").join("main.rs")).unwrap();
     assert!(content.contains("fn b2() {}"));
     assert!(!content.contains("fn b() {}"));
 }
@@ -2887,7 +2895,11 @@ async fn test_replace_lines_stale_digest_fails() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/main.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("main.rs"),
+        "fn a() {}\nfn b() {}\n",
+    )
+    .unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -2923,7 +2935,7 @@ async fn test_replace_lines_delete_empty() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "fn a() {}\nfn b() {}\nfn c() {}\n",
     )
     .unwrap();
@@ -2952,7 +2964,7 @@ async fn test_replace_lines_delete_empty() {
     assert_eq!(parsed["lines"], json!([2, 2]));
     assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
-    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    let content = fs::read_to_string(project.join("src").join("main.rs")).unwrap();
     assert!(!content.contains("fn b() {}"));
     assert_eq!(content, "fn a() {}\nfn c() {}\n");
 }
@@ -2965,7 +2977,7 @@ async fn test_replace_lines_delete_whole_file_leaves_empty() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "fn a() {}\nfn b() {}\nfn c() {}\n",
     )
     .unwrap();
@@ -2994,7 +3006,7 @@ async fn test_replace_lines_delete_whole_file_leaves_empty() {
     assert_eq!(parsed["lines"], json!([1, 3]));
     assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
-    let content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    let content = fs::read_to_string(project.join("src").join("main.rs")).unwrap();
     assert_eq!(content, "");
 }
 
@@ -3388,7 +3400,7 @@ async fn test_redundancy_finds_planted_duplicate() {
 
     // Two functions: identical structure, renamed identifiers.
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub fn compute_a(value: i32) -> i32 {
     let mut acc = 0;
@@ -3765,14 +3777,18 @@ async fn test_test_coverage_file_mode_returns_rollup() {
 async fn source_path_override_is_used_by_coverage_and_risk_tools() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    fs::create_dir_all(project.join("components/test/__tests__")).unwrap();
+    fs::create_dir_all(project.join("components").join("test").join("__tests__")).unwrap();
     fs::write(
-        project.join("components/test/widget.rs"),
+        project.join("components").join("test").join("widget.rs"),
         "pub fn widget() -> bool { true }\n",
     )
     .unwrap();
     fs::write(
-        project.join("components/test/__tests__/widget_test.rs"),
+        project
+            .join("components")
+            .join("test")
+            .join("__tests__")
+            .join("widget_test.rs"),
         "#[test]\nfn widget_works() { assert!(true); }\n",
     )
     .unwrap();
@@ -3955,15 +3971,15 @@ async fn test_dependencies_surfaces_license_and_drift() {
         "[workspace]\nmembers = [\"crates/*\"]\n",
     )
     .unwrap();
-    fs::create_dir_all(dir.path().join("crates/alpha")).unwrap();
-    fs::create_dir_all(dir.path().join("crates/beta")).unwrap();
+    fs::create_dir_all(dir.path().join("crates").join("alpha")).unwrap();
+    fs::create_dir_all(dir.path().join("crates").join("beta")).unwrap();
     fs::write(
-        dir.path().join("crates/alpha/Cargo.toml"),
+        dir.path().join("crates").join("alpha").join("Cargo.toml"),
         "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\nlicense = \"MIT\"\n\n[dependencies]\nserde = \"1.0\"\n",
     )
     .unwrap();
     fs::write(
-        dir.path().join("crates/beta/Cargo.toml"),
+        dir.path().join("crates").join("beta").join("Cargo.toml"),
         "[package]\nname = \"beta\"\nversion = \"0.1.0\"\nlicense = \"Apache-2.0\"\n\n[dependencies]\nserde = \"2.0\"\n",
     )
     .unwrap();
@@ -4067,7 +4083,7 @@ async fn test_session_start() {
     let output: serde_json::Value = serde_json::from_str(text).unwrap();
     assert!(output["quality_signal"].as_u64().is_some());
     assert_eq!(output["status"].as_str().unwrap(), "baseline_saved");
-    let baseline_path = dir.path().join(".tokensave/session_baseline.json");
+    let baseline_path = dir.path().join(".tokensave").join("session_baseline.json");
     assert!(baseline_path.exists(), "baseline file should exist");
 
     // session_start emits a compact, budget-bounded memory delta (issue #122).
@@ -4097,7 +4113,7 @@ async fn test_session_end() {
     assert!(output["signal_before"].as_u64().is_some());
     assert!(output["signal_after"].as_u64().is_some());
     assert!(output["delta"].is_number());
-    let baseline_path = dir.path().join(".tokensave/session_baseline.json");
+    let baseline_path = dir.path().join(".tokensave").join("session_baseline.json");
     assert!(
         !baseline_path.exists(),
         "baseline should be removed after session_end"
@@ -4209,7 +4225,7 @@ async fn test_todos_finds_markers() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         r#"
 fn main() {
     // TODO: refactor this
@@ -4262,7 +4278,7 @@ async fn test_todos_filters_by_kind() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         r#"
 fn main() {
     // TODO: a
@@ -4584,7 +4600,7 @@ async fn setup_function_vs_field_collision() -> (TempDir, TokenSave) {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub struct Solvers {
     pub gmres: u32,
@@ -4641,7 +4657,7 @@ async fn diff_context_dedupes_impacted_symbols() {
     // Two functions in `mod.rs` both call `shared` in `dep.rs`. Without dedup,
     // `shared` appears twice in `impacted_symbols`.
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 mod dep;
 pub fn first() { dep::shared(); }
@@ -4649,7 +4665,7 @@ pub fn second() { dep::shared(); }
 "#,
     )
     .unwrap();
-    fs::write(project.join("src/dep.rs"), "pub fn shared() {}\n").unwrap();
+    fs::write(project.join("src").join("dep.rs"), "pub fn shared() {}\n").unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
 
@@ -4684,7 +4700,7 @@ async fn recursion_keeps_direct_recursion() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub fn recurse(n: u32) -> u32 {
     if n == 0 { 0 } else { recurse(n - 1) }
@@ -4724,7 +4740,7 @@ async fn recursion_filters_self_edge_artifacts() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub struct Triplet {
     rows: Vec<usize>,
@@ -4763,7 +4779,7 @@ async fn recursion_reports_real_cycle_path() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub fn a() { b(); }
 pub fn b() { c(); }
@@ -4820,8 +4836,12 @@ async fn changelog_filters_directory_paths() {
         .current_dir(project)
         .output()
         .unwrap();
-    fs::create_dir_all(project.join("src/sub")).unwrap();
-    fs::write(project.join("src/sub/keep.rs"), "pub fn k() {}\n").unwrap();
+    fs::create_dir_all(project.join("src").join("sub")).unwrap();
+    fs::write(
+        project.join("src").join("sub").join("keep.rs"),
+        "pub fn k() {}\n",
+    )
+    .unwrap();
     std::process::Command::new("git")
         .args(["add", "."])
         .current_dir(project)
@@ -4833,11 +4853,15 @@ async fn changelog_filters_directory_paths() {
         .output()
         .unwrap();
     fs::write(
-        project.join("src/sub/keep.rs"),
+        project.join("src").join("sub").join("keep.rs"),
         "pub fn k() { let _ = 1; }\n",
     )
     .unwrap();
-    fs::write(project.join("src/sub/added.rs"), "pub fn a() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("sub").join("added.rs"),
+        "pub fn a() {}\n",
+    )
+    .unwrap();
     std::process::Command::new("git")
         .args(["add", "."])
         .current_dir(project)
@@ -4890,7 +4914,7 @@ async fn unused_imports_detects_truly_unused() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -4900,7 +4924,11 @@ pub fn used_one() -> HashMap<u32, u32> { HashMap::new() }
 "#,
     )
     .unwrap();
-    fs::write(project.join("src/inner.rs"), "pub fn inner_fn() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("inner.rs"),
+        "pub fn inner_fn() {}\n",
+    )
+    .unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
 
@@ -4928,7 +4956,7 @@ async fn dead_code_with_include_public_finds_pub_unreferenced() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub fn called() {}
 pub fn never_called_anywhere() {}
@@ -4987,7 +5015,7 @@ async fn dependency_depth_excludes_implements_and_extends() {
     // file_a derives Debug — extractor emits derives_macro and the
     // resolver historically pollutes implements edges across files.
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 mod a;
 mod b;
@@ -4995,7 +5023,7 @@ mod b;
     )
     .unwrap();
     fs::write(
-        project.join("src/a.rs"),
+        project.join("src").join("a.rs"),
         r#"
 #[derive(Debug, Clone)]
 pub struct A;
@@ -5003,7 +5031,7 @@ pub struct A;
     )
     .unwrap();
     fs::write(
-        project.join("src/b.rs"),
+        project.join("src").join("b.rs"),
         r#"
 pub trait T {}
 "#,
@@ -5041,7 +5069,11 @@ async fn run_affected_tests_dispatches_directly_changed_test_files() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::create_dir_all(project.join("tests")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn util() -> u32 { 1 }\n").unwrap();
+    fs::write(
+        project.join("src").join("lib.rs"),
+        "pub fn util() -> u32 { 1 }\n",
+    )
+    .unwrap();
     fs::write(
         project.join("Cargo.toml"),
         r#"[package]
@@ -5052,7 +5084,7 @@ edition = "2021"
     )
     .unwrap();
     fs::write(
-        project.join("tests/edited_only.rs"),
+        project.join("tests").join("edited_only.rs"),
         r#"
 #[test]
 fn edited_only_test() {
@@ -5109,11 +5141,11 @@ async fn diagnose_normalizes_absolute_and_backslash_paths() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn target() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn target() {}\n").unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
 
-    let abs_path = project.join("src/lib.rs");
+    let abs_path = project.join("src").join("lib.rs");
     let abs_str = abs_path.to_string_lossy().to_string();
     let backslash_str = "src\\lib.rs";
     let cargo_output = format!(
@@ -5154,7 +5186,7 @@ async fn resolver_blocklist_branch_respects_kind_filter() {
     // Pre-fix the resolver's same-file blocklist branch would bind the
     // Calls ref to this struct because no other "new" lives in the file.
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub struct new;
 
@@ -5211,7 +5243,7 @@ async fn implements_refs_dont_resolve_to_enum_variants() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub enum Token { Default, Plus }
 
@@ -5261,19 +5293,19 @@ async fn circular_reports_one_entry_per_scc_not_per_walk() {
     // Three-file cycle: a uses b, b uses c, c uses a. Multiple DFS walks
     // through this triangle would have reported 3+ "cycles" pre-fix
     // (a→b→c→a, b→c→a→b, c→a→b→c).
-    fs::write(project.join("src/lib.rs"), "mod a; mod b; mod c;\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "mod a; mod b; mod c;\n").unwrap();
     fs::write(
-        project.join("src/a.rs"),
+        project.join("src").join("a.rs"),
         "use crate::b::b_fn;\npub fn a_fn() { b_fn(); }\n",
     )
     .unwrap();
     fs::write(
-        project.join("src/b.rs"),
+        project.join("src").join("b.rs"),
         "use crate::c::c_fn;\npub fn b_fn() { c_fn(); }\n",
     )
     .unwrap();
     fs::write(
-        project.join("src/c.rs"),
+        project.join("src").join("c.rs"),
         "use crate::a::a_fn;\npub fn c_fn() { a_fn(); }\n",
     )
     .unwrap();
@@ -5311,9 +5343,9 @@ async fn port_order_reports_separate_scc_groups() {
     // the fix, both pairs would be lumped into a single "Mutual
     // dependency" entry. After the fix, each pair appears as its own
     // cycle group.
-    fs::write(project.join("src/lib.rs"), "pub mod m;\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub mod m;\n").unwrap();
     fs::write(
-        project.join("src/m.rs"),
+        project.join("src").join("m.rs"),
         r#"
 pub fn a() { b(); }
 pub fn b() { a(); }
@@ -5374,9 +5406,9 @@ async fn port_order_provides_intra_cycle_ordering() {
     fs::create_dir_all(project.join("src")).unwrap();
     // a → b → c → a, plus a "hub" h that all three call into and that
     // calls a back. h is the central node (highest in-cycle in-degree).
-    fs::write(project.join("src/lib.rs"), "pub mod m;\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub mod m;\n").unwrap();
     fs::write(
-        project.join("src/m.rs"),
+        project.join("src").join("m.rs"),
         r#"
 pub fn a() { b(); h(); }
 pub fn b() { c(); h(); }
@@ -5447,9 +5479,9 @@ async fn port_order_ignores_self_edges() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub mod m;\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub mod m;\n").unwrap();
     fs::write(
-        project.join("src/m.rs"),
+        project.join("src").join("m.rs"),
         r#"
 pub struct Triplet {
     rows: Vec<usize>,
@@ -5491,7 +5523,7 @@ async fn inheritance_depth_walks_rust_supertraits() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub trait Base {}
 pub trait Middle: Base {}
@@ -5539,7 +5571,7 @@ async fn circular_emits_disjoint_sccs_under_load() {
     for k in 0..5 {
         lib_rs.push_str(&format!("pub mod a{k};\npub mod b{k};\npub mod c{k};\n"));
     }
-    fs::write(project.join("src/lib.rs"), lib_rs).unwrap();
+    fs::write(project.join("src").join("lib.rs"), lib_rs).unwrap();
     for k in 0..5 {
         let next = (k + 1) % 5;
         fs::write(
@@ -5595,7 +5627,7 @@ async fn diff_context_dedupes_modified_symbols_on_duplicate_input() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         "pub struct S; pub fn one() {} pub fn two() {}\n",
     )
     .unwrap();
@@ -5645,8 +5677,12 @@ async fn changelog_filters_deleted_directory_entries() {
     git(project, &["init"]);
     git(project, &["config", "user.email", "t@t"]);
     git(project, &["config", "user.name", "t"]);
-    fs::create_dir_all(project.join("crates/sub")).unwrap();
-    fs::write(project.join("crates/sub/keep.rs"), "pub fn k() {}\n").unwrap();
+    fs::create_dir_all(project.join("crates").join("sub")).unwrap();
+    fs::write(
+        project.join("crates").join("sub").join("keep.rs"),
+        "pub fn k() {}\n",
+    )
+    .unwrap();
     fs::write(project.join("main.rs"), "fn main() {}\n").unwrap();
     git(project, &["add", "."]);
     git(project, &["commit", "-m", "init"]);
@@ -5708,7 +5744,7 @@ async fn pr_context_collapses_cargo_toml_keys() {
         "[package]\nname = \"x\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
     )
     .unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn a() {}\n").unwrap();
     git(project, &["add", "."]);
     git(project, &["commit", "-m", "init"]);
     // Second commit: bloat Cargo.toml with many deps.
@@ -5785,12 +5821,16 @@ async fn pr_context_uses_branch_meta_default_branch() {
     git(project, &["config", "user.email", "t@t"]);
     git(project, &["config", "user.name", "t"]);
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn a() {}\n").unwrap();
     git(project, &["add", "."]);
     git(project, &["commit", "-m", "init"]);
 
     git(project, &["checkout", "-b", "feature"]);
-    fs::write(project.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("lib.rs"),
+        "pub fn a() {}\npub fn b() {}\n",
+    )
+    .unwrap();
     git(project, &["add", "."]);
     git(project, &["commit", "-m", "add b"]);
 
@@ -5831,7 +5871,7 @@ async fn unused_imports_handles_grouped_use() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 use std::collections::{HashMap, HashSet};
 
@@ -5892,7 +5932,7 @@ async fn dead_code_flags_unreferenced_fn_with_attribute() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 fn caller() {
     used_helper();
@@ -5936,13 +5976,13 @@ fn dead_helper_with_attr() {}
 async fn search_ranks_trait_definition_above_use_reexports() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    fs::create_dir_all(project.join("src/a")).unwrap();
-    fs::create_dir_all(project.join("src/b")).unwrap();
-    fs::create_dir_all(project.join("src/c")).unwrap();
-    fs::create_dir_all(project.join("src/d")).unwrap();
-    fs::create_dir_all(project.join("src/e")).unwrap();
+    fs::create_dir_all(project.join("src").join("a")).unwrap();
+    fs::create_dir_all(project.join("src").join("b")).unwrap();
+    fs::create_dir_all(project.join("src").join("c")).unwrap();
+    fs::create_dir_all(project.join("src").join("d")).unwrap();
+    fs::create_dir_all(project.join("src").join("e")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub mod operator;
 pub mod a;
@@ -5954,7 +5994,7 @@ pub mod e;
     )
     .unwrap();
     fs::write(
-        project.join("src/operator.rs"),
+        project.join("src").join("operator.rs"),
         "pub trait LinearOperator { fn apply(&self); }\n",
     )
     .unwrap();
@@ -6005,9 +6045,9 @@ async fn search_doc_penalty_on_additive_query_path() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::create_dir_all(project.join("docs")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub mod config;\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub mod config;\n").unwrap();
     fs::write(
-        project.join("src/config.rs"),
+        project.join("src").join("config.rs"),
         "pub fn parse_configuration() {}\n",
     )
     .unwrap();
@@ -6017,7 +6057,7 @@ async fn search_doc_penalty_on_additive_query_path() {
     )
     .unwrap();
     fs::write(
-        project.join("docs/guide.md"),
+        project.join("docs").join("guide.md"),
         "# Configuration Guide\n\nLonger prose.\n",
     )
     .unwrap();
@@ -6169,7 +6209,7 @@ async fn setup_vendored_project() -> (TempDir, TokenSave) {
     fs::create_dir_all(project.join("third_party")).unwrap();
 
     fs::write(
-        project.join("src/app.rs"),
+        project.join("src").join("app.rs"),
         r#"
 /// App-level helper.
 pub fn helper() -> String {
@@ -6180,7 +6220,7 @@ pub fn helper() -> String {
     .unwrap();
 
     fs::write(
-        project.join("third_party/lib.rs"),
+        project.join("third_party").join("lib.rs"),
         r#"
 /// Vendored helper.
 pub fn helper() -> String {
@@ -6304,7 +6344,7 @@ async fn callers_resolve_generic_trait_calls_for_concrete_impl_method() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub trait LinearOperator {
     fn apply_into(&self, input: &[f64], output: &mut [f64]);
@@ -6394,7 +6434,7 @@ async fn affected_promotes_directly_changed_inline_test_source() {
     )
     .unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"pub fn changed_api() {}
 
 #[cfg(test)]
@@ -6452,42 +6492,58 @@ async fn affected_classifies_candidates_and_includes_inline_sources_in_suite() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::create_dir_all(project.join("tests")).unwrap();
-    fs::create_dir_all(project.join("crates/consumer/src")).unwrap();
-    fs::create_dir_all(project.join("crates/consumer/tests")).unwrap();
+    fs::create_dir_all(project.join("crates").join("consumer").join("src")).unwrap();
+    fs::create_dir_all(project.join("crates").join("consumer").join("tests")).unwrap();
     fs::write(
         project.join("Cargo.toml"),
         "[package]\nname='root'\nversion='0.1.0'\nedition='2021'\n",
     )
     .unwrap();
     fs::write(
-        project.join("crates/consumer/Cargo.toml"),
+        project.join("crates").join("consumer").join("Cargo.toml"),
         "[package]\nname='consumer'\nversion='0.1.0'\nedition='2021'\n",
     )
     .unwrap();
-    fs::write(project.join("src/core.rs"), "pub fn changed_api() {}\n").unwrap();
     fs::write(
-        project.join("src/inline.rs"),
+        project.join("src").join("core.rs"),
+        "pub fn changed_api() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src").join("inline.rs"),
         "#[test]\nfn inline_check() {}\n",
     )
     .unwrap();
-    fs::write(project.join("src/facade.rs"), "pub fn facade_call() {}\n").unwrap();
     fs::write(
-        project.join("tests/core_test.rs"),
+        project.join("src").join("facade.rs"),
+        "pub fn facade_call() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("tests").join("core_test.rs"),
         "#[test]\nfn direct_check() {}\n",
     )
     .unwrap();
     fs::write(
-        project.join("tests/integration_test.rs"),
+        project.join("tests").join("integration_test.rs"),
         "#[test]\nfn integration_check() {}\n",
     )
     .unwrap();
     fs::write(
-        project.join("crates/consumer/src/lib.rs"),
+        project
+            .join("crates")
+            .join("consumer")
+            .join("src")
+            .join("lib.rs"),
         "pub fn consumer_bridge() {}\n",
     )
     .unwrap();
     fs::write(
-        project.join("crates/consumer/tests/use_core.rs"),
+        project
+            .join("crates")
+            .join("consumer")
+            .join("tests")
+            .join("use_core.rs"),
         "#[test]\nfn consumer_check() {}\n",
     )
     .unwrap();
@@ -6609,7 +6665,7 @@ async fn test_str_replace_resolved_path_for_relative_path_in_root() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/main.rs"), "fn hello() {}\n").unwrap();
+    fs::write(project.join("src").join("main.rs"), "fn hello() {}\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -6641,7 +6697,7 @@ async fn test_str_replace_absolute_path_outside_root_honored_verbatim() {
     let project_dir = TempDir::new().unwrap();
     let project = project_dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/main.rs"), "fn hello() {}\n").unwrap();
+    fs::write(project.join("src").join("main.rs"), "fn hello() {}\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -6682,7 +6738,7 @@ async fn test_str_replace_absolute_path_outside_root_honored_verbatim() {
     assert_eq!(content, "done: fixed the bug\n");
 
     // The indexed project itself must be untouched.
-    let project_content = fs::read_to_string(project.join("src/main.rs")).unwrap();
+    let project_content = fs::read_to_string(project.join("src").join("main.rs")).unwrap();
     assert_eq!(project_content, "fn hello() {}\n");
 }
 
@@ -6692,7 +6748,7 @@ async fn test_str_replace_project_root_override_writes_to_worktree_not_primary_c
     let primary_root = primary.path();
     fs::create_dir_all(primary_root.join("src")).unwrap();
     fs::write(
-        primary_root.join("src/main.rs"),
+        primary_root.join("src").join("main.rs"),
         "fn hello() { \"primary\" }\n",
     )
     .unwrap();
@@ -6706,7 +6762,7 @@ async fn test_str_replace_project_root_override_writes_to_worktree_not_primary_c
     let worktree_root = worktree.path();
     fs::create_dir_all(worktree_root.join("src")).unwrap();
     fs::write(
-        worktree_root.join("src/main.rs"),
+        worktree_root.join("src").join("main.rs"),
         "fn hello() { \"worktree\" }\n",
     )
     .unwrap();
@@ -6734,12 +6790,12 @@ async fn test_str_replace_project_root_override_writes_to_worktree_not_primary_c
     assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
     // The worktree copy was edited...
-    let worktree_content = fs::read_to_string(worktree_root.join("src/main.rs")).unwrap();
+    let worktree_content = fs::read_to_string(worktree_root.join("src").join("main.rs")).unwrap();
     assert_eq!(worktree_content, "fn hello() { \"worktree-updated\" }\n");
 
     // ...and — this is the regression the bug report describes — the
     // primary checkout's identically-named relative file must be untouched.
-    let primary_content = fs::read_to_string(primary_root.join("src/main.rs")).unwrap();
+    let primary_content = fs::read_to_string(primary_root.join("src").join("main.rs")).unwrap();
     assert_eq!(primary_content, "fn hello() { \"primary\" }\n");
 }
 
@@ -6748,7 +6804,7 @@ async fn test_insert_at_absolute_path_outside_root_honored_verbatim() {
     let project_dir = TempDir::new().unwrap();
     let project = project_dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/main.rs"), "fn hello() {}\n").unwrap();
+    fs::write(project.join("src").join("main.rs"), "fn hello() {}\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -6790,7 +6846,7 @@ async fn test_replace_symbol_project_root_override_writes_to_worktree_not_primar
     let primary_root = primary.path();
     fs::create_dir_all(primary_root.join("src")).unwrap();
     let original_source = "pub fn greet_widget_example() -> String {\n    \"hi\".to_string()\n}\n";
-    fs::write(primary_root.join("src/lib.rs"), original_source).unwrap();
+    fs::write(primary_root.join("src").join("lib.rs"), original_source).unwrap();
 
     let cg = TokenSave::init(primary_root).await.unwrap();
     cg.index_all().await.unwrap();
@@ -6801,7 +6857,7 @@ async fn test_replace_symbol_project_root_override_writes_to_worktree_not_primar
     let worktree = TempDir::new().unwrap();
     let worktree_root = worktree.path();
     fs::create_dir_all(worktree_root.join("src")).unwrap();
-    fs::write(worktree_root.join("src/lib.rs"), original_source).unwrap();
+    fs::write(worktree_root.join("src").join("lib.rs"), original_source).unwrap();
 
     let new_source =
         "pub fn greet_widget_example() -> String {\n    \"hi from worktree\".to_string()\n}";
@@ -6826,11 +6882,11 @@ async fn test_replace_symbol_project_root_override_writes_to_worktree_not_primar
     assert_eq!(parsed["lines"], json!([1, 3]));
     assert!(parsed["digest"].as_str().unwrap().len() == 64);
 
-    let worktree_content = fs::read_to_string(worktree_root.join("src/lib.rs")).unwrap();
+    let worktree_content = fs::read_to_string(worktree_root.join("src").join("lib.rs")).unwrap();
     assert!(worktree_content.contains("hi from worktree"));
 
     // The primary checkout's copy of the same relative file must be untouched.
-    let primary_content = fs::read_to_string(primary_root.join("src/lib.rs")).unwrap();
+    let primary_content = fs::read_to_string(primary_root.join("src").join("lib.rs")).unwrap();
     assert_eq!(primary_content, original_source);
 }
 
@@ -6861,7 +6917,7 @@ fn init_git_with_commits(project: &std::path::Path) {
     run_git(project, &["config", "commit.gpgsign", "false"]);
     run_git(project, &["add", "."]);
     run_git(project, &["commit", "-m", "initial"]);
-    fs::write(project.join("src/extra.rs"), "pub fn extra() {}\n").unwrap();
+    fs::write(project.join("src").join("extra.rs"), "pub fn extra() {}\n").unwrap();
     run_git(project, &["add", "."]);
     run_git(project, &["commit", "-m", "second"]);
 }
@@ -6957,18 +7013,30 @@ async fn setup_documented_project() -> (TempDir, TokenSave) {
     fs::create_dir_all(project.join("src")).unwrap();
     fs::create_dir_all(project.join("tokensave-docs")).unwrap();
 
-    fs::write(project.join("src/big_class.rs"), "pub fn parse_it() {}\n").unwrap();
     fs::write(
-        project.join("src/big_class.readme.md"),
+        project.join("src").join("big_class.rs"),
+        "pub fn parse_it() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src").join("big_class.readme.md"),
         "# Big Class\n\nOrchestrates parsing; read this before the 3000-line body.\n",
     )
     .unwrap();
 
-    fs::write(project.join("src/search_es8.rs"), "pub fn query_es8() {}\n").unwrap();
-    fs::write(project.join("src/feed_es8.rs"), "pub fn feed_es8() {}\n").unwrap();
-    fs::write(project.join("src/plain.rs"), "pub fn plain() {}\n").unwrap();
     fs::write(
-        project.join("tokensave-docs/es8.md"),
+        project.join("src").join("search_es8.rs"),
+        "pub fn query_es8() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src").join("feed_es8.rs"),
+        "pub fn feed_es8() {}\n",
+    )
+    .unwrap();
+    fs::write(project.join("src").join("plain.rs"), "pub fn plain() {}\n").unwrap();
+    fs::write(
+        project.join("tokensave-docs").join("es8.md"),
         "---\napplies_to:\n  - \"**/*_es8.rs\"\n---\n\n# ES8 driver\n\nUse the raw driver, not the standard syntax.\n",
     )
     .unwrap();
@@ -7188,9 +7256,9 @@ async fn doc_staleness_flags_code_committed_after_the_doc() {
     git(&["config", "user.name", "t"]);
 
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/thing.rs"), "pub fn a() {}\n").unwrap();
+    fs::write(project.join("src").join("thing.rs"), "pub fn a() {}\n").unwrap();
     fs::write(
-        project.join("src/thing.readme.md"),
+        project.join("src").join("thing.readme.md"),
         "# Thing\n\nDescribes thing.\n",
     )
     .unwrap();
@@ -7199,7 +7267,7 @@ async fn doc_staleness_flags_code_committed_after_the_doc() {
 
     // Now change only the code, in a later commit.
     fs::write(
-        project.join("src/thing.rs"),
+        project.join("src").join("thing.rs"),
         "pub fn a() {}\npub fn b() {}\n",
     )
     .unwrap();

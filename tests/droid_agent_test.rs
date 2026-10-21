@@ -38,15 +38,15 @@ fn read_json(path: &Path) -> serde_json::Value {
 }
 
 fn mcp_path(home: &Path) -> PathBuf {
-    home.join(".factory/mcp.json")
+    home.join(".factory").join("mcp.json")
 }
 
 fn agents_md_path(home: &Path) -> PathBuf {
-    home.join(".factory/AGENTS.md")
+    home.join(".factory").join("AGENTS.md")
 }
 
 fn settings_path(home: &Path) -> PathBuf {
-    home.join(".factory/settings.json")
+    home.join(".factory").join("settings.json")
 }
 
 // ===========================================================================
@@ -182,7 +182,7 @@ fn test_local_install_targets_project() {
     DroidIntegration.install(&ctx).unwrap();
 
     assert!(
-        project.join(".factory/mcp.json").exists(),
+        project.join(".factory").join("mcp.json").exists(),
         "--local should write <project>/.factory/mcp.json"
     );
     assert!(
@@ -736,7 +736,7 @@ fn test_local_install_writes_project_settings() {
     DroidIntegration.install(&ctx).unwrap();
 
     assert!(
-        project.join(".factory/settings.json").exists(),
+        project.join(".factory").join("settings.json").exists(),
         "--local should write <project>/.factory/settings.json"
     );
     assert!(

@@ -25,13 +25,13 @@ async fn indexed(dir: &std::path::Path) -> TokenSave {
             "pub fn caller_{i}() -> u32 {{ crate::helpers::target_{i}() + crate::helpers::shared() }}\n"
         ));
     }
-    std::fs::write(dir.join("src/lib.rs"), lib).expect("lib.rs");
+    std::fs::write(dir.join("src").join("lib.rs"), lib).expect("lib.rs");
 
     let mut helpers = String::from("pub fn shared() -> u32 { 1 }\n");
     for i in 0..40 {
         helpers.push_str(&format!("pub fn target_{i}() -> u32 {{ {i} }}\n"));
     }
-    std::fs::write(dir.join("src/helpers.rs"), helpers).expect("helpers.rs");
+    std::fs::write(dir.join("src").join("helpers.rs"), helpers).expect("helpers.rs");
 
     let cg = TokenSave::init(dir).await.expect("init");
     cg.index_all().await.expect("index");

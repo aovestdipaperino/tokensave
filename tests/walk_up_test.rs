@@ -11,12 +11,12 @@ use tokensave::tokensave::TokenSave;
 async fn setup_nested_project() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
-    fs::create_dir_all(root.join("src/mcp")).unwrap();
-    fs::create_dir_all(root.join("src/db")).unwrap();
+    fs::create_dir_all(root.join("src").join("mcp")).unwrap();
+    fs::create_dir_all(root.join("src").join("db")).unwrap();
     fs::create_dir_all(root.join("tests")).unwrap();
 
     fs::write(
-        root.join("src/mcp/server.rs"),
+        root.join("src").join("mcp").join("server.rs"),
         r#"
 pub fn serve() -> String {
     "running".to_string()
@@ -26,7 +26,7 @@ pub fn serve() -> String {
     .unwrap();
 
     fs::write(
-        root.join("src/db/queries.rs"),
+        root.join("src").join("db").join("queries.rs"),
         r#"
 pub fn query_all() -> Vec<String> {
     vec!["result".to_string()]
@@ -36,7 +36,7 @@ pub fn query_all() -> Vec<String> {
     .unwrap();
 
     fs::write(
-        root.join("src/main.rs"),
+        root.join("src").join("main.rs"),
         r#"
 mod mcp;
 mod db;
@@ -50,7 +50,7 @@ fn main() {
     .unwrap();
 
     fs::write(
-        root.join("tests/test_server.rs"),
+        root.join("tests").join("test_server.rs"),
         r#"
 #[test]
 fn test_serve() {
@@ -76,8 +76,8 @@ async fn test_discover_project_root_from_subdir() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
     fs::create_dir_all(root.join(".tokensave")).unwrap();
-    fs::write(root.join(".tokensave/tokensave.db"), b"fake").unwrap();
-    let subdir = root.join("src/mcp/tools");
+    fs::write(root.join(".tokensave").join("tokensave.db"), b"fake").unwrap();
+    let subdir = root.join("src").join("mcp").join("tools");
     fs::create_dir_all(&subdir).unwrap();
 
     let found = tokensave::config::discover_project_root(&subdir);

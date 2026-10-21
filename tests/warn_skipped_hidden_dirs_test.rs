@@ -126,7 +126,7 @@ fn missing_on_disk_tracked_file_is_not_counted() {
     // Sparse checkouts and staged deletions keep index entries for files the
     // walker never would have seen; they must not trigger the warning.
     let dir = setup_repo();
-    std::fs::remove_file(dir.path().join(".github/scripts/deploy.py")).unwrap();
+    std::fs::remove_file(dir.path().join(".github").join("scripts").join("deploy.py")).unwrap();
     let config = TokenSaveConfig::default();
     assert!(
         detect_skipped_hidden_dirs(dir.path(), &config, None, EXTS).is_none(),

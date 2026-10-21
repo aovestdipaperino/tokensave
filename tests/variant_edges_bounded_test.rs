@@ -28,7 +28,7 @@ async fn indexed(dir: &Path) -> TokenSave {
 
     // The real thing: one name, two cfg-gated definitions, called from a third.
     std::fs::write(
-        dir.join("src/platform.rs"),
+        dir.join("src").join("platform.rs"),
         r#"
 #[cfg(unix)]
 pub fn symlink_dir(a: &str) -> bool { a.is_empty() }
@@ -43,7 +43,7 @@ pub fn caller() -> bool { symlink_dir("x") }
 
     // The trap: same short name, no cfg gate. Fusing these would be wrong.
     std::fs::write(
-        dir.join("src/plain.rs"),
+        dir.join("src").join("plain.rs"),
         r#"
 pub struct A;
 pub struct B;
@@ -58,12 +58,12 @@ pub fn use_them() -> u8 { A::from(1) + B::from(2) }
     // preference to break the tie on — without that the call binds to neither
     // and there is nothing to propagate.
     std::fs::write(
-        dir.join("gopkg/impl_linux.go"),
+        dir.join("gopkg").join("impl_linux.go"),
         "package gopkg\n\nfunc platformName() string { return \"linux\" }\n\nfunc Describe() string { return platformName() }\n",
     )
     .expect("go linux");
     std::fs::write(
-        dir.join("gopkg/impl_darwin.go"),
+        dir.join("gopkg").join("impl_darwin.go"),
         "package gopkg\n\nfunc platformName() string { return \"darwin\" }\n",
     )
     .expect("go darwin");
@@ -252,7 +252,7 @@ async fn a_project_with_no_variants_produces_no_groups() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(dir.path().join("src")).expect("src");
     std::fs::write(
-        dir.path().join("src/lib.rs"),
+        dir.path().join("src").join("lib.rs"),
         "pub fn a() -> u8 { 1 }\npub fn b() -> u8 { a() }\n",
     )
     .expect("lib.rs");

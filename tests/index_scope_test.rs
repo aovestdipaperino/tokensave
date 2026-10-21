@@ -32,7 +32,10 @@ fn tmp() -> tempfile::TempDir {
 }
 
 fn paths(dir: &tempfile::TempDir) -> (PathBuf, PathBuf) {
-    (dir.path().join("home"), dir.path().join("home/code/proj"))
+    (
+        dir.path().join("home"),
+        dir.path().join("home").join("code").join("proj"),
+    )
 }
 
 #[test]

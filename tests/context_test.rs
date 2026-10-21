@@ -10,7 +10,7 @@ async fn test_reranking_demotes_fixture_nodes() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
 
@@ -169,10 +169,14 @@ async fn test_build_context_with_db() {
 
     // Create a source file
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn process_data() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("lib.rs"),
+        "pub fn process_data() {}\n",
+    )
+    .unwrap();
 
     // Init DB and insert a node
-    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
     let node = Node {
@@ -228,12 +232,12 @@ async fn test_get_code_reads_source_file() {
 
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "fn main() {\n    println!(\"hello\");\n}\n",
     )
     .unwrap();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
 
@@ -285,7 +289,7 @@ async fn test_get_code_returns_none_for_missing_file() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
 
@@ -334,7 +338,7 @@ async fn test_find_relevant_context() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
     let node = Node {
@@ -386,7 +390,7 @@ async fn test_exclude_node_ids_deduplication() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
 
@@ -456,7 +460,7 @@ async fn test_exact_name_match_wins_max_merge() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
 
@@ -578,7 +582,7 @@ async fn test_query_ignore_filters_context_entry_points() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
 
@@ -666,12 +670,12 @@ async fn test_merge_adjacent_code_blocks() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         "fn alpha() {}\n\nfn beta() {}\n\nfn gamma() {}\n",
     )
     .unwrap();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
 
@@ -781,7 +785,7 @@ async fn test_entry_points_capped_to_search_limit() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
 
@@ -862,11 +866,15 @@ async fn exact_qualified_expression_seeds_every_enclosing_symbol() {
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    fs::create_dir_all(project.join("crates/sonium-bem/src")).unwrap();
-    fs::create_dir_all(project.join("crates/sonium-qa/tests")).unwrap();
-    fs::create_dir_all(project.join("crates/unrelated/src")).unwrap();
+    fs::create_dir_all(project.join("crates").join("sonium-bem").join("src")).unwrap();
+    fs::create_dir_all(project.join("crates").join("sonium-qa").join("tests")).unwrap();
+    fs::create_dir_all(project.join("crates").join("unrelated").join("src")).unwrap();
     fs::write(
-        project.join("crates/sonium-bem/src/linear.rs"),
+        project
+            .join("crates")
+            .join("sonium-bem")
+            .join("src")
+            .join("linear.rs"),
         r#"
 pub enum BasisOrder { Linear, Quadratic }
 
@@ -889,7 +897,11 @@ pub fn validate_backend(order: BasisOrder) {
     )
     .unwrap();
     fs::write(
-        project.join("crates/sonium-qa/tests/linear_regression.rs"),
+        project
+            .join("crates")
+            .join("sonium-qa")
+            .join("tests")
+            .join("linear_regression.rs"),
         r#"
 pub fn physical_pressure() {
     let order = BasisOrder::Linear;
@@ -905,7 +917,11 @@ fn linear_regression() {
     )
     .unwrap();
     fs::write(
-        project.join("crates/unrelated/src/ignored.rs"),
+        project
+            .join("crates")
+            .join("unrelated")
+            .join("src")
+            .join("ignored.rs"),
         "pub fn excluded_path() { let _ = BasisOrder::Linear; }\n",
     )
     .unwrap();
@@ -965,7 +981,7 @@ async fn conceptual_context_discovers_executable_body_owner() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/solver.rs"),
+        project.join("src").join("solver.rs"),
         r#"
 pub fn run_policy(frequencies: &[f64]) {
     let mut preconditioner_cache = None;
@@ -1024,7 +1040,7 @@ async fn conceptual_context_associates_local_control_flow_with_owner() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/runner.rs"),
+        project.join("src").join("runner.rs"),
         r#"
 pub fn execute(frequencies: &[f64]) {
     let mut cached_precond = None;
@@ -1076,7 +1092,7 @@ async fn requested_type_expands_to_its_behavioral_api() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/source.rs"),
+        project.join("src").join("source.rs"),
         r#"
 pub struct Source {
     gain: f64,
@@ -1132,7 +1148,7 @@ async fn executable_body_index_is_replaced_by_incremental_sync() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
-    let source_path = project.join("src/policy.rs");
+    let source_path = project.join("src").join("policy.rs");
     fs::write(
         &source_path,
         "pub fn policy() { let cached_precond = true; let must_rebuild = cached_precond; }\n",
@@ -1227,7 +1243,7 @@ async fn test_context_surfaces_asset_generator_over_generic_ui_decoys() {
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
 

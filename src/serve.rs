@@ -78,7 +78,7 @@ pub async fn load_registered_projects() -> Vec<RegisteredProject> {
 /// Probes one registered path: `None` once its index is gone from disk.
 fn probe_registered_project(path: String) -> Option<RegisteredProject> {
     let path = std::path::PathBuf::from(path);
-    if !path.join(".tokensave/tokensave.db").exists() {
+    if !path.join(".tokensave").join("tokensave.db").exists() {
         return None;
     }
     let canonical = path.canonicalize().ok();
@@ -548,7 +548,7 @@ mod tests {
     /// A project directory with an index file, as `probe` sees one.
     fn indexed(dir: &std::path::Path) -> String {
         std::fs::create_dir_all(dir.join(".tokensave")).unwrap();
-        std::fs::write(dir.join(".tokensave/tokensave.db"), b"").unwrap();
+        std::fs::write(dir.join(".tokensave").join("tokensave.db"), b"").unwrap();
         dir.to_string_lossy().into_owned()
     }
 
@@ -580,7 +580,7 @@ mod tests {
     fn selection_falls_back_to_the_shallowest_project_under_cwd() {
         let tmp = tempfile::TempDir::new().unwrap();
         let near = tmp.path().join("near");
-        let far = tmp.path().join("a/b/far");
+        let far = tmp.path().join("a").join("b").join("far");
         let registered = prep(vec![indexed(&far), indexed(&near)]);
         let cwd = tmp.path().canonicalize().unwrap();
         assert_eq!(

@@ -74,7 +74,7 @@ impl AgentIntegration for GeminiIntegration {
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
-        Some(home.join(".gemini/settings.json"))
+        Some(home.join(".gemini").join("settings.json"))
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {

@@ -27,17 +27,17 @@ async fn fixture() -> (TempDir, TokenSave) {
     fs::create_dir_all(project.join("features")).unwrap();
 
     fs::write(
-        project.join("src/login.rs"),
+        project.join("src").join("login.rs"),
         "pub fn submit_credentials() -> bool { true }\n",
     )
     .unwrap();
     fs::write(
-        project.join("features/login.feature"),
+        project.join("features").join("login.feature"),
         "Feature: Login\n  Scenario: Valid credentials\n    Given the login form is open\n",
     )
     .unwrap();
     fs::write(
-        project.join("features/checkout.feature"),
+        project.join("features").join("checkout.feature"),
         "Feature: Checkout\n",
     )
     .unwrap();
@@ -175,7 +175,7 @@ async fn sync_adds_a_new_artifact() {
     // A spec added after the initial index must appear without a full reindex.
     let (dir, cg) = fixture().await;
     fs::write(
-        dir.path().join("features/signup.feature"),
+        dir.path().join("features").join("signup.feature"),
         "Feature: Signup\n",
     )
     .unwrap();
@@ -194,7 +194,7 @@ async fn sync_removes_a_deleted_artifact() {
     // Removal runs off the same DB-vs-disk comparison as source, so this pins
     // that artifacts were not accidentally exempted from it.
     let (dir, cg) = fixture().await;
-    fs::remove_file(dir.path().join("features/checkout.feature")).unwrap();
+    fs::remove_file(dir.path().join("features").join("checkout.feature")).unwrap();
 
     cg.sync().await.unwrap();
 
@@ -220,7 +220,7 @@ async fn an_edited_artifact_gets_a_new_hash() {
         .content_hash;
 
     fs::write(
-        dir.path().join("features/login.feature"),
+        dir.path().join("features").join("login.feature"),
         "Feature: Login\n  Scenario: Invalid credentials\n",
     )
     .unwrap();
@@ -246,7 +246,7 @@ async fn an_extension_owned_by_an_extractor_stays_source() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn f() {}\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();

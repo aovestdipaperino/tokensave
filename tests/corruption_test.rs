@@ -485,7 +485,7 @@ async fn open_finalizes_interrupted_bulk_load() {
     let project = dir.path();
     std::fs::create_dir_all(project.join("src")).unwrap();
     std::fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         "fn caller() { callee(); }\nfn callee() {}\n",
     )
     .unwrap();

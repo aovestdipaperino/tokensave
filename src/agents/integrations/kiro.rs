@@ -54,19 +54,19 @@ fn kiro_base(ctx: &InstallContext) -> PathBuf {
 }
 
 fn mcp_config_path_in(base: &Path) -> PathBuf {
-    base.join("settings/mcp.json")
+    base.join("settings").join("mcp.json")
 }
 
 fn cli_config_path_in(base: &Path) -> PathBuf {
-    base.join("settings/cli.json")
+    base.join("settings").join("cli.json")
 }
 
 fn managed_agent_path_in(base: &Path) -> PathBuf {
-    base.join("agents/tokensave.json")
+    base.join("agents").join("tokensave.json")
 }
 
 fn steering_path_in(base: &Path) -> PathBuf {
-    base.join("steering/tokensave.md")
+    base.join("steering").join("tokensave.md")
 }
 
 fn mcp_config_path(home: &Path) -> PathBuf {
@@ -86,7 +86,7 @@ fn steering_path(home: &Path) -> PathBuf {
 }
 
 fn workspace_mcp_config_path(project_path: &Path) -> PathBuf {
-    project_path.join(".kiro/settings/mcp.json")
+    project_path.join(".kiro").join("settings").join("mcp.json")
 }
 
 impl AgentIntegration for KiroIntegration {

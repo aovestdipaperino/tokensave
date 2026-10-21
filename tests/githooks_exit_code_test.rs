@@ -28,7 +28,8 @@ fn a_local_install_that_cannot_write_exits_non_zero() {
         .success());
     // The hooks *directory* is fine; the hook file itself cannot be written,
     // which is the case the old code printed and then swallowed.
-    fs::create_dir_all(repo.path().join(".git/hooks/post-commit")).expect("occupy hook path");
+    fs::create_dir_all(repo.path().join(".git").join("hooks").join("post-commit"))
+        .expect("occupy hook path");
 
     let output = Command::new(env!("CARGO_BIN_EXE_tokensave"))
         .args(["githooks", "on", "--local"])
@@ -53,7 +54,7 @@ fn a_local_install_that_cannot_write_exits_non_zero() {
 fn a_global_install_that_cannot_write_exits_non_zero() {
     let home = tempfile::tempdir().expect("temp home");
     let cwd = tempfile::tempdir().expect("temp cwd");
-    occupy(&home.path().join(".config/git/hooks"));
+    occupy(&home.path().join(".config").join("git").join("hooks"));
 
     let output = Command::new(env!("CARGO_BIN_EXE_tokensave"))
         .args(["githooks", "on"])

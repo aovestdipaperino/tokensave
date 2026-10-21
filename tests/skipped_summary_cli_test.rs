@@ -116,7 +116,7 @@ fn detailed_modes_do_not_duplicate_the_compact_summary() {
 fn nothing_is_reported_when_every_file_is_supported() {
     let dir = TempDir::new().unwrap();
     std::fs::create_dir(dir.path().join("src")).unwrap();
-    std::fs::write(dir.path().join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+    std::fs::write(dir.path().join("src").join("lib.rs"), "pub fn hello() {}\n").unwrap();
 
     let output = format!(
         "{}{}",
@@ -139,7 +139,7 @@ fn init_without_tty_still_excludes_tokensave_from_git() {
     let repo = dir.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
     std::fs::create_dir(repo.join("src")).unwrap();
-    std::fs::write(repo.join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+    std::fs::write(repo.join("src").join("lib.rs"), "pub fn hello() {}\n").unwrap();
 
     let init = std::process::Command::new("git")
         .arg("-C")
@@ -158,7 +158,7 @@ fn init_without_tty_still_excludes_tokensave_from_git() {
         "non-interactive init must report the local exclusion: {output}"
     );
 
-    let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+    let exclude = std::fs::read_to_string(repo.join(".git").join("info").join("exclude")).unwrap();
     assert!(
         exclude.lines().any(|l| l.trim() == ".tokensave/"),
         "non-interactive init must write .tokensave/ to .git/info/exclude, got: {exclude}"

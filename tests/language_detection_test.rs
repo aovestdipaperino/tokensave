@@ -230,7 +230,7 @@ async fn opt_in_preserves_known_extension_manifest_and_selection_policies() {
     .unwrap();
     fs::write(dir.path().join("override.custom"), PY).unwrap();
     fs::write(
-        dir.path().join(".tokensave/project.json"),
+        dir.path().join(".tokensave").join("project.json"),
         r#"{"version":1,"entries":[{"path":"override.custom","language":"Rust"}]}"#,
     )
     .unwrap();
@@ -489,7 +489,7 @@ async fn detection_preserves_registered_formats_and_artifact_override_equivalenc
         fs::write(dir.path().join(path), source).unwrap();
     }
     fs::write(
-        dir.path().join(".tokensave/project.json"),
+        dir.path().join(".tokensave").join("project.json"),
         r#"{"entries":[{"path":"override.custom","language":"python"}]}"#,
     )
     .unwrap();

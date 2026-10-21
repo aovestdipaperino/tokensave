@@ -27,12 +27,12 @@ async fn indexed_project() -> (tempfile::TempDir, TokenSave) {
     std::fs::create_dir_all(root.join("src")).unwrap();
 
     std::fs::write(
-        root.join("src/lib.rs"),
+        root.join("src").join("lib.rs"),
         "pub mod shapes;\npub mod render;\npub use shapes::Circle;\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("src/shapes.rs"),
+        root.join("src").join("shapes.rs"),
         r#"
 pub trait Shape {
     fn area(&self) -> f64;
@@ -54,7 +54,7 @@ pub const LOOKUP: [(&str, f64); 3] = [("unit", 1.0), ("double", 2.0), ("triple",
     )
     .unwrap();
     std::fs::write(
-        root.join("src/render.rs"),
+        root.join("src").join("render.rs"),
         r#"
 use crate::shapes::{Circle, Shape};
 

@@ -33,10 +33,14 @@ fn test_ignore_crate_nested_gitignore_direct() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    fs::create_dir_all(project.join("src/vendor")).unwrap();
-    fs::write(project.join("src/lib.rs"), "kept").unwrap();
-    fs::write(project.join("src/vendor/gen.rs"), "generated").unwrap();
-    fs::write(project.join("src/vendor/.gitignore"), "*\n").unwrap();
+    fs::create_dir_all(project.join("src").join("vendor")).unwrap();
+    fs::write(project.join("src").join("lib.rs"), "kept").unwrap();
+    fs::write(
+        project.join("src").join("vendor").join("gen.rs"),
+        "generated",
+    )
+    .unwrap();
+    fs::write(project.join("src").join("vendor").join(".gitignore"), "*\n").unwrap();
 
     let files: Vec<String> = ignore::WalkBuilder::new(project)
         .hidden(true)
@@ -74,7 +78,7 @@ async fn test_full_pipeline() {
     // Create a small Rust project
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         r#"
 use crate::utils::helper;
 
@@ -89,7 +93,7 @@ fn main() {
     .unwrap();
 
     fs::write(
-        project.join("src/utils.rs"),
+        project.join("src").join("utils.rs"),
         r#"
 /// Returns a greeting string.
 pub fn helper() -> String {
@@ -135,7 +139,7 @@ async fn test_full_index_records_build_version() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         "pub fn helper() -> i32 { 42 }\n",
     )
     .unwrap();
@@ -157,7 +161,7 @@ async fn test_incremental_sync() {
     let project = dir.path();
 
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn original() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn original() {}\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -168,7 +172,7 @@ async fn test_incremental_sync() {
 
     // Modify file
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         "pub fn modified() {}\npub fn added() {}\n",
     )
     .unwrap();
@@ -253,7 +257,7 @@ async fn test_context_building() {
 
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 /// Processes incoming data.
 pub fn process_data(input: &str) -> String {
@@ -284,7 +288,7 @@ async fn test_struct_and_impl_extraction() {
 
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub struct Point {
     pub x: f64,
@@ -328,8 +332,12 @@ async fn test_file_removal_sync() {
     let project = dir.path();
 
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn keep() {}\n").unwrap();
-    fs::write(project.join("src/remove_me.rs"), "pub fn gone() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn keep() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("remove_me.rs"),
+        "pub fn gone() {}\n",
+    )
+    .unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -342,7 +350,7 @@ async fn test_file_removal_sync() {
     );
 
     // Remove file
-    fs::remove_file(project.join("src/remove_me.rs")).unwrap();
+    fs::remove_file(project.join("src").join("remove_me.rs")).unwrap();
 
     // Sync
     let sync_result = cg.sync().await.unwrap();
@@ -360,7 +368,7 @@ async fn test_index_all_is_idempotent() {
 
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         "pub fn alpha() {}\npub fn beta() {}\n",
     )
     .unwrap();
@@ -389,7 +397,7 @@ async fn test_sync_no_changes() {
     let project = dir.path();
 
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn stable() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn stable() {}\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -408,7 +416,7 @@ async fn test_search_by_docstring() {
 
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 /// Calculates the fibonacci sequence.
 pub fn fibonacci(n: u64) -> u64 {
@@ -436,7 +444,7 @@ async fn test_multiple_files_cross_reference() {
 
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub mod models;
 pub mod services;
@@ -445,7 +453,7 @@ pub mod services;
     .unwrap();
 
     fs::write(
-        project.join("src/models.rs"),
+        project.join("src").join("models.rs"),
         r#"
 pub struct User {
     pub name: String,
@@ -456,7 +464,7 @@ pub struct User {
     .unwrap();
 
     fs::write(
-        project.join("src/services.rs"),
+        project.join("src").join("services.rs"),
         r#"
 use crate::models::User;
 
@@ -534,13 +542,17 @@ async fn test_nested_gitignore_excludes_files_in_subdir() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    fs::create_dir_all(project.join("src/vendor")).unwrap();
+    fs::create_dir_all(project.join("src").join("vendor")).unwrap();
     // This file should be indexed.
-    fs::write(project.join("src/lib.rs"), "pub fn kept() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn kept() {}\n").unwrap();
     // This file is excluded by the nested .gitignore only.
-    fs::write(project.join("src/vendor/gen.rs"), "pub fn generated() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("vendor").join("gen.rs"),
+        "pub fn generated() {}\n",
+    )
+    .unwrap();
     // Nested .gitignore ignores everything in vendor/.
-    fs::write(project.join("src/vendor/.gitignore"), "*\n").unwrap();
+    fs::write(project.join("src").join("vendor").join(".gitignore"), "*\n").unwrap();
 
     let cg = setup_gitignore_project(project).await;
     let result = cg.index_all().await.unwrap();
@@ -566,15 +578,23 @@ async fn test_nested_gitignore_scope_is_limited_to_its_directory() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    fs::create_dir_all(project.join("src/internal")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn public_api() {}\n").unwrap();
+    fs::create_dir_all(project.join("src").join("internal")).unwrap();
     fs::write(
-        project.join("src/internal/secret.rs"),
+        project.join("src").join("lib.rs"),
+        "pub fn public_api() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src").join("internal").join("secret.rs"),
         "pub fn secret() {}\n",
     )
     .unwrap();
     // The nested .gitignore only covers files within src/internal/.
-    fs::write(project.join("src/internal/.gitignore"), "*.rs\n").unwrap();
+    fs::write(
+        project.join("src").join("internal").join(".gitignore"),
+        "*.rs\n",
+    )
+    .unwrap();
 
     let cg = setup_gitignore_project(project).await;
     cg.index_all().await.unwrap();
@@ -599,19 +619,23 @@ async fn test_nested_gitignore_negation_overrides_parent_rule() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    fs::create_dir_all(project.join("src/exceptions")).unwrap();
+    fs::create_dir_all(project.join("src").join("exceptions")).unwrap();
     // Root .gitignore ignores all .rs files.
     fs::write(project.join(".gitignore"), "*.rs\n").unwrap();
     // The nested .gitignore un-ignores the one file we actually want indexed.
-    fs::write(project.join("src/exceptions/.gitignore"), "!important.rs\n").unwrap();
     fs::write(
-        project.join("src/exceptions/important.rs"),
+        project.join("src").join("exceptions").join(".gitignore"),
+        "!important.rs\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src").join("exceptions").join("important.rs"),
         "pub fn must_be_indexed() {}\n",
     )
     .unwrap();
     // This sibling file stays excluded by the root rule.
     fs::write(
-        project.join("src/exceptions/ignored.rs"),
+        project.join("src").join("exceptions").join("ignored.rs"),
         "pub fn ignored() {}\n",
     )
     .unwrap();
@@ -640,12 +664,24 @@ async fn test_nested_gitignore_applies_to_deeper_descendants() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    fs::create_dir_all(project.join("src/mid/deep")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn top() {}\n").unwrap();
+    fs::create_dir_all(project.join("src").join("mid").join("deep")).unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn top() {}\n").unwrap();
     // The mid-level .gitignore excludes the deep/ subtree.
-    fs::write(project.join("src/mid/.gitignore"), "deep/\n").unwrap();
-    fs::write(project.join("src/mid/mid.rs"), "pub fn mid() {}\n").unwrap();
-    fs::write(project.join("src/mid/deep/leaf.rs"), "pub fn leaf() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("mid").join(".gitignore"),
+        "deep/\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src").join("mid").join("mid.rs"),
+        "pub fn mid() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src").join("mid").join("deep").join("leaf.rs"),
+        "pub fn leaf() {}\n",
+    )
+    .unwrap();
 
     let cg = setup_gitignore_project(project).await;
     cg.index_all().await.unwrap();
@@ -712,7 +748,11 @@ async fn test_gitignore_scan_prunes_excluded_dir_with_symlink() {
 
     // A real source file that should be indexed.
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/main.rs"), "pub fn real_symbol() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("main.rs"),
+        "pub fn real_symbol() {}\n",
+    )
+    .unwrap();
 
     // An external tree the excluded symlink points at — must never be reached.
     let external = TempDir::new().unwrap();
@@ -723,7 +763,7 @@ async fn test_gitignore_scan_prunes_excluded_dir_with_symlink() {
     .unwrap();
 
     // build-output/nested/link -> external, with build-output excluded.
-    let excluded = project.join("build-output/nested");
+    let excluded = project.join("build-output").join("nested");
     fs::create_dir_all(&excluded).unwrap();
     symlink(external.path(), excluded.join("link")).unwrap();
 
@@ -759,7 +799,7 @@ async fn setup_call_edge_project() -> (TempDir, TokenSave) {
     fs::create_dir_all(project.join("src")).unwrap();
 
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub mod caller_mod;
 pub mod callee_mod;
@@ -768,7 +808,7 @@ pub mod callee_mod;
     .unwrap();
 
     fs::write(
-        project.join("src/callee_mod.rs"),
+        project.join("src").join("callee_mod.rs"),
         r#"
 /// The target function that should be found via call edges.
 pub fn target_fn() -> u32 {
@@ -779,7 +819,7 @@ pub fn target_fn() -> u32 {
     .unwrap();
 
     fs::write(
-        project.join("src/caller_mod.rs"),
+        project.join("src").join("caller_mod.rs"),
         r#"
 use crate::callee_mod::target_fn;
 
@@ -995,7 +1035,7 @@ async fn test_sync_produces_call_edges_after_file_modification() {
     fs::create_dir_all(project.join("src")).unwrap();
 
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub fn base_fn() -> u32 { 1 }
 pub fn consumer() -> u32 { base_fn() }
@@ -1008,7 +1048,7 @@ pub fn consumer() -> u32 { base_fn() }
 
     // Modify the file to add a new call chain.
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub fn base_fn() -> u32 { 1 }
 pub fn middle_fn() -> u32 { base_fn() }
@@ -1058,7 +1098,7 @@ async fn test_sync_resolves_cross_file_call_edges_for_new_files() {
 
     // Start with a single file.
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub mod engine;
 pub fn entry_point() -> u32 { 0 }
@@ -1071,7 +1111,7 @@ pub fn entry_point() -> u32 { 0 }
 
     // Add a new file that calls the existing function.
     fs::write(
-        project.join("src/engine.rs"),
+        project.join("src").join("engine.rs"),
         r#"
 use crate::entry_point;
 
@@ -1103,19 +1143,19 @@ async fn test_sync_does_not_duplicate_edges() {
     // Three files: a callee, a caller that will be modified, and
     // an unchanged caller whose edges must not be duplicated.
     fs::write(
-        project.join("src/callee.rs"),
+        project.join("src").join("callee.rs"),
         "pub fn target_fn() -> u32 { 42 }\n",
     )
     .unwrap();
 
     fs::write(
-        project.join("src/caller_a.rs"),
+        project.join("src").join("caller_a.rs"),
         "pub fn caller_a() -> u32 { target_fn() }\n",
     )
     .unwrap();
 
     fs::write(
-        project.join("src/caller_b.rs"),
+        project.join("src").join("caller_b.rs"),
         "pub fn caller_b() -> u32 { target_fn() }\n",
     )
     .unwrap();
@@ -1128,7 +1168,7 @@ async fn test_sync_does_not_duplicate_edges() {
 
     // Modify caller_a only — caller_b is unchanged.
     fs::write(
-        project.join("src/caller_a.rs"),
+        project.join("src").join("caller_a.rs"),
         "pub fn caller_a() -> u32 { target_fn() + 1 }\n",
     )
     .unwrap();
@@ -1161,12 +1201,12 @@ async fn test_concurrent_sync_is_rejected() {
     let project = dir.path();
 
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn f() {}\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
 
     // Simulate an in-progress sync by placing a lockfile with our own PID.
-    let lock_path = project.join(".tokensave/sync.lock");
+    let lock_path = project.join(".tokensave").join("sync.lock");
     fs::write(&lock_path, format!("{}", std::process::id())).unwrap();
 
     let err = cg.sync().await.unwrap_err();
@@ -1202,17 +1242,17 @@ async fn test_sync_reresolves_inbound_edges_after_callee_change() {
     // A callee whose own file will change, plus two callers in different
     // files that are never touched again after the initial full index.
     fs::write(
-        project.join("src/callee.rs"),
+        project.join("src").join("callee.rs"),
         "pub fn target_fn() -> u32 { 42 }\n",
     )
     .unwrap();
     fs::write(
-        project.join("src/caller_a.rs"),
+        project.join("src").join("caller_a.rs"),
         "pub fn caller_a() -> u32 { target_fn() }\n",
     )
     .unwrap();
     fs::write(
-        project.join("src/caller_b.rs"),
+        project.join("src").join("caller_b.rs"),
         "pub fn caller_b() -> u32 { target_fn() }\n",
     )
     .unwrap();
@@ -1244,7 +1284,7 @@ async fn test_sync_reresolves_inbound_edges_after_callee_change() {
 
     // Change ONLY the callee — neither caller file is touched again.
     fs::write(
-        project.join("src/callee.rs"),
+        project.join("src").join("callee.rs"),
         "pub fn target_fn() -> u32 { 43 }\npub fn unrelated() -> u32 { 0 }\n",
     )
     .unwrap();
@@ -1284,10 +1324,10 @@ async fn test_incremental_sync_graph_matches_full_reindex() {
     let caller_b_v1 = "pub fn caller_b() -> u32 { target_fn() }\n";
     let caller_c_v1 = "pub fn caller_c() -> u32 { target_fn() }\n";
 
-    fs::write(synced_project.join("src/callee.rs"), callee_v1).unwrap();
-    fs::write(synced_project.join("src/caller_a.rs"), caller_a_v1).unwrap();
-    fs::write(synced_project.join("src/caller_b.rs"), caller_b_v1).unwrap();
-    fs::write(synced_project.join("src/caller_c.rs"), caller_c_v1).unwrap();
+    fs::write(synced_project.join("src").join("callee.rs"), callee_v1).unwrap();
+    fs::write(synced_project.join("src").join("caller_a.rs"), caller_a_v1).unwrap();
+    fs::write(synced_project.join("src").join("caller_b.rs"), caller_b_v1).unwrap();
+    fs::write(synced_project.join("src").join("caller_c.rs"), caller_c_v1).unwrap();
 
     let cg = TokenSave::init(synced_project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -1296,22 +1336,22 @@ async fn test_incremental_sync_graph_matches_full_reindex() {
     // each in its own separate sync. caller_c.rs is never touched again
     // after the initial full index.
     let callee_v2 = "pub fn target_fn() -> u32 { 43 }\npub fn extra_1() {}\n";
-    fs::write(synced_project.join("src/callee.rs"), callee_v2).unwrap();
+    fs::write(synced_project.join("src").join("callee.rs"), callee_v2).unwrap();
     cg.sync().await.unwrap();
 
     let caller_a_v2 = "pub fn caller_a() -> u32 { target_fn() + 1 }\n";
-    fs::write(synced_project.join("src/caller_a.rs"), caller_a_v2).unwrap();
+    fs::write(synced_project.join("src").join("caller_a.rs"), caller_a_v2).unwrap();
     cg.sync().await.unwrap();
 
     let caller_b_v2 = "pub fn caller_b() -> u32 { target_fn() + 2 }\n";
-    fs::write(synced_project.join("src/caller_b.rs"), caller_b_v2).unwrap();
+    fs::write(synced_project.join("src").join("caller_b.rs"), caller_b_v2).unwrap();
     cg.sync().await.unwrap();
 
     // Build the identical final state fresh and index it once.
-    fs::write(full_project.join("src/callee.rs"), callee_v2).unwrap();
-    fs::write(full_project.join("src/caller_a.rs"), caller_a_v2).unwrap();
-    fs::write(full_project.join("src/caller_b.rs"), caller_b_v2).unwrap();
-    fs::write(full_project.join("src/caller_c.rs"), caller_c_v1).unwrap();
+    fs::write(full_project.join("src").join("callee.rs"), callee_v2).unwrap();
+    fs::write(full_project.join("src").join("caller_a.rs"), caller_a_v2).unwrap();
+    fs::write(full_project.join("src").join("caller_b.rs"), caller_b_v2).unwrap();
+    fs::write(full_project.join("src").join("caller_c.rs"), caller_c_v1).unwrap();
 
     let cg_full = TokenSave::init(full_project).await.unwrap();
     cg_full.index_all().await.unwrap();
@@ -1349,8 +1389,8 @@ async fn test_ruby_incremental_sync_graph_matches_full_reindex() {
     let full_project = full_dir.path();
 
     for project in [synced_project, full_project] {
-        fs::create_dir_all(project.join("app/models/concerns")).unwrap();
-        fs::create_dir_all(project.join("app/services")).unwrap();
+        fs::create_dir_all(project.join("app").join("models").join("concerns")).unwrap();
+        fs::create_dir_all(project.join("app").join("services")).unwrap();
     }
 
     let application_record = r#"class ApplicationRecord
@@ -1412,18 +1452,32 @@ end
 "#;
 
     fs::write(
-        synced_project.join("app/models/application_record.rb"),
+        synced_project
+            .join("app")
+            .join("models")
+            .join("application_record.rb"),
         application_record,
     )
     .unwrap();
     fs::write(
-        synced_project.join("app/models/concerns/auditable.rb"),
+        synced_project
+            .join("app")
+            .join("models")
+            .join("concerns")
+            .join("auditable.rb"),
         auditable_v1,
     )
     .unwrap();
-    fs::write(synced_project.join("app/models/report.rb"), report_v1).unwrap();
     fs::write(
-        synced_project.join("app/services/report_publisher.rb"),
+        synced_project.join("app").join("models").join("report.rb"),
+        report_v1,
+    )
+    .unwrap();
+    fs::write(
+        synced_project
+            .join("app")
+            .join("services")
+            .join("report_publisher.rb"),
         publisher_v1,
     )
     .unwrap();
@@ -1432,35 +1486,60 @@ end
     cg.index_all().await.unwrap();
 
     fs::write(
-        synced_project.join("app/models/concerns/auditable.rb"),
+        synced_project
+            .join("app")
+            .join("models")
+            .join("concerns")
+            .join("auditable.rb"),
         auditable_v2,
     )
     .unwrap();
     assert_eq!(cg.sync().await.unwrap().files_modified, 1);
 
-    fs::write(synced_project.join("app/models/report.rb"), report_v2).unwrap();
+    fs::write(
+        synced_project.join("app").join("models").join("report.rb"),
+        report_v2,
+    )
+    .unwrap();
     assert_eq!(cg.sync().await.unwrap().files_modified, 1);
 
     fs::write(
-        synced_project.join("app/services/report_publisher.rb"),
+        synced_project
+            .join("app")
+            .join("services")
+            .join("report_publisher.rb"),
         publisher_v2,
     )
     .unwrap();
     assert_eq!(cg.sync().await.unwrap().files_modified, 1);
 
     fs::write(
-        full_project.join("app/models/application_record.rb"),
+        full_project
+            .join("app")
+            .join("models")
+            .join("application_record.rb"),
         application_record,
     )
     .unwrap();
     fs::write(
-        full_project.join("app/models/concerns/auditable.rb"),
+        full_project
+            .join("app")
+            .join("models")
+            .join("concerns")
+            .join("auditable.rb"),
         auditable_v2,
     )
     .unwrap();
-    fs::write(full_project.join("app/models/report.rb"), report_v2).unwrap();
     fs::write(
-        full_project.join("app/services/report_publisher.rb"),
+        full_project.join("app").join("models").join("report.rb"),
+        report_v2,
+    )
+    .unwrap();
+    fs::write(
+        full_project
+            .join("app")
+            .join("services")
+            .join("report_publisher.rb"),
         publisher_v2,
     )
     .unwrap();
@@ -1520,7 +1599,7 @@ async fn test_verbose_sync_reports_skipped_extensions() {
     let project = dir.path();
 
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn f() {}\n").unwrap();
     // Two files of an unsupported source-like language, plus binary noise.
     fs::write(project.join("a.coolscript"), "print 1\n").unwrap();
     fs::write(project.join("b.coolscript"), "print 2\n").unwrap();

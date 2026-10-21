@@ -29,7 +29,7 @@ async fn fixture() -> (TempDir, TokenSave) {
     fs::create_dir_all(project.join("rtl")).unwrap();
 
     fs::write(
-        project.join("rtl/my_pkg.vhd"),
+        project.join("rtl").join("my_pkg.vhd"),
         "library ieee;\n\
          use ieee.std_logic_1164.all;\n\
          \n\
@@ -56,7 +56,7 @@ async fn fixture() -> (TempDir, TokenSave) {
 
     // Mixed case on purpose: `Child` here, `child` at the instantiation.
     fs::write(
-        project.join("rtl/child.vhdl"),
+        project.join("rtl").join("child.vhdl"),
         "library ieee;\n\
          use ieee.std_logic_1164.all;\n\
          \n\
@@ -78,7 +78,7 @@ async fn fixture() -> (TempDir, TokenSave) {
 
     // A package reached through a user library rather than `work`.
     fs::write(
-        project.join("rtl/loot_pkg.vhd"),
+        project.join("rtl").join("loot_pkg.vhd"),
         "package loot_pkg is\n\
         \x20 constant K : integer := 1;\n\
          end package loot_pkg;\n",
@@ -88,7 +88,7 @@ async fn fixture() -> (TempDir, TokenSave) {
     // Component instantiation, direct entity instantiation, an unresolvable
     // vendor cell, and a labelled process.
     fs::write(
-        project.join("rtl/top.vhd"),
+        project.join("rtl").join("top.vhd"),
         "library ieee;\n\
          library loot;\n\
          use ieee.std_logic_1164.all;\n\

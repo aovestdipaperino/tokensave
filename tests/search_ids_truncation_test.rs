@@ -17,7 +17,7 @@ async fn project() -> (TempDir, TokenSave) {
     let root = tmp.path().to_path_buf();
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
-        root.join("src/lib.rs"),
+        root.join("src").join("lib.rs"),
         "pub fn refresh_one() {\n    call_refresh_async();\n}\n\n\
          pub fn refresh_two() {\n    call_refresh_async();\n    call_refresh_async();\n}\n\n\
          pub fn refresh_three() {\n    call_refresh_async();\n    call_refresh_async();\n}\n\n\

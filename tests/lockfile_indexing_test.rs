@@ -48,21 +48,24 @@ provider "registry.opentofu.org/timofurrer/desec" {
 async fn fixture() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    fs::create_dir_all(project.join("infra/terraform")).unwrap();
+    fs::create_dir_all(project.join("infra").join("terraform")).unwrap();
     fs::create_dir_all(project.join("packer")).unwrap();
 
     fs::write(
-        project.join("infra/terraform/versions.tf"),
+        project.join("infra").join("terraform").join("versions.tf"),
         "terraform {\n  required_version = \">= 1.6\"\n}\n",
     )
     .unwrap();
     fs::write(
-        project.join("infra/terraform/.terraform.lock.hcl"),
+        project
+            .join("infra")
+            .join("terraform")
+            .join(".terraform.lock.hcl"),
         LOCKFILE,
     )
     .unwrap();
     fs::write(
-        project.join("packer/consul.hcl"),
+        project.join("packer").join("consul.hcl"),
         "acl {\n  enabled = true\n}\n",
     )
     .unwrap();
@@ -159,9 +162,9 @@ async fn sync_picks_up_a_newly_written_lockfile() {
     // the lockfile on an incremental sync, not just a full reindex.
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    fs::create_dir_all(project.join("infra/terraform")).unwrap();
+    fs::create_dir_all(project.join("infra").join("terraform")).unwrap();
     fs::write(
-        project.join("infra/terraform/versions.tf"),
+        project.join("infra").join("terraform").join("versions.tf"),
         "terraform {}\n",
     )
     .unwrap();
@@ -176,7 +179,10 @@ async fn sync_picks_up_a_newly_written_lockfile() {
     );
 
     fs::write(
-        project.join("infra/terraform/.terraform.lock.hcl"),
+        project
+            .join("infra")
+            .join("terraform")
+            .join(".terraform.lock.hcl"),
         LOCKFILE,
     )
     .unwrap();
@@ -195,9 +201,12 @@ async fn lockfile_is_found_without_gitignore_support() {
     // filter; the lockfile exemption must hold there too.
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    fs::create_dir_all(project.join("infra/terraform")).unwrap();
+    fs::create_dir_all(project.join("infra").join("terraform")).unwrap();
     fs::write(
-        project.join("infra/terraform/.terraform.lock.hcl"),
+        project
+            .join("infra")
+            .join("terraform")
+            .join(".terraform.lock.hcl"),
         LOCKFILE,
     )
     .unwrap();
@@ -221,14 +230,25 @@ async fn other_hidden_files_remain_excluded() {
     // The lockfile exemption must not widen hidden-file handling generally.
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    fs::create_dir_all(project.join("infra/terraform")).unwrap();
+    fs::create_dir_all(project.join("infra").join("terraform")).unwrap();
     fs::write(
-        project.join("infra/terraform/.terraform.lock.hcl"),
+        project
+            .join("infra")
+            .join("terraform")
+            .join(".terraform.lock.hcl"),
         LOCKFILE,
     )
     .unwrap();
-    fs::write(project.join("infra/terraform/.env"), "SECRET=nope\n").unwrap();
-    fs::write(project.join("infra/terraform/.notes.md"), "hidden\n").unwrap();
+    fs::write(
+        project.join("infra").join("terraform").join(".env"),
+        "SECRET=nope\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("infra").join("terraform").join(".notes.md"),
+        "hidden\n",
+    )
+    .unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();

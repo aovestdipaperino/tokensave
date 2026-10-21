@@ -3406,8 +3406,8 @@ mod staleness_banner_tests {
         let tmp = tempdir().unwrap();
         let root = tmp.path();
         fs::create_dir_all(root.join("src")).unwrap();
-        fs::write(root.join("src/a.rs"), "fn a() {}").unwrap();
-        fs::write(root.join("src/b.rs"), "fn b() {}").unwrap();
+        fs::write(root.join("src").join("a.rs"), "fn a() {}").unwrap();
+        fs::write(root.join("src").join("b.rs"), "fn b() {}").unwrap();
 
         let stale = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
         let banner = format_per_file_staleness_banner(root, &stale);

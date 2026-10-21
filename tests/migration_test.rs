@@ -1618,7 +1618,7 @@ async fn test_failed_migration_is_recoverable_by_a_forced_rebuild() {
     drop(cg);
 
     // Make v18 fail: a legacy column that a view depends on cannot be dropped.
-    let db_path = dir.path().join(".tokensave/tokensave.db");
+    let db_path = dir.path().join(".tokensave").join("tokensave.db");
     {
         let db = Builder::new_local(&db_path).build().await.expect("db");
         let conn = db.connect().expect("conn");
@@ -1656,7 +1656,7 @@ async fn test_forced_rebuild_is_refused_while_the_sync_lock_is_held() {
     cg.index_all().await.expect("index");
     drop(cg);
 
-    let db_path = dir.path().join(".tokensave/tokensave.db");
+    let db_path = dir.path().join(".tokensave").join("tokensave.db");
     {
         let db = Builder::new_local(&db_path).build().await.expect("db");
         let conn = db.connect().expect("conn");
@@ -1672,7 +1672,7 @@ async fn test_forced_rebuild_is_refused_while_the_sync_lock_is_held() {
     let before = std::fs::read(&db_path).expect("read db");
 
     // A live process (this one) holds the sync lock.
-    let lock = dir.path().join(".tokensave/sync.lock");
+    let lock = dir.path().join(".tokensave").join("sync.lock");
     std::fs::write(&lock, std::process::id().to_string()).expect("write lock");
 
     let err = match TokenSave::open_rebuilding_failed_migration(dir.path()).await {

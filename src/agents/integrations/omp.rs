@@ -103,7 +103,7 @@ impl AgentIntegration for OmpIntegration {
             doctor_check_surfaces(
                 dc,
                 &local_dir.join("mcp.json"),
-                &local_dir.join("rules/tokensave.md"),
+                &local_dir.join("rules").join("tokensave.md"),
                 "project-local",
             );
         }
@@ -137,14 +137,14 @@ impl AgentIntegration for OmpIntegration {
 fn omp_paths(ctx: &InstallContext) -> Result<(PathBuf, PathBuf)> {
     match &ctx.scope {
         InstallScope::Local { project_path } => Ok((
-            project_path.join(".omp/mcp.json"),
-            project_path.join(".omp/rules/tokensave.md"),
+            project_path.join(".omp").join("mcp.json"),
+            project_path.join(".omp").join("rules").join("tokensave.md"),
         )),
         InstallScope::Global => {
             let agent_dir = resolve_omp_agent_dir()?;
             Ok((
                 agent_dir.join("mcp.json"),
-                agent_dir.join("rules/tokensave.md"),
+                agent_dir.join("rules").join("tokensave.md"),
             ))
         }
     }
@@ -266,7 +266,7 @@ fn omp_candidate_dirs(home: &Path) -> Vec<PathBuf> {
     if let Ok(active) = resolve_omp_agent_dir() {
         paths.push(active);
     }
-    paths.push(home.join(".omp/agent"));
+    paths.push(home.join(".omp").join("agent"));
     let _ = normalize_agent_dirs(&mut paths);
     paths
 }
@@ -304,7 +304,7 @@ fn install_global(ctx: &InstallContext) -> Result<()> {
     for agent_dir in &targets {
         if let Err(error) = install_omp_surfaces_with_rules(
             &agent_dir.join("mcp.json"),
-            &agent_dir.join("rules/tokensave.md"),
+            &agent_dir.join("rules").join("tokensave.md"),
             &ctx.tokensave_bin,
             &rules,
         ) {
@@ -321,7 +321,7 @@ fn uninstall_global(ctx: &InstallContext) -> Result<()> {
     let mut locked = LockedOmpProfileRegistry::load(&ctx.home)?;
     let active = resolve_omp_agent_dir();
     let mut targets = locked.registry.agent_dirs.clone();
-    targets.push(ctx.home.join(".omp/agent"));
+    targets.push(ctx.home.join(".omp").join("agent"));
     if let Ok(path) = &active {
         targets.push(path.clone());
     }
@@ -333,7 +333,7 @@ fn uninstall_global(ctx: &InstallContext) -> Result<()> {
     for agent_dir in targets.iter().filter(|path| path.is_dir()) {
         if let Err(error) = uninstall_omp_surfaces(
             &agent_dir.join("mcp.json"),
-            &agent_dir.join("rules/tokensave.md"),
+            &agent_dir.join("rules").join("tokensave.md"),
         ) {
             failures.push(format!("{}: {error}", agent_dir.display()));
             retry.push(agent_dir.clone());
@@ -592,8 +592,8 @@ fn doctor_check_global_profiles(dc: &mut DoctorCounters, home: &Path) {
         }
     };
     let mut targets = registry.agent_dirs;
-    if home.join(".omp/agent").is_dir() {
-        targets.push(home.join(".omp/agent"));
+    if home.join(".omp").join("agent").is_dir() {
+        targets.push(home.join(".omp").join("agent"));
     }
     match resolve_omp_agent_dir() {
         Ok(active) => targets.push(active),
@@ -611,7 +611,7 @@ fn doctor_check_global_profiles(dc: &mut DoctorCounters, home: &Path) {
         doctor_check_surfaces(
             dc,
             &agent_dir.join("mcp.json"),
-            &agent_dir.join("rules/tokensave.md"),
+            &agent_dir.join("rules").join("tokensave.md"),
             "global",
         );
     }

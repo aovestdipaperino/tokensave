@@ -65,7 +65,7 @@ async fn drifted_server(strict: bool) -> (TempDir, Arc<McpServer>) {
     let dir = TempDir::new().unwrap();
     let root = dir.path().to_path_buf();
     std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(root.join("src/base.rs"), "fn base() -> i32 { 1 }\n").unwrap();
+    std::fs::write(root.join("src").join("base.rs"), "fn base() -> i32 { 1 }\n").unwrap();
 
     git(&root, &["init", "-b", "master"]);
     git(&root, &["add", "-A"]);
@@ -152,7 +152,11 @@ async fn strict_mode_is_inert_without_a_mismatch() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(root.join("src/main.rs"), "fn main() { let _ = 1; }\n").unwrap();
+    std::fs::write(
+        root.join("src").join("main.rs"),
+        "fn main() { let _ = 1; }\n",
+    )
+    .unwrap();
 
     let cg = TokenSave::init(root).await.unwrap();
     cg.index_all().await.unwrap();

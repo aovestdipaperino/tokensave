@@ -268,7 +268,7 @@ pub(crate) async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
     if all {
         // wipe acts on the live `.tokensave/` directory; drop rows whose
         // directory is already gone (they're handled by `tokensave doctor`).
-        targets.retain(|p| p.join(".tokensave/tokensave.db").exists());
+        targets.retain(|p| p.join(".tokensave").join("tokensave.db").exists());
     }
 
     if !all && targets.is_empty() {

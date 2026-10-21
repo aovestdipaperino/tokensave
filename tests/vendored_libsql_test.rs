@@ -74,7 +74,7 @@ fn package_version(manifest: &str) -> Option<String> {
 
 #[test]
 fn patch_entry_and_vendored_copy_agree_on_existing() {
-    let vendored = repo_root().join("vendor/libsql");
+    let vendored = repo_root().join("vendor").join("libsql");
     assert_eq!(
         patch_is_active(&our_manifest()),
         vendored.is_dir(),
@@ -118,7 +118,7 @@ fn vendored_libsql_matches_the_requested_version() {
         .and_then(|rest| rest.split('"').next())
         .expect("Cargo.toml declares `libsql = \"<version>\"`");
 
-    let vendored = read_lf(&repo_root().join("vendor/libsql/Cargo.toml"))
+    let vendored = read_lf(&repo_root().join("vendor").join("libsql").join("Cargo.toml"))
         .expect("read vendor/libsql/Cargo.toml");
     let vendored = package_version(&vendored).expect("vendor/libsql declares a package version");
 
@@ -136,7 +136,12 @@ fn vendored_libsql_still_carries_the_double_close_fix() {
         return;
     }
 
-    let connection = repo_root().join("vendor/libsql/src/local/connection.rs");
+    let connection = repo_root()
+        .join("vendor")
+        .join("libsql")
+        .join("src")
+        .join("local")
+        .join("connection.rs");
     let source = read_lf(&connection).expect("read vendored connection.rs");
 
     let disconnect = source

@@ -62,9 +62,9 @@ fn codes_round_trip_and_never_collide() {
 async fn full_index_persists_resolved_by() {
     let dir = TempDir::new().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
-    fs::write(dir.path().join("src/utils.rs"), UTILS_RS).unwrap();
+    fs::write(dir.path().join("src").join("utils.rs"), UTILS_RS).unwrap();
     fs::write(
-        dir.path().join("src/main.rs"),
+        dir.path().join("src").join("main.rs"),
         "mod utils;\nuse crate::utils::Counter;\nfn main() {\n    let _ = utils::compute_total(1);\n    let _ = Counter::new();\n}\n",
     )
     .unwrap();
@@ -102,8 +102,12 @@ async fn full_index_persists_resolved_by() {
 async fn incremental_sync_persists_resolved_by() {
     let dir = TempDir::new().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
-    fs::write(dir.path().join("src/utils.rs"), UTILS_RS).unwrap();
-    fs::write(dir.path().join("src/main.rs"), "mod utils;\nfn main() {}\n").unwrap();
+    fs::write(dir.path().join("src").join("utils.rs"), UTILS_RS).unwrap();
+    fs::write(
+        dir.path().join("src").join("main.rs"),
+        "mod utils;\nfn main() {}\n",
+    )
+    .unwrap();
     let cg = TokenSave::init(dir.path()).await.unwrap();
     cg.index_all().await.unwrap();
     assert!(call_provenance(&cg)
@@ -114,7 +118,7 @@ async fn incremental_sync_persists_resolved_by() {
     // Make sure the edit is seen as a change even on coarse mtime clocks.
     std::thread::sleep(std::time::Duration::from_millis(1100));
     fs::write(
-        dir.path().join("src/main.rs"),
+        dir.path().join("src").join("main.rs"),
         "mod utils;\nuse crate::utils::Counter;\nfn main() {\n    let _ = compute_total(1);\n    let _ = Counter::new();\n}\n",
     )
     .unwrap();
@@ -169,8 +173,8 @@ async fn full_index_and_incremental_sync_agree_on_labels() {
     let utils = "pub fn compute_total(x: i32) -> i32 { x + 1 }\npub struct Counter { n: i32 }\nimpl Counter {\n    pub fn new() -> Self { Counter { n: 0 } }\n    pub fn bump(&mut self) { self.n += 1; }\n}\n";
     let dir = TempDir::new().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
-    fs::write(dir.path().join("src/utils.rs"), utils).unwrap();
-    fs::write(dir.path().join("src/main.rs"), main).unwrap();
+    fs::write(dir.path().join("src").join("utils.rs"), utils).unwrap();
+    fs::write(dir.path().join("src").join("main.rs"), main).unwrap();
     let cg = TokenSave::init(dir.path()).await.unwrap();
     cg.index_all().await.unwrap();
     let full = labels(&cg).await;
@@ -178,9 +182,13 @@ async fn full_index_and_incremental_sync_agree_on_labels() {
 
     // Edit both files without moving a line, so every edge keeps its key.
     std::thread::sleep(std::time::Duration::from_millis(1100));
-    fs::write(dir.path().join("src/main.rs"), format!("{main}// edited\n")).unwrap();
     fs::write(
-        dir.path().join("src/utils.rs"),
+        dir.path().join("src").join("main.rs"),
+        format!("{main}// edited\n"),
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("src").join("utils.rs"),
         format!("{utils}// edited\n"),
     )
     .unwrap();

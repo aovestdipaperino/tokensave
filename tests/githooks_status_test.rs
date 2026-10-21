@@ -25,9 +25,9 @@ fn bare_githooks_reports_hooks_in_the_current_repository() {
     let repo = tempfile::tempdir().expect("temp repo");
     let home = tempfile::tempdir().expect("temp home");
     git_init(repo.path());
-    fs::create_dir_all(repo.path().join(".git/hooks")).expect("create hooks directory");
+    fs::create_dir_all(repo.path().join(".git").join("hooks")).expect("create hooks directory");
     fs::write(
-        repo.path().join(".git/hooks/post-commit"),
+        repo.path().join(".git").join("hooks").join("post-commit"),
         "#!/bin/sh\n# tokensave: auto-sync\n/usr/bin/tokensave sync >/dev/null 2>&1 &\n",
     )
     .expect("write local hook");
@@ -77,9 +77,9 @@ fn doctor_recommends_scoped_repair_for_a_stale_repository_hook() {
         String::from_utf8_lossy(&init.stderr)
     );
 
-    fs::create_dir_all(repo.path().join(".git/hooks")).expect("create hooks directory");
+    fs::create_dir_all(repo.path().join(".git").join("hooks")).expect("create hooks directory");
     fs::write(
-        repo.path().join(".git/hooks/post-checkout"),
+        repo.path().join(".git").join("hooks").join("post-checkout"),
         "#!/bin/sh\n# tokensave: auto-init\nold hook body\n# tokensave: end auto-init\n",
     )
     .expect("write stale hook");

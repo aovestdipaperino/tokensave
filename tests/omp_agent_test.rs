@@ -114,7 +114,7 @@ fn global_install_uses_resolved_profile_and_preserves_existing_config() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let agent_dir = temp.path().join("profiles/work/agent");
+    let agent_dir = temp.path().join("profiles").join("work").join("agent");
     let mcp_path = agent_dir.join("mcp.json");
     std::fs::create_dir_all(&agent_dir).unwrap();
     std::fs::write(
@@ -134,10 +134,10 @@ fn global_install_uses_resolved_profile_and_preserves_existing_config() {
     );
     assert!(config["mcpServers"]["other-tool"].is_object());
     assert!(config["unrelated"].as_bool().unwrap());
-    let rules_path = agent_dir.join("rules/tokensave.md");
+    let rules_path = agent_dir.join("rules").join("tokensave.md");
     let rules_before = std::fs::read(&rules_path).unwrap();
     assert!(String::from_utf8_lossy(&rules_before).contains(OMP_RULES_MARKER));
-    assert!(!home.join(".omp/agent/mcp.json").exists());
+    assert!(!home.join(".omp").join("agent").join("mcp.json").exists());
 
     OmpIntegration.install(&make_ctx(&home)).unwrap();
 
@@ -160,8 +160,8 @@ fn global_install_inherits_omp_and_pi_profile_selection() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let omp_profile = temp.path().join("omp-profile/agent");
-    let pi_profile = temp.path().join("pi-profile/agent");
+    let omp_profile = temp.path().join("omp-profile").join("agent");
+    let pi_profile = temp.path().join("pi-profile").join("agent");
     write_script(
         &bin_dir,
         &format!(
@@ -230,7 +230,7 @@ fn global_resolver_rejects_missing_failed_empty_and_multiline_output() {
             "{label} error should name the resolver, got {message:?}"
         );
         assert!(
-            !home.join(".omp/agent/mcp.json").exists(),
+            !home.join(".omp").join("agent").join("mcp.json").exists(),
             "{label} resolver failure must not fall back to the default profile"
         );
     }
@@ -258,7 +258,7 @@ fn global_resolver_times_out_and_reaps_the_child() {
         elapsed >= Duration::from_secs(9) && elapsed < Duration::from_secs(15),
         "ten-second resolver deadline should be bounded, elapsed {elapsed:?}"
     );
-    assert!(!home.join(".omp/agent/mcp.json").exists());
+    assert!(!home.join(".omp").join("agent").join("mcp.json").exists());
 }
 
 #[test]
@@ -279,9 +279,13 @@ fn local_install_is_deterministic_and_does_not_invoke_omp() {
         .install(&make_local_ctx(&home, &project))
         .unwrap();
 
-    assert!(project.join(".omp/mcp.json").exists());
-    assert!(project.join(".omp/rules/tokensave.md").exists());
-    assert!(!home.join(".omp/agent/mcp.json").exists());
+    assert!(project.join(".omp").join("mcp.json").exists());
+    assert!(project
+        .join(".omp")
+        .join("rules")
+        .join("tokensave.md")
+        .exists());
+    assert!(!home.join(".omp").join("agent").join("mcp.json").exists());
     assert!(!sentinel.exists(), "local install must not invoke omp");
 }
 
@@ -291,8 +295,8 @@ fn reinstall_refreshes_owned_surfaces_and_preserves_valid_command() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let agent_dir = temp.path().join("profile/agent");
-    let old_bin = temp.path().join("old/tokensave");
+    let agent_dir = temp.path().join("profile").join("agent");
+    let old_bin = temp.path().join("old").join("tokensave");
     std::fs::create_dir_all(old_bin.parent().unwrap()).unwrap();
     std::fs::write(&old_bin, "#!/bin/sh\n").unwrap();
     write_fake_omp(&bin_dir, &agent_dir, 0);
@@ -300,7 +304,8 @@ fn reinstall_refreshes_owned_surfaces_and_preserves_valid_command() {
     let mut ctx = make_ctx(&home);
     ctx.tokensave_bin = temp
         .path()
-        .join("new/tokensave")
+        .join("new")
+        .join("tokensave")
         .to_string_lossy()
         .into_owned();
     std::fs::create_dir_all(&agent_dir).unwrap();
@@ -317,7 +322,7 @@ fn reinstall_refreshes_owned_surfaces_and_preserves_valid_command() {
         .unwrap(),
     )
     .unwrap();
-    let rules_path = agent_dir.join("rules/tokensave.md");
+    let rules_path = agent_dir.join("rules").join("tokensave.md");
     std::fs::create_dir_all(rules_path.parent().unwrap()).unwrap();
     std::fs::write(&rules_path, format!("{OMP_RULES_MARKER}\nstale\n")).unwrap();
 
@@ -347,7 +352,7 @@ fn uninstall_preserves_unrelated_json_and_removes_owned_surfaces() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let agent_dir = temp.path().join("profile/agent");
+    let agent_dir = temp.path().join("profile").join("agent");
     write_fake_omp(&bin_dir, &agent_dir, 0);
     let _path = PathGuard::replace(&bin_dir);
     let ctx = make_ctx(&home);
@@ -365,7 +370,7 @@ fn uninstall_preserves_unrelated_json_and_removes_owned_surfaces() {
     assert!(config["unrelated"].as_bool().unwrap());
     assert!(config["mcpServers"]["other-tool"].is_object());
     assert!(config["mcpServers"].get("tokensave").is_none());
-    assert!(!agent_dir.join("rules/tokensave.md").exists());
+    assert!(!agent_dir.join("rules").join("tokensave.md").exists());
 }
 
 #[test]
@@ -374,7 +379,7 @@ fn uninstall_removes_otherwise_empty_mcp_file() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let agent_dir = temp.path().join("profile/agent");
+    let agent_dir = temp.path().join("profile").join("agent");
     write_fake_omp(&bin_dir, &agent_dir, 0);
     let _path = PathGuard::replace(&bin_dir);
     let ctx = make_ctx(&home);
@@ -383,7 +388,7 @@ fn uninstall_removes_otherwise_empty_mcp_file() {
     OmpIntegration.uninstall(&ctx).unwrap();
 
     assert!(!agent_dir.join("mcp.json").exists());
-    assert!(!agent_dir.join("rules/tokensave.md").exists());
+    assert!(!agent_dir.join("rules").join("tokensave.md").exists());
 }
 
 #[test]
@@ -392,8 +397,8 @@ fn uninstall_refuses_to_delete_rule_without_exact_ownership_marker() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let agent_dir = temp.path().join("profile/agent");
-    let rules_path = agent_dir.join("rules/tokensave.md");
+    let agent_dir = temp.path().join("profile").join("agent");
+    let rules_path = agent_dir.join("rules").join("tokensave.md");
     write_fake_omp(&bin_dir, &agent_dir, 0);
     let _path = PathGuard::replace(&bin_dir);
     std::fs::create_dir_all(rules_path.parent().unwrap()).unwrap();
@@ -430,7 +435,7 @@ fn missing_resolved_profile_is_not_detected_but_real_profiles_are() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let missing = temp.path().join("profiles/missing/agent");
+    let missing = temp.path().join("profiles").join("missing").join("agent");
     write_fake_omp(&bin_dir, &missing, 0);
     let _path = PathGuard::replace(&bin_dir);
 
@@ -445,9 +450,13 @@ fn missing_resolved_profile_is_not_detected_but_real_profiles_are() {
     assert!(OmpIntegration.is_detected(&home));
     std::fs::remove_dir_all(home.join(".omp")).unwrap();
 
-    let registered = temp.path().join("profiles/registered/agent");
+    let registered = temp
+        .path()
+        .join("profiles")
+        .join("registered")
+        .join("agent");
     std::fs::create_dir_all(&registered).unwrap();
-    let registry_path = home.join(".tokensave/omp-profiles.json");
+    let registry_path = home.join(".tokensave").join("omp-profiles.json");
     std::fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
     std::fs::write(
         registry_path,
@@ -468,7 +477,7 @@ fn doctor_warns_when_detected_global_surfaces_are_absent() {
     let home = temp.path().join("home");
     let project = temp.path().join("project");
     let bin_dir = temp.path().join("bin");
-    let agent_dir = temp.path().join("profile/agent");
+    let agent_dir = temp.path().join("profile").join("agent");
     std::fs::create_dir_all(home.join(".omp")).unwrap();
     write_fake_omp(&bin_dir, &agent_dir, 0);
     let _path = PathGuard::replace(&bin_dir);
@@ -503,9 +512,9 @@ fn doctor_warns_for_missing_but_detects_present_broken_global_surfaces() {
     let home = temp.path().join("home");
     let project = temp.path().join("project");
     let bin_dir = temp.path().join("bin");
-    let agent_dir = temp.path().join("profile/agent");
+    let agent_dir = temp.path().join("profile").join("agent");
     let mcp_path = agent_dir.join("mcp.json");
-    let rules_path = agent_dir.join("rules/tokensave.md");
+    let rules_path = agent_dir.join("rules").join("tokensave.md");
     std::fs::create_dir_all(home.join(".omp")).unwrap();
     write_fake_omp(&bin_dir, &agent_dir, 0);
     let _path = PathGuard::replace(&bin_dir);
@@ -562,7 +571,7 @@ fn doctor_reports_resolver_failure_and_still_checks_present_local_surfaces() {
         "a correct local install should add no issue beyond the failed global resolver"
     );
 
-    std::fs::write(project.join(".omp/mcp.json"), "{ malformed").unwrap();
+    std::fs::write(project.join(".omp").join("mcp.json"), "{ malformed").unwrap();
     let malformed_local = healthcheck(&home, &project);
     assert!(
         malformed_local.issues > resolver_only.issues,
@@ -609,7 +618,7 @@ fn default_profile_detection_survives_resolver_failure() {
         &format!("printf called > '{}'\nexit 99", sentinel.display()),
     );
     let _path = PathGuard::replace(&bin_dir);
-    let mcp_path = home.join(".omp/agent/mcp.json");
+    let mcp_path = home.join(".omp").join("agent").join("mcp.json");
     std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
     std::fs::write(
         &mcp_path,
@@ -639,12 +648,12 @@ fn custom_profile_without_registry_is_detected_migrated_and_reported() {
     let home = temp.path().join("home");
     let project = temp.path().join("project");
     let bin_dir = temp.path().join("bin");
-    let agent_dir = temp.path().join("profiles/work/agent");
+    let agent_dir = temp.path().join("profiles").join("work").join("agent");
     write_fake_omp(&bin_dir, &agent_dir, 0);
     let _path = PathGuard::replace(&bin_dir);
 
     OmpIntegration.install(&make_ctx(&home)).unwrap();
-    std::fs::remove_file(home.join(".tokensave/omp-profiles.json")).unwrap();
+    std::fs::remove_file(home.join(".tokensave").join("omp-profiles.json")).unwrap();
 
     assert!(!home.join(".omp").exists());
     assert!(OmpIntegration.is_detected(&home));
@@ -667,12 +676,12 @@ fn doctor_checks_custom_profile_when_default_directory_is_absent() {
     let home = temp.path().join("home");
     let project = temp.path().join("project");
     let bin_dir = temp.path().join("bin");
-    let agent_dir = temp.path().join("profiles/work/agent");
+    let agent_dir = temp.path().join("profiles").join("work").join("agent");
     let mcp_path = agent_dir.join("mcp.json");
     write_fake_omp(&bin_dir, &agent_dir, 0);
     let _path = PathGuard::replace(&bin_dir);
     OmpIntegration.install(&make_ctx(&home)).unwrap();
-    std::fs::remove_file(home.join(".tokensave/omp-profiles.json")).unwrap();
+    std::fs::remove_file(home.join(".tokensave").join("omp-profiles.json")).unwrap();
 
     let mut config = read_json(&mcp_path);
     config["mcpServers"]["tokensave"]["args"] = serde_json::json!(["wrong"]);
@@ -688,8 +697,8 @@ fn profile_change_uninstall_cleans_original_without_populating_new_profile() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let original = temp.path().join("profiles/original/agent");
-    let active = temp.path().join("profiles/active/agent");
+    let original = temp.path().join("profiles").join("original").join("agent");
+    let active = temp.path().join("profiles").join("active").join("agent");
     write_fake_omp(&bin_dir, &original, 0);
     let _path = PathGuard::replace(&bin_dir);
     let ctx = make_ctx(&home);
@@ -699,7 +708,7 @@ fn profile_change_uninstall_cleans_original_without_populating_new_profile() {
     OmpIntegration.uninstall(&ctx).unwrap();
 
     assert!(!original.join("mcp.json").exists());
-    assert!(!original.join("rules/tokensave.md").exists());
+    assert!(!original.join("rules").join("tokensave.md").exists());
     assert!(
         !active.exists(),
         "uninstall must never populate a new profile"
@@ -712,7 +721,7 @@ fn uninstall_uses_recorded_profile_when_resolver_disappears() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let original = temp.path().join("profiles/original/agent");
+    let original = temp.path().join("profiles").join("original").join("agent");
     write_fake_omp(&bin_dir, &original, 0);
     let _path = PathGuard::replace(&bin_dir);
     let ctx = make_ctx(&home);
@@ -722,8 +731,8 @@ fn uninstall_uses_recorded_profile_when_resolver_disappears() {
     OmpIntegration.uninstall(&ctx).unwrap();
 
     assert!(!original.join("mcp.json").exists());
-    assert!(!original.join("rules/tokensave.md").exists());
-    assert!(!home.join(".tokensave/omp-profiles.json").exists());
+    assert!(!original.join("rules").join("tokensave.md").exists());
+    assert!(!home.join(".tokensave").join("omp-profiles.json").exists());
 }
 
 #[test]
@@ -732,8 +741,8 @@ fn reinstall_refreshes_recorded_and_current_profiles() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let original = temp.path().join("profiles/original/agent");
-    let active = temp.path().join("profiles/active/agent");
+    let original = temp.path().join("profiles").join("original").join("agent");
+    let active = temp.path().join("profiles").join("active").join("agent");
     write_fake_omp(&bin_dir, &original, 0);
     let _path = PathGuard::replace(&bin_dir);
     let ctx = make_ctx(&home);
@@ -747,7 +756,7 @@ fn reinstall_refreshes_recorded_and_current_profiles() {
     )
     .unwrap();
     std::fs::write(
-        original.join("rules/tokensave.md"),
+        original.join("rules").join("tokensave.md"),
         format!("{OMP_RULES_MARKER}\nstale\n"),
     )
     .unwrap();
@@ -762,7 +771,7 @@ fn reinstall_refreshes_recorded_and_current_profiles() {
             serde_json::json!(["serve"])
         );
         assert_eq!(
-            std::fs::read_to_string(profile.join("rules/tokensave.md")).unwrap(),
+            std::fs::read_to_string(profile.join("rules").join("tokensave.md")).unwrap(),
             format!(
                 "{}\n",
                 managed_rules_contents(&rules_for_agent("omp").unwrap())
@@ -777,8 +786,8 @@ fn reinstall_forgets_deleted_profiles_without_recreating_them() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let deleted = temp.path().join("profiles/deleted/agent");
-    let active = temp.path().join("profiles/active/agent");
+    let deleted = temp.path().join("profiles").join("deleted").join("agent");
+    let active = temp.path().join("profiles").join("active").join("agent");
     write_fake_omp(&bin_dir, &deleted, 0);
     let _path = PathGuard::replace(&bin_dir);
     let ctx = make_ctx(&home);
@@ -792,7 +801,7 @@ fn reinstall_forgets_deleted_profiles_without_recreating_them() {
 
     assert!(!deleted.exists());
     assert_eq!(
-        read_json(&home.join(".tokensave/omp-profiles.json"))["agent_dirs"],
+        read_json(&home.join(".tokensave").join("omp-profiles.json"))["agent_dirs"],
         serde_json::json!([active])
     );
 }
@@ -803,8 +812,12 @@ fn broken_recorded_profile_does_not_block_installing_current_profile() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let recorded = temp.path().join("profiles/a-recorded/agent");
-    let active = temp.path().join("profiles/b-active/agent");
+    let recorded = temp
+        .path()
+        .join("profiles")
+        .join("a-recorded")
+        .join("agent");
+    let active = temp.path().join("profiles").join("b-active").join("agent");
     write_fake_omp(&bin_dir, &recorded, 0);
     let _path = PathGuard::replace(&bin_dir);
     let ctx = make_ctx(&home);
@@ -816,7 +829,7 @@ fn broken_recorded_profile_does_not_block_installing_current_profile() {
 
     assert!(OmpIntegration.install(&ctx).is_err());
     assert!(omp_has_tokensave(&active.join("mcp.json")));
-    assert!(active.join("rules/tokensave.md").exists());
+    assert!(active.join("rules").join("tokensave.md").exists());
 }
 
 #[test]
@@ -825,8 +838,8 @@ fn uninstall_attempts_every_profile_and_retains_failed_ownership() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let broken = temp.path().join("profiles/a-broken/agent");
-    let healthy = temp.path().join("profiles/b-healthy/agent");
+    let broken = temp.path().join("profiles").join("a-broken").join("agent");
+    let healthy = temp.path().join("profiles").join("b-healthy").join("agent");
     write_fake_omp(&bin_dir, &broken, 0);
     let _path = PathGuard::replace(&bin_dir);
     let ctx = make_ctx(&home);
@@ -839,9 +852,9 @@ fn uninstall_attempts_every_profile_and_retains_failed_ownership() {
 
     assert!(OmpIntegration.uninstall(&ctx).is_err());
     assert!(!healthy.join("mcp.json").exists());
-    assert!(!healthy.join("rules/tokensave.md").exists());
+    assert!(!healthy.join("rules").join("tokensave.md").exists());
 
-    let registry = read_json(&home.join(".tokensave/omp-profiles.json"));
+    let registry = read_json(&home.join(".tokensave").join("omp-profiles.json"));
     assert_eq!(registry["agent_dirs"], serde_json::json!([broken]));
 }
 
@@ -853,7 +866,7 @@ fn uninstall_retains_ownership_when_rules_removal_fails() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let agent_dir = temp.path().join("profiles/work/agent");
+    let agent_dir = temp.path().join("profiles").join("work").join("agent");
     write_fake_omp(&bin_dir, &agent_dir, 0);
     let _path = PathGuard::replace(&bin_dir);
     let ctx = make_ctx(&home);
@@ -866,9 +879,9 @@ fn uninstall_retains_ownership_when_rules_removal_fails() {
 
     std::fs::set_permissions(&rules_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(result.is_err());
-    assert!(agent_dir.join("rules/tokensave.md").exists());
+    assert!(agent_dir.join("rules").join("tokensave.md").exists());
     assert_eq!(
-        read_json(&home.join(".tokensave/omp-profiles.json"))["agent_dirs"],
+        read_json(&home.join(".tokensave").join("omp-profiles.json"))["agent_dirs"],
         serde_json::json!([agent_dir])
     );
 }
@@ -879,8 +892,8 @@ fn malformed_profile_registry_blocks_install_without_touching_omp() {
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let agent_dir = temp.path().join("profiles/work/agent");
-    let registry = home.join(".tokensave/omp-profiles.json");
+    let agent_dir = temp.path().join("profiles").join("work").join("agent");
+    let registry = home.join(".tokensave").join("omp-profiles.json");
     std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
     std::fs::write(&registry, "{ malformed").unwrap();
     write_fake_omp(&bin_dir, &agent_dir, 0);
@@ -899,8 +912,8 @@ fn unsupported_or_relative_profile_registry_blocks_install_without_touching_omp(
     let temp = TempDir::new().unwrap();
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    let agent_dir = temp.path().join("profiles/work/agent");
-    let registry = home.join(".tokensave/omp-profiles.json");
+    let agent_dir = temp.path().join("profiles").join("work").join("agent");
+    let registry = home.join(".tokensave").join("omp-profiles.json");
     std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
     write_fake_omp(&bin_dir, &agent_dir, 0);
     let _path = PathGuard::replace(&bin_dir);

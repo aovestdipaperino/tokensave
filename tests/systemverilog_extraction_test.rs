@@ -31,7 +31,7 @@ async fn fixture() -> (TempDir, TokenSave) {
     fs::create_dir_all(project.join("rtl")).unwrap();
 
     fs::write(
-        project.join("rtl/child.v"),
+        project.join("rtl").join("child.v"),
         "module child (\n\
         \x20   input wire clk\n\
          );\n\
@@ -41,7 +41,7 @@ async fn fixture() -> (TempDir, TokenSave) {
 
     // Cross-file instantiation, an unresolvable vendor cell, and a parameter.
     fs::write(
-        project.join("rtl/top.v"),
+        project.join("rtl").join("top.v"),
         "module top #(parameter WIDTH = 8) (\n\
         \x20   input wire clk\n\
          );\n\
@@ -53,7 +53,7 @@ async fn fixture() -> (TempDir, TokenSave) {
     .unwrap();
 
     fs::write(
-        project.join("rtl/pkg.sv"),
+        project.join("rtl").join("pkg.sv"),
         "package pkg_a;\n\
         \x20 typedef enum {A, B} state_t;\n\
         \x20 function automatic int add(int x, int y);\n\
@@ -64,7 +64,7 @@ async fn fixture() -> (TempDir, TokenSave) {
     .unwrap();
 
     fs::write(
-        project.join("rtl/bus.sv"),
+        project.join("rtl").join("bus.sv"),
         "interface bus_if;\n\
         \x20 logic valid;\n\
          endinterface\n\
@@ -294,7 +294,7 @@ async fn mixed_language_fixture(with_verilog_child: bool) -> (TempDir, TokenSave
     fs::create_dir_all(project.join("lib")).unwrap();
 
     fs::write(
-        project.join("rtl/top.v"),
+        project.join("rtl").join("top.v"),
         "module top (input wire clk);\n\
         \x20 child u_child (.clk(clk));\n\
          endmodule\n",
@@ -302,13 +302,13 @@ async fn mixed_language_fixture(with_verilog_child: bool) -> (TempDir, TokenSave
     .unwrap();
     if with_verilog_child {
         fs::write(
-            project.join("lib/child.v"),
+            project.join("lib").join("child.v"),
             "module child (input wire clk);\nendmodule\n",
         )
         .unwrap();
     }
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         "pub mod child {\n    pub fn run() {}\n}\n",
     )
     .unwrap();

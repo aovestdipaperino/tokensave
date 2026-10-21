@@ -22,21 +22,21 @@ use tokensave::types::{Node, NodeKind, Visibility};
 async fn indexed() -> (tempfile::TempDir, TokenSave) {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
-    std::fs::create_dir_all(root.join("src/inner")).unwrap();
+    std::fs::create_dir_all(root.join("src").join("inner")).unwrap();
     std::fs::create_dir_all(root.join("other")).unwrap();
 
     std::fs::write(
-        root.join("src/lib.rs"),
+        root.join("src").join("lib.rs"),
         "pub mod inner;\npub fn exported() -> i32 { 1 }\nfn private_one() -> i32 { 2 }\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("src/inner/deep.rs"),
+        root.join("src").join("inner").join("deep.rs"),
         "use std::collections::HashMap;\npub fn deep_fn() -> i32 {\n    let mut m = HashMap::new();\n    m.insert(1, 2);\n    m.len() as i32\n}\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("other/elsewhere.rs"),
+        root.join("other").join("elsewhere.rs"),
         "pub fn elsewhere() -> i32 { 3 }\npub struct Marker;\n",
     )
     .unwrap();
@@ -183,8 +183,12 @@ async fn path_prefix_does_not_match_a_sibling_with_the_same_stem() {
     let root = tmp.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::create_dir_all(root.join("srcfoo")).unwrap();
-    std::fs::write(root.join("src/a.rs"), "pub fn a() -> i32 { 1 }\n").unwrap();
-    std::fs::write(root.join("srcfoo/b.rs"), "pub fn b() -> i32 { 2 }\n").unwrap();
+    std::fs::write(root.join("src").join("a.rs"), "pub fn a() -> i32 { 1 }\n").unwrap();
+    std::fs::write(
+        root.join("srcfoo").join("b.rs"),
+        "pub fn b() -> i32 { 2 }\n",
+    )
+    .unwrap();
 
     let cg = TokenSave::init(root).await.unwrap();
     cg.sync().await.unwrap();
@@ -215,8 +219,16 @@ async fn path_prefix_treats_like_wildcards_literally() {
     let root = tmp.path();
     std::fs::create_dir_all(root.join("a_b")).unwrap();
     std::fs::create_dir_all(root.join("axb")).unwrap();
-    std::fs::write(root.join("a_b/one.rs"), "pub fn one() -> i32 { 1 }\n").unwrap();
-    std::fs::write(root.join("axb/two.rs"), "pub fn two() -> i32 { 2 }\n").unwrap();
+    std::fs::write(
+        root.join("a_b").join("one.rs"),
+        "pub fn one() -> i32 { 1 }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("axb").join("two.rs"),
+        "pub fn two() -> i32 { 2 }\n",
+    )
+    .unwrap();
 
     let cg = TokenSave::init(root).await.unwrap();
     cg.sync().await.unwrap();

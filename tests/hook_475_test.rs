@@ -52,7 +52,10 @@ fn is_blocked(command: &str, root: &Path) -> bool {
 #[test]
 fn bare_search_is_still_redirected() {
     let (_tmp, root) = project();
-    let cmd = format!("grep -n MySymbol {}", root.join("src/lib.rs").display());
+    let cmd = format!(
+        "grep -n MySymbol {}",
+        root.join("src").join("lib.rs").display()
+    );
     assert!(
         is_blocked(&cmd, &root),
         "a plain code-file grep should still redirect"
@@ -62,7 +65,7 @@ fn bare_search_is_still_redirected() {
 #[test]
 fn search_followed_by_other_work_passes_through() {
     let (_tmp, root) = project();
-    let target = root.join("src/lib.rs");
+    let target = root.join("src").join("lib.rs");
     for suffix in ["&& git status", "&& ./deploy.sh", "|| true", "; git status"] {
         let cmd = format!("grep -n MySymbol {} {suffix}", target.display());
         assert!(
@@ -78,7 +81,7 @@ fn search_followed_by_other_work_passes_through() {
 #[test]
 fn piped_search_is_redirected_only_into_read_only_filters() {
     let (_tmp, root) = project();
-    let target = root.join("src/lib.rs");
+    let target = root.join("src").join("lib.rs");
     let cmd = format!("grep -n MySymbol {} | head -5", target.display());
     assert!(is_blocked(&cmd, &root), "`| head` is not work: {cmd}");
     for consumer in ["xargs rm", "tee out.txt", "sort -o out.txt"] {
@@ -97,7 +100,7 @@ fn quoted_operator_is_not_a_chain() {
     let (_tmp, root) = project();
     let cmd = format!(
         "grep -n my_function {} -e 'a;b'",
-        root.join("src/lib.rs").display()
+        root.join("src").join("lib.rs").display()
     );
     assert!(
         is_blocked(&cmd, &root),
