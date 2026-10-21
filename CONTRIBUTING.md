@@ -83,6 +83,30 @@ cargo test --locked --no-default-features --features lite
    cargo clippy --workspace --all-targets --locked
    ```
 
+## Filesystem Path Construction
+
+Contributors and AI coding agents MUST follow the convention established in
+[PR #738](https://github.com/aovestdipaperino/tokensave/pull/738) when constructing
+filesystem paths in production code and tests:
+
+- Use `Path`/`PathBuf` APIs and one component per `join` or `push` call for
+  hard-coded relative paths: `home.join(".pi").join("agent")`, rather than
+  `home.join(".pi/agent")`. Do not embed `/` or `\` separators in these components
+  or assemble filesystem paths with string concatenation or formatting.
+- Keep externally supplied paths intact and preserve their existing resolution
+  semantics. This rule does not require splitting user input or changing roots,
+  prefixes, `.` or `..` components.
+- String joins such as `segments.join("/")`, URLs, import specifiers, and formats
+  that explicitly require portable `/` separators are outside this rule.
+- A test fixture may retain embedded separators when the path syntax itself is
+  what it tests (for example, `a/b/c/../c/tokensave`). Explain the exception in a
+  nearby comment so it is distinguishable from ordinary path construction.
+
+Separate component calls let Rust insert the OS-native separator, avoiding mixed
+separators in Windows paths and displayed output. Review new and modified path
+construction against this rule; do not mechanically rewrite string operations
+or intentional path-syntax fixtures.
+
 ## Memory and Resource Management
 
 These requirements apply to contributors and AI coding agents. **MUST** and

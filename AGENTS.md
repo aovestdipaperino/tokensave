@@ -16,6 +16,11 @@ without explicit permission — issue closure is left to the repository maintain
 
 ## Build, lint, and test
 
+Follow the mandatory [filesystem path construction rule](CONTRIBUTING.md#filesystem-path-construction):
+use one component per `Path`/`PathBuf` `join` or `push` call for hard-coded
+relative filesystem paths, as in PR #738. Preserve external path inputs,
+portable string formats, and documented path-syntax test fixtures.
+
 - Toolchain is pinned by `rust-toolchain.toml` (Rust 1.98.1, clippy + rustfmt).
 - `cargo build` builds the default `full` feature set (50+ languages). For fast dev cycles use `cargo build --no-default-features --features lite` (or `medium`).
 - `cargo test --workspace` is the CI test command. On Windows set `RUST_MIN_STACK=8388608` (CI does this; async-heavy tests overflow the 1 MB MSVC default).

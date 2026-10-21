@@ -13,6 +13,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- Mandatory contributor and AI agent rule for native filesystem path construction (#743), following PR #738: one component per `join` or `push`, with explicit exceptions for portable string formats and path-syntax fixtures.
+
 - Automatic extraction RAM safeguards complement project profiles: sample physical RAM (and visible Linux cgroup headroom) before parallel extraction and reduce concurrency using a conservative parser allowance. Applies to subprocess and in-process paths, including `performance`; no background polling or hard RSS guarantee.
 
 - Project `memory_usage` profiles (`low`, `balanced`, `performance`) limit simultaneous extraction parsers independently of CPU policy, trading throughput for lower parser memory. The default `balanced` caps extraction at two parsers; `performance` retains previous concurrency. These are not total-RAM caps.
