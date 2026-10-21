@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Performance
+
+- Construct the MCP tool registry once during server startup and release schemas before opening the global database, preserving routing gates and schema accounting without retaining a schema cache (#735).
+
 ### Added
 
 - Automatic extraction RAM safeguards complement project profiles: sample physical RAM (and visible Linux cgroup headroom) before parallel extraction and reduce concurrency using a conservative parser allowance. Applies to subprocess and in-process paths, including `performance`; no background polling or hard RSS guarantee.

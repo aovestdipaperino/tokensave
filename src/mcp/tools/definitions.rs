@@ -614,7 +614,7 @@ pub fn get_listed_tool_definitions(
 /// True when a definition is marked `anthropic/alwaysLoad` — i.e. its schema
 /// is loaded into the model's context immediately, rather than being deferred
 /// and fetched on demand (via `ToolSearch`).
-fn is_always_load(def: &ToolDefinition) -> bool {
+pub(crate) fn is_always_load(def: &ToolDefinition) -> bool {
     def.meta
         .as_ref()
         .and_then(|m| m.get("anthropic/alwaysLoad"))
