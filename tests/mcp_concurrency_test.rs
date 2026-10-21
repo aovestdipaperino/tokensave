@@ -16,7 +16,6 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 use tempfile::TempDir;
-use tokensave::mcp::tools::is_read_only_tool;
 use tokensave::mcp::transport::ChannelTransport;
 use tokensave::mcp::{McpServer, McpTransport};
 use tokensave::tokensave::TokenSave;
@@ -72,8 +71,9 @@ fn request(id: i64, name: &str, arguments: Value) -> String {
 
 /// The calls the server may run side by side are the ones that only read the
 /// graph. Everything that changes the index still runs alone.
-#[test]
-fn only_read_only_tools_are_concurrent_safe() {
+#[tokio::test]
+async fn only_read_only_tools_are_concurrent_safe() {
+    let (_dir, server) = indexed_server().await;
     for name in [
         "tokensave_search",
         "tokensave_context",
@@ -83,7 +83,7 @@ fn only_read_only_tools_are_concurrent_safe() {
         "tokensave_impact",
         "tokensave_files",
     ] {
-        assert!(is_read_only_tool(name), "{name} should be read-only");
+        assert!(server.is_read_only_tool(name), "{name} should be read-only");
     }
     for name in [
         "tokensave_str_replace",
@@ -94,7 +94,10 @@ fn only_read_only_tools_are_concurrent_safe() {
         "tokensave_replace_lines",
         "tokensave_ast_grep_rewrite",
     ] {
-        assert!(!is_read_only_tool(name), "{name} must not be read-only");
+        assert!(
+            !server.is_read_only_tool(name),
+            "{name} must not be read-only"
+        );
     }
 }
 

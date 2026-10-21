@@ -26,7 +26,7 @@ use super::graph_scope::{
 use super::tools::{
     baseline_policy, cap_baseline, get_listed_tool_definitions, get_tool_definitions,
     handle_tool_call_with_session, is_always_load, is_graph_scoped_tool, is_hidden_tool,
-    is_selectorless_local_graph_tool, is_tool_area, request_overhead_tokens,
+    is_read_only_tool, is_selectorless_local_graph_tool, is_tool_area, request_overhead_tokens,
     schema_overhead_tokens, settle_session_debt, tool_area, SessionState, CORE_TOOLS, MORE_TOOL,
     TOOL_AREAS,
 };
@@ -374,6 +374,9 @@ pub struct McpServer {
     graph_scoped_tools: HashSet<String>,
     /// Selector-less local graph tools refused after tracked-branch drift.
     selectorless_local_graph_tools: HashSet<String>,
+    /// The tools that only read the graph, and may therefore be answered
+    /// while another request is in flight (#685).
+    read_only_tools: HashSet<String>,
     stats: ServerStats,
     tool_call_counts: std::sync::Mutex<HashMap<String, u64>>,
     /// Approximate token count per indexed file (`file_path` -> tokens).
@@ -698,7 +701,7 @@ impl McpServer {
         // Build schemas once and retain only the names and scalar estimate.
         // All schemas drop before global DB initialization; nothing is cached
         // or deferred to the first request.
-        let (graph_scoped_tools, selectorless_local_graph_tools, schema_overhead) = {
+        let (graph_scoped_tools, selectorless_local_graph_tools, read_only_tools, schema_overhead) = {
             let mut definitions = get_tool_definitions();
             let graph_scoped_tools = definitions
                 .iter()
@@ -712,12 +715,21 @@ impl McpServer {
                 .filter(|definition| is_selectorless_local_graph_tool(definition))
                 .map(|definition| definition.name.clone())
                 .collect();
+            // The calls that only read the graph, and may therefore run side
+            // by side (#685). Derived from the same registry pass, so the set
+            // costs nothing beyond the names.
+            let read_only_tools = definitions
+                .iter()
+                .filter(|definition| is_read_only_tool(definition))
+                .map(|definition| definition.name.clone())
+                .collect();
             // Preserve registry order and charge only always-loaded schemas.
             definitions.retain(is_always_load);
             let schema_overhead = schema_overhead_tokens(&definitions);
             (
                 graph_scoped_tools,
                 selectorless_local_graph_tools,
+                read_only_tools,
                 schema_overhead,
             )
         };
@@ -760,6 +772,7 @@ impl McpServer {
             registered_projects,
             graph_scoped_tools,
             selectorless_local_graph_tools,
+            read_only_tools,
             stats: ServerStats::new(),
             tool_call_counts: std::sync::Mutex::new(HashMap::new()),
             file_token_map: std::sync::Mutex::new(file_token_map),
@@ -2002,6 +2015,12 @@ impl McpServer {
         Ok(())
     }
 
+    /// Whether the named tool only reads the graph, and may therefore be
+    /// answered while another request is in flight (#685).
+    pub fn is_read_only_tool(&self, name: &str) -> bool {
+        self.read_only_tools.contains(name)
+    }
+
     /// Whether a request may be answered while another one is in flight.
     ///
     /// Only a read-only tool call qualifies: it does not change the index, so
@@ -2018,7 +2037,7 @@ impl McpServer {
         let Some(name) = params.get("name").and_then(Value::as_str) else {
             return false;
         };
-        crate::mcp::tools::is_read_only_tool(name)
+        self.read_only_tools.contains(name)
     }
 
     /// Writes any pending notifications (e.g., version warnings).
