@@ -59,13 +59,13 @@ async fn a_lone_candidate_in_an_unreachable_module_is_not_a_match() {
     std::fs::create_dir_all(root.join("tests")).unwrap();
 
     std::fs::write(
-        root.join("src/a.py"),
+        root.join("src").join("a.py"),
         "import logging\n\nlog = logging.getLogger(__name__)\n\n\n\
          def do_work(payload):\n    log.info(\"starting %s\", payload)\n    return payload\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("tests/helper.py"),
+        root.join("tests").join("helper.py"),
         "def info(msg, *args):\n    return (msg, args)\n",
     )
     .unwrap();
@@ -91,23 +91,23 @@ async fn an_imported_or_sibling_candidate_still_resolves() {
 
     // Imported across directories: `pkg.helpers` is named in the import.
     std::fs::write(
-        root.join("other/caller.py"),
+        root.join("other").join("caller.py"),
         "import pkg.helpers\n\n\ndef run(x):\n    return pkg.helpers.transmogrify(x)\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("pkg/helpers.py"),
+        root.join("pkg").join("helpers.py"),
         "def transmogrify(x):\n    return x + 1\n",
     )
     .unwrap();
     // Siblings in one directory, called through an untracked receiver.
     std::fs::write(
-        root.join("pkg/neighbour.py"),
+        root.join("pkg").join("neighbour.py"),
         "def embiggen(x):\n    return x * 2\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("pkg/user.py"),
+        root.join("pkg").join("user.py"),
         "def use(thing):\n    return thing.embiggen(3)\n",
     )
     .unwrap();

@@ -895,7 +895,7 @@ mod tests {
         drop(graph);
 
         if with_node {
-            let db_path = dir.path().join(".tokensave/tokensave.db");
+            let db_path = dir.path().join(".tokensave").join("tokensave.db");
             let (db, _) = Database::open(&db_path).await.unwrap();
             db.insert_node(&sample_node()).await.unwrap();
             db.checkpoint().await.unwrap();

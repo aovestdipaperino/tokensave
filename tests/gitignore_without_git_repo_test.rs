@@ -21,9 +21,17 @@ async fn gitignore_is_honored_without_a_git_repository() {
     fs::create_dir(project.join("src")).unwrap();
     fs::create_dir(project.join("zeta")).unwrap();
     fs::create_dir(project.join("omega")).unwrap();
-    fs::write(project.join("src/a.rs"), "pub fn keep_me() {}\n").unwrap();
-    fs::write(project.join("zeta/b.rs"), "pub fn ignored_zeta() {}\n").unwrap();
-    fs::write(project.join("omega/c.rs"), "pub fn kept_omega() {}\n").unwrap();
+    fs::write(project.join("src").join("a.rs"), "pub fn keep_me() {}\n").unwrap();
+    fs::write(
+        project.join("zeta").join("b.rs"),
+        "pub fn ignored_zeta() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("omega").join("c.rs"),
+        "pub fn kept_omega() {}\n",
+    )
+    .unwrap();
     fs::write(project.join(".gitignore"), "zeta/\n").unwrap();
 
     assert!(

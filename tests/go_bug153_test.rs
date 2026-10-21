@@ -39,9 +39,9 @@ fn extract_text(value: &Value) -> &str {
 async fn setup_bug1() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    fs::create_dir_all(project.join("internal/a/jobs")).unwrap();
-    fs::create_dir_all(project.join("internal/b/jobs")).unwrap();
-    fs::create_dir_all(project.join("internal/c/jobs")).unwrap();
+    fs::create_dir_all(project.join("internal").join("a").join("jobs")).unwrap();
+    fs::create_dir_all(project.join("internal").join("b").join("jobs")).unwrap();
+    fs::create_dir_all(project.join("internal").join("c").join("jobs")).unwrap();
 
     fs::write(
         project.join("go.mod"),
@@ -135,7 +135,7 @@ async fn no_phantom_call_edges_for_same_name_funcs_in_same_name_packages() {
 async fn setup_bug2() -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    fs::create_dir_all(project.join("internal/mail")).unwrap();
+    fs::create_dir_all(project.join("internal").join("mail")).unwrap();
 
     fs::write(
         project.join("go.mod"),
@@ -162,7 +162,7 @@ func main() {
     .unwrap();
 
     fs::write(
-        project.join("internal/mail/resend.go"),
+        project.join("internal").join("mail").join("resend.go"),
         r#"package mail
 
 import (
@@ -207,7 +207,7 @@ func (s *ResendSender) Send(ctx context.Context, m Message) error {
     .unwrap();
 
     fs::write(
-        project.join("internal/mail/message.go"),
+        project.join("internal").join("mail").join("message.go"),
         "package mail\n\ntype Message struct {\n\tTo      string\n\tSubject string\n}\n",
     )
     .unwrap();

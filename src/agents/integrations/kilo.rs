@@ -17,7 +17,7 @@ use super::*;
 pub struct KiloIntegration;
 
 fn kilo_config_dir(home: &Path) -> std::path::PathBuf {
-    home.join(".config/kilo")
+    home.join(".config").join("kilo")
 }
 
 fn kilo_config_path(home: &Path) -> std::path::PathBuf {

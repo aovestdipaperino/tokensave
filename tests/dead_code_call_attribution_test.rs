@@ -39,7 +39,7 @@ async fn typescript_module_level_call_keeps_its_target_alive() {
     let dir = TempDir::new().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
-        dir.path().join("src/toast.ts"),
+        dir.path().join("src").join("toast.ts"),
         r#"function registerHandlers(): void {
   console.log("registered");
 }
@@ -77,7 +77,7 @@ async fn typescript_calls_inside_a_const_initializer_callback_count() {
     let dir = TempDir::new().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
-        dir.path().join("src/favorites.ts"),
+        dir.path().join("src").join("favorites.ts"),
         r#"function loadFromStorage(): string[] {
   return [];
 }

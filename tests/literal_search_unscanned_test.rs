@@ -47,14 +47,14 @@ async fn project_with_untracked_extensions() -> (TempDir, TokenSave) {
     let root = tmp.path().to_path_buf();
 
     git(&root, &["init", "-b", "master"]);
-    std::fs::create_dir_all(root.join("routes/templates")).unwrap();
+    std::fs::create_dir_all(root.join("routes").join("templates")).unwrap();
     std::fs::write(
         root.join("index.js"),
         "const features = { someFlag: true };\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("routes/templates/page.tmpl"),
+        root.join("routes").join("templates").join("page.tmpl"),
         "<div>{ k: 'someFlag' }</div>\n",
     )
     .unwrap();
@@ -178,7 +178,7 @@ async fn adding_the_extension_makes_the_file_searchable_and_shrinks_the_report()
     let (tmp, cg) = project_with_untracked_extensions().await;
     drop(cg);
 
-    let config_path = tmp.path().join(".tokensave/config.json");
+    let config_path = tmp.path().join(".tokensave").join("config.json");
     let mut config: Value =
         serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
     config["artifact_extensions"]
@@ -235,7 +235,7 @@ async fn a_deliberately_excluded_file_is_not_reported_as_unscanned() {
     let (tmp, cg) = project_with_untracked_extensions().await;
     drop(cg);
 
-    let config_path = tmp.path().join(".tokensave/config.json");
+    let config_path = tmp.path().join(".tokensave").join("config.json");
     let mut config: Value =
         serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
     config["exclude"]

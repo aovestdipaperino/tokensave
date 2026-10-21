@@ -23,7 +23,7 @@ async fn setup_godot_project() -> (TempDir, TokenSave) {
     fs::create_dir_all(project.join("src")).unwrap();
 
     fs::write(
-        project.join("src/registry.cpp"),
+        project.join("src").join("registry.cpp"),
         r#"
 #include <godot_cpp/classes/object.hpp>
 using namespace godot;
@@ -54,7 +54,7 @@ void MyRegistry::_bind_methods() {
     .unwrap();
 
     fs::write(
-        project.join("src/game.gd"),
+        project.join("src").join("game.gd"),
         r#"
 extends Node
 

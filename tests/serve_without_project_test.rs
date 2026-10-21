@@ -35,7 +35,7 @@ fn init_project(home: &Path, symbol: &str) -> TempDir {
     let project = TempDir::new().expect("temp project");
     std::fs::create_dir_all(project.path().join("src")).expect("create src");
     std::fs::write(
-        project.path().join("src/lib.rs"),
+        project.path().join("src").join("lib.rs"),
         format!("pub fn {symbol}() -> u32 {{ 1 }}\n"),
     )
     .expect("write source");

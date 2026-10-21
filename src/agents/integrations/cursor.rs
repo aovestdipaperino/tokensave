@@ -38,7 +38,7 @@ impl AgentIntegration for CursorIntegration {
     }
 
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let mcp_path = ctx.base_dir().join(".cursor/mcp.json");
+        let mcp_path = ctx.base_dir().join(".cursor").join("mcp.json");
 
         if let Some(parent) = mcp_path.parent() {
             std::fs::create_dir_all(parent).ok();
@@ -80,7 +80,7 @@ impl AgentIntegration for CursorIntegration {
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let mcp_path = ctx.base_dir().join(".cursor/mcp.json");
+        let mcp_path = ctx.base_dir().join(".cursor").join("mcp.json");
         uninstall_mcp_server(&mcp_path);
 
         let hooks_path = cursor_hooks_path_for(ctx);
@@ -103,7 +103,7 @@ impl AgentIntegration for CursorIntegration {
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
-        Some(home.join(".cursor/mcp.json"))
+        Some(home.join(".cursor").join("mcp.json"))
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {
@@ -116,11 +116,11 @@ impl AgentIntegration for CursorIntegration {
 // ---------------------------------------------------------------------------
 
 fn cursor_hooks_path_for(ctx: &InstallContext) -> PathBuf {
-    ctx.base_dir().join(".cursor/hooks.json")
+    ctx.base_dir().join(".cursor").join("hooks.json")
 }
 
 fn cursor_hooks_path(home: &Path) -> PathBuf {
-    home.join(".cursor/hooks.json")
+    home.join(".cursor").join("hooks.json")
 }
 
 fn hook_command(tokensave_bin: &str, subcommand: &str) -> String {
@@ -128,7 +128,7 @@ fn hook_command(tokensave_bin: &str, subcommand: &str) -> String {
 }
 
 fn cursor_has_mcp(home: &Path) -> bool {
-    let mcp_path = home.join(".cursor/mcp.json");
+    let mcp_path = home.join(".cursor").join("mcp.json");
     if !mcp_path.exists() {
         return false;
     }
@@ -368,7 +368,7 @@ fn uninstall_mcp_server(mcp_path: &Path) {
 
 /// Check ~/.cursor/mcp.json has tokensave MCP server registered.
 fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
-    let mcp_path = home.join(".cursor/mcp.json");
+    let mcp_path = home.join(".cursor").join("mcp.json");
 
     if !mcp_path.exists() {
         dc.warn(&format!(

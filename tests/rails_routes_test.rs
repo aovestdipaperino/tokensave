@@ -56,7 +56,10 @@ async fn rails_route_local_visibility_literals_and_unknown_lists_are_safe() {
     ] {
         let root = project();
         fs::write(
-            root.path().join("app/controllers/notes_controller.rb"),
+            root.path()
+                .join("app")
+                .join("controllers")
+                .join("notes_controller.rb"),
             format!("class NotesController\n def show; end\n {directive}\nend\n"),
         )
         .unwrap();
@@ -79,15 +82,21 @@ async fn rails_route_local_visibility_literals_and_unknown_lists_are_safe() {
 #[tokio::test]
 async fn rails_route_backfill_waits_for_indexable_routes() {
     let root = project();
-    fs::remove_file(root.path().join("config/routes.rb")).unwrap();
-    fs::create_dir_all(root.path().join("config/initializers")).unwrap();
+    fs::remove_file(root.path().join("config").join("routes.rb")).unwrap();
+    fs::create_dir_all(root.path().join("config").join("initializers")).unwrap();
     fs::write(
-        root.path().join("config/initializers/inflections.rb"),
+        root.path()
+            .join("config")
+            .join("initializers")
+            .join("inflections.rb"),
         "# Default inflections\n",
     )
     .unwrap();
     fs::write(
-        root.path().join("app/controllers/visibility.rb"),
+        root.path()
+            .join("app")
+            .join("controllers")
+            .join("visibility.rb"),
         "class NotesController\n private :show\nend\n",
     )
     .unwrap();
@@ -108,7 +117,7 @@ async fn rails_route_backfill_waits_for_indexable_routes() {
             .is_none());
     }
     fs::write(
-        root.path().join("config/routes.rb"),
+        root.path().join("config").join("routes.rb"),
         "Rails.application.routes.draw do\n get '/notes', to: 'notes#show'\nend\n",
     )
     .unwrap();
@@ -137,7 +146,10 @@ async fn rails_route_backfill_waits_for_indexable_routes() {
 async fn rails_visibility_backfill_reextracts_unchanged_controller_inputs() {
     let root = project();
     fs::write(
-        root.path().join("app/controllers/visibility.rb"),
+        root.path()
+            .join("app")
+            .join("controllers")
+            .join("visibility.rb"),
         "class NotesController\n private :show\nend\n",
     )
     .unwrap();
@@ -178,7 +190,11 @@ async fn rails_route_reopening_visibility_stays_unresolved_and_clears_on_deletio
         let graph = TokenSave::init(root.path()).await.unwrap();
         graph.index_all().await.unwrap();
         assert_eq!(route_edges(&graph).await.len(), 1);
-        let reopening = root.path().join("app/controllers/visibility.rb");
+        let reopening = root
+            .path()
+            .join("app")
+            .join("controllers")
+            .join("visibility.rb");
         fs::write(
             &reopening,
             format!("class NotesController\n {directive}\nend\n"),
@@ -213,7 +229,10 @@ async fn rails_route_reopening_visibility_stays_unresolved_and_clears_on_deletio
     ] {
         let root = project();
         fs::write(
-            root.path().join("app/controllers/visibility.rb"),
+            root.path()
+                .join("app")
+                .join("controllers")
+                .join("visibility.rb"),
             format!("class NotesController\n {directive}\nend\n"),
         )
         .unwrap();
@@ -320,13 +339,13 @@ end
 fn project() -> TempDir {
     let root = tempdir().unwrap();
     fs::create_dir_all(root.path().join("config")).unwrap();
-    fs::create_dir_all(root.path().join("app/controllers")).unwrap();
+    fs::create_dir_all(root.path().join("app").join("controllers")).unwrap();
     fs::write(
-        root.path().join("config/routes.rb"),
+        root.path().join("config").join("routes.rb"),
         "Rails.application.routes.draw do\n  get '/notes/:id', to: 'notes#show'\nend\n",
     )
     .unwrap();
-    fs::write(root.path().join("app/controllers/notes_controller.rb"), "class NotesController < ApplicationController\n  def show\n    load_note()\n  end\n  def load_note; end\nend\n").unwrap();
+    fs::write(root.path().join("app").join("controllers").join("notes_controller.rb"), "class NotesController < ApplicationController\n  def show\n    load_note()\n  end\n  def load_note; end\nend\n").unwrap();
     root
 }
 
@@ -349,9 +368,12 @@ async fn rails_route_action_renames_are_blocked_without_editing_router_tokens() 
             "Rails.application.routes.draw do\n get '/sample', to: 'notes#{action}'\nend\n"
         );
         let controller = format!("class NotesController\n def {action}; end\nend\n");
-        fs::write(root.path().join("config/routes.rb"), &routes).unwrap();
+        fs::write(root.path().join("config").join("routes.rb"), &routes).unwrap();
         fs::write(
-            root.path().join("app/controllers/notes_controller.rb"),
+            root.path()
+                .join("app")
+                .join("controllers")
+                .join("notes_controller.rb"),
             &controller,
         )
         .unwrap();
@@ -391,12 +413,17 @@ async fn rails_route_action_renames_are_blocked_without_editing_router_tokens() 
             assert!(!outcome.applied);
             assert!(outcome.refused.unwrap().contains("route target literals"));
             assert_eq!(
-                fs::read_to_string(root.path().join("config/routes.rb")).unwrap(),
+                fs::read_to_string(root.path().join("config").join("routes.rb")).unwrap(),
                 routes
             );
             assert_eq!(
-                fs::read_to_string(root.path().join("app/controllers/notes_controller.rb"))
-                    .unwrap(),
+                fs::read_to_string(
+                    root.path()
+                        .join("app")
+                        .join("controllers")
+                        .join("notes_controller.rb")
+                )
+                .unwrap(),
                 controller
             );
         }
@@ -652,8 +679,8 @@ fn rails_routes_reject_each_unsupported_static_boundary() {
 #[tokio::test]
 async fn rails_routes_validate_controller_prefixes_after_scope_expansion() {
     let root = project();
-    fs::write(root.path().join("app/controllers/prefixed.rb"), "module Api\n class HealthController\n  def ping; end\n end\nend\nmodule Admin\n class HealthController\n  def ping; end\n end\nend\n").unwrap();
-    fs::write(root.path().join("config/routes.rb"), "Rails.application.routes.draw do\n scope module: 'Api' do\n  get 'ping', to: 'health#ping'\n end\n namespace 'Admin' do\n  get 'ping', to: 'health#ping'\n end\n scope module: 'api' do\n  get 'ping', to: 'health#ping'\n end\nend\n").unwrap();
+    fs::write(root.path().join("app").join("controllers").join("prefixed.rb"), "module Api\n class HealthController\n  def ping; end\n end\nend\nmodule Admin\n class HealthController\n  def ping; end\n end\nend\n").unwrap();
+    fs::write(root.path().join("config").join("routes.rb"), "Rails.application.routes.draw do\n scope module: 'Api' do\n  get 'ping', to: 'health#ping'\n end\n namespace 'Admin' do\n  get 'ping', to: 'health#ping'\n end\n scope module: 'api' do\n  get 'ping', to: 'health#ping'\n end\nend\n").unwrap();
     let graph = TokenSave::init(root.path()).await.unwrap();
     graph.index_all().await.unwrap();
     let edges = route_edges(&graph).await;
@@ -720,14 +747,18 @@ fn rails_route_inflection_evidence_survives_diagnostic_changes_and_serialization
 #[tokio::test]
 async fn rails_route_search_keeps_controller_definitions_visible() {
     let root = project();
-    fs::create_dir_all(root.path().join("app/models")).unwrap();
-    fs::write(root.path().join("app/models/user.rb"), "class User; end\n").unwrap();
-    fs::write(root.path().join("app/controllers/users_controller.rb"), "class UsersController\n def index; end\nend\nmodule Admin\n class UsersController\n  def index; end\n end\nend\n").unwrap();
+    fs::create_dir_all(root.path().join("app").join("models")).unwrap();
+    fs::write(
+        root.path().join("app").join("models").join("user.rb"),
+        "class User; end\n",
+    )
+    .unwrap();
+    fs::write(root.path().join("app").join("controllers").join("users_controller.rb"), "class UsersController\n def index; end\nend\nmodule Admin\n class UsersController\n  def index; end\n end\nend\n").unwrap();
     let declarations: String = (0..14)
         .map(|i| format!(" get '/users/{i}', to: 'users#index'\n"))
         .collect();
     fs::write(
-        root.path().join("config/routes.rb"),
+        root.path().join("config").join("routes.rb"),
         format!("Rails.application.routes.draw do\n{declarations}end\n"),
     )
     .unwrap();
@@ -770,7 +801,7 @@ async fn rails_routes_reject_reserved_dispatch_segments_in_complete_paths() {
     ] {
         let root = project();
         fs::write(
-            root.path().join("config/routes.rb"),
+            root.path().join("config").join("routes.rb"),
             format!("Rails.application.routes.draw do\n {declaration}\nend\n"),
         )
         .unwrap();
@@ -800,7 +831,7 @@ async fn rails_route_diagnostics_clear_when_unsupported_only_file_is_deleted() {
     for deletion in ["sync", "stale", "database"] {
         let root = project();
         fs::write(
-            root.path().join("config/routes.rb"),
+            root.path().join("config").join("routes.rb"),
             "Rails.application.routes.draw do\n resources :notes, shallow: true\nend\n",
         )
         .unwrap();
@@ -822,7 +853,7 @@ async fn rails_route_diagnostics_clear_when_unsupported_only_file_is_deleted() {
                 .unwrap()
                 .is_empty()
         );
-        fs::remove_file(root.path().join("config/routes.rb")).unwrap();
+        fs::remove_file(root.path().join("config").join("routes.rb")).unwrap();
         match deletion {
             "sync" => {
                 graph.sync().await.unwrap();
@@ -881,9 +912,12 @@ async fn rails_route_failures_retry_and_inflection_changes_invalidate_links() {
         false
     );
 
-    fs::create_dir_all(root.path().join("config/initializers")).unwrap();
+    fs::create_dir_all(root.path().join("config").join("initializers")).unwrap();
     fs::write(
-        root.path().join("config/initializers/inflections.rb"),
+        root.path()
+            .join("config")
+            .join("initializers")
+            .join("inflections.rb"),
         "ActiveSupport::Inflector.inflections(:en) do |inflect|\n inflect.acronym 'API'\nend\n",
     )
     .unwrap();
@@ -894,7 +928,13 @@ async fn rails_route_failures_retry_and_inflection_changes_invalidate_links() {
             ["custom-inflections"],
         1
     );
-    fs::remove_file(root.path().join("config/initializers/inflections.rb")).unwrap();
+    fs::remove_file(
+        root.path()
+            .join("config")
+            .join("initializers")
+            .join("inflections.rb"),
+    )
+    .unwrap();
     graph.sync().await.unwrap();
     assert_eq!(route_edges(&graph).await.len(), 1);
 }
@@ -902,7 +942,7 @@ async fn rails_route_failures_retry_and_inflection_changes_invalidate_links() {
 #[tokio::test]
 async fn rails_routes_reject_unrelated_singleton_and_inherited_actions() {
     let root = project();
-    fs::write(root.path().join("app/controllers/notes_controller.rb"), "class BaseController\n def show; end\nend\nclass NotesController < BaseController\n def self.show; end\nend\nclass OtherController\n def show; end\nend\n").unwrap();
+    fs::write(root.path().join("app").join("controllers").join("notes_controller.rb"), "class BaseController\n def show; end\nend\nclass NotesController < BaseController\n def self.show; end\nend\nclass OtherController\n def show; end\nend\n").unwrap();
     let graph = TokenSave::init(root.path()).await.unwrap();
     graph.index_all().await.unwrap();
     assert!(route_edges(&graph).await.is_empty());
@@ -912,20 +952,32 @@ async fn rails_routes_reject_unrelated_singleton_and_inherited_actions() {
         1
     );
     fs::write(
-        root.path().join("app/controllers/reopened.rb"),
+        root.path()
+            .join("app")
+            .join("controllers")
+            .join("reopened.rb"),
         "class NotesController\n def show; end\nend\n",
     )
     .unwrap();
     graph.sync().await.unwrap();
     assert!(route_edges(&graph).await.is_empty());
     fs::write(
-        root.path().join("app/controllers/notes_controller.rb"),
+        root.path()
+            .join("app")
+            .join("controllers")
+            .join("notes_controller.rb"),
         "class NotesController; end\n",
     )
     .unwrap();
     graph.sync().await.unwrap();
     assert_eq!(route_edges(&graph).await.len(), 1);
-    fs::remove_file(root.path().join("app/controllers/reopened.rb")).unwrap();
+    fs::remove_file(
+        root.path()
+            .join("app")
+            .join("controllers")
+            .join("reopened.rb"),
+    )
+    .unwrap();
     graph.sync().await.unwrap();
     assert!(route_edges(&graph).await.is_empty());
     assert_eq!(
@@ -933,7 +985,13 @@ async fn rails_routes_reject_unrelated_singleton_and_inherited_actions() {
             ["missing-action"],
         1
     );
-    fs::remove_file(root.path().join("app/controllers/notes_controller.rb")).unwrap();
+    fs::remove_file(
+        root.path()
+            .join("app")
+            .join("controllers")
+            .join("notes_controller.rb"),
+    )
+    .unwrap();
     graph.sync().await.unwrap();
     assert_eq!(
         graph.db().rails_route_status().await.unwrap().unwrap()["counts_by_status"]
@@ -945,9 +1003,12 @@ async fn rails_routes_reject_unrelated_singleton_and_inherited_actions() {
 #[tokio::test]
 async fn rails_route_reference_backfill_preserves_the_existing_schema() {
     let root = project();
-    fs::create_dir_all(root.path().join("config/initializers")).unwrap();
+    fs::create_dir_all(root.path().join("config").join("initializers")).unwrap();
     fs::write(
-        root.path().join("config/initializers/inflections.rb"),
+        root.path()
+            .join("config")
+            .join("initializers")
+            .join("inflections.rb"),
         "# Default inflections\n",
     )
     .unwrap();
@@ -1075,14 +1136,20 @@ async fn rails_routes_link_exact_actions_and_restore_after_edits() {
         .unwrap();
     assert_eq!(route_edges(&graph).await.len(), 1);
     fs::write(
-        root.path().join("app/controllers/notes_controller.rb"),
+        root.path()
+            .join("app")
+            .join("controllers")
+            .join("notes_controller.rb"),
         "class NotesController\n  private\n  def show; end\nend\n",
     )
     .unwrap();
     graph.sync().await.unwrap();
     assert!(route_edges(&graph).await.is_empty());
     fs::write(
-        root.path().join("app/controllers/notes_controller.rb"),
+        root.path()
+            .join("app")
+            .join("controllers")
+            .join("notes_controller.rb"),
         "class NotesController\n  def show; end\nend\n",
     )
     .unwrap();
@@ -1092,19 +1159,28 @@ async fn rails_routes_link_exact_actions_and_restore_after_edits() {
         .unwrap());
     assert_eq!(route_edges(&graph).await.len(), 1);
     fs::write(
-        root.path().join("app/controllers/reopened.rb"),
+        root.path()
+            .join("app")
+            .join("controllers")
+            .join("reopened.rb"),
         "class NotesController\n def show; end\nend\n",
     )
     .unwrap();
     graph.sync().await.unwrap();
     assert!(route_edges(&graph).await.is_empty());
-    fs::remove_file(root.path().join("app/controllers/reopened.rb")).unwrap();
+    fs::remove_file(
+        root.path()
+            .join("app")
+            .join("controllers")
+            .join("reopened.rb"),
+    )
+    .unwrap();
     graph.sync().await.unwrap();
     assert_eq!(route_edges(&graph).await.len(), 1);
     let before = canonical(&graph).await;
     graph.index_all().await.unwrap();
     assert_eq!(before, canonical(&graph).await);
-    fs::remove_file(root.path().join("config/routes.rb")).unwrap();
+    fs::remove_file(root.path().join("config").join("routes.rb")).unwrap();
     graph.sync().await.unwrap();
     assert!(route_edges(&graph).await.is_empty());
     assert_eq!(
@@ -1136,10 +1212,12 @@ async fn rails_route_edits_moves_and_restart_match_full_index() {
     graph.index_all().await.unwrap();
     assert_eq!(edited, canonical(&graph).await);
 
-    fs::write(root.path().join("config/routes.rb"), "Rails.application.routes.draw do\n namespace :admin do\n  get '/notes', to: 'notes#show'\n end\nend\n").unwrap();
+    fs::write(root.path().join("config").join("routes.rb"), "Rails.application.routes.draw do\n namespace :admin do\n  get '/notes', to: 'notes#show'\n end\nend\n").unwrap();
     fs::write(
         root.path()
-            .join("app/controllers/admin_notes_controller.rb"),
+            .join("app")
+            .join("controllers")
+            .join("admin_notes_controller.rb"),
         "module Admin\n class NotesController\n  def show; end\n end\nend\n",
     )
     .unwrap();
@@ -1155,8 +1233,10 @@ async fn rails_route_edits_moves_and_restart_match_full_index() {
 
     fs::rename(
         root.path()
-            .join("app/controllers/admin_notes_controller.rb"),
-        root.path().join("app/controllers/moved.rb"),
+            .join("app")
+            .join("controllers")
+            .join("admin_notes_controller.rb"),
+        root.path().join("app").join("controllers").join("moved.rb"),
     )
     .unwrap();
     graph.sync().await.unwrap();
@@ -1170,7 +1250,7 @@ async fn rails_route_edits_moves_and_restart_match_full_index() {
     assert_eq!(moved, canonical(&graph).await);
 
     fs::write(
-        root.path().join("config/routes.rb"),
+        root.path().join("config").join("routes.rb"),
         "Rails.application.routes.draw do\n get '/new', to: '/notes#show'\nend\n",
     )
     .unwrap();
@@ -1188,8 +1268,8 @@ async fn rails_route_edits_moves_and_restart_match_full_index() {
     assert_eq!(stale, canonical(&graph).await);
 
     fs::rename(
-        root.path().join("config/routes.rb"),
-        root.path().join("config/unloaded_routes.rb"),
+        root.path().join("config").join("routes.rb"),
+        root.path().join("config").join("unloaded_routes.rb"),
     )
     .unwrap();
     graph.sync().await.unwrap();
@@ -1400,11 +1480,19 @@ async fn rails_routes_follow_draw_files_engines_and_api_only_apps() {
     );
     graph.sync().await.unwrap();
     assert_eq!(route_counts(&graph).await["missing-controller"], 2);
-    fs::remove_file(root.path().join("engines/blog/lib/blog/engine.rb")).unwrap();
+    fs::remove_file(
+        root.path()
+            .join("engines")
+            .join("blog")
+            .join("lib")
+            .join("blog")
+            .join("engine.rb"),
+    )
+    .unwrap();
     graph.sync().await.unwrap();
     assert_eq!(route_counts(&graph).await["missing-engine"], 2);
     write(&root, "engines/blog/lib/blog/engine.rb", engine);
-    fs::remove_file(root.path().join("config/application.rb")).unwrap();
+    fs::remove_file(root.path().join("config").join("application.rb")).unwrap();
     graph.sync().await.unwrap();
     assert_eq!(route_counts(&graph).await["resolved"], 10);
     write(&root, "config/application.rb", "module App\n class Application < Rails::Application\n  config.api_only = true\n end\nend\n");
@@ -1506,7 +1594,11 @@ async fn rails_route_backfill_runs_once_even_when_a_file_is_skipped() {
         .await
         .unwrap();
     drop(graph);
-    let controller = root.path().join("app/controllers/notes_controller.rb");
+    let controller = root
+        .path()
+        .join("app")
+        .join("controllers")
+        .join("notes_controller.rb");
     let mut permissions = fs::metadata(&controller).unwrap().permissions();
     std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o000);
     fs::set_permissions(&controller, permissions.clone()).unwrap();

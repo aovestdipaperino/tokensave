@@ -34,13 +34,18 @@ fn claude_local_writes_project_files_only() {
     // Project files exist with tokensave registered.
     let mcp = read_json(&proj.path().join(".mcp.json"));
     assert!(mcp["mcpServers"]["tokensave"].is_object());
-    let settings = read_json(&proj.path().join(".claude/settings.json"));
+    let settings = read_json(&proj.path().join(".claude").join("settings.json"));
     assert!(settings["hooks"]["PreToolUse"].is_array());
     assert!(
         !proj.path().join("CLAUDE.md").exists(),
         "local install should not create/touch project CLAUDE.md"
     );
-    assert!(proj.path().join(".claude/rules/tokensave.md").exists());
+    assert!(proj
+        .path()
+        .join(".claude")
+        .join("rules")
+        .join("tokensave.md")
+        .exists());
 
     // Global config under home was NOT touched.
     assert!(
@@ -48,7 +53,7 @@ fn claude_local_writes_project_files_only() {
         "must not write global ~/.claude.json"
     );
     assert!(
-        !home.path().join(".claude/settings.json").exists(),
+        !home.path().join(".claude").join("settings.json").exists(),
         "must not write global settings"
     );
 }
@@ -93,10 +98,10 @@ fn cursor_local_writes_project_mcp_only() {
         force_permission_style: false,
     };
     get_integration("cursor").unwrap().install(&ctx).unwrap();
-    let mcp = read_json(&proj.path().join(".cursor/mcp.json"));
+    let mcp = read_json(&proj.path().join(".cursor").join("mcp.json"));
     assert!(mcp["mcpServers"]["tokensave"].is_object());
     assert!(
-        !home.path().join(".cursor/mcp.json").exists(),
+        !home.path().join(".cursor").join("mcp.json").exists(),
         "must not write global cursor config"
     );
 }
@@ -115,9 +120,9 @@ fn gemini_local_writes_project_settings() {
         force_permission_style: false,
     };
     get_integration("gemini").unwrap().install(&ctx).unwrap();
-    let settings = read_json(&proj.path().join(".gemini/settings.json"));
+    let settings = read_json(&proj.path().join(".gemini").join("settings.json"));
     assert!(settings["mcpServers"]["tokensave"].is_object());
-    assert!(!home.path().join(".gemini/settings.json").exists());
+    assert!(!home.path().join(".gemini").join("settings.json").exists());
 }
 
 #[test]
@@ -134,9 +139,14 @@ fn kiro_local_writes_workspace_mcp() {
         force_permission_style: false,
     };
     get_integration("kiro").unwrap().install(&ctx).unwrap();
-    let mcp = read_json(&proj.path().join(".kiro/settings/mcp.json"));
+    let mcp = read_json(&proj.path().join(".kiro").join("settings").join("mcp.json"));
     assert!(mcp["mcpServers"]["tokensave"].is_object());
-    assert!(!home.path().join(".kiro/settings/mcp.json").exists());
+    assert!(!home
+        .path()
+        .join(".kiro")
+        .join("settings")
+        .join("mcp.json")
+        .exists());
 }
 
 #[test]
@@ -153,7 +163,7 @@ fn zed_local_writes_project_settings() {
         force_permission_style: false,
     };
     get_integration("zed").unwrap().install(&ctx).unwrap();
-    let settings = read_json(&proj.path().join(".zed/settings.json"));
+    let settings = read_json(&proj.path().join(".zed").join("settings.json"));
     assert!(settings["context_servers"]["tokensave"].is_object());
 }
 
@@ -171,6 +181,6 @@ fn roo_local_writes_project_mcp() {
         force_permission_style: false,
     };
     get_integration("roo-code").unwrap().install(&ctx).unwrap();
-    let mcp = read_json(&proj.path().join(".roo/mcp.json"));
+    let mcp = read_json(&proj.path().join(".roo").join("mcp.json"));
     assert!(mcp["mcpServers"]["tokensave"].is_object());
 }

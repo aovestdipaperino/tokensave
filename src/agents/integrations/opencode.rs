@@ -224,16 +224,16 @@ fn opencode_config_path(home: &Path) -> std::path::PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         let xdg_path = std::path::PathBuf::from(&xdg);
         if xdg_path.starts_with(home) {
-            return xdg_path.join("opencode/opencode.json");
+            return xdg_path.join("opencode").join("opencode.json");
         }
     }
-    home.join(".config/opencode/opencode.json")
+    home.join(".config").join("opencode").join("opencode.json")
 }
 
 /// Returns the path to the global AGENTS.md prompt file.
 fn opencode_prompt_path(home: &Path) -> std::path::PathBuf {
-    let modern = home.join(".config/opencode/AGENTS.md");
-    if modern.exists() || home.join(".config/opencode").exists() {
+    let modern = home.join(".config").join("opencode").join("AGENTS.md");
+    if modern.exists() || home.join(".config").join("opencode").exists() {
         return modern;
     }
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {

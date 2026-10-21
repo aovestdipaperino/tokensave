@@ -26,7 +26,7 @@ async fn indexed_server() -> (tempfile::TempDir, Arc<McpServer>) {
     let dir = tempfile::TempDir::new().expect("tempdir");
     let project = dir.path();
     std::fs::create_dir_all(project.join("src")).expect("create src");
-    std::fs::write(project.join("src/main.rs"), "fn main() {}\n").expect("write src");
+    std::fs::write(project.join("src").join("main.rs"), "fn main() {}\n").expect("write src");
     let cg = TokenSave::init(project).await.expect("init");
     cg.index_all().await.expect("index");
     let server = McpServer::new(cg, None).await;
@@ -153,10 +153,10 @@ async fn a_cancelled_sync_stops_and_leaves_the_index_marked_stale() {
             result.is_err(),
             "in-flight cancellation must not publish a graph"
         );
-        assert!(project.join(".tokensave/dirty").exists());
+        assert!(project.join(".tokensave").join("dirty").exists());
         cg.index_all()
             .await
             .expect("recovery after in-flight cancellation");
-        assert!(!project.join(".tokensave/dirty").exists());
+        assert!(!project.join(".tokensave").join("dirty").exists());
     }
 }

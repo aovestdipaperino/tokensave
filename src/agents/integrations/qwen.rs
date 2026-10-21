@@ -75,7 +75,7 @@ impl AgentIntegration for QwenIntegration {
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
-        Some(home.join(".qwen/settings.json"))
+        Some(home.join(".qwen").join("settings.json"))
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {

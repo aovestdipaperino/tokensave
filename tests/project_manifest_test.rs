@@ -13,12 +13,19 @@ async fn index_with_manifest(manifest: &str) -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     fs::create_dir_all(project.join(".tokensave")).unwrap();
-    fs::create_dir_all(project.join("homedir/.bashrc.d")).unwrap();
-    fs::write(project.join("homedir/.bash_profile"), BASH_PROFILE).unwrap();
-    fs::write(project.join("homedir/.bashrc.d/prompt.shrc"), SHRC).unwrap();
+    fs::create_dir_all(project.join("homedir").join(".bashrc.d")).unwrap();
+    fs::write(project.join("homedir").join(".bash_profile"), BASH_PROFILE).unwrap();
+    fs::write(
+        project
+            .join("homedir")
+            .join(".bashrc.d")
+            .join("prompt.shrc"),
+        SHRC,
+    )
+    .unwrap();
     // A normal source file to prove default dispatch still works.
     fs::write(project.join("main.sh"), "regular_fn() { echo hi; }\n").unwrap();
-    fs::write(project.join(".tokensave/project.json"), manifest).unwrap();
+    fs::write(project.join(".tokensave").join("project.json"), manifest).unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -79,7 +86,7 @@ async fn manifest_external_absolute_path_is_indexed() {
     let project = dir.path();
     fs::create_dir_all(project.join(".tokensave")).unwrap();
     fs::write(project.join("main.sh"), "local_fn() { echo hi; }\n").unwrap();
-    fs::write(project.join(".tokensave/project.json"), manifest).unwrap();
+    fs::write(project.join(".tokensave").join("project.json"), manifest).unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -111,7 +118,7 @@ async fn unknown_language_fails_the_sync_loudly() {
     fs::create_dir_all(project.join(".tokensave")).unwrap();
     fs::write(project.join("main.sh"), "f() { echo hi; }\n").unwrap();
     fs::write(
-        project.join(".tokensave/project.json"),
+        project.join(".tokensave").join("project.json"),
         r#"{ "version": 1, "entries": [ { "path": "x/*.cfg", "language": "klingon" } ] }"#,
     )
     .unwrap();
@@ -136,7 +143,10 @@ async fn sync_picks_up_manifest_files_too() {
 
     // Add a new manifest-matched file after the initial index and sync.
     fs::write(
-        dir.path().join("homedir/.bashrc.d/aliases.shrc"),
+        dir.path()
+            .join("homedir")
+            .join(".bashrc.d")
+            .join("aliases.shrc"),
         "my_alias_fn() {\n    echo a\n}\n",
     )
     .unwrap();

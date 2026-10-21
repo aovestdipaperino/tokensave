@@ -571,7 +571,11 @@ mod tests {
     async fn claude_file_read_error_marks_coverage_partial() {
         let home_tmp = TempDir::new().unwrap();
         let db_tmp = TempDir::new().unwrap();
-        let projects = home_tmp.path().join(".claude/projects/project");
+        let projects = home_tmp
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join("project");
         std::fs::create_dir_all(&projects).unwrap();
         std::os::unix::fs::symlink(
             projects.join("missing-target"),

@@ -70,11 +70,11 @@ impl AgentIntegration for KimiIntegration {
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
-        Some(home.join(".kimi/mcp.json"))
+        Some(home.join(".kimi").join("mcp.json"))
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {
-        let mcp_path = home.join(".kimi/mcp.json");
+        let mcp_path = home.join(".kimi").join("mcp.json");
         if !mcp_path.exists() {
             return false;
         }

@@ -157,7 +157,7 @@ fn test_claude_install_creates_config() {
     assert!(args.iter().any(|v| v.as_str() == Some("serve")));
 
     // Check ~/.claude/settings.json exists with hook and permissions
-    let settings_path = home.join(".claude/settings.json");
+    let settings_path = home.join(".claude").join("settings.json");
     assert!(
         settings_path.exists(),
         "settings.json should exist after install"
@@ -178,10 +178,10 @@ fn test_claude_install_creates_config() {
     // Issue #256: rules live in a tokensave-owned managed file, not
     // appended to the user's CLAUDE.md.
     assert!(
-        !home.join(".claude/CLAUDE.md").exists(),
+        !home.join(".claude").join("CLAUDE.md").exists(),
         "install should not create/touch CLAUDE.md"
     );
-    let rules_path = home.join(".claude/rules/tokensave.md");
+    let rules_path = home.join(".claude").join("rules").join("tokensave.md");
     assert!(
         rules_path.exists(),
         "managed rules file should exist after install"
@@ -201,7 +201,7 @@ fn test_gemini_install_creates_config() {
     GeminiIntegration.install(&ctx).unwrap();
 
     // Check ~/.gemini/settings.json
-    let settings_path = home.join(".gemini/settings.json");
+    let settings_path = home.join(".gemini").join("settings.json");
     assert!(
         settings_path.exists(),
         "settings.json should exist after install"
@@ -220,7 +220,7 @@ fn test_gemini_install_creates_config() {
     );
 
     // Check GEMINI.md
-    let gemini_md = home.join(".gemini/GEMINI.md");
+    let gemini_md = home.join(".gemini").join("GEMINI.md");
     assert!(gemini_md.exists(), "GEMINI.md should exist after install");
     let md_content = std::fs::read_to_string(&gemini_md).unwrap();
     assert!(
@@ -237,7 +237,7 @@ fn test_qwen_install_creates_config() {
     QwenIntegration.install(&ctx).unwrap();
 
     // Check ~/.qwen/settings.json
-    let settings_path = home.join(".qwen/settings.json");
+    let settings_path = home.join(".qwen").join("settings.json");
     assert!(
         settings_path.exists(),
         "settings.json should exist after install"
@@ -256,7 +256,7 @@ fn test_qwen_install_creates_config() {
     );
 
     // Check QWEN.md
-    let qwen_md = home.join(".qwen/QWEN.md");
+    let qwen_md = home.join(".qwen").join("QWEN.md");
     assert!(qwen_md.exists(), "QWEN.md should exist after install");
     let md_content = std::fs::read_to_string(&qwen_md).unwrap();
     assert!(
@@ -273,7 +273,7 @@ fn test_codex_install_creates_config() {
     CodexIntegration.install(&ctx).unwrap();
 
     // Check ~/.codex/config.toml
-    let config_path = home.join(".codex/config.toml");
+    let config_path = home.join(".codex").join("config.toml");
     assert!(
         config_path.exists(),
         "config.toml should exist after install"
@@ -292,7 +292,7 @@ fn test_codex_install_creates_config() {
     );
 
     // Check AGENTS.md
-    let agents_md = home.join(".codex/AGENTS.md");
+    let agents_md = home.join(".codex").join("AGENTS.md");
     assert!(agents_md.exists(), "AGENTS.md should exist after install");
     let md_content = std::fs::read_to_string(&agents_md).unwrap();
     assert!(md_content.contains("tokensave"));
@@ -305,7 +305,7 @@ fn test_kimi_install_creates_config() {
     let ctx = make_install_ctx(home);
     KimiIntegration.install(&ctx).unwrap();
 
-    let mcp_path = home.join(".kimi/mcp.json");
+    let mcp_path = home.join(".kimi").join("mcp.json");
     assert!(mcp_path.exists(), "mcp.json should exist after install");
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
@@ -318,7 +318,7 @@ fn test_kimi_install_creates_config() {
         .unwrap();
     assert!(args.iter().any(|v| v.as_str() == Some("serve")));
 
-    let agents_md = home.join(".kimi/AGENTS.md");
+    let agents_md = home.join(".kimi").join("AGENTS.md");
     assert!(agents_md.exists(), "AGENTS.md should exist after install");
     let md_content = std::fs::read_to_string(&agents_md).unwrap();
     assert!(
@@ -334,7 +334,7 @@ fn test_kimi_install_then_uninstall() {
     let ctx = make_install_ctx(home);
 
     KimiIntegration.install(&ctx).unwrap();
-    let mcp_path = home.join(".kimi/mcp.json");
+    let mcp_path = home.join(".kimi").join("mcp.json");
     assert!(mcp_path.exists());
 
     KimiIntegration.uninstall(&ctx).unwrap();
@@ -344,7 +344,7 @@ fn test_kimi_install_then_uninstall() {
         "mcp.json with only tokensave should be removed on uninstall"
     );
 
-    let agents_md = home.join(".kimi/AGENTS.md");
+    let agents_md = home.join(".kimi").join("AGENTS.md");
     if agents_md.exists() {
         let content = std::fs::read_to_string(&agents_md).unwrap();
         assert!(
@@ -376,13 +376,13 @@ fn test_cursor_install_creates_config() {
     let ctx = make_install_ctx(home);
     CursorIntegration.install(&ctx).unwrap();
 
-    let mcp_path = home.join(".cursor/mcp.json");
+    let mcp_path = home.join(".cursor").join("mcp.json");
     assert!(mcp_path.exists(), "mcp.json should exist after install");
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
     assert!(content["mcpServers"]["tokensave"].is_object());
 
-    let hooks_path = home.join(".cursor/hooks.json");
+    let hooks_path = home.join(".cursor").join("hooks.json");
     assert!(hooks_path.exists(), "hooks.json should exist after install");
     let hooks: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
@@ -399,7 +399,7 @@ fn test_cursor_install_creates_config() {
 fn test_cursor_install_preserves_foreign_hooks() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
-    let hooks_path = home.join(".cursor/hooks.json");
+    let hooks_path = home.join(".cursor").join("hooks.json");
     std::fs::create_dir_all(hooks_path.parent().unwrap()).unwrap();
     std::fs::write(
         &hooks_path,
@@ -440,7 +440,7 @@ fn test_cursor_uninstall_removes_only_tokensave_hooks() {
     CursorIntegration.install(&ctx).unwrap();
     CursorIntegration.uninstall(&ctx).unwrap();
 
-    let hooks_path = home.join(".cursor/hooks.json");
+    let hooks_path = home.join(".cursor").join("hooks.json");
     assert!(
         !hooks_path.exists() || {
             let hooks: serde_json::Value =
@@ -469,9 +469,13 @@ fn test_zed_install_creates_config() {
     // On macOS: ~/Library/Application Support/Zed/settings.json
     // On linux: ~/.config/zed/settings.json
     #[cfg(target_os = "macos")]
-    let settings_path = home.join("Library/Application Support/Zed/settings.json");
+    let settings_path = home
+        .join("Library")
+        .join("Application Support")
+        .join("Zed")
+        .join("settings.json");
     #[cfg(not(target_os = "macos"))]
-    let settings_path = home.join(".config/zed/settings.json");
+    let settings_path = home.join(".config").join("zed").join("settings.json");
 
     assert!(
         settings_path.exists(),
@@ -491,13 +495,29 @@ fn test_cline_install_creates_config() {
 
     // Cline uses VS Code extension global storage
     #[cfg(target_os = "macos")]
-    let settings_path = home.join("Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
+    let settings_path = home
+        .join("Library")
+        .join("Application Support")
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("saoudrizwan.claude-dev")
+        .join("settings")
+        .join("cline_mcp_settings.json");
     #[cfg(target_os = "linux")]
     let settings_path = home.join(
         ".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
     );
     #[cfg(target_os = "windows")]
-    let settings_path = home.join("AppData/Roaming/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
+    let settings_path = home
+        .join("AppData")
+        .join("Roaming")
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("saoudrizwan.claude-dev")
+        .join("settings")
+        .join("cline_mcp_settings.json");
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     let settings_path = home.join(
         ".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
@@ -520,13 +540,43 @@ fn test_roo_code_install_creates_config() {
     RooCodeIntegration.install(&ctx).unwrap();
 
     #[cfg(target_os = "macos")]
-    let settings_path = home.join("Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
+    let settings_path = home
+        .join("Library")
+        .join("Application Support")
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("rooveterinaryinc.roo-cline")
+        .join("settings")
+        .join("cline_mcp_settings.json");
     #[cfg(target_os = "linux")]
-    let settings_path = home.join(".config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
+    let settings_path = home
+        .join(".config")
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("rooveterinaryinc.roo-cline")
+        .join("settings")
+        .join("cline_mcp_settings.json");
     #[cfg(target_os = "windows")]
-    let settings_path = home.join("AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
+    let settings_path = home
+        .join("AppData")
+        .join("Roaming")
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("rooveterinaryinc.roo-cline")
+        .join("settings")
+        .join("cline_mcp_settings.json");
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    let settings_path = home.join(".config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
+    let settings_path = home
+        .join(".config")
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("rooveterinaryinc.roo-cline")
+        .join("settings")
+        .join("cline_mcp_settings.json");
 
     assert!(
         settings_path.exists(),
@@ -546,13 +596,31 @@ fn test_copilot_install_creates_config() {
 
     // Check VS Code's dedicated mcp.json (1.102+, GA MCP — issue #266)
     #[cfg(target_os = "macos")]
-    let vscode_mcp_json = home.join("Library/Application Support/Code/User/mcp.json");
+    let vscode_mcp_json = home
+        .join("Library")
+        .join("Application Support")
+        .join("Code")
+        .join("User")
+        .join("mcp.json");
     #[cfg(target_os = "linux")]
-    let vscode_mcp_json = home.join(".config/Code/User/mcp.json");
+    let vscode_mcp_json = home
+        .join(".config")
+        .join("Code")
+        .join("User")
+        .join("mcp.json");
     #[cfg(target_os = "windows")]
-    let vscode_mcp_json = home.join("AppData/Roaming/Code/User/mcp.json");
+    let vscode_mcp_json = home
+        .join("AppData")
+        .join("Roaming")
+        .join("Code")
+        .join("User")
+        .join("mcp.json");
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    let vscode_mcp_json = home.join(".config/Code/User/mcp.json");
+    let vscode_mcp_json = home
+        .join(".config")
+        .join("Code")
+        .join("User")
+        .join("mcp.json");
 
     assert!(vscode_mcp_json.exists(), "VS Code mcp.json should exist");
     let content: serde_json::Value =
@@ -560,7 +628,7 @@ fn test_copilot_install_creates_config() {
     assert!(content["servers"]["tokensave"].is_object());
 
     // Check CLI config
-    let cli_config = home.join(".copilot/mcp-config.json");
+    let cli_config = home.join(".copilot").join("mcp-config.json");
     assert!(cli_config.exists(), "Copilot CLI config should exist");
     let cli_content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cli_config).unwrap()).unwrap();
@@ -574,7 +642,7 @@ fn test_vibe_install_creates_config() {
     let ctx = make_install_ctx(home);
     VibeIntegration.install(&ctx).unwrap();
 
-    let config_path = home.join(".vibe/config.toml");
+    let config_path = home.join(".vibe").join("config.toml");
     assert!(
         config_path.exists(),
         "config.toml should exist after install"
@@ -594,7 +662,7 @@ fn test_vibe_install_creates_config() {
     );
 
     // Check prompt rules
-    let prompt_path = home.join(".vibe/prompts/cli.md");
+    let prompt_path = home.join(".vibe").join("prompts").join("cli.md");
     assert!(
         prompt_path.exists(),
         "Vibe prompt should exist after install"
@@ -648,7 +716,7 @@ fn test_gemini_install_then_uninstall() {
     let ctx = make_install_ctx(home);
 
     GeminiIntegration.install(&ctx).unwrap();
-    let settings_path = home.join(".gemini/settings.json");
+    let settings_path = home.join(".gemini").join("settings.json");
     assert!(settings_path.exists());
 
     GeminiIntegration.uninstall(&ctx).unwrap();
@@ -668,7 +736,7 @@ fn test_gemini_install_then_uninstall() {
     }
 
     // GEMINI.md should be removed (was only tokensave rules)
-    let gemini_md = home.join(".gemini/GEMINI.md");
+    let gemini_md = home.join(".gemini").join("GEMINI.md");
     if gemini_md.exists() {
         let content = std::fs::read_to_string(&gemini_md).unwrap();
         assert!(
@@ -685,7 +753,7 @@ fn test_qwen_install_then_uninstall() {
     let ctx = make_install_ctx(home);
 
     QwenIntegration.install(&ctx).unwrap();
-    let settings_path = home.join(".qwen/settings.json");
+    let settings_path = home.join(".qwen").join("settings.json");
     assert!(settings_path.exists());
 
     QwenIntegration.uninstall(&ctx).unwrap();
@@ -705,7 +773,7 @@ fn test_qwen_install_then_uninstall() {
     }
 
     // QWEN.md should be removed (was only tokensave rules)
-    let qwen_md = home.join(".qwen/QWEN.md");
+    let qwen_md = home.join(".qwen").join("QWEN.md");
     if qwen_md.exists() {
         let content = std::fs::read_to_string(&qwen_md).unwrap();
         assert!(
@@ -722,7 +790,7 @@ fn test_codex_install_then_uninstall() {
     let ctx = make_install_ctx(home);
 
     CodexIntegration.install(&ctx).unwrap();
-    let config_path = home.join(".codex/config.toml");
+    let config_path = home.join(".codex").join("config.toml");
     assert!(config_path.exists());
 
     CodexIntegration.uninstall(&ctx).unwrap();
@@ -735,7 +803,7 @@ fn test_codex_install_then_uninstall() {
         "config.toml with only tokensave should be removed on uninstall"
     );
 
-    let agents_md = home.join(".codex/AGENTS.md");
+    let agents_md = home.join(".codex").join("AGENTS.md");
     if agents_md.exists() {
         let content = std::fs::read_to_string(&agents_md).unwrap();
         assert!(
@@ -753,7 +821,7 @@ fn test_codex_install_preserves_existing_config() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     std::fs::create_dir_all(home.join(".codex")).unwrap();
-    let config_path = home.join(".codex/config.toml");
+    let config_path = home.join(".codex").join("config.toml");
     let original = "\
 model = \"o4-mini\"
 approval_policy = \"on-failure\"
@@ -768,7 +836,7 @@ args = [\"--flag\"]
     CodexIntegration.install(&ctx).unwrap();
 
     // A backup of the original must exist.
-    let backup = home.join(".codex/config.toml.bak");
+    let backup = home.join(".codex").join("config.toml.bak");
     assert!(backup.exists(), "install must back up the existing config");
     assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
 
@@ -805,7 +873,7 @@ fn test_codex_install_refuses_unparseable_config() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     std::fs::create_dir_all(home.join(".codex")).unwrap();
-    let config_path = home.join(".codex/config.toml");
+    let config_path = home.join(".codex").join("config.toml");
     let original = "this is not valid TOML {{{{";
     std::fs::write(&config_path, original).unwrap();
 
@@ -957,7 +1025,7 @@ fn test_cursor_uninstall_backs_up_config_with_other_content() {
     let home = dir.path();
     let ctx = make_install_ctx(home);
 
-    let path = home.join(".cursor/mcp.json");
+    let path = home.join(".cursor").join("mcp.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let original = r#"{
   "mcpServers": {
@@ -970,7 +1038,7 @@ fn test_cursor_uninstall_backs_up_config_with_other_content() {
 
     CursorIntegration.uninstall(&ctx).unwrap();
 
-    let backup = home.join(".cursor/mcp.json.bak");
+    let backup = home.join(".cursor").join("mcp.json.bak");
     assert!(
         backup.exists(),
         "uninstall must back up the existing config before rewriting it"
@@ -1032,8 +1100,15 @@ fn test_antigravity_install_writes_cli_plugin() {
 
     AntigravityIntegration.install(&ctx).expect("install ok");
 
-    let ide_path = home.join(".gemini/antigravity/mcp_config.json");
-    let cli_path = home.join(".gemini/antigravity-cli/plugins/tokensave.json");
+    let ide_path = home
+        .join(".gemini")
+        .join("antigravity")
+        .join("mcp_config.json");
+    let cli_path = home
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("plugins")
+        .join("tokensave.json");
     assert!(
         ide_path.exists(),
         "IDE config must be written: {ide_path:?}"
@@ -1084,13 +1159,20 @@ fn test_antigravity_uninstall_removes_both_locations() {
     AntigravityIntegration.install(&ctx).unwrap();
     AntigravityIntegration.uninstall(&ctx).unwrap();
 
-    let cli_path = home.join(".gemini/antigravity-cli/plugins/tokensave.json");
+    let cli_path = home
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("plugins")
+        .join("tokensave.json");
     assert!(
         !cli_path.exists(),
         "CLI plugin file must be deleted, still exists at {cli_path:?}"
     );
 
-    let ide_path = home.join(".gemini/antigravity/mcp_config.json");
+    let ide_path = home
+        .join(".gemini")
+        .join("antigravity")
+        .join("mcp_config.json");
     // IDE config either deleted (empty) or rewritten without our entry —
     // both are acceptable; what's not acceptable is the entry persisting.
     if ide_path.exists() {
@@ -1163,7 +1245,7 @@ fn test_cursor_install_then_uninstall() {
     let ctx = make_install_ctx(home);
 
     CursorIntegration.install(&ctx).unwrap();
-    let mcp_path = home.join(".cursor/mcp.json");
+    let mcp_path = home.join(".cursor").join("mcp.json");
     assert!(mcp_path.exists());
 
     CursorIntegration.uninstall(&ctx).unwrap();
@@ -1190,7 +1272,7 @@ fn test_copilot_install_then_uninstall() {
     CopilotIntegration.uninstall(&ctx).unwrap();
 
     // CLI config should be cleaned up
-    let cli_config = home.join(".copilot/mcp-config.json");
+    let cli_config = home.join(".copilot").join("mcp-config.json");
     if cli_config.exists() {
         let content: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&cli_config).unwrap()).unwrap();
@@ -1211,7 +1293,7 @@ fn test_vibe_install_then_uninstall() {
     VibeIntegration.install(&ctx).unwrap();
     VibeIntegration.uninstall(&ctx).unwrap();
 
-    let config_path = home.join(".vibe/config.toml");
+    let config_path = home.join(".vibe").join("config.toml");
     if config_path.exists() {
         let content = std::fs::read_to_string(&config_path).unwrap();
         assert!(
@@ -1220,7 +1302,7 @@ fn test_vibe_install_then_uninstall() {
         );
     }
 
-    let prompt_path = home.join(".vibe/prompts/cli.md");
+    let prompt_path = home.join(".vibe").join("prompts").join("cli.md");
     if prompt_path.exists() {
         let content = std::fs::read_to_string(&prompt_path).unwrap();
         assert!(
@@ -1473,7 +1555,12 @@ fn test_safe_write_json_file() {
 #[test]
 fn test_safe_write_json_file_creates_parent_dirs() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("deep/nested/dir/output.json");
+    let path = dir
+        .path()
+        .join("deep")
+        .join("nested")
+        .join("dir")
+        .join("output.json");
     let value = serde_json::json!({"nested": true});
     safe_write_json_file(&path, &value, None).unwrap();
     assert!(path.exists());
@@ -1710,7 +1797,7 @@ fn test_is_detected_opencode() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     assert!(!OpenCodeIntegration.is_detected(home));
-    std::fs::create_dir_all(home.join(".config/opencode")).unwrap();
+    std::fs::create_dir_all(home.join(".config").join("opencode")).unwrap();
     assert!(OpenCodeIntegration.is_detected(home));
 }
 
@@ -1720,9 +1807,9 @@ fn test_is_detected_zed() {
     let home = dir.path();
     assert!(!ZedIntegration.is_detected(home));
     #[cfg(target_os = "macos")]
-    std::fs::create_dir_all(home.join("Library/Application Support/Zed")).unwrap();
+    std::fs::create_dir_all(home.join("Library").join("Application Support").join("Zed")).unwrap();
     #[cfg(not(target_os = "macos"))]
-    std::fs::create_dir_all(home.join(".config/zed")).unwrap();
+    std::fs::create_dir_all(home.join(".config").join("zed")).unwrap();
     assert!(ZedIntegration.is_detected(home));
 }
 
@@ -1772,7 +1859,7 @@ fn test_has_tokensave_codex() {
 
     let ctx = make_install_ctx(home);
     CodexIntegration.install(&ctx).unwrap();
-    assert!(home.join(".codex/config.toml").exists());
+    assert!(home.join(".codex").join("config.toml").exists());
     assert!(
         CodexIntegration.has_tokensave(home),
         "has_tokensave should detect tokensave after a clean install"
@@ -1841,9 +1928,10 @@ fn test_gemini_install_idempotent() {
     GeminiIntegration.install(&ctx).unwrap();
     GeminiIntegration.install(&ctx).unwrap();
 
-    let settings: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(home.join(".gemini/settings.json")).unwrap())
-            .unwrap();
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(home.join(".gemini").join("settings.json")).unwrap(),
+    )
+    .unwrap();
     assert!(settings["mcpServers"]["tokensave"].is_object());
 }
 
@@ -1902,7 +1990,7 @@ fn test_gemini_install_preserves_existing_settings() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
-    let settings_path = home.join(".gemini/settings.json");
+    let settings_path = home.join(".gemini").join("settings.json");
     std::fs::create_dir_all(home.join(".gemini")).unwrap();
     std::fs::write(
         &settings_path,

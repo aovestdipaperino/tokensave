@@ -33,17 +33,17 @@ async fn ambiguous_project() -> (tempfile::TempDir, TokenSave) {
     std::fs::create_dir_all(root.join("src")).unwrap();
 
     std::fs::write(
-        root.join("src/a.ts"),
+        root.join("src").join("a.ts"),
         "export class StatusBar {\n    dispose(): void {\n        console.log('bar');\n    }\n}\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("src/b.ts"),
+        root.join("src").join("b.ts"),
         "export class ProviderManager {\n    dispose(): void {\n        console.log('mgr');\n    }\n}\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("src/extension.ts"),
+        root.join("src").join("extension.ts"),
         "export class Extension {\n    deactivate(thing): void {\n        thing.dispose();\n    }\n}\n",
     )
     .unwrap();
@@ -135,12 +135,12 @@ async fn an_unambiguous_project_records_no_ambiguity() {
     let root = tmp.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
-        root.join("src/widget.ts"),
+        root.join("src").join("widget.ts"),
         "export class Widget {\n    render(): void {\n        console.log('w');\n    }\n}\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("src/app.ts"),
+        root.join("src").join("app.ts"),
         "import { Widget } from './widget';\n\
          export class App {\n    private widget = new Widget();\n\
          \n    start(): void {\n        this.widget.render();\n    }\n}\n",

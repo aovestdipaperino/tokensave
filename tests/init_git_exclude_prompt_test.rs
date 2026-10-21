@@ -37,7 +37,7 @@ fn run_init(dir: &std::path::Path, stdin_data: &str) -> String {
 fn sample_project() -> TempDir {
     let dir = TempDir::new().unwrap();
     std::fs::create_dir(dir.path().join("src")).unwrap();
-    std::fs::write(dir.path().join("src/lib.rs"), "pub fn hello() {}\n").unwrap();
+    std::fs::write(dir.path().join("src").join("lib.rs"), "pub fn hello() {}\n").unwrap();
     dir
 }
 

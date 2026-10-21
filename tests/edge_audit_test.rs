@@ -21,23 +21,23 @@ async fn fixture() -> (tempfile::TempDir, TokenSave) {
     std::fs::create_dir_all(root.join("util")).unwrap();
 
     std::fs::write(
-        root.join("ui/panel.py"),
+        root.join("ui").join("panel.py"),
         "import tkinter as tk\n\n\nclass Panel:\n    def writers(self):\n        t = self._txt\n\n        def p(s):\n            t.insert(tk.END, s)\n\n        return p\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("util/paths.py"),
+        root.join("util").join("paths.py"),
         "import os\n\n\ndef cache_dir(root):\n    p = os.path.join(root, \".cache\")\n    return p\n",
     )
     .unwrap();
     // The recall control: an explicitly imported cross-package name.
     std::fs::write(
-        root.join("ui/widgets.py"),
+        root.join("ui").join("widgets.py"),
         "def render_banner():\n    return \"banner\"\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("util/report.py"),
+        root.join("util").join("report.py"),
         "from ui.widgets import render_banner\n\n\ndef build():\n    return render_banner()\n",
     )
     .unwrap();

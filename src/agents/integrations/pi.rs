@@ -35,7 +35,7 @@ fn pi_agent_dir(home: &Path) -> PathBuf {
             return PathBuf::from(dir);
         }
     }
-    home.join(".pi/agent")
+    home.join(".pi").join("agent")
 }
 
 /// Returns the Pi MCP config path (`<agent-dir>/mcp.json`).

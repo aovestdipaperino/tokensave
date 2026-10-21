@@ -9,19 +9,33 @@ use crate::common::{make_install_ctx as make_ctx, read_json};
 fn vscode_settings_path(home: &Path) -> std::path::PathBuf {
     #[cfg(target_os = "macos")]
     {
-        home.join("Library/Application Support/Code/User/settings.json")
+        home.join("Library")
+            .join("Application Support")
+            .join("Code")
+            .join("User")
+            .join("settings.json")
     }
     #[cfg(target_os = "linux")]
     {
-        home.join(".config/Code/User/settings.json")
+        home.join(".config")
+            .join("Code")
+            .join("User")
+            .join("settings.json")
     }
     #[cfg(target_os = "windows")]
     {
-        home.join("AppData/Roaming/Code/User/settings.json")
+        home.join("AppData")
+            .join("Roaming")
+            .join("Code")
+            .join("User")
+            .join("settings.json")
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
-        home.join(".config/Code/User/settings.json")
+        home.join(".config")
+            .join("Code")
+            .join("User")
+            .join("settings.json")
     }
 }
 
@@ -30,19 +44,33 @@ fn vscode_settings_path(home: &Path) -> std::path::PathBuf {
 fn vscode_mcp_json_path(home: &Path) -> std::path::PathBuf {
     #[cfg(target_os = "macos")]
     {
-        home.join("Library/Application Support/Code/User/mcp.json")
+        home.join("Library")
+            .join("Application Support")
+            .join("Code")
+            .join("User")
+            .join("mcp.json")
     }
     #[cfg(target_os = "linux")]
     {
-        home.join(".config/Code/User/mcp.json")
+        home.join(".config")
+            .join("Code")
+            .join("User")
+            .join("mcp.json")
     }
     #[cfg(target_os = "windows")]
     {
-        home.join("AppData/Roaming/Code/User/mcp.json")
+        home.join("AppData")
+            .join("Roaming")
+            .join("Code")
+            .join("User")
+            .join("mcp.json")
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
-        home.join(".config/Code/User/mcp.json")
+        home.join(".config")
+            .join("Code")
+            .join("User")
+            .join("mcp.json")
     }
 }
 
@@ -50,19 +78,33 @@ fn vscode_mcp_json_path(home: &Path) -> std::path::PathBuf {
 fn vscode_insiders_mcp_json_path(home: &Path) -> std::path::PathBuf {
     #[cfg(target_os = "macos")]
     {
-        home.join("Library/Application Support/Code - Insiders/User/mcp.json")
+        home.join("Library")
+            .join("Application Support")
+            .join("Code - Insiders")
+            .join("User")
+            .join("mcp.json")
     }
     #[cfg(target_os = "linux")]
     {
-        home.join(".config/Code - Insiders/User/mcp.json")
+        home.join(".config")
+            .join("Code - Insiders")
+            .join("User")
+            .join("mcp.json")
     }
     #[cfg(target_os = "windows")]
     {
-        home.join("AppData/Roaming/Code - Insiders/User/mcp.json")
+        home.join("AppData")
+            .join("Roaming")
+            .join("Code - Insiders")
+            .join("User")
+            .join("mcp.json")
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
-        home.join(".config/Code - Insiders/User/mcp.json")
+        home.join(".config")
+            .join("Code - Insiders")
+            .join("User")
+            .join("mcp.json")
     }
 }
 
@@ -71,35 +113,48 @@ fn vscode_insiders_mcp_json_path(home: &Path) -> std::path::PathBuf {
 fn vscode_insiders_user_dir(home: &Path) -> std::path::PathBuf {
     #[cfg(target_os = "macos")]
     {
-        home.join("Library/Application Support/Code - Insiders/User")
+        home.join("Library")
+            .join("Application Support")
+            .join("Code - Insiders")
+            .join("User")
     }
     #[cfg(target_os = "linux")]
     {
-        home.join(".config/Code - Insiders/User")
+        home.join(".config").join("Code - Insiders").join("User")
     }
     #[cfg(target_os = "windows")]
     {
-        home.join("AppData/Roaming/Code - Insiders/User")
+        home.join("AppData")
+            .join("Roaming")
+            .join("Code - Insiders")
+            .join("User")
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
-        home.join(".config/Code - Insiders/User")
+        home.join(".config").join("Code - Insiders").join("User")
     }
 }
 
 fn cli_config_path(home: &Path) -> std::path::PathBuf {
-    home.join(".copilot/mcp-config.json")
+    home.join(".copilot").join("mcp-config.json")
 }
 
 /// Platform-specific path for the JetBrains plugin's mcp.json under the temp home.
 fn jetbrains_config_path(home: &Path) -> std::path::PathBuf {
     #[cfg(target_os = "windows")]
     {
-        home.join("AppData/Local/github-copilot/intellij/mcp.json")
+        home.join("AppData")
+            .join("Local")
+            .join("github-copilot")
+            .join("intellij")
+            .join("mcp.json")
     }
     #[cfg(not(target_os = "windows"))]
     {
-        home.join(".config/github-copilot/intellij/mcp.json")
+        home.join(".config")
+            .join("github-copilot")
+            .join("intellij")
+            .join("mcp.json")
     }
 }
 
@@ -1183,13 +1238,21 @@ fn test_is_detected_with_vscode_user_dir() {
     let home = dir.path();
     // Create the VS Code User dir
     #[cfg(target_os = "macos")]
-    let user_dir = home.join("Library/Application Support/Code/User");
+    let user_dir = home
+        .join("Library")
+        .join("Application Support")
+        .join("Code")
+        .join("User");
     #[cfg(target_os = "linux")]
-    let user_dir = home.join(".config/Code/User");
+    let user_dir = home.join(".config").join("Code").join("User");
     #[cfg(target_os = "windows")]
-    let user_dir = home.join("AppData/Roaming/Code/User");
+    let user_dir = home
+        .join("AppData")
+        .join("Roaming")
+        .join("Code")
+        .join("User");
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    let user_dir = home.join(".config/Code/User");
+    let user_dir = home.join(".config").join("Code").join("User");
 
     std::fs::create_dir_all(&user_dir).unwrap();
     assert!(

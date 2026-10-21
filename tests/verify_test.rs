@@ -75,7 +75,7 @@ async fn reports_dangling_dependencies_references_and_fingerprints() {
 #[tokio::test]
 async fn invalid_branch_metadata_and_missing_branch_database() {
     let (dir, _db) = project().await;
-    let meta = dir.path().join(".tokensave/branch-meta.json");
+    let meta = dir.path().join(".tokensave").join("branch-meta.json");
     std::fs::write(&meta, "{").unwrap();
     let report = verify(dir.path(), false, false).await;
     assert_eq!(report.exit_code(), 2);
@@ -101,7 +101,7 @@ async fn verification_and_unsupported_repair_do_not_write() {
     let (dir, db) = project().await;
     db.checkpoint().await.unwrap();
     drop(db);
-    let path = dir.path().join(".tokensave/tokensave.db");
+    let path = dir.path().join(".tokensave").join("tokensave.db");
     let before = std::fs::read(&path).unwrap();
     for _ in 0..3 {
         assert_eq!(verify(dir.path(), true, false).await.exit_code(), 0);
@@ -135,7 +135,11 @@ async fn schema_mismatch_and_corrupt_database_are_not_migrated() {
     );
     db.checkpoint().await.unwrap();
     drop(db);
-    std::fs::write(dir.path().join(".tokensave/tokensave.db"), "not sqlite").unwrap();
+    std::fs::write(
+        dir.path().join(".tokensave").join("tokensave.db"),
+        "not sqlite",
+    )
+    .unwrap();
     assert_eq!(verify(dir.path(), false, false).await.exit_code(), 2);
 }
 

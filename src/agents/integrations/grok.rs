@@ -70,7 +70,7 @@ impl AgentIntegration for GrokIntegration {
     }
 
     fn primary_config_path(&self, home: &Path) -> Option<std::path::PathBuf> {
-        Some(home.join(".grok/config.toml"))
+        Some(home.join(".grok").join("config.toml"))
     }
 
     fn has_tokensave(&self, home: &Path) -> bool {

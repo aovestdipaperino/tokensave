@@ -1077,7 +1077,7 @@ async fn setup_project() -> (TempDir, TokenSave) {
     fs::create_dir_all(project.join("src")).expect("failed to create src dir");
 
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         r#"
 use crate::utils::helper;
 mod utils;
@@ -1091,7 +1091,7 @@ fn main() {
     .expect("failed to write main.rs");
 
     fs::write(
-        project.join("src/utils.rs"),
+        project.join("src").join("utils.rs"),
         r#"
 /// Returns a greeting string.
 pub fn helper() -> String {

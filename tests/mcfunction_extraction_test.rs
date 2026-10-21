@@ -144,7 +144,7 @@ tellraw @a {\"text\":\"function example:nope\"}
 async fn test_mcfunction_end_to_end_call_edges() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    let fn_dir = project.join("data/example/function");
+    let fn_dir = project.join("data").join("example").join("function");
     fs::create_dir_all(&fn_dir).unwrap();
     fs::write(
         fn_dir.join("a.mcfunction"),

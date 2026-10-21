@@ -712,7 +712,7 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 pub fn discover_project_root(start: &Path) -> Option<PathBuf> {
     let mut dir = start.to_path_buf();
     loop {
-        if dir.join(".tokensave/tokensave.db").exists() {
+        if dir.join(".tokensave").join("tokensave.db").exists() {
             return Some(dir);
         }
         if !dir.pop() {

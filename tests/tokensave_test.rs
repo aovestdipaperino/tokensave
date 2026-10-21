@@ -23,7 +23,7 @@ async fn setup() -> (TempDir, TokenSave) {
     fs::create_dir_all(project.join("src")).unwrap();
 
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub fn foo() { bar(); }
 fn bar() {}
@@ -33,7 +33,7 @@ fn unused_private() {}
     .unwrap();
 
     fs::write(
-        project.join("src/utils.rs"),
+        project.join("src").join("utils.rs"),
         r#"
 use crate::lib::foo;
 pub fn helper() { foo(); }
@@ -103,7 +103,11 @@ async fn setup_single_db_project(symbol: &str) -> SelectedGraphFixture {
     let dir = TempDir::new().unwrap();
     let root = dir.path().to_path_buf();
     fs::create_dir_all(root.join("src")).unwrap();
-    fs::write(root.join("src/lib.rs"), format!("pub fn {symbol}() {{}}\n")).unwrap();
+    fs::write(
+        root.join("src").join("lib.rs"),
+        format!("pub fn {symbol}() {{}}\n"),
+    )
+    .unwrap();
 
     let graph = TokenSave::init(&root).await.unwrap();
     graph.index_all().await.unwrap();
@@ -118,7 +122,7 @@ async fn setup_tracked_branch_project() -> SelectedGraphFixture {
     let root = dir.path().to_path_buf();
     run_git(&root, &["init", "-b", "master"]);
     fs::create_dir_all(root.join("src")).unwrap();
-    fs::write(root.join("src/lib.rs"), "pub fn master_only() {}\n").unwrap();
+    fs::write(root.join("src").join("lib.rs"), "pub fn master_only() {}\n").unwrap();
     run_git(&root, &["add", "src/lib.rs"]);
     run_git(&root, &["commit", "-m", "initial"]);
 
@@ -131,14 +135,18 @@ async fn setup_tracked_branch_project() -> SelectedGraphFixture {
     fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
     fs::copy(
         tokensave_dir.join("tokensave.db"),
-        tokensave_dir.join("branches/feature.db"),
+        tokensave_dir.join("branches").join("feature.db"),
     )
     .unwrap();
     let mut meta = branch_meta::load_branch_meta(&tokensave_dir).unwrap();
     meta.add_branch("feature", "branches/feature.db", "master");
     branch_meta::save_branch_meta(&tokensave_dir, &meta).unwrap();
 
-    fs::write(root.join("src/lib.rs"), "pub fn feature_only() {}\n").unwrap();
+    fs::write(
+        root.join("src").join("lib.rs"),
+        "pub fn feature_only() {}\n",
+    )
+    .unwrap();
     let feature = TokenSave::open_branch(&root, "feature").await.unwrap();
     feature.index_all().await.unwrap();
     feature.checkpoint().await.unwrap();
@@ -161,7 +169,7 @@ async fn open_read_only_uses_explicit_tracked_branch() {
     assert_eq!(selected.fallback_warning(), None);
     assert_eq!(
         selected.db_path(),
-        fixture.tokensave_dir().join("branches/feature.db")
+        fixture.tokensave_dir().join("branches").join("feature.db")
     );
     assert_eq!(selected.search("feature_only", 10).await.unwrap().len(), 1);
     assert!(selected.search("master_only", 10).await.unwrap().is_empty());
@@ -218,7 +226,7 @@ async fn open_branch_rejects_untracked_branch_with_remedy() {
 #[tokio::test]
 async fn open_read_only_rejects_explicit_branch_with_missing_database() {
     let fixture = setup_tracked_branch_project().await;
-    fs::remove_file(fixture.tokensave_dir().join("branches/feature.db")).unwrap();
+    fs::remove_file(fixture.tokensave_dir().join("branches").join("feature.db")).unwrap();
     let before = fixture.metadata_snapshot();
 
     let error = TokenSave::open_read_only(fixture.root(), Some("feature"))
@@ -299,7 +307,11 @@ async fn open_read_only_omitted_branch_does_not_auto_track() {
         "helper failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!fixture.tokensave_dir().join("branches/work.db").exists());
+    assert!(!fixture
+        .tokensave_dir()
+        .join("branches")
+        .join("work.db")
+        .exists());
     fixture.assert_metadata_unchanged(&before);
 }
 
@@ -321,7 +333,7 @@ async fn open_read_only_opens_branch_only_default_database_layout() {
     fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
     fs::rename(
         tokensave_dir.join("tokensave.db"),
-        tokensave_dir.join("branches/master.db"),
+        tokensave_dir.join("branches").join("master.db"),
     )
     .unwrap();
     let mut meta = BranchMeta::new("master");
@@ -446,12 +458,12 @@ async fn test_search_ranks_app_dir_above_generated_tree() {
     fs::create_dir_all(project.join("dist")).unwrap();
 
     fs::write(
-        project.join("src/widget.rs"),
+        project.join("src").join("widget.rs"),
         "pub fn make_widget() -> u32 { 1 }\n",
     )
     .unwrap();
     fs::write(
-        project.join("dist/widget.rs"),
+        project.join("dist").join("widget.rs"),
         "pub fn make_widget() -> u32 { 2 }\n",
     )
     .unwrap();
@@ -625,7 +637,7 @@ async fn test_check_file_staleness_after_modification() {
 
     // Wait a moment, then modify the file so mtime > indexed_at
     std::thread::sleep(std::time::Duration::from_secs(2));
-    let file_path = dir.path().join("src/lib.rs");
+    let file_path = dir.path().join("src").join("lib.rs");
     fs::write(
         &file_path,
         "pub fn foo() { bar(); }\nfn bar() {}\nfn new_function() {}\n",
@@ -646,7 +658,7 @@ async fn mtime_only_sync_clears_staleness_without_reindexing() {
     use std::time::{Duration, UNIX_EPOCH};
 
     let (dir, cg) = setup().await;
-    let path = dir.path().join("src/lib.rs");
+    let path = dir.path().join("src").join("lib.rs");
     let contents = fs::read(&path).unwrap();
     let record = cg
         .get_all_files()
@@ -758,7 +770,7 @@ async fn check_file_staleness_normalizes_backslash_paths() {
     let tmp = tempdir().unwrap();
     let project = tmp.path();
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/a.rs"), "fn a() {}").unwrap();
+    fs::write(project.join("src").join("a.rs"), "fn a() {}").unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.sync().await.unwrap();
 
@@ -778,7 +790,7 @@ async fn sync_if_stale_silent_does_not_create_duplicate_row_for_backslash_path()
     let tmp = tempdir().unwrap();
     let project = tmp.path();
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/a.rs"), "fn a() {}").unwrap();
+    fs::write(project.join("src").join("a.rs"), "fn a() {}").unwrap();
     let cg = TokenSave::init(project).await.unwrap();
     cg.sync().await.unwrap();
 
@@ -787,7 +799,7 @@ async fn sync_if_stale_silent_does_not_create_duplicate_row_for_backslash_path()
     // this, second-resolution mtimes on some filesystems can leave
     // `mtime == indexed_at` and the staleness check returns empty.
     std::thread::sleep(std::time::Duration::from_secs(1));
-    fs::write(project.join("src/a.rs"), "fn a() { let _x = 1; }").unwrap();
+    fs::write(project.join("src").join("a.rs"), "fn a() { let _x = 1; }").unwrap();
 
     cg.sync_if_stale_silent(&["src\\a.rs".to_string()])
         .await
@@ -823,7 +835,7 @@ async fn sync_if_stale_prunes_deleted_files() {
         "setup should index src/utils.rs nodes"
     );
 
-    fs::remove_file(dir.path().join("src/utils.rs")).unwrap();
+    fs::remove_file(dir.path().join("src").join("utils.rs")).unwrap();
 
     let still_stale = cg
         .sync_if_stale(&["src/utils.rs".to_string()])
@@ -851,7 +863,7 @@ async fn sync_if_stale_prunes_deleted_files() {
 #[tokio::test]
 async fn sync_if_stale_silent_prunes_deleted_files() {
     let (dir, cg) = setup().await;
-    fs::remove_file(dir.path().join("src/utils.rs")).unwrap();
+    fs::remove_file(dir.path().join("src").join("utils.rs")).unwrap();
 
     cg.sync_if_stale_silent(&["src/utils.rs".to_string()])
         .await
@@ -886,7 +898,7 @@ async fn go_cross_package_calls_produce_edges() {
     )
     .unwrap();
     fs::write(
-        project.join("b/b.go"),
+        project.join("b").join("b.go"),
         r#"package b
 
 type Store struct{}
@@ -902,7 +914,7 @@ func inc(x int) int { return x + 1 }
     )
     .unwrap();
     fs::write(
-        project.join("a/a.go"),
+        project.join("a").join("a.go"),
         r#"package a
 
 import "example.com/repro/b"
@@ -1072,7 +1084,7 @@ async fn test_is_initialized() {
         "should not be initialized before init"
     );
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "fn main() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "fn main() {}\n").unwrap();
     let _cg = TokenSave::init(project).await.unwrap();
     assert!(
         TokenSave::is_initialized(project),

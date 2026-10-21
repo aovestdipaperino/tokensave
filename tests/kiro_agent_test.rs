@@ -51,7 +51,7 @@ fn test_install_creates_global_mcp_steering_agent_and_default() {
 
     KiroIntegration.install(&ctx).unwrap();
 
-    let mcp_path = home.join(".kiro/settings/mcp.json");
+    let mcp_path = home.join(".kiro").join("settings").join("mcp.json");
     assert!(mcp_path.exists(), "global Kiro MCP config should exist");
     let mcp = read_json(&mcp_path);
     let server = &mcp["mcpServers"]["tokensave"];
@@ -67,7 +67,7 @@ fn test_install_creates_global_mcp_steering_agent_and_default() {
         "global MCP config should leave approval policy to the managed Kiro agent"
     );
 
-    let steering_path = home.join(".kiro/steering/tokensave.md");
+    let steering_path = home.join(".kiro").join("steering").join("tokensave.md");
     assert!(
         steering_path.exists(),
         "global Kiro tokensave.md should exist"
@@ -76,7 +76,7 @@ fn test_install_creates_global_mcp_steering_agent_and_default() {
     assert!(steering.contains("## Prefer tokensave MCP tools"));
     assert!(steering.contains("delegate"));
 
-    let agent_path = home.join(".kiro/agents/tokensave.json");
+    let agent_path = home.join(".kiro").join("agents").join("tokensave.json");
     assert!(agent_path.exists(), "managed Kiro agent should exist");
     let agent = read_json(&agent_path);
     assert_eq!(agent["name"].as_str(), Some("tokensave"));
@@ -134,7 +134,7 @@ fn test_install_creates_global_mcp_steering_agent_and_default() {
         30_000,
     );
 
-    let cli_path = home.join(".kiro/settings/cli.json");
+    let cli_path = home.join(".kiro").join("settings").join("cli.json");
     assert!(cli_path.exists(), "Kiro CLI settings should exist");
     let cli = read_json(&cli_path);
     assert_eq!(cli["chat"]["defaultAgent"].as_str(), Some("tokensave"));
@@ -144,7 +144,7 @@ fn test_install_creates_global_mcp_steering_agent_and_default() {
 fn test_install_preserves_existing_mcp_config_and_writes_backup() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
-    let mcp_path = home.join(".kiro/settings/mcp.json");
+    let mcp_path = home.join(".kiro").join("settings").join("mcp.json");
     std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
     std::fs::write(
         &mcp_path,
@@ -160,7 +160,10 @@ fn test_install_preserves_existing_mcp_config_and_writes_backup() {
     assert!(mcp["mcpServers"]["other"].is_object());
     assert_eq!(mcp["theme"].as_str(), Some("dark"));
     assert!(
-        home.join(".kiro/settings/mcp.json.bak").exists(),
+        home.join(".kiro")
+            .join("settings")
+            .join("mcp.json.bak")
+            .exists(),
         "install should preserve a backup before rewriting existing config"
     );
 }
@@ -171,7 +174,7 @@ fn test_install_and_uninstall_preserve_existing_steering_content() {
     let home = dir.path();
     let ctx = make_ctx(home);
 
-    let user_steering_path = home.join(".kiro/steering/team.md");
+    let user_steering_path = home.join(".kiro").join("steering").join("team.md");
     std::fs::create_dir_all(user_steering_path.parent().unwrap()).unwrap();
     std::fs::write(
         &user_steering_path,
@@ -186,7 +189,7 @@ fn test_install_and_uninstall_preserve_existing_steering_content() {
     assert!(user_steering.contains("Keep this user-authored guidance."));
     assert!(!user_steering.contains("## Prefer tokensave MCP tools"));
 
-    let tokensave_steering_path = home.join(".kiro/steering/tokensave.md");
+    let tokensave_steering_path = home.join(".kiro").join("steering").join("tokensave.md");
     let installed = std::fs::read_to_string(&tokensave_steering_path).unwrap();
     assert!(installed.contains("## Prefer tokensave MCP tools"));
 
@@ -207,7 +210,7 @@ fn test_uninstall_preserves_user_steering_after_tokensave_block() {
 
     KiroIntegration.install(&ctx).unwrap();
 
-    let steering_path = home.join(".kiro/steering/tokensave.md");
+    let steering_path = home.join(".kiro").join("steering").join("tokensave.md");
     std::fs::OpenOptions::new()
         .append(true)
         .open(&steering_path)
@@ -228,7 +231,7 @@ fn test_uninstall_removes_tokensave_and_preserves_other_mcp_servers() {
     let home = dir.path();
     let ctx = make_ctx(home);
 
-    let mcp_path = home.join(".kiro/settings/mcp.json");
+    let mcp_path = home.join(".kiro").join("settings").join("mcp.json");
     std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
     std::fs::write(
         &mcp_path,
@@ -244,14 +247,20 @@ fn test_uninstall_removes_tokensave_and_preserves_other_mcp_servers() {
     assert!(mcp["mcpServers"].get("tokensave").is_none());
     assert_eq!(mcp["theme"].as_str(), Some("dark"));
 
-    assert!(!home.join(".kiro/agents/tokensave.json").exists());
-    let cli = std::fs::read_to_string(home.join(".kiro/settings/cli.json")).unwrap_or_default();
+    assert!(!home
+        .join(".kiro")
+        .join("agents")
+        .join("tokensave.json")
+        .exists());
+    let cli = std::fs::read_to_string(home.join(".kiro").join("settings").join("cli.json"))
+        .unwrap_or_default();
     assert!(
         !cli.contains("defaultAgent"),
         "uninstall should remove tokensave default agent"
     );
     let steering =
-        std::fs::read_to_string(home.join(".kiro/steering/tokensave.md")).unwrap_or_default();
+        std::fs::read_to_string(home.join(".kiro").join("steering").join("tokensave.md"))
+            .unwrap_or_default();
     assert!(!steering.contains("## Prefer tokensave MCP tools"));
 }
 
@@ -261,7 +270,7 @@ fn test_install_and_uninstall_preserve_user_managed_custom_agent() {
     let home = dir.path();
     let ctx = make_ctx(home);
 
-    let agent_path = home.join(".kiro/agents/tokensave.json");
+    let agent_path = home.join(".kiro").join("agents").join("tokensave.json");
     std::fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
     let custom_agent = serde_json::json!({
         "name": "tokensave",
@@ -285,7 +294,11 @@ fn test_install_and_uninstall_preserve_user_managed_custom_agent() {
     KiroIntegration.install(&ctx).unwrap();
     assert_eq!(read_json(&agent_path), custom_agent);
     assert!(
-        !home.join(".kiro/settings/cli.json").exists(),
+        !home
+            .join(".kiro")
+            .join("settings")
+            .join("cli.json")
+            .exists(),
         "install should not point defaultAgent at a user-managed tokensave agent"
     );
 
@@ -299,7 +312,7 @@ fn test_install_preserves_existing_custom_default_agent_choice() {
     let home = dir.path();
     let ctx = make_ctx(home);
 
-    let cli_path = home.join(".kiro/settings/cli.json");
+    let cli_path = home.join(".kiro").join("settings").join("cli.json");
     std::fs::create_dir_all(cli_path.parent().unwrap()).unwrap();
     std::fs::write(
         &cli_path,
@@ -312,7 +325,11 @@ fn test_install_preserves_existing_custom_default_agent_choice() {
     let cli = read_json(&cli_path);
     assert_eq!(cli["chat"]["defaultAgent"].as_str(), Some("my-team-agent"));
     assert_eq!(cli["telemetry"]["enabled"].as_bool(), Some(false));
-    assert!(home.join(".kiro/agents/tokensave.json").exists());
+    assert!(home
+        .join(".kiro")
+        .join("agents")
+        .join("tokensave.json")
+        .exists());
 }
 
 #[test]
@@ -321,7 +338,7 @@ fn test_install_replaces_builtin_default_agent_choice() {
     let home = dir.path();
     let ctx = make_ctx(home);
 
-    let cli_path = home.join(".kiro/settings/cli.json");
+    let cli_path = home.join(".kiro").join("settings").join("cli.json");
     std::fs::create_dir_all(cli_path.parent().unwrap()).unwrap();
     std::fs::write(&cli_path, r#"{"chat":{"defaultAgent":"kiro_default"}}"#).unwrap();
 
@@ -373,7 +390,7 @@ fn test_healthcheck_warns_and_install_migrates_legacy_heading_block() {
 
     KiroIntegration.install(&ctx).unwrap();
 
-    let steering_path = home.join(".kiro/steering/tokensave.md");
+    let steering_path = home.join(".kiro").join("steering").join("tokensave.md");
     std::fs::write(
         &steering_path,
         "## Prefer tokensave MCP tools\n\nEdited tokensave guidance without ownership marker.\n",
@@ -418,7 +435,7 @@ fn test_healthcheck_warns_when_agent_tool_policy_is_not_permissive() {
 
     KiroIntegration.install(&ctx).unwrap();
 
-    let agent_path = home.join(".kiro/agents/tokensave.json");
+    let agent_path = home.join(".kiro").join("agents").join("tokensave.json");
     let mut agent = read_json(&agent_path);
     agent["tools"] = serde_json::json!(["@tokensave"]);
     agent["allowedTools"] = serde_json::json!(["@builtin"]);
@@ -451,7 +468,7 @@ fn test_healthcheck_fails_when_workspace_mcp_disables_tokensave() {
 
     KiroIntegration.install(&ctx).unwrap();
 
-    let workspace_mcp_path = project.join(".kiro/settings/mcp.json");
+    let workspace_mcp_path = project.join(".kiro").join("settings").join("mcp.json");
     std::fs::create_dir_all(workspace_mcp_path.parent().unwrap()).unwrap();
     std::fs::write(
         &workspace_mcp_path,
@@ -482,7 +499,7 @@ fn test_healthcheck_fails_when_workspace_mcp_shadows_global_command() {
 
     KiroIntegration.install(&ctx).unwrap();
 
-    let workspace_mcp_path = project.join(".kiro/settings/mcp.json");
+    let workspace_mcp_path = project.join(".kiro").join("settings").join("mcp.json");
     std::fs::create_dir_all(workspace_mcp_path.parent().unwrap()).unwrap();
     std::fs::write(
         &workspace_mcp_path,

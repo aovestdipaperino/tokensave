@@ -21,7 +21,7 @@ fn isolated_home_with_claude_session() -> TempDir {
     )
     .expect("config");
 
-    let session_dir = home.path().join(".claude/projects/project");
+    let session_dir = home.path().join(".claude").join("projects").join("project");
     fs::create_dir_all(&session_dir).expect("claude session dir");
     fs::write(
         session_dir.join("session.jsonl"),
@@ -70,7 +70,11 @@ fn cost_without_droid_preserves_existing_output() {
 #[test]
 fn removed_droid_source_does_not_surface_stale_rows() {
     let home = isolated_home_with_claude_session();
-    let droid_dir = home.path().join(".factory/sessions/project");
+    let droid_dir = home
+        .path()
+        .join(".factory")
+        .join("sessions")
+        .join("project");
     fs::create_dir_all(&droid_dir).expect("droid session dir");
     fs::write(
         droid_dir.join("session.settings.json"),

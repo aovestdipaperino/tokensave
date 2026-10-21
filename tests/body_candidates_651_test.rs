@@ -18,7 +18,7 @@ async fn setup_csharp() -> (TempDir, TokenSave) {
     fs::create_dir_all(project.join("src")).unwrap();
     fs::create_dir_all(project.join("tests")).unwrap();
     fs::write(
-        project.join("src/Catalog.cs"),
+        project.join("src").join("Catalog.cs"),
         r#"namespace App
 {
     public class Catalog
@@ -36,7 +36,7 @@ async fn setup_csharp() -> (TempDir, TokenSave) {
     )
     .unwrap();
     fs::write(
-        project.join("src/Coordinator.cs"),
+        project.join("src").join("Coordinator.cs"),
         r#"namespace App
 {
     public class Coordinator
@@ -51,7 +51,7 @@ async fn setup_csharp() -> (TempDir, TokenSave) {
     )
     .unwrap();
     fs::write(
-        project.join("tests/FakeCoordinator.cs"),
+        project.join("tests").join("FakeCoordinator.cs"),
         r#"namespace App.Tests
 {
     public class FakeCoordinator
@@ -231,7 +231,7 @@ async fn unique_bare_name_returns_body() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         "pub fn only_one(x: u32) -> u32 {\n    x * 2\n}\n",
     )
     .unwrap();
