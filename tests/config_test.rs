@@ -475,11 +475,20 @@ fn test_discover_project_root_at_root_itself() {
 #[test]
 fn cpu_usage_defaults_and_legacy_configs() {
     use tokensave::cpu::CpuUsage;
-    assert_eq!(TokenSaveConfig::default().cpu_usage, CpuUsage::Balanced);
-    let mut legacy = serde_json::to_value(TokenSaveConfig::default()).unwrap();
-    legacy.as_object_mut().unwrap().remove("cpu_usage");
+    // A new project pins nothing: it follows the global settings (#752).
+    assert_eq!(TokenSaveConfig::default().cpu_usage, None);
+    let written = serde_json::to_value(TokenSaveConfig::default()).unwrap();
+    assert!(written.get("cpu_usage").is_none(), "{written}");
+    // Configs written before #752 always carried `cpu_usage`; it stays a pin.
+    let mut legacy = written;
+    legacy["cpu_usage"] = serde_json::json!("balanced");
     let config: TokenSaveConfig = serde_json::from_value(legacy).unwrap();
-    assert_eq!(config.cpu_usage, CpuUsage::Balanced);
+    assert_eq!(config.cpu_usage, Some(CpuUsage::Balanced));
+    // An explicit null means unset.
+    let mut null = serde_json::to_value(TokenSaveConfig::default()).unwrap();
+    null["cpu_usage"] = serde_json::Value::Null;
+    let config: TokenSaveConfig = serde_json::from_value(null).unwrap();
+    assert_eq!(config.cpu_usage, None);
 }
 
 #[test]
@@ -488,11 +497,11 @@ fn cpu_usage_profiles_round_trip_through_existing_config() {
     for profile in [CpuUsage::Low, CpuUsage::Balanced, CpuUsage::Performance] {
         let dir = TempDir::new().unwrap();
         let config = TokenSaveConfig {
-            cpu_usage: profile,
+            cpu_usage: Some(profile),
             ..Default::default()
         };
         save_config(dir.path(), &config).unwrap();
-        assert_eq!(load_config(dir.path()).unwrap().cpu_usage, profile);
+        assert_eq!(load_config(dir.path()).unwrap().cpu_usage, Some(profile));
     }
 }
 
@@ -501,11 +510,7 @@ fn invalid_cpu_usage_reports_valid_choices_and_config_path() {
     let dir = TempDir::new().unwrap();
     save_config(dir.path(), &TokenSaveConfig::default()).unwrap();
     let path = dir.path().join(".tokensave").join("config.json");
-    for invalid in [
-        serde_json::json!("turbo"),
-        serde_json::json!(null),
-        serde_json::json!(2),
-    ] {
+    for invalid in [serde_json::json!("turbo"), serde_json::json!(2)] {
         let mut config = serde_json::to_value(TokenSaveConfig::default()).unwrap();
         config["cpu_usage"] = invalid;
         std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
@@ -555,11 +560,7 @@ fn invalid_memory_usage_reports_valid_choices_and_config_path() {
     let dir = TempDir::new().unwrap();
     save_config(dir.path(), &TokenSaveConfig::default()).unwrap();
     let path = dir.path().join(".tokensave").join("config.json");
-    for invalid in [
-        serde_json::json!("turbo"),
-        serde_json::json!(null),
-        serde_json::json!(2),
-    ] {
+    for invalid in [serde_json::json!("turbo"), serde_json::json!(2)] {
         let mut config = serde_json::to_value(TokenSaveConfig::default()).unwrap();
         config["memory_usage"] = invalid;
         std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();

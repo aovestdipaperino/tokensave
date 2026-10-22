@@ -52,17 +52,22 @@ pub enum Commands {
         /// Do not offer this repository's own git hooks
         #[arg(long = "no-git-hook")]
         no_git_hook: bool,
-        /// CPU usage profile to store, skipping the resource benchmark
-        /// (default: benchmark this machine, or keep a `cpu_usage` already
-        /// in `.tokensave/config.json`)
+        /// CPU usage profile to pin in `.tokensave/config.json` for this
+        /// project (default: follow the global hardware benchmark, measured
+        /// once per machine; see `tokensave config benchmark`)
         #[arg(long, value_enum)]
         cpu_usage: Option<tokensave::cpu::CpuUsage>,
     },
-    /// Benchmark this machine and set the project's CPU usage profile
+    /// Global (machine-level) settings in ~/.tokensave
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+    /// Benchmark this machine again and update the project's CPU usage profile
     ///
-    /// Measures CPUs, memory and parallel speedup, then stores `low`,
-    /// `balanced` or `performance` as `cpu_usage` in `.tokensave/config.json`.
-    /// `tokensave init` runs the same benchmark.
+    /// Measures CPUs, memory and parallel speedup, saves the result as the
+    /// global hardware benchmark (see `tokensave config benchmark`), and
+    /// updates a `cpu_usage` this project pins in `.tokensave/config.json`.
     Tune {
         /// Project path (default: current directory)
         path: Option<String>,
@@ -567,6 +572,31 @@ mod tests {
             err_kind
         );
     }
+}
+
+#[derive(Subcommand)]
+pub enum ConfigAction {
+    /// Show, run, or reset the machine-level hardware benchmark
+    ///
+    /// The benchmark measures CPUs, memory and parallel speedup once per
+    /// machine and saves the recommended CPU usage profile in
+    /// ~/.tokensave/benchmark.toml. Every project without its own
+    /// `cpu_usage` uses it. Without a flag, a valid saved result is reused
+    /// and the benchmark runs only when none exists.
+    Benchmark {
+        /// Measure again even when a valid result is saved
+        #[arg(long, group = "benchmark_action")]
+        force: bool,
+        /// Print the saved result and settings without measuring
+        #[arg(long, group = "benchmark_action")]
+        show: bool,
+        /// Delete the saved result; the next `tokensave init` measures again
+        #[arg(long, group = "benchmark_action")]
+        reset: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
