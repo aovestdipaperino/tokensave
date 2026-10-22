@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tempfile::TempDir;
-use tokensave::agents::{AgentIntegration, DoctorCounters, HealthcheckContext, PiIntegration};
-
+use tokensave::agents::{
+    AgentIntegration, DoctorCounters, HealthcheckContext, InstallScope, PiIntegration,
+};
 mod common;
 use common::{make_install_ctx as make_ctx, read_json};
 
@@ -29,6 +30,25 @@ fn pi_config_path(home: &Path) -> PathBuf {
 /// helper in `src/agents/integrations/pi.rs`.
 fn pi_rules_path(home: &Path) -> PathBuf {
     home.join(".pi").join("agent").join("AGENTS.md")
+}
+
+/// Project-scoped Pi MCP config path (`<project>/.pi/mcp.json`).
+fn pi_local_config_path(project: &Path) -> PathBuf {
+    project.join(".pi").join("mcp.json")
+}
+
+/// Project-scoped Pi instructions file (`<project>/AGENTS.md`).
+fn pi_local_rules_path(project: &Path) -> PathBuf {
+    project.join("AGENTS.md")
+}
+
+/// An install context scoped to a project (`--local`).
+fn make_local_ctx(home: &Path, project: &Path) -> tokensave::agents::InstallContext {
+    let mut ctx = make_ctx(home);
+    ctx.scope = InstallScope::Local {
+        project_path: project.to_path_buf(),
+    };
+    ctx
 }
 
 // ===========================================================================
@@ -455,4 +475,153 @@ fn test_has_tokensave_before_and_after_install() {
 fn test_name_and_id() {
     assert_eq!(PiIntegration.name(), "Pi");
     assert_eq!(PiIntegration.id(), "pi");
+}
+
+// ===========================================================================
+// Local (--local) scope
+// ===========================================================================
+
+#[test]
+fn test_pi_supports_local() {
+    assert!(
+        PiIntegration.supports_local(),
+        "pi has project-scoped config (.pi/mcp.json, project AGENTS.md)"
+    );
+}
+
+#[test]
+fn test_local_install_writes_project_surfaces_only() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let ctx = make_local_ctx(home, &project);
+    PiIntegration.install(&ctx).unwrap();
+
+    let mcp_path = pi_local_config_path(&project);
+    assert!(
+        mcp_path.exists(),
+        "local install should create {}",
+        mcp_path.display()
+    );
+    let config = read_json(&mcp_path);
+    assert!(
+        config["mcpServers"]["tokensave"].is_object(),
+        "project .pi/mcp.json should register tokensave"
+    );
+
+    let rules_path = pi_local_rules_path(&project);
+    assert!(
+        rules_path.exists(),
+        "local install should write rules to {}",
+        rules_path.display()
+    );
+    let contents = std::fs::read_to_string(&rules_path).unwrap();
+    assert!(
+        contents.contains("tokensave rules begin"),
+        "project AGENTS.md should carry the tokensave rules block"
+    );
+
+    assert!(
+        !pi_config_path(home).exists(),
+        "local install must not touch the global mcp.json"
+    );
+    assert!(
+        !pi_rules_path(home).exists(),
+        "local install must not touch the global AGENTS.md"
+    );
+}
+
+#[test]
+fn test_local_install_preserves_existing_agents_md() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let rules_path = pi_local_rules_path(&project);
+    std::fs::write(&rules_path, "# Project rules\n\nAlways run the linter.\n").unwrap();
+
+    let ctx = make_local_ctx(home, &project);
+    PiIntegration.install(&ctx).unwrap();
+
+    let contents = std::fs::read_to_string(&rules_path).unwrap();
+    assert!(
+        contents.contains("Always run the linter."),
+        "existing project instructions must be preserved"
+    );
+    assert!(
+        contents.contains("tokensave rules begin"),
+        "the tokensave rules block should be added"
+    );
+}
+
+#[test]
+fn test_local_uninstall_removes_project_surfaces_only() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let global_ctx = make_ctx(home);
+    PiIntegration.install(&global_ctx).unwrap();
+
+    let ctx = make_local_ctx(home, &project);
+    PiIntegration.install(&ctx).unwrap();
+    PiIntegration.uninstall(&ctx).unwrap();
+
+    assert!(
+        !pi_local_config_path(&project).exists(),
+        "project .pi/mcp.json should be removed when tokensave was the only entry"
+    );
+    let rules_path = pi_local_rules_path(&project);
+    assert!(
+        !rules_path.exists()
+            || !std::fs::read_to_string(&rules_path)
+                .unwrap()
+                .contains("tokensave rules begin"),
+        "the tokensave rules block should be gone from the project AGENTS.md"
+    );
+
+    assert!(
+        pi_config_path(home).exists(),
+        "local uninstall must not remove the global mcp.json"
+    );
+    let global_rules = std::fs::read_to_string(pi_rules_path(home)).unwrap();
+    assert!(
+        global_rules.contains("tokensave rules begin"),
+        "local uninstall must not remove the global rules block"
+    );
+}
+
+#[test]
+fn test_local_healthcheck_reports_project_config() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let ctx = make_local_ctx(home, &project);
+    PiIntegration.install(&ctx).unwrap();
+
+    let mut dc = DoctorCounters::new();
+    let hctx = HealthcheckContext {
+        home: home.to_path_buf(),
+        project_path: project.to_path_buf(),
+    };
+    PiIntegration.healthcheck(&mut dc, &hctx);
+    assert_eq!(dc.issues, 0, "clean local Pi install should have no issues");
 }

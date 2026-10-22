@@ -7,7 +7,18 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+
+## [7.16.0] - 2026-10-22
+
+### Performance
+
+- Construct the MCP tool registry once during server startup and release schemas before opening the global database, preserving routing gates and schema accounting without retaining a schema cache (#735).
+
 ### Added
+
+- **The Pi integration supports `--local` (#747).** Pi has both a user-level and a project-level configuration, so the claim that Pi has no project-scoped config was wrong: `tokensave install --agent pi --local` now registers the MCP server in the project's `.pi/mcp.json` and writes the rules block into the `AGENTS.md` in the project root, which Pi reads as a context file. The rules go in as a managed block, so an existing project `AGENTS.md` keeps its own content. A global install is unchanged (`<agent-dir>/mcp.json` and `<agent-dir>/AGENTS.md`), and `tokensave uninstall --agent pi --local` removes only the project files.
+
+- Mandatory contributor and AI agent rule for native filesystem path construction (#743), following PR #738: one component per `join` or `push`, with explicit exceptions for portable string formats and path-syntax fixtures.
 
 - Automatic extraction RAM safeguards complement project profiles: sample physical RAM (and visible Linux cgroup headroom) before parallel extraction and reduce concurrency using a conservative parser allowance. Applies to subprocess and in-process paths, including `performance`; no background polling or hard RSS guarantee.
 
@@ -2123,3 +2134,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [7.14.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.14.0
 [7.14.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.14.1
 [7.15.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.15.0
+[7.16.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.16.0
