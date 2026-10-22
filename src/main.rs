@@ -499,6 +499,15 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             dry_run,
             json,
         } => commands::run_tune(path, dry_run, json)?,
+        Commands::Config {
+            action:
+                cli::ConfigAction::Benchmark {
+                    force,
+                    show,
+                    reset,
+                    json,
+                },
+        } => commands::run_config_benchmark(force, show, reset, json),
         Commands::Sync {
             path,
             force,

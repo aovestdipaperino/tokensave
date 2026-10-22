@@ -1,19 +1,27 @@
 //! One-shot host resource benchmark that selects a [`CpuUsage`] profile.
 //!
-//! Runs once, on demand (`tokensave init`, `tokensave tune`), never in the
-//! background. It probes CPUs and memory, then times a fixed CPU-bound
-//! workload on one thread and on several scoped threads to measure the
-//! parallel speedup the host actually delivers. [`recommend`] maps the result
-//! to one of the existing profiles; the caller persists that profile, so
-//! normal runs read the config and never re-measure.
+//! Runs on demand (the first `tokensave init` on a machine,
+//! `tokensave config benchmark`, `tokensave tune`), never in the background.
+//! It probes CPUs and memory, then times a fixed CPU-bound workload on one
+//! thread and on several scoped threads to measure the parallel speedup the
+//! host actually delivers. [`recommend`] maps the result
+//! to one of the existing profiles. The result is machine-level, so
+//! [`crate::global_benchmark`] saves it once per machine in
+//! `~/.tokensave/benchmark.toml` and every project reuses it.
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cpu::CpuUsage;
 
 const GIB: u64 = 1 << 30;
+
+/// Version of [`measure`] and [`recommend`]. Bump it when a change would make
+/// a saved recommendation wrong for the same machine (a new workload, new
+/// thresholds), so cached results in `~/.tokensave/benchmark.toml` are
+/// measured again. A release that leaves both alone keeps the cache.
+pub const ALGORITHM_VERSION: u32 = 1;
 
 /// Single-thread time the calibration aims for. Short enough that the whole
 /// benchmark normally finishes in well under a second.
@@ -47,7 +55,7 @@ const PERFORMANCE_TOTAL_MEMORY: u64 = 16 * GIB;
 const PERFORMANCE_AVAILABLE_MEMORY: u64 = 8 * GIB;
 
 /// Static host capacity. `None` means the probe failed or is unsupported.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostResources {
     /// CPUs this process may use (affinity and cgroup quota aware).
     pub cpus: Option<usize>,
@@ -58,7 +66,7 @@ pub struct HostResources {
 }
 
 /// Result of the parallel scaling benchmark.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ParallelBenchmark {
     /// Threads used in the parallel phase.
     pub threads: usize,
@@ -76,7 +84,7 @@ impl ParallelBenchmark {
 }
 
 /// Everything [`recommend`] decides on.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Measurement {
     pub resources: HostResources,
     /// `None` when the CPU count is unknown or a benchmark thread failed to start.
@@ -117,7 +125,7 @@ impl Measurement {
 }
 
 /// Selected profile and why.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recommendation {
     pub profile: CpuUsage,
     pub reason: String,
