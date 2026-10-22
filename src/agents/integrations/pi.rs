@@ -10,7 +10,11 @@
 //! shape, so the server entry matches the other JSON-based integrations
 //! (Cursor, Cline): `{ "command", "args": ["serve"] }`.
 //!
-//! Pi has no documented project-scoped config, so `--local` is not supported.
+//! Pi has both a user-level and a project-level configuration: the agent
+//! directory holds `mcp.json` and `AGENTS.md`, while a project owns `.pi/mcp.json`
+//! and the `AGENTS.md` in its root (Pi loads context files from the working
+//! directory and its parents). Both scopes are supported, so `--local` targets
+//! the project paths.
 
 use std::path::{Path, PathBuf};
 
@@ -48,6 +52,38 @@ fn pi_rules_path(home: &Path) -> PathBuf {
     pi_agent_dir(home).join("AGENTS.md")
 }
 
+/// Returns the project-scoped Pi MCP config path (`<project>/.pi/mcp.json`).
+///
+/// Pi loads project MCP servers from the `.pi` directory of the working
+/// directory, once the project is trusted.
+fn pi_local_config_path(project_path: &Path) -> PathBuf {
+    project_path.join(".pi").join("mcp.json")
+}
+
+/// Returns the project-scoped instructions file (`<project>/AGENTS.md`).
+///
+/// Pi loads context files from the working directory and its parents, so the
+/// `AGENTS.md` in the project root is the file Pi reads for a project.
+fn pi_local_rules_path(project_path: &Path) -> PathBuf {
+    project_path.join("AGENTS.md")
+}
+
+/// Returns the Pi MCP config path the install scope targets.
+fn pi_mcp_path(ctx: &InstallContext) -> PathBuf {
+    match &ctx.scope {
+        InstallScope::Global => pi_config_path(&ctx.home),
+        InstallScope::Local { project_path } => pi_local_config_path(project_path),
+    }
+}
+
+/// Returns the instructions file the install scope targets.
+fn pi_instructions_path(ctx: &InstallContext) -> PathBuf {
+    match &ctx.scope {
+        InstallScope::Global => pi_rules_path(&ctx.home),
+        InstallScope::Local { project_path } => pi_local_rules_path(project_path),
+    }
+}
+
 impl AgentIntegration for PiIntegration {
     fn name(&self) -> &'static str {
         "Pi"
@@ -58,7 +94,7 @@ impl AgentIntegration for PiIntegration {
     }
 
     fn install(&self, ctx: &InstallContext) -> Result<()> {
-        let mcp_path = pi_config_path(&ctx.home);
+        let mcp_path = pi_mcp_path(ctx);
 
         if let Some(parent) = mcp_path.parent() {
             std::fs::create_dir_all(parent).ok();
@@ -89,7 +125,7 @@ impl AgentIntegration for PiIntegration {
             mcp_path.display()
         );
 
-        install_prompt_rules(&ctx.home)?;
+        install_prompt_rules(ctx)?;
         crate::agent_note!();
         crate::agent_note!("Setup complete. Next steps:");
         crate::agent_note!("  1. cd into your project and run: tokensave init");
@@ -98,9 +134,9 @@ impl AgentIntegration for PiIntegration {
     }
 
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
-        let mcp_path = pi_config_path(&ctx.home);
+        let mcp_path = pi_mcp_path(ctx);
         uninstall_mcp_server(&mcp_path);
-        uninstall_prompt_rules(&ctx.home);
+        uninstall_prompt_rules(ctx);
 
         crate::agent_note!();
         crate::agent_note!("Uninstall complete. Tokensave has been removed from Pi.");
@@ -108,10 +144,15 @@ impl AgentIntegration for PiIntegration {
         Ok(())
     }
 
+    fn supports_local(&self) -> bool {
+        true
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mPi integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home);
         doctor_check_prompt(dc, &ctx.home);
+        doctor_check_local_config(dc, &ctx.project_path);
     }
 
     fn is_detected(&self, home: &Path) -> bool {
@@ -220,19 +261,55 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
     }
 }
 
-/// Write or refresh the tokensave rules block in Pi's global AGENTS.md.
-fn install_prompt_rules(home: &Path) -> Result<()> {
+/// Write or refresh the tokensave rules block in the AGENTS.md the install
+/// scope targets.
+fn install_prompt_rules(ctx: &InstallContext) -> Result<()> {
     let body = rules_for_agent("pi")?;
-    write_rules_block(&pi_rules_path(home), "pi", &body).map(|_| ())
+    write_rules_block(&pi_instructions_path(ctx), "pi", &body).map(|_| ())
 }
 
-/// Remove the tokensave rules block from Pi's global AGENTS.md.
-fn uninstall_prompt_rules(home: &Path) {
-    remove_rules_block(&pi_rules_path(home)).ok();
-    remove_legacy_rules_block(&pi_rules_path(home), LEGACY_RULES_MARKER, &[]).ok();
+/// Remove the tokensave rules block from the AGENTS.md the install scope
+/// targets.
+fn uninstall_prompt_rules(ctx: &InstallContext) {
+    let rules_path = pi_instructions_path(ctx);
+    remove_rules_block(&rules_path).ok();
+    remove_legacy_rules_block(&rules_path, LEGACY_RULES_MARKER, &[]).ok();
 }
 
 /// Check Pi's AGENTS.md contains the up-to-date tokensave rules block.
 fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
     check_shared_rules_block(dc, &pi_rules_path(home), "pi");
+}
+
+/// Check the project-scoped Pi configuration of the current project.
+///
+/// Only reported when the project actually owns a `.pi` directory: a project
+/// without one has no project-scoped Pi configuration to complain about.
+fn doctor_check_local_config(dc: &mut DoctorCounters, project_path: &Path) {
+    if !project_path.join(".pi").is_dir() {
+        return;
+    }
+
+    crate::agent_note!("\n\x1b[1mLocal config\x1b[0m");
+
+    let mcp_path = pi_local_config_path(project_path);
+    if mcp_path.exists() {
+        let settings = load_json_file(&mcp_path);
+        let server = settings.get("mcpServers").and_then(|v| v.get("tokensave"));
+        if server.and_then(|v| v.as_object()).is_some() {
+            dc.pass(&format!("MCP server registered in {}", mcp_path.display()));
+        } else {
+            dc.fail(&format!(
+                "MCP server NOT registered in {} — run `tokensave install --agent pi --local`",
+                mcp_path.display()
+            ));
+        }
+    } else {
+        dc.warn(&format!(
+            "{} not found — run `tokensave install --agent pi --local` to register it for this project",
+            mcp_path.display()
+        ));
+    }
+
+    check_shared_rules_block(dc, &pi_local_rules_path(project_path), "pi");
 }
