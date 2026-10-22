@@ -12,7 +12,7 @@ Skipped.
 
 | # | Work item | Issues | Depends on | Status |
 | --- | --- | --- | --- | --- |
-| 1 | Workload and compatibility inventory ([database-workload-inventory.md](database-workload-inventory.md)) | #739, #741, #742 | — | Draft PR |
+| 1 | Workload and compatibility inventory ([database-workload-inventory.md](database-workload-inventory.md)) | #739, #741, #742 | — | Draft PR #745 |
 | 2 | Benchmark harness: isolated bench target, workload definitions, p50/p95/p99, JSON export, correctness checks that fail on errors | #741, #742 | — | Planned |
 | 3 | Deterministic synthetic graph generator (seeded; small/medium/large tiers; nothing large committed) | #741, #742 | 2 | Planned |
 | 4 | Current libSQL baseline (W1–W7 from the inventory), hardware and versions recorded | #741 | 2, 3 | Planned |
