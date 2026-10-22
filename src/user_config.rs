@@ -137,6 +137,18 @@ pub struct UserConfig {
     #[serde(default = "default_true")]
     pub claude_hooks: bool,
 
+    /// Machine-wide CPU usage profile for projects whose
+    /// `.tokensave/config.json` has no `cpu_usage` (#752). It takes
+    /// precedence over the saved hardware benchmark; `TOKENSAVE_CPU_USAGE`
+    /// and a project's own `cpu_usage` take precedence over it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_usage: Option<crate::cpu::CpuUsage>,
+
+    /// The `[benchmark]` table: whether and when the global hardware
+    /// benchmark runs and is used (#752).
+    #[serde(default, skip_serializing_if = "BenchmarkPreferences::is_default")]
+    pub benchmark: BenchmarkPreferences,
+
     /// Snapshot of the config-owned fields (see `ConfigFile`) as last seen
     /// on disk by this instance -- either at `load()` time, or as of its own
     /// most recent successful `save()`. `save()` compares against this to
@@ -182,6 +194,46 @@ fn default_true() -> bool {
     true
 }
 
+/// `[benchmark]` in `config.toml`: how the machine-level hardware benchmark
+/// in `~/.tokensave/benchmark.toml` is used (#752).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BenchmarkPreferences {
+    /// When false, saved benchmark recommendations are ignored and the
+    /// benchmark never runs; profiles come from explicit settings or the
+    /// built-in default.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// When false, a valid saved result is still used, but a missing or
+    /// out-of-date one is not measured again automatically (by `init`).
+    /// `tokensave config benchmark` still runs it on request.
+    #[serde(default = "default_true")]
+    pub auto_run: bool,
+}
+
+impl Default for BenchmarkPreferences {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_run: true,
+        }
+    }
+}
+
+impl BenchmarkPreferences {
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes a reference
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// The global resource settings in `config.toml`, as read by
+/// [`resource_preferences`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResourcePreferences {
+    pub cpu_usage: Option<crate::cpu::CpuUsage>,
+    pub benchmark: BenchmarkPreferences,
+}
+
 fn default_watcher_debounce() -> String {
     "2s".to_string()
 }
@@ -213,6 +265,8 @@ impl Default for UserConfig {
             wildcard_permissions: false,
             manage_rules: true,
             claude_hooks: true,
+            cpu_usage: None,
+            benchmark: BenchmarkPreferences::default(),
             loaded_config: Mutex::new(None),
             loaded_state: Mutex::new(None),
             loaded_legacy_state: AtomicBool::new(false),
@@ -236,6 +290,11 @@ pub(crate) struct ConfigFile {
     manage_rules: bool,
     #[serde(default = "default_true")]
     claude_hooks: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cpu_usage: Option<crate::cpu::CpuUsage>,
+    // Last: a TOML table has to follow the plain keys.
+    #[serde(default, skip_serializing_if = "BenchmarkPreferences::is_default")]
+    benchmark: BenchmarkPreferences,
 }
 
 impl ConfigFile {
@@ -248,6 +307,8 @@ impl ConfigFile {
             wildcard_permissions: c.wildcard_permissions,
             manage_rules: c.manage_rules,
             claude_hooks: c.claude_hooks,
+            cpu_usage: c.cpu_usage,
+            benchmark: c.benchmark,
         }
     }
 }
@@ -618,7 +679,7 @@ fn set_tmp_file_mode(tmp_path: &std::path::Path, target: &std::path::Path) -> bo
 /// so a crash or a full disk mid-write can't leave `path` truncated or
 /// corrupt. The temp file name mixes the process ID with a per-process
 /// counter so it is unique per invocation, not just per process.
-fn write_atomic(path: &std::path::Path, contents: &str) -> bool {
+pub(crate) fn write_atomic(path: &std::path::Path, contents: &str) -> bool {
     #[cfg(test)]
     if TEST_WRITE_FAILURE.with(|cell| cell.borrow().as_deref() == Some(path)) {
         return false;
@@ -706,6 +767,29 @@ pub fn config_path() -> Option<PathBuf> {
 /// Returns the path to the machine-local state file: `~/.tokensave/state.toml`.
 pub fn state_path() -> Option<PathBuf> {
     tokensave_dir().map(|d| d.join("state.toml"))
+}
+
+/// Returns the path to the machine-level hardware benchmark cache:
+/// `~/.tokensave/benchmark.toml` (#752).
+pub fn benchmark_path() -> Option<PathBuf> {
+    tokensave_dir().map(|d| d.join("benchmark.toml"))
+}
+
+/// Reads the global resource settings straight from `config.toml`.
+///
+/// Opening a project calls this, so unlike [`UserConfig::load`] it takes no
+/// lock, merges no state and never moves a corrupt file aside: it only
+/// reads. A missing or unparseable file yields the defaults; the next
+/// `load()` preserves a corrupt file as usual. Writes replace the file by
+/// rename, so an unlocked read never sees a partial file.
+pub fn resource_preferences() -> ResourcePreferences {
+    let parsed = config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|contents| toml::from_str::<ConfigFile>(&contents).ok());
+    parsed.map_or_else(ResourcePreferences::default, |file| ResourcePreferences {
+        cpu_usage: file.cpu_usage,
+        benchmark: file.benchmark,
+    })
 }
 
 /// Returns the path to the advisory lock guarding `config.toml`'s
@@ -1034,7 +1118,9 @@ impl UserConfig {
             || self.extraction_timeout_secs != base.extraction_timeout_secs
             || self.wildcard_permissions != base.wildcard_permissions
             || self.manage_rules != base.manage_rules
-            || self.claude_hooks != base.claude_hooks;
+            || self.claude_hooks != base.claude_hooks
+            || self.cpu_usage != base.cpu_usage
+            || self.benchmark != base.benchmark;
         if !changed && !self.loaded_legacy_state.load(Ordering::Relaxed) {
             return Ok(None);
         }
@@ -1078,6 +1164,16 @@ impl UserConfig {
                 on_disk.claude_hooks
             } else {
                 self.claude_hooks
+            },
+            cpu_usage: if self.cpu_usage == base.cpu_usage {
+                on_disk.cpu_usage
+            } else {
+                self.cpu_usage
+            },
+            benchmark: if self.benchmark == base.benchmark {
+                on_disk.benchmark
+            } else {
+                self.benchmark
             },
         }))
     }
@@ -1204,10 +1300,100 @@ mod tests {
             wildcard_permissions: true,
             manage_rules: false,
             claude_hooks: false,
+            cpu_usage: Some(crate::cpu::CpuUsage::Low),
+            benchmark: BenchmarkPreferences {
+                enabled: true,
+                auto_run: false,
+            },
             loaded_config: Mutex::new(None),
             loaded_state: Mutex::new(None),
             loaded_legacy_state: AtomicBool::new(false),
         }
+    }
+
+    #[test]
+    fn resource_preferences_round_trip_and_read_only_accessor() {
+        let _home = test_home();
+        assert_eq!(resource_preferences(), ResourcePreferences::default());
+
+        let config = sample_config();
+        assert!(config.save());
+        let loaded = UserConfig::load();
+        assert_eq!(loaded.cpu_usage, Some(crate::cpu::CpuUsage::Low));
+        assert!(loaded.benchmark.enabled && !loaded.benchmark.auto_run);
+        assert_eq!(
+            resource_preferences(),
+            ResourcePreferences {
+                cpu_usage: Some(crate::cpu::CpuUsage::Low),
+                benchmark: BenchmarkPreferences {
+                    enabled: true,
+                    auto_run: false,
+                },
+            }
+        );
+        let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
+        assert!(text.contains("cpu_usage = \"low\""), "{text}");
+        assert!(text.contains("[benchmark]"), "{text}");
+    }
+
+    #[test]
+    fn default_resource_preferences_are_not_written() {
+        let _home = test_home();
+        let config = UserConfig {
+            upload_enabled: false,
+            ..UserConfig::default()
+        };
+        assert!(config.save());
+        let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
+        assert!(!text.contains("cpu_usage"), "{text}");
+        assert!(!text.contains("benchmark"), "{text}");
+    }
+
+    #[test]
+    fn unparseable_config_gives_default_resource_preferences_and_is_left_alone() {
+        let _home = test_home();
+        let path = config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "cpu_usage = \"turbo\"\n").unwrap();
+        assert_eq!(resource_preferences(), ResourcePreferences::default());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "cpu_usage = \"turbo\"\n",
+            "the read-only accessor must not move or rewrite the file"
+        );
+    }
+
+    #[test]
+    fn concurrent_benchmark_preference_change_survives_unrelated_save() {
+        let _home = test_home();
+        assert!(UserConfig::default().save());
+        let stale = UserConfig::load();
+
+        let mut other = UserConfig::load();
+        other.benchmark.auto_run = false;
+        other.cpu_usage = Some(crate::cpu::CpuUsage::Performance);
+        assert!(other.save());
+
+        let mut stale = stale;
+        stale.wildcard_permissions = true;
+        assert!(stale.save());
+
+        let reloaded = UserConfig::load();
+        assert!(reloaded.wildcard_permissions);
+        assert!(!reloaded.benchmark.auto_run);
+        assert_eq!(reloaded.cpu_usage, Some(crate::cpu::CpuUsage::Performance));
+    }
+
+    #[test]
+    fn benchmark_cache_lives_next_to_config() {
+        let _home = test_home();
+        let config = config_path().unwrap();
+        let benchmark = benchmark_path().unwrap();
+        assert_eq!(benchmark.parent(), config.parent());
+        assert_eq!(
+            benchmark.file_name().and_then(|n| n.to_str()),
+            Some("benchmark.toml")
+        );
     }
 
     #[test]
