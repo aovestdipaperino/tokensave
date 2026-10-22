@@ -13,6 +13,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- Database workload and compatibility inventory (`docs/benchmarks/database-workload-inventory.md`) and an evaluation progress tracker for the database backend investigation (#739, #741, #742). Documentation only.
+
 - Mandatory contributor and AI agent rule for native filesystem path construction (#743), following PR #738: one component per `join` or `push`, with explicit exceptions for portable string formats and path-syntax fixtures.
 
 - Automatic extraction RAM safeguards complement project profiles: sample physical RAM (and visible Linux cgroup headroom) before parallel extraction and reduce concurrency using a conservative parser allowance. Applies to subprocess and in-process paths, including `performance`; no background polling or hard RSS guarantee.
