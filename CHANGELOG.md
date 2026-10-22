@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+
+## [7.16.0] - 2026-10-22
+
 ### Performance
 
 - Construct the MCP tool registry once during server startup and release schemas before opening the global database, preserving routing gates and schema accounting without retaining a schema cache (#735).
@@ -2131,3 +2134,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [7.14.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.14.0
 [7.14.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.14.1
 [7.15.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.15.0
+[7.16.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.16.0
