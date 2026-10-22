@@ -3,6 +3,15 @@
 Status: executable compatibility check for #739. No production code changes and
 no migration. Performance is not measured here.
 
+> **Follow-up:** this page answers whether turso runs tokensave's *existing* SQL
+> (it doesn't run FTS5). Whether turso's *native* Tantivy full-text search can
+> replace FTS5 with adapted DDL and queries, and how fast it is, is measured
+> separately in [turso-fts-report.md](turso-fts-report.md) (methodology:
+> [turso-fts-methodology.md](turso-fts-methodology.md)). The probe results
+> below are unchanged. They were re-run after the crate switched to the system
+> allocator (turso's `mimalloc` default feature off; see the methodology), and
+> all 220 outcomes were identical.
+
 ## Summary
 
 Turso 0.8.3 runs **39 of 55** probes with results identical to SQLite. The
@@ -14,7 +23,7 @@ documentation lists as unsupported.
 | Finding | Severity for tokensave |
 | --- | --- |
 | No FTS5 module: every `nodes_fts`, `executable_body_fts` and `memory_decisions_fts` probe fails with `no such module: fts5`. | **Blocker.** Search (W4), bulk load (W1) and incremental sync (W2) all depend on it. |
-| Turso's native FTS (`CREATE INDEX … USING fts`, Tantivy-based) offers `default`, `raw`, `simple`, `whitespace` and `ngram` tokenizers and per-field weights. There is no stemming tokenizer. | Not a drop-in replacement. `porter unicode61` stemming (for example *running* matching *runs*) can't be reproduced, so ranking parity can't be claimed. |
+| Turso's native FTS (`CREATE INDEX … USING fts`, Tantivy-based) offers `default`, `raw`, `simple`, `whitespace` and `ngram` tokenizers and per-field weights. There is no stemming tokenizer. | Not a drop-in replacement. `porter unicode61` stemming (for example *running* matching *runs*) can't be reproduced, so ranking parity can't be claimed. Measured in [turso-fts-report.md](turso-fts-report.md). |
 | 0.8.3 opens an existing tokensave v18 database and reads its ordinary tables correctly, but `nodes_fts` does not exist for it. | Read-only access to the graph works; search does not. |
 | 0.8.3 `PRAGMA integrity_check` on a valid tokensave database (libsql reports `ok`) returns `Page N: never used` for many pages. | **Blocker for `verify.rs`.** A healthy index would be reported as corrupt. The cause was not determined; FTS5 shadow-table pages are a plausible explanation. |
 | **0.9.0-pre.1 refuses to open** any existing tokensave database: `Virtual table module not found: fts5`. | The upgrade path gets worse, not better, on the current prerelease. |
@@ -110,9 +119,11 @@ Full per-probe tables and JSON, including error messages:
 - **Query plans.** The probes check results, not index use.
 - **Historical schemas v1–v17** and migration replay.
 - **Turso native FTS relevance.** It was inspected in source (`turso_core`
-  0.8.3 `index_method/fts`), not run.
+  0.8.3 `index_method/fts`), not run. Now run in
+  [turso-fts-report.md](turso-fts-report.md).
 - **macOS and Windows.** All runs were on Linux.
-- **Performance.** Not in scope here.
+- **Performance.** Not in scope here; see [turso-fts-report.md](turso-fts-report.md)
+  for full-text workloads.
 
 ## Environment
 

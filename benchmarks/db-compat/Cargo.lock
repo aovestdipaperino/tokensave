@@ -3143,7 +3143,9 @@ dependencies = [
 name = "tokensave-db-compat"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "libsql",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
