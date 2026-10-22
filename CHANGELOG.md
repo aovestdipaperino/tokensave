@@ -7,6 +7,14 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Changed
+
+- **The hardware benchmark is machine-level (#752).** `tokensave init` no longer benchmarks every repository. The first `init` on a machine measures it and saves the result in `~/.tokensave/benchmark.toml`, and later projects reuse that result without measuring. A saved result is measured again only when it is missing, malformed or incomplete, when its schema or benchmark algorithm version changed, when the CPU count changed, or when total memory changed by more than 10%. New projects no longer pin `cpu_usage` in `.tokensave/config.json`; they follow `TOKENSAVE_CPU_USAGE`, then an optional global `cpu_usage` in `~/.tokensave/config.toml`, then the saved benchmark, then `balanced`. A project's own `cpu_usage` still takes precedence over the global settings, so existing projects keep their stored profile unchanged. `[benchmark] enabled` and `auto_run` in `config.toml` turn the benchmark off or stop it from running automatically. Concurrent `init`s coordinate through an advisory lock, so only one of them measures, and writes are atomic. `tokensave tune` now also saves its measurement as the global result.
+
+### Added
+
+- **`tokensave config benchmark [--force | --show | --reset] [--json]` (#752)** reuses or runs, re-measures, inspects (without measuring) or deletes the machine-level hardware benchmark.
+
 
 ## [7.16.0] - 2026-10-22
 
