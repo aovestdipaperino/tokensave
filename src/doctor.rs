@@ -4,7 +4,7 @@
 //! integrations, and network connectivity.
 
 use crate::agents::hooks as tokensave_hooks;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::agents::{self, DoctorCounters, HealthcheckContext};
 use crate::display::{format_bytes, format_token_count};
@@ -26,7 +26,7 @@ pub async fn run_doctor(agent_filter: Option<&str>) {
     check_binary(&mut dc);
 
     eprintln!("\n\x1b[1mCurrent project\x1b[0m");
-    let project_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let project_path = crate::config::resolve_path_with_discovery(None);
     if TokenSave::is_initialized(&project_path) {
         dc.pass(&format!(
             "Index found: {}/.tokensave/",

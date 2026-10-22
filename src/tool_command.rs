@@ -13,7 +13,8 @@
 //!
 //! Unlike the MCP server, the CLI does not cap a result at 15,000 characters:
 //! its output goes to a script or a terminal, not a context window (#673).
-//! - `--project <path>` — project root to open. Defaults to cwd. We use
+//! - `--project <path>` — project root to open. Defaults to the project that
+//!   owns cwd (see [`tokensave::config::discover_project`]). We use
 //!   `--project` (not `-p`) because several MCP tools have a `path` argument
 //!   that filters files within the project.
 //! - `--args <json>` — escape hatch. Treats the JSON value as the entire
@@ -77,7 +78,7 @@ pub(crate) async fn run(name: Option<String>, args: Vec<String>) -> Result<()> {
         return Ok(());
     }
 
-    let project_path = tokensave::config::resolve_path(parsed.project.clone());
+    let project_path = tokensave::config::resolve_path_with_discovery(parsed.project.clone());
     let cg = serve::ensure_initialized(&project_path).await?;
     // The 15,000-character cap protects an agent's context window; the CLI's
     // reader is a script or a person, so it gets the whole result (#673).

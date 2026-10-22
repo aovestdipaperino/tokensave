@@ -2324,7 +2324,7 @@ fn collect_strings<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
 /// Token savings are now reported inline in each MCP tool response,
 /// so this hook only needs to reset the counter for the new turn.
 pub async fn hook_prompt_submit() {
-    let project_path = crate::config::resolve_path(None);
+    let project_path = crate::config::resolve_path_with_discovery(None);
     if let Ok(cg) = crate::tokensave::TokenSave::open(&project_path).await {
         let _ = cg.reset_local_counter().await;
     }
@@ -2418,7 +2418,7 @@ pub async fn hook_stop() {
     }
 
     // Read tokens saved for efficiency calculation
-    let project_path = crate::config::resolve_path(None);
+    let project_path = crate::config::resolve_path_with_discovery(None);
     let tokens_saved = if let Ok(cg) = crate::tokensave::TokenSave::open(&project_path).await {
         cg.get_tokens_saved().await.unwrap_or(0)
     } else {

@@ -193,6 +193,30 @@ tokensave init
 
 This creates a `.tokensave/` directory with the knowledge graph database. Initialization and sync are separate commands: `init` is a one-time opt-in per project, while `sync` only updates projects that were already initialized. This prevents the global git hooks from silently creating databases in repos you never intended to index. After `init`, use `tokensave sync` to incrementally update -- only changed files are re-indexed.
 
+#### Running from subdirectories
+
+Every command finds the project that owns the current directory by walking up to the nearest `.tokensave/`, so you can run it from anywhere inside the project:
+
+```bash
+cd repository
+tokensave init                     # creates repository/.tokensave/
+
+cd src/backend/services
+tokensave tool search database     # searches the repository's index
+tokensave init                     # reports the existing project; exits 0, indexes nothing
+
+cd ../..
+tokensave sync                     # syncs the repository's index
+```
+
+The MCP server and the agent hooks resolve the project the same way. Search paths stay relative to the project root (`src/backend/db.rs`). Note that an MCP server launched from a subdirectory still uses that subdirectory as its default path filter for listing tools.
+
+- **Git repositories.** If no project exists yet, `init` from inside a git repository initializes the repository root (or the linked worktree root), not the current directory.
+- **Repository boundaries.** A git repository root is an isolation boundary. Inside a nested, independent repository (a nested clone or a submodule), commands never use an outer repository's index; run `tokensave init` there to give it its own. A linked worktree nested in its main checkout still borrows the main index, and the borrowed-worktree notice says so.
+- **Non-git projects.** A `.tokensave/` in a folder that is not inside a git repository works the same way, including for any repositories inside that folder.
+- **Explicit roots.** `tokensave init <path>`, `--path` (`-p`), and `tool --project <path>` use the directory you pass, with no discovery.
+- **Broken installs.** A `.tokensave/` with a `config.json` but no database is reported instead of being skipped in favor of an outer project. A config that cannot be parsed is an error that names the file to fix.
+
 <details>
 <summary><strong>What install writes for Claude Code</strong></summary>
 
@@ -892,7 +916,8 @@ See [TOKENSAVE-VERSIONING.md](TOKENSAVE-VERSIONING.md) for why tokensave diverge
 ## CLI Reference
 
 ```bash
-tokensave init [path]              # Initialize a new project (full index)
+tokensave init [path]              # Initialize a new project (full index); without a path, the git root
+                                   # (a no-op inside an existing project)
 tokensave init --cpu-usage low     # Initialize with a fixed CPU profile (skip the benchmark)
 tokensave tune [path] [--dry-run]  # Re-benchmark this machine and update cpu_usage
 tokensave sync [path]              # Incremental sync (must be initialized first)

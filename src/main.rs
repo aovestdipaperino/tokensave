@@ -187,7 +187,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     {
         let root = match path {
             Some(path) => std::path::PathBuf::from(path),
-            None => std::env::current_dir()?,
+            None => tokensave::config::resolve_path_with_discovery(None),
         };
         let report = tokensave::verify::verify(&root, *deep, *repair).await;
         if *json {
@@ -229,10 +229,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         allow_stale,
     } = &command
     {
-        let root =
-            std::env::current_dir().map_err(|e| tokensave::errors::TokenSaveError::Config {
-                message: e.to_string(),
-            })?;
+        let root = tokensave::config::resolve_path_with_discovery(None);
         let options = tokensave::quality_diff::QualityOptions {
             cyclomatic: *cyclomatic,
             cognitive: *cognitive,
@@ -424,7 +421,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             no_git_hook,
             cpu_usage,
         } => {
-            let project_path = tokensave::config::resolve_path(path);
+            // `None`: cwd is inside an existing project, which was reported.
+            let Some(project_path) = commands::resolve_init_root(path)? else {
+                return Ok(());
+            };
             if TokenSave::is_initialized(&project_path) {
                 eprintln!(
                     "\x1b[31merror:\x1b[0m TokenSave is already initialized at '{}'.\n\
@@ -1402,13 +1402,13 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             None => tokensave::upgrade::show_channel(),
         },
         Commands::CurrentCounter { path } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let cg = serve::ensure_initialized(&project_path).await?;
             let value = cg.get_local_counter().await?;
             println!("{value}");
         }
         Commands::ResetCounter { path } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let cg = serve::ensure_initialized(&project_path).await?;
             let prev = cg.get_local_counter().await?;
             cg.reset_local_counter().await?;
@@ -1498,7 +1498,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
         }
         Commands::Gitignore { path, action } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let mut config = tokensave::config::load_config(&project_path)?;
             match action.as_deref() {
                 Some("on") => {

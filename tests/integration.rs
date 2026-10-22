@@ -142,6 +142,7 @@ mod php_extraction_test;
 mod plank_agent_test;
 mod powershell_extraction_test;
 mod project_manifest_test;
+mod project_root_discovery_test;
 mod proto_extraction_test;
 mod python_bug224_test;
 mod python_extraction_test;

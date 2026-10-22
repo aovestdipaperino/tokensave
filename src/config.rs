@@ -704,35 +704,130 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     out
 }
 
-/// Walks from `start` upward looking for a `.tokensave/tokensave.db`.
+/// The project a directory belongs to, as found by [`discover_project`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectDiscovery {
+    /// An initialized project (`.tokensave/tokensave.db`) owns the directory.
+    Initialized(PathBuf),
+    /// The nearest `.tokensave/` holds a `config.json` but no database: an
+    /// interrupted or partial `init`. Reported rather than skipped so an outer
+    /// project is never used in its place.
+    Incomplete(PathBuf),
+    /// No project owns the directory. `git_root` is the nearest enclosing git
+    /// working tree root (main checkout, linked worktree, or submodule), the
+    /// directory `init` targets by default.
+    Uninitialized { git_root: Option<PathBuf> },
+}
+
+/// Finds the project that owns `start` by walking up its ancestors.
 ///
-/// Returns the first ancestor directory (inclusive) that contains an
-/// initialised `TokenSave` project, or `None` if the filesystem root is
-/// reached without finding one.
+/// This is the single authority for "which project am I in": every command run
+/// without an explicit path, the MCP server, and the agent hooks resolve
+/// through it, so a command run from `repo/src/backend` serves the same index
+/// as one run from `repo`.
+///
+/// The nearest `.tokensave/` wins. Git repository roots are isolation
+/// boundaries: once the walk passes the root of an independent repository (a
+/// `.git` directory, or a submodule's `.git` file), a project above it is used
+/// only when that project is not itself inside a git repository — a plain
+/// workspace folder that indexes several checkouts — never when it belongs to
+/// an outer repository. A linked worktree's `.git` file is not a boundary: a
+/// worktree nested in its main checkout keeps borrowing that index, which the
+/// borrowed-worktree notice (#312) then reports.
+///
+/// Costs a few `stat` calls per ancestor and never spawns `git`.
+pub fn discover_project(start: &Path) -> ProjectDiscovery {
+    discover_project_from(start, crate::agents::home_dir().as_deref())
+}
+
+/// [`discover_project`] with the home directory passed in. `~/.tokensave/` is
+/// the global state directory, not a project, unless it holds a database.
+fn discover_project_from(start: &Path, home: Option<&Path>) -> ProjectDiscovery {
+    let mut git_root: Option<PathBuf> = None;
+    let mut crossed_repository = false;
+    for dir in start.ancestors() {
+        let tokensave_dir = dir.join(".tokensave");
+        let found = if tokensave_dir.join("tokensave.db").exists() {
+            Some(ProjectDiscovery::Initialized(dir.to_path_buf()))
+        } else if Some(dir) != home && tokensave_dir.join("config.json").is_file() {
+            Some(ProjectDiscovery::Incomplete(dir.to_path_buf()))
+        } else {
+            None
+        };
+        if let Some(found) = found {
+            if crossed_repository && dir.ancestors().any(|d| git_marker(d).is_some()) {
+                break;
+            }
+            return found;
+        }
+        if let Some(marker) = git_marker(dir) {
+            if git_root.is_none() {
+                git_root = Some(dir.to_path_buf());
+            }
+            if marker == GitMarker::Repository {
+                crossed_repository = true;
+            }
+        }
+    }
+    ProjectDiscovery::Uninitialized { git_root }
+}
+
+/// What a directory's `.git` entry says about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitMarker {
+    /// The root of a repository of its own: a `.git` directory, or a `.git`
+    /// file pointing anywhere but a `worktrees/` entry (a submodule).
+    Repository,
+    /// A linked worktree of a repository whose main checkout lives elsewhere.
+    LinkedWorktree,
+}
+
+fn git_marker(dir: &Path) -> Option<GitMarker> {
+    let dot_git = dir.join(".git");
+    let meta = fs::metadata(&dot_git).ok()?;
+    if meta.is_dir() {
+        return Some(GitMarker::Repository);
+    }
+    // A linked worktree's `.git` file reads `gitdir: <common-dir>/worktrees/<name>`.
+    let contents = fs::read_to_string(&dot_git).ok()?;
+    let gitdir = Path::new(contents.strip_prefix("gitdir:")?.trim());
+    let in_worktrees = gitdir
+        .parent()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name == "worktrees");
+    Some(if in_worktrees {
+        GitMarker::LinkedWorktree
+    } else {
+        GitMarker::Repository
+    })
+}
+
+/// Returns the nearest initialized `TokenSave` project that owns `start`, or
+/// `None` when [`discover_project`] finds none (or only an incomplete one).
 pub fn discover_project_root(start: &Path) -> Option<PathBuf> {
-    let mut dir = start.to_path_buf();
-    loop {
-        if dir.join(".tokensave").join("tokensave.db").exists() {
-            return Some(dir);
-        }
-        if !dir.pop() {
-            return None;
-        }
+    match discover_project(start) {
+        ProjectDiscovery::Initialized(root) => Some(root),
+        ProjectDiscovery::Incomplete(_) | ProjectDiscovery::Uninitialized { .. } => None,
     }
 }
 
-/// Like [`resolve_path`], but when `path` is `None` it walks up from `cwd`
-/// to find the nearest initialised `TokenSave` project before falling back to
-/// `cwd` itself.
+/// Like [`resolve_path`], but when `path` is `None` it resolves the project
+/// that owns `cwd` via [`discover_project`].
 ///
-/// Used by `serve`, `sync`, and `status`. NOT used by `init` (which must
-/// create a fresh project at the target directory).
+/// An explicit `path` is an override and is used as given. Without one, an
+/// incomplete project resolves to its own root, so the caller's "not
+/// initialized" error names it rather than `cwd`; with no project at all this
+/// falls back to `cwd`. `init` calls [`discover_project`] directly, since it
+/// also needs the git root.
 pub fn resolve_path_with_discovery(path: Option<String>) -> PathBuf {
     if let Some(p) = path {
         absolutize(PathBuf::from(p))
     } else {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        discover_project_root(&cwd).unwrap_or(cwd)
+        match discover_project(&cwd) {
+            ProjectDiscovery::Initialized(root) | ProjectDiscovery::Incomplete(root) => root,
+            ProjectDiscovery::Uninitialized { .. } => cwd,
+        }
     }
 }
 
@@ -1187,5 +1282,193 @@ mod tests {
         // Absent → the config value wins, in both directions.
         assert!(env_bool_override("TOKENSAVE_UNSET_TEST_VAR_XYZ", true));
         assert!(!env_bool_override("TOKENSAVE_UNSET_TEST_VAR_XYZ", false));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod discovery_tests {
+    use super::{discover_project_from, ProjectDiscovery};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use tempfile::TempDir;
+
+    fn mkdirs(base: &Path, parts: &[&str]) -> PathBuf {
+        let mut dir = base.to_path_buf();
+        for part in parts {
+            dir.push(part);
+        }
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn init_project(dir: &Path) {
+        let tokensave_dir = dir.join(".tokensave");
+        fs::create_dir_all(&tokensave_dir).unwrap();
+        fs::write(tokensave_dir.join("tokensave.db"), b"").unwrap();
+    }
+
+    fn init_repo(dir: &Path) {
+        fs::create_dir_all(dir.join(".git")).unwrap();
+    }
+
+    fn discover(start: &Path) -> ProjectDiscovery {
+        discover_project_from(start, None)
+    }
+
+    #[test]
+    fn nested_directories_resolve_to_the_project_root() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        init_repo(&root);
+        init_project(&root);
+        for parts in [
+            &[][..],
+            &["src"],
+            &["src", "backend", "services"],
+            &["tests"],
+        ] {
+            let start = mkdirs(&root, parts);
+            assert_eq!(
+                discover(&start),
+                ProjectDiscovery::Initialized(root.clone()),
+                "from {}",
+                start.display()
+            );
+        }
+    }
+
+    #[test]
+    fn nearest_project_wins_within_one_repository() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        init_repo(&root);
+        init_project(&root);
+        let inner = mkdirs(&root, &["packages", "app"]);
+        init_project(&inner);
+        let start = mkdirs(&inner, &["src"]);
+        assert_eq!(discover(&start), ProjectDiscovery::Initialized(inner));
+    }
+
+    #[test]
+    fn uninitialized_git_subdirectory_reports_the_git_root() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        init_repo(&root);
+        let start = mkdirs(&root, &["src", "component"]);
+        assert_eq!(
+            discover(&start),
+            ProjectDiscovery::Uninitialized {
+                git_root: Some(root)
+            }
+        );
+    }
+
+    #[test]
+    fn independent_nested_repository_does_not_borrow_the_outer_index() {
+        let tmp = TempDir::new().unwrap();
+        let outer = tmp.path().to_path_buf();
+        init_repo(&outer);
+        init_project(&outer);
+        let nested = mkdirs(&outer, &["vendor", "lib"]);
+        init_repo(&nested);
+        let start = mkdirs(&nested, &["src"]);
+        assert_eq!(
+            discover(&start),
+            ProjectDiscovery::Uninitialized {
+                git_root: Some(nested)
+            }
+        );
+    }
+
+    #[test]
+    fn submodule_git_file_is_a_repository_boundary() {
+        let tmp = TempDir::new().unwrap();
+        let outer = tmp.path().to_path_buf();
+        init_repo(&outer);
+        init_project(&outer);
+        let sub = mkdirs(&outer, &["deps", "sub"]);
+        fs::write(sub.join(".git"), "gitdir: ../../.git/modules/sub\n").unwrap();
+        assert_eq!(
+            discover(&sub),
+            ProjectDiscovery::Uninitialized {
+                git_root: Some(sub)
+            }
+        );
+    }
+
+    #[test]
+    fn non_git_workspace_project_is_shared_by_the_repositories_inside_it() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        init_project(&workspace);
+        let repo = mkdirs(&workspace, &["dev", "app"]);
+        init_repo(&repo);
+        let start = mkdirs(&repo, &["src"]);
+        assert_eq!(discover(&start), ProjectDiscovery::Initialized(workspace));
+    }
+
+    #[test]
+    fn linked_worktree_nested_in_its_main_checkout_borrows_the_main_index() {
+        let tmp = TempDir::new().unwrap();
+        let main = tmp.path().to_path_buf();
+        init_repo(&main);
+        init_project(&main);
+        let worktree = mkdirs(&main, &[".worktrees", "feature"]);
+        let gitdir = main.join(".git").join("worktrees").join("feature");
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .unwrap();
+        assert_eq!(discover(&worktree), ProjectDiscovery::Initialized(main));
+    }
+
+    #[test]
+    fn linked_worktree_without_an_index_reports_its_own_root() {
+        let tmp = TempDir::new().unwrap();
+        let worktree = mkdirs(tmp.path(), &["wt"]);
+        fs::write(worktree.join(".git"), "gitdir: /repo/.git/worktrees/wt\n").unwrap();
+        let start = mkdirs(&worktree, &["src"]);
+        assert_eq!(
+            discover(&start),
+            ProjectDiscovery::Uninitialized {
+                git_root: Some(worktree)
+            }
+        );
+    }
+
+    #[test]
+    fn partial_install_is_reported_instead_of_an_outer_project() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        init_project(&workspace);
+        let partial = mkdirs(&workspace, &["app"]);
+        let tokensave_dir = mkdirs(&partial, &[".tokensave"]);
+        fs::write(tokensave_dir.join("config.json"), "{}").unwrap();
+        let start = mkdirs(&partial, &["src"]);
+        assert_eq!(discover(&start), ProjectDiscovery::Incomplete(partial));
+    }
+
+    #[test]
+    fn global_state_directory_in_home_is_not_a_project() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        let global_dir = mkdirs(&home, &[".tokensave"]);
+        fs::write(global_dir.join("config.json"), "{}").unwrap();
+        let start = mkdirs(&home, &["scratch"]);
+        assert_eq!(
+            discover_project_from(&start, Some(&home)),
+            ProjectDiscovery::Uninitialized { git_root: None }
+        );
+    }
+
+    #[test]
+    fn paths_with_spaces_and_unicode_resolve() {
+        let tmp = TempDir::new().unwrap();
+        let root = mkdirs(tmp.path(), &["My Projects", "café ☕"]);
+        init_project(&root);
+        let start = mkdirs(&root, &["sous dossier", "日本"]);
+        assert_eq!(discover(&start), ProjectDiscovery::Initialized(root));
     }
 }
