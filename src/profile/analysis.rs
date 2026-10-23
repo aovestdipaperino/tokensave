@@ -192,7 +192,7 @@ pub fn findings(snapshot: &Snapshot) -> Vec<Finding> {
         }
     }
     out.retain(|f| f.impact_us > 0);
-    out.sort_by(|a, b| b.impact_us.cmp(&a.impact_us));
+    out.sort_by_key(|finding| std::cmp::Reverse(finding.impact_us));
     out
 }
 
@@ -248,6 +248,7 @@ pub fn render_text(engine: &str, snapshot: &Snapshot, window: &str, top: usize) 
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::profile::recorder::Repeat;
