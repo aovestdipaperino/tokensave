@@ -23,6 +23,53 @@ max_bytes = 33554432      # size cap for ~/.tokensave/profile/ (32 MiB)
 
 New tokensave processes pick the change up. Restart running MCP servers to include them. Detailed mode falls back to light when `--for` runs out (default 24h).
 
+## Repository-local controls
+
+The hidden `--local` option applies the same commands to the current TokenSave
+project, or its Git repository before initialization, including from a subdirectory:
+
+```sh
+tokensave profile enable --local
+tokensave profile enable --local --detailed --for 2h
+tokensave profile disable --local
+tokensave profile status --local
+tokensave profile share status --local
+tokensave profile share enable --local
+tokensave profile share disable --local
+tokensave profile share preview --local
+```
+
+`--local` is accepted but omitted from CLI help. Local preferences are stored
+in `.tokensave/profile.toml`, using the same `profiling_share_enabled` key and
+`[profiling]` table as the global configuration. Both controls default to off;
+creating local settings selects independent preferences rather than inheriting
+global profiling or sharing consent. Repositories without this file continue
+to use the global settings. Remove this file to resume using global settings.
+Keep it machine-local, especially sharing consent; do not commit it.
+
+Indexing, sync and MCP servers select settings using their resolved project,
+including an explicit path or a server-discovery fallback. Local commands use
+the same discovery rules; a worktree borrowing another project's index also
+uses that project's local settings. Restart existing MCP
+servers after changing the profiling mode. Environment overrides retain their
+existing behavior: `TOKENSAVE_PROFILE` selects the process mode, and
+`TOKENSAVE_PROFILE_SHARE` can only block sharing. Malformed or unreadable local
+settings disable profiling and sharing rather than falling back to global
+consent. Sharing remains blocked until the destination and policy are approved.
+
+Local aggregates are stored in `.tokensave/profile/`, with separate sharing
+state and cadence in that repository's `.tokensave/` directory. Add `--local`
+to `report`, `analyze`, `slow-queries`, `export` or `reset` to operate only on
+that store. Local exports and uploads never merge the global store. Sharing
+consent is re-read from the selected scope before each send.
+
+A repository-scoped MCP collector measures its default project. Calls with
+explicit `graph_root` or `graph_branch` selectors, including federated calls,
+are omitted from recording. Recording is conservatively suppressed process-wide
+while these calls run, including concurrent calls and spawned work, so another
+project's measurements cannot enter the local store. A server started with
+global settings retains its existing process-wide profiling behavior.
+
 ## What is recorded
 
 | Series | Meaning |

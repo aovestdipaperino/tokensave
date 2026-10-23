@@ -2642,6 +2642,10 @@ impl McpServer {
         id: Value,
         params: Option<&Value>,
     ) -> JsonRpcResponse {
+        let selected = params
+            .and_then(|p| p.get("arguments"))
+            .is_some_and(|a| a.get("graph_root").is_some() || a.get("graph_branch").is_some());
+        let _suppression = crate::profile::suppress_selected_call(selected);
         if !crate::profile::enabled() {
             return self.handle_tools_call(id, params).await;
         }

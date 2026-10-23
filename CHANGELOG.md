@@ -9,6 +9,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- Hidden `profile --local` controls for repository-specific profiling and independent sharing consent, with separate aggregates, reports and upload state; environment overrides and the destination gate remain in force (#764).
+
 - Draft performance sharing controls (`profile share status|preview|enable|disable`), separate default-off consent and disable-only environment override. Uploads remain unavailable pending the maintainer-approved endpoint and data policy (#754, PR 8).
 
 - Opt-in performance profiling infrastructure (#754): a `[profiling]` table in `config.toml` (`mode = "off" | "light" | "detailed"`, slow threshold, retention, size limit, detailed-mode expiry) with a `TOKENSAVE_PROFILE` per-run override, a static operation registry, mergeable fixed-bucket latency histograms, sharded lock-free aggregation, spans with inclusive/exclusive time and per-invocation database attribution, and bounded hourly files under `~/.tokensave/profile/`. Off by default; no call sites are instrumented yet, and with profiling off nothing is measured or written.

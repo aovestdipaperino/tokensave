@@ -19,6 +19,8 @@
 //!
 //! With profiling off, [`span`] costs one relaxed atomic load: no clock
 //! read, no allocation and no I/O, and no file or directory is created.
+//! Enabled spans also check a fixed atomic suppression counter so a local
+//! collector omits calls that explicitly select another graph.
 //! Recording never does I/O; a background thread owned by [`Profiler`]
 //! drains the recorder every [`FLUSH_INTERVAL`] and on shutdown.
 //!
@@ -28,6 +30,7 @@ pub mod analysis;
 pub mod context;
 pub mod export;
 pub mod histogram;
+pub mod local;
 pub mod ops;
 pub mod recorder;
 pub mod report;
@@ -36,7 +39,7 @@ pub mod storage;
 pub mod tools;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::OnceLock;
 use std::thread::JoinHandle;
@@ -157,6 +160,27 @@ fn unix_now() -> u64 {
 }
 
 static MODE: AtomicU8 = AtomicU8::new(0);
+static LOCAL_SCOPE: AtomicBool = AtomicBool::new(false);
+static SUPPRESSED: AtomicUsize = AtomicUsize::new(0);
+
+/// Repository-scoped servers omit explicit graph selections, including
+/// federated calls. The process-wide guard also covers spawned child work;
+/// concurrent calls during that interval are conservatively omitted.
+pub(crate) fn suppress_selected_call(selected: bool) -> Option<Suppression> {
+    if selected && LOCAL_SCOPE.load(Ordering::Relaxed) {
+        SUPPRESSED.fetch_add(1, Ordering::Relaxed);
+        Some(Suppression)
+    } else {
+        None
+    }
+}
+
+pub(crate) struct Suppression;
+impl Drop for Suppression {
+    fn drop(&mut self) {
+        SUPPRESSED.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 static RECORDER: OnceLock<Recorder> = OnceLock::new();
 
 /// The current mode.
@@ -167,7 +191,7 @@ pub fn mode() -> Mode {
 /// Whether anything is being measured.
 #[inline]
 pub fn enabled() -> bool {
-    MODE.load(Ordering::Relaxed) != 0
+    MODE.load(Ordering::Relaxed) != 0 && SUPPRESSED.load(Ordering::Relaxed) == 0
 }
 
 /// Switches the mode for this process. The recorder (a fixed allocation,
@@ -329,6 +353,19 @@ impl Profiler {
     /// thread writing to `dir`. Returns `None` (and creates nothing) when
     /// profiling is off.
     pub fn start(settings: &Settings, dir: PathBuf, interval: Duration) -> Option<Self> {
+        Self::start_scoped(settings, dir, interval, local::Scope::Global)
+    }
+
+    fn start_scoped(
+        settings: &Settings,
+        dir: PathBuf,
+        interval: Duration,
+        scope: local::Scope,
+    ) -> Option<Self> {
+        LOCAL_SCOPE.store(
+            matches!(scope, local::Scope::Repository(_)),
+            Ordering::Relaxed,
+        );
         set_mode(settings.mode);
         if settings.mode == Mode::Off {
             return None;
@@ -349,7 +386,7 @@ impl Profiler {
                 );
                 // Best-effort: profiling must never break the workload.
                 if store.flush(&drain(recorder), unix_now()).is_ok() {
-                    sharing::after_flush(&dir, unix_now());
+                    sharing::after_flush(&dir, unix_now(), &scope);
                 }
                 if last {
                     break;
@@ -377,6 +414,15 @@ impl Profiler {
         )
     }
 
+    /// Start with the resolved project's local settings when present.
+    /// Local profiles and sharing state never enter the global store.
+    pub fn start_for_project(root: &std::path::Path) -> Option<Self> {
+        let scope = local::Scope::for_project(root);
+        let settings = scope.settings();
+        let dir = scope.profile_dir().ok()?;
+        Self::start_scoped(&settings, dir, FLUSH_INTERVAL, scope)
+    }
+
     /// Stops the flush thread after a final flush and waits for it.
     pub fn shutdown(mut self) {
         self.stop_and_join();
@@ -400,6 +446,26 @@ impl Drop for Profiler {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn local_selected_calls_suppress_spawned_work_and_restore_on_drop() {
+        let _lock = TEST_MODE_LOCK.lock().await;
+        LOCAL_SCOPE.store(true, Ordering::Relaxed);
+        set_mode(Mode::Light);
+        assert!(enabled());
+        let first = suppress_selected_call(true).unwrap();
+        let second = suppress_selected_call(true).unwrap();
+        assert!(!enabled());
+        assert!(!tokio::spawn(async { enabled() }).await.unwrap());
+        drop(first);
+        assert!(!enabled());
+        drop(second);
+        assert!(enabled());
+        assert!(suppress_selected_call(false).is_none());
+        LOCAL_SCOPE.store(false, Ordering::Relaxed);
+        assert!(suppress_selected_call(true).is_none());
+        set_mode(Mode::Off);
+    }
 
     fn prefs(mode: Mode) -> ProfilingPreferences {
         ProfilingPreferences {

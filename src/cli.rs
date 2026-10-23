@@ -423,6 +423,9 @@ pub enum Commands {
     },
     /// Opt-in performance profiling: status, reports and sanitized export (#754)
     Profile {
+        /// Apply settings and reports only to the current repository
+        #[arg(long, global = true, hide = true)]
+        local: bool,
         #[command(subcommand)]
         action: ProfileAction,
     },

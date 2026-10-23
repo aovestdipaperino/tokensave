@@ -97,16 +97,13 @@ impl Transport for Https {
 
 /// Called on the existing flush thread, after local persistence. No new task,
 /// queue or retry loop is created. Nothing is retained after the attempt.
-pub(crate) fn after_flush(dir: &Path, now: u64) {
+pub(crate) fn after_flush(dir: &Path, now: u64, scope: &super::local::Scope) {
     attempt(
         dir,
         now,
         DESTINATION,
         environment_allows(),
-        || {
-            super::Settings::from_environment().mode != Mode::Off
-                && crate::user_config::profiling_sharing_consent()
-        },
+        || scope.settings().mode != Mode::Off && scope.sharing_consent(),
         &Https,
     );
 }

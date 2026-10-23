@@ -7,8 +7,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use tokensave::errors::{Result, TokenSaveError};
+use tokensave::profile::local::Scope;
 use tokensave::profile::{self, analysis, export, report, storage, Mode, Settings};
-use tokensave::user_config::{self, UserConfig};
+use tokensave::user_config;
 
 use crate::cli::{ProfileAction, ProfileShareAction};
 use tokensave::profile::sharing;
@@ -37,16 +38,23 @@ fn since_hour(window: Duration) -> u64 {
     unix_now().saturating_sub(window.as_secs()) / 3600
 }
 
-fn profile_dir() -> Result<std::path::PathBuf> {
-    user_config::profile_dir().ok_or_else(|| config_error("could not locate the home directory"))
+pub(crate) fn handle_profile_action(action: ProfileAction, local: bool) -> Result<()> {
+    let scope = if local {
+        Scope::from_cwd()?
+    } else {
+        Scope::Global
+    };
+    dispatch(action, &scope)
 }
 
-pub(crate) fn handle_profile_action(action: ProfileAction) -> Result<()> {
+fn dispatch(action: ProfileAction, scope: &Scope) -> Result<()> {
     match action {
-        ProfileAction::Share { action } => share(action),
-        ProfileAction::Status => status(),
-        ProfileAction::Enable { detailed, duration } => enable(detailed, duration.as_deref()),
-        ProfileAction::Disable => set_mode(Mode::Off, None),
+        ProfileAction::Share { action } => share(action, scope),
+        ProfileAction::Status => status(scope),
+        ProfileAction::Enable { detailed, duration } => {
+            enable(detailed, duration.as_deref(), scope)
+        }
+        ProfileAction::Disable => set_mode(Mode::Off, None, scope),
         ProfileAction::Report {
             mcp,
             database,
@@ -64,7 +72,7 @@ pub(crate) fn handle_profile_action(action: ProfileAction) -> Result<()> {
             } else {
                 report::Section::All
             };
-            let mut merged = storage::load(&profile_dir()?, since_hour(window(&since)?));
+            let mut merged = storage::load(&scope.profile_dir()?, since_hour(window(&since)?));
             if let Some(engine) = engine {
                 merged.retain(|name, _| *name == engine);
             }
@@ -80,7 +88,7 @@ pub(crate) fn handle_profile_action(action: ProfileAction) -> Result<()> {
             Ok(())
         }
         ProfileAction::Analyze { since, top, json } => {
-            let merged = storage::load(&profile_dir()?, since_hour(window(&since)?));
+            let merged = storage::load(&scope.profile_dir()?, since_hour(window(&since)?));
             if json {
                 let findings: serde_json::Map<String, serde_json::Value> = merged
                     .iter()
@@ -109,14 +117,14 @@ pub(crate) fn handle_profile_action(action: ProfileAction) -> Result<()> {
             Ok(())
         }
         ProfileAction::SlowQueries { since } => {
-            let merged = storage::load(&profile_dir()?, since_hour(window(&since)?));
-            let threshold = user_config::profiling_preferences().slow_query_ms;
+            let merged = storage::load(&scope.profile_dir()?, since_hour(window(&since)?));
+            let threshold = scope.load()?.profiling.slow_query_ms;
             print!("{}", report::render_slow(&merged, threshold, &since));
             Ok(())
         }
         ProfileAction::Export { since, output } => {
             let window = window(&since)?;
-            let merged = storage::load(&profile_dir()?, since_hour(window));
+            let merged = storage::load(&scope.profile_dir()?, since_hour(window));
             let export = export::sanitized(
                 &merged,
                 window.as_secs().div_ceil(3600),
@@ -135,34 +143,29 @@ pub(crate) fn handle_profile_action(action: ProfileAction) -> Result<()> {
             Ok(())
         }
         ProfileAction::Reset => {
-            let removed = storage::reset(&profile_dir()?);
+            let removed = storage::reset(&scope.profile_dir()?);
             println!("Removed {removed} profile file(s).");
             Ok(())
         }
     }
 }
 
-fn enable(detailed: bool, duration: Option<&str>) -> Result<()> {
+fn enable(detailed: bool, duration: Option<&str>, scope: &Scope) -> Result<()> {
     if !detailed {
-        set_mode(Mode::Light, None)?;
-        return invite_sharing();
+        set_mode(Mode::Light, None, scope)?;
+        return invite_sharing(scope);
     }
     let lasts = match duration {
         Some(text) => window(text)?,
         None => DEFAULT_DETAILED_FOR,
     };
     let expires = unix_now().saturating_add(lasts.as_secs());
-    set_mode(Mode::Detailed, Some(expires as i64))?;
-    invite_sharing()
+    set_mode(Mode::Detailed, Some(expires as i64), scope)?;
+    invite_sharing(scope)
 }
 
-fn set_mode(mode: Mode, detailed_expires_at: Option<i64>) -> Result<()> {
-    let mut config = UserConfig::load();
-    config.profiling.mode = mode;
-    config.profiling.detailed_expires_at = detailed_expires_at;
-    if !config.save() {
-        return Err(config_error("failed to save ~/.tokensave/config.toml"));
-    }
+fn set_mode(mode: Mode, detailed_expires_at: Option<i64>, scope: &Scope) -> Result<()> {
+    scope.save_mode(mode, detailed_expires_at)?;
     match mode {
         Mode::Off => println!(
             "Profiling disabled. Recorded data is kept; `tokensave profile reset` deletes it."
@@ -175,43 +178,33 @@ fn set_mode(mode: Mode, detailed_expires_at: Option<i64>) -> Result<()> {
     }
     if mode != Mode::Off {
         println!(
-            "Profiles are stored under ~/.tokensave/profile/. Sharing requires separate consent. New tokensave processes pick \
-             this up; restart running MCP servers to include them."
+            "Profiles are stored under {}. Sharing requires separate consent. New tokensave processes pick \
+             this up; restart running MCP servers to include them.", scope.profile_dir()?.display()
         );
     }
     Ok(())
 }
 
-fn save_sharing(enabled: bool) -> Result<()> {
-    let mut config = UserConfig::load();
-    config.profiling_share_enabled = enabled;
-    config.profiling_share_asked = true;
-    if !config.save() {
-        return Err(config_error("failed to save sharing consent"));
-    }
-    Ok(())
-}
-
-fn share(action: ProfileShareAction) -> Result<()> {
+fn share(action: ProfileShareAction, scope: &Scope) -> Result<()> {
     match action {
         ProfileShareAction::Preview => {
-            print!("{}", sharing::payload(&profile_dir()?, unix_now()));
+            print!("{}", sharing::payload(&scope.profile_dir()?, unix_now()));
         }
         ProfileShareAction::Disable => {
-            save_sharing(false)?;
+            scope.save_sharing(false)?;
             println!("Performance sharing disabled. Local profile data is unchanged.");
         }
         ProfileShareAction::Enable => {
             let destination = sharing::DESTINATION.filter(|d| d.ready()).ok_or_else(||
                 config_error("Performance sharing is unavailable: the maintainer has not approved the endpoint and data policy. Consent remains unchanged."))?;
-            if Settings::from_environment().mode == Mode::Off {
+            if scope.settings().mode == Mode::Off {
                 return Err(config_error(
                     "Enable profiling first with `tokensave profile enable`.",
                 ));
             }
             show_destination(destination);
-            print!("{}", sharing::payload(&profile_dir()?, unix_now()));
-            save_sharing(true)?;
+            print!("{}", sharing::payload(&scope.profile_dir()?, unix_now()));
+            scope.save_sharing(true)?;
             println!(
                 "Performance sharing enabled by explicit request. Uploads run at most once a day."
             );
@@ -220,7 +213,7 @@ fn share(action: ProfileShareAction) -> Result<()> {
             }
         }
         ProfileShareAction::Status => {
-            let enabled = user_config::profiling_sharing_consent();
+            let enabled = scope.sharing_consent();
             println!(
                 "Performance sharing consent: {}",
                 if enabled { "enabled" } else { "disabled" }
@@ -237,7 +230,7 @@ fn share(action: ProfileShareAction) -> Result<()> {
                     "blocks uploads"
                 }
             );
-            let state = sharing::state(&profile_dir()?);
+            let state = sharing::state(&scope.profile_dir()?);
             match state {
                 Some(state) => {
                     println!(
@@ -247,7 +240,7 @@ fn share(action: ProfileShareAction) -> Result<()> {
                     if enabled
                         && sharing::DESTINATION.is_some()
                         && sharing::environment_allows()
-                        && Settings::from_environment().mode != Mode::Off
+                        && scope.settings().mode != Mode::Off
                     {
                         println!(
                             "Next due (UNIX seconds): {}",
@@ -272,9 +265,9 @@ fn show_destination(destination: sharing::Destination) {
     println!("Fields: schema, tokensave version, OS, architecture, logical CPU count, window hours, engine and static metric aggregates. No stable identifier.");
 }
 
-fn invite_sharing() -> Result<()> {
+fn invite_sharing(scope: &Scope) -> Result<()> {
     use std::io::{IsTerminal, Write};
-    let config = UserConfig::load();
+    let config = scope.load()?;
     if config.profiling_share_asked
         || !std::io::stdin().is_terminal()
         || !std::io::stdout().is_terminal()
@@ -286,7 +279,7 @@ fn invite_sharing() -> Result<()> {
         return Ok(());
     };
     show_destination(destination);
-    print!("{}", sharing::payload(&profile_dir()?, unix_now()));
+    print!("{}", sharing::payload(&scope.profile_dir()?, unix_now()));
     print!("Share these sanitized performance aggregates? [y/N] ");
     std::io::stdout()
         .flush()
@@ -298,16 +291,16 @@ fn invite_sharing() -> Result<()> {
     std::io::BufReader::new(std::io::stdin().lock().take(64))
         .read_line(&mut answer)
         .map_err(|e| config_error(e.to_string()))?;
-    save_sharing(matches!(
+    scope.save_sharing(matches!(
         answer.trim().to_ascii_lowercase().as_str(),
         "y" | "yes"
     ))
 }
 
-fn status() -> Result<()> {
-    let prefs = user_config::profiling_preferences();
-    let effective = Settings::from_environment();
-    let dir = profile_dir()?;
+fn status(scope: &Scope) -> Result<()> {
+    let prefs = scope.load()?.profiling;
+    let effective = scope.settings();
+    let dir = scope.profile_dir()?;
     print!(
         "{}",
         render_status(

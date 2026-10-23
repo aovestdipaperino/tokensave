@@ -467,7 +467,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             tokensave::memstats::init("index", &project_path);
             tokensave::memstats::record("start");
             // Opt-in profiling (#754); a no-op unless enabled.
-            let profiler = tokensave::profile::Profiler::start_from_environment();
+            let profiler = tokensave::profile::Profiler::start_for_project(&project_path);
 
             tokensave::profile::invocation(commands::init_and_index(
                 &project_path,
@@ -558,7 +558,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             tokensave::memstats::init("sync", &project_path);
             tokensave::memstats::record("start");
             // Opt-in profiling (#754); a no-op unless enabled.
-            let profiler = tokensave::profile::Profiler::start_from_environment();
+            let profiler = tokensave::profile::Profiler::start_for_project(&project_path);
 
             if force {
                 tokensave::profile::invocation(commands::init_and_index(
@@ -1285,10 +1285,6 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 // The process exits cleanly so the host does not retry.
                 return Ok(());
             }
-            // Opt-in profiling (#754): off unless `[profiling]` or
-            // TOKENSAVE_PROFILE enables it, in which case aggregates are
-            // flushed to ~/.tokensave/profile/ until the server exits.
-            let profiler = tokensave::profile::Profiler::start_from_environment();
             let original_cwd = std::env::current_dir().ok();
             // An explicit --path is a deliberate choice of project root
             // (possibly a different repo than the CWD, #201); only
@@ -1340,6 +1336,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         None => None,
                     }
                 }
+            };
+            let profiler = match cg.as_ref() {
+                Some(cg) => tokensave::profile::Profiler::start_for_project(cg.project_root()),
+                None => tokensave::profile::Profiler::start_from_environment(),
             };
             let Some(cg) = cg else {
                 // No project resolved (#606). Exiting here left the host with
@@ -1925,8 +1925,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 eprintln!("Memory report error: {e}");
             }
         }
-        Commands::Profile { action } => {
-            profile_command::handle_profile_action(action)?;
+        Commands::Profile { action, local } => {
+            profile_command::handle_profile_action(action, local)?;
         }
         Commands::QualityDiff { .. } => unreachable!("handled before startup"),
         Commands::Branch { action } => {
