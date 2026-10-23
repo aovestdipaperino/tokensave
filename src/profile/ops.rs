@@ -4,7 +4,8 @@
 //! variant's name is its metric key, so no SQL text, parameter, path or other
 //! dynamic string can enter a series key, and the number of series is fixed
 //! at compile time. Database query variants are added as call sites migrate
-//! to the profiled execution API.
+//! to the profiled execution API (`crate::db::Database::profiled_query`); a
+//! variant names a query method, not a SQL string.
 
 /// Declares a fieldless operation enum with an `ALL` table and a static,
 /// dot-qualified `name()`.
@@ -45,6 +46,58 @@ op_enum! {
         WriteLockWait => "write_lock_wait",
         /// A write transaction, from BEGIN to COMMIT or ROLLBACK.
         Transaction => "transaction",
+        /// Look up one node by id.
+        GetNodeById => "get_node_by_id",
+        /// Batch node lookup by ids.
+        GetNodesByIds => "get_nodes_by_ids",
+        /// Nodes of one file.
+        GetNodesByFile => "get_nodes_by_file",
+        /// Children of one node.
+        GetChildrenOf => "get_children_of",
+        /// Children of several nodes.
+        GetChildrenOfMany => "get_children_of_many",
+        /// Trait methods an impl method implements.
+        GetTraitMethodsForImplMethod => "get_trait_methods_for_impl_method",
+        /// Nodes of one kind.
+        GetNodesByKind => "get_nodes_by_kind",
+        /// Nodes matching a filter.
+        GetNodesFiltered => "get_nodes_filtered",
+        /// Nodes by short name.
+        GetNodesByName => "get_nodes_by_name",
+        /// Nodes by qualified name.
+        GetNodesByQualifiedName => "get_nodes_by_qualified_name",
+        /// Outgoing edges of one node.
+        GetOutgoingEdges => "get_outgoing_edges",
+        /// Incoming edges of one node.
+        GetIncomingEdges => "get_incoming_edges",
+        /// Incoming edges of several nodes.
+        GetIncomingEdgesBulk => "get_incoming_edges_bulk",
+        /// Call edges into a set of targets.
+        CallsEdgesInto => "calls_edges_into",
+        /// All call edges, optionally under a path prefix.
+        GetCallEdges => "get_call_edges",
+        /// Symbol search (non-FTS path).
+        SearchNodes => "search_nodes",
+        /// FTS5 symbol search.
+        SearchNodesFts => "search_nodes_fts",
+        /// Bounded FTS5 symbol search.
+        SearchNodesBounded => "search_nodes_bounded",
+        /// Exact-name symbol search.
+        SearchNodesByExactName => "search_nodes_by_exact_name",
+        /// FTS5 search over executable bodies.
+        SearchExecutableBodies => "search_executable_bodies",
+        /// Incoming call counts for ranking.
+        BatchIncomingCallCounts => "batch_incoming_call_counts",
+        /// Dead-code candidate query.
+        FindDeadCode => "find_dead_code",
+        /// Live GDScript override query.
+        GdscriptLiveOverrides => "gdscript_live_overrides",
+        /// Files a file depends on.
+        GetFileDependencies => "get_file_dependencies",
+        /// Files depending on a file.
+        GetFileDependents => "get_file_dependents",
+        /// File-level dependency adjacency.
+        BuildFileAdjacency => "build_file_adjacency",
     }
 }
 
