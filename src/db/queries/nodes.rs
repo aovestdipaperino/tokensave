@@ -392,6 +392,16 @@ impl Database {
     /// Inserts nodes using a prepared statement: parse SQL once, then
     /// bind+execute+reset for each row — zero SQL parsing after the first call.
     pub async fn insert_nodes(&self, nodes: &[Node]) -> Result<()> {
+        crate::profile::measure_write(
+            DbOp::InsertNodes,
+            nodes.len(),
+            self.insert_nodes_unprofiled(nodes),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::insert_nodes`].
+    async fn insert_nodes_unprofiled(&self, nodes: &[Node]) -> Result<()> {
         if nodes.is_empty() {
             return Ok(());
         }

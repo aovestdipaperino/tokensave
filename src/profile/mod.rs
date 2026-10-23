@@ -38,7 +38,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 pub use context::{InvocationSummary, Span};
-pub use ops::{Category, DbOp, IndexPhase, McpPhase, Op};
+pub use ops::{Category, DbOp, IndexPhase, McpPhase, Op, RunBucket, SyncPhase};
 pub use recorder::{Recorder, SeriesSnapshot, Snapshot};
 
 use crate::user_config::ProfilingPreferences;
@@ -195,6 +195,92 @@ pub fn span(op: impl Into<Op>) -> Span {
         Some(recorder) => Span::start(recorder, op.into()),
         None => Span::inert(),
     }
+}
+
+/// Records a finished index (`full`) or sync run under its size bucket:
+/// project files as rows returned, nodes and edges as rows affected.
+pub fn record_run(full: bool, files: usize, elapsed_us: u64, written: usize) {
+    if !enabled() {
+        return;
+    }
+    if let Some(recorder) = RECORDER.get() {
+        recorder.record(
+            RunBucket::for_run(full, files).into(),
+            recorder::Sample {
+                inclusive_us: elapsed_us,
+                exclusive_us: elapsed_us,
+                rows_returned: files as u64,
+                rows_affected: written as u64,
+            },
+        );
+    }
+}
+
+/// Rows reported for a measured result: `(returned, affected)`.
+pub trait Counted {
+    fn rows(&self) -> (u64, u64);
+}
+
+impl Counted for () {
+    fn rows(&self) -> (u64, u64) {
+        (0, 0)
+    }
+}
+
+impl<T> Counted for Vec<T> {
+    fn rows(&self) -> (u64, u64) {
+        (self.len() as u64, 0)
+    }
+}
+
+impl<T> Counted for Option<T> {
+    fn rows(&self) -> (u64, u64) {
+        (u64::from(self.is_some()), 0)
+    }
+}
+
+/// A traversal reports nodes visited as rows returned and edges as rows
+/// affected.
+impl Counted for crate::types::Subgraph {
+    fn rows(&self) -> (u64, u64) {
+        (self.nodes.len() as u64, self.edges.len() as u64)
+    }
+}
+
+/// Awaits `fut` under a span for `op`, recording its rows on success and an
+/// error otherwise.
+pub async fn measure<T, E, F>(op: impl Into<Op>, fut: F) -> Result<T, E>
+where
+    T: Counted,
+    F: std::future::Future<Output = Result<T, E>>,
+{
+    let mut span = span(op);
+    let result = fut.await;
+    match &result {
+        Ok(value) => {
+            let (returned, affected) = value.rows();
+            span.add_rows(returned, affected);
+            span.finish();
+        }
+        Err(_) => span.fail(),
+    }
+    result
+}
+
+/// Awaits a write of `affected` rows under a span for `op`.
+pub async fn measure_write<E, F>(op: impl Into<Op>, affected: usize, fut: F) -> Result<(), E>
+where
+    F: std::future::Future<Output = Result<(), E>>,
+{
+    let mut span = span(op);
+    let result = fut.await;
+    if result.is_ok() {
+        span.add_rows(0, affected as u64);
+        span.finish();
+    } else {
+        span.fail();
+    }
+    result
 }
 
 /// Runs `fut` as one invocation (an MCP call, a sync run): spans inside it
@@ -411,5 +497,38 @@ mod tests {
                 assert!(!source.contains(needle), "profile code uses {needle}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn measure_records_rows_and_errors() {
+        let _g = TEST_MODE_LOCK.lock().await;
+        set_mode(Mode::Light);
+        let recorder = recorder().unwrap();
+        let _ = recorder.drain();
+
+        let subgraph = crate::types::Subgraph {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            roots: Vec::new(),
+        };
+        let ok: Result<_, ()> = measure(McpPhase::GraphTraversal, async { Ok(subgraph) }).await;
+        assert!(ok.is_ok());
+        let found: Result<Vec<u8>, ()> =
+            measure(McpPhase::GraphTraversal, async { Ok(vec![1, 2, 3]) }).await;
+        assert!(found.is_ok());
+        let failed: Result<(), ()> = measure_write(DbOp::InsertNodes, 5, async { Err(()) }).await;
+        assert!(failed.is_err());
+        let written: Result<(), ()> = measure_write(DbOp::InsertEdges, 7, async { Ok(()) }).await;
+        assert!(written.is_ok());
+        record_run(true, 2_500, 1_000, 42);
+
+        let snap = recorder.drain();
+        set_mode(Mode::Off);
+        let traversal = &snap["mcp.graph_traversal"];
+        assert!(traversal.count >= 2 && traversal.rows_returned >= 3);
+        assert!(snap["db.insert_nodes"].errors >= 1);
+        assert!(snap["db.insert_edges"].rows_affected >= 7);
+        let run = &snap["run.index.files_1k_10k"];
+        assert!(run.count >= 1 && run.rows_returned >= 2_500 && run.rows_affected >= 42);
     }
 }

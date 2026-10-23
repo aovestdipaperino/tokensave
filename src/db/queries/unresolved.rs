@@ -1,5 +1,6 @@
 //! Unresolved-reference queries.
 use super::*;
+use crate::profile::DbOp;
 
 // ---------------------------------------------------------------------------
 // Unresolved reference operations
@@ -66,6 +67,16 @@ impl Database {
 
     /// Inserts a batch of unresolved references using a prepared statement.
     pub async fn insert_unresolved_refs(&self, refs: &[UnresolvedRef]) -> Result<()> {
+        crate::profile::measure_write(
+            DbOp::InsertUnresolvedRefs,
+            refs.len(),
+            self.insert_unresolved_refs_unprofiled(refs),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::insert_unresolved_refs`].
+    async fn insert_unresolved_refs_unprofiled(&self, refs: &[UnresolvedRef]) -> Result<()> {
         if refs.is_empty() {
             return Ok(());
         }
