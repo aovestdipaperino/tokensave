@@ -229,18 +229,22 @@ impl Span {
 
     /// Ends the span successfully.
     pub fn finish(mut self) {
-        self.complete(true);
+        let _ = self.complete(true);
     }
 
     /// Ends the span as failed.
     pub fn fail(mut self) {
-        self.complete(false);
+        let _ = self.complete(false);
     }
 
-    fn complete(&mut self, ok: bool) {
-        let Some(a) = self.active.take() else {
-            return;
-        };
+    /// Ends the span as succeeded or failed and returns its inclusive time,
+    /// or `None` for an inert span.
+    pub fn end(mut self, ok: bool) -> Option<u64> {
+        self.complete(ok)
+    }
+
+    fn complete(&mut self, ok: bool) -> Option<u64> {
+        let a = self.active.take()?;
         let inclusive_us = u64::try_from(a.start.elapsed().as_micros()).unwrap_or(u64::MAX);
         let child_us = a
             .slot
@@ -259,12 +263,13 @@ impl Span {
         } else {
             a.recorder.record_error(a.op);
         }
+        Some(inclusive_us)
     }
 }
 
 impl Drop for Span {
     fn drop(&mut self) {
-        self.complete(false);
+        let _ = self.complete(false);
     }
 }
 

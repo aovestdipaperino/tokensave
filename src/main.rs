@@ -1261,6 +1261,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 // The process exits cleanly so the host does not retry.
                 return Ok(());
             }
+            // Opt-in profiling (#754): off unless `[profiling]` or
+            // TOKENSAVE_PROFILE enables it, in which case aggregates are
+            // flushed to ~/.tokensave/profile/ until the server exits.
+            let profiler = tokensave::profile::Profiler::start_from_environment();
             let original_cwd = std::env::current_dir().ok();
             // An explicit --path is a deliberate choice of project root
             // (possibly a different repo than the CWD, #201); only
@@ -1338,7 +1342,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 watch_for_orphaning();
                 let server = tokensave::mcp::McpServer::new_without_project(registered).await;
                 run_mcp_server(&server, timings, peeked_line, idle_timeout_secs).await?;
-                exit_after_serve();
+                exit_after_serve(profiler);
             };
 
             // Set the shutdown flag the instant a signal arrives, rather than
@@ -1388,7 +1392,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // A hard kill skips this; that is what reaping on startup and on
             // read is for.
             tokensave::servers::unregister();
-            exit_after_serve();
+            exit_after_serve(profiler);
         }
         Commands::Servers { json } => {
             let entries = tokensave::servers::list();
@@ -2536,8 +2540,13 @@ async fn run_mcp_server(
 /// Shutdown has already persisted counters and checkpointed the WAL, and is
 /// idempotent, so there is nothing left to unwind for. Stdout is flushed
 /// first: a response written just before a signal must still reach the client.
-fn exit_after_serve() -> ! {
+fn exit_after_serve(profiler: Option<tokensave::profile::Profiler>) -> ! {
     use std::io::Write;
+    // `process::exit` skips destructors, so the final profile flush runs
+    // here explicitly.
+    if let Some(profiler) = profiler {
+        profiler.shutdown();
+    }
     let _ = std::io::stdout().flush();
     std::process::exit(0);
 }

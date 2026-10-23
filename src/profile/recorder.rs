@@ -173,6 +173,22 @@ pub struct SeriesSnapshot {
     pub rows_returned: u64,
     pub rows_affected: u64,
     pub histogram: Histogram,
+    /// Invocation series only (`tool.*`): database time and operations
+    /// attributed to the invocations, response size, and the distribution
+    /// of database operations per invocation.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub db_us: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub db_ops: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub response_bytes: u64,
+    #[serde(default, skip_serializing_if = "Histogram::is_empty")]
+    pub db_ops_per_call: Histogram,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes a reference
+fn is_zero(v: &u64) -> bool {
+    *v == 0
 }
 
 impl SeriesSnapshot {
@@ -190,6 +206,10 @@ impl SeriesSnapshot {
         self.rows_returned = self.rows_returned.saturating_add(other.rows_returned);
         self.rows_affected = self.rows_affected.saturating_add(other.rows_affected);
         self.histogram.merge(&other.histogram);
+        self.db_us = self.db_us.saturating_add(other.db_us);
+        self.db_ops = self.db_ops.saturating_add(other.db_ops);
+        self.response_bytes = self.response_bytes.saturating_add(other.response_bytes);
+        self.db_ops_per_call.merge(&other.db_ops_per_call);
     }
 
     pub fn mean_us(&self) -> Option<f64> {
