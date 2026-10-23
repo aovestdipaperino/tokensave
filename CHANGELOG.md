@@ -7,7 +7,22 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Added
+
+- Hidden `profile --local` controls for repository-specific profiling and independent sharing consent, with separate aggregates, reports and upload state; environment overrides and the destination gate remain in force (#764).
+
+- Draft performance sharing controls (`profile share status|preview|enable|disable`), separate default-off consent and disable-only environment override. Uploads remain unavailable pending the maintainer-approved endpoint and data policy (#754, PR 8).
+
+- Opt-in performance profiling infrastructure (#754): a `[profiling]` table in `config.toml` (`mode = "off" | "light" | "detailed"`, slow threshold, retention, size limit, detailed-mode expiry) with a `TOKENSAVE_PROFILE` per-run override, a static operation registry, mergeable fixed-bucket latency histograms, sharded lock-free aggregation, spans with inclusive/exclusive time and per-invocation database attribution, and bounded hourly files under `~/.tokensave/profile/`. Off by default; no call sites are instrumented yet, and with profiling off nothing is measured or written.
+- Profiled database execution (#754): MCP read-path queries (node, edge and search lookups, dead-code and file-dependency queries) are measured per static operation, with rows returned and errors, plus write-lock wait and write-transaction duration. Inert unless profiling is enabled.
+- Profiled MCP tool calls (#754): with profiling enabled, `tokensave serve` records each `tools/call` as one invocation (end-to-end latency, attributed database time and operations, operations per call, response size, errors) per registered tool, plus project-resolution, freshness and handler phases, and flushes aggregates on exit. `serve --timings` now reads the handler measurement the profiler records.
+- Profiled indexing, sync and graph traversal (#754): full-index (`index.*`) and incremental-sync (`sync.*`) phases, whole runs bucketed by project file count (`run.*`), graph traversals with nodes and edges visited, and the bulk write paths (node, edge, file, unresolved-reference and FTS-document inserts, bulk-load end). `tokensave init` and `tokensave sync` start the profiler when it is enabled. Verbose output is unchanged.
+- `tokensave profile status|enable|disable|report|slow-queries|export|reset` (#754): ranked text and JSON reports (percentiles with sample counts, P95/P99 flagged below 100 samples, MCP database share, median DB operations per tool call), slow-operation counts, and a sanitized export that keeps only static operation and registered tool names. See `docs/PROFILING.md`.
+- `tokensave profile analyze` (#754): bottlenecks ranked by cumulative impact and classified (DB execution latency, excessive query count, connection/transaction overhead, graph traversal, freshness/sync, parsing/extraction, result processing), each with its measured evidence; suggestions are labelled as hypotheses. MCP calls now count database operations per op, so ops run 20 or more times in one call are reported per tool as N+1 candidates.
+
 ### Fixed
+
+- Restore Clippy checks for profiling unit tests by keeping test-only unwraps scoped to their test modules (#754).
 
 - Resolve the project that owns the current directory the same way in every command run without an explicit path: `init`, `tool`, `doctor`, `verify`, `quality-diff`, `branch`, `gitignore`, the counters, a bare `tokensave`, and the prompt-submit and stop hooks. `sync`, `status`, `serve`, and the MCP roots fallback already did. `init` in a subdirectory of an existing project now reports that project and exits 0 instead of creating a nested index. In an uninitialized git repository, `init` initializes the repository root. Git repository roots isolate nested independent repositories (nested clones and submodules) from an outer repository's index, and a partial `.tokensave/` is no longer skipped in favor of an outer project (#749).
 

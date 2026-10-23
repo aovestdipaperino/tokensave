@@ -820,6 +820,18 @@ A machine-wide memory report for every tokensave process (MCP servers, syncs, in
 
 **Each is recorded after the work it names.** They used to be recorded before it, so every sample reported the previous step's RSS under the next step's label — which attributed 73 MiB to the node load that in fact belonged to loading the unresolved references, a step with no sample at all, and pointed a memory investigation at the wrong subsystem for months (#409). If you add a phase, sample after the work, not before it, and add one for any step large enough to hold the peak.
 
+### Performance profiling
+
+```bash
+tokensave profile enable          # opt in (off by default; data stays local)
+tokensave profile report --mcp    # latency by tool and phase, ranked by cumulative time
+tokensave profile export          # sanitized aggregates to attach to an issue
+```
+
+Opt-in latency attribution for database operations, MCP tool phases and indexing (#754). Aggregates are kept under `~/.tokensave/profile/` within a size and retention limit, and nothing is uploaded. See [docs/PROFILING.md](docs/PROFILING.md).
+
+You can also tune profiling for an individual repository: run `tokensave profile enable --local`, then edit `.tokensave/profile.toml` to adjust its slow-query threshold, retention period and storage limit. See [repository-local controls](docs/PROFILING.md#repository-local-controls) for examples. The `--local` option is hidden from CLI help.
+
 ### Session and lifetime counters
 
 ```bash
@@ -1001,6 +1013,8 @@ tokensave's core functionality (indexing, search, graph queries, MCP server) is 
 | Model pricing refresh | Nothing (GET request) | `tokensave cost` (cached 24h) | N/A (5s timeout, falls back to embedded pricing) |
 
 The worldwide counter upload sends a single HTTP POST with a JSON body like `{"amount": 4823}`. No cookies, no tracking, no user ID. The Cloudflare Worker logs the country of your IP address (derived from request headers) for aggregate geographic statistics -- your actual IP address is not stored.
+
+Opt-in performance profiling (`tokensave profile`) is local only and makes no network calls.
 
 The model pricing refresh fetches a public JSON file from GitHub (`raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`) to keep Claude model pricing up to date for `tokensave cost`. No data is sent -- it is a plain HTTPS GET. The response is cached at `~/.tokensave/pricing.json` for 24 hours. If the fetch fails, tokensave uses its compiled-in pricing table.
 

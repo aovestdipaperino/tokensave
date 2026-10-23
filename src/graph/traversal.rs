@@ -3,6 +3,7 @@ use std::collections::{HashSet, VecDeque};
 
 use crate::db::Database;
 use crate::errors::Result;
+use crate::profile::McpPhase;
 use crate::types::*;
 
 /// A path through the graph: a sequence of nodes, each paired with the
@@ -53,6 +54,19 @@ impl<'a> GraphTraverser<'a> {
     /// node kind filter, direction, and result limit. Returns a `Subgraph`
     /// containing the discovered nodes and the edges used to reach them.
     pub async fn traverse_bfs(&self, start_id: &str, opts: &TraversalOptions) -> Result<Subgraph> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.traverse_bfs_unprofiled(start_id, opts),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::traverse_bfs`].
+    async fn traverse_bfs_unprofiled(
+        &self,
+        start_id: &str,
+        opts: &TraversalOptions,
+    ) -> Result<Subgraph> {
         debug_assert!(
             !start_id.is_empty(),
             "traverse_bfs called with empty start_id"
@@ -191,6 +205,19 @@ impl<'a> GraphTraverser<'a> {
     /// Uses an iterative approach with an explicit stack to avoid async
     /// recursion issues.
     pub async fn traverse_dfs(&self, start_id: &str, opts: &TraversalOptions) -> Result<Subgraph> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.traverse_dfs_unprofiled(start_id, opts),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::traverse_dfs`].
+    async fn traverse_dfs_unprofiled(
+        &self,
+        start_id: &str,
+        opts: &TraversalOptions,
+    ) -> Result<Subgraph> {
         debug_assert!(
             !start_id.is_empty(),
             "traverse_dfs called with empty start_id"
@@ -310,6 +337,19 @@ impl<'a> GraphTraverser<'a> {
         node_id: &str,
         max_depth: usize,
     ) -> Result<Vec<(Node, Edge, usize)>> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.get_callers_with_depth_unprofiled(node_id, max_depth),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::get_callers_with_depth`].
+    async fn get_callers_with_depth_unprofiled(
+        &self,
+        node_id: &str,
+        max_depth: usize,
+    ) -> Result<Vec<(Node, Edge, usize)>> {
         debug_assert!(!node_id.is_empty(), "get_callers called with empty node_id");
         debug_assert!(max_depth > 0, "get_callers max_depth must be positive");
         let mut results: Vec<(Node, Edge, usize)> = Vec::new();
@@ -376,6 +416,19 @@ impl<'a> GraphTraverser<'a> {
     /// in the first incoming-edge query. The optional string identifies the
     /// trait method through which the caller dispatches.
     pub async fn get_callers_with_dispatch_depth(
+        &self,
+        node_id: &str,
+        max_depth: usize,
+    ) -> Result<Vec<(Node, Edge, usize, Option<String>)>> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.get_callers_with_dispatch_depth_unprofiled(node_id, max_depth),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::get_callers_with_dispatch_depth`].
+    async fn get_callers_with_dispatch_depth_unprofiled(
         &self,
         node_id: &str,
         max_depth: usize,
@@ -466,6 +519,19 @@ impl<'a> GraphTraverser<'a> {
     ///
     /// Follows outgoing `Calls` edges to find callees transitively.
     pub async fn get_callees(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.get_callees_unprofiled(node_id, max_depth),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::get_callees`].
+    async fn get_callees_unprofiled(
+        &self,
+        node_id: &str,
+        max_depth: usize,
+    ) -> Result<Vec<(Node, Edge)>> {
         debug_assert!(!node_id.is_empty(), "get_callees called with empty node_id");
         debug_assert!(max_depth > 0, "get_callees max_depth must be positive");
         let mut results: Vec<(Node, Edge)> = Vec::new();
@@ -558,6 +624,19 @@ impl<'a> GraphTraverser<'a> {
     ///
     /// Returns every reachable node, including the seeds themselves.
     pub async fn get_impact_radius_multi(
+        &self,
+        seed_ids: &[String],
+        max_depth: usize,
+    ) -> Result<Vec<Node>> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.get_impact_radius_multi_unprofiled(seed_ids, max_depth),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::get_impact_radius_multi`].
+    async fn get_impact_radius_multi_unprofiled(
         &self,
         seed_ids: &[String],
         max_depth: usize,
@@ -699,6 +778,20 @@ impl<'a> GraphTraverser<'a> {
         to_id: &str,
         edge_kinds: &[EdgeKind],
     ) -> Result<Option<GraphPath>> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.find_path_unprofiled(from_id, to_id, edge_kinds),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::find_path`].
+    async fn find_path_unprofiled(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        edge_kinds: &[EdgeKind],
+    ) -> Result<Option<GraphPath>> {
         debug_assert!(!from_id.is_empty(), "find_path called with empty from_id");
         debug_assert!(!to_id.is_empty(), "find_path called with empty to_id");
         if from_id == to_id {
@@ -802,6 +895,21 @@ impl<'a> GraphTraverser<'a> {
     /// older `find_path` does a bidirectional walk that's right for "are these
     /// connected at all" but wrong for directed-chain queries.
     pub async fn find_path_directed(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        edge_kinds: &[EdgeKind],
+        max_depth: usize,
+    ) -> Result<Option<GraphPath>> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.find_path_directed_unprofiled(from_id, to_id, edge_kinds, max_depth),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::find_path_directed`].
+    async fn find_path_directed_unprofiled(
         &self,
         from_id: &str,
         to_id: &str,

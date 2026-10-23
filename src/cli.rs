@@ -421,6 +421,14 @@ pub enum Commands {
         #[arg(long)]
         clean: bool,
     },
+    /// Opt-in performance profiling: status, reports and sanitized export (#754)
+    Profile {
+        /// Apply settings and reports only to the current repository
+        #[arg(long, global = true, hide = true)]
+        local: bool,
+        #[command(subcommand)]
+        action: ProfileAction,
+    },
     /// Compare code quality at two indexed branch tips without changing files.
     QualityDiff {
         #[arg(long)]
@@ -572,6 +580,91 @@ mod tests {
             err_kind
         );
     }
+}
+
+#[derive(Subcommand)]
+pub enum ProfileAction {
+    /// Manage separate consent for sanitized performance data sharing
+    Share {
+        #[command(subcommand)]
+        action: ProfileShareAction,
+    },
+    /// Show the profiling mode, storage use, recorded samples and overhead
+    Status,
+    /// Enable local profiling for new tokensave processes (sharing has separate consent)
+    Enable {
+        /// Collect detailed data; falls back to light after `--for`
+        #[arg(long)]
+        detailed: bool,
+        /// How long detailed mode lasts, e.g. 2h or 1d (default: 24h)
+        #[arg(long = "for", value_name = "DURATION", requires = "detailed")]
+        duration: Option<String>,
+    },
+    /// Disable profiling (recorded data is kept until `profile reset`)
+    Disable,
+    /// Report recorded latency by operation, ranked by cumulative time
+    Report {
+        /// Only MCP phases and per-tool invocations
+        #[arg(long, group = "profile_section")]
+        mcp: bool,
+        /// Only database operations
+        #[arg(long, group = "profile_section")]
+        database: bool,
+        /// Only index, sync and run-size series
+        #[arg(long, group = "profile_section")]
+        indexing: bool,
+        /// Window to include, e.g. 30m, 24h or 7d
+        #[arg(long, default_value = "24h")]
+        since: String,
+        /// Only this engine (e.g. libsql)
+        #[arg(long)]
+        engine: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rank bottlenecks by cumulative impact, with evidence and N+1 candidates
+    Analyze {
+        /// Window to include, e.g. 24h or 7d
+        #[arg(long, default_value = "7d")]
+        since: String,
+        /// Number of findings to show per engine
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+        /// Output as JSON (all findings)
+        #[arg(long)]
+        json: bool,
+    },
+    /// List operations with executions at or above the slow threshold
+    SlowQueries {
+        /// Window to include, e.g. 30m, 24h or 7d
+        #[arg(long, default_value = "24h")]
+        since: String,
+    },
+    /// Print the sanitized export (static operation names and aggregates
+    /// only), e.g. to attach to a GitHub issue
+    Export {
+        /// Window to include, e.g. 24h or 7d
+        #[arg(long, default_value = "7d")]
+        since: String,
+        /// Write to this file instead of stdout
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
+    },
+    /// Delete all recorded profile data
+    Reset,
+}
+
+#[derive(Subcommand)]
+pub enum ProfileShareAction {
+    /// Show consent, destination availability, last upload and next due time
+    Status,
+    /// Explicitly consent after reviewing the destination, policy and payload
+    Enable,
+    /// Revoke consent for subsequent uploads
+    Disable,
+    /// Print exactly the sanitized JSON payload (the same as profile export)
+    Preview,
 }
 
 #[derive(Subcommand)]

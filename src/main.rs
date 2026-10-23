@@ -9,6 +9,7 @@ use tokensave::tokensave::TokenSave;
 mod cli;
 mod commands;
 mod global;
+mod profile_command;
 mod serve;
 mod tool_command;
 
@@ -465,8 +466,20 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // from inside indexing.rs) against this process.
             tokensave::memstats::init("index", &project_path);
             tokensave::memstats::record("start");
+            // Opt-in profiling (#754); a no-op unless enabled.
+            let profiler = tokensave::profile::Profiler::start_for_project(&project_path);
 
-            commands::init_and_index(&project_path, &skip_folders, false, cpu_usage).await?;
+            tokensave::profile::invocation(commands::init_and_index(
+                &project_path,
+                &skip_folders,
+                false,
+                cpu_usage,
+            ))
+            .await
+            .0?;
+            if let Some(profiler) = profiler {
+                profiler.shutdown();
+            }
 
             // Offer this repository's own git hooks (#455). Local rather than
             // global, because the global path claims `core.hooksPath` — one
@@ -544,46 +557,54 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // inside the indexing code itself.
             tokensave::memstats::init("sync", &project_path);
             tokensave::memstats::record("start");
+            // Opt-in profiling (#754); a no-op unless enabled.
+            let profiler = tokensave::profile::Profiler::start_for_project(&project_path);
 
             if force {
-                commands::init_and_index(&project_path, &skip_folders, verbose, None).await?;
+                tokensave::profile::invocation(commands::init_and_index(
+                    &project_path,
+                    &skip_folders,
+                    verbose,
+                    None,
+                ))
+                .await
+                .0?;
             } else {
                 let mut cg = TokenSave::open(&project_path).await?;
                 cg.add_skip_folders(&skip_folders);
                 let spinner = Spinner::new();
                 let sync_start = std::time::Instant::now();
-                let result = cg
-                    .sync_with_progress_verbose(
-                        |current, total, detail| {
-                            if current == 0 {
-                                // Phase message (scanning, hashing, detecting, resolving)
-                                spinner.set_message(detail);
-                            } else {
-                                // Per-file progress with ETA
-                                let elapsed = sync_start.elapsed().as_secs_f64();
-                                let eta = if current > 1 {
-                                    let per_file = elapsed / (current - 1) as f64;
-                                    let remaining = per_file * (total - current) as f64;
-                                    if remaining >= 1.0 {
-                                        format!(" (ETA: {remaining:.0}s)")
-                                    } else {
-                                        String::new()
-                                    }
+                let result = tokensave::profile::invocation(cg.sync_with_progress_verbose(
+                    |current, total, detail| {
+                        if current == 0 {
+                            // Phase message (scanning, hashing, detecting, resolving)
+                            spinner.set_message(detail);
+                        } else {
+                            // Per-file progress with ETA
+                            let elapsed = sync_start.elapsed().as_secs_f64();
+                            let eta = if current > 1 {
+                                let per_file = elapsed / (current - 1) as f64;
+                                let remaining = per_file * (total - current) as f64;
+                                if remaining >= 1.0 {
+                                    format!(" (ETA: {remaining:.0}s)")
                                 } else {
                                     String::new()
-                                };
-                                spinner.set_message(&format!(
-                                    "[{current}/{total}] syncing {detail}{eta}"
-                                ));
-                            }
-                        },
-                        |msg| {
-                            if verbose {
-                                eprintln!("  \x1b[2m[verbose]\x1b[0m {msg}");
-                            }
-                        },
-                    )
-                    .await?;
+                                }
+                            } else {
+                                String::new()
+                            };
+                            spinner
+                                .set_message(&format!("[{current}/{total}] syncing {detail}{eta}"));
+                        }
+                    },
+                    |msg| {
+                        if verbose {
+                            eprintln!("  \x1b[2m[verbose]\x1b[0m {msg}");
+                        }
+                    },
+                ))
+                .await
+                .0?;
                 let skipped_msg = if result.skipped_paths.is_empty() {
                     String::new()
                 } else {
@@ -616,6 +637,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     commands::print_skipped_extension_summary(&result.skipped_extensions);
                 }
                 global::update_global_db(&cg).await;
+            }
+            if let Some(profiler) = profiler {
+                profiler.shutdown();
             }
 
             // Print update notice from parallel check (suppressed for 15 min)
@@ -1313,6 +1337,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     }
                 }
             };
+            let profiler = match cg.as_ref() {
+                Some(cg) => tokensave::profile::Profiler::start_for_project(cg.project_root()),
+                None => tokensave::profile::Profiler::start_from_environment(),
+            };
             let Some(cg) = cg else {
                 // No project resolved (#606). Exiting here left the host with
                 // a failed server and the session with no tools at all,
@@ -1338,7 +1366,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 watch_for_orphaning();
                 let server = tokensave::mcp::McpServer::new_without_project(registered).await;
                 run_mcp_server(&server, timings, peeked_line, idle_timeout_secs).await?;
-                exit_after_serve();
+                exit_after_serve(profiler);
             };
 
             // Set the shutdown flag the instant a signal arrives, rather than
@@ -1388,7 +1416,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // A hard kill skips this; that is what reaping on startup and on
             // read is for.
             tokensave::servers::unregister();
-            exit_after_serve();
+            exit_after_serve(profiler);
         }
         Commands::Servers { json } => {
             let entries = tokensave::servers::list();
@@ -1896,6 +1924,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             if let Err(e) = tokensave::memstats::run(clean) {
                 eprintln!("Memory report error: {e}");
             }
+        }
+        Commands::Profile { action, local } => {
+            profile_command::handle_profile_action(action, local)?;
         }
         Commands::QualityDiff { .. } => unreachable!("handled before startup"),
         Commands::Branch { action } => {
@@ -2536,8 +2567,13 @@ async fn run_mcp_server(
 /// Shutdown has already persisted counters and checkpointed the WAL, and is
 /// idempotent, so there is nothing left to unwind for. Stdout is flushed
 /// first: a response written just before a signal must still reach the client.
-fn exit_after_serve() -> ! {
+fn exit_after_serve(profiler: Option<tokensave::profile::Profiler>) -> ! {
     use std::io::Write;
+    // `process::exit` skips destructors, so the final profile flush runs
+    // here explicitly.
+    if let Some(profiler) = profiler {
+        profiler.shutdown();
+    }
     let _ = std::io::stdout().flush();
     std::process::exit(0);
 }
