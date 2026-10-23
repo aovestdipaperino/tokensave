@@ -1,0 +1,27 @@
+[package]
+name = "tokensave-db-compat"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Executable SQL compatibility probes for evaluating alternative database engines for tokensave (#739, #741)"
+
+# Standalone crate: not part of the tokensave package or build. Exact versions
+# are pinned so a probe report names the engine it actually tested.
+[workspace]
+
+[dependencies]
+# Control arm: the same vendored libsql copy production uses (#367).
+libsql = { path = "../../vendor/libsql" }
+# `fts` is turso's native Tantivy full-text search. Default features are off so
+# that turso's `mimalloc` global allocator does not also replace the allocator
+# of the libsql arm in the same binary; `--features turso-mimalloc` restores it
+# for an allocator sensitivity run.
+turso = { version = "=0.8.3", default-features = false, features = ["fts"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tempfile = "3"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+libc = "0.2"
+
+[features]
+turso-mimalloc = ["turso/mimalloc"]

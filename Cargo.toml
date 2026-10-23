@@ -309,3 +309,8 @@ lto = true
 codegen-units = 1
 strip = "symbols"
 
+
+[[bench]]
+name = "db_workloads"
+path = "benches/db_workloads/main.rs"
+harness = false

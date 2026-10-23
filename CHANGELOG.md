@@ -7,7 +7,20 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Added
+
+- Profiling overhead comparisons (`off`/`light`/`detailed`) in the database workload harness, with per-workload production recorder snapshots, randomized fresh-process repetitions and correctness gates; optional per-engine profiler breakdowns in the existing Turso compatibility probes (#754, PR 6). Timed-out probe tasks are aborted and joined before temporary directory cleanup (#761).
+
+- Opt-in performance profiling infrastructure (#754): a `[profiling]` table in `config.toml` (`mode = "off" | "light" | "detailed"`, slow threshold, retention, size limit, detailed-mode expiry) with a `TOKENSAVE_PROFILE` per-run override, a static operation registry, mergeable fixed-bucket latency histograms, sharded lock-free aggregation, spans with inclusive/exclusive time and per-invocation database attribution, and bounded hourly files under `~/.tokensave/profile/`. Off by default; no call sites are instrumented yet, and with profiling off nothing is measured or written.
+- Profiled database execution (#754): MCP read-path queries (node, edge and search lookups, dead-code and file-dependency queries) are measured per static operation, with rows returned and errors, plus write-lock wait and write-transaction duration. Inert unless profiling is enabled.
+- Profiled MCP tool calls (#754): with profiling enabled, `tokensave serve` records each `tools/call` as one invocation (end-to-end latency, attributed database time and operations, operations per call, response size, errors) per registered tool, plus project-resolution, freshness and handler phases, and flushes aggregates on exit. `serve --timings` now reads the handler measurement the profiler records.
+- Profiled indexing, sync and graph traversal (#754): full-index (`index.*`) and incremental-sync (`sync.*`) phases, whole runs bucketed by project file count (`run.*`), graph traversals with nodes and edges visited, and the bulk write paths (node, edge, file, unresolved-reference and FTS-document inserts, bulk-load end). `tokensave init` and `tokensave sync` start the profiler when it is enabled. Verbose output is unchanged.
+- `tokensave profile status|enable|disable|report|slow-queries|export|reset` (#754): ranked text and JSON reports (percentiles with sample counts, P95/P99 flagged below 100 samples, MCP database share, median DB operations per tool call), slow-operation counts, and a sanitized export that keeps only static operation and registered tool names. See `docs/PROFILING.md`.
+- `tokensave profile analyze` (#754): bottlenecks ranked by cumulative impact and classified (DB execution latency, excessive query count, connection/transaction overhead, graph traversal, freshness/sync, parsing/extraction, result processing), each with its measured evidence; suggestions are labelled as hypotheses. MCP calls now count database operations per op, so ops run 20 or more times in one call are reported per tool as N+1 candidates.
+
 ### Fixed
+
+- Restore Clippy checks for profiling unit tests by keeping test-only unwraps scoped to their test modules (#754).
 
 - Resolve the project that owns the current directory the same way in every command run without an explicit path: `init`, `tool`, `doctor`, `verify`, `quality-diff`, `branch`, `gitignore`, the counters, a bare `tokensave`, and the prompt-submit and stop hooks. `sync`, `status`, `serve`, and the MCP roots fallback already did. `init` in a subdirectory of an existing project now reports that project and exits 0 instead of creating a nested index. In an uninitialized git repository, `init` initializes the repository root. Git repository roots isolate nested independent repositories (nested clones and submodules) from an outer repository's index, and a partial `.tokensave/` is no longer skipped in favor of an outer project (#749).
 
@@ -24,6 +37,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - Mandatory contributor and AI agent rule for native filesystem path construction (#743), following PR #738: one component per `join` or `push`, with explicit exceptions for portable string formats and path-syntax fixtures.
 
 - Automatic extraction RAM safeguards complement project profiles: sample physical RAM (and visible Linux cgroup headroom) before parallel extraction and reduce concurrency using a conservative parser allowance. Applies to subprocess and in-process paths, including `performance`; no background polling or hard RSS guarantee.
+
+- Executable SQL compatibility probes for the Turso evaluation (`benchmarks/db-compat/`, standalone crate) and their report (`docs/benchmarks/turso-compatibility.md`, #739). Turso 0.8.3 matches SQLite on 39 of 55 probes; FTS5 is unsupported. No production changes.
+
+- Functional, relevance and performance comparison of Turso's native Tantivy full-text search against SQLite FTS5 (`fts_compare` in `benchmarks/db-compat/`, report in `docs/benchmarks/turso-fts-report.md`, #739). Separate from the SQL probes, whose results are unchanged. No production changes.
 
 - Project `memory_usage` profiles (`low`, `balanced`, `performance`) limit simultaneous extraction parsers independently of CPU policy, trading throughput for lower parser memory. The default `balanced` caps extraction at two parsers; `performance` retains previous concurrency. These are not total-RAM caps.
 - Configurable `language_aliases` reuse enabled extractors for custom extensions such as Perl `.t` tests (#725). Existing `project.json` file/glob overrides take precedence; mapping edits invalidate unchanged indexed files. Source overrides also take precedence over artifacts, and sync diagnostics describe alias and artifact remedies. `tokensave init` now preserves the existing project settings instead of resetting them to their defaults, so a supplied mapping survives the first index.
