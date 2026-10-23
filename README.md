@@ -193,6 +193,30 @@ tokensave init
 
 This creates a `.tokensave/` directory with the knowledge graph database. Initialization and sync are separate commands: `init` is a one-time opt-in per project, while `sync` only updates projects that were already initialized. This prevents the global git hooks from silently creating databases in repos you never intended to index. After `init`, use `tokensave sync` to incrementally update -- only changed files are re-indexed.
 
+#### Running from subdirectories
+
+Every command finds the project that owns the current directory by walking up to the nearest `.tokensave/`, so you can run it from anywhere inside the project:
+
+```bash
+cd repository
+tokensave init                     # creates repository/.tokensave/
+
+cd src/backend/services
+tokensave tool search database     # searches the repository's index
+tokensave init                     # reports the existing project; exits 0, indexes nothing
+
+cd ../..
+tokensave sync                     # syncs the repository's index
+```
+
+The MCP server and the agent hooks resolve the project the same way. Search paths stay relative to the project root (`src/backend/db.rs`). Note that an MCP server launched from a subdirectory still uses that subdirectory as its default path filter for listing tools.
+
+- **Git repositories.** If no project exists yet, `init` from inside a git repository initializes the repository root (or the linked worktree root), not the current directory.
+- **Repository boundaries.** A git repository root is an isolation boundary. Inside a nested, independent repository (a nested clone or a submodule), commands never use an outer repository's index; run `tokensave init` there to give it its own. A linked worktree nested in its main checkout still borrows the main index, and the borrowed-worktree notice says so.
+- **Non-git projects.** A `.tokensave/` in a folder that is not inside a git repository works the same way, including for any repositories inside that folder.
+- **Explicit roots.** `tokensave init <path>`, `--path` (`-p`), and `tool --project <path>` use the directory you pass, with no discovery.
+- **Broken installs.** A `.tokensave/` with a `config.json` but no database is reported instead of being skipped in favor of an outer project. A config that cannot be parsed is an error that names the file to fix.
+
 <details>
 <summary><strong>What install writes for Claude Code</strong></summary>
 
@@ -229,7 +253,7 @@ Appends instructions to `~/.claude/CLAUDE.md` that tell Claude to use tokensave 
 
 Tree-sitter grammars are compiled C/C++ code. They occasionally hit an internal assertion or otherwise terminate the process by paths that Rust panic handling cannot intercept. As of v4.3.0, every file is parsed inside a short-lived worker subprocess: if a grammar segfaults, calls `abort()`, or hits a stack overflow, only the worker dies. The pool respawns it, the offending file is logged and skipped, and `sync` keeps going.
 
-The worker is a hidden `extract-worker` subcommand authenticated against the parent via a 256-bit per-spawn token, required as both a `TOKENSAVE_WORKER_TOKEN` env var and as the first 32 bytes received on stdin. Direct invocation by users fails. Worker concurrency follows `cpu_usage` in `.tokensave/config.json`: `low` uses one worker, `balanced` (default) uses half the available CPUs rounded up, and `performance` uses all available CPUs. `tokensave init` benchmarks the machine once and stores the profile that fits it; `tokensave tune` measures again later. `memory_usage` independently limits simultaneous extraction parsers: `low` uses one, `balanced` (default) at most two, and `performance` retains the CPU ceiling. An automatic preflight check can further lower parser concurrency when physical RAM headroom is limited, including in `performance` mode. This reduces parser memory at a possible throughput cost; total graph memory remains proportional to the project, so it is not a hard RAM cap. `TOKENSAVE_WORKERS` can lower the subprocess limit further. These limits are not CPU-percentage caps. Restart the MCP server after changing the profile; opt out of subprocess isolation with `TOKENSAVE_DISABLE_SUBPROCESS=1`.
+The worker is a hidden `extract-worker` subcommand authenticated against the parent via a 256-bit per-spawn token, required as both a `TOKENSAVE_WORKER_TOKEN` env var and as the first 32 bytes received on stdin. Direct invocation by users fails. Worker concurrency follows `cpu_usage` in `.tokensave/config.json`: `low` uses one worker, `balanced` (default) uses half the available CPUs rounded up, and `performance` uses all available CPUs. The first `tokensave init` on a machine benchmarks it once and saves the recommended profile in `~/.tokensave/benchmark.toml`, which every project without its own `cpu_usage` reuses; `tokensave config benchmark [--force|--show|--reset]` manages that result, and `TOKENSAVE_CPU_USAGE` or a global `cpu_usage` in `~/.tokensave/config.toml` override it (see the [user guide](docs/USER-GUIDE.md#cpu-usage-profiles)). `memory_usage` independently limits simultaneous extraction parsers: `low` uses one, `balanced` (default) at most two, and `performance` retains the CPU ceiling. An automatic preflight check can further lower parser concurrency when physical RAM headroom is limited, including in `performance` mode. This reduces parser memory at a possible throughput cost; total graph memory remains proportional to the project, so it is not a hard RAM cap. `TOKENSAVE_WORKERS` can lower the subprocess limit further. These limits are not CPU-percentage caps. Restart the MCP server after changing the profile; opt out of subprocess isolation with `TOKENSAVE_DISABLE_SUBPROCESS=1`.
 
 Edit primitives (`tokensave_str_replace`, `tokensave_insert_at`, etc.) still run in-process: they target one file at a time where subprocess overhead would dominate, and an extractor crash there is immediately visible to the agent.
 
@@ -892,9 +916,14 @@ See [TOKENSAVE-VERSIONING.md](TOKENSAVE-VERSIONING.md) for why tokensave diverge
 ## CLI Reference
 
 ```bash
-tokensave init [path]              # Initialize a new project (full index)
+tokensave init [path]              # Initialize a new project (full index); without a path, the git root
+                                   # (a no-op inside an existing project)
 tokensave init --cpu-usage low     # Initialize with a fixed CPU profile (skip the benchmark)
-tokensave tune [path] [--dry-run]  # Re-benchmark this machine and update cpu_usage
+tokensave config benchmark         # Run or reuse the machine-level hardware benchmark
+tokensave config benchmark --show  # Show the saved benchmark and settings (never measures)
+tokensave config benchmark --force # Measure this machine again
+tokensave config benchmark --reset # Delete the saved benchmark
+tokensave tune [path] [--dry-run]  # Re-benchmark, save globally, update a pinned cpu_usage
 tokensave sync [path]              # Incremental sync (must be initialized first)
 tokensave sync --force [path]      # Force a full re-index
 tokensave sync --doctor [path]     # Sync and list added/modified/removed files

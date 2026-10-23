@@ -403,7 +403,7 @@ impl TokenSave {
             &project_root,
             registry,
             files.clone(),
-            self.config.cpu_usage,
+            self.cpu_usage(),
             self.config.memory_usage,
         )?;
         // Extraction stops early on a shutdown, so a short result here means
@@ -499,8 +499,7 @@ impl TokenSave {
             let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
             crate::memstats::record("index:resolve:build_caches");
             let resolution = self
-                .config
-                .cpu_usage
+                .cpu_usage()
                 .run(|| resolver.resolve_all(&all_unresolved))?;
             crate::memstats::record("index:resolve:refs");
             // Ties are recorded rather than dropped, so a caller can pick the
@@ -813,10 +812,8 @@ impl TokenSave {
                 attempted_refs.extend(refs.iter().map(AmbiguityRefKey::from));
             }
             crate::cancel::check("resolve")?;
-            let (batch_resolved, batch_ambiguous) = self
-                .config
-                .cpu_usage
-                .run(|| resolver.resolve_batch(&refs))?;
+            let (batch_resolved, batch_ambiguous) =
+                self.cpu_usage().run(|| resolver.resolve_batch(&refs))?;
             resolved.extend(batch_resolved);
             ambiguous.extend(batch_ambiguous);
         }
@@ -1076,7 +1073,7 @@ impl TokenSave {
             project_root,
             registry,
             file_paths.clone(),
-            self.config.cpu_usage,
+            self.cpu_usage(),
             self.config.memory_usage,
         )?;
 
@@ -1280,7 +1277,7 @@ impl TokenSave {
         on_progress(0, 0, "checking file timestamps");
         let phase_start = Instant::now();
         let project_root = &self.project_root;
-        let file_stats: Vec<(String, i64, u64)> = self.config.cpu_usage.run(|| {
+        let file_stats: Vec<(String, i64, u64)> = self.cpu_usage().run(|| {
             current_files
                 .par_iter()
                 .filter_map(|path| {
@@ -1383,7 +1380,7 @@ impl TokenSave {
         on_progress(0, 0, "hashing changed files");
         let phase_start = Instant::now();
         let needs_read: Vec<&String> = new_files.iter().chain(stat_changed.iter()).collect();
-        let hash_results: Vec<_> = self.config.cpu_usage.run(|| {
+        let hash_results: Vec<_> = self.cpu_usage().run(|| {
             needs_read
                 .par_iter()
                 .map(|path| {
@@ -1562,7 +1559,7 @@ impl TokenSave {
             project_root,
             registry,
             to_index.clone(),
-            self.config.cpu_usage,
+            self.cpu_usage(),
             self.config.memory_usage,
         )?;
         let extracted_paths: HashSet<&str> = sync_extractions
@@ -2524,7 +2521,7 @@ impl TokenSave {
         if paths.is_empty() {
             return Ok(Vec::new());
         }
-        self.config.cpu_usage.run(|| {
+        self.cpu_usage().run(|| {
             paths
                 .par_iter()
                 .filter_map(|path| self.artifact_file_record(path))

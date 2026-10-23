@@ -1357,17 +1357,36 @@ Existing cancellation, reaping and on-demand freshness bounds remain in place.
 
 ### CPU usage profiles
 
-`tokensave init` picks a profile for you. Before the first index it benchmarks
-the machine (normally well under a second) and writes `low`, `balanced` or
-`performance` as `cpu_usage` in `.tokensave/config.json`, printing what it
-measured and why it chose that profile:
+tokensave picks a profile for you from a **machine-level hardware benchmark**.
+CPU count, parallel throughput and memory belong to the machine, not to a
+repository, so the benchmark runs once per machine. Its result is saved in
+`~/.tokensave/benchmark.toml` (`%USERPROFILE%\.tokensave\benchmark.toml` on
+Windows), and every project without its own `cpu_usage` uses it.
+
+The first `tokensave init` on a machine runs the benchmark, which normally takes
+well under a second:
 
 ```text
-Benchmarking this machine to choose a CPU usage profile...
-  8 CPUs, 7.6 GiB memory (5.5 GiB available), 4.3x speedup on 8 threads
+No global hardware benchmark found.
+Running initial hardware benchmark...
+  Measured:    8 CPUs, 7.6 GiB memory (5.5 GiB available), 4.3x speedup on 8 threads
+  Recommended: balanced profile, 4 workers (4.3 CPUs of parallel throughput; resources are moderate or shared)
+Global benchmark results saved to /home/you/.tokensave/benchmark.toml.
 Initialized TokenSave at /path/to/project
-CPU usage profile: balanced (4.3 CPUs of parallel throughput; resources are moderate or shared; run `tokensave tune` to measure again)
+CPU usage profile: balanced (from the global hardware benchmark)
 ```
+
+Every later `init`, on any repository, reuses the saved result without
+measuring:
+
+```text
+Using cached global hardware benchmark.
+Initialized TokenSave at /path/to/other-project
+CPU usage profile: balanced (from the global hardware benchmark)
+```
+
+`sync`, `serve` and MCP tool calls never run the benchmark. They only read
+the saved result when a project opens.
 
 The benchmark reads the CPUs this process may use (`available_parallelism`,
 which honors affinity and cgroup CPU quotas) and total and available memory
@@ -1382,18 +1401,83 @@ containers, shared vCPUs or a busy machine. The profile is chosen as follows:
 | `performance` | At least 6 effective CPUs, at least 60% parallel efficiency, at least 16 GiB total memory and at least 8 GiB available. |
 | `balanced` | Everything else, and whenever a probe fails. |
 
-The benchmark runs once and its result is stored, so normal runs never measure
-anything. To skip it, pass `tokensave init --cpu-usage <low|balanced|performance>`.
-A `cpu_usage` that is already in the config file is also kept.
+#### Managing the global benchmark
 
-Run `tokensave tune` at any time after `init` to measure again, for example
-after a hardware change or when the first benchmark ran on a busy machine. It
-updates `cpu_usage` when the recommendation differs from the stored profile.
-`tokensave tune --dry-run` only prints the recommendation and also works where
-no project is initialized. `--json` gives machine-readable output. Restart
-`tokensave serve` after a change.
+```bash
+tokensave config benchmark           # Reuse a valid saved result, or measure and save one
+tokensave config benchmark --force   # Measure again even if a valid result is saved
+tokensave config benchmark --show    # Print the saved result, its validity and the settings (never measures)
+tokensave config benchmark --reset   # Delete the saved result; the next init measures again
+tokensave config benchmark --show --json   # Machine-readable output (all forms accept --json)
+```
 
-To choose a profile by hand, set `"cpu_usage"` in the existing `.tokensave/config.json`:
+`--force`, `--show` and `--reset` are mutually exclusive; combining them is a
+usage error (exit code 2). A run that cannot save its result, and a run while
+the benchmark is disabled, exit with code 1.
+
+Run `--force` after the first benchmark ran on a busy machine. Hardware changes
+are detected automatically. `tokensave tune [path]` still works: it measures
+again, saves the result as the global benchmark, and updates the project's
+`cpu_usage` if the project pins one. `tokensave tune --dry-run` only prints the
+recommendation and also works where no project is initialized.
+
+**When a saved result is measured again.** A saved result survives restarts,
+other repositories, `init`, `sync` and upgrades that leave the benchmark alone.
+`init` measures again only when one of these applies:
+
+- the file is missing, malformed or incomplete;
+- its schema version or benchmark algorithm version differs from the running
+  release;
+- the CPU count changed;
+- total memory changed by more than 10%.
+
+Available memory is recorded but not compared, so momentary memory pressure
+never invalidates the result; extraction already adapts to the current
+headroom at run time (see [Automatic RAM safeguards](#automatic-ram-safeguards)).
+Results never expire by age.
+
+**Concurrency and failures.** Simultaneous `init`s coordinate through an
+advisory lock (`benchmark.toml.lock`, released by the OS if a process dies),
+so only one of them measures and the others reuse its result. The file is
+replaced by an atomic rename, so a failed or interrupted write keeps the
+previous valid result. If the result can't be saved (for example, the home
+directory is read-only), `init` prints a warning, uses the built-in default
+`balanced`, and still initializes the project.
+
+#### Settings and precedence
+
+The effective profile is resolved when a project opens, highest precedence
+first:
+
+1. `TOKENSAVE_CPU_USAGE=<low|balanced|performance>`, a per-run override. An
+   unrecognized value is ignored with a warning.
+2. `cpu_usage` in the project's `.tokensave/config.json`. `tokensave init
+   --cpu-usage <profile>` writes it.
+3. `cpu_usage` in `~/.tokensave/config.toml`, a machine-wide manual profile.
+4. The saved global hardware benchmark, when it is enabled and valid.
+5. The built-in default, `balanced`.
+
+The benchmark runs only when level 4 would actually be used: `init` skips it
+when `--cpu-usage`, `TOKENSAVE_CPU_USAGE`, a project `cpu_usage` or a global
+`cpu_usage` is set.
+
+Global benchmark settings live in `~/.tokensave/config.toml`:
+
+```toml
+cpu_usage = "balanced"   # optional machine-wide profile; beats the benchmark
+
+[benchmark]
+enabled = true    # false: never run the benchmark and ignore saved results
+auto_run = true   # false: use a valid saved result, but never measure automatically
+```
+
+With `auto_run = false`, `init` uses a valid saved result but never measures;
+run `tokensave config benchmark` yourself when you want one. With
+`enabled = false`, or with a global `cpu_usage`, tokensave runs no benchmark at
+all.
+
+To pin a profile for one project, set `"cpu_usage"` in its
+`.tokensave/config.json`:
 
 ```json
 {
@@ -1402,8 +1486,16 @@ To choose a profile by hand, set `"cpu_usage"` in the existing `.tokensave/confi
 ```
 
 This snippet is a field to add to your existing file, not a replacement for
-its required fields. Missing `cpu_usage` defaults to `balanced`; invalid values
-are rejected with the supported choices.
+its required fields. Without `cpu_usage` the project follows the global
+settings above; invalid values are rejected with the supported choices.
+
+**Projects initialized before the global benchmark.** Earlier releases
+always wrote `cpu_usage` into `.tokensave/config.json`, so existing projects
+keep exactly the profile they have, as a project pin. No reinitialization is
+needed. To make an existing project follow the global benchmark, delete its
+`cpu_usage` line. Per-project results from earlier releases aren't copied into
+the global cache, because nothing records whether a stored profile was
+measured or chosen by hand, so the first `init` after upgrading measures once.
 
 | Profile | Worker ceiling | Choose it when |
 | --- | --- | --- |

@@ -1,9 +1,10 @@
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::cli::BranchAction;
 use crate::global;
 use crate::Spinner;
+use tokensave::config::{discover_project, ProjectDiscovery};
 use tokensave::tokensave::TokenSave;
 
 pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::errors::Result<()> {
@@ -13,7 +14,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
 
     match action {
         BranchAction::List { path } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
             let Some(meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
                 eprintln!("No branch tracking configured. Run `tokensave branch add` to start.");
@@ -49,7 +50,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             path,
             if_enabled,
         } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
 
             // #397: an automated caller (the `post-checkout` hook) passes
@@ -180,7 +181,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             }
         }
         BranchAction::Remove { name, path } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
             let Some(mut meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
                 eprintln!("No branch tracking configured.");
@@ -206,7 +207,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             }
         }
         BranchAction::Removeall { path } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
             let Some(mut meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
                 eprintln!("No branch tracking configured.");
@@ -234,7 +235,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             }
         }
         BranchAction::Gc { path } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
             if branch_meta::load_branch_meta(&tokensave_dir).is_none() {
                 eprintln!("No branch tracking configured.");
@@ -462,9 +463,62 @@ async fn is_fresh_install() -> bool {
     }
 }
 
+/// Where a project that does not exist yet is created for `cwd`: an incomplete
+/// project's own root (re-running `init` completes it), else the enclosing git
+/// working tree root, else `cwd` itself.
+fn init_target(cwd: PathBuf, discovery: ProjectDiscovery) -> PathBuf {
+    match discovery {
+        ProjectDiscovery::Initialized(root) | ProjectDiscovery::Incomplete(root) => root,
+        ProjectDiscovery::Uninitialized { git_root } => git_root.unwrap_or(cwd),
+    }
+}
+
+/// Resolves the directory `tokensave init` initializes.
+///
+/// An explicit path is an override and is used as given. Without one, `cwd` is
+/// resolved through [`discover_project`]: when it lies below an existing
+/// project, that project is reported and `None` is returned, so `init` exits 0
+/// without creating a nested `.tokensave/` or indexing anything. `cwd` being
+/// the project root itself is returned as is, keeping `init`'s refusal to
+/// re-initialize (#372). Otherwise the project is created at the git root.
+pub(crate) fn resolve_init_root(
+    path: Option<String>,
+) -> tokensave::errors::Result<Option<PathBuf>> {
+    if path.is_some() {
+        return Ok(Some(tokensave::config::resolve_path(path)));
+    }
+    let cwd = tokensave::config::resolve_path(None);
+    match discover_project(&cwd) {
+        ProjectDiscovery::Initialized(root) if root != cwd => {
+            // Reporting a project whose config cannot load as "usable" would
+            // only defer the failure to the first sync or query.
+            if let Err(e) = tokensave::config::load_config(&root) {
+                return Err(tokensave::errors::TokenSaveError::Config {
+                    message: format!(
+                        "TokenSave is initialized at '{}', but its configuration cannot be \
+                         loaded: {e}\n  Fix or remove .tokensave/config.json there, then rerun.",
+                        root.display()
+                    ),
+                });
+            }
+            eprintln!(
+                "TokenSave is already initialized in:\n  {}\n\nCurrent directory:\n  {}\n\n\
+                 Using existing project configuration and index.\n\
+                 No initialization or indexing required.",
+                root.display(),
+                cwd.display()
+            );
+            Ok(None)
+        }
+        discovery => Ok(Some(init_target(cwd, discovery))),
+    }
+}
+
 /// When invoked with no subcommand, offer to create the index if none exists.
 pub(crate) async fn handle_no_command() -> tokensave::errors::Result<()> {
-    let project_path = tokensave::config::resolve_path(None);
+    let cwd = tokensave::config::resolve_path(None);
+    let discovery = discover_project(&cwd);
+    let project_path = init_target(cwd, discovery);
     if TokenSave::is_initialized(&project_path) {
         // Already initialized — render help to stderr, never stdout. Agent
         // permission hooks invoke a bare `tokensave` and parse stdout as JSON;
@@ -512,32 +566,261 @@ pub(crate) async fn handle_no_command() -> tokensave::errors::Result<()> {
     Ok(())
 }
 
-/// Picks the profile for a project being initialized, and a note saying where
-/// it came from. Benchmarks the host only when nothing was chosen explicitly.
-fn select_initial_cpu_usage(
-    project_path: &Path,
-    requested: Option<tokensave::cpu::CpuUsage>,
-) -> tokensave::errors::Result<(tokensave::cpu::CpuUsage, String)> {
-    if let Some(profile) = requested {
-        return Ok((profile, "from --cpu-usage".to_string()));
-    }
-    if let Some(profile) = tokensave::config::configured_cpu_usage(project_path)? {
-        return Ok((profile, "kept from .tokensave/config.json".to_string()));
-    }
-    eprintln!("Benchmarking this machine to choose a CPU usage profile...");
-    let measurement = tokensave::hardware::measure();
-    eprintln!("  {}", measurement.summary());
-    let recommendation = tokensave::hardware::recommend(&measurement);
-    Ok((
-        recommendation.profile,
-        format!(
-            "{}; run `tokensave tune` to measure again",
-            recommendation.reason
-        ),
-    ))
+/// Prints a saved or fresh benchmark result for `init` and `config benchmark`.
+fn print_benchmark(result: &tokensave::global_benchmark::SavedBenchmark) {
+    eprintln!("  Measured:    {}", result.measurement.summary());
+    let workers = result.recommended_workers();
+    eprintln!(
+        "  Recommended: {} profile, {workers} worker{} ({})",
+        result.recommendation.profile.as_str(),
+        if workers == 1 { "" } else { "s" },
+        result.recommendation.reason
+    );
 }
 
-/// Re-runs the resource benchmark and updates `cpu_usage` (#731).
+fn benchmark_file_display() -> String {
+    tokensave::user_config::benchmark_path().map_or_else(
+        || "~/.tokensave/benchmark.toml".to_string(),
+        |p| p.display().to_string(),
+    )
+}
+
+/// Explains why the benchmark is about to run.
+fn announce_benchmark(status: &tokensave::global_benchmark::CacheStatus, forced: bool) {
+    use tokensave::global_benchmark::CacheStatus;
+    match status {
+        _ if forced => eprintln!("Running hardware benchmark (--force)..."),
+        CacheStatus::Invalid { reason, .. } => {
+            eprintln!("Saved global hardware benchmark can't be reused: {reason}.");
+            eprintln!("Running hardware benchmark...");
+        }
+        _ => {
+            eprintln!("No global hardware benchmark found.");
+            eprintln!("Running initial hardware benchmark...");
+        }
+    }
+}
+
+/// Picks the `cpu_usage` to pin for a project being initialized: only
+/// `--cpu-usage` pins one. When the project will follow the global hardware
+/// benchmark, makes sure a valid one is saved, measuring only if none is, so
+/// the next project on this machine reuses it (#752).
+fn prepare_initial_cpu_usage(
+    project_path: &Path,
+    requested: Option<tokensave::cpu::CpuUsage>,
+) -> tokensave::errors::Result<Option<tokensave::cpu::CpuUsage>> {
+    use tokensave::global_benchmark::{self as gb, Outcome, Trigger};
+    if requested.is_some() {
+        return Ok(requested);
+    }
+    // A setting that takes precedence over the benchmark makes it unused.
+    if tokensave::config::configured_cpu_usage(project_path)?.is_some()
+        || gb::env_cpu_usage().is_some()
+    {
+        return Ok(None);
+    }
+    let prefs = tokensave::user_config::resource_preferences();
+    if prefs.cpu_usage.is_some() {
+        return Ok(None);
+    }
+    match gb::ensure(prefs.benchmark, Trigger::Automatic, |status| {
+        announce_benchmark(status, false);
+    }) {
+        Outcome::Cached(_) => eprintln!("Using cached global hardware benchmark."),
+        Outcome::Measured { result, saved } => {
+            print_benchmark(&result);
+            match saved {
+                Ok(()) => eprintln!(
+                    "Global benchmark results saved to {}.",
+                    benchmark_file_display()
+                ),
+                Err(e) => eprintln!(
+                    "\x1b[33mwarning:\x1b[0m could not save the hardware benchmark: {e}. \
+                     Using the built-in default; run `tokensave config benchmark` to retry."
+                ),
+            }
+        }
+        Outcome::Disabled => {}
+        Outcome::Skipped(status) => {
+            let why = match status {
+                gb::CacheStatus::Invalid { reason, .. } => reason,
+                _ => "none is saved".to_string(),
+            };
+            eprintln!(
+                "No usable global hardware benchmark ({why}) and automatic benchmarking is off \
+                 ([benchmark] auto_run = false). Run `tokensave config benchmark` to measure."
+            );
+        }
+    }
+    Ok(None)
+}
+
+fn print_json(report: &serde_json::Value) {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(report).unwrap_or_else(|_| report.to_string())
+    );
+}
+
+/// `tokensave config benchmark`: manages the machine-level hardware
+/// benchmark in `~/.tokensave/benchmark.toml` (#752). Exits 1 when the
+/// requested action could not be completed.
+pub(crate) fn run_config_benchmark(force: bool, show: bool, reset: bool, json: bool) {
+    use tokensave::global_benchmark::{self as gb, CacheStatus, Outcome, Trigger};
+    let path = benchmark_file_display();
+    let fail = |message: String, report: serde_json::Value| -> ! {
+        if json {
+            print_json(&report);
+        } else {
+            eprintln!("\x1b[31merror:\x1b[0m {message}");
+        }
+        std::process::exit(1);
+    };
+
+    if reset {
+        match gb::reset() {
+            Ok(removed) => {
+                if json {
+                    print_json(&serde_json::json!({
+                        "action": "reset", "path": path, "removed": removed,
+                    }));
+                } else if removed {
+                    println!(
+                        "Deleted {path}. The next `tokensave init` or \
+                         `tokensave config benchmark` measures this machine again."
+                    );
+                } else {
+                    println!("No global hardware benchmark was saved ({path}).");
+                }
+            }
+            Err(e) => fail(
+                e.clone(),
+                serde_json::json!({ "action": "reset", "path": path, "error": e }),
+            ),
+        }
+        return;
+    }
+
+    let prefs = tokensave::user_config::resource_preferences();
+    if show {
+        let (_, status) = gb::status();
+        let (profile, source) = gb::effective_cpu_usage(None);
+        let (state, reason, saved) = match &status {
+            CacheStatus::Missing => ("missing", None, None),
+            CacheStatus::Valid(saved) => ("valid", None, Some(saved)),
+            CacheStatus::Invalid { reason, saved } => ("invalid", Some(reason), saved.as_ref()),
+        };
+        if json {
+            print_json(&serde_json::json!({
+                "action": "show",
+                "path": path,
+                "status": state,
+                "reason": reason,
+                "saved": saved,
+                "recommended_workers": saved.map(gb::SavedBenchmark::recommended_workers),
+                "settings": {
+                    "enabled": prefs.benchmark.enabled,
+                    "auto_run": prefs.benchmark.auto_run,
+                    "cpu_usage": prefs.cpu_usage,
+                },
+                "effective": { "cpu_usage": profile, "source": source },
+            }));
+            return;
+        }
+        println!("Global hardware benchmark: {path}");
+        match (state, reason) {
+            ("valid", _) => println!("  Status:      valid for this machine"),
+            ("missing", _) => println!("  Status:      not measured yet"),
+            (_, Some(reason)) => println!("  Status:      not usable: {reason}"),
+            _ => {}
+        }
+        if let Some(saved) = saved {
+            println!("  Measured:    {}", saved.measurement.summary());
+            println!(
+                "  Recommended: {} profile, {} worker(s) ({})",
+                saved.recommendation.profile.as_str(),
+                saved.recommended_workers(),
+                saved.recommendation.reason
+            );
+            println!(
+                "  Measured at: {} by tokensave {}",
+                saved.measured_at_utc(),
+                saved.tokensave_version
+            );
+        }
+        println!(
+            "  Settings:    enabled = {}, auto_run = {}, global cpu_usage = {}",
+            prefs.benchmark.enabled,
+            prefs.benchmark.auto_run,
+            prefs
+                .cpu_usage
+                .map_or("(not set)", tokensave::cpu::CpuUsage::as_str)
+        );
+        println!(
+            "  Projects without their own cpu_usage use: {} ({})",
+            profile.as_str(),
+            source.describe()
+        );
+        return;
+    }
+
+    if !prefs.benchmark.enabled {
+        let message = "the hardware benchmark is disabled ([benchmark] enabled = false in \
+                       ~/.tokensave/config.toml)"
+            .to_string();
+        fail(
+            message.clone(),
+            serde_json::json!({ "action": "benchmark", "path": path, "error": message }),
+        );
+    }
+    let trigger = if force {
+        Trigger::Force
+    } else {
+        Trigger::OnRequest
+    };
+    let outcome = gb::ensure(prefs.benchmark, trigger, |status| {
+        if !json {
+            announce_benchmark(status, force);
+        }
+    });
+    let (result, measured, saved) = match outcome {
+        Outcome::Cached(result) => (result, false, Ok(())),
+        Outcome::Measured { result, saved } => (result, true, saved),
+        // Ruled out above: enabled is true and the trigger is explicit.
+        Outcome::Disabled | Outcome::Skipped(_) => return,
+    };
+    if json {
+        let report = serde_json::json!({
+            "action": "benchmark",
+            "path": path,
+            "status": if measured { "measured" } else { "cached" },
+            "saved": saved.is_ok(),
+            "error": saved.as_ref().err(),
+            "result": result,
+            "recommended_workers": result.recommended_workers(),
+        });
+        if saved.is_err() {
+            fail(String::new(), report);
+        }
+        print_json(&report);
+        return;
+    }
+    if !measured {
+        eprintln!("Using cached global hardware benchmark (run with --force to measure again).");
+    }
+    print_benchmark(&result);
+    match saved {
+        Ok(()) if measured => eprintln!("Global benchmark results saved to {path}."),
+        Ok(()) => {}
+        Err(e) => fail(
+            format!("could not save the hardware benchmark: {e}"),
+            serde_json::Value::Null,
+        ),
+    }
+}
+
+/// Re-runs the resource benchmark, saves it as the global benchmark and
+/// updates a `cpu_usage` the project pins (#731, #752).
 ///
 /// `--dry-run` only reports, so it also works where no project is initialized.
 pub(crate) fn run_tune(
@@ -561,10 +844,7 @@ pub(crate) fn run_tune(
                 "dry_run": dry_run,
                 "written": false,
             });
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&report).unwrap_or_else(|_| report.to_string())
-            );
+            print_json(&report);
         } else {
             eprintln!(
                 "\x1b[31merror:\x1b[0m {plain}.\n\
@@ -580,19 +860,30 @@ pub(crate) fn run_tune(
     let measurement = tokensave::hardware::measure();
     let recommendation = tokensave::hardware::recommend(&measurement);
 
+    // Only a profile the project pins is updated; a project without one
+    // follows the global benchmark saved below.
     let mut config = if initialized {
         Some(tokensave::config::load_config(&project_path)?)
     } else {
         None
     };
-    let previous = config.as_ref().map(|c| c.cpu_usage);
+    let previous = config.as_ref().and_then(|c| c.cpu_usage);
     let written = match config.as_mut() {
-        Some(config) if !dry_run && config.cpu_usage != recommendation.profile => {
-            config.cpu_usage = recommendation.profile;
+        Some(config) if !dry_run && previous.is_some_and(|p| p != recommendation.profile) => {
+            config.cpu_usage = Some(recommendation.profile);
             tokensave::config::save_config(&project_path, config)?;
             true
         }
         _ => false,
+    };
+    let global_saved = if dry_run
+        || !tokensave::user_config::resource_preferences()
+            .benchmark
+            .enabled
+    {
+        None
+    } else {
+        Some(tokensave::global_benchmark::save_measurement(measurement))
     };
 
     if json {
@@ -605,11 +896,9 @@ pub(crate) fn run_tune(
             "previous": previous,
             "dry_run": dry_run,
             "written": written,
+            "global_saved": global_saved.as_ref().is_some_and(Result::is_ok),
         });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report).unwrap_or_else(|_| report.to_string())
-        );
+        print_json(&report);
         return Ok(());
     }
 
@@ -632,15 +921,32 @@ pub(crate) fn run_tune(
             "Dry run: cpu_usage stays {}. Run without --dry-run to apply.",
             prev.as_str()
         ),
-        (None, _) => println!("Dry run: no project is initialized here, nothing written."),
+        (None, _) if !initialized => {
+            println!("Dry run: no project is initialized here, nothing written.");
+        }
+        (None, _) if dry_run => println!("Dry run: nothing written."),
+        (None, _) => println!(
+            "This project has no cpu_usage of its own and follows the global hardware benchmark."
+        ),
+    }
+    match global_saved {
+        Some(Ok(_)) => println!(
+            "Saved as the global hardware benchmark ({}).",
+            benchmark_file_display()
+        ),
+        Some(Err(e)) => {
+            eprintln!("\x1b[33mwarning:\x1b[0m could not save the global hardware benchmark: {e}")
+        }
+        None => {}
     }
     Ok(())
 }
 
 /// Initializes a new project (if needed) and runs a full index.
 ///
-/// For a new project the CPU usage profile is `cpu_usage` when given, else the
-/// `cpu_usage` already in `.tokensave/config.json`, else benchmarked (#731).
+/// For a new project, `cpu_usage` pins the project's CPU usage profile when
+/// given; otherwise the project follows the global settings and the global
+/// hardware benchmark, which is measured only if none is saved (#752).
 pub(crate) async fn init_and_index(
     project_path: &Path,
     skip_folders: &[String],
@@ -658,10 +964,18 @@ pub(crate) async fn init_and_index(
     let mut cg = if TokenSave::is_initialized(project_path) {
         TokenSave::open_rebuilding_failed_migration(project_path).await?
     } else {
-        let (cpu_usage, cpu_note) = select_initial_cpu_usage(project_path, cpu_usage)?;
-        let cg = TokenSave::init_with_cpu_usage(project_path, cpu_usage).await?;
+        let pin = prepare_initial_cpu_usage(project_path, cpu_usage)?;
+        let cg = TokenSave::init_with_cpu_usage(project_path, pin).await?;
         eprintln!("Initialized TokenSave at {}", project_path.display());
-        eprintln!("CPU usage profile: {} ({cpu_note})", cpu_usage.as_str());
+        let source = cg.cpu_usage_source();
+        let note = if cpu_usage.is_some()
+            && source == tokensave::global_benchmark::CpuUsageSource::Project
+        {
+            "from --cpu-usage"
+        } else {
+            source.describe()
+        };
+        eprintln!("CPU usage profile: {} ({note})", cg.cpu_usage().as_str());
         // Offer to exclude .tokensave from git if it isn't already. Default to
         // the local, untracked .git/info/exclude so we don't leave a committable
         // diff; offer the tracked .gitignore as an explicit opt-in.
