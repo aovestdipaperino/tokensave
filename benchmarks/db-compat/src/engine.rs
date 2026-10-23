@@ -49,6 +49,7 @@ pub enum Engine {
         _db: libsql::Database,
     },
     Turso {
+        kind: EngineKind,
         conn: turso::Connection,
         _db: turso::Database,
     },
@@ -56,51 +57,84 @@ pub enum Engine {
 
 impl Engine {
     pub async fn open(kind: EngineKind, path: &Path) -> Result<Self, String> {
-        let path_str = path.to_str().ok_or("non-UTF-8 database path")?;
-        match kind {
-            EngineKind::Libsql => {
-                let db = libsql::Builder::new_local(path)
-                    .build()
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let conn = db.connect().map_err(|e| e.to_string())?;
-                Ok(Self::Libsql { conn, _db: db })
-            }
-            EngineKind::Turso
-            | EngineKind::TursoExperimental
-            | EngineKind::TursoMultiprocessWal => {
-                let mut builder = turso::Builder::new_local(path_str);
-                if kind == EngineKind::TursoExperimental {
-                    builder = builder
-                        .experimental_vacuum(true)
-                        .experimental_index_method(true);
+        let span = crate::profile::Span::start(kind, crate::profile::ops::DbOp::ProbeOpen);
+        let result = async {
+            let path_str = path.to_str().ok_or("non-UTF-8 database path")?;
+            match kind {
+                EngineKind::Libsql => {
+                    let db = libsql::Builder::new_local(path)
+                        .build()
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let conn = db.connect().map_err(|e| e.to_string())?;
+                    Ok(Self::Libsql { conn, _db: db })
                 }
-                if kind == EngineKind::TursoMultiprocessWal {
-                    builder = builder.experimental_multiprocess_wal(true);
+                EngineKind::Turso
+                | EngineKind::TursoExperimental
+                | EngineKind::TursoMultiprocessWal => {
+                    let mut builder = turso::Builder::new_local(path_str);
+                    if kind == EngineKind::TursoExperimental {
+                        builder = builder
+                            .experimental_vacuum(true)
+                            .experimental_index_method(true);
+                    }
+                    if kind == EngineKind::TursoMultiprocessWal {
+                        builder = builder.experimental_multiprocess_wal(true);
+                    }
+                    let db = builder.build().await.map_err(|e| e.to_string())?;
+                    let conn = db.connect().map_err(|e| e.to_string())?;
+                    Ok(Self::Turso {
+                        kind,
+                        conn,
+                        _db: db,
+                    })
                 }
-                let db = builder.build().await.map_err(|e| e.to_string())?;
-                let conn = db.connect().map_err(|e| e.to_string())?;
-                Ok(Self::Turso { conn, _db: db })
             }
+        }
+        .await;
+        if result.is_ok() {
+            span.finish(0);
+        }
+        result
+    }
+
+    fn kind(&self) -> EngineKind {
+        match self {
+            Self::Libsql { .. } => EngineKind::Libsql,
+            Self::Turso { kind, .. } => *kind,
         }
     }
 
     pub async fn execute_batch(&self, sql: &str) -> Result<(), String> {
-        match self {
+        let span = crate::profile::Span::start(self.kind(), crate::profile::ops::DbOp::ProbeBatch);
+        let result = match self {
             Self::Libsql { conn, .. } => conn
                 .execute_batch(sql)
                 .await
                 .map(|_| ())
                 .map_err(|e| e.to_string()),
             Self::Turso { conn, .. } => conn.execute_batch(sql).await.map_err(|e| e.to_string()),
+        };
+        if result.is_ok() {
+            span.finish(0);
         }
+        result
     }
 
     pub async fn query(&self, sql: &str) -> Result<Rows, String> {
         let mut out = Vec::new();
         match self {
             Self::Libsql { conn, .. } => {
+                let execute = crate::profile::Span::start(
+                    self.kind(),
+                    crate::profile::ops::DbOp::ProbeQueryExecute,
+                );
                 let mut rows = conn.query(sql, ()).await.map_err(|e| e.to_string())?;
+                execute.finish(0);
+                let materialize = crate::profile::Span::start(
+                    self.kind(),
+                    crate::profile::ops::DbOp::ProbeMaterialize,
+                );
                 while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
                     let mut cols = Vec::new();
                     for i in 0..row.column_count() {
@@ -109,9 +143,19 @@ impl Engine {
                     }
                     out.push(cols.join("|"));
                 }
+                materialize.finish(out.len() as u64);
             }
             Self::Turso { conn, .. } => {
+                let execute = crate::profile::Span::start(
+                    self.kind(),
+                    crate::profile::ops::DbOp::ProbeQueryExecute,
+                );
                 let mut rows = conn.query(sql, ()).await.map_err(|e| e.to_string())?;
+                execute.finish(0);
+                let materialize = crate::profile::Span::start(
+                    self.kind(),
+                    crate::profile::ops::DbOp::ProbeMaterialize,
+                );
                 while let Some(row) = rows.next().await.map_err(|e| e.to_string())? {
                     let mut cols = Vec::new();
                     for i in 0..row.column_count() {
@@ -120,6 +164,7 @@ impl Engine {
                     }
                     out.push(cols.join("|"));
                 }
+                materialize.finish(out.len() as u64);
             }
         }
         Ok(out)

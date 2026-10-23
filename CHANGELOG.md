@@ -9,6 +9,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- Profiling overhead comparisons (`off`/`light`/`detailed`) in the database workload harness, with per-workload production recorder snapshots, randomized fresh-process repetitions and correctness gates; optional per-engine profiler breakdowns in the existing Turso compatibility probes (#754, PR 6). Timed-out probe tasks are aborted and joined before temporary directory cleanup (#761).
+
 - Opt-in performance profiling infrastructure (#754): a `[profiling]` table in `config.toml` (`mode = "off" | "light" | "detailed"`, slow threshold, retention, size limit, detailed-mode expiry) with a `TOKENSAVE_PROFILE` per-run override, a static operation registry, mergeable fixed-bucket latency histograms, sharded lock-free aggregation, spans with inclusive/exclusive time and per-invocation database attribution, and bounded hourly files under `~/.tokensave/profile/`. Off by default; no call sites are instrumented yet, and with profiling off nothing is measured or written.
 - Profiled database execution (#754): MCP read-path queries (node, edge and search lookups, dead-code and file-dependency queries) are measured per static operation, with rows returned and errors, plus write-lock wait and write-transaction duration. Inert unless profiling is enabled.
 - Profiled MCP tool calls (#754): with profiling enabled, `tokensave serve` records each `tools/call` as one invocation (end-to-end latency, attributed database time and operations, operations per call, response size, errors) per registered tool, plus project-resolution, freshness and handler phases, and flushes aggregates on exit. `serve --timings` now reads the handler measurement the profiler records.

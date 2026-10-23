@@ -15,6 +15,7 @@
 
 mod engine;
 mod probes;
+mod profile;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -124,24 +125,38 @@ async fn run_probe(probe: &Probe, kind: EngineKind, dir: &Path) -> Outcome {
 
 /// Runs one probe on a worker task so a panic or hang in an engine is
 /// reported as an outcome instead of aborting the whole run.
-async fn run_isolated(probe: &'static Probe, kind: EngineKind, seed: Option<PathBuf>) -> Outcome {
+async fn run_isolated(
+    probe: std::sync::Arc<Probe>,
+    kind: EngineKind,
+    seed: Option<PathBuf>,
+    profiling: bool,
+) -> (Outcome, serde_json::Value) {
     let Ok(dir) = tempfile::tempdir() else {
-        return Outcome::Error {
-            stage: "tempdir",
-            message: "could not create temporary directory".into(),
-        };
+        return (
+            Outcome::Error {
+                stage: "tempdir",
+                message: "could not create temporary directory".into(),
+            },
+            serde_json::Value::Null,
+        );
     };
     if let Some(src) = seed {
         if let Err(e) = std::fs::copy(&src, dir.path().join("main.db")) {
-            return Outcome::Error {
-                stage: "copy",
-                message: e.to_string(),
-            };
+            return (
+                Outcome::Error {
+                    stage: "copy",
+                    message: e.to_string(),
+                },
+                serde_json::Value::Null,
+            );
         }
     }
     let path = dir.path().to_path_buf();
-    let task = tokio::spawn(async move { run_probe(probe, kind, &path).await });
-    let outcome = match tokio::time::timeout(PROBE_TIMEOUT, task).await {
+    let mut task =
+        tokio::spawn(
+            async move { profile::scoped(profiling, run_probe(&probe, kind, &path)).await },
+        );
+    let outcome = match tokio::time::timeout(PROBE_TIMEOUT, &mut task).await {
         Ok(Ok(o)) => o,
         Ok(Err(e)) if e.is_panic() => {
             let payload = e.into_panic();
@@ -150,10 +165,14 @@ async fn run_isolated(probe: &'static Probe, kind: EngineKind, seed: Option<Path
                 .cloned()
                 .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
                 .unwrap_or_else(|| "non-string panic".into());
-            Outcome::Panic(msg)
+            (Outcome::Panic(msg), serde_json::Value::Null)
         }
-        Ok(Err(e)) => Outcome::Panic(e.to_string()),
-        Err(_) => Outcome::Timeout,
+        Ok(Err(e)) => (Outcome::Panic(e.to_string()), serde_json::Value::Null),
+        Err(_) => {
+            task.abort();
+            let _ = task.await;
+            (Outcome::Timeout, serde_json::Value::Null)
+        }
     };
     drop(dir);
     outcome
@@ -218,6 +237,7 @@ fn arg_value(args: &[String], flag: &str) -> Option<String> {
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let profiling = args.iter().any(|arg| arg == "--profile");
     let json_out = arg_value(&args, "--json");
     let existing = arg_value(&args, "--existing-db").map(PathBuf::from);
 
@@ -231,7 +251,7 @@ async fn main() {
             }
         }
     }
-    let catalog: &'static [Probe] = Vec::leak(catalog);
+    let catalog: Vec<_> = catalog.into_iter().map(std::sync::Arc::new).collect();
 
     let mut results = Vec::new();
     let mut control_failures = 0;
@@ -240,18 +260,20 @@ async fn main() {
         EngineKind::ALL.map(EngineKind::label).join(" | ")
     );
     println!("|---|---|{}", "---|".repeat(EngineKind::ALL.len()));
-    for probe in catalog {
+    for probe in &catalog {
         let seed = (probe.gate == "Existing tokensave DB")
             .then(|| existing.clone())
             .flatten();
         let mut cells = Vec::new();
         for kind in EngineKind::ALL {
-            let outcome = run_isolated(probe, kind, seed.clone()).await;
+            let (outcome, metrics) =
+                run_isolated(probe.clone(), kind, seed.clone(), profiling).await;
             if kind == EngineKind::Libsql && !matches!(outcome, Outcome::Pass) {
                 control_failures += 1;
             }
             cells.push(outcome.label().to_string());
             results.push(json!({
+                "profile": metrics,
                 "probe": probe.id,
                 "gate": probe.gate,
                 "engine": kind.label(),

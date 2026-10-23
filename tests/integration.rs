@@ -211,3 +211,5 @@ mod zig_extraction_test;
 mod verify_test;
 
 mod language_aliases_test;
+
+mod db_bench_stats_test;
