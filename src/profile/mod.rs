@@ -15,6 +15,7 @@
 //! - [`tools`]: per-tool MCP invocation aggregates.
 //! - [`report`] and [`export`]: `tokensave profile` reports and the
 //!   sanitized export.
+//! - [`analysis`]: ranked, classified bottleneck findings.
 //!
 //! With profiling off, [`span`] costs one relaxed atomic load: no clock
 //! read, no allocation and no I/O, and no file or directory is created.
@@ -23,6 +24,7 @@
 //!
 //! This module never touches the network.
 
+pub mod analysis;
 pub mod context;
 pub mod export;
 pub mod histogram;
@@ -491,6 +493,7 @@ mod tests {
             include_str!("tools.rs"),
             include_str!("report.rs"),
             include_str!("export.rs"),
+            include_str!("analysis.rs"),
         ];
         // Built with concat! so this test's own source does not match.
         let forbidden = [

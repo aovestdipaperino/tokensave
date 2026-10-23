@@ -64,7 +64,11 @@ pub fn sanitized(
             let series = snapshot
                 .iter()
                 .filter(|(name, _)| is_known_series(name, tools))
-                .map(|(name, s)| (name.clone(), s.clone()))
+                .map(|(name, s)| {
+                    let mut s = s.clone();
+                    s.repeated.retain(|op, _| Op::from_name(op).is_some());
+                    (name.clone(), s)
+                })
                 .collect();
             (engine.clone(), series)
         })
@@ -103,7 +107,12 @@ mod tests {
         };
         s.histogram.record(10);
         snap.insert("db.get_node_by_id".into(), s.clone());
-        snap.insert("tool.tokensave_search".into(), s.clone());
+        let mut tool = s.clone();
+        tool.repeated
+            .insert("db.get_outgoing_edges".into(), Default::default());
+        tool.repeated
+            .insert("SELECT * FROM secret".into(), Default::default());
+        snap.insert("tool.tokensave_search".into(), tool);
         snap.insert(secret_path.into(), s.clone());
         snap.insert("tool.charge_customer_card".into(), s.clone());
         let mut merged = BTreeMap::new();
@@ -124,6 +133,7 @@ mod tests {
         }
         assert!(json.contains("db.get_node_by_id"));
         assert!(json.contains("tool.tokensave_search"));
+        assert!(json.contains("db.get_outgoing_edges"));
         assert!(json.contains(EXPORT_SCHEMA));
         let round_trip: Export = serde_json::from_str(&json).unwrap();
         assert_eq!(round_trip, export);

@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use tokensave::errors::{Result, TokenSaveError};
-use tokensave::profile::{self, export, report, storage, Mode, Settings};
+use tokensave::profile::{self, analysis, export, report, storage, Mode, Settings};
 use tokensave::user_config::{self, UserConfig};
 
 use crate::cli::ProfileAction;
@@ -74,6 +74,35 @@ pub(crate) fn handle_profile_action(action: ProfileAction) -> Result<()> {
                 );
             } else {
                 print!("{}", report::render_text(&merged, section, &since));
+            }
+            Ok(())
+        }
+        ProfileAction::Analyze { since, top, json } => {
+            let merged = storage::load(&profile_dir()?, since_hour(window(&since)?));
+            if json {
+                let findings: serde_json::Map<String, serde_json::Value> = merged
+                    .iter()
+                    .map(|(engine, snapshot)| {
+                        (
+                            engine.clone(),
+                            serde_json::to_value(analysis::findings(snapshot)).unwrap_or_default(),
+                        )
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "window": since,
+                        "engines": findings,
+                    }))
+                    .unwrap_or_default()
+                );
+            } else if merged.is_empty() {
+                println!("No profile data recorded (window: {since}).");
+            } else {
+                for (engine, snapshot) in &merged {
+                    print!("{}", analysis::render_text(engine, snapshot, &since, top));
+                }
             }
             Ok(())
         }

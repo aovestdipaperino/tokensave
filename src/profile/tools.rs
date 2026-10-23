@@ -7,21 +7,29 @@
 //! invocation, response size, and a histogram of database operations per
 //! invocation (the distribution N+1 detection reads).
 //!
+//! Ops executed at least [`REPEAT_MIN_PER_CALL`] times within one call are
+//! also counted per tool and op, the evidence N+1 findings rest on.
+//!
 //! The table is allocated only when profiling is enabled at registration
-//! time: about `(registered tools + 1) × 21 KiB`.
+//! time: about `(registered tools + 1) × 22 KiB`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 use super::context::InvocationSummary;
 use super::histogram::AtomicHistogram;
-use super::recorder::{SeriesSnapshot, Snapshot};
+use super::ops::Op;
+use super::recorder::{Repeat, SeriesSnapshot, Snapshot};
 
 /// Series name for calls to tools that were not registered.
 pub const OTHER: &str = "other";
 
 /// Upper bound on registered tools; names past it fold into [`OTHER`].
 const MAX_TOOLS: usize = 256;
+
+/// An op executed at least this many times within one call is recorded as
+/// repeated for that tool (an N+1 candidate).
+pub const REPEAT_MIN_PER_CALL: u16 = 20;
 
 #[derive(Default)]
 struct Counters {
@@ -38,6 +46,10 @@ struct ToolSeries {
     counters: Counters,
     latency: AtomicHistogram,
     db_ops_per_call: AtomicHistogram,
+    /// Per op (by [`Op::index`]): calls in which it repeated, and its
+    /// executions in those calls.
+    repeated_calls: Box<[AtomicU64]>,
+    repeated_executions: Box<[AtomicU64]>,
 }
 
 impl ToolSeries {
@@ -46,6 +58,8 @@ impl ToolSeries {
             counters: Counters::default(),
             latency: AtomicHistogram::new(),
             db_ops_per_call: AtomicHistogram::new(),
+            repeated_calls: (0..Op::COUNT).map(|_| AtomicU64::new(0)).collect(),
+            repeated_executions: (0..Op::COUNT).map(|_| AtomicU64::new(0)).collect(),
         }
     }
 }
@@ -117,6 +131,16 @@ pub fn record(tool: &str, call: ToolCall) {
         .fetch_add(call.response_bytes, Ordering::Relaxed);
     series.latency.record(call.elapsed_us);
     series.db_ops_per_call.record(call.invocation.db_ops);
+    for (op, n) in call.invocation.repeated_ops(REPEAT_MIN_PER_CALL) {
+        let index = op.index();
+        if let (Some(calls), Some(executions)) = (
+            series.repeated_calls.get(index),
+            series.repeated_executions.get(index),
+        ) {
+            calls.fetch_add(1, Ordering::Relaxed);
+            executions.fetch_add(u64::from(n), Ordering::Relaxed);
+        }
+    }
 }
 
 /// Moves every tool's aggregates into `into` as `tool.<name>` series.
@@ -140,6 +164,19 @@ pub(crate) fn drain_into(into: &mut Snapshot) {
         s.exclusive_sum_us = s.sum_us.saturating_sub(s.db_us);
         series.latency.drain_into(&mut s.histogram);
         series.db_ops_per_call.drain_into(&mut s.db_ops_per_call);
+        for (index, calls) in series.repeated_calls.iter().enumerate() {
+            let calls = calls.swap(0, Ordering::Relaxed);
+            let executions = series
+                .repeated_executions
+                .get(index)
+                .map_or(0, |e| e.swap(0, Ordering::Relaxed));
+            if calls > 0 {
+                if let Some(op) = Op::from_index(index) {
+                    s.repeated
+                        .insert(op.name().to_string(), Repeat { calls, executions });
+                }
+            }
+        }
         if s.is_empty() {
             continue;
         }
@@ -170,10 +207,13 @@ mod tests {
         let mut before = Snapshot::new();
         drain_into(&mut before);
 
-        let invocation = InvocationSummary {
+        let mut invocation = InvocationSummary {
             db_us: 300,
             db_ops: 25,
+            ..InvocationSummary::default()
         };
+        invocation.op_counts
+            [crate::profile::Op::Db(crate::profile::DbOp::GetOutgoingEdges).index()] = 25;
         let ok = |elapsed_us| ToolCall {
             elapsed_us,
             ok: true,
@@ -197,6 +237,8 @@ mod tests {
         assert!(s.db_ops_per_call.count() >= 2);
         assert!(s.response_bytes >= 20);
         assert!(snap[&format!("tool.{OTHER}")].count >= 1);
+        let repeated = &s.repeated["db.get_outgoing_edges"];
+        assert!(repeated.calls >= 2 && repeated.executions >= 50);
         assert!(!snap.contains_key("tool.not_a_tool"));
     }
 }
