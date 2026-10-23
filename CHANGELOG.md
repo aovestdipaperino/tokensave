@@ -7,7 +7,13 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in performance profiling infrastructure (#754): a `[profiling]` table in `config.toml` (`mode = "off" | "light" | "detailed"`, slow threshold, retention, size limit, detailed-mode expiry) with a `TOKENSAVE_PROFILE` per-run override, a static operation registry, mergeable fixed-bucket latency histograms, sharded lock-free aggregation, spans with inclusive/exclusive time and per-invocation database attribution, and bounded hourly files under `~/.tokensave/profile/`. Off by default; no call sites are instrumented yet, and with profiling off nothing is measured or written.
+
 ### Fixed
+
+- Restore Clippy checks for profiling unit tests by keeping test-only unwraps scoped to their test modules (#754).
 
 - Resolve the project that owns the current directory the same way in every command run without an explicit path: `init`, `tool`, `doctor`, `verify`, `quality-diff`, `branch`, `gitignore`, the counters, a bare `tokensave`, and the prompt-submit and stop hooks. `sync`, `status`, `serve`, and the MCP roots fallback already did. `init` in a subdirectory of an existing project now reports that project and exits 0 instead of creating a nested index. In an uninitialized git repository, `init` initializes the repository root. Git repository roots isolate nested independent repositories (nested clones and submodules) from an outer repository's index, and a partial `.tokensave/` is no longer skipped in favor of an outer project (#749).
 
