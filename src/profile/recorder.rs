@@ -252,6 +252,7 @@ pub fn merge_snapshot(into: &mut Snapshot, from: &Snapshot) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::profile::ops::{DbOp, IndexPhase};

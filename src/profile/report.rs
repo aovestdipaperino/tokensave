@@ -231,7 +231,7 @@ pub fn render_slow(merged: &BTreeMap<String, Snapshot>, threshold_ms: u64, windo
     for (engine, snapshot) in merged {
         let mut slow: Vec<(&String, &SeriesSnapshot)> =
             snapshot.iter().filter(|(_, s)| s.slow > 0).collect();
-        slow.sort_by(|a, b| b.1.slow.cmp(&a.1.slow));
+        slow.sort_by_key(|(_, series)| std::cmp::Reverse(series.slow));
         for (name, s) in slow {
             any = true;
             let _ = writeln!(
@@ -255,6 +255,7 @@ pub fn render_slow(merged: &BTreeMap<String, Snapshot>, threshold_ms: u64, windo
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
