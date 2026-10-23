@@ -7,14 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
-### Changed
+### Fixed
 
-- **The hardware benchmark is machine-level (#752).** `tokensave init` no longer benchmarks every repository. The first `init` on a machine measures it and saves the result in `~/.tokensave/benchmark.toml`, and later projects reuse that result without measuring. A saved result is measured again only when it is missing, malformed or incomplete, when its schema or benchmark algorithm version changed, when the CPU count changed, or when total memory changed by more than 10%. New projects no longer pin `cpu_usage` in `.tokensave/config.json`; they follow `TOKENSAVE_CPU_USAGE`, then an optional global `cpu_usage` in `~/.tokensave/config.toml`, then the saved benchmark, then `balanced`. A project's own `cpu_usage` still takes precedence over the global settings, so existing projects keep their stored profile unchanged. `[benchmark] enabled` and `auto_run` in `config.toml` turn the benchmark off or stop it from running automatically. Concurrent `init`s coordinate through an advisory lock, so only one of them measures, and writes are atomic. `tokensave tune` now also saves its measurement as the global result.
-
-### Added
-
-- **`tokensave config benchmark [--force | --show | --reset] [--json]` (#752)** reuses or runs, re-measures, inspects (without measuring) or deletes the machine-level hardware benchmark.
-
+- Resolve the project that owns the current directory the same way in every command run without an explicit path: `init`, `tool`, `doctor`, `verify`, `quality-diff`, `branch`, `gitignore`, the counters, a bare `tokensave`, and the prompt-submit and stop hooks. `sync`, `status`, `serve`, and the MCP roots fallback already did. `init` in a subdirectory of an existing project now reports that project and exits 0 instead of creating a nested index. In an uninitialized git repository, `init` initializes the repository root. Git repository roots isolate nested independent repositories (nested clones and submodules) from an outer repository's index, and a partial `.tokensave/` is no longer skipped in favor of an outer project (#749).
 
 ## [7.16.0] - 2026-10-22
 

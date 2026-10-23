@@ -1,9 +1,10 @@
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::cli::BranchAction;
 use crate::global;
 use crate::Spinner;
+use tokensave::config::{discover_project, ProjectDiscovery};
 use tokensave::tokensave::TokenSave;
 
 pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::errors::Result<()> {
@@ -13,7 +14,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
 
     match action {
         BranchAction::List { path } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
             let Some(meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
                 eprintln!("No branch tracking configured. Run `tokensave branch add` to start.");
@@ -49,7 +50,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             path,
             if_enabled,
         } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
 
             // #397: an automated caller (the `post-checkout` hook) passes
@@ -180,7 +181,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             }
         }
         BranchAction::Remove { name, path } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
             let Some(mut meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
                 eprintln!("No branch tracking configured.");
@@ -206,7 +207,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             }
         }
         BranchAction::Removeall { path } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
             let Some(mut meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
                 eprintln!("No branch tracking configured.");
@@ -234,7 +235,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             }
         }
         BranchAction::Gc { path } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
             if branch_meta::load_branch_meta(&tokensave_dir).is_none() {
                 eprintln!("No branch tracking configured.");
@@ -462,9 +463,62 @@ async fn is_fresh_install() -> bool {
     }
 }
 
+/// Where a project that does not exist yet is created for `cwd`: an incomplete
+/// project's own root (re-running `init` completes it), else the enclosing git
+/// working tree root, else `cwd` itself.
+fn init_target(cwd: PathBuf, discovery: ProjectDiscovery) -> PathBuf {
+    match discovery {
+        ProjectDiscovery::Initialized(root) | ProjectDiscovery::Incomplete(root) => root,
+        ProjectDiscovery::Uninitialized { git_root } => git_root.unwrap_or(cwd),
+    }
+}
+
+/// Resolves the directory `tokensave init` initializes.
+///
+/// An explicit path is an override and is used as given. Without one, `cwd` is
+/// resolved through [`discover_project`]: when it lies below an existing
+/// project, that project is reported and `None` is returned, so `init` exits 0
+/// without creating a nested `.tokensave/` or indexing anything. `cwd` being
+/// the project root itself is returned as is, keeping `init`'s refusal to
+/// re-initialize (#372). Otherwise the project is created at the git root.
+pub(crate) fn resolve_init_root(
+    path: Option<String>,
+) -> tokensave::errors::Result<Option<PathBuf>> {
+    if path.is_some() {
+        return Ok(Some(tokensave::config::resolve_path(path)));
+    }
+    let cwd = tokensave::config::resolve_path(None);
+    match discover_project(&cwd) {
+        ProjectDiscovery::Initialized(root) if root != cwd => {
+            // Reporting a project whose config cannot load as "usable" would
+            // only defer the failure to the first sync or query.
+            if let Err(e) = tokensave::config::load_config(&root) {
+                return Err(tokensave::errors::TokenSaveError::Config {
+                    message: format!(
+                        "TokenSave is initialized at '{}', but its configuration cannot be \
+                         loaded: {e}\n  Fix or remove .tokensave/config.json there, then rerun.",
+                        root.display()
+                    ),
+                });
+            }
+            eprintln!(
+                "TokenSave is already initialized in:\n  {}\n\nCurrent directory:\n  {}\n\n\
+                 Using existing project configuration and index.\n\
+                 No initialization or indexing required.",
+                root.display(),
+                cwd.display()
+            );
+            Ok(None)
+        }
+        discovery => Ok(Some(init_target(cwd, discovery))),
+    }
+}
+
 /// When invoked with no subcommand, offer to create the index if none exists.
 pub(crate) async fn handle_no_command() -> tokensave::errors::Result<()> {
-    let project_path = tokensave::config::resolve_path(None);
+    let cwd = tokensave::config::resolve_path(None);
+    let discovery = discover_project(&cwd);
+    let project_path = init_target(cwd, discovery);
     if TokenSave::is_initialized(&project_path) {
         // Already initialized — render help to stderr, never stdout. Agent
         // permission hooks invoke a bare `tokensave` and parse stdout as JSON;
