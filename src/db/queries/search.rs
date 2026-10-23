@@ -1,5 +1,6 @@
 //! Search queries.
 use super::*;
+use crate::profile::DbOp;
 
 // ---------------------------------------------------------------------------
 // Search
@@ -49,6 +50,19 @@ impl Database {
     /// replacements for incremental indexing; full indexing starts from an
     /// empty table.
     pub async fn insert_executable_body_documents(
+        &self,
+        documents: &[ExecutableBodyDocument],
+    ) -> Result<()> {
+        crate::profile::measure_write(
+            DbOp::InsertExecutableBodyDocuments,
+            documents.len(),
+            self.insert_executable_body_documents_unprofiled(documents),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::insert_executable_body_documents`].
+    async fn insert_executable_body_documents_unprofiled(
         &self,
         documents: &[ExecutableBodyDocument],
     ) -> Result<()> {
@@ -138,8 +152,8 @@ impl Database {
             .collect::<Vec<_>>()
             .join(" OR ");
         let mut rows = self
-            .conn()
-            .query(
+            .profiled_query(
+                DbOp::SearchExecutableBodies,
                 "SELECT node_id, body FROM executable_body_fts
                  WHERE executable_body_fts MATCH ?1
                  LIMIT ?2",
@@ -267,9 +281,7 @@ impl Database {
 
         // Fallback: LIKE query
         let like_pattern = format!("%{}%", escape_like(query));
-        let mut rows = self
-            .conn()
-            .query(
+        let mut rows = self.profiled_query(DbOp::SearchNodes,
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
                     docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
@@ -345,9 +357,7 @@ impl Database {
         fts_query: &str,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let mut rows = self
-            .conn()
-            .query(
+        let mut rows = self.profiled_query(DbOp::SearchNodesBounded,
                 "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
@@ -390,9 +400,7 @@ impl Database {
         fts_query: &str,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let mut rows = self
-            .conn()
-            .query(
+        let mut rows = self.profiled_query(DbOp::SearchNodesFts,
                 "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
@@ -447,8 +455,11 @@ impl Database {
             .map(|id| libsql::Value::Text(id.clone()))
             .collect();
         let mut rows = self
-            .conn()
-            .query(&sql, libsql::params_from_iter(param_values))
+            .profiled_query(
+                DbOp::BatchIncomingCallCounts,
+                &sql,
+                libsql::params_from_iter(param_values),
+            )
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to batch count incoming calls: {e}"),
@@ -494,8 +505,11 @@ impl Database {
         param_values.push(libsql::Value::Integer(limit as i64));
 
         let mut rows = self
-            .conn()
-            .query(&sql, libsql::params_from_iter(param_values))
+            .profiled_query(
+                DbOp::SearchNodesByExactName,
+                &sql,
+                libsql::params_from_iter(param_values),
+            )
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to search by exact name: {e}"),
