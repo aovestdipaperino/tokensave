@@ -830,6 +830,8 @@ tokensave profile export          # sanitized aggregates to attach to an issue
 
 Opt-in latency attribution for database operations, MCP tool phases and indexing (#754). Aggregates are kept under `~/.tokensave/profile/` within a size and retention limit, and nothing is uploaded. See [docs/PROFILING.md](docs/PROFILING.md).
 
+You can also tune profiling for an individual repository: run `tokensave profile enable --local`, then edit `.tokensave/profile.toml` to adjust its slow-query threshold, retention period and storage limit. See [repository-local controls](docs/PROFILING.md#repository-local-controls) for examples. The `--local` option is hidden from CLI help.
+
 ### Session and lifetime counters
 
 ```bash

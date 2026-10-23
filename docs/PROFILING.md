@@ -47,6 +47,24 @@ global profiling or sharing consent. Repositories without this file continue
 to use the global settings. Remove this file to resume using global settings.
 Keep it machine-local, especially sharing consent; do not commit it.
 
+If you want to tune profiling for this repository, first run
+`tokensave profile enable --local`, then edit its `.tokensave/profile.toml`.
+For example, keep a shorter history and count queries taking at least 100 ms
+as slow:
+
+```toml
+[profiling]
+mode = "light"
+slow_query_ms = 100
+retention_days = 7
+max_bytes = 16777216 # 16 MiB
+```
+
+Update the existing `[profiling]` table rather than adding a second one.
+These settings apply only to this project's local profiles. Check the result
+with `tokensave profile status --local`, and restart running MCP servers to
+pick up the changes.
+
 Indexing, sync and MCP servers select settings using their resolved project,
 including an explicit path or a server-discovery fallback. Local commands use
 the same discovery rules; a worktree borrowing another project's index also
