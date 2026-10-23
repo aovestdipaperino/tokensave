@@ -9,6 +9,7 @@ use tokensave::tokensave::TokenSave;
 mod cli;
 mod commands;
 mod global;
+mod profile_command;
 mod serve;
 mod tool_command;
 
@@ -1923,6 +1924,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             if let Err(e) = tokensave::memstats::run(clean) {
                 eprintln!("Memory report error: {e}");
             }
+        }
+        Commands::Profile { action } => {
+            profile_command::handle_profile_action(action)?;
         }
         Commands::QualityDiff { .. } => unreachable!("handled before startup"),
         Commands::Branch { action } => {

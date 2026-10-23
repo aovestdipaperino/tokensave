@@ -42,10 +42,13 @@ pub struct WindowFile {
     /// Hours since the UNIX epoch.
     pub hour: u64,
     pub series: Snapshot,
+    /// The writing process's cumulative flush overhead as of this write.
+    #[serde(default)]
+    pub overhead: Overhead,
 }
 
 /// The profiler's own cost, for `profile status`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Overhead {
     pub flushes: u64,
     pub flush_us: u64,
@@ -119,6 +122,7 @@ impl Store {
             engine: ENGINE.to_string(),
             hour,
             series: std::mem::take(&mut self.current),
+            overhead: overhead(),
         };
         let json = serde_json::to_string(&file).map_err(std::io::Error::other);
         self.current = file.series;
@@ -209,6 +213,63 @@ pub fn load(dir: &Path, since_hour: u64) -> BTreeMap<String, Snapshot> {
         merge_snapshot(merged.entry(file.engine).or_default(), &file.series);
     }
     merged
+}
+
+/// What `profile status` reports about the directory.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DirSummary {
+    pub files: usize,
+    pub bytes: u64,
+    /// Distinct writing processes.
+    pub processes: usize,
+    /// Sum, over processes, of each one's latest recorded overhead.
+    pub overhead: Overhead,
+}
+
+/// Summarizes the aggregate files in `dir`.
+pub fn summarize(dir: &Path) -> DirSummary {
+    let mut summary = DirSummary::default();
+    // Latest (hour, overhead) per process tag; overhead is cumulative per
+    // process, so only the newest file of each process counts.
+    let mut latest: BTreeMap<String, (u64, Overhead)> = BTreeMap::new();
+    for (hour, path) in list_files(dir) {
+        summary.files += 1;
+        summary.bytes += std::fs::metadata(&path).map_or(0, |m| m.len());
+        let Some(tag) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.split_once('-'))
+            .map(|(_, tag)| tag.to_string())
+        else {
+            continue;
+        };
+        let Some(file) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<WindowFile>(&s).ok())
+        else {
+            continue;
+        };
+        let entry = latest.entry(tag).or_insert((hour, file.overhead));
+        if hour >= entry.0 {
+            *entry = (hour, file.overhead);
+        }
+    }
+    summary.processes = latest.len();
+    for (_, o) in latest.values() {
+        summary.overhead.flushes += o.flushes;
+        summary.overhead.flush_us += o.flush_us;
+        summary.overhead.bytes_written += o.bytes_written;
+        summary.overhead.files_removed += o.files_removed;
+    }
+    summary
+}
+
+/// Deletes every profiler file in `dir`; returns how many were removed.
+pub fn reset(dir: &Path) -> usize {
+    list_files(dir)
+        .into_iter()
+        .filter(|(_, path)| std::fs::remove_file(path).is_ok())
+        .count()
 }
 
 /// Total size of the files in `dir`, for `profile status`.
@@ -339,5 +400,21 @@ mod tests {
         let mut store = Store::new(dir.clone(), 30, 0);
         store.flush(&snapshot(2), 6 * HOUR).unwrap();
         assert_eq!(load(&dir, 0)[ENGINE]["db.open"].count, 2);
+    }
+
+    #[test]
+    fn summary_counts_processes_and_reset_removes_only_profile_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let mut a = Store::new(dir.clone(), 30, 0);
+        a.flush(&snapshot(1), 10 * HOUR).unwrap();
+        a.flush(&snapshot(1), 11 * HOUR).unwrap();
+        std::fs::write(dir.join("notes.txt"), "keep").unwrap();
+        let summary = summarize(&dir);
+        assert_eq!(summary.files, 2);
+        assert_eq!(summary.processes, 1);
+        assert!(summary.overhead.flushes >= 1);
+        assert_eq!(reset(&dir), 2);
+        assert!(dir.join("notes.txt").exists());
     }
 }
