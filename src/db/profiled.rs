@@ -127,6 +127,7 @@ pub(crate) fn transaction_span() -> Span {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::profile::{Mode, SeriesSnapshot};
