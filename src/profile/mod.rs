@@ -208,6 +208,10 @@ pub fn invocation_sync<R>(f: impl FnOnce() -> R) -> (R, InvocationSummary) {
     }
 }
 
+/// Serializes tests, across modules, that change the process-wide mode.
+#[cfg(test)]
+pub(crate) static TEST_MODE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// How often the background thread flushes aggregates to disk.
 pub const FLUSH_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -291,9 +295,6 @@ impl Drop for Profiler {
 mod tests {
     use super::*;
 
-    /// Serializes the tests that change the process-wide mode.
-    static GLOBAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn prefs(mode: Mode) -> ProfilingPreferences {
         ProfilingPreferences {
             mode,
@@ -341,9 +342,7 @@ mod tests {
 
     #[test]
     fn off_creates_nothing_and_spans_are_inert() {
-        let _g = GLOBAL
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = TEST_MODE_LOCK.blocking_lock();
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("profile");
         let settings = Settings::resolve(&ProfilingPreferences::default(), None, 0);
@@ -359,9 +358,7 @@ mod tests {
 
     #[test]
     fn shutdown_flushes_recorded_spans() {
-        let _g = GLOBAL
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = TEST_MODE_LOCK.blocking_lock();
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("profile");
         let settings = Settings::resolve(&prefs(Mode::Light), None, 0);

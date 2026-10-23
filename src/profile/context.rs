@@ -7,11 +7,16 @@
 //!
 //! The context is a tokio task-local inside [`invocation`] (an MCP call or a
 //! sync run, possibly crossing `.await` points and threads), and a
-//! thread-local everywhere else (CLI code, rayon workers); outside an
-//! invocation a span must not be held across an `.await`, since the task may
-//! resume on another thread. Frames live in a
-//! fixed array, so opening a span never allocates; spans nested deeper than
-//! [`MAX_DEPTH`] are still recorded, with exclusive time equal to inclusive.
+//! thread-local inside [`invocation_sync`] (synchronous code). Outside both,
+//! spans have no context: they are recorded with exclusive time equal to
+//! inclusive and attributed to no invocation. That keeps a span held across
+//! an `.await` outside an invocation, which may resume on another thread,
+//! from corrupting a thread's frame stack. Frames live in a fixed array, so
+//! opening a span never allocates; spans nested deeper than [`MAX_DEPTH`]
+//! are still recorded, with exclusive time equal to inclusive.
+//!
+//! [`invocation`]: super::invocation
+//! [`invocation_sync`]: super::invocation_sync
 
 use std::cell::RefCell;
 use std::future::Future;
@@ -48,10 +53,13 @@ struct Context {
     frames: [Frame; MAX_DEPTH],
     depth: usize,
     summary: InvocationSummary,
+    /// Whether an invocation owns this context. The idle thread-local
+    /// context is inactive and ignored by spans.
+    active: bool,
 }
 
 impl Context {
-    const fn new() -> Self {
+    const fn new(active: bool) -> Self {
         Self {
             frames: [EMPTY_FRAME; MAX_DEPTH],
             depth: 0,
@@ -59,6 +67,7 @@ impl Context {
                 db_us: 0,
                 db_ops: 0,
             },
+            active,
         }
     }
 
@@ -105,12 +114,19 @@ tokio::task_local! {
 }
 
 thread_local! {
-    static THREAD_CONTEXT: RefCell<Context> = const { RefCell::new(Context::new()) };
+    static THREAD_CONTEXT: RefCell<Context> = const { RefCell::new(Context::new(false)) };
 }
 
-/// Runs `f` on the current context. Returns `None` if the context is
-/// unavailable (thread teardown) or already borrowed.
+/// Runs `f` on the active invocation's context. Returns `None` outside an
+/// invocation, during thread teardown, or if the context is already
+/// borrowed.
 fn with_context<R>(f: impl FnOnce(&mut Context) -> R) -> Option<R> {
+    with_current(|c| c.active.then(|| f(c))).flatten()
+}
+
+/// Runs `f` on the task-local context if one is in scope, else on this
+/// thread's context, active or not.
+fn with_current<R>(f: impl FnOnce(&mut Context) -> R) -> Option<R> {
     if TASK_CONTEXT.try_with(|_| ()).is_ok() {
         TASK_CONTEXT
             .try_with(|c| c.try_borrow_mut().ok().map(|mut c| f(&mut c)))
@@ -129,7 +145,7 @@ fn with_context<R>(f: impl FnOnce(&mut Context) -> R) -> Option<R> {
 /// attributed to it even across `.await` points and worker threads.
 pub(crate) async fn scoped<F: Future>(fut: F) -> (F::Output, InvocationSummary) {
     TASK_CONTEXT
-        .scope(RefCell::new(Context::new()), async move {
+        .scope(RefCell::new(Context::new(true)), async move {
             let out = fut.await;
             let summary = TASK_CONTEXT
                 .try_with(|c| c.try_borrow().map(|c| c.summary).unwrap_or_default())
@@ -139,11 +155,13 @@ pub(crate) async fn scoped<F: Future>(fut: F) -> (F::Output, InvocationSummary) 
         .await
 }
 
-/// Synchronous counterpart of [`scoped`] on the thread-local context.
+/// Synchronous counterpart of [`scoped`]: gives `f` a fresh active context
+/// (the task-local one when called inside [`scoped`], else this thread's)
+/// and restores the previous one afterwards.
 pub(crate) fn scoped_sync<R>(f: impl FnOnce() -> R) -> (R, InvocationSummary) {
-    let saved = with_context(|c| std::mem::replace(c, Context::new()));
+    let saved = with_current(|c| std::mem::replace(c, Context::new(true)));
     let out = f();
-    let summary = with_context(|c| {
+    let summary = with_current(|c| {
         let summary = c.summary;
         if let Some(saved) = saved {
             *c = saved;
@@ -169,7 +187,9 @@ struct Active {
     recorder: &'static Recorder,
     op: Op,
     start: Instant,
-    slot: Option<usize>,
+    /// `None` when no context was active at start; otherwise the frame slot
+    /// (`Some(None)` past `MAX_DEPTH`).
+    slot: Option<Option<usize>>,
     rows_returned: u64,
     rows_affected: u64,
 }
@@ -181,7 +201,7 @@ impl Span {
     }
 
     pub(crate) fn start(recorder: &'static Recorder, op: Op) -> Self {
-        let slot = with_context(|c| c.push(op.category() == Category::Db)).flatten();
+        let slot = with_context(|c| c.push(op.category() == Category::Db));
         Self {
             active: Some(Active {
                 recorder,
@@ -222,7 +242,10 @@ impl Span {
             return;
         };
         let inclusive_us = u64::try_from(a.start.elapsed().as_micros()).unwrap_or(u64::MAX);
-        let child_us = with_context(|c| c.pop(a.slot, a.op, inclusive_us)).unwrap_or(0);
+        let child_us = a
+            .slot
+            .and_then(|slot| with_context(|c| c.pop(slot, a.op, inclusive_us)))
+            .unwrap_or(0);
         if ok {
             a.recorder.record(
                 a.op,
@@ -302,12 +325,14 @@ mod tests {
     #[test]
     fn dropped_span_is_an_error_but_still_a_child() {
         let r = recorder();
-        let outer = Span::start(r, Op::Mcp(McpPhase::Total));
-        {
-            let _failed = Span::start(r, Op::Db(DbOp::Open));
-            spin(Duration::from_millis(2));
-        }
-        outer.finish();
+        scoped_sync(|| {
+            let outer = Span::start(r, Op::Mcp(McpPhase::Total));
+            {
+                let _failed = Span::start(r, Op::Db(DbOp::Open));
+                spin(Duration::from_millis(2));
+            }
+            outer.finish();
+        });
         let snap = r.drain();
         assert_eq!(snap["db.open"].errors, 1);
         assert_eq!(snap["db.open"].count, 0);
@@ -318,25 +343,47 @@ mod tests {
     #[test]
     fn deep_nesting_past_the_frame_limit_is_still_recorded() {
         let r = recorder();
-        let spans: Vec<_> = (0..MAX_DEPTH + 4)
-            .map(|_| Span::start(r, Op::Mcp(McpPhase::Ranking)))
-            .collect();
-        for span in spans.into_iter().rev() {
-            span.finish();
-        }
+        let (depth, _) = scoped_sync(|| {
+            let spans: Vec<_> = (0..MAX_DEPTH + 4)
+                .map(|_| Span::start(r, Op::Mcp(McpPhase::Ranking)))
+                .collect();
+            for span in spans.into_iter().rev() {
+                span.finish();
+            }
+            with_context(|c| c.depth)
+        });
         assert_eq!(r.drain()["mcp.ranking"].count, (MAX_DEPTH + 4) as u64);
-        assert_eq!(with_context(|c| c.depth), Some(0));
+        assert_eq!(depth, Some(0));
     }
 
     #[test]
     fn out_of_order_drop_unwinds_the_stack() {
         let r = recorder();
-        let a = Span::start(r, Op::Mcp(McpPhase::Total));
-        let b = Span::start(r, Op::Mcp(McpPhase::Ranking));
-        a.finish();
-        b.finish();
-        assert_eq!(with_context(|c| c.depth), Some(0));
+        let (depth, _) = scoped_sync(|| {
+            let a = Span::start(r, Op::Mcp(McpPhase::Total));
+            let b = Span::start(r, Op::Mcp(McpPhase::Ranking));
+            a.finish();
+            b.finish();
+            with_context(|c| c.depth)
+        });
+        assert_eq!(depth, Some(0));
         assert_eq!(r.drain().len(), 2);
+    }
+
+    #[test]
+    fn spans_outside_an_invocation_leave_the_thread_context_alone() {
+        let r = recorder();
+        let outer = Span::start(r, Op::Mcp(McpPhase::Total));
+        let inner = Span::start(r, Op::Db(DbOp::Open));
+        inner.finish();
+        outer.finish();
+        assert_eq!(with_current(|c| (c.active, c.depth)), Some((false, 0)));
+        let snap = r.drain();
+        let total = &snap["mcp.total"];
+        assert_eq!(
+            total.exclusive_sum_us, total.sum_us,
+            "no parent attribution"
+        );
     }
 
     #[test]
