@@ -274,6 +274,7 @@ impl Drop for Span {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::profile::ops::{DbOp, McpPhase};
