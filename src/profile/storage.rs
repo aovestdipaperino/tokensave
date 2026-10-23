@@ -221,6 +221,7 @@ pub fn disk_usage(dir: &Path) -> u64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::profile::recorder::SeriesSnapshot;
