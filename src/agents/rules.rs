@@ -151,15 +151,15 @@ external APIs).\n\n\
 ### When you spawn an Explore agent in a tokensave-enabled project\n\n\
 When the user asks for an Explore agent, include the following in the agent \
 prompt:\n\n\
-> This project has tokensave initialised (.tokensave/ exists). Start with \
-> `tokensave_context`: call it with your question in plain English; the \
-> source sections it returns are the relevant code. Follow the call budget \
-> in the tool description, and pass `seen_node_ids` from each response to \
-> the next call's `exclude_node_ids`. Use `tokensave_search` for a symbol \
-> by name; with `literal: true` it finds exact text, so for who calls or \
-> implements a name, search the text that construct takes in the file's \
-> language, in every form the language allows. Grep only for a regex or \
-> for the files a literal search reports as `unscanned`, and Read only \
+> This project has tokensave initialised (.tokensave/ exists). Start with\n\
+> `tokensave_context`: call it with your question in plain English; the\n\
+> source sections it returns are the relevant code. Follow the call budget\n\
+> in the tool description, and pass `seen_node_ids` from each response to\n\
+> the next call's `exclude_node_ids`. Use `tokensave_search` for a symbol\n\
+> by name; with `literal: true` it finds exact text, so for who calls or\n\
+> implements a name, search the text that construct takes in the file's\n\
+> language, in every form the language allows. Grep only for a regex or\n\
+> for the files a literal search reports as `unscanned`, and Read only\n\
 > the ranges a result points to.\n\n\
 ### When the hook denies a search\n\n\
 A denied grep, glob, or find means the search looked like a code-symbol lookup \
@@ -901,6 +901,23 @@ mod tests {
         assert!(!body.contains("ONLY exploration tool"));
         assert!(!body.contains("Do not call Read"));
         assert!(body.contains("in every form the language allows"));
+    }
+
+    /// #765: string continuations must not fold blockquote markers into prose.
+    #[test]
+    fn claude_subagent_brief_preserves_blockquote_lines() {
+        let body = expected_rules_markdown("claude").unwrap();
+        let (_, brief) = body.split_once("prompt:\n\n").unwrap();
+        let (brief, _) = brief
+            .split_once("\n\n### When the hook denies a search")
+            .unwrap();
+        assert!(brief.starts_with("> This project has tokensave initialised"));
+        assert!(brief.ends_with("the ranges a result points to."));
+        assert!(brief.lines().count() > 1, "brief must retain line breaks");
+        for line in brief.lines() {
+            let text = line.strip_prefix("> ").expect("each line must be quoted");
+            assert!(!text.contains('>'), "stray blockquote marker: {line}");
+        }
     }
 
     /// The core toolset is the default (#576), so a tool the rules name that
