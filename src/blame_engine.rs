@@ -637,7 +637,7 @@ fn commit_metadata(commit: &gix::Commit<'_>) -> Result<(String, String, String, 
     Ok((author, email, date, summary))
 }
 
-fn format_rfc3339(unix_secs: i64) -> String {
+pub(crate) fn format_rfc3339(unix_secs: i64) -> String {
     // gix doesn't ship a time formatter; format manually as UTC.
     let (yr, mo, dy, hr, mn, sc) = ymd_hms_from_unix(unix_secs);
     format!("{yr:04}-{mo:02}-{dy:02}T{hr:02}:{mn:02}:{sc:02}Z")

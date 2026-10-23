@@ -65,6 +65,13 @@ pub struct TokenSave {
     /// [`Self::find_stale_files_bounded`]; explicit `sync` ignores it.
     /// Seeded from `config.max_auto_sync_files`.
     max_auto_sync_files: usize,
+    /// Effective CPU usage profile and where it came from, resolved once at
+    /// open: `TOKENSAVE_CPU_USAGE`, the project's `cpu_usage`, the global
+    /// `cpu_usage`, the global hardware benchmark, then `balanced` (#752).
+    cpu_usage: (
+        crate::cpu::CpuUsage,
+        crate::global_benchmark::CpuUsageSource,
+    ),
 }
 
 /// A decision recorded by an agent during a session.
@@ -158,19 +165,22 @@ impl TokenSave {
     /// Creates the `.tokensave` directory, writes a default configuration
     /// (preserving existing project settings), and initializes a fresh `SQLite` database.
     pub async fn init(project_root: &Path) -> Result<Self> {
-        Self::init_with_cpu_usage(project_root, load_config(project_root)?.cpu_usage).await
+        Self::init_with_cpu_usage(project_root, None).await
     }
 
-    /// Like [`Self::init`], but stores `cpu_usage` instead of the existing
-    /// profile. Used by `tokensave init` after benchmarking the host.
+    /// Like [`Self::init`], but `Some(profile)` pins the project's
+    /// `cpu_usage` (`tokensave init --cpu-usage`). `None` keeps the
+    /// project's existing setting, which for a new project means following
+    /// the global settings and hardware benchmark.
     pub async fn init_with_cpu_usage(
         project_root: &Path,
-        cpu_usage: crate::cpu::CpuUsage,
+        cpu_usage: Option<crate::cpu::CpuUsage>,
     ) -> Result<Self> {
+        let existing = load_config(project_root)?;
         let config = TokenSaveConfig {
-            cpu_usage,
+            cpu_usage: cpu_usage.or(existing.cpu_usage),
             root_dir: project_root.to_string_lossy().to_string(),
-            ..load_config(project_root)?
+            ..existing
         };
         save_config(project_root, &config)?;
 
@@ -189,6 +199,7 @@ impl TokenSave {
         Ok(Self {
             db,
             max_auto_sync_files: config.max_auto_sync_files,
+            cpu_usage: crate::global_benchmark::effective_cpu_usage(config.cpu_usage),
             config,
             project_root: project_root.to_path_buf(),
             registry: LanguageRegistry::new(),
@@ -210,7 +221,12 @@ impl TokenSave {
     /// parallelism, so it follows the project's configured policy rather than
     /// a hard-coded thread count.
     pub fn cpu_usage(&self) -> crate::cpu::CpuUsage {
-        self.config.cpu_usage
+        self.cpu_usage.0
+    }
+
+    /// Where [`Self::cpu_usage`] came from.
+    pub fn cpu_usage_source(&self) -> crate::global_benchmark::CpuUsageSource {
+        self.cpu_usage.1
     }
 
     /// Overrides the automatic-sync file ceiling for this handle, without
@@ -339,6 +355,7 @@ impl TokenSave {
                 let ts = Self {
                     db,
                     max_auto_sync_files: config.max_auto_sync_files,
+                    cpu_usage: crate::global_benchmark::effective_cpu_usage(config.cpu_usage),
                     config,
                     project_root: project_root.to_path_buf(),
                     registry: LanguageRegistry::new(),
@@ -370,6 +387,7 @@ impl TokenSave {
                 let ts = Self {
                     db: new_db,
                     max_auto_sync_files: config.max_auto_sync_files,
+                    cpu_usage: crate::global_benchmark::effective_cpu_usage(config.cpu_usage),
                     config,
                     project_root: project_root.to_path_buf(),
                     registry: LanguageRegistry::new(),
@@ -405,6 +423,7 @@ impl TokenSave {
         let ts = Self {
             db,
             max_auto_sync_files: config.max_auto_sync_files,
+            cpu_usage: crate::global_benchmark::effective_cpu_usage(config.cpu_usage),
             config,
             project_root: project_root.to_path_buf(),
             registry: LanguageRegistry::new(),
@@ -558,6 +577,7 @@ impl TokenSave {
         Ok(Self {
             db,
             max_auto_sync_files: config.max_auto_sync_files,
+            cpu_usage: crate::global_benchmark::effective_cpu_usage(config.cpu_usage),
             config,
             project_root: project_root.to_path_buf(),
             registry: LanguageRegistry::new(),
@@ -604,6 +624,7 @@ impl TokenSave {
         Ok(Self {
             db,
             max_auto_sync_files: config.max_auto_sync_files,
+            cpu_usage: crate::global_benchmark::effective_cpu_usage(config.cpu_usage),
             config,
             project_root: project_root.to_path_buf(),
             registry: LanguageRegistry::new(),

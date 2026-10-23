@@ -87,9 +87,12 @@ pub struct TokenSaveConfig {
     /// Opt-in fallback for files without a registered extension or manifest language.
     #[serde(default)]
     pub language_detection: crate::language_detection::DetectionConfig,
-    /// CPU concurrency profile, applied when the project is opened.
-    #[serde(default)]
-    pub cpu_usage: crate::cpu::CpuUsage,
+    /// CPU concurrency profile pinned for this project, applied when it is
+    /// opened. `None` (the field absent) follows `TOKENSAVE_CPU_USAGE`, the
+    /// global `cpu_usage` and the global hardware benchmark (#752); see
+    /// [`crate::global_benchmark::effective_cpu_usage`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_usage: Option<crate::cpu::CpuUsage>,
     /// Extraction parser-memory profile, applied when the project is opened.
     #[serde(default)]
     pub memory_usage: crate::memory::MemoryUsage,
@@ -283,7 +286,7 @@ impl Default for TokenSaveConfig {
     fn default() -> Self {
         Self {
             language_detection: crate::language_detection::DetectionConfig::default(),
-            cpu_usage: crate::cpu::CpuUsage::default(),
+            cpu_usage: None,
             memory_usage: crate::memory::MemoryUsage::default(),
             version: CONFIG_VERSION,
             root_dir: String::new(),
@@ -379,8 +382,8 @@ pub fn load_config(project_root: &Path) -> Result<TokenSaveConfig> {
 
 /// The `cpu_usage` explicitly present in the project's config file, if any.
 ///
-/// Unlike [`load_config`], a missing field is `None` rather than the default,
-/// so `init` can tell a profile the user chose from one it should benchmark.
+/// Unlike [`load_config`], a project that is not initialized yet is `None`
+/// rather than an error, and nothing else in the file has to be valid.
 pub fn configured_cpu_usage(project_root: &Path) -> Result<Option<crate::cpu::CpuUsage>> {
     let config_path = get_config_path(project_root);
     if !config_path.exists() {

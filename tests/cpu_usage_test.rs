@@ -33,12 +33,12 @@ async fn profiles_preserve_full_and_incremental_graphs() {
         }
         drop(TokenSave::init(dir.path()).await.unwrap());
         let mut config = load_config(dir.path()).unwrap();
-        config.cpu_usage = profile;
+        config.cpu_usage = Some(profile);
         config.memory_usage = memory;
         save_config(dir.path(), &config).unwrap();
         // Reinitializing must honor the same on-disk selection as opening.
         drop(TokenSave::init(dir.path()).await.unwrap());
-        assert_eq!(load_config(dir.path()).unwrap().cpu_usage, profile);
+        assert_eq!(load_config(dir.path()).unwrap().cpu_usage, Some(profile));
         assert_eq!(load_config(dir.path()).unwrap().memory_usage, memory);
         let cg = TokenSave::open(dir.path()).await.unwrap();
         cg.index_all().await.unwrap();

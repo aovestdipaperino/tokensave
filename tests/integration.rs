@@ -79,6 +79,7 @@ mod git_hook_isolation_test;
 mod githooks_exit_code_test;
 mod githooks_status_test;
 mod gitignore_without_git_repo_test;
+mod global_benchmark_cli_test;
 mod glsl_extraction_test;
 mod go_bug148_test;
 mod go_bug149_test;

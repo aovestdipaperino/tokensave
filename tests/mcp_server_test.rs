@@ -4163,7 +4163,7 @@ async fn cpu_usage_profiles_allow_mcp_queries_during_indexing() {
         }
         drop(TokenSave::init(dir.path()).await.unwrap());
         let mut config = tokensave::config::load_config(dir.path()).unwrap();
-        config.cpu_usage = profile;
+        config.cpu_usage = Some(profile);
         config.memory_usage = match profile {
             CpuUsage::Low => tokensave::memory::MemoryUsage::Low,
             CpuUsage::Balanced => tokensave::memory::MemoryUsage::Balanced,
