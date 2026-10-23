@@ -581,9 +581,14 @@ mod tests {
 
 #[derive(Subcommand)]
 pub enum ProfileAction {
+    /// Manage separate consent for sanitized performance data sharing
+    Share {
+        #[command(subcommand)]
+        action: ProfileShareAction,
+    },
     /// Show the profiling mode, storage use, recorded samples and overhead
     Status,
-    /// Enable profiling for new tokensave processes (data stays local)
+    /// Enable local profiling for new tokensave processes (sharing has separate consent)
     Enable {
         /// Collect detailed data; falls back to light after `--for`
         #[arg(long)]
@@ -645,6 +650,18 @@ pub enum ProfileAction {
     },
     /// Delete all recorded profile data
     Reset,
+}
+
+#[derive(Subcommand)]
+pub enum ProfileShareAction {
+    /// Show consent, destination availability, last upload and next due time
+    Status,
+    /// Explicitly consent after reviewing the destination, policy and payload
+    Enable,
+    /// Revoke consent for subsequent uploads
+    Disable,
+    /// Print exactly the sanitized JSON payload (the same as profile export)
+    Preview,
 }
 
 #[derive(Subcommand)]

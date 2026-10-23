@@ -149,8 +149,13 @@ pub struct UserConfig {
     #[serde(default, skip_serializing_if = "BenchmarkPreferences::is_default")]
     pub benchmark: BenchmarkPreferences,
 
-    /// The `[profiling]` table: opt-in latency profiling (#754). Off by
-    /// default; `TOKENSAVE_PROFILE` overrides the mode for one run.
+    /// Separate consent for sanitized performance sharing; never implied by counter uploads.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub profiling_share_enabled: bool,
+    /// Whether the interactive invitation has been answered (including No).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub profiling_share_asked: bool,
+    /// The `[profiling]` table: opt-in latency profiling (#754), default off.
     #[serde(default, skip_serializing_if = "ProfilingPreferences::is_default")]
     pub profiling: ProfilingPreferences,
 
@@ -327,6 +332,8 @@ impl Default for UserConfig {
             claude_hooks: true,
             cpu_usage: None,
             benchmark: BenchmarkPreferences::default(),
+            profiling_share_enabled: false,
+            profiling_share_asked: false,
             profiling: ProfilingPreferences::default(),
             loaded_config: Mutex::new(None),
             loaded_state: Mutex::new(None),
@@ -353,6 +360,10 @@ pub(crate) struct ConfigFile {
     claude_hooks: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cpu_usage: Option<crate::cpu::CpuUsage>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    profiling_share_enabled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    profiling_share_asked: bool,
     // Last: a TOML table has to follow the plain keys.
     #[serde(default, skip_serializing_if = "BenchmarkPreferences::is_default")]
     benchmark: BenchmarkPreferences,
@@ -372,6 +383,8 @@ impl ConfigFile {
             claude_hooks: c.claude_hooks,
             cpu_usage: c.cpu_usage,
             benchmark: c.benchmark,
+            profiling_share_enabled: c.profiling_share_enabled,
+            profiling_share_asked: c.profiling_share_asked,
             profiling: c.profiling,
         }
     }
@@ -873,6 +886,14 @@ pub fn profiling_preferences() -> ProfilingPreferences {
         .unwrap_or_default()
 }
 
+/// Sharing consent, read without state migration or writes. Invalid config denies sharing.
+pub fn profiling_sharing_consent() -> bool {
+    config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| toml::from_str::<ConfigFile>(&text).ok())
+        .is_some_and(|config| config.profiling_share_enabled)
+}
+
 /// Returns the path to the advisory lock guarding `config.toml`'s
 /// read-modify-write span in `save()` (see `merge_config_file`'s doc
 /// comment). A distinct sidecar path rather than locking `config.toml`
@@ -1202,6 +1223,8 @@ impl UserConfig {
             || self.claude_hooks != base.claude_hooks
             || self.cpu_usage != base.cpu_usage
             || self.benchmark != base.benchmark
+            || self.profiling_share_enabled != base.profiling_share_enabled
+            || self.profiling_share_asked != base.profiling_share_asked
             || self.profiling != base.profiling;
         if !changed && !self.loaded_legacy_state.load(Ordering::Relaxed) {
             return Ok(None);
@@ -1256,6 +1279,17 @@ impl UserConfig {
                 on_disk.benchmark
             } else {
                 self.benchmark
+            },
+            profiling_share_enabled: if self.profiling_share_enabled == base.profiling_share_enabled
+            {
+                on_disk.profiling_share_enabled
+            } else {
+                self.profiling_share_enabled
+            },
+            profiling_share_asked: if self.profiling_share_asked == base.profiling_share_asked {
+                on_disk.profiling_share_asked
+            } else {
+                self.profiling_share_asked
             },
             profiling: if self.profiling == base.profiling {
                 on_disk.profiling
@@ -1392,6 +1426,8 @@ mod tests {
                 enabled: true,
                 auto_run: false,
             },
+            profiling_share_enabled: false,
+            profiling_share_asked: false,
             profiling: ProfilingPreferences::default(),
             loaded_config: Mutex::new(None),
             loaded_state: Mutex::new(None),
@@ -1470,6 +1506,54 @@ mod tests {
         assert!(reloaded.wildcard_permissions);
         assert!(!reloaded.benchmark.auto_run);
         assert_eq!(reloaded.cpu_usage, Some(crate::cpu::CpuUsage::Performance));
+    }
+
+    #[test]
+    fn sharing_consent_round_trips_and_is_independent() {
+        let _home = test_home();
+        assert!(!profiling_sharing_consent());
+        let mut config = UserConfig::load();
+        config.upload_enabled = true;
+        config.profiling.mode = crate::profile::Mode::Light;
+        assert!(config.save());
+        assert!(!profiling_sharing_consent());
+        config.profiling_share_enabled = true;
+        config.profiling_share_asked = true;
+        config.upload_enabled = false;
+        assert!(config.save());
+        assert!(profiling_sharing_consent());
+        let loaded = UserConfig::load();
+        assert!(!loaded.upload_enabled);
+        assert!(loaded.profiling_share_asked);
+    }
+
+    #[test]
+    fn stale_profiling_save_cannot_restore_revoked_consent() {
+        let _home = test_home();
+        let mut original = UserConfig::load();
+        original.profiling_share_enabled = true;
+        assert!(original.save());
+        let mut stale = UserConfig::load();
+        let mut revoke = UserConfig::load();
+        revoke.profiling_share_enabled = false;
+        assert!(revoke.save());
+        stale.profiling.mode = crate::profile::Mode::Light;
+        assert!(stale.save());
+        assert!(!profiling_sharing_consent());
+        assert_eq!(
+            UserConfig::load().profiling.mode,
+            crate::profile::Mode::Light
+        );
+    }
+
+    #[test]
+    fn corrupt_sharing_config_denies_consent_without_rewriting_it() {
+        let _home = test_home();
+        let path = config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "invalid = [").unwrap();
+        assert!(!profiling_sharing_consent());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "invalid = [");
     }
 
     #[test]

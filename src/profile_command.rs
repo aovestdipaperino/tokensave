@@ -1,7 +1,7 @@
 //! `tokensave profile ...`: opt-in performance profiling (#754).
 //!
-//! Every subcommand reads or changes local state only: `config.toml` and
-//! `~/.tokensave/profile/`. Nothing here touches the network.
+//! Subcommands read or change local state only. Uploads, when approved and
+//! separately consented, run on the profiler flush thread.
 
 use std::path::Path;
 use std::time::Duration;
@@ -10,7 +10,8 @@ use tokensave::errors::{Result, TokenSaveError};
 use tokensave::profile::{self, analysis, export, report, storage, Mode, Settings};
 use tokensave::user_config::{self, UserConfig};
 
-use crate::cli::ProfileAction;
+use crate::cli::{ProfileAction, ProfileShareAction};
+use tokensave::profile::sharing;
 
 /// Detailed mode lasts this long unless `--for` says otherwise.
 const DEFAULT_DETAILED_FOR: Duration = Duration::from_secs(24 * 3600);
@@ -42,6 +43,7 @@ fn profile_dir() -> Result<std::path::PathBuf> {
 
 pub(crate) fn handle_profile_action(action: ProfileAction) -> Result<()> {
     match action {
+        ProfileAction::Share { action } => share(action),
         ProfileAction::Status => status(),
         ProfileAction::Enable { detailed, duration } => enable(detailed, duration.as_deref()),
         ProfileAction::Disable => set_mode(Mode::Off, None),
@@ -142,14 +144,16 @@ pub(crate) fn handle_profile_action(action: ProfileAction) -> Result<()> {
 
 fn enable(detailed: bool, duration: Option<&str>) -> Result<()> {
     if !detailed {
-        return set_mode(Mode::Light, None);
+        set_mode(Mode::Light, None)?;
+        return invite_sharing();
     }
     let lasts = match duration {
         Some(text) => window(text)?,
         None => DEFAULT_DETAILED_FOR,
     };
     let expires = unix_now().saturating_add(lasts.as_secs());
-    set_mode(Mode::Detailed, Some(expires as i64))
+    set_mode(Mode::Detailed, Some(expires as i64))?;
+    invite_sharing()
 }
 
 fn set_mode(mode: Mode, detailed_expires_at: Option<i64>) -> Result<()> {
@@ -171,11 +175,133 @@ fn set_mode(mode: Mode, detailed_expires_at: Option<i64>) -> Result<()> {
     }
     if mode != Mode::Off {
         println!(
-            "Data stays on this machine under ~/.tokensave/profile/. New tokensave processes pick \
+            "Profiles are stored under ~/.tokensave/profile/. Sharing requires separate consent. New tokensave processes pick \
              this up; restart running MCP servers to include them."
         );
     }
     Ok(())
+}
+
+fn save_sharing(enabled: bool) -> Result<()> {
+    let mut config = UserConfig::load();
+    config.profiling_share_enabled = enabled;
+    config.profiling_share_asked = true;
+    if !config.save() {
+        return Err(config_error("failed to save sharing consent"));
+    }
+    Ok(())
+}
+
+fn share(action: ProfileShareAction) -> Result<()> {
+    match action {
+        ProfileShareAction::Preview => {
+            print!("{}", sharing::payload(&profile_dir()?, unix_now()));
+        }
+        ProfileShareAction::Disable => {
+            save_sharing(false)?;
+            println!("Performance sharing disabled. Local profile data is unchanged.");
+        }
+        ProfileShareAction::Enable => {
+            let destination = sharing::DESTINATION.filter(|d| d.ready()).ok_or_else(||
+                config_error("Performance sharing is unavailable: the maintainer has not approved the endpoint and data policy. Consent remains unchanged."))?;
+            if Settings::from_environment().mode == Mode::Off {
+                return Err(config_error(
+                    "Enable profiling first with `tokensave profile enable`.",
+                ));
+            }
+            show_destination(destination);
+            print!("{}", sharing::payload(&profile_dir()?, unix_now()));
+            save_sharing(true)?;
+            println!(
+                "Performance sharing enabled by explicit request. Uploads run at most once a day."
+            );
+            if !sharing::environment_allows() {
+                println!("Uploads remain blocked for this run by TOKENSAVE_PROFILE_SHARE.");
+            }
+        }
+        ProfileShareAction::Status => {
+            let enabled = user_config::profiling_sharing_consent();
+            println!(
+                "Performance sharing consent: {}",
+                if enabled { "enabled" } else { "disabled" }
+            );
+            match sharing::DESTINATION.filter(|d| d.ready()) {
+                Some(destination) => show_destination(destination),
+                None => println!("Uploads unavailable: endpoint, access, retention and deletion policy await maintainer approval."),
+            }
+            println!(
+                "Per-run sharing override: {}",
+                if sharing::environment_allows() {
+                    "allows configured consent"
+                } else {
+                    "blocks uploads"
+                }
+            );
+            let state = sharing::state(&profile_dir()?);
+            match state {
+                Some(state) => {
+                    println!(
+                        "Last upload (UNIX seconds, 0 = never): {}",
+                        state.last_upload
+                    );
+                    if enabled
+                        && sharing::DESTINATION.is_some()
+                        && sharing::environment_allows()
+                        && Settings::from_environment().mode != Mode::Off
+                    {
+                        println!(
+                            "Next due (UNIX seconds): {}",
+                            state.last_attempt.saturating_add(sharing::INTERVAL_SECS)
+                        );
+                    } else {
+                        println!("Next upload: inactive");
+                    }
+                }
+                None => println!("Upload state unreadable; uploads are blocked."),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn show_destination(destination: sharing::Destination) {
+    println!(
+        "Destination: {}\nAccess: {}\nRetention: {}\nDeletion: {}",
+        destination.url, destination.access, destination.retention, destination.deletion
+    );
+    println!("Fields: schema, tokensave version, OS, architecture, logical CPU count, window hours, engine and static metric aggregates. No stable identifier.");
+}
+
+fn invite_sharing() -> Result<()> {
+    use std::io::{IsTerminal, Write};
+    let config = UserConfig::load();
+    if config.profiling_share_asked
+        || !std::io::stdin().is_terminal()
+        || !std::io::stdout().is_terminal()
+    {
+        return Ok(());
+    }
+    let Some(destination) = sharing::DESTINATION.filter(|d| d.ready()) else {
+        println!("Performance sharing is unavailable pending the maintainer's endpoint and policy decisions.");
+        return Ok(());
+    };
+    show_destination(destination);
+    print!("{}", sharing::payload(&profile_dir()?, unix_now()));
+    print!("Share these sanitized performance aggregates? [y/N] ");
+    std::io::stdout()
+        .flush()
+        .map_err(|e| config_error(e.to_string()))?;
+    let mut answer = String::new();
+    // Read a bounded answer; only an explicit yes grants consent.
+    use std::io::BufRead;
+    use std::io::Read;
+    std::io::BufReader::new(std::io::stdin().lock().take(64))
+        .read_line(&mut answer)
+        .map_err(|e| config_error(e.to_string()))?;
+    save_sharing(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 fn status() -> Result<()> {

@@ -22,7 +22,7 @@
 //! Recording never does I/O; a background thread owned by [`Profiler`]
 //! drains the recorder every [`FLUSH_INTERVAL`] and on shutdown.
 //!
-//! This module never touches the network.
+//! Only [`sharing`] may touch the network, with separate explicit consent.
 
 pub mod analysis;
 pub mod context;
@@ -31,6 +31,7 @@ pub mod histogram;
 pub mod ops;
 pub mod recorder;
 pub mod report;
+pub mod sharing;
 pub mod storage;
 pub mod tools;
 
@@ -336,7 +337,8 @@ impl Profiler {
         recorder.set_slow_threshold_us(
             u64::try_from(settings.slow_threshold.as_micros()).unwrap_or(u64::MAX),
         );
-        let mut store = storage::Store::new(dir, settings.retention_days, settings.max_bytes);
+        let mut store =
+            storage::Store::new(dir.clone(), settings.retention_days, settings.max_bytes);
         let (stop, stopped) = mpsc::channel::<()>();
         let thread = std::thread::Builder::new()
             .name("tokensave-profile-flush".into())
@@ -346,7 +348,9 @@ impl Profiler {
                     Err(RecvTimeoutError::Timeout)
                 );
                 // Best-effort: profiling must never break the workload.
-                let _ = store.flush(&drain(recorder), unix_now());
+                if store.flush(&drain(recorder), unix_now()).is_ok() {
+                    sharing::after_flush(&dir, unix_now());
+                }
                 if last {
                     break;
                 }

@@ -82,3 +82,50 @@ Findings use exclusive time for phases, so nothing is counted twice, and the evi
 ## Storage and overhead
 
 Each process keeps fixed-size in-memory aggregates (about 1 MiB, plus about 21 KiB per registered tool in an MCP server). A background thread writes one small JSON file per process per hour under `~/.tokensave/profile/`, every 60 s and at exit, enforcing `retention_days` and `max_bytes` as it writes. Nothing is written while nothing has been recorded. `profile status` shows the profiler's own flush cost. With profiling off, each instrumented site costs one atomic load.
+
+## Performance sharing (draft; uploads disabled)
+
+This build has **no configured sharing destination**. The maintainer must approve
+and publish the HTTPS endpoint, who can access uploads, the server retention
+period, the deletion process, and whether aggregates will be published before
+sharing can ship. `profile share enable` fails without changing consent until
+that policy is present. There is no environment or configuration setting that
+can substitute a destination. No real upload was used to validate this draft.
+
+```sh
+tokensave profile share status
+tokensave profile share preview
+tokensave profile share enable
+tokensave profile share disable
+```
+
+`preview` prints exactly the bytes `profile export` prints with its default
+seven-day window, including the trailing newline. The uploader uses the same
+serializer. Fields are the versioned export schema, tokensave version, OS,
+architecture, logical CPU count, window length, approved engine names, static
+operation/tool names, counters and histograms. No machine/user identifier,
+repository name, paths, symbols, SQL, parameters or prompts are sent. The
+existing export schema identifies the payload; uploads add no envelope or IDs.
+Payloads over 1 MiB are skipped.
+
+The separate `profiling_share_enabled` preference defaults to false. It is
+independent of `upload_enabled` (token counting) and of the profiling mode in
+both directions. Sharing requires profiling; granting sharing consent does not
+enable it. Once a destination is approved, `profile enable` offers sharing once
+only on an interactive terminal, displaying the destination, policies, fields
+and exact payload; the default answer is **No**. Hooks, MCP servers, installation,
+upgrades and redirected input never prompt. `share enable` is the explicit
+non-interactive consent action. `TOKENSAVE_PROFILE_SHARE=0` (also `off`, `false`,
+`no` or empty) blocks uploads for a run. It cannot grant consent.
+
+Uploads run on the owned profiler flush thread after local persistence, with a
+two-second total request timeout, no redirects, and the existing TLS trust-store
+configuration. No request runs on the recording or MCP request path. A separate
+cross-process lock and attempt timestamp permit at most one attempt per 24 hours,
+including failures; failures are discarded without immediate retries. Shutdown
+joins the flush thread and may wait up to the request timeout for an in-flight
+upload. There is no detached task or upload queue. Local aggregates and retention
+are unchanged. `share disable` is read again before each send, including by
+already-running servers; a request already sent cannot be recalled. The draft
+cannot promise deletion of historical server data: the deletion process remains
+a maintainer decision and is a release prerequisite.
