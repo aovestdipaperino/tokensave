@@ -8,6 +8,7 @@
 //! be added below (or there) because `autotests = false`.
 
 mod common;
+mod db_bench_stats_test;
 
 mod accounting_test;
 mod actionscript_extraction_test;
@@ -211,5 +212,3 @@ mod zig_extraction_test;
 mod verify_test;
 
 mod language_aliases_test;
-
-mod db_bench_stats_test;

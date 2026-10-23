@@ -194,3 +194,44 @@ fn render_turso(v: &turso::Value) -> String {
         turso::Value::Blob(b) => format!("blob:{}", b.len()),
     }
 }
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn profile_records_actual_engine_rows_and_query_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (result, metrics) = crate::profile::scoped(true, async {
+            for (index, kind) in [EngineKind::Libsql, EngineKind::TursoExperimental]
+                .into_iter()
+                .enumerate()
+            {
+                let engine = Engine::open(kind, &tmp.path().join(format!("{index}.db"))).await?;
+                assert_eq!(engine.query("SELECT 1 UNION ALL SELECT 2").await?.len(), 2);
+                assert!(engine
+                    .query("SELECT * FROM missing_profile_fixture_table")
+                    .await
+                    .is_err());
+            }
+            Ok::<_, String>(())
+        })
+        .await;
+        result.unwrap();
+        for kind in [EngineKind::Libsql, EngineKind::TursoExperimental] {
+            let data = &metrics[kind.label()];
+            assert_eq!(data["db.probe_open"]["count"], 1);
+            assert!(data["db.probe_query_execute"]["count"].as_u64().unwrap() >= 1);
+            let errors = data["db.probe_query_execute"]["errors"]
+                .as_u64()
+                .unwrap_or(0)
+                + data["db.probe_materialize"]["errors"].as_u64().unwrap_or(0);
+            assert_eq!(errors, 1);
+            assert_eq!(data["db.probe_materialize"]["rows_returned"], 2);
+        }
+        assert!(!metrics.to_string().contains("SELECT"));
+        let (answer, off) = crate::profile::scoped(false, async { 42 }).await;
+        assert_eq!(answer, 42);
+        assert!(off.is_null());
+    }
+}
