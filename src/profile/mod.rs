@@ -292,6 +292,7 @@ impl Drop for Profiler {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
