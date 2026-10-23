@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::db::Database;
 use crate::errors::{Result, TokenSaveError};
+use crate::profile::DbOp;
 use crate::types::*;
 
 /// Godot virtual callbacks that the engine invokes on `Object`, `Node`,
@@ -332,15 +333,14 @@ impl<'a> GraphQueryManager<'a> {
              AND id NOT IN (SELECT target FROM temp.test_annotated_targets)"
         );
 
-        let mut rows =
-            self.db
-                .conn()
-                .query(&sql, ())
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to find dead code: {e}"),
-                    operation: "find_dead_code".to_string(),
-                })?;
+        let mut rows = self
+            .db
+            .profiled_query(DbOp::FindDeadCode, &sql, ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to find dead code: {e}"),
+                operation: "find_dead_code".to_string(),
+            })?;
 
         let mut dead = Vec::new();
         while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
@@ -393,15 +393,14 @@ impl<'a> GraphQueryManager<'a> {
                          AND b.kind IN ('function', 'method')
              WHERE EXISTS (SELECT 1 FROM edges c
                            WHERE c.target = b.id AND c.kind IN ('calls', 'uses'))";
-        let mut rows =
-            self.db
-                .conn()
-                .query(sql, ())
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to find live GDScript overrides: {e}"),
-                    operation: "gdscript_live_overrides".to_string(),
-                })?;
+        let mut rows = self
+            .db
+            .profiled_query(DbOp::GdscriptLiveOverrides, sql, ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to find live GDScript overrides: {e}"),
+                operation: "gdscript_live_overrides".to_string(),
+            })?;
         let mut live = HashSet::new();
         while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to read row: {e}"),
@@ -472,8 +471,11 @@ impl<'a> GraphQueryManager<'a> {
 
         let mut rows = self
             .db
-            .conn()
-            .query(&sql, libsql::params_from_iter(param_values))
+            .profiled_query(
+                DbOp::GetFileDependencies,
+                &sql,
+                libsql::params_from_iter(param_values),
+            )
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query file dependencies: {e}"),
@@ -534,8 +536,11 @@ impl<'a> GraphQueryManager<'a> {
 
         let mut rows = self
             .db
-            .conn()
-            .query(&sql, libsql::params_from_iter(param_values))
+            .profiled_query(
+                DbOp::GetFileDependents,
+                &sql,
+                libsql::params_from_iter(param_values),
+            )
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query file dependents: {e}"),
@@ -622,15 +627,14 @@ impl<'a> GraphQueryManager<'a> {
                    WHERE e.kind IN ('calls', 'uses') \
                    AND n1.file_path != n2.file_path";
 
-        let mut rows =
-            self.db
-                .conn()
-                .query(sql, ())
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to query file adjacency: {e}"),
-                    operation: "build_file_adjacency".to_string(),
-                })?;
+        let mut rows = self
+            .db
+            .profiled_query(DbOp::BuildFileAdjacency, sql, ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query file adjacency: {e}"),
+                operation: "build_file_adjacency".to_string(),
+            })?;
 
         // Normalise the prefix once: ensure it ends with '/'.
         let prefix: Option<String> = path_prefix.map(|p| {
