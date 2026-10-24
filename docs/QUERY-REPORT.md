@@ -2881,15 +2881,15 @@ ROLLBACK
 
 #### Q0223 — `insert_executable_body_documents`
 
-Source: [src/db/queries/search.rs:67](../src/db/queries/search.rs#L67).
+Source: [src/db/queries/search.rs:92](../src/db/queries/search.rs#L92).
 
 ```sql
-INSERT INTO executable_bodies (node_id, file_path, body) VALUES (?1, ?2, ?3)
+INSERT INTO executable_bodies (node_id, file_path, body) VALUES {placeholders}
 ```
 
 #### Q0225 — `search_executable_bodies`
 
-Source: [src/db/queries/search.rs:135](../src/db/queries/search.rs#L135).
+Source: [src/db/queries/search.rs:165](../src/db/queries/search.rs#L165).
 
 ```sql
 SELECT node_id, body FROM executable_body_fts
@@ -2899,7 +2899,7 @@ SELECT node_id, body FROM executable_body_fts
 
 #### Q0226 — `search_nodes`
 
-Source: [src/db/queries/search.rs:265](../src/db/queries/search.rs#L265).
+Source: [src/db/queries/search.rs:295](../src/db/queries/search.rs#L295).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -2912,7 +2912,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0227 — `search_nodes_bounded_fts`
 
-Source: [src/db/queries/search.rs:343](../src/db/queries/search.rs#L343).
+Source: [src/db/queries/search.rs:373](../src/db/queries/search.rs#L373).
 
 ```sql
 SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
@@ -2929,7 +2929,7 @@ SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
 
 #### Q0228 — `search_nodes_fts`
 
-Source: [src/db/queries/search.rs:388](../src/db/queries/search.rs#L388).
+Source: [src/db/queries/search.rs:418](../src/db/queries/search.rs#L418).
 
 ```sql
 SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
@@ -2945,7 +2945,7 @@ SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
 
 #### Q0229 — `batch_incoming_call_counts`
 
-Source: [src/db/queries/search.rs:435](../src/db/queries/search.rs#L435).
+Source: [src/db/queries/search.rs:465](../src/db/queries/search.rs#L465).
 
 ```sql
 SELECT target, COUNT(*) AS cnt FROM edges WHERE target IN ({placeholders}) AND kind = 'calls' GROUP BY target
@@ -2953,7 +2953,7 @@ SELECT target, COUNT(*) AS cnt FROM edges WHERE target IN ({placeholders}) AND k
 
 #### Q0230 — `search_nodes_by_exact_name`
 
-Source: [src/db/queries/search.rs:473](../src/db/queries/search.rs#L473).
+Source: [src/db/queries/search.rs:503](../src/db/queries/search.rs#L503).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -10270,24 +10270,54 @@ Source: [src/db/queries/search.rs:51](../src/db/queries/search.rs#L51).
             operation: "insert_executable_body_documents".to_string(),
         };
         let tx = self.conn().transaction().await.map_err(err)?;
-        let result: Result<()> =
-            async {
-                let stmt = tx.prepare(
-                "INSERT INTO executable_bodies (node_id, file_path, body) VALUES (?1, ?2, ?3)",
-            ).await.map_err(err)?;
-                for document in documents {
-                    stmt.execute(params![
-                        document.node_id.as_str(),
-                        document.file_path.as_str(),
-                        document.body.as_str()
-                    ])
+        let result: Result<()> = async {
+            // One outer INSERT per bounded batch avoids flushing FTS pending
+            // terms after every trigger invocation. Bound both bind count and
+            // copied parameter bytes; an oversized document runs on its own.
+            const MAX_ROWS: usize = 128;
+            const MAX_BYTES: usize = 256 * 1024;
+            let document_bytes = |doc: &ExecutableBodyDocument| {
+                doc.node_id
+                    .len()
+                    .saturating_add(doc.file_path.len())
+                    .saturating_add(doc.body.len())
+            };
+            let mut start = 0;
+            while start < documents.len() {
+                let mut end = start + 1;
+                let mut bytes = document_bytes(&documents[start]);
+                while end < documents.len() && end - start < MAX_ROWS {
+                    let next_bytes = bytes.saturating_add(document_bytes(&documents[end]));
+                    if next_bytes > MAX_BYTES {
+                        break;
+                    }
+                    bytes = next_bytes;
+                    end += 1;
+                }
+                let placeholders = std::iter::repeat_n("(?, ?, ?)", end - start)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!(
+                    "INSERT INTO executable_bodies (node_id, file_path, body) VALUES {placeholders}"
+                );
+                let values: Vec<libsql::Value> = documents[start..end]
+                    .iter()
+                    .flat_map(|doc| {
+                        [
+                            libsql::Value::Text(doc.node_id.clone()),
+                            libsql::Value::Text(doc.file_path.clone()),
+                            libsql::Value::Text(doc.body.clone()),
+                        ]
+                    })
+                    .collect();
+                tx.execute(&sql, libsql::params_from_iter(values))
                     .await
                     .map_err(err)?;
-                    stmt.reset();
-                }
-                Ok(())
+                start = end;
             }
-            .await;
+            Ok(())
+        }
+        .await;
         if let Err(error) = result {
             tx.rollback().await.map_err(err)?;
             return Err(error);
@@ -10297,9 +10327,9 @@ Source: [src/db/queries/search.rs:51](../src/db/queries/search.rs#L51).
     }
 ```
 
-### `search_executable_bodies` — src/db/queries/search.rs:94
+### `search_executable_bodies` — src/db/queries/search.rs:124
 
-Source: [src/db/queries/search.rs:94](../src/db/queries/search.rs#L94).
+Source: [src/db/queries/search.rs:124](../src/db/queries/search.rs#L124).
 
 ```rust
     pub async fn search_executable_bodies(
@@ -10397,9 +10427,9 @@ Source: [src/db/queries/search.rs:94](../src/db/queries/search.rs#L94).
     }
 ```
 
-### `search_nodes` — src/db/queries/search.rs:212
+### `search_nodes` — src/db/queries/search.rs:242
 
-Source: [src/db/queries/search.rs:212](../src/db/queries/search.rs#L212).
+Source: [src/db/queries/search.rs:242](../src/db/queries/search.rs#L242).
 
 ```rust
     pub async fn search_nodes(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
@@ -10484,9 +10514,9 @@ Source: [src/db/queries/search.rs:212](../src/db/queries/search.rs#L212).
     }
 ```
 
-### `search_nodes_bounded_fts` — src/db/queries/search.rs:335
+### `search_nodes_bounded_fts` — src/db/queries/search.rs:365
 
-Source: [src/db/queries/search.rs:335](../src/db/queries/search.rs#L335).
+Source: [src/db/queries/search.rs:365](../src/db/queries/search.rs#L365).
 
 ```rust
     async fn search_nodes_bounded_fts(
@@ -10534,9 +10564,9 @@ Source: [src/db/queries/search.rs:335](../src/db/queries/search.rs#L335).
     }
 ```
 
-### `search_nodes_fts` — src/db/queries/search.rs:380
+### `search_nodes_fts` — src/db/queries/search.rs:410
 
-Source: [src/db/queries/search.rs:380](../src/db/queries/search.rs#L380).
+Source: [src/db/queries/search.rs:410](../src/db/queries/search.rs#L410).
 
 ```rust
     pub(crate) async fn search_nodes_fts(
@@ -10583,9 +10613,9 @@ Source: [src/db/queries/search.rs:380](../src/db/queries/search.rs#L380).
     }
 ```
 
-### `batch_incoming_call_counts` — src/db/queries/search.rs:425
+### `batch_incoming_call_counts` — src/db/queries/search.rs:455
 
-Source: [src/db/queries/search.rs:425](../src/db/queries/search.rs#L425).
+Source: [src/db/queries/search.rs:455](../src/db/queries/search.rs#L455).
 
 ```rust
     pub async fn batch_incoming_call_counts(
@@ -10624,9 +10654,9 @@ Source: [src/db/queries/search.rs:425](../src/db/queries/search.rs#L425).
     }
 ```
 
-### `search_nodes_by_exact_name` — src/db/queries/search.rs:463
+### `search_nodes_by_exact_name` — src/db/queries/search.rs:493
 
-Source: [src/db/queries/search.rs:463](../src/db/queries/search.rs#L463).
+Source: [src/db/queries/search.rs:493](../src/db/queries/search.rs#L493).
 
 ```rust
     pub async fn search_nodes_by_exact_name(
@@ -13066,8 +13096,9 @@ version changes in this batch.
 
 A synthetic SQLite 3.46.1 check with 20,000 nodes, 80,000 call edges, 100
 scoped candidates, 512-byte signatures, LIMIT 20, and five timed repetitions
-verified identical outputs. Median query times were 44.382 → 0.250 ms for
-the narrow scope and 104.558 → 73.539 ms for the whole graph. This is a local
+verified identical outputs. Using the actual shared exact-or-LIKE-prefix predicate, median query times
+were 29.707 → 3.786 ms for the narrow scope and 75.587 → 64.441 ms for
+the whole graph. This is a local
 algorithm comparison, not a bundled-libSQL or production latency guarantee.
 
 Resource review: score materialization is proportional to eligible nodes and
@@ -13084,7 +13115,11 @@ and text are copied before replacing the internal-content FTS table with an
 external-content index over `executable_bodies`; its insert/update/delete
 triggers maintain postings. Only body text is full-text indexed. Q0198 now
 uses the ordinary file-path index, and Q0223 writes the content table under
-the shared write lock and an explicitly rolled-back transaction. The prior
+the shared write lock and an explicitly rolled-back transaction. Its VALUES
+builder binds node ID, file path, and body for each document in that order.
+Batches stop at 128 rows or 256 KiB of parameter text; one oversized document
+runs alone. This bounds copied parameter storage and avoids per-document FTS
+pending-term flushes under the content-table triggers. The prior
 manual BEGIN/COMMIT literals Q0222/Q0224 are removed in favor of the transaction
 API. Q0088 clears body content and ambiguity records, invoking derived-index
 cleanup triggers.
@@ -13108,10 +13143,16 @@ for old/new storage and WAL. Scores/content and membership statements retain no
 new process-lifetime caches or tasks. Existing project-open behavior forces a
 full reindex after the schema migration. No production throughput or long-run
 RSS guarantee is claimed. Validation: the complete workspace suite passed
-4,411 tests (zero failed, four ignored, none filtered) with isolated `/var/tmp`
+4,412 tests (zero failed, four ignored, none filtered) with isolated `/var/tmp`
 storage. Clippy completed with existing warnings only; formatting and diff
 checks passed. Migration/body/candidate fixtures also verify the new indexes
-with bundled libSQL query plans.
+with bundled libSQL query plans. An additional fixture checks oversized
+body documents and rollback across multiple completed batches. A single
+SQLite 3.46.1 write-path check with 5,000 documents measured 0.027 s for legacy
+direct FTS writes, 0.179 s for per-row content triggers, and 0.055 s for
+128-row trigger batches. Thus batching mitigates the trigger overhead but
+there is still a write/index-maintenance tradeoff; these are not production
+or bundled-libSQL throughput guarantees.
 
 ## Coverage and limitations
 

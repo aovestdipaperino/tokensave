@@ -44,8 +44,8 @@ pub(crate) fn to_fts_phrase_query(query: &str) -> Option<String> {
 }
 
 impl Database {
-    /// Replaces executable-body FTS documents in one prepared-statement
-    /// transaction. Callers delete stale documents by file before supplying
+    /// Inserts executable-body documents in one transaction using bounded
+    /// batches. Callers delete stale documents by file before supplying
     /// replacements for incremental indexing; full indexing starts from an
     /// empty table.
     pub async fn insert_executable_body_documents(
@@ -61,24 +61,54 @@ impl Database {
             operation: "insert_executable_body_documents".to_string(),
         };
         let tx = self.conn().transaction().await.map_err(err)?;
-        let result: Result<()> =
-            async {
-                let stmt = tx.prepare(
-                "INSERT INTO executable_bodies (node_id, file_path, body) VALUES (?1, ?2, ?3)",
-            ).await.map_err(err)?;
-                for document in documents {
-                    stmt.execute(params![
-                        document.node_id.as_str(),
-                        document.file_path.as_str(),
-                        document.body.as_str()
-                    ])
+        let result: Result<()> = async {
+            // One outer INSERT per bounded batch avoids flushing FTS pending
+            // terms after every trigger invocation. Bound both bind count and
+            // copied parameter bytes; an oversized document runs on its own.
+            const MAX_ROWS: usize = 128;
+            const MAX_BYTES: usize = 256 * 1024;
+            let document_bytes = |doc: &ExecutableBodyDocument| {
+                doc.node_id
+                    .len()
+                    .saturating_add(doc.file_path.len())
+                    .saturating_add(doc.body.len())
+            };
+            let mut start = 0;
+            while start < documents.len() {
+                let mut end = start + 1;
+                let mut bytes = document_bytes(&documents[start]);
+                while end < documents.len() && end - start < MAX_ROWS {
+                    let next_bytes = bytes.saturating_add(document_bytes(&documents[end]));
+                    if next_bytes > MAX_BYTES {
+                        break;
+                    }
+                    bytes = next_bytes;
+                    end += 1;
+                }
+                let placeholders = std::iter::repeat_n("(?, ?, ?)", end - start)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!(
+                    "INSERT INTO executable_bodies (node_id, file_path, body) VALUES {placeholders}"
+                );
+                let values: Vec<libsql::Value> = documents[start..end]
+                    .iter()
+                    .flat_map(|doc| {
+                        [
+                            libsql::Value::Text(doc.node_id.clone()),
+                            libsql::Value::Text(doc.file_path.clone()),
+                            libsql::Value::Text(doc.body.clone()),
+                        ]
+                    })
+                    .collect();
+                tx.execute(&sql, libsql::params_from_iter(values))
                     .await
                     .map_err(err)?;
-                    stmt.reset();
-                }
-                Ok(())
+                start = end;
             }
-            .await;
+            Ok(())
+        }
+        .await;
         if let Err(error) = result {
             tx.rollback().await.map_err(err)?;
             return Err(error);

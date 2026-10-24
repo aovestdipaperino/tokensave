@@ -1117,3 +1117,66 @@ async fn ambiguity_membership_tracks_replacement_updates_deletion_and_exact_ids(
         .unwrap()
         .contains("idx_ambiguous_candidates_node"));
 }
+
+#[tokio::test]
+async fn body_batches_bound_large_documents_and_roll_back_earlier_batches() {
+    let (_dir, db) = setup_db().await;
+    let mut documents = vec![ExecutableBodyDocument {
+        node_id: "large".into(),
+        file_path: "src/large.rs".into(),
+        body: "largeword ".repeat(30_000),
+    }];
+    documents.extend((0..260).map(|i| ExecutableBodyDocument {
+        node_id: format!("small-{i}"),
+        file_path: "src/small.rs".into(),
+        body: "smallword document".into(),
+    }));
+    documents.push(ExecutableBodyDocument {
+        node_id: "fail".into(),
+        file_path: "src/fail.rs".into(),
+        body: "failure".into(),
+    });
+    db.conn().execute_batch("CREATE TRIGGER fail_body_batch BEFORE INSERT ON executable_bodies WHEN NEW.node_id='fail' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").await.unwrap();
+    assert!(db
+        .insert_executable_body_documents(&documents)
+        .await
+        .is_err());
+    let mut rows = db
+        .conn()
+        .query("SELECT COUNT(*) FROM executable_bodies", ())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+        0
+    );
+    drop(rows);
+    db.conn()
+        .execute_batch("DROP TRIGGER fail_body_batch")
+        .await
+        .unwrap();
+    db.insert_executable_body_documents(&documents)
+        .await
+        .unwrap();
+    for (term, expected) in [("largeword", 1), ("smallword", 260), ("failure", 1)] {
+        let mut rows = db
+            .conn()
+            .query(
+                "SELECT COUNT(*) FROM executable_body_fts WHERE executable_body_fts MATCH ?1",
+                libsql::params![term],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            expected
+        );
+    }
+    db.conn()
+        .execute(
+            "INSERT INTO executable_body_fts(executable_body_fts,rank) VALUES('integrity-check',1)",
+            (),
+        )
+        .await
+        .unwrap();
+}
