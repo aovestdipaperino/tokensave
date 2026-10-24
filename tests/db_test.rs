@@ -791,3 +791,120 @@ async fn test_search_nodes_bounded_excludes_file_and_doc_nodes() {
         "file/doc nodes must not consume symbol-fetch slots: {ids:?}"
     );
 }
+
+/// Set-based deletion must clean both edge directions and every dependent,
+/// including with foreign keys disabled during indexing.
+#[tokio::test]
+async fn test_delete_nodes_by_file_cleans_dependents_and_preserves_other_files() {
+    for foreign_keys in [true, false] {
+        let (_dir, db) = setup_db().await;
+        let nodes: Vec<_> = (0..400)
+            .map(|i| sample_node(&format!("del-{i}"), "deleted", "src/deleted.rs"))
+            .chain([
+                sample_node("keep-a", "kept", "src/keep.rs"),
+                sample_node("keep-b", "kept", "src/keep.rs"),
+            ])
+            .collect();
+        db.insert_nodes(&nodes).await.unwrap();
+        db.conn().execute_batch(
+            "INSERT INTO edges(source, target, kind, line) VALUES
+                ('del-0', 'keep-a', 'calls', NULL),
+                ('keep-a', 'del-1', 'calls', 2),
+                ('del-2', 'del-3', 'calls', 3),
+                ('keep-a', 'keep-b', 'calls', 4);
+             INSERT INTO unresolved_refs(from_node_id, reference_name, reference_kind, line, col, file_path)
+                VALUES ('del-0', 'missing', 'calls', 1, 0, 'src/deleted.rs'),
+                       ('keep-a', 'missing', 'calls', 1, 0, 'src/keep.rs');
+             INSERT INTO vectors(node_id, embedding, model, created_at)
+                VALUES ('del-0', X'00', 'test', 1), ('keep-a', X'00', 'test', 1);
+             INSERT INTO executable_body_fts(node_id, file_path, body)
+                VALUES ('del-0', 'src/deleted.rs', 'deleted body'),
+                       ('keep-a', 'src/keep.rs', 'kept body');
+             INSERT INTO trait_dispatch_callers(concrete_method_id, trait_method_id, caller_id, line)
+                VALUES ('keep-b', 'keep-a', 'del-0', -1),
+                       ('keep-b', 'del-1', 'keep-a', 2),
+                       ('keep-b', 'keep-b', 'keep-a', 4);",
+        ).await.unwrap();
+        db.conn()
+            .execute_batch(if foreign_keys {
+                "PRAGMA foreign_keys = ON"
+            } else {
+                "PRAGMA foreign_keys = OFF"
+            })
+            .await
+            .unwrap();
+
+        db.delete_nodes_by_file("src/deleted.rs").await.unwrap();
+        // Repeated and absent-file deletions must remain harmless.
+        db.delete_nodes_by_file("src/deleted.rs").await.unwrap();
+        db.delete_nodes_by_file("src/absent.rs").await.unwrap();
+        for (sql, expected) in [
+            ("SELECT COUNT(*) FROM nodes", 2),
+            ("SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'deleted'", 0),
+            ("SELECT COUNT(*) FROM edges WHERE source='keep-a' AND target='keep-b'", 1),
+            ("SELECT COUNT(*) FROM edges", 1),
+            ("SELECT COUNT(*) FROM unresolved_refs WHERE from_node_id='keep-a'", 1),
+            ("SELECT COUNT(*) FROM unresolved_refs", 1),
+            ("SELECT COUNT(*) FROM vectors WHERE node_id='keep-a'", 1),
+            ("SELECT COUNT(*) FROM vectors", 1),
+            ("SELECT COUNT(*) FROM executable_body_fts WHERE file_path='src/keep.rs'", 1),
+            ("SELECT COUNT(*) FROM executable_body_fts", 1),
+            ("SELECT COUNT(*) FROM trait_dispatch_callers WHERE caller_id='keep-a' AND trait_method_id='keep-b'", 1),
+            ("SELECT COUNT(*) FROM trait_dispatch_callers", 1),
+        ] {
+            let mut rows = db.conn().query(sql, ()).await.unwrap();
+            let actual = rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap();
+            assert_eq!(actual, expected, "foreign_keys={foreign_keys}: {sql}");
+        }
+        // FTS cleanup must also run when no graph node remains for a file.
+        db.conn().execute("INSERT INTO executable_body_fts(node_id, file_path, body) VALUES ('orphan', 'src/absent.rs', 'orphan')", ()).await.unwrap();
+        db.delete_nodes_by_file("src/absent.rs").await.unwrap();
+        let mut rows = db
+            .conn()
+            .query("SELECT COUNT(*) FROM executable_body_fts", ())
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_delete_nodes_by_file_rolls_back_fts_and_dependents_on_error() {
+    let (_dir, db) = setup_db().await;
+    db.insert_nodes(&[
+        sample_node("a", "alpha", "src/a.rs"),
+        sample_node("b", "beta", "src/b.rs"),
+    ])
+    .await
+    .unwrap();
+    db.conn().execute_batch(
+        "INSERT INTO edges(source, target, kind) VALUES ('a', 'b', 'calls');
+         INSERT INTO vectors(node_id, embedding, model, created_at) VALUES ('a', X'00', 'test', 1);
+         INSERT INTO executable_body_fts(node_id, file_path, body) VALUES ('a', 'src/a.rs', 'alpha');
+         CREATE TRIGGER prevent_vector_delete BEFORE DELETE ON vectors BEGIN
+             SELECT RAISE(ABORT, 'injected failure');
+         END;",
+    ).await.unwrap();
+    assert!(db.delete_nodes_by_file("src/a.rs").await.is_err());
+    for table in ["nodes", "edges", "vectors", "executable_body_fts"] {
+        let mut rows = db
+            .conn()
+            .query(&format!("SELECT COUNT(*) FROM {table}"), ())
+            .await
+            .unwrap();
+        let expected = if table == "nodes" { 2 } else { 1 };
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            expected,
+            "{table}"
+        );
+    }
+    db.conn()
+        .execute_batch("DROP TRIGGER prevent_vector_delete")
+        .await
+        .unwrap();
+    db.delete_nodes_by_file("src/a.rs").await.unwrap();
+}

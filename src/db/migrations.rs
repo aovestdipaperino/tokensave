@@ -15,7 +15,7 @@ use crate::errors::{Result, TokenSaveError};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 18;
+const LATEST_VERSION: u32 = 19;
 
 /// Schema for the ambiguity record added in v17 (#412). Used by both
 /// `migrate_v17` and the fresh-schema path, which never replays migrations.
@@ -373,6 +373,7 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
             operation: "create_schema".to_string(),
         })?;
 
+    migrate_v19(conn).await?;
     set_version(conn, LATEST_VERSION).await?;
     Ok(())
 }
@@ -519,6 +520,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         16 => migrate_v16(conn).await,
         17 => migrate_v17(conn).await,
         18 => migrate_v18(conn).await,
+        19 => migrate_v19(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -1779,5 +1781,24 @@ async fn migrate_v18(conn: &Connection) -> Result<()> {
             message: format!("v18: failed to add edges.resolved_by: {e}"),
             operation: "migrate_v18".to_string(),
         })?;
+    Ok(())
+}
+
+/// Index the lookup performed for every deleted call edge. The dispatch
+/// primary key starts with `concrete_method_id` and cannot serve this lookup.
+async fn migrate_v19(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "trait_dispatch_callers").await? {
+        return Ok(());
+    }
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trait_dispatch_callers_call
+         ON trait_dispatch_callers(caller_id, trait_method_id, line)",
+        (),
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("v19: failed to index dispatch call deletion: {e}"),
+        operation: "migrate_v19".to_string(),
+    })?;
     Ok(())
 }

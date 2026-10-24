@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Performance
+
+- Batch file-scoped graph cleanup into five data statements, make executable-body FTS cleanup transactional, and index dispatch-cache deletion lookups. Schema v19 adds the index and uses the existing full-reindex-on-migration behavior (Refs #775).
+
 ### Added
 
 - Add a SQL query inventory in `docs/QUERY-REPORT.md` with source links and dynamic construction context, and require agents to keep it synchronized with query changes (Refs #773).
