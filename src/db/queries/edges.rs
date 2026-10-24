@@ -1332,20 +1332,41 @@ impl Database {
         }
 
         let where_clause = conditions.join(" AND ");
+        // Scoped rankings count only candidates' incident edges, including
+        // calls across the path boundary. Whole-project rankings retain the
+        // grouped strategy rather than probing twice for every graph node.
+        let (fan_out, fan_in, joins) = if path_prefix.is_some() {
+            (
+                "(SELECT COUNT(*) FROM edges WHERE source = n.id AND kind = 'calls')",
+                "(SELECT COUNT(*) FROM edges WHERE target = n.id AND kind = 'calls')",
+                "",
+            )
+        } else {
+            (
+                "COALESCE(out_calls.cnt, 0)",
+                "COALESCE(in_calls.cnt, 0)",
+                "LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
+                 LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id",
+            )
+        };
+        // Materialize only scores; fetch large signatures/docstrings after
+        // LIMIT has selected the winners. The candidate set is request-scoped.
         let sql = format!(
-            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+            "WITH scores AS MATERIALIZED (
+                 SELECT n.id, (n.end_line - n.start_line + 1) AS lines,
+                        {fan_out} AS fan_out, {fan_in} AS fan_in
+                 FROM nodes n {joins}
+                 WHERE {where_clause}
+             ), top_scores AS (
+                 SELECT *, (lines + fan_out * 3 + fan_in) AS score
+                 FROM scores ORDER BY score DESC, id LIMIT ?{param_idx}
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    (n.end_line - n.start_line + 1) AS lines,
-                    COALESCE(out_calls.cnt, 0) AS fan_out,
-                    COALESCE(in_calls.cnt, 0) AS fan_in,
-                    ((n.end_line - n.start_line + 1) + COALESCE(out_calls.cnt, 0) * 3 + COALESCE(in_calls.cnt, 0)) AS score
-             FROM nodes n
-             LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
-             LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id
-             WHERE {where_clause}
-             ORDER BY score DESC
-             LIMIT ?{param_idx}"
+                    t.lines, t.fan_out, t.fan_in, t.score
+             FROM top_scores t JOIN nodes n ON n.id = t.id
+             ORDER BY t.score DESC, t.id"
         );
         param_values.push(libsql::Value::Integer(limit as i64));
 

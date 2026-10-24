@@ -2913,3 +2913,66 @@ async fn test_get_top_degree_nodes_breaks_ties_deterministically() {
         "equal degrees must come back in id order, not in an arbitrary one"
     );
 }
+
+#[tokio::test]
+async fn scoped_complexity_matches_global_scores_including_external_calls() {
+    let (_dir, db) = setup_db().await;
+    let mut nodes = vec![
+        sample_node("a", "a", "src/a_b/lib.rs"),
+        sample_node("b", "b", "src/a_b/nested.rs"),
+        sample_node("external", "external", "src/external.rs"),
+        sample_node("wildcard", "wildcard", "src/axb/lib.rs"),
+        sample_node("percent", "percent", "src/100%/lib.rs"),
+    ];
+    nodes[1].kind = NodeKind::Method;
+    db.insert_nodes(&nodes).await.unwrap();
+    let mut calls = vec![
+        sample_edge("a", "external", EdgeKind::Calls),
+        sample_edge("external", "a", EdgeKind::Calls),
+        sample_edge("a", "a", EdgeKind::Calls),
+        sample_edge("a", "b", EdgeKind::Uses),
+    ];
+    let mut other_line = sample_edge("a", "external", EdgeKind::Calls);
+    other_line.line = None;
+    calls.push(other_line);
+    db.insert_edges(&calls).await.unwrap();
+    for kind in [None, Some(NodeKind::Function), Some(NodeKind::Method)] {
+        let all = db
+            .get_complexity_ranked(kind.as_ref(), None, 100)
+            .await
+            .unwrap();
+        for prefix in [
+            "src/a_b",
+            "src/a_b/",
+            "src/a_b/lib.rs",
+            "src/100%",
+            "absent",
+        ] {
+            let prefix_trimmed = prefix.trim_end_matches('/');
+            let expected: Vec<_> = all
+                .iter()
+                .filter(|(n, ..)| {
+                    n.file_path == prefix_trimmed
+                        || n.file_path.starts_with(&format!("{prefix_trimmed}/"))
+                })
+                .cloned()
+                .collect();
+            for limit in [1, 10] {
+                let actual = db
+                    .get_complexity_ranked(kind.as_ref(), Some(prefix), limit)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    actual,
+                    expected.iter().take(limit).cloned().collect::<Vec<_>>(),
+                    "{prefix}"
+                );
+            }
+        }
+    }
+    let one = db
+        .get_complexity_ranked(None, Some("src/a_b/lib.rs"), 1)
+        .await
+        .unwrap();
+    assert_eq!((one[0].1, one[0].2, one[0].3, one[0].4), (10, 3, 2, 21));
+}

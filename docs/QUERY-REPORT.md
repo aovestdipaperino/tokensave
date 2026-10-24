@@ -1,6 +1,6 @@
 # tokensave SQL query inventory
 
-Snapshot: base `4527d5a1168f66a33ce7afdb2d492d0113203bac` plus query optimizations (source inspected on 2026-10-24).
+Snapshot: base `ccd0ee042e21445afcb8f9a7b18b4c9eb5b86300` plus scoped-ranking and savings optimizations (source inspected on 2026-10-24).
 
 ## Scope and reading guide
 
@@ -13,7 +13,7 @@ Entries are grouped by source file and retain separate occurrences, even when SQ
 ## Inventory summary
 
 - SQL-bearing source files: **36**.
-- SQL literal/template occurrences: **342**.
+- SQL literal/template occurrences: **345**.
 - Functions retained for construction/binding context: **172**.
 
 ## Source file index
@@ -27,7 +27,7 @@ Entries are grouped by source file and retain separate occurrences, even when SQ
 | [src/db/connection.rs](../src/db/connection.rs) | 11 |
 | [src/db/migrations.rs](../src/db/migrations.rs) | 54 |
 | [src/db/queries/clear.rs](../src/db/queries/clear.rs) | 1 |
-| [src/db/queries/edges.rs](../src/db/queries/edges.rs) | 51 |
+| [src/db/queries/edges.rs](../src/db/queries/edges.rs) | 54 |
 | [src/db/queries/files.rs](../src/db/queries/files.rs) | 8 |
 | [src/db/queries/fingerprints.rs](../src/db/queries/fingerprints.rs) | 3 |
 | [src/db/queries/metadata.rs](../src/db/queries/metadata.rs) | 13 |
@@ -1837,27 +1837,29 @@ SELECT source, target, line FROM edges WHERE kind = 'calls'
 
 #### Q0127 — `get_complexity_ranked`
 
-Source: [src/db/queries/edges.rs:1336](../src/db/queries/edges.rs#L1336).
+Source: [src/db/queries/edges.rs:1355](../src/db/queries/edges.rs#L1355).
 
 ```sql
-SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+WITH scores AS MATERIALIZED (
+                 SELECT n.id, (n.end_line - n.start_line + 1) AS lines,
+                        {fan_out} AS fan_out, {fan_in} AS fan_in
+                 FROM nodes n {joins}
+                 WHERE {where_clause}
+             ), top_scores AS (
+                 SELECT *, (lines + fan_out * 3 + fan_in) AS score
+                 FROM scores ORDER BY score DESC, id LIMIT ?{param_idx}
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    (n.end_line - n.start_line + 1) AS lines,
-                    COALESCE(out_calls.cnt, 0) AS fan_out,
-                    COALESCE(in_calls.cnt, 0) AS fan_in,
-                    ((n.end_line - n.start_line + 1) + COALESCE(out_calls.cnt, 0) * 3 + COALESCE(in_calls.cnt, 0)) AS score
-             FROM nodes n
-             LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
-             LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id
-             WHERE {where_clause}
-             ORDER BY score DESC
-             LIMIT ?{param_idx}
+                    t.lines, t.fan_out, t.fan_in, t.score
+             FROM top_scores t JOIN nodes n ON n.id = t.id
+             ORDER BY t.score DESC, t.id
 ```
 
 #### Q0128 — `get_undocumented_public_symbols`
 
-Source: [src/db/queries/edges.rs:1420](../src/db/queries/edges.rs#L1420).
+Source: [src/db/queries/edges.rs:1441](../src/db/queries/edges.rs#L1441).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -1874,7 +1876,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0129 — `get_undocumented_public_symbols`
 
-Source: [src/db/queries/edges.rs:1435](../src/db/queries/edges.rs#L1435).
+Source: [src/db/queries/edges.rs:1456](../src/db/queries/edges.rs#L1456).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -1890,7 +1892,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0130 — `get_god_classes`
 
-Source: [src/db/queries/edges.rs:1482](../src/db/queries/edges.rs#L1482).
+Source: [src/db/queries/edges.rs:1503](../src/db/queries/edges.rs#L1503).
 
 ```sql
 SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
@@ -1910,7 +1912,7 @@ SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
 
 #### Q0131 — `get_all_edges`
 
-Source: [src/db/queries/edges.rs:1539](../src/db/queries/edges.rs#L1539).
+Source: [src/db/queries/edges.rs:1560](../src/db/queries/edges.rs#L1560).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges
@@ -1918,7 +1920,7 @@ SELECT source, target, kind, line, resolved_by FROM edges
 
 #### Q0132 — `get_edges_by_kind`
 
-Source: [src/db/queries/edges.rs:1560](../src/db/queries/edges.rs#L1560).
+Source: [src/db/queries/edges.rs:1581](../src/db/queries/edges.rs#L1581).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = ?1
@@ -1926,7 +1928,7 @@ SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = ?1
 
 #### Q0133 — `get_edges_by_kinds`
 
-Source: [src/db/queries/edges.rs:1583](../src/db/queries/edges.rs#L1583).
+Source: [src/db/queries/edges.rs:1604](../src/db/queries/edges.rs#L1604).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges WHERE kind IN ({})
@@ -1934,7 +1936,7 @@ SELECT source, target, kind, line, resolved_by FROM edges WHERE kind IN ({})
 
 #### Q0134 — `variant_group_candidates`
 
-Source: [src/db/queries/edges.rs:1635](../src/db/queries/edges.rs#L1635).
+Source: [src/db/queries/edges.rs:1656](../src/db/queries/edges.rs#L1656).
 
 ```sql
 SELECT 'rs' || char(1) || n.qualified_name, n.id FROM nodes n JOIN edges e ON e.target = n.id AND e.kind = 'annotates' JOIN nodes a ON a.id = e.source WHERE a.kind = 'annotation_usage' AND a.name IN ('cfg', 'cfg_attr') AND lower(n.file_path) LIKE '%.rs' AND n.kind IN ({kinds})
@@ -1942,7 +1944,7 @@ SELECT 'rs' || char(1) || n.qualified_name, n.id FROM nodes n JOIN edges e ON e.
 
 #### Q0135 — `go_variant_candidates`
 
-Source: [src/db/queries/edges.rs:1667](../src/db/queries/edges.rs#L1667).
+Source: [src/db/queries/edges.rs:1688](../src/db/queries/edges.rs#L1688).
 
 ```sql
 SELECT file_path, name, id FROM nodes                    WHERE kind = 'function' AND lower(file_path) LIKE '%.go'                      AND name IN (                        SELECT name FROM nodes                        WHERE kind = 'function' AND lower(file_path) LIKE '%.go'                        GROUP BY name HAVING COUNT(*) >= 2                      )
@@ -1950,7 +1952,7 @@ SELECT file_path, name, id FROM nodes                    WHERE kind = 'function'
 
 #### Q0136 — `calls_edges_into`
 
-Source: [src/db/queries/edges.rs:1700](../src/db/queries/edges.rs#L1700).
+Source: [src/db/queries/edges.rs:1721](../src/db/queries/edges.rs#L1721).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = 'calls' AND target IN ({})
@@ -1958,7 +1960,7 @@ SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = 'calls' A
 
 #### Q0137 — `get_top_degree_nodes`
 
-Source: [src/db/queries/edges.rs:1740](../src/db/queries/edges.rs#L1740).
+Source: [src/db/queries/edges.rs:1761](../src/db/queries/edges.rs#L1761).
 
 ```sql
 SELECT id, SUM(inc) AS in_degree, SUM(outg) AS out_degree FROM ( SELECT target AS id, 1 AS inc, 0 AS outg FROM edges WHERE source <> target UNION ALL SELECT source AS id, 0 AS inc, 1 AS outg FROM edges WHERE source <> target ) GROUP BY id ORDER BY (in_degree + out_degree) DESC, id ASC LIMIT ?1
@@ -1966,7 +1968,7 @@ SELECT id, SUM(inc) AS in_degree, SUM(outg) AS out_degree FROM ( SELECT target A
 
 #### Q0138 — `delete_edges_by_source`
 
-Source: [src/db/queries/edges.rs:1787](../src/db/queries/edges.rs#L1787).
+Source: [src/db/queries/edges.rs:1808](../src/db/queries/edges.rs#L1808).
 
 ```sql
 DELETE FROM edges WHERE source = ?1
@@ -1974,12 +1976,37 @@ DELETE FROM edges WHERE source = ?1
 
 #### Q0139 — `delete_call_edges_at_sites`
 
-Source: [src/db/queries/edges.rs:1806](../src/db/queries/edges.rs#L1806).
+Source: [src/db/queries/edges.rs:1827](../src/db/queries/edges.rs#L1827).
 
 ```sql
 DELETE FROM edges
                      WHERE kind = 'calls' AND source = ?1 AND line = ?2
                        AND target IN (SELECT id FROM nodes WHERE name = ?3)
+```
+
+#### Q0344 — `get_complexity_ranked`
+
+Source: [src/db/queries/edges.rs:1340](../src/db/queries/edges.rs#L1340).
+
+```sql
+(SELECT COUNT(*) FROM edges WHERE source = n.id AND kind = 'calls')
+```
+
+#### Q0345 — `get_complexity_ranked`
+
+Source: [src/db/queries/edges.rs:1341](../src/db/queries/edges.rs#L1341).
+
+```sql
+(SELECT COUNT(*) FROM edges WHERE target = n.id AND kind = 'calls')
+```
+
+#### Q0346 — `get_complexity_ranked`
+
+Source: [src/db/queries/edges.rs:1348](../src/db/queries/edges.rs#L1348).
+
+```sql
+LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
+                 LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id
 ```
 
 ### src/db/queries/files.rs
@@ -3131,12 +3158,13 @@ CREATE TABLE IF NOT EXISTS turns (
                 after_tokens INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_savings_ledger_ts ON savings_ledger(ts);
-            CREATE INDEX IF NOT EXISTS idx_savings_ledger_project ON savings_ledger(project_path)
+            CREATE INDEX IF NOT EXISTS idx_savings_ledger_project ON savings_ledger(project_path);
+            CREATE INDEX IF NOT EXISTS idx_savings_ledger_project_ts ON savings_ledger(project_path, ts)
 ```
 
 #### Q0258 — `open_at`
 
-Source: [src/global_db.rs:276](../src/global_db.rs#L276).
+Source: [src/global_db.rs:277](../src/global_db.rs#L277).
 
 ```sql
 CREATE TABLE IF NOT EXISTS meta (
@@ -3147,7 +3175,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 #### Q0259 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:302](../src/global_db.rs#L302).
+Source: [src/global_db.rs:303](../src/global_db.rs#L303).
 
 ```sql
 PRAGMA table_info(turns)
@@ -3155,7 +3183,7 @@ PRAGMA table_info(turns)
 
 #### Q0260 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:321](../src/global_db.rs#L321).
+Source: [src/global_db.rs:322](../src/global_db.rs#L322).
 
 ```sql
 ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'
@@ -3163,7 +3191,7 @@ ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'
 
 #### Q0261 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:328](../src/global_db.rs#L328).
+Source: [src/global_db.rs:329](../src/global_db.rs#L329).
 
 ```sql
 ALTER TABLE turns ADD COLUMN credits INTEGER
@@ -3171,7 +3199,7 @@ ALTER TABLE turns ADD COLUMN credits INTEGER
 
 #### Q0262 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:338](../src/global_db.rs#L338).
+Source: [src/global_db.rs:339](../src/global_db.rs#L339).
 
 ```sql
 ALTER TABLE turns ADD COLUMN tool_result_tokens INTEGER NOT NULL DEFAULT 0
@@ -3179,7 +3207,7 @@ ALTER TABLE turns ADD COLUMN tool_result_tokens INTEGER NOT NULL DEFAULT 0
 
 #### Q0263 — `migrate_project_paths`
 
-Source: [src/global_db.rs:357](../src/global_db.rs#L357).
+Source: [src/global_db.rs:358](../src/global_db.rs#L358).
 
 ```sql
 SELECT 1 FROM meta WHERE key = 'projects_path_normalized'
@@ -3187,7 +3215,7 @@ SELECT 1 FROM meta WHERE key = 'projects_path_normalized'
 
 #### Q0264 — `migrate_project_paths`
 
-Source: [src/global_db.rs:368](../src/global_db.rs#L368).
+Source: [src/global_db.rs:369](../src/global_db.rs#L369).
 
 ```sql
 SELECT path, tokens_saved FROM projects
@@ -3195,7 +3223,7 @@ SELECT path, tokens_saved FROM projects
 
 #### Q0265 — `migrate_project_paths`
 
-Source: [src/global_db.rs:397](../src/global_db.rs#L397).
+Source: [src/global_db.rs:398](../src/global_db.rs#L398).
 
 ```sql
 DELETE FROM projects
@@ -3203,7 +3231,7 @@ DELETE FROM projects
 
 #### Q0266 — `migrate_project_paths`
 
-Source: [src/global_db.rs:403](../src/global_db.rs#L403).
+Source: [src/global_db.rs:404](../src/global_db.rs#L404).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3211,7 +3239,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0267 — `migrate_project_paths`
 
-Source: [src/global_db.rs:413](../src/global_db.rs#L413).
+Source: [src/global_db.rs:414](../src/global_db.rs#L414).
 
 ```sql
 UPDATE savings_ledger SET project_path = ?1 WHERE project_path = ?2
@@ -3219,7 +3247,7 @@ UPDATE savings_ledger SET project_path = ?1 WHERE project_path = ?2
 
 #### Q0268 — `migrate_project_paths`
 
-Source: [src/global_db.rs:422](../src/global_db.rs#L422).
+Source: [src/global_db.rs:423](../src/global_db.rs#L423).
 
 ```sql
 INSERT OR REPLACE INTO meta (key, value) VALUES ('projects_path_normalized', '1')
@@ -3227,7 +3255,7 @@ INSERT OR REPLACE INTO meta (key, value) VALUES ('projects_path_normalized', '1'
 
 #### Q0269 — `upsert`
 
-Source: [src/global_db.rs:437](../src/global_db.rs#L437).
+Source: [src/global_db.rs:438](../src/global_db.rs#L438).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3236,7 +3264,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0270 — `get_project_tokens`
 
-Source: [src/global_db.rs:450](../src/global_db.rs#L450).
+Source: [src/global_db.rs:451](../src/global_db.rs#L451).
 
 ```sql
 SELECT tokens_saved FROM projects WHERE path = ?1
@@ -3244,7 +3272,7 @@ SELECT tokens_saved FROM projects WHERE path = ?1
 
 #### Q0271 — `global_tokens_saved`
 
-Source: [src/global_db.rs:467](../src/global_db.rs#L467).
+Source: [src/global_db.rs:468](../src/global_db.rs#L468).
 
 ```sql
 SELECT COALESCE(SUM(tokens_saved), 0) FROM projects
@@ -3252,7 +3280,7 @@ SELECT COALESCE(SUM(tokens_saved), 0) FROM projects
 
 #### Q0272 — `record_savings`
 
-Source: [src/global_db.rs:489](../src/global_db.rs#L489).
+Source: [src/global_db.rs:490](../src/global_db.rs#L490).
 
 ```sql
 INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_tokens) VALUES (?1, ?2, ?3, ?4, ?5)
@@ -3260,7 +3288,7 @@ INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_to
 
 #### Q0273 — `sum_savings`
 
-Source: [src/global_db.rs:503](../src/global_db.rs#L503).
+Source: [src/global_db.rs:504](../src/global_db.rs#L504).
 
 ```sql
 SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE project_path = ?1 AND ts >= ?2
@@ -3268,7 +3296,7 @@ SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - 
 
 #### Q0274 — `sum_savings`
 
-Source: [src/global_db.rs:506](../src/global_db.rs#L506).
+Source: [src/global_db.rs:507](../src/global_db.rs#L507).
 
 ```sql
 SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE ts >= ?1
@@ -3276,7 +3304,7 @@ SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - 
 
 #### Q0275 — `savings_history`
 
-Source: [src/global_db.rs:534](../src/global_db.rs#L534).
+Source: [src/global_db.rs:535](../src/global_db.rs#L535).
 
 ```sql
 SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE project_path = ?1 AND ts >= ?2 GROUP BY day ORDER BY day DESC
@@ -3284,7 +3312,7 @@ SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tok
 
 #### Q0276 — `savings_history`
 
-Source: [src/global_db.rs:540](../src/global_db.rs#L540).
+Source: [src/global_db.rs:541](../src/global_db.rs#L541).
 
 ```sql
 SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE ts >= ?1 GROUP BY day ORDER BY day DESC
@@ -3292,7 +3320,7 @@ SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tok
 
 #### Q0277 — `delete_project`
 
-Source: [src/global_db.rs:569](../src/global_db.rs#L569).
+Source: [src/global_db.rs:570](../src/global_db.rs#L570).
 
 ```sql
 DELETE FROM projects WHERE path = ?1
@@ -3300,7 +3328,7 @@ DELETE FROM projects WHERE path = ?1
 
 #### Q0278 — `delete_projects`
 
-Source: [src/global_db.rs:588](../src/global_db.rs#L588).
+Source: [src/global_db.rs:589](../src/global_db.rs#L589).
 
 ```sql
 DELETE FROM projects WHERE path IN ({})
@@ -3308,7 +3336,7 @@ DELETE FROM projects WHERE path IN ({})
 
 #### Q0279 — `list_project_paths`
 
-Source: [src/global_db.rs:604](../src/global_db.rs#L604).
+Source: [src/global_db.rs:605](../src/global_db.rs#L605).
 
 ```sql
 SELECT path FROM projects
@@ -3316,7 +3344,7 @@ SELECT path FROM projects
 
 #### Q0280 — `insert_turn`
 
-Source: [src/global_db.rs:622](../src/global_db.rs#L622).
+Source: [src/global_db.rs:623](../src/global_db.rs#L623).
 
 ```sql
 INSERT OR IGNORE INTO turns
@@ -3328,7 +3356,7 @@ INSERT OR IGNORE INTO turns
 
 #### Q0281 — `add_tool_result_tokens`
 
-Source: [src/global_db.rs:666](../src/global_db.rs#L666).
+Source: [src/global_db.rs:667](../src/global_db.rs#L667).
 
 ```sql
 UPDATE turns SET tool_result_tokens = tool_result_tokens + ?2 WHERE message_id = ?1
@@ -3336,7 +3364,7 @@ UPDATE turns SET tool_result_tokens = tool_result_tokens + ?2 WHERE message_id =
 
 #### Q0282 — `upsert_droid_turn`
 
-Source: [src/global_db.rs:685](../src/global_db.rs#L685).
+Source: [src/global_db.rs:686](../src/global_db.rs#L686).
 
 ```sql
 INSERT INTO turns
@@ -3378,7 +3406,7 @@ INSERT INTO turns
 
 #### Q0283 — `total_cost_since`
 
-Source: [src/global_db.rs:746](../src/global_db.rs#L746).
+Source: [src/global_db.rs:747](../src/global_db.rs#L747).
 
 ```sql
 SELECT COALESCE(SUM(cost_usd), 0.0) FROM turns WHERE timestamp >= ?1
@@ -3386,7 +3414,7 @@ SELECT COALESCE(SUM(cost_usd), 0.0) FROM turns WHERE timestamp >= ?1
 
 #### Q0284 — `total_tokens_since`
 
-Source: [src/global_db.rs:760](../src/global_db.rs#L760).
+Source: [src/global_db.rs:761](../src/global_db.rs#L761).
 
 ```sql
 SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM turns WHERE timestamp >= ?1
@@ -3394,7 +3422,7 @@ SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM turns WHERE timestamp
 
 #### Q0285 — `token_breakdown_since`
 
-Source: [src/global_db.rs:775](../src/global_db.rs#L775).
+Source: [src/global_db.rs:776](../src/global_db.rs#L776).
 
 ```sql
 SELECT COALESCE(SUM(input_tokens), 0),
@@ -3406,7 +3434,7 @@ SELECT COALESCE(SUM(input_tokens), 0),
 
 #### Q0286 — `cost_by_model_since`
 
-Source: [src/global_db.rs:805](../src/global_db.rs#L805).
+Source: [src/global_db.rs:806](../src/global_db.rs#L806).
 
 ```sql
 SELECT model, SUM(cost_usd),
@@ -3417,7 +3445,7 @@ SELECT model, SUM(cost_usd),
 
 #### Q0287 — `cost_by_category_since`
 
-Source: [src/global_db.rs:831](../src/global_db.rs#L831).
+Source: [src/global_db.rs:832](../src/global_db.rs#L832).
 
 ```sql
 SELECT category, SUM(cost_usd), COUNT(*)
@@ -3427,7 +3455,7 @@ SELECT category, SUM(cost_usd), COUNT(*)
 
 #### Q0288 — `nav_turns_since`
 
-Source: [src/global_db.rs:868](../src/global_db.rs#L868).
+Source: [src/global_db.rs:869](../src/global_db.rs#L869).
 
 ```sql
 SELECT tool_names, tool_result_tokens FROM turns WHERE timestamp >= ?1 AND agent = 'claude'
@@ -3435,7 +3463,7 @@ SELECT tool_names, tool_result_tokens FROM turns WHERE timestamp >= ?1 AND agent
 
 #### Q0289 — `cost_by_agent_since`
 
-Source: [src/global_db.rs:892](../src/global_db.rs#L892).
+Source: [src/global_db.rs:893](../src/global_db.rs#L893).
 
 ```sql
 SELECT agent,
@@ -3452,7 +3480,7 @@ SELECT agent,
 
 #### Q0290 — `get_parse_offset`
 
-Source: [src/global_db.rs:940](../src/global_db.rs#L940).
+Source: [src/global_db.rs:941](../src/global_db.rs#L941).
 
 ```sql
 SELECT byte_offset, mtime FROM parse_offsets WHERE file_path = ?1
@@ -3460,7 +3488,7 @@ SELECT byte_offset, mtime FROM parse_offsets WHERE file_path = ?1
 
 #### Q0291 — `set_parse_offset`
 
-Source: [src/global_db.rs:956](../src/global_db.rs#L956).
+Source: [src/global_db.rs:957](../src/global_db.rs#L957).
 
 ```sql
 INSERT INTO parse_offsets (file_path, byte_offset, mtime) VALUES (?1, ?2, ?3)
@@ -3469,7 +3497,7 @@ INSERT INTO parse_offsets (file_path, byte_offset, mtime) VALUES (?1, ?2, ?3)
 
 #### Q0292 — `checkpoint`
 
-Source: [src/global_db.rs:967](../src/global_db.rs#L967).
+Source: [src/global_db.rs:968](../src/global_db.rs#L968).
 
 ```sql
 PRAGMA wal_checkpoint(TRUNCATE);
@@ -3477,7 +3505,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 
 #### Q0293 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1067](../src/global_db.rs#L1067).
+Source: [src/global_db.rs:1068](../src/global_db.rs#L1068).
 
 ```sql
 DELETE FROM meta WHERE key = 'projects_path_normalized';
@@ -3486,7 +3514,7 @@ DELETE FROM meta WHERE key = 'projects_path_normalized';
 
 #### Q0294 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1079](../src/global_db.rs#L1079).
+Source: [src/global_db.rs:1080](../src/global_db.rs#L1080).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3494,7 +3522,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0295 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1088](../src/global_db.rs#L1088).
+Source: [src/global_db.rs:1089](../src/global_db.rs#L1089).
 
 ```sql
 INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_tokens) VALUES (42, ?1, 'tokensave_context', 1000, 100)
@@ -7614,20 +7642,41 @@ Source: [src/db/queries/edges.rs:1307](../src/db/queries/edges.rs#L1307).
         }
 
         let where_clause = conditions.join(" AND ");
+        // Scoped rankings count only candidates' incident edges, including
+        // calls across the path boundary. Whole-project rankings retain the
+        // grouped strategy rather than probing twice for every graph node.
+        let (fan_out, fan_in, joins) = if path_prefix.is_some() {
+            (
+                "(SELECT COUNT(*) FROM edges WHERE source = n.id AND kind = 'calls')",
+                "(SELECT COUNT(*) FROM edges WHERE target = n.id AND kind = 'calls')",
+                "",
+            )
+        } else {
+            (
+                "COALESCE(out_calls.cnt, 0)",
+                "COALESCE(in_calls.cnt, 0)",
+                "LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
+                 LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id",
+            )
+        };
+        // Materialize only scores; fetch large signatures/docstrings after
+        // LIMIT has selected the winners. The candidate set is request-scoped.
         let sql = format!(
-            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+            "WITH scores AS MATERIALIZED (
+                 SELECT n.id, (n.end_line - n.start_line + 1) AS lines,
+                        {fan_out} AS fan_out, {fan_in} AS fan_in
+                 FROM nodes n {joins}
+                 WHERE {where_clause}
+             ), top_scores AS (
+                 SELECT *, (lines + fan_out * 3 + fan_in) AS score
+                 FROM scores ORDER BY score DESC, id LIMIT ?{param_idx}
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    (n.end_line - n.start_line + 1) AS lines,
-                    COALESCE(out_calls.cnt, 0) AS fan_out,
-                    COALESCE(in_calls.cnt, 0) AS fan_in,
-                    ((n.end_line - n.start_line + 1) + COALESCE(out_calls.cnt, 0) * 3 + COALESCE(in_calls.cnt, 0)) AS score
-             FROM nodes n
-             LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
-             LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id
-             WHERE {where_clause}
-             ORDER BY score DESC
-             LIMIT ?{param_idx}"
+                    t.lines, t.fan_out, t.fan_in, t.score
+             FROM top_scores t JOIN nodes n ON n.id = t.id
+             ORDER BY t.score DESC, t.id"
         );
         param_values.push(libsql::Value::Integer(limit as i64));
 
@@ -7673,9 +7722,9 @@ Source: [src/db/queries/edges.rs:1307](../src/db/queries/edges.rs#L1307).
     }
 ```
 
-### `get_undocumented_public_symbols` — src/db/queries/edges.rs:1400
+### `get_undocumented_public_symbols` — src/db/queries/edges.rs:1421
 
-Source: [src/db/queries/edges.rs:1400](../src/db/queries/edges.rs#L1400).
+Source: [src/db/queries/edges.rs:1421](../src/db/queries/edges.rs#L1421).
 
 ```rust
     pub async fn get_undocumented_public_symbols(
@@ -7741,9 +7790,9 @@ Source: [src/db/queries/edges.rs:1400](../src/db/queries/edges.rs#L1400).
     }
 ```
 
-### `get_god_classes` — src/db/queries/edges.rs:1465
+### `get_god_classes` — src/db/queries/edges.rs:1486
 
-Source: [src/db/queries/edges.rs:1465](../src/db/queries/edges.rs#L1465).
+Source: [src/db/queries/edges.rs:1486](../src/db/queries/edges.rs#L1486).
 
 ```rust
     pub async fn get_god_classes(
@@ -7816,9 +7865,9 @@ Source: [src/db/queries/edges.rs:1465](../src/db/queries/edges.rs#L1465).
     }
 ```
 
-### `get_all_edges` — src/db/queries/edges.rs:1535
+### `get_all_edges` — src/db/queries/edges.rs:1556
 
-Source: [src/db/queries/edges.rs:1535](../src/db/queries/edges.rs#L1535).
+Source: [src/db/queries/edges.rs:1556](../src/db/queries/edges.rs#L1556).
 
 ```rust
     pub async fn get_all_edges(&self) -> Result<Vec<Edge>> {
@@ -7838,9 +7887,9 @@ Source: [src/db/queries/edges.rs:1535](../src/db/queries/edges.rs#L1535).
     }
 ```
 
-### `get_edges_by_kind` — src/db/queries/edges.rs:1556
+### `get_edges_by_kind` — src/db/queries/edges.rs:1577
 
-Source: [src/db/queries/edges.rs:1556](../src/db/queries/edges.rs#L1556).
+Source: [src/db/queries/edges.rs:1577](../src/db/queries/edges.rs#L1577).
 
 ```rust
     pub async fn get_edges_by_kind(&self, kind: EdgeKind) -> Result<Vec<Edge>> {
@@ -7860,9 +7909,9 @@ Source: [src/db/queries/edges.rs:1556](../src/db/queries/edges.rs#L1556).
     }
 ```
 
-### `get_edges_by_kinds` — src/db/queries/edges.rs:1577
+### `get_edges_by_kinds` — src/db/queries/edges.rs:1598
 
-Source: [src/db/queries/edges.rs:1577](../src/db/queries/edges.rs#L1577).
+Source: [src/db/queries/edges.rs:1598](../src/db/queries/edges.rs#L1598).
 
 ```rust
     pub async fn get_edges_by_kinds(&self, kinds: &[EdgeKind]) -> Result<Vec<Edge>> {
@@ -7891,9 +7940,9 @@ Source: [src/db/queries/edges.rs:1577](../src/db/queries/edges.rs#L1577).
     }
 ```
 
-### `variant_group_candidates` — src/db/queries/edges.rs:1628
+### `variant_group_candidates` — src/db/queries/edges.rs:1649
 
-Source: [src/db/queries/edges.rs:1628](../src/db/queries/edges.rs#L1628).
+Source: [src/db/queries/edges.rs:1649](../src/db/queries/edges.rs#L1649).
 
 ```rust
     pub async fn variant_group_candidates(&self) -> Result<Vec<(String, String)>> {
@@ -7929,9 +7978,9 @@ Source: [src/db/queries/edges.rs:1628](../src/db/queries/edges.rs#L1628).
     }
 ```
 
-### `go_variant_candidates` — src/db/queries/edges.rs:1666
+### `go_variant_candidates` — src/db/queries/edges.rs:1687
 
-Source: [src/db/queries/edges.rs:1666](../src/db/queries/edges.rs#L1666).
+Source: [src/db/queries/edges.rs:1687](../src/db/queries/edges.rs#L1687).
 
 ```rust
     pub async fn go_variant_candidates(&self) -> Result<Vec<(String, String, String)>> {
@@ -7958,9 +8007,9 @@ Source: [src/db/queries/edges.rs:1666](../src/db/queries/edges.rs#L1666).
     }
 ```
 
-### `calls_edges_into` — src/db/queries/edges.rs:1693
+### `calls_edges_into` — src/db/queries/edges.rs:1714
 
-Source: [src/db/queries/edges.rs:1693](../src/db/queries/edges.rs#L1693).
+Source: [src/db/queries/edges.rs:1714](../src/db/queries/edges.rs#L1714).
 
 ```rust
     pub async fn calls_edges_into(&self, targets: &[String]) -> Result<Vec<Edge>> {
@@ -7992,9 +8041,9 @@ Source: [src/db/queries/edges.rs:1693](../src/db/queries/edges.rs#L1693).
     }
 ```
 
-### `get_top_degree_nodes` — src/db/queries/edges.rs:1739
+### `get_top_degree_nodes` — src/db/queries/edges.rs:1760
 
-Source: [src/db/queries/edges.rs:1739](../src/db/queries/edges.rs#L1739).
+Source: [src/db/queries/edges.rs:1760](../src/db/queries/edges.rs#L1760).
 
 ```rust
     pub async fn get_top_degree_nodes(&self, limit: usize) -> Result<Vec<(String, u32, u32)>> {
@@ -8043,9 +8092,9 @@ Source: [src/db/queries/edges.rs:1739](../src/db/queries/edges.rs#L1739).
     }
 ```
 
-### `delete_edges_by_source` — src/db/queries/edges.rs:1785
+### `delete_edges_by_source` — src/db/queries/edges.rs:1806
 
-Source: [src/db/queries/edges.rs:1785](../src/db/queries/edges.rs#L1785).
+Source: [src/db/queries/edges.rs:1806](../src/db/queries/edges.rs#L1806).
 
 ```rust
     pub async fn delete_edges_by_source(&self, source_id: &str) -> Result<()> {
@@ -8060,9 +8109,9 @@ Source: [src/db/queries/edges.rs:1785](../src/db/queries/edges.rs#L1785).
     }
 ```
 
-### `delete_call_edges_at_sites` — src/db/queries/edges.rs:1799
+### `delete_call_edges_at_sites` — src/db/queries/edges.rs:1820
 
-Source: [src/db/queries/edges.rs:1799](../src/db/queries/edges.rs#L1799).
+Source: [src/db/queries/edges.rs:1820](../src/db/queries/edges.rs#L1820).
 
 ```rust
     pub async fn delete_call_edges_at_sites(&self, sites: &[(String, u32, String)]) -> Result<()> {
@@ -11095,9 +11144,9 @@ pub async fn audit(db: &Database, limit: usize) -> Result<EdgeAudit> {
 }
 ```
 
-### `delete_projects` — src/global_db.rs:579
+### `delete_projects` — src/global_db.rs:580
 
-Source: [src/global_db.rs:579](../src/global_db.rs#L579).
+Source: [src/global_db.rs:580](../src/global_db.rs#L580).
 
 ```rust
     pub async fn delete_projects(&self, project_paths: &[String]) -> usize {
@@ -11124,9 +11173,9 @@ Source: [src/global_db.rs:579](../src/global_db.rs#L579).
     }
 ```
 
-### `migration_merges_duplicates_and_drops_relative_rows` — src/global_db.rs:1054
+### `migration_merges_duplicates_and_drops_relative_rows` — src/global_db.rs:1055
 
-Source: [src/global_db.rs:1054](../src/global_db.rs#L1054).
+Source: [src/global_db.rs:1055](../src/global_db.rs#L1055).
 
 ```rust
     async fn migration_merges_duplicates_and_drops_relative_rows() {
@@ -12746,9 +12795,9 @@ Source: [src/db/queries/nodes.rs:78](../src/db/queries/nodes.rs#L78).
     }
 ```
 
-### `upsert` — src/global_db.rs:432
+### `upsert` — src/global_db.rs:433
 
-Source: [src/global_db.rs:432](../src/global_db.rs#L432).
+Source: [src/global_db.rs:433](../src/global_db.rs#L433).
 
 ```rust
     pub async fn upsert(&self, project_path: &Path, tokens_saved: u64) {
@@ -12764,9 +12813,9 @@ Source: [src/global_db.rs:432](../src/global_db.rs#L432).
     }
 ```
 
-### `upsert_droid_turn` — src/global_db.rs:682
+### `upsert_droid_turn` — src/global_db.rs:683
 
-Source: [src/global_db.rs:682](../src/global_db.rs#L682).
+Source: [src/global_db.rs:683](../src/global_db.rs#L683).
 
 ```rust
     pub async fn upsert_droid_turn(&self, turn: &crate::types::CostTurn) -> bool {
@@ -12880,6 +12929,33 @@ index. The current application forces a full reindex after a schema migration.
 - The configured origin `atontini/tokensave` has issues disabled. The changes
   are tracked upstream in [issue #775](https://github.com/aovestdipaperino/tokensave/issues/775);
   issue closure is left to the maintainer.
+
+## Scoped ranking and savings (Refs #777)
+
+Q0127 interpolates Q0344/Q0345 correlated counts when a path prefix is
+supplied, and Q0346 grouped joins otherwise. All incident calls count,
+including calls across the selected path boundary and recursive calls.
+Only IDs, line counts, and degrees are materialized for eligible candidates;
+full node text is hydrated after LIMIT. Equal scores are ordered by ID.
+Kind and limit bindings retain their numbered parameter positions; the path
+filter retains the shared SQL-quoting and LIKE-escaping implementation.
+
+Q0257 creates `(project_path, ts)` on every global DB open with IF NOT EXISTS,
+so existing ledgers gain the index. Q0273/Q0275 can constrain both fields;
+the timestamp-only index remains for unscoped queries. No project schema
+version changes in this batch.
+
+A synthetic SQLite 3.46.1 check with 20,000 nodes, 80,000 call edges, 100
+scoped candidates, 512-byte signatures, LIMIT 20, and five timed repetitions
+verified identical outputs. Median query times were 44.382 → 0.250 ms for
+the narrow scope and 104.558 → 73.539 ms for the whole graph. This is a local
+algorithm comparison, not a bundled-libSQL or production latency guarantee.
+
+Resource review: score materialization is proportional to eligible nodes and
+released at statement completion; full node hydration is limited to winners.
+The ledger index grows with ledger rows and adds write/index-build cost.
+No background work, caches, queues, or extra retained connections are added.
+No long-running RSS or production-throughput measurement is claimed.
 
 ## Coverage and limitations
 
