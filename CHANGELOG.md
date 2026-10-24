@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Performance
+
+- Use weighted FTS5 rank-ordered cursors for bounded and general node search while preserving relevance scores and symbol filtering (Refs #751).
+
 ### Added
 
 - Add a SQL query inventory in `docs/QUERY-REPORT.md` with source links and dynamic construction context, and require agents to keep it synchronized with query changes (Refs #773).

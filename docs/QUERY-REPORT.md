@@ -1,6 +1,6 @@
 # tokensave SQL query inventory
 
-Snapshot: `3eb8c01079a9f62ee0dd4ec29b58f5e5f27a2c25` (working-tree source inspected on 2026-10-24).
+Snapshot base: `4527d5a1168f66a33ce7afdb2d492d0113203bac` (working-tree source inspected on 2026-10-24).
 
 ## Scope and reading guide
 
@@ -8,7 +8,7 @@ This report interprets “queries” as SQL used by tokensave’s own Rust appli
 
 Entries are grouped by source file and retain separate occurrences, even when SQL is repeated. Each entry identifies its source line and enclosing function when available. Module-level constants and documentation/example strings are labelled as such; inline test functions are retained, so this is a source inventory rather than a runtime execution trace. A fenced block may contain an entire SQL batch or trigger definition.
 
-`?`, `?1`, and similar placeholders are bound by the caller. Rust format fields such as `{placeholders}`, `{where_clause}`, `{limit}`, and `{}` are preserved as templates; they are not executable SQL until constructed. Rust string escapes and backslash-newline continuations are decoded for readability. Dynamic SQL has potentially unlimited concrete instances, so the report includes its templates and complete builder functions in the construction appendix, including conditional clauses and parameter bindings. No SQL was executed to produce this report.
+`?`, `?1`, and similar placeholders are bound by the caller. Rust format fields such as `{placeholders}`, `{where_clause}`, `{limit}`, and `{}` are preserved as templates; they are not executable SQL until constructed. Rust string escapes and backslash-newline continuations are decoded for readability. Dynamic SQL has potentially unlimited concrete instances, so the report includes its templates and complete builder functions in the construction appendix, including conditional clauses and parameter bindings. No SQL was executed to enumerate the inventory; separate benchmark evidence is linked below.
 
 ## Inventory summary
 
@@ -2798,34 +2798,36 @@ Source: [src/db/queries/search.rs:351](../src/db/queries/search.rs#L351).
 SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0) AS rank
+                    nodes_fts.rank AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
+                   AND nodes_fts.rank MATCH 'bm25(10.0, 5.0, 1.0, 2.0, 3.0)'
                    AND n.kind NOT IN ('file', 'doc')
-                 ORDER BY rank
+                 ORDER BY nodes_fts.rank
                  LIMIT ?2
 ```
 
 #### Q0228 — `search_nodes_fts`
 
-Source: [src/db/queries/search.rs:396](../src/db/queries/search.rs#L396).
+Source: [src/db/queries/search.rs:401](../src/db/queries/search.rs#L401).
 
 ```sql
 SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0) AS rank
+                    nodes_fts.rank AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
-                 ORDER BY bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0)
+                   AND nodes_fts.rank MATCH 'bm25(10.0, 5.0, 1.0, 2.0, 3.0)'
+                 ORDER BY nodes_fts.rank
                  LIMIT ?2
 ```
 
 #### Q0229 — `batch_incoming_call_counts`
 
-Source: [src/db/queries/search.rs:443](../src/db/queries/search.rs#L443).
+Source: [src/db/queries/search.rs:449](../src/db/queries/search.rs#L449).
 
 ```sql
 SELECT target, COUNT(*) AS cnt FROM edges WHERE target IN ({placeholders}) AND kind = 'calls' GROUP BY target
@@ -2833,7 +2835,7 @@ SELECT target, COUNT(*) AS cnt FROM edges WHERE target IN ({placeholders}) AND k
 
 #### Q0230 — `search_nodes_by_exact_name`
 
-Source: [src/db/queries/search.rs:481](../src/db/queries/search.rs#L481).
+Source: [src/db/queries/search.rs:487](../src/db/queries/search.rs#L487).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -10341,12 +10343,13 @@ Source: [src/db/queries/search.rs:343](../src/db/queries/search.rs#L343).
                 "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0) AS rank
+                    nodes_fts.rank AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
+                   AND nodes_fts.rank MATCH 'bm25(10.0, 5.0, 1.0, 2.0, 3.0)'
                    AND n.kind NOT IN ('file', 'doc')
-                 ORDER BY rank
+                 ORDER BY nodes_fts.rank
                  LIMIT ?2",
                 params![fts_query, limit as i64],
             )
@@ -10375,9 +10378,9 @@ Source: [src/db/queries/search.rs:343](../src/db/queries/search.rs#L343).
     }
 ```
 
-### `search_nodes_fts` — src/db/queries/search.rs:388
+### `search_nodes_fts` — src/db/queries/search.rs:393
 
-Source: [src/db/queries/search.rs:388](../src/db/queries/search.rs#L388).
+Source: [src/db/queries/search.rs:393](../src/db/queries/search.rs#L393).
 
 ```rust
     pub(crate) async fn search_nodes_fts(
@@ -10391,11 +10394,12 @@ Source: [src/db/queries/search.rs:388](../src/db/queries/search.rs#L388).
                 "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0) AS rank
+                    nodes_fts.rank AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
-                 ORDER BY bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0)
+                   AND nodes_fts.rank MATCH 'bm25(10.0, 5.0, 1.0, 2.0, 3.0)'
+                 ORDER BY nodes_fts.rank
                  LIMIT ?2",
                 params![fts_query, limit as i64],
             )
@@ -10424,9 +10428,9 @@ Source: [src/db/queries/search.rs:388](../src/db/queries/search.rs#L388).
     }
 ```
 
-### `batch_incoming_call_counts` — src/db/queries/search.rs:433
+### `batch_incoming_call_counts` — src/db/queries/search.rs:439
 
-Source: [src/db/queries/search.rs:433](../src/db/queries/search.rs#L433).
+Source: [src/db/queries/search.rs:439](../src/db/queries/search.rs#L439).
 
 ```rust
     pub async fn batch_incoming_call_counts(
@@ -10465,9 +10469,9 @@ Source: [src/db/queries/search.rs:433](../src/db/queries/search.rs#L433).
     }
 ```
 
-### `search_nodes_by_exact_name` — src/db/queries/search.rs:471
+### `search_nodes_by_exact_name` — src/db/queries/search.rs:477
 
-Source: [src/db/queries/search.rs:471](../src/db/queries/search.rs#L471).
+Source: [src/db/queries/search.rs:477](../src/db/queries/search.rs#L477).
 
 ```rust
     pub async fn search_nodes_by_exact_name(
@@ -12837,6 +12841,31 @@ Source: [src/global_db.rs:682](../src/global_db.rs#L682).
             .is_ok_and(|n| n > 0)
     }
 ```
+
+## FTS ranking (Refs #751)
+
+Q0227/Q0228 read and order by `nodes_fts.rank`, configured per query with
+`rank MATCH 'bm25(10.0, 5.0, 1.0, 2.0, 3.0)'`. This lets the FTS5 cursor supply
+rank order without an outer SQL sort. Weights, score negation, the full matching
+candidate set, and bindings (`?1` MATCH expression, `?2` limit) stay unchanged.
+Q0227 excludes file/doc nodes before LIMIT. Phrase promotion, corruption retry,
+and LIKE fallback behavior are unchanged. No persistent rank configuration,
+cache, candidate truncation, schema change, or extra retained resource is added.
+Rank scoring/sorting and cursor-local temporary state can still scale with the
+full matching set; LIMIT bounds returned rows, not all ranking work.
+
+[SQLite documents the rank-column optimization](https://www.sqlite.org/fts5.html#sorting_by_auxiliary_function_results).
+The libSQL regression fixture compares weighted BM25 scores and complete node
+payloads across prefix, Unicode, missing-term and phrase requests, multiple
+limits and kind exclusion, including an intentionally different table-level
+rank default. The override is cursor-local; state is released with each query.
+
+Native SQLite measurements of a real 24,163-node project index show gains on
+several frequent-prefix queries, while synthetic all-hit and some rare/empty
+cases regress. The benchmark review and consolidated implementation summary are
+tracked separately in [issue #786](https://github.com/aovestdipaperino/tokensave/issues/786).
+These are not bundled-libSQL latency or production p99 guarantees; broader
+investigation in #751 remains open.
 
 ## Coverage and limitations
 

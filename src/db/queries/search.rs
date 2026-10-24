@@ -351,12 +351,13 @@ impl Database {
                 "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0) AS rank
+                    nodes_fts.rank AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
+                   AND nodes_fts.rank MATCH 'bm25(10.0, 5.0, 1.0, 2.0, 3.0)'
                    AND n.kind NOT IN ('file', 'doc')
-                 ORDER BY rank
+                 ORDER BY nodes_fts.rank
                  LIMIT ?2",
                 params![fts_query, limit as i64],
             )
@@ -385,6 +386,10 @@ impl Database {
     }
 
     /// Executes the FTS5 query and returns ranked results.
+    ///
+    /// Configure the hidden rank column per query so FTS5 can supply rank
+    /// order directly. The weights and negated result scores match BM25;
+    /// no arbitrary candidate cap is applied before ranking or kind filtering.
     pub(crate) async fn search_nodes_fts(
         &self,
         fts_query: &str,
@@ -396,11 +401,12 @@ impl Database {
                 "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0) AS rank
+                    nodes_fts.rank AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
-                 ORDER BY bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0)
+                   AND nodes_fts.rank MATCH 'bm25(10.0, 5.0, 1.0, 2.0, 3.0)'
+                 ORDER BY nodes_fts.rank
                  LIMIT ?2",
                 params![fts_query, limit as i64],
             )
