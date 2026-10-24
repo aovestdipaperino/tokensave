@@ -54,3 +54,45 @@ async fn savings_history_buckets_by_day() {
     assert_eq!(history[0].saved_tokens, 720); // day2: 800 - 80
     assert_eq!(history[1].saved_tokens, 1350); // day1: (1000-100) + (500-50)
 }
+
+#[tokio::test]
+async fn savings_compound_index_upgrades_existing_ledger_and_preserves_boundaries() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join(".tokensave").join("global.db");
+    {
+        let db = open_isolated_db(&tmp).await;
+        for (project, before, after, ts) in [
+            ("/a", 100, 10, 99),
+            ("/a", 200, 20, 100),
+            ("/a", 10, 20, 101),
+            ("/b", 1000, 0, 100),
+        ] {
+            db.record_savings(project, "test", before, after, ts).await;
+        }
+    }
+    let raw = libsql::Builder::new_local(&path).build().await.unwrap();
+    let conn = raw.connect().unwrap();
+    conn.execute("DROP INDEX idx_savings_ledger_project_ts", ())
+        .await
+        .unwrap();
+    drop(conn);
+    drop(raw);
+    let db = open_isolated_db(&tmp).await;
+    let total = db.sum_savings(Some("/a"), 100).await;
+    assert_eq!((total.saved_tokens, total.calls), (180, 2));
+    let history = db.savings_history(Some("/a"), 100).await;
+    assert_eq!(history.len(), 1);
+    assert_eq!((history[0].saved_tokens, history[0].calls), (180, 2));
+    assert_eq!(db.sum_savings(None, 100).await.saved_tokens, 1180);
+    let raw = libsql::Builder::new_local(&path).build().await.unwrap();
+    let conn = raw.connect().unwrap();
+    let mut rows = conn.query("EXPLAIN QUERY PLAN SELECT SUM(before_tokens-after_tokens) FROM savings_ledger WHERE project_path=?1 AND ts>=?2", libsql::params!["/a", 100]).await.unwrap();
+    let mut indexed = false;
+    while let Some(row) = rows.next().await.unwrap() {
+        indexed |= row
+            .get::<String>(3)
+            .unwrap()
+            .contains("idx_savings_ledger_project_ts");
+    }
+    assert!(indexed);
+}

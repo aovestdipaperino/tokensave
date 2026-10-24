@@ -9,6 +9,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Performance
 
+- Scope complexity call counts to ranked candidates, hydrate only top results, and index project/time savings lookups on new and existing ledgers (Refs #777).
+
 - Batch file-scoped graph cleanup into five data statements, make executable-body FTS cleanup transactional, and index dispatch-cache deletion lookups. Schema v19 adds the index and uses the existing full-reindex-on-migration behavior (Refs #775).
 
 ### Added

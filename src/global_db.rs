@@ -267,7 +267,8 @@ impl GlobalDb {
                 after_tokens INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_savings_ledger_ts ON savings_ledger(ts);
-            CREATE INDEX IF NOT EXISTS idx_savings_ledger_project ON savings_ledger(project_path)",
+            CREATE INDEX IF NOT EXISTS idx_savings_ledger_project ON savings_ledger(project_path);
+            CREATE INDEX IF NOT EXISTS idx_savings_ledger_project_ts ON savings_ledger(project_path, ts)",
         )
         .await
         .ok()?;
