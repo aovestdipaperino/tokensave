@@ -14,6 +14,21 @@ create issues for identified bugs and enhancements, link PRs with "Refs #N" (nev
 "Fixes #N" / "Closes #N"), and never close an issue (including via `gh issue close`)
 without explicit permission — issue closure is left to the repository maintainer.
 
+## SQL query inventory
+
+Keep [docs/QUERY-REPORT.md](docs/QUERY-REPORT.md) synchronized with every SQL
+query added, changed, moved, or removed in the report's documented scope, in the
+same change as the source modification. This includes SQL templates, shared
+fragments, dynamic builders, parameter bindings, migrations, triggers, and
+database maintenance statements.
+
+Update the affected SQL entries and construction/binding context, source links,
+and inventory counts. Add entries for new queries and remove obsolete entries;
+keep existing query IDs stable and assign unused IDs to new entries. If query
+coverage changes, update the report's scope and limitations. Before finishing,
+review the source diff for SQL changes and verify that each is reflected in the
+report. Git history records the changes; the report describes the current source.
+
 ## Build, lint, and test
 
 Follow the mandatory [filesystem path construction rule](CONTRIBUTING.md#filesystem-path-construction):
