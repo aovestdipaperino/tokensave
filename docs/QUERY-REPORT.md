@@ -1,6 +1,6 @@
 # tokensave SQL query inventory
 
-Snapshot: `3eb8c01079a9f62ee0dd4ec29b58f5e5f27a2c25` (working-tree source inspected on 2026-10-24).
+Snapshot base: `4527d5a1168f66a33ce7afdb2d492d0113203bac` (working-tree source inspected on 2026-10-24).
 
 ## Scope and reading guide
 
@@ -1701,24 +1701,30 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0118 — `get_ranked_nodes_by_edge_kind`
 
-Source: [src/db/queries/edges.rs:882](../src/db/queries/edges.rs#L882).
+Source: [src/db/queries/edges.rs:884](../src/db/queries/edges.rs#L884).
 
 ```sql
-SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+WITH ranked AS MATERIALIZED (
+                 SELECT {group_col} AS id, COUNT(*) AS cnt
+                 FROM edges e
+                 JOIN nodes n ON {join_col} = n.id
+                 WHERE {where_clause}
+                 GROUP BY {group_col}
+                 ORDER BY cnt DESC, {group_col}
+                 LIMIT ?{param_idx}
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    COUNT(*) AS cnt
-             FROM edges e
-             JOIN nodes n ON {join_col} = n.id
-             WHERE {where_clause}
-             GROUP BY {group_col}
-             ORDER BY cnt DESC
-             LIMIT ?{param_idx}
+                    r.cnt
+             FROM ranked r
+             JOIN nodes n ON n.id = r.id
+             ORDER BY r.cnt DESC, r.id
 ```
 
 #### Q0119 — `get_largest_nodes`
 
-Source: [src/db/queries/edges.rs:954](../src/db/queries/edges.rs#L954).
+Source: [src/db/queries/edges.rs:962](../src/db/queries/edges.rs#L962).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -1733,7 +1739,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0120 — `get_file_coupling`
 
-Source: [src/db/queries/edges.rs:1021](../src/db/queries/edges.rs#L1021).
+Source: [src/db/queries/edges.rs:1029](../src/db/queries/edges.rs#L1029).
 
 ```sql
 SELECT {group_alias}.file_path, COUNT(DISTINCT {count_alias}.file_path) AS coupling
@@ -1750,7 +1756,7 @@ SELECT {group_alias}.file_path, COUNT(DISTINCT {count_alias}.file_path) AS coupl
 
 #### Q0121 — `get_inheritance_depth`
 
-Source: [src/db/queries/edges.rs:1096](../src/db/queries/edges.rs#L1096).
+Source: [src/db/queries/edges.rs:1104](../src/db/queries/edges.rs#L1104).
 
 ```sql
 WITH RECURSIVE hierarchy(leaf_id, current_id, depth, path) AS (
@@ -1784,7 +1790,7 @@ WITH RECURSIVE hierarchy(leaf_id, current_id, depth, path) AS (
 
 #### Q0122 — `get_node_distribution`
 
-Source: [src/db/queries/edges.rs:1162](../src/db/queries/edges.rs#L1162).
+Source: [src/db/queries/edges.rs:1170](../src/db/queries/edges.rs#L1170).
 
 ```sql
 SELECT file_path, kind, COUNT(*) AS cnt FROM nodes
@@ -1792,7 +1798,7 @@ SELECT file_path, kind, COUNT(*) AS cnt FROM nodes
 
 #### Q0123 — `get_call_edges`
 
-Source: [src/db/queries/edges.rs:1210](../src/db/queries/edges.rs#L1210).
+Source: [src/db/queries/edges.rs:1218](../src/db/queries/edges.rs#L1218).
 
 ```sql
 SELECT e.source, e.target FROM edges e
@@ -1802,7 +1808,7 @@ SELECT e.source, e.target FROM edges e
 
 #### Q0124 — `get_call_edges`
 
-Source: [src/db/queries/edges.rs:1218](../src/db/queries/edges.rs#L1218).
+Source: [src/db/queries/edges.rs:1226](../src/db/queries/edges.rs#L1226).
 
 ```sql
 SELECT source, target FROM edges WHERE kind = 'calls'
@@ -1810,7 +1816,7 @@ SELECT source, target FROM edges WHERE kind = 'calls'
 
 #### Q0125 — `get_call_edges_with_lines`
 
-Source: [src/db/queries/edges.rs:1261](../src/db/queries/edges.rs#L1261).
+Source: [src/db/queries/edges.rs:1269](../src/db/queries/edges.rs#L1269).
 
 ```sql
 SELECT e.source, e.target, e.line FROM edges e
@@ -1820,7 +1826,7 @@ SELECT e.source, e.target, e.line FROM edges e
 
 #### Q0126 — `get_call_edges_with_lines`
 
-Source: [src/db/queries/edges.rs:1269](../src/db/queries/edges.rs#L1269).
+Source: [src/db/queries/edges.rs:1277](../src/db/queries/edges.rs#L1277).
 
 ```sql
 SELECT source, target, line FROM edges WHERE kind = 'calls'
@@ -1828,7 +1834,7 @@ SELECT source, target, line FROM edges WHERE kind = 'calls'
 
 #### Q0127 — `get_complexity_ranked`
 
-Source: [src/db/queries/edges.rs:1336](../src/db/queries/edges.rs#L1336).
+Source: [src/db/queries/edges.rs:1344](../src/db/queries/edges.rs#L1344).
 
 ```sql
 SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
@@ -1848,7 +1854,7 @@ SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
 
 #### Q0128 — `get_undocumented_public_symbols`
 
-Source: [src/db/queries/edges.rs:1420](../src/db/queries/edges.rs#L1420).
+Source: [src/db/queries/edges.rs:1428](../src/db/queries/edges.rs#L1428).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -1865,7 +1871,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0129 — `get_undocumented_public_symbols`
 
-Source: [src/db/queries/edges.rs:1435](../src/db/queries/edges.rs#L1435).
+Source: [src/db/queries/edges.rs:1443](../src/db/queries/edges.rs#L1443).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -1881,27 +1887,34 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0130 — `get_god_classes`
 
-Source: [src/db/queries/edges.rs:1482](../src/db/queries/edges.rs#L1482).
+Source: [src/db/queries/edges.rs:1492](../src/db/queries/edges.rs#L1492).
 
 ```sql
-SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+WITH ranked AS MATERIALIZED (
+                 SELECT n.id,
+                        SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
+                        SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
+                        COUNT(*) AS total
+                 FROM nodes n
+                 JOIN nodes c ON c.parent_id = n.id
+                 WHERE n.kind IN ('class', 'struct', 'inner_class', 'object')
+                   {path_filter}
+                 GROUP BY n.id
+                 ORDER BY total DESC, n.id
+                 LIMIT ?1
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
-                    SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
-                    COUNT(*) AS total
-             FROM nodes n
-             JOIN nodes c ON c.parent_id = n.id
-             WHERE n.kind IN ('class', 'struct', 'inner_class', 'object')
-               {path_filter}
-             GROUP BY n.id
-             ORDER BY total DESC
-             LIMIT ?1
+                    r.methods, r.fields, r.total
+             FROM ranked r
+             JOIN nodes n ON n.id = r.id
+             ORDER BY r.total DESC, r.id
 ```
 
 #### Q0131 — `get_all_edges`
 
-Source: [src/db/queries/edges.rs:1539](../src/db/queries/edges.rs#L1539).
+Source: [src/db/queries/edges.rs:1556](../src/db/queries/edges.rs#L1556).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges
@@ -1909,7 +1922,7 @@ SELECT source, target, kind, line, resolved_by FROM edges
 
 #### Q0132 — `get_edges_by_kind`
 
-Source: [src/db/queries/edges.rs:1560](../src/db/queries/edges.rs#L1560).
+Source: [src/db/queries/edges.rs:1577](../src/db/queries/edges.rs#L1577).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = ?1
@@ -1917,7 +1930,7 @@ SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = ?1
 
 #### Q0133 — `get_edges_by_kinds`
 
-Source: [src/db/queries/edges.rs:1583](../src/db/queries/edges.rs#L1583).
+Source: [src/db/queries/edges.rs:1600](../src/db/queries/edges.rs#L1600).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges WHERE kind IN ({})
@@ -1925,7 +1938,7 @@ SELECT source, target, kind, line, resolved_by FROM edges WHERE kind IN ({})
 
 #### Q0134 — `variant_group_candidates`
 
-Source: [src/db/queries/edges.rs:1635](../src/db/queries/edges.rs#L1635).
+Source: [src/db/queries/edges.rs:1652](../src/db/queries/edges.rs#L1652).
 
 ```sql
 SELECT 'rs' || char(1) || n.qualified_name, n.id FROM nodes n JOIN edges e ON e.target = n.id AND e.kind = 'annotates' JOIN nodes a ON a.id = e.source WHERE a.kind = 'annotation_usage' AND a.name IN ('cfg', 'cfg_attr') AND lower(n.file_path) LIKE '%.rs' AND n.kind IN ({kinds})
@@ -1933,7 +1946,7 @@ SELECT 'rs' || char(1) || n.qualified_name, n.id FROM nodes n JOIN edges e ON e.
 
 #### Q0135 — `go_variant_candidates`
 
-Source: [src/db/queries/edges.rs:1667](../src/db/queries/edges.rs#L1667).
+Source: [src/db/queries/edges.rs:1684](../src/db/queries/edges.rs#L1684).
 
 ```sql
 SELECT file_path, name, id FROM nodes                    WHERE kind = 'function' AND lower(file_path) LIKE '%.go'                      AND name IN (                        SELECT name FROM nodes                        WHERE kind = 'function' AND lower(file_path) LIKE '%.go'                        GROUP BY name HAVING COUNT(*) >= 2                      )
@@ -1941,7 +1954,7 @@ SELECT file_path, name, id FROM nodes                    WHERE kind = 'function'
 
 #### Q0136 — `calls_edges_into`
 
-Source: [src/db/queries/edges.rs:1700](../src/db/queries/edges.rs#L1700).
+Source: [src/db/queries/edges.rs:1717](../src/db/queries/edges.rs#L1717).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = 'calls' AND target IN ({})
@@ -1949,7 +1962,7 @@ SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = 'calls' A
 
 #### Q0137 — `get_top_degree_nodes`
 
-Source: [src/db/queries/edges.rs:1740](../src/db/queries/edges.rs#L1740).
+Source: [src/db/queries/edges.rs:1757](../src/db/queries/edges.rs#L1757).
 
 ```sql
 SELECT id, SUM(inc) AS in_degree, SUM(outg) AS out_degree FROM ( SELECT target AS id, 1 AS inc, 0 AS outg FROM edges WHERE source <> target UNION ALL SELECT source AS id, 0 AS inc, 1 AS outg FROM edges WHERE source <> target ) GROUP BY id ORDER BY (in_degree + out_degree) DESC, id ASC LIMIT ?1
@@ -1957,7 +1970,7 @@ SELECT id, SUM(inc) AS in_degree, SUM(outg) AS out_degree FROM ( SELECT target A
 
 #### Q0138 — `delete_edges_by_source`
 
-Source: [src/db/queries/edges.rs:1787](../src/db/queries/edges.rs#L1787).
+Source: [src/db/queries/edges.rs:1804](../src/db/queries/edges.rs#L1804).
 
 ```sql
 DELETE FROM edges WHERE source = ?1
@@ -1965,7 +1978,7 @@ DELETE FROM edges WHERE source = ?1
 
 #### Q0139 — `delete_call_edges_at_sites`
 
-Source: [src/db/queries/edges.rs:1806](../src/db/queries/edges.rs#L1806).
+Source: [src/db/queries/edges.rs:1823](../src/db/queries/edges.rs#L1823).
 
 ```sql
 DELETE FROM edges
@@ -7116,17 +7129,25 @@ Source: [src/db/queries/edges.rs:842](../src/db/queries/edges.rs#L842).
         }
 
         let where_clause = conditions.join(" AND ");
+        // Keep signatures/docstrings out of aggregation and sorting; only
+        // hydrate the bounded winners after applying all candidate filters.
         let sql = format!(
-            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+            "WITH ranked AS MATERIALIZED (
+                 SELECT {group_col} AS id, COUNT(*) AS cnt
+                 FROM edges e
+                 JOIN nodes n ON {join_col} = n.id
+                 WHERE {where_clause}
+                 GROUP BY {group_col}
+                 ORDER BY cnt DESC, {group_col}
+                 LIMIT ?{param_idx}
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    COUNT(*) AS cnt
-             FROM edges e
-             JOIN nodes n ON {join_col} = n.id
-             WHERE {where_clause}
-             GROUP BY {group_col}
-             ORDER BY cnt DESC
-             LIMIT ?{param_idx}"
+                    r.cnt
+             FROM ranked r
+             JOIN nodes n ON n.id = r.id
+             ORDER BY r.cnt DESC, r.id"
         );
         param_values.push(libsql::Value::Integer(limit as i64));
 
@@ -7160,9 +7181,9 @@ Source: [src/db/queries/edges.rs:842](../src/db/queries/edges.rs#L842).
     }
 ```
 
-### `get_largest_nodes` — src/db/queries/edges.rs:926
+### `get_largest_nodes` — src/db/queries/edges.rs:934
 
-Source: [src/db/queries/edges.rs:926](../src/db/queries/edges.rs#L926).
+Source: [src/db/queries/edges.rs:934](../src/db/queries/edges.rs#L934).
 
 ```rust
     pub async fn get_largest_nodes(
@@ -7234,9 +7255,9 @@ Source: [src/db/queries/edges.rs:926](../src/db/queries/edges.rs#L926).
     }
 ```
 
-### `get_file_coupling` — src/db/queries/edges.rs:999
+### `get_file_coupling` — src/db/queries/edges.rs:1007
 
-Source: [src/db/queries/edges.rs:999](../src/db/queries/edges.rs#L999).
+Source: [src/db/queries/edges.rs:1007](../src/db/queries/edges.rs#L1007).
 
 ```rust
     pub async fn get_file_coupling(
@@ -7303,9 +7324,9 @@ Source: [src/db/queries/edges.rs:999](../src/db/queries/edges.rs#L999).
     }
 ```
 
-### `get_inheritance_depth` — src/db/queries/edges.rs:1067
+### `get_inheritance_depth` — src/db/queries/edges.rs:1075
 
-Source: [src/db/queries/edges.rs:1067](../src/db/queries/edges.rs#L1067).
+Source: [src/db/queries/edges.rs:1075](../src/db/queries/edges.rs#L1075).
 
 ```rust
     pub async fn get_inheritance_depth(
@@ -7396,9 +7417,9 @@ Source: [src/db/queries/edges.rs:1067](../src/db/queries/edges.rs#L1067).
     }
 ```
 
-### `get_node_distribution` — src/db/queries/edges.rs:1158
+### `get_node_distribution` — src/db/queries/edges.rs:1166
 
-Source: [src/db/queries/edges.rs:1158](../src/db/queries/edges.rs#L1158).
+Source: [src/db/queries/edges.rs:1166](../src/db/queries/edges.rs#L1166).
 
 ```rust
     pub async fn get_node_distribution(
@@ -7446,9 +7467,9 @@ Source: [src/db/queries/edges.rs:1158](../src/db/queries/edges.rs#L1158).
     }
 ```
 
-### `get_call_edges` — src/db/queries/edges.rs:1205
+### `get_call_edges` — src/db/queries/edges.rs:1213
 
-Source: [src/db/queries/edges.rs:1205](../src/db/queries/edges.rs#L1205).
+Source: [src/db/queries/edges.rs:1213](../src/db/queries/edges.rs#L1213).
 
 ```rust
     pub async fn get_call_edges(&self, path_prefix: Option<&str>) -> Result<Vec<(String, String)>> {
@@ -7497,9 +7518,9 @@ Source: [src/db/queries/edges.rs:1205](../src/db/queries/edges.rs#L1205).
     }
 ```
 
-### `get_call_edges_with_lines` — src/db/queries/edges.rs:1253
+### `get_call_edges_with_lines` — src/db/queries/edges.rs:1261
 
-Source: [src/db/queries/edges.rs:1253](../src/db/queries/edges.rs#L1253).
+Source: [src/db/queries/edges.rs:1261](../src/db/queries/edges.rs#L1261).
 
 ```rust
     pub async fn get_call_edges_with_lines(
@@ -7552,9 +7573,9 @@ Source: [src/db/queries/edges.rs:1253](../src/db/queries/edges.rs#L1253).
     }
 ```
 
-### `get_complexity_ranked` — src/db/queries/edges.rs:1307
+### `get_complexity_ranked` — src/db/queries/edges.rs:1315
 
-Source: [src/db/queries/edges.rs:1307](../src/db/queries/edges.rs#L1307).
+Source: [src/db/queries/edges.rs:1315](../src/db/queries/edges.rs#L1315).
 
 ```rust
     pub async fn get_complexity_ranked(
@@ -7644,9 +7665,9 @@ Source: [src/db/queries/edges.rs:1307](../src/db/queries/edges.rs#L1307).
     }
 ```
 
-### `get_undocumented_public_symbols` — src/db/queries/edges.rs:1400
+### `get_undocumented_public_symbols` — src/db/queries/edges.rs:1408
 
-Source: [src/db/queries/edges.rs:1400](../src/db/queries/edges.rs#L1400).
+Source: [src/db/queries/edges.rs:1408](../src/db/queries/edges.rs#L1408).
 
 ```rust
     pub async fn get_undocumented_public_symbols(
@@ -7712,9 +7733,9 @@ Source: [src/db/queries/edges.rs:1400](../src/db/queries/edges.rs#L1400).
     }
 ```
 
-### `get_god_classes` — src/db/queries/edges.rs:1465
+### `get_god_classes` — src/db/queries/edges.rs:1473
 
-Source: [src/db/queries/edges.rs:1465](../src/db/queries/edges.rs#L1465).
+Source: [src/db/queries/edges.rs:1473](../src/db/queries/edges.rs#L1473).
 
 ```rust
     pub async fn get_god_classes(
@@ -7733,20 +7754,29 @@ Source: [src/db/queries/edges.rs:1465](../src/db/queries/edges.rs#L1465).
 
         // After v9, containment is `nodes.parent_id`, not Contains edges.
         // Join each candidate container directly to its children via parent_id.
+        // Materialize only IDs and member counts for the selected containers.
+        // Full node text is loaded after the ranking limit, not per child row.
         let sql = format!(
-            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+            "WITH ranked AS MATERIALIZED (
+                 SELECT n.id,
+                        SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
+                        SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
+                        COUNT(*) AS total
+                 FROM nodes n
+                 JOIN nodes c ON c.parent_id = n.id
+                 WHERE n.kind IN ('class', 'struct', 'inner_class', 'object')
+                   {path_filter}
+                 GROUP BY n.id
+                 ORDER BY total DESC, n.id
+                 LIMIT ?1
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
-                    SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
-                    COUNT(*) AS total
-             FROM nodes n
-             JOIN nodes c ON c.parent_id = n.id
-             WHERE n.kind IN ('class', 'struct', 'inner_class', 'object')
-               {path_filter}
-             GROUP BY n.id
-             ORDER BY total DESC
-             LIMIT ?1"
+                    r.methods, r.fields, r.total
+             FROM ranked r
+             JOIN nodes n ON n.id = r.id
+             ORDER BY r.total DESC, r.id"
         );
 
         let op = "get_god_classes";
@@ -7787,9 +7817,9 @@ Source: [src/db/queries/edges.rs:1465](../src/db/queries/edges.rs#L1465).
     }
 ```
 
-### `get_all_edges` — src/db/queries/edges.rs:1535
+### `get_all_edges` — src/db/queries/edges.rs:1552
 
-Source: [src/db/queries/edges.rs:1535](../src/db/queries/edges.rs#L1535).
+Source: [src/db/queries/edges.rs:1552](../src/db/queries/edges.rs#L1552).
 
 ```rust
     pub async fn get_all_edges(&self) -> Result<Vec<Edge>> {
@@ -7809,9 +7839,9 @@ Source: [src/db/queries/edges.rs:1535](../src/db/queries/edges.rs#L1535).
     }
 ```
 
-### `get_edges_by_kind` — src/db/queries/edges.rs:1556
+### `get_edges_by_kind` — src/db/queries/edges.rs:1573
 
-Source: [src/db/queries/edges.rs:1556](../src/db/queries/edges.rs#L1556).
+Source: [src/db/queries/edges.rs:1573](../src/db/queries/edges.rs#L1573).
 
 ```rust
     pub async fn get_edges_by_kind(&self, kind: EdgeKind) -> Result<Vec<Edge>> {
@@ -7831,9 +7861,9 @@ Source: [src/db/queries/edges.rs:1556](../src/db/queries/edges.rs#L1556).
     }
 ```
 
-### `get_edges_by_kinds` — src/db/queries/edges.rs:1577
+### `get_edges_by_kinds` — src/db/queries/edges.rs:1594
 
-Source: [src/db/queries/edges.rs:1577](../src/db/queries/edges.rs#L1577).
+Source: [src/db/queries/edges.rs:1594](../src/db/queries/edges.rs#L1594).
 
 ```rust
     pub async fn get_edges_by_kinds(&self, kinds: &[EdgeKind]) -> Result<Vec<Edge>> {
@@ -7862,9 +7892,9 @@ Source: [src/db/queries/edges.rs:1577](../src/db/queries/edges.rs#L1577).
     }
 ```
 
-### `variant_group_candidates` — src/db/queries/edges.rs:1628
+### `variant_group_candidates` — src/db/queries/edges.rs:1645
 
-Source: [src/db/queries/edges.rs:1628](../src/db/queries/edges.rs#L1628).
+Source: [src/db/queries/edges.rs:1645](../src/db/queries/edges.rs#L1645).
 
 ```rust
     pub async fn variant_group_candidates(&self) -> Result<Vec<(String, String)>> {
@@ -7900,9 +7930,9 @@ Source: [src/db/queries/edges.rs:1628](../src/db/queries/edges.rs#L1628).
     }
 ```
 
-### `go_variant_candidates` — src/db/queries/edges.rs:1666
+### `go_variant_candidates` — src/db/queries/edges.rs:1683
 
-Source: [src/db/queries/edges.rs:1666](../src/db/queries/edges.rs#L1666).
+Source: [src/db/queries/edges.rs:1683](../src/db/queries/edges.rs#L1683).
 
 ```rust
     pub async fn go_variant_candidates(&self) -> Result<Vec<(String, String, String)>> {
@@ -7929,9 +7959,9 @@ Source: [src/db/queries/edges.rs:1666](../src/db/queries/edges.rs#L1666).
     }
 ```
 
-### `calls_edges_into` — src/db/queries/edges.rs:1693
+### `calls_edges_into` — src/db/queries/edges.rs:1710
 
-Source: [src/db/queries/edges.rs:1693](../src/db/queries/edges.rs#L1693).
+Source: [src/db/queries/edges.rs:1710](../src/db/queries/edges.rs#L1710).
 
 ```rust
     pub async fn calls_edges_into(&self, targets: &[String]) -> Result<Vec<Edge>> {
@@ -7963,9 +7993,9 @@ Source: [src/db/queries/edges.rs:1693](../src/db/queries/edges.rs#L1693).
     }
 ```
 
-### `get_top_degree_nodes` — src/db/queries/edges.rs:1739
+### `get_top_degree_nodes` — src/db/queries/edges.rs:1756
 
-Source: [src/db/queries/edges.rs:1739](../src/db/queries/edges.rs#L1739).
+Source: [src/db/queries/edges.rs:1756](../src/db/queries/edges.rs#L1756).
 
 ```rust
     pub async fn get_top_degree_nodes(&self, limit: usize) -> Result<Vec<(String, u32, u32)>> {
@@ -8014,9 +8044,9 @@ Source: [src/db/queries/edges.rs:1739](../src/db/queries/edges.rs#L1739).
     }
 ```
 
-### `delete_edges_by_source` — src/db/queries/edges.rs:1785
+### `delete_edges_by_source` — src/db/queries/edges.rs:1802
 
-Source: [src/db/queries/edges.rs:1785](../src/db/queries/edges.rs#L1785).
+Source: [src/db/queries/edges.rs:1802](../src/db/queries/edges.rs#L1802).
 
 ```rust
     pub async fn delete_edges_by_source(&self, source_id: &str) -> Result<()> {
@@ -8031,9 +8061,9 @@ Source: [src/db/queries/edges.rs:1785](../src/db/queries/edges.rs#L1785).
     }
 ```
 
-### `delete_call_edges_at_sites` — src/db/queries/edges.rs:1799
+### `delete_call_edges_at_sites` — src/db/queries/edges.rs:1816
 
-Source: [src/db/queries/edges.rs:1799](../src/db/queries/edges.rs#L1799).
+Source: [src/db/queries/edges.rs:1816](../src/db/queries/edges.rs#L1816).
 
 ```rust
     pub async fn delete_call_edges_at_sites(&self, sites: &[(String, u32, String)]) -> Result<()> {
@@ -12837,6 +12867,39 @@ Source: [src/global_db.rs:682](../src/global_db.rs#L682).
             .is_ok_and(|n| n > 0)
     }
 ```
+
+## Ranked node hydration (Refs #784)
+
+Q0118 and Q0130 aggregate IDs and counts into a `ranked AS MATERIALIZED` CTE,
+order and limit that narrow result, then hydrate all 28 node columns through the
+primary key. Both inner and outer orders use descending count and ascending
+node ID, making tied selection deterministic. Q0118 still binds edge kind at
+`?1`, optional node kind next, and limit last; direction and escaped path filters
+apply before grouping. Q0130 retains direct `parent_id` child counting, its four
+container kinds, method/field buckets, all-kind total, and exclusion of empty
+containers. Its path predicate applies to the container, not the children, and
+`?1` remains the limit. No schema or index change is required.
+
+The materialized result holds at most LIMIT ID/count rows, bounded further by
+eligible candidates, and is owned by one statement. Grouping/sorting still
+scales with eligible nodes and edges/children, but full text is hydrated only
+for selected IDs. No retained cache, extra connection, task, or Rust-side graph
+copy is added. Independent fixture counts in Rust verify filtering, edge
+direction/kind, multiple call sites, self calls, tied limits, direct children,
+external child paths, and complete hydrated payloads. No production-throughput
+or long-running RSS guarantee is claimed.
+
+Synthetic SQLite 3.46.1 comparisons used ANALYZE statistics, 7,800 nodes,
+32,000 call edges, 400 containers, LIMIT 20, two warmups, and seven alternating
+old/new runs. Full candidate results matched. With 2,048 bytes each in signatures
+and docstrings for functions/containers, median milliseconds were outgoing
+edge ranking 13.630 → 10.201, incoming 12.878 → 7.830, scoped incoming/kind
+0.955 → 0.665, god classes 20.019 → 2.939, and scoped god classes
+1.776 → 1.694. Empty-text workloads were also compared. Sparse queries with
+eight remaining call edges and one nonempty container measured edge ranking
+0.017 → 0.019 ms and god classes 0.434 → 0.373 ms: materialization and hydration
+can add constant overhead for tiny rankings. These are local algorithm checks,
+not bundled-libSQL or production latency guarantees.
 
 ## Coverage and limitations
 

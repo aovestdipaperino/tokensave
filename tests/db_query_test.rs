@@ -2913,3 +2913,240 @@ async fn test_get_top_degree_nodes_breaks_ties_deterministically() {
         "equal degrees must come back in id order, not in an arbitrary one"
     );
 }
+
+/// Rank from fixture edges in Rust, including distinct call sites and self calls.
+#[tokio::test]
+async fn test_ranked_edge_hydration_preserves_filters_counts_and_payloads() {
+    let (_dir, db) = setup_db().await;
+    let scope = "src/a_%'quoted";
+    let definitions = [
+        ("rank-a", NodeKind::Function, scope),
+        ("rank-b", NodeKind::Function, "src/a_%'quoted/b.rs"),
+        ("rank-c", NodeKind::Class, "src/a_%'quoted/c.rs"),
+        ("rank-d", NodeKind::Function, "outside/d.rs"),
+        ("rank-e", NodeKind::Class, "outside/e.rs"),
+        (
+            "rank-sibling",
+            NodeKind::Function,
+            "src/a_%'quoted-sibling/x.rs",
+        ),
+        ("rank-wildcard", NodeKind::Function, "src/abXX'quoted/x.rs"),
+        ("rank-empty", NodeKind::Function, scope),
+    ];
+    let nodes: Vec<_> = definitions
+        .into_iter()
+        .enumerate()
+        .map(|(i, (id, kind, path))| {
+            let mut node = sample_node(id, id, path);
+            node.kind = kind;
+            node.signature = Some(format!("{id}: {}", "signature ".repeat(200)));
+            node.docstring = Some(format!("{id}: {}", "documentation ".repeat(200)));
+            node.branches = i as u32;
+            node.cognitive_complexity = i as u32;
+            node
+        })
+        .collect();
+    db.insert_nodes(&nodes).await.unwrap();
+    let mut edges: Vec<_> = [
+        ("rank-a", "rank-b", EdgeKind::Calls),
+        ("rank-b", "rank-a", EdgeKind::Calls),
+        ("rank-a", "rank-a", EdgeKind::Calls),
+        ("rank-d", "rank-a", EdgeKind::Calls),
+        ("rank-c", "rank-b", EdgeKind::Calls),
+        ("rank-a", "rank-c", EdgeKind::Calls),
+        ("rank-d", "rank-e", EdgeKind::Calls),
+        ("rank-sibling", "rank-a", EdgeKind::Calls),
+        ("rank-wildcard", "rank-b", EdgeKind::Calls),
+        ("rank-a", "rank-c", EdgeKind::Implements),
+        ("rank-d", "rank-c", EdgeKind::Implements),
+        ("rank-a", "rank-e", EdgeKind::Uses),
+        ("rank-b", "rank-e", EdgeKind::Uses),
+    ]
+    .into_iter()
+    .map(|(source, target, kind)| sample_edge(source, target, kind))
+    .collect();
+    let mut another_call = sample_edge("rank-a", "rank-b", EdgeKind::Calls);
+    another_call.line = Some(99);
+    edges.push(another_call);
+    db.insert_edges(&edges).await.unwrap();
+
+    for edge_kind in [EdgeKind::Calls, EdgeKind::Implements, EdgeKind::Uses] {
+        for incoming in [false, true] {
+            for kind in [None, Some(&NodeKind::Function), Some(&NodeKind::Class)] {
+                for prefix in [
+                    None,
+                    Some(scope),
+                    Some("src/a_%'quoted/b.rs"),
+                    Some("missing"),
+                ] {
+                    let mut expected: Vec<_> = nodes
+                        .iter()
+                        .filter(|node| kind.is_none_or(|kind| node.kind == *kind))
+                        .filter(|node| {
+                            prefix.is_none_or(|prefix| {
+                                node.file_path == prefix
+                                    || node.file_path.starts_with(&format!("{prefix}/"))
+                            })
+                        })
+                        .filter_map(|node| {
+                            let count = edges
+                                .iter()
+                                .filter(|edge| {
+                                    edge.kind == edge_kind
+                                        && (if incoming { &edge.target } else { &edge.source })
+                                            == &node.id
+                                })
+                                .count() as u64;
+                            (count > 0).then_some((node, count))
+                        })
+                        .collect();
+                    expected.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.id.cmp(&b.0.id)));
+                    for limit in [1, 2, 100] {
+                        let actual = db
+                            .get_ranked_nodes_by_edge_kind(
+                                &edge_kind, kind, incoming, prefix, limit,
+                            )
+                            .await
+                            .unwrap();
+                        let expected: Vec<_> = expected.iter().take(limit).collect();
+                        assert_eq!(actual.len(), expected.len());
+                        for ((node, count), (expected_node, expected_count)) in
+                            actual.iter().zip(expected)
+                        {
+                            assert_eq!(count, expected_count);
+                            assert_eq!(
+                                serde_json::to_value(node).unwrap(),
+                                serde_json::to_value(expected_node).unwrap()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Count all direct children, including kinds outside the method/field buckets.
+#[tokio::test]
+async fn test_god_class_hydration_preserves_direct_member_counts_and_payloads() {
+    let (_dir, db) = setup_db().await;
+    let scope = "src/a_%'quoted";
+    let definitions = [
+        ("god-a", NodeKind::Class, scope),
+        ("god-b", NodeKind::Struct, "src/a_%'quoted/b.rs"),
+        ("god-c", NodeKind::InnerClass, "outside/c.rs"),
+        ("god-d", NodeKind::ScalaObject, "outside/d.rs"),
+        ("god-empty", NodeKind::Class, scope),
+        ("god-module", NodeKind::Module, scope),
+        (
+            "god-sibling",
+            NodeKind::Class,
+            "src/a_%'quoted-sibling/x.rs",
+        ),
+        ("god-wildcard", NodeKind::Class, "src/abXX'quoted/x.rs"),
+    ];
+    let mut nodes: Vec<_> = definitions
+        .into_iter()
+        .map(|(id, kind, path)| {
+            let mut node = sample_node(id, id, path);
+            node.kind = kind;
+            node.signature = Some(format!("{id}: {}", "signature ".repeat(200)));
+            node.docstring = Some(format!("{id}: {}", "documentation ".repeat(200)));
+            node
+        })
+        .collect();
+    let child_kinds = [
+        NodeKind::Method,
+        NodeKind::SingletonMethod,
+        NodeKind::AbstractMethod,
+        NodeKind::Constructor,
+        NodeKind::Field,
+        NodeKind::Function,
+    ];
+    for (parent, count) in [
+        ("god-a", 6),
+        ("god-b", 6),
+        ("god-c", 4),
+        ("god-d", 2),
+        ("god-module", 7),
+        ("god-sibling", 7),
+        ("god-wildcard", 7),
+    ] {
+        for i in 0..count {
+            let id = format!("{parent}-child-{i}");
+            let mut child = sample_node(&id, &id, "outside/children.rs");
+            child.kind = child_kinds[i % child_kinds.len()].clone();
+            child.parent_id = Some(parent.to_string());
+            nodes.push(child);
+        }
+    }
+    // A grandchild must not increase its grandparent's direct member count.
+    let mut grandchild = sample_node("god-grandchild", "Nested", scope);
+    grandchild.parent_id = Some("god-a-child-0".to_string());
+    nodes.push(grandchild);
+    db.insert_nodes(&nodes).await.unwrap();
+
+    for prefix in [
+        None,
+        Some(scope),
+        Some("src/a_%'quoted/b.rs"),
+        Some("missing"),
+    ] {
+        let mut expected: Vec<_> = nodes
+            .iter()
+            .filter(|node| {
+                matches!(
+                    node.kind,
+                    NodeKind::Class
+                        | NodeKind::Struct
+                        | NodeKind::InnerClass
+                        | NodeKind::ScalaObject
+                )
+            })
+            .filter(|node| {
+                prefix.is_none_or(|prefix| {
+                    node.file_path == prefix || node.file_path.starts_with(&format!("{prefix}/"))
+                })
+            })
+            .filter_map(|node| {
+                let children: Vec<_> = nodes
+                    .iter()
+                    .filter(|child| child.parent_id.as_deref() == Some(node.id.as_str()))
+                    .collect();
+                let methods = children
+                    .iter()
+                    .filter(|child| {
+                        matches!(
+                            child.kind,
+                            NodeKind::Method
+                                | NodeKind::SingletonMethod
+                                | NodeKind::AbstractMethod
+                                | NodeKind::Constructor
+                        )
+                    })
+                    .count() as u64;
+                let fields = children
+                    .iter()
+                    .filter(|child| child.kind == NodeKind::Field)
+                    .count() as u64;
+                let total = children.len() as u64;
+                (total > 0).then_some((node, methods, fields, total))
+            })
+            .collect();
+        expected.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| a.0.id.cmp(&b.0.id)));
+        for limit in [0, 1, 2, 100] {
+            let actual = db.get_god_classes(prefix, limit).await.unwrap();
+            let expected: Vec<_> = expected.iter().take(limit).collect();
+            assert_eq!(actual.len(), expected.len());
+            for ((node, methods, fields, total), (expected_node, em, ef, et)) in
+                actual.iter().zip(expected)
+            {
+                assert_eq!((methods, fields, total), (em, ef, et));
+                assert_eq!(
+                    serde_json::to_value(node).unwrap(),
+                    serde_json::to_value(expected_node).unwrap()
+                );
+            }
+        }
+    }
+}

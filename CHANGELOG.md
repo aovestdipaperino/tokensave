@@ -19,6 +19,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Performance
 
+- Rank edge-count and god-class candidates using IDs and counts before loading full node data for the selected results, with deterministic ordering for equal counts (Refs #784).
+
 - Construct the MCP tool registry once during server startup and release schemas before opening the global database, preserving routing gates and schema accounting without retaining a schema cache (#735).
 
 ### Added

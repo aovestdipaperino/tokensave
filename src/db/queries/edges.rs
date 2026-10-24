@@ -838,7 +838,7 @@ impl Database {
     /// by outgoing edge count (e.g. "class that implements the most interfaces").
     ///
     /// The query is performed entirely in SQL for efficiency — no need to load
-    /// all edges into memory. Results are ordered by count descending.
+    /// all edges into memory. Results are ordered by count descending, then node ID.
     pub async fn get_ranked_nodes_by_edge_kind(
         &self,
         edge_kind: &EdgeKind,
@@ -878,17 +878,25 @@ impl Database {
         }
 
         let where_clause = conditions.join(" AND ");
+        // Keep signatures/docstrings out of aggregation and sorting; only
+        // hydrate the bounded winners after applying all candidate filters.
         let sql = format!(
-            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+            "WITH ranked AS MATERIALIZED (
+                 SELECT {group_col} AS id, COUNT(*) AS cnt
+                 FROM edges e
+                 JOIN nodes n ON {join_col} = n.id
+                 WHERE {where_clause}
+                 GROUP BY {group_col}
+                 ORDER BY cnt DESC, {group_col}
+                 LIMIT ?{param_idx}
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    COUNT(*) AS cnt
-             FROM edges e
-             JOIN nodes n ON {join_col} = n.id
-             WHERE {where_clause}
-             GROUP BY {group_col}
-             ORDER BY cnt DESC
-             LIMIT ?{param_idx}"
+                    r.cnt
+             FROM ranked r
+             JOIN nodes n ON n.id = r.id
+             ORDER BY r.cnt DESC, r.id"
         );
         param_values.push(libsql::Value::Integer(limit as i64));
 
@@ -1478,20 +1486,29 @@ impl Database {
 
         // After v9, containment is `nodes.parent_id`, not Contains edges.
         // Join each candidate container directly to its children via parent_id.
+        // Materialize only IDs and member counts for the selected containers.
+        // Full node text is loaded after the ranking limit, not per child row.
         let sql = format!(
-            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+            "WITH ranked AS MATERIALIZED (
+                 SELECT n.id,
+                        SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
+                        SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
+                        COUNT(*) AS total
+                 FROM nodes n
+                 JOIN nodes c ON c.parent_id = n.id
+                 WHERE n.kind IN ('class', 'struct', 'inner_class', 'object')
+                   {path_filter}
+                 GROUP BY n.id
+                 ORDER BY total DESC, n.id
+                 LIMIT ?1
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
-                    SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
-                    COUNT(*) AS total
-             FROM nodes n
-             JOIN nodes c ON c.parent_id = n.id
-             WHERE n.kind IN ('class', 'struct', 'inner_class', 'object')
-               {path_filter}
-             GROUP BY n.id
-             ORDER BY total DESC
-             LIMIT ?1"
+                    r.methods, r.fields, r.total
+             FROM ranked r
+             JOIN nodes n ON n.id = r.id
+             ORDER BY r.total DESC, r.id"
         );
 
         let op = "get_god_classes";
