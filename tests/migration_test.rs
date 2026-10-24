@@ -1689,3 +1689,47 @@ async fn test_forced_rebuild_is_refused_while_the_sync_lock_is_held() {
         .expect("rebuild");
     assert!(!cg.get_nodes_by_name("f").await.expect("query").is_empty());
 }
+
+#[tokio::test]
+async fn test_v19_indexes_dispatch_deletion_on_fresh_and_upgraded_databases() {
+    let (_dir, conn, _db) = create_raw_db().await;
+    create_schema(&conn).await.unwrap();
+    assert!(index_exists(&conn, "idx_trait_dispatch_callers_call").await);
+    conn.execute_batch(
+        "DROP INDEX idx_trait_dispatch_callers_call;
+         INSERT INTO trait_dispatch_callers VALUES ('concrete', 'trait', 'caller', -1);",
+    )
+    .await
+    .unwrap();
+    set_user_version(&conn, 18).await;
+    assert!(migrate(&conn).await.unwrap());
+    assert_eq!(get_user_version(&conn).await, latest_version());
+    assert!(index_exists(&conn, "idx_trait_dispatch_callers_call").await);
+    let mut rows = conn
+        .query(
+            "EXPLAIN QUERY PLAN DELETE FROM trait_dispatch_callers
+         WHERE caller_id='caller' AND trait_method_id='trait' AND line=-1",
+            (),
+        )
+        .await
+        .unwrap();
+    let mut uses_index = false;
+    while let Some(row) = rows.next().await.unwrap() {
+        uses_index |= row
+            .get::<String>(3)
+            .unwrap()
+            .contains("idx_trait_dispatch_callers_call");
+    }
+    assert!(uses_index, "dispatch deletion must use the new index");
+    drop(rows);
+    let mut rows = conn
+        .query("SELECT COUNT(*) FROM trait_dispatch_callers", ())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+        1
+    );
+    drop(rows);
+    assert!(!migrate(&conn).await.unwrap());
+}

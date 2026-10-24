@@ -1115,48 +1115,6 @@ impl Database {
         // SQLite rejects as "cannot start a transaction within a transaction"
         // (#563).
         let _write_guard = self.write_lock.lock().await;
-        self.conn()
-            .execute(
-                "DELETE FROM executable_body_fts WHERE file_path = ?1",
-                params![file_path],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to delete executable body documents: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })?;
-
-        // Gather node IDs for the file first.
-        let node_ids: Vec<String> = {
-            let mut rows = self
-                .conn()
-                .query(
-                    "SELECT id FROM nodes WHERE file_path = ?1",
-                    params![file_path],
-                )
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to query node ids: {e}"),
-                    operation: "delete_nodes_by_file".to_string(),
-                })?;
-
-            let mut ids = Vec::new();
-            while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-                message: format!("failed to read node id: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })? {
-                ids.push(row.get::<String>(0).map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to read node id value: {e}"),
-                    operation: "delete_nodes_by_file".to_string(),
-                })?);
-            }
-            ids
-        };
-
-        if node_ids.is_empty() {
-            return Ok(());
-        }
-
         let tx = self
             .conn()
             .transaction()
@@ -1166,44 +1124,48 @@ impl Database {
                 operation: "delete_nodes_by_file".to_string(),
             })?;
 
-        for id in &node_ids {
-            tx.execute(
-                "DELETE FROM edges WHERE source = ?1 OR target = ?1",
-                params![id.as_str()],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to delete edges: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })?;
+        let result: Result<()> = async {
+            // Delete dependents while the nodes still exist, so dispatch triggers
+            // can resolve their parents. Subqueries avoid collecting IDs in Rust
+            // or issuing three statements for every node in the file. Explicit
+            // deletes also preserve cleanup when foreign keys are disabled.
+            for sql in [
+                "DELETE FROM executable_body_fts WHERE file_path = ?1",
+                "DELETE FROM edges
+                 WHERE source IN (SELECT id FROM nodes WHERE file_path = ?1)
+                    OR target IN (SELECT id FROM nodes WHERE file_path = ?1)",
+                "DELETE FROM unresolved_refs
+                 WHERE from_node_id IN (SELECT id FROM nodes WHERE file_path = ?1)",
+                "DELETE FROM vectors
+                 WHERE node_id IN (SELECT id FROM nodes WHERE file_path = ?1)",
+            ] {
+                tx.execute(sql, params![file_path]).await.map_err(|e| {
+                    TokenSaveError::Database {
+                        message: format!("failed to delete file dependents: {e}"),
+                        operation: "delete_nodes_by_file".to_string(),
+                    }
+                })?;
+            }
 
-            tx.execute(
-                "DELETE FROM unresolved_refs WHERE from_node_id = ?1",
-                params![id.as_str()],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to delete unresolved refs: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })?;
+            tx.execute("DELETE FROM nodes WHERE file_path = ?1", params![file_path])
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to delete nodes: {e}"),
+                    operation: "delete_nodes_by_file".to_string(),
+                })?;
 
-            tx.execute(
-                "DELETE FROM vectors WHERE node_id = ?1",
-                params![id.as_str()],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to delete vectors: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })?;
+            Ok(())
         }
-
-        tx.execute("DELETE FROM nodes WHERE file_path = ?1", params![file_path])
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to delete nodes: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })?;
+        .await;
+        if let Err(error) = result {
+            tx.rollback()
+                .await
+                .map_err(|rollback_error| TokenSaveError::Database {
+                    message: format!("{error}; rollback failed: {rollback_error}"),
+                    operation: "delete_nodes_by_file".to_string(),
+                })?;
+            return Err(error);
+        }
 
         tx.commit().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to commit transaction: {e}"),

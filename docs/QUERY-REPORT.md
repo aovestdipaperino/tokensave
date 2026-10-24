@@ -1,6 +1,6 @@
 # tokensave SQL query inventory
 
-Snapshot: `3eb8c01079a9f62ee0dd4ec29b58f5e5f27a2c25` (working-tree source inspected on 2026-10-24).
+Snapshot: base `4527d5a1168f66a33ce7afdb2d492d0113203bac` plus query optimizations (source inspected on 2026-10-24).
 
 ## Scope and reading guide
 
@@ -14,7 +14,7 @@ Entries are grouped by source file and retain separate occurrences, even when SQ
 
 - SQL-bearing source files: **36**.
 - SQL literal/template occurrences: **342**.
-- Functions retained for construction/binding context: **171**.
+- Functions retained for construction/binding context: **172**.
 
 ## Source file index
 
@@ -25,14 +25,14 @@ Entries are grouped by source file and retain separate occurrences, even when SQ
 | [src/blame_engine.rs](../src/blame_engine.rs) | 16 |
 | [src/branch.rs](../src/branch.rs) | 2 |
 | [src/db/connection.rs](../src/db/connection.rs) | 11 |
-| [src/db/migrations.rs](../src/db/migrations.rs) | 53 |
+| [src/db/migrations.rs](../src/db/migrations.rs) | 54 |
 | [src/db/queries/clear.rs](../src/db/queries/clear.rs) | 1 |
 | [src/db/queries/edges.rs](../src/db/queries/edges.rs) | 51 |
 | [src/db/queries/files.rs](../src/db/queries/files.rs) | 8 |
 | [src/db/queries/fingerprints.rs](../src/db/queries/fingerprints.rs) | 3 |
 | [src/db/queries/metadata.rs](../src/db/queries/metadata.rs) | 13 |
 | [src/db/queries/mod.rs](../src/db/queries/mod.rs) | 3 |
-| [src/db/queries/nodes.rs](../src/db/queries/nodes.rs) | 37 |
+| [src/db/queries/nodes.rs](../src/db/queries/nodes.rs) | 36 |
 | [src/db/queries/routes.rs](../src/db/queries/routes.rs) | 18 |
 | [src/db/queries/search.rs](../src/db/queries/search.rs) | 9 |
 | [src/db/queries/stats.rs](../src/db/queries/stats.rs) | 5 |
@@ -713,7 +713,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 
 #### Q0040 — `migrate`
 
-Source: [src/db/migrations.rs:401](../src/db/migrations.rs#L401).
+Source: [src/db/migrations.rs:402](../src/db/migrations.rs#L402).
 
 ```sql
 BEGIN EXCLUSIVE
@@ -721,7 +721,7 @@ BEGIN EXCLUSIVE
 
 #### Q0041 — `migrate`
 
-Source: [src/db/migrations.rs:416](../src/db/migrations.rs#L416).
+Source: [src/db/migrations.rs:417](../src/db/migrations.rs#L417).
 
 ```sql
 COMMIT
@@ -729,7 +729,7 @@ COMMIT
 
 #### Q0042 — `migrate`
 
-Source: [src/db/migrations.rs:425](../src/db/migrations.rs#L425).
+Source: [src/db/migrations.rs:426](../src/db/migrations.rs#L426).
 
 ```sql
 ROLLBACK
@@ -737,7 +737,7 @@ ROLLBACK
 
 #### Q0043 — `migrate_v1`
 
-Source: [src/db/migrations.rs:537](../src/db/migrations.rs#L537).
+Source: [src/db/migrations.rs:539](../src/db/migrations.rs#L539).
 
 ```sql
 CREATE TABLE IF NOT EXISTS nodes (
@@ -799,7 +799,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 
 #### Q0044 — `migrate_v1`
 
-Source: [src/db/migrations.rs:601](../src/db/migrations.rs#L601).
+Source: [src/db/migrations.rs:603](../src/db/migrations.rs#L603).
 
 ```sql
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
@@ -831,7 +831,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
 
 #### Q0045 — `migrate_v1`
 
-Source: [src/db/migrations.rs:635](../src/db/migrations.rs#L635).
+Source: [src/db/migrations.rs:637](../src/db/migrations.rs#L637).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
@@ -853,7 +853,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
 
 #### Q0046 — `migrate_v2`
 
-Source: [src/db/migrations.rs:667](../src/db/migrations.rs#L667).
+Source: [src/db/migrations.rs:669](../src/db/migrations.rs#L669).
 
 ```sql
 CREATE TABLE IF NOT EXISTS metadata (
@@ -864,7 +864,7 @@ CREATE TABLE IF NOT EXISTS metadata (
 
 #### Q0047 — `migrate_v2`
 
-Source: [src/db/migrations.rs:680](../src/db/migrations.rs#L680).
+Source: [src/db/migrations.rs:682](../src/db/migrations.rs#L682).
 
 ```sql
 DROP TABLE IF EXISTS schema_versions
@@ -872,7 +872,7 @@ DROP TABLE IF EXISTS schema_versions
 
 #### Q0048 — `migrate_v3`
 
-Source: [src/db/migrations.rs:697](../src/db/migrations.rs#L697).
+Source: [src/db/migrations.rs:699](../src/db/migrations.rs#L699).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN branches INTEGER NOT NULL DEFAULT 0;
@@ -883,7 +883,7 @@ ALTER TABLE nodes ADD COLUMN branches INTEGER NOT NULL DEFAULT 0;
 
 #### Q0049 — `migrate_v4`
 
-Source: [src/db/migrations.rs:718](../src/db/migrations.rs#L718).
+Source: [src/db/migrations.rs:720](../src/db/migrations.rs#L720).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN unsafe_blocks INTEGER NOT NULL DEFAULT 0;
@@ -893,7 +893,7 @@ ALTER TABLE nodes ADD COLUMN unsafe_blocks INTEGER NOT NULL DEFAULT 0;
 
 #### Q0050 — `migrate_v5`
 
-Source: [src/db/migrations.rs:743](../src/db/migrations.rs#L743).
+Source: [src/db/migrations.rs:745](../src/db/migrations.rs#L745).
 
 ```sql
 CREATE TABLE edges_dedup (
@@ -923,7 +923,7 @@ CREATE TABLE edges_dedup (
 
 #### Q0051 — `migrate_v6`
 
-Source: [src/db/migrations.rs:784](../src/db/migrations.rs#L784).
+Source: [src/db/migrations.rs:786](../src/db/migrations.rs#L786).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name))
@@ -931,7 +931,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name))
 
 #### Q0052 — `migrate_v7`
 
-Source: [src/db/migrations.rs:809](../src/db/migrations.rs#L809).
+Source: [src/db/migrations.rs:811](../src/db/migrations.rs#L811).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN attrs_start_line INTEGER NOT NULL DEFAULT 0
@@ -939,7 +939,7 @@ ALTER TABLE nodes ADD COLUMN attrs_start_line INTEGER NOT NULL DEFAULT 0
 
 #### Q0053 — `migrate_v7`
 
-Source: [src/db/migrations.rs:819](../src/db/migrations.rs#L819).
+Source: [src/db/migrations.rs:821](../src/db/migrations.rs#L821).
 
 ```sql
 UPDATE nodes SET attrs_start_line = start_line WHERE attrs_start_line = 0
@@ -947,7 +947,7 @@ UPDATE nodes SET attrs_start_line = start_line WHERE attrs_start_line = 0
 
 #### Q0054 — `migrate_v8`
 
-Source: [src/db/migrations.rs:842](../src/db/migrations.rs#L842).
+Source: [src/db/migrations.rs:844](../src/db/migrations.rs#L844).
 
 ```sql
 CREATE TABLE IF NOT EXISTS memory_decisions (
@@ -1000,7 +1000,7 @@ CREATE TABLE IF NOT EXISTS memory_decisions (
 
 #### Q0055 — `migrate_v9`
 
-Source: [src/db/migrations.rs:913](../src/db/migrations.rs#L913).
+Source: [src/db/migrations.rs:915](../src/db/migrations.rs#L915).
 
 ```sql
 CREATE TABLE IF NOT EXISTS read_cache (
@@ -1023,7 +1023,7 @@ CREATE TABLE IF NOT EXISTS read_cache (
 
 #### Q0056 — `migrate_v9`
 
-Source: [src/db/migrations.rs:942](../src/db/migrations.rs#L942).
+Source: [src/db/migrations.rs:944](../src/db/migrations.rs#L944).
 
 ```sql
 PRAGMA table_info(nodes)
@@ -1031,7 +1031,7 @@ PRAGMA table_info(nodes)
 
 #### Q0057 — `migrate_v9`
 
-Source: [src/db/migrations.rs:964](../src/db/migrations.rs#L964).
+Source: [src/db/migrations.rs:966](../src/db/migrations.rs#L966).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN parent_id TEXT
@@ -1039,7 +1039,7 @@ ALTER TABLE nodes ADD COLUMN parent_id TEXT
 
 #### Q0058 — `migrate_v9`
 
-Source: [src/db/migrations.rs:978](../src/db/migrations.rs#L978).
+Source: [src/db/migrations.rs:980](../src/db/migrations.rs#L980).
 
 ```sql
 SELECT 1 FROM sqlite_master WHERE type='table' AND name='edges'
@@ -1047,7 +1047,7 @@ SELECT 1 FROM sqlite_master WHERE type='table' AND name='edges'
 
 #### Q0059 — `migrate_v9`
 
-Source: [src/db/migrations.rs:1000](../src/db/migrations.rs#L1000).
+Source: [src/db/migrations.rs:1002](../src/db/migrations.rs#L1002).
 
 ```sql
 UPDATE nodes SET parent_id = (
@@ -1059,7 +1059,7 @@ UPDATE nodes SET parent_id = (
 
 #### Q0060 — `migrate_v9`
 
-Source: [src/db/migrations.rs:1013](../src/db/migrations.rs#L1013).
+Source: [src/db/migrations.rs:1015](../src/db/migrations.rs#L1015).
 
 ```sql
 DELETE FROM edges WHERE kind = 'contains'
@@ -1067,7 +1067,7 @@ DELETE FROM edges WHERE kind = 'contains'
 
 #### Q0061 — `migrate_v9`
 
-Source: [src/db/migrations.rs:1022](../src/db/migrations.rs#L1022).
+Source: [src/db/migrations.rs:1024](../src/db/migrations.rs#L1024).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)
@@ -1075,7 +1075,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)
 
 #### Q0062 — `migrate_v10`
 
-Source: [src/db/migrations.rs:1044](../src/db/migrations.rs#L1044).
+Source: [src/db/migrations.rs:1046](../src/db/migrations.rs#L1046).
 
 ```sql
 CREATE TABLE IF NOT EXISTS node_fingerprints (
@@ -1095,7 +1095,7 @@ CREATE TABLE IF NOT EXISTS node_fingerprints (
 
 #### Q0063 — `migrate_v11`
 
-Source: [src/db/migrations.rs:1097](../src/db/migrations.rs#L1097).
+Source: [src/db/migrations.rs:1099](../src/db/migrations.rs#L1099).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0
@@ -1103,7 +1103,7 @@ ALTER TABLE nodes ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0
 
 #### Q0064 — `migrate_v12`
 
-Source: [src/db/migrations.rs:1120](../src/db/migrations.rs#L1120).
+Source: [src/db/migrations.rs:1122](../src/db/migrations.rs#L1122).
 
 ```sql
 CREATE VIRTUAL TABLE IF NOT EXISTS executable_body_fts USING fts5(
@@ -1125,7 +1125,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS executable_body_fts USING fts5(
 
 #### Q0065 — `migrate_v12`
 
-Source: [src/db/migrations.rs:1143](../src/db/migrations.rs#L1143).
+Source: [src/db/migrations.rs:1145](../src/db/migrations.rs#L1145).
 
 ```sql
 SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
@@ -1133,7 +1133,7 @@ SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
 
 #### Q0066 — `migrate_v13`
 
-Source: [src/db/migrations.rs:1180](../src/db/migrations.rs#L1180).
+Source: [src/db/migrations.rs:1182](../src/db/migrations.rs#L1182).
 
 ```sql
 CREATE TABLE IF NOT EXISTS trait_dispatch_callers (
@@ -1149,7 +1149,7 @@ CREATE TABLE IF NOT EXISTS trait_dispatch_callers (
 
 #### Q0067 — `migrate_v13`
 
-Source: [src/db/migrations.rs:1198](../src/db/migrations.rs#L1198).
+Source: [src/db/migrations.rs:1200](../src/db/migrations.rs#L1200).
 
 ```sql
 SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
@@ -1157,7 +1157,7 @@ SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
 
 #### Q0068 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1274](../src/db/migrations.rs#L1274).
+Source: [src/db/migrations.rs:1276](../src/db/migrations.rs#L1276).
 
 ```sql
 SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
@@ -1165,7 +1165,7 @@ SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
 
 #### Q0069 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1294](../src/db/migrations.rs#L1294).
+Source: [src/db/migrations.rs:1296](../src/db/migrations.rs#L1296).
 
 ```sql
 DELETE FROM edges
@@ -1177,7 +1177,7 @@ DELETE FROM edges
 
 #### Q0070 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1311](../src/db/migrations.rs#L1311).
+Source: [src/db/migrations.rs:1313](../src/db/migrations.rs#L1313).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN search_terms TEXT NOT NULL DEFAULT ''
@@ -1185,7 +1185,7 @@ ALTER TABLE nodes ADD COLUMN search_terms TEXT NOT NULL DEFAULT ''
 
 #### Q0071 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1323](../src/db/migrations.rs#L1323).
+Source: [src/db/migrations.rs:1325](../src/db/migrations.rs#L1325).
 
 ```sql
 DROP TRIGGER IF EXISTS nodes_fts_insert;
@@ -1196,7 +1196,7 @@ DROP TRIGGER IF EXISTS nodes_fts_insert;
 
 #### Q0072 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1338](../src/db/migrations.rs#L1338).
+Source: [src/db/migrations.rs:1340](../src/db/migrations.rs#L1340).
 
 ```sql
 SELECT rowid, name, qualified_name FROM nodes
@@ -1204,7 +1204,7 @@ SELECT rowid, name, qualified_name FROM nodes
 
 #### Q0073 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1369](../src/db/migrations.rs#L1369).
+Source: [src/db/migrations.rs:1371](../src/db/migrations.rs#L1371).
 
 ```sql
 UPDATE nodes SET search_terms = ?1 WHERE rowid = ?2
@@ -1212,7 +1212,7 @@ UPDATE nodes SET search_terms = ?1 WHERE rowid = ?2
 
 #### Q0074 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1382](../src/db/migrations.rs#L1382).
+Source: [src/db/migrations.rs:1384](../src/db/migrations.rs#L1384).
 
 ```sql
 CREATE VIRTUAL TABLE nodes_fts USING fts5(
@@ -1243,7 +1243,7 @@ CREATE VIRTUAL TABLE nodes_fts USING fts5(
 
 #### Q0075 — `table_exists`
 
-Source: [src/db/migrations.rs:1441](../src/db/migrations.rs#L1441).
+Source: [src/db/migrations.rs:1443](../src/db/migrations.rs#L1443).
 
 ```sql
 SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
@@ -1251,7 +1251,7 @@ SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
 
 #### Q0076 — `migrate_v15`
 
-Source: [src/db/migrations.rs:1479](../src/db/migrations.rs#L1479).
+Source: [src/db/migrations.rs:1481](../src/db/migrations.rs#L1481).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
@@ -1263,7 +1263,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
 
 #### Q0077 — `migrate_v15`
 
-Source: [src/db/migrations.rs:1495](../src/db/migrations.rs#L1495).
+Source: [src/db/migrations.rs:1497](../src/db/migrations.rs#L1497).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source, kind);
@@ -1275,7 +1275,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source, kind);
 
 #### Q0078 — `migrate_v15`
 
-Source: [src/db/migrations.rs:1511](../src/db/migrations.rs#L1511).
+Source: [src/db/migrations.rs:1513](../src/db/migrations.rs#L1513).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_unresolved_refs_from_node_id ON unresolved_refs(from_node_id);
@@ -1285,7 +1285,7 @@ CREATE INDEX IF NOT EXISTS idx_unresolved_refs_from_node_id ON unresolved_refs(f
 
 #### Q0079 — `migrate_v15`
 
-Source: [src/db/migrations.rs:1530](../src/db/migrations.rs#L1530).
+Source: [src/db/migrations.rs:1532](../src/db/migrations.rs#L1532).
 
 ```sql
 DROP TRIGGER IF EXISTS nodes_fts_insert;
@@ -1312,7 +1312,7 @@ DROP TRIGGER IF EXISTS nodes_fts_insert;
 
 #### Q0080 — `node_columns`
 
-Source: [src/db/migrations.rs:1575](../src/db/migrations.rs#L1575).
+Source: [src/db/migrations.rs:1577](../src/db/migrations.rs#L1577).
 
 ```sql
 PRAGMA table_info(nodes)
@@ -1320,7 +1320,7 @@ PRAGMA table_info(nodes)
 
 #### Q0081 — `migrate_v16`
 
-Source: [src/db/migrations.rs:1622](../src/db/migrations.rs#L1622).
+Source: [src/db/migrations.rs:1624](../src/db/migrations.rs#L1624).
 
 ```sql
 ALTER TABLE files ADD COLUMN kind TEXT NOT NULL DEFAULT 'code';
@@ -1328,7 +1328,7 @@ ALTER TABLE files ADD COLUMN kind TEXT NOT NULL DEFAULT 'code';
 
 #### Q0082 — `indexes_naming`
 
-Source: [src/db/migrations.rs:1659](../src/db/migrations.rs#L1659).
+Source: [src/db/migrations.rs:1661](../src/db/migrations.rs#L1661).
 
 ```sql
 SELECT name FROM sqlite_master
@@ -1337,7 +1337,7 @@ SELECT name FROM sqlite_master
 
 #### Q0083 — `table_columns`
 
-Source: [src/db/migrations.rs:1683](../src/db/migrations.rs#L1683).
+Source: [src/db/migrations.rs:1685](../src/db/migrations.rs#L1685).
 
 ```sql
 PRAGMA table_info({table})
@@ -1345,7 +1345,7 @@ PRAGMA table_info({table})
 
 #### Q0084 — `migrate_v18`
 
-Source: [src/db/migrations.rs:1733](../src/db/migrations.rs#L1733).
+Source: [src/db/migrations.rs:1735](../src/db/migrations.rs#L1735).
 
 ```sql
 PRAGMA table_info(edges)
@@ -1353,7 +1353,7 @@ PRAGMA table_info(edges)
 
 #### Q0085 — `migrate_v18`
 
-Source: [src/db/migrations.rs:1762](../src/db/migrations.rs#L1762).
+Source: [src/db/migrations.rs:1764](../src/db/migrations.rs#L1764).
 
 ```sql
 DROP INDEX IF EXISTS "{index}";
@@ -1361,7 +1361,7 @@ DROP INDEX IF EXISTS "{index}";
 
 #### Q0086 — `migrate_v18`
 
-Source: [src/db/migrations.rs:1769](../src/db/migrations.rs#L1769).
+Source: [src/db/migrations.rs:1771](../src/db/migrations.rs#L1771).
 
 ```sql
 ALTER TABLE edges DROP COLUMN resolved_by;
@@ -1369,10 +1369,19 @@ ALTER TABLE edges DROP COLUMN resolved_by;
 
 #### Q0087 — `migrate_v18`
 
-Source: [src/db/migrations.rs:1776](../src/db/migrations.rs#L1776).
+Source: [src/db/migrations.rs:1778](../src/db/migrations.rs#L1778).
 
 ```sql
 ALTER TABLE edges ADD COLUMN resolved_by INTEGER;
+```
+
+#### Q0343 — `migrate_v19`
+
+Source: [src/db/migrations.rs:1794](../src/db/migrations.rs#L1794).
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_trait_dispatch_callers_call
+         ON trait_dispatch_callers(caller_id, trait_method_id, line)
 ```
 
 ### src/db/queries/clear.rs
@@ -2538,47 +2547,43 @@ SELECT kind, name, qualified_name FROM nodes WHERE file_path = ?1
 
 #### Q0198 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1120](../src/db/queries/nodes.rs#L1120).
+Source: [src/db/queries/nodes.rs:1133](../src/db/queries/nodes.rs#L1133).
 
 ```sql
 DELETE FROM executable_body_fts WHERE file_path = ?1
 ```
 
-#### Q0199 — `delete_nodes_by_file`
+#### Q0200 — `delete_nodes_by_file`
 
 Source: [src/db/queries/nodes.rs:1134](../src/db/queries/nodes.rs#L1134).
 
 ```sql
-SELECT id FROM nodes WHERE file_path = ?1
-```
-
-#### Q0200 — `delete_nodes_by_file`
-
-Source: [src/db/queries/nodes.rs:1171](../src/db/queries/nodes.rs#L1171).
-
-```sql
-DELETE FROM edges WHERE source = ?1 OR target = ?1
+DELETE FROM edges
+                 WHERE source IN (SELECT id FROM nodes WHERE file_path = ?1)
+                    OR target IN (SELECT id FROM nodes WHERE file_path = ?1)
 ```
 
 #### Q0201 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1181](../src/db/queries/nodes.rs#L1181).
+Source: [src/db/queries/nodes.rs:1137](../src/db/queries/nodes.rs#L1137).
 
 ```sql
-DELETE FROM unresolved_refs WHERE from_node_id = ?1
+DELETE FROM unresolved_refs
+                 WHERE from_node_id IN (SELECT id FROM nodes WHERE file_path = ?1)
 ```
 
 #### Q0202 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1191](../src/db/queries/nodes.rs#L1191).
+Source: [src/db/queries/nodes.rs:1139](../src/db/queries/nodes.rs#L1139).
 
 ```sql
-DELETE FROM vectors WHERE node_id = ?1
+DELETE FROM vectors
+                 WHERE node_id IN (SELECT id FROM nodes WHERE file_path = ?1)
 ```
 
 #### Q0203 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1201](../src/db/queries/nodes.rs#L1201).
+Source: [src/db/queries/nodes.rs:1150](../src/db/queries/nodes.rs#L1150).
 
 ```sql
 DELETE FROM nodes WHERE file_path = ?1
@@ -4998,14 +5003,15 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
             operation: "create_schema".to_string(),
         })?;
 
+    migrate_v19(conn).await?;
     set_version(conn, LATEST_VERSION).await?;
     Ok(())
 }
 ```
 
-### `migrate` — src/db/migrations.rs:386
+### `migrate` — src/db/migrations.rs:387
 
-Source: [src/db/migrations.rs:386](../src/db/migrations.rs#L386).
+Source: [src/db/migrations.rs:387](../src/db/migrations.rs#L387).
 
 ```rust
 pub async fn migrate(conn: &Connection) -> Result<bool> {
@@ -5076,9 +5082,9 @@ pub async fn migrate(conn: &Connection) -> Result<bool> {
 }
 ```
 
-### `migrate_v1` — src/db/migrations.rs:534
+### `migrate_v1` — src/db/migrations.rs:536
 
-Source: [src/db/migrations.rs:534](../src/db/migrations.rs#L534).
+Source: [src/db/migrations.rs:536](../src/db/migrations.rs#L536).
 
 ```rust
 async fn migrate_v1(conn: &Connection) -> Result<()> {
@@ -5208,9 +5214,9 @@ async fn migrate_v1(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v2` — src/db/migrations.rs:665
+### `migrate_v2` — src/db/migrations.rs:667
 
-Source: [src/db/migrations.rs:665](../src/db/migrations.rs#L665).
+Source: [src/db/migrations.rs:667](../src/db/migrations.rs#L667).
 
 ```rust
 async fn migrate_v2(conn: &Connection) -> Result<()> {
@@ -5239,9 +5245,9 @@ async fn migrate_v2(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v3` — src/db/migrations.rs:695
+### `migrate_v3` — src/db/migrations.rs:697
 
-Source: [src/db/migrations.rs:695](../src/db/migrations.rs#L695).
+Source: [src/db/migrations.rs:697](../src/db/migrations.rs#L697).
 
 ```rust
 async fn migrate_v3(conn: &Connection) -> Result<()> {
@@ -5261,9 +5267,9 @@ async fn migrate_v3(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v4` — src/db/migrations.rs:716
+### `migrate_v4` — src/db/migrations.rs:718
 
-Source: [src/db/migrations.rs:716](../src/db/migrations.rs#L716).
+Source: [src/db/migrations.rs:718](../src/db/migrations.rs#L718).
 
 ```rust
 async fn migrate_v4(conn: &Connection) -> Result<()> {
@@ -5282,9 +5288,9 @@ async fn migrate_v4(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v5` — src/db/migrations.rs:738
+### `migrate_v5` — src/db/migrations.rs:740
 
-Source: [src/db/migrations.rs:738](../src/db/migrations.rs#L738).
+Source: [src/db/migrations.rs:740](../src/db/migrations.rs#L740).
 
 ```rust
 async fn migrate_v5(conn: &Connection) -> Result<()> {
@@ -5326,9 +5332,9 @@ async fn migrate_v5(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v6` — src/db/migrations.rs:782
+### `migrate_v6` — src/db/migrations.rs:784
 
-Source: [src/db/migrations.rs:782](../src/db/migrations.rs#L782).
+Source: [src/db/migrations.rs:784](../src/db/migrations.rs#L784).
 
 ```rust
 async fn migrate_v6(conn: &Connection) -> Result<()> {
@@ -5346,9 +5352,9 @@ async fn migrate_v6(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v7` — src/db/migrations.rs:807
+### `migrate_v7` — src/db/migrations.rs:809
 
-Source: [src/db/migrations.rs:807](../src/db/migrations.rs#L807).
+Source: [src/db/migrations.rs:809](../src/db/migrations.rs#L809).
 
 ```rust
 async fn migrate_v7(conn: &Connection) -> Result<()> {
@@ -5376,9 +5382,9 @@ async fn migrate_v7(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v8` — src/db/migrations.rs:840
+### `migrate_v8` — src/db/migrations.rs:842
 
-Source: [src/db/migrations.rs:840](../src/db/migrations.rs#L840).
+Source: [src/db/migrations.rs:842](../src/db/migrations.rs#L842).
 
 ```rust
 async fn migrate_v8(conn: &Connection) -> Result<()> {
@@ -5440,9 +5446,9 @@ async fn migrate_v8(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v9` — src/db/migrations.rs:911
+### `migrate_v9` — src/db/migrations.rs:913
 
-Source: [src/db/migrations.rs:911](../src/db/migrations.rs#L911).
+Source: [src/db/migrations.rs:913](../src/db/migrations.rs#L913).
 
 ```rust
 async fn migrate_v9(conn: &Connection) -> Result<()> {
@@ -5569,9 +5575,9 @@ async fn migrate_v9(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v10` — src/db/migrations.rs:1042
+### `migrate_v10` — src/db/migrations.rs:1044
 
-Source: [src/db/migrations.rs:1042](../src/db/migrations.rs#L1042).
+Source: [src/db/migrations.rs:1044](../src/db/migrations.rs#L1044).
 
 ```rust
 async fn migrate_v10(conn: &Connection) -> Result<()> {
@@ -5600,9 +5606,9 @@ async fn migrate_v10(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v11` — src/db/migrations.rs:1084
+### `migrate_v11` — src/db/migrations.rs:1086
 
-Source: [src/db/migrations.rs:1084](../src/db/migrations.rs#L1084).
+Source: [src/db/migrations.rs:1086](../src/db/migrations.rs#L1086).
 
 ```rust
 async fn migrate_v11(conn: &Connection) -> Result<()> {
@@ -5632,9 +5638,9 @@ async fn migrate_v11(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v12` — src/db/migrations.rs:1118
+### `migrate_v12` — src/db/migrations.rs:1120
 
-Source: [src/db/migrations.rs:1118](../src/db/migrations.rs#L1118).
+Source: [src/db/migrations.rs:1120](../src/db/migrations.rs#L1120).
 
 ```rust
 async fn migrate_v12(conn: &Connection) -> Result<()> {
@@ -5691,9 +5697,9 @@ async fn migrate_v12(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v13` — src/db/migrations.rs:1178
+### `migrate_v13` — src/db/migrations.rs:1180
 
-Source: [src/db/migrations.rs:1178](../src/db/migrations.rs#L1178).
+Source: [src/db/migrations.rs:1180](../src/db/migrations.rs#L1180).
 
 ```rust
 async fn migrate_v13(conn: &Connection) -> Result<()> {
@@ -5745,9 +5751,9 @@ async fn migrate_v13(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v14` — src/db/migrations.rs:1270
+### `migrate_v14` — src/db/migrations.rs:1272
 
-Source: [src/db/migrations.rs:1270](../src/db/migrations.rs#L1270).
+Source: [src/db/migrations.rs:1272](../src/db/migrations.rs#L1272).
 
 ```rust
 async fn migrate_v14(conn: &Connection) -> Result<()> {
@@ -5897,9 +5903,9 @@ async fn migrate_v14(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `table_exists` — src/db/migrations.rs:1438
+### `table_exists` — src/db/migrations.rs:1440
 
-Source: [src/db/migrations.rs:1438](../src/db/migrations.rs#L1438).
+Source: [src/db/migrations.rs:1440](../src/db/migrations.rs#L1440).
 
 ```rust
 async fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
@@ -5925,9 +5931,9 @@ async fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
 }
 ```
 
-### `migrate_v15` — src/db/migrations.rs:1470
+### `migrate_v15` — src/db/migrations.rs:1472
 
-Source: [src/db/migrations.rs:1470](../src/db/migrations.rs#L1470).
+Source: [src/db/migrations.rs:1472](../src/db/migrations.rs#L1472).
 
 ```rust
 async fn migrate_v15(conn: &Connection) -> Result<()> {
@@ -6033,9 +6039,9 @@ async fn migrate_v15(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `node_columns` — src/db/migrations.rs:1573
+### `node_columns` — src/db/migrations.rs:1575
 
-Source: [src/db/migrations.rs:1573](../src/db/migrations.rs#L1573).
+Source: [src/db/migrations.rs:1575](../src/db/migrations.rs#L1575).
 
 ```rust
 async fn node_columns(conn: &Connection) -> Result<Vec<String>> {
@@ -6062,9 +6068,9 @@ async fn node_columns(conn: &Connection) -> Result<Vec<String>> {
 }
 ```
 
-### `migrate_v16` — src/db/migrations.rs:1610
+### `migrate_v16` — src/db/migrations.rs:1612
 
-Source: [src/db/migrations.rs:1610](../src/db/migrations.rs#L1610).
+Source: [src/db/migrations.rs:1612](../src/db/migrations.rs#L1612).
 
 ```rust
 async fn migrate_v16(conn: &Connection) -> Result<()> {
@@ -6089,9 +6095,9 @@ async fn migrate_v16(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `indexes_naming` — src/db/migrations.rs:1655
+### `indexes_naming` — src/db/migrations.rs:1657
 
-Source: [src/db/migrations.rs:1655](../src/db/migrations.rs#L1655).
+Source: [src/db/migrations.rs:1657](../src/db/migrations.rs#L1657).
 
 ```rust
 async fn indexes_naming(conn: &Connection, table: &str, column: &str) -> Result<Vec<String>> {
@@ -6118,9 +6124,9 @@ async fn indexes_naming(conn: &Connection, table: &str, column: &str) -> Result<
 }
 ```
 
-### `table_columns` — src/db/migrations.rs:1679
+### `table_columns` — src/db/migrations.rs:1681
 
-Source: [src/db/migrations.rs:1679](../src/db/migrations.rs#L1679).
+Source: [src/db/migrations.rs:1681](../src/db/migrations.rs#L1681).
 
 ```rust
 async fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
@@ -6149,9 +6155,9 @@ async fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
 }
 ```
 
-### `migrate_v18` — src/db/migrations.rs:1726
+### `migrate_v18` — src/db/migrations.rs:1728
 
-Source: [src/db/migrations.rs:1726](../src/db/migrations.rs#L1726).
+Source: [src/db/migrations.rs:1728](../src/db/migrations.rs#L1728).
 
 ```rust
 async fn migrate_v18(conn: &Connection) -> Result<()> {
@@ -6210,6 +6216,29 @@ async fn migrate_v18(conn: &Connection) -> Result<()> {
             message: format!("v18: failed to add edges.resolved_by: {e}"),
             operation: "migrate_v18".to_string(),
         })?;
+    Ok(())
+}
+```
+
+### `migrate_v19` — src/db/migrations.rs:1789
+
+Source: [src/db/migrations.rs:1789](../src/db/migrations.rs#L1789).
+
+```rust
+async fn migrate_v19(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "trait_dispatch_callers").await? {
+        return Ok(());
+    }
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trait_dispatch_callers_call
+         ON trait_dispatch_callers(caller_id, trait_method_id, line)",
+        (),
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("v19: failed to index dispatch call deletion: {e}"),
+        operation: "migrate_v19".to_string(),
+    })?;
     Ok(())
 }
 ```
@@ -9655,48 +9684,6 @@ Source: [src/db/queries/nodes.rs:1103](../src/db/queries/nodes.rs#L1103).
         // SQLite rejects as "cannot start a transaction within a transaction"
         // (#563).
         let _write_guard = self.write_lock.lock().await;
-        self.conn()
-            .execute(
-                "DELETE FROM executable_body_fts WHERE file_path = ?1",
-                params![file_path],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to delete executable body documents: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })?;
-
-        // Gather node IDs for the file first.
-        let node_ids: Vec<String> = {
-            let mut rows = self
-                .conn()
-                .query(
-                    "SELECT id FROM nodes WHERE file_path = ?1",
-                    params![file_path],
-                )
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to query node ids: {e}"),
-                    operation: "delete_nodes_by_file".to_string(),
-                })?;
-
-            let mut ids = Vec::new();
-            while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-                message: format!("failed to read node id: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })? {
-                ids.push(row.get::<String>(0).map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to read node id value: {e}"),
-                    operation: "delete_nodes_by_file".to_string(),
-                })?);
-            }
-            ids
-        };
-
-        if node_ids.is_empty() {
-            return Ok(());
-        }
-
         let tx = self
             .conn()
             .transaction()
@@ -9706,44 +9693,48 @@ Source: [src/db/queries/nodes.rs:1103](../src/db/queries/nodes.rs#L1103).
                 operation: "delete_nodes_by_file".to_string(),
             })?;
 
-        for id in &node_ids {
-            tx.execute(
-                "DELETE FROM edges WHERE source = ?1 OR target = ?1",
-                params![id.as_str()],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to delete edges: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })?;
+        let result: Result<()> = async {
+            // Delete dependents while the nodes still exist, so dispatch triggers
+            // can resolve their parents. Subqueries avoid collecting IDs in Rust
+            // or issuing three statements for every node in the file. Explicit
+            // deletes also preserve cleanup when foreign keys are disabled.
+            for sql in [
+                "DELETE FROM executable_body_fts WHERE file_path = ?1",
+                "DELETE FROM edges
+                 WHERE source IN (SELECT id FROM nodes WHERE file_path = ?1)
+                    OR target IN (SELECT id FROM nodes WHERE file_path = ?1)",
+                "DELETE FROM unresolved_refs
+                 WHERE from_node_id IN (SELECT id FROM nodes WHERE file_path = ?1)",
+                "DELETE FROM vectors
+                 WHERE node_id IN (SELECT id FROM nodes WHERE file_path = ?1)",
+            ] {
+                tx.execute(sql, params![file_path]).await.map_err(|e| {
+                    TokenSaveError::Database {
+                        message: format!("failed to delete file dependents: {e}"),
+                        operation: "delete_nodes_by_file".to_string(),
+                    }
+                })?;
+            }
 
-            tx.execute(
-                "DELETE FROM unresolved_refs WHERE from_node_id = ?1",
-                params![id.as_str()],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to delete unresolved refs: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })?;
+            tx.execute("DELETE FROM nodes WHERE file_path = ?1", params![file_path])
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to delete nodes: {e}"),
+                    operation: "delete_nodes_by_file".to_string(),
+                })?;
 
-            tx.execute(
-                "DELETE FROM vectors WHERE node_id = ?1",
-                params![id.as_str()],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to delete vectors: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })?;
+            Ok(())
         }
-
-        tx.execute("DELETE FROM nodes WHERE file_path = ?1", params![file_path])
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to delete nodes: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })?;
+        .await;
+        if let Err(error) = result {
+            tx.rollback()
+                .await
+                .map_err(|rollback_error| TokenSaveError::Database {
+                    message: format!("{error}; rollback failed: {rollback_error}"),
+                    operation: "delete_nodes_by_file".to_string(),
+                })?;
+            return Err(error);
+        }
 
         tx.commit().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to commit transaction: {e}"),
@@ -12838,8 +12829,60 @@ Source: [src/global_db.rs:682](../src/global_db.rs#L682).
     }
 ```
 
+## File deletion and dispatch-index context
+
+Q0198 and Q0200–Q0203 now run in one transaction under the existing write
+lock. Each binds `?1` to the file path; the dependent deletes use indexed
+node-ID subqueries rather than an application-side ID vector and per-node
+statements. Q0199 was removed. Edge deletion precedes node deletion so dispatch
+triggers can still inspect parent nodes. The transaction also covers FTS
+cleanup, including files with stale FTS documents but no remaining nodes.
+
+Q0343 creates `(caller_id, trait_method_id, line)` for the call-deletion trigger
+in Q0036. It runs for fresh databases and migration v19, with the existing
+`table_exists` check for partial schemas. Bulk loading does not drop this
+index. The current application forces a full reindex after a schema migration.
+
+## Resource review for file-deletion optimization
+
+- For a file with N > 0 nodes, application-issued data statements decrease
+  from `3N + 3` to five, excluding transaction control and trigger/cascade work.
+- The Rust node-ID vector is removed. SQLite may materialize input-proportional
+  ID sets for the subqueries; these are statement-scoped. The new dispatch
+  index consumes storage proportional to dispatch-cache rows and adds index
+  maintenance to dispatch writes.
+- The existing write lock remains held through commit or explicit rollback.
+  No background work, queues, caches, or new connections are introduced.
+  Cancellation retains the local transaction's rollback-on-drop behavior.
+- Regression fixtures cover 400-node deletion with foreign keys on and off,
+  repeated/absent-file deletion, cross-file edge and dispatch cleanup, and
+  an injected write failure followed by a successful retry. Migration checks
+  cover fresh creation, upgrade, preserved cache rows, and index selection.
+- The executable-body FTS file-path scan remains unchanged. No production
+  timing or long-running RSS measurement is claimed by this change.
+
+## Validation of the query optimization (2026-10-24)
+
+- Targeted lite runs: 111 database-related tests, 48 graph tests, and 37
+  migration tests passed. The four file-deletion tests include the new cleanup
+  and rollback regressions.
+- Full-feature integration run: 3,110 passed, three failed in unchanged
+  discovery/hook tests expecting no project under `/tmp`, and one server
+  registration test excluded after an earlier failure. The database, graph,
+  migration, and Rails tests passed, including the schema-v19 checks. Workspace
+  runs also encountered discovery/global-project assertions affected by the
+  surrounding `/tmp` Git/project state. A fully green workspace run is not
+  claimed for this environment.
+- `cargo clippy --workspace --all-targets --locked`, formatting, and diff
+  whitespace checks passed. Clippy reports warnings in unchanged code.
+- SQL inventory review verified 342 unique entries, the changed statement
+  source locations, and the updated construction bodies against source.
+- The configured origin `atontini/tokensave` has issues disabled. The changes
+  are tracked upstream in [issue #775](https://github.com/aovestdipaperino/tokensave/issues/775);
+  issue closure is left to the maintainer.
+
 ## Coverage and limitations
 
 Coverage was checked against SQL-bearing string literals and database execution entry points (`query`, `execute`, `prepare`, and `execute_batch`) in the current `src/` tree. SQL passed through variables or constants is represented by the defining template and, for constructed SQL, its builder context. This static inventory does not enumerate concrete values supplied by users or runtime-generated batches. It includes historical migrations and inline tests; their presence does not imply that every statement runs on every invocation. Source line links apply to the recorded snapshot and may move after edits.
 
-The tokensave graph tools were consulted first, but reported a stale index and a different served checkout. The inventory therefore uses the current working-tree source rather than relying on graph contents. This documentation-only change does not modify application behavior; no database statements or application tests were run.
+The tokensave graph tools were consulted first, but reported a stale index and a different served checkout. The inventory therefore uses the current working-tree source rather than relying on graph contents. The inventory describes the current source, including the file-deletion and dispatch-index changes. Validation results for those changes are recorded separately; this inventory is not a performance benchmark.
