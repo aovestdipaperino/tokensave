@@ -1,6 +1,6 @@
 # tokensave SQL query inventory
 
-Snapshot: `3eb8c01079a9f62ee0dd4ec29b58f5e5f27a2c25` (working-tree source inspected on 2026-10-24).
+Snapshot base: `4527d5a1168f66a33ce7afdb2d492d0113203bac` (working-tree source inspected on 2026-10-24).
 
 ## Scope and reading guide
 
@@ -13,7 +13,7 @@ Entries are grouped by source file and retain separate occurrences, even when SQ
 ## Inventory summary
 
 - SQL-bearing source files: **36**.
-- SQL literal/template occurrences: **342**.
+- SQL literal/template occurrences: **343**.
 - Functions retained for construction/binding context: **171**.
 
 ## Source file index
@@ -27,7 +27,7 @@ Entries are grouped by source file and retain separate occurrences, even when SQ
 | [src/db/connection.rs](../src/db/connection.rs) | 11 |
 | [src/db/migrations.rs](../src/db/migrations.rs) | 53 |
 | [src/db/queries/clear.rs](../src/db/queries/clear.rs) | 1 |
-| [src/db/queries/edges.rs](../src/db/queries/edges.rs) | 51 |
+| [src/db/queries/edges.rs](../src/db/queries/edges.rs) | 52 |
 | [src/db/queries/files.rs](../src/db/queries/files.rs) | 8 |
 | [src/db/queries/fingerprints.rs](../src/db/queries/fingerprints.rs) | 3 |
 | [src/db/queries/metadata.rs](../src/db/queries/metadata.rs) | 13 |
@@ -1750,14 +1750,15 @@ SELECT {group_alias}.file_path, COUNT(DISTINCT {count_alias}.file_path) AS coupl
 
 #### Q0121 — `get_inheritance_depth`
 
-Source: [src/db/queries/edges.rs:1096](../src/db/queries/edges.rs#L1096).
+Source: [src/db/queries/edges.rs:1097](../src/db/queries/edges.rs#L1097).
 
 ```sql
 WITH RECURSIVE hierarchy(leaf_id, current_id, depth, path) AS (
                  SELECT e.source, e.target, 1,
                         ',' || e.source || ',' || e.target || ','
-                 FROM edges e
+                 FROM edges e {seed_join}
                  WHERE e.kind = 'extends'
+                   {path_filter}
                  UNION ALL
                  SELECT h.leaf_id, e.target, h.depth + 1,
                         h.path || e.target || ','
@@ -1777,14 +1778,26 @@ WITH RECURSIVE hierarchy(leaf_id, current_id, depth, path) AS (
                     ld.max_depth
              FROM leaf_depths ld
              JOIN nodes n ON ld.leaf_id = n.id
-             {path_filter}
              ORDER BY ld.max_depth DESC
              LIMIT ?1
 ```
 
+#### Q0353 — `get_inheritance_depth` scoped seed fragment
+
+Source: [src/db/queries/edges.rs:1076](../src/db/queries/edges.rs#L1076).
+
+```sql
+JOIN nodes seed ON seed.id = e.source
+```
+
+Q0121 inserts this join only in its non-recursive seed. The builder appends
+`AND` and the shared exact-or-prefix predicate for `seed.file_path`, including
+SQL quoting and LIKE escaping, to the seed WHERE clause. `None` supplies empty
+join/filter fragments. The only bound parameter remains `?1 = limit`.
+
 #### Q0122 — `get_node_distribution`
 
-Source: [src/db/queries/edges.rs:1162](../src/db/queries/edges.rs#L1162).
+Source: [src/db/queries/edges.rs:1163](../src/db/queries/edges.rs#L1163).
 
 ```sql
 SELECT file_path, kind, COUNT(*) AS cnt FROM nodes
@@ -1792,7 +1805,7 @@ SELECT file_path, kind, COUNT(*) AS cnt FROM nodes
 
 #### Q0123 — `get_call_edges`
 
-Source: [src/db/queries/edges.rs:1210](../src/db/queries/edges.rs#L1210).
+Source: [src/db/queries/edges.rs:1211](../src/db/queries/edges.rs#L1211).
 
 ```sql
 SELECT e.source, e.target FROM edges e
@@ -1802,7 +1815,7 @@ SELECT e.source, e.target FROM edges e
 
 #### Q0124 — `get_call_edges`
 
-Source: [src/db/queries/edges.rs:1218](../src/db/queries/edges.rs#L1218).
+Source: [src/db/queries/edges.rs:1219](../src/db/queries/edges.rs#L1219).
 
 ```sql
 SELECT source, target FROM edges WHERE kind = 'calls'
@@ -1810,7 +1823,7 @@ SELECT source, target FROM edges WHERE kind = 'calls'
 
 #### Q0125 — `get_call_edges_with_lines`
 
-Source: [src/db/queries/edges.rs:1261](../src/db/queries/edges.rs#L1261).
+Source: [src/db/queries/edges.rs:1262](../src/db/queries/edges.rs#L1262).
 
 ```sql
 SELECT e.source, e.target, e.line FROM edges e
@@ -1820,7 +1833,7 @@ SELECT e.source, e.target, e.line FROM edges e
 
 #### Q0126 — `get_call_edges_with_lines`
 
-Source: [src/db/queries/edges.rs:1269](../src/db/queries/edges.rs#L1269).
+Source: [src/db/queries/edges.rs:1270](../src/db/queries/edges.rs#L1270).
 
 ```sql
 SELECT source, target, line FROM edges WHERE kind = 'calls'
@@ -1828,7 +1841,7 @@ SELECT source, target, line FROM edges WHERE kind = 'calls'
 
 #### Q0127 — `get_complexity_ranked`
 
-Source: [src/db/queries/edges.rs:1336](../src/db/queries/edges.rs#L1336).
+Source: [src/db/queries/edges.rs:1337](../src/db/queries/edges.rs#L1337).
 
 ```sql
 SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
@@ -1848,7 +1861,7 @@ SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
 
 #### Q0128 — `get_undocumented_public_symbols`
 
-Source: [src/db/queries/edges.rs:1420](../src/db/queries/edges.rs#L1420).
+Source: [src/db/queries/edges.rs:1421](../src/db/queries/edges.rs#L1421).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -1865,7 +1878,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0129 — `get_undocumented_public_symbols`
 
-Source: [src/db/queries/edges.rs:1435](../src/db/queries/edges.rs#L1435).
+Source: [src/db/queries/edges.rs:1436](../src/db/queries/edges.rs#L1436).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -1881,7 +1894,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0130 — `get_god_classes`
 
-Source: [src/db/queries/edges.rs:1482](../src/db/queries/edges.rs#L1482).
+Source: [src/db/queries/edges.rs:1483](../src/db/queries/edges.rs#L1483).
 
 ```sql
 SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
@@ -1901,7 +1914,7 @@ SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
 
 #### Q0131 — `get_all_edges`
 
-Source: [src/db/queries/edges.rs:1539](../src/db/queries/edges.rs#L1539).
+Source: [src/db/queries/edges.rs:1540](../src/db/queries/edges.rs#L1540).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges
@@ -1909,7 +1922,7 @@ SELECT source, target, kind, line, resolved_by FROM edges
 
 #### Q0132 — `get_edges_by_kind`
 
-Source: [src/db/queries/edges.rs:1560](../src/db/queries/edges.rs#L1560).
+Source: [src/db/queries/edges.rs:1561](../src/db/queries/edges.rs#L1561).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = ?1
@@ -1917,7 +1930,7 @@ SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = ?1
 
 #### Q0133 — `get_edges_by_kinds`
 
-Source: [src/db/queries/edges.rs:1583](../src/db/queries/edges.rs#L1583).
+Source: [src/db/queries/edges.rs:1584](../src/db/queries/edges.rs#L1584).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges WHERE kind IN ({})
@@ -1925,7 +1938,7 @@ SELECT source, target, kind, line, resolved_by FROM edges WHERE kind IN ({})
 
 #### Q0134 — `variant_group_candidates`
 
-Source: [src/db/queries/edges.rs:1635](../src/db/queries/edges.rs#L1635).
+Source: [src/db/queries/edges.rs:1636](../src/db/queries/edges.rs#L1636).
 
 ```sql
 SELECT 'rs' || char(1) || n.qualified_name, n.id FROM nodes n JOIN edges e ON e.target = n.id AND e.kind = 'annotates' JOIN nodes a ON a.id = e.source WHERE a.kind = 'annotation_usage' AND a.name IN ('cfg', 'cfg_attr') AND lower(n.file_path) LIKE '%.rs' AND n.kind IN ({kinds})
@@ -1933,7 +1946,7 @@ SELECT 'rs' || char(1) || n.qualified_name, n.id FROM nodes n JOIN edges e ON e.
 
 #### Q0135 — `go_variant_candidates`
 
-Source: [src/db/queries/edges.rs:1667](../src/db/queries/edges.rs#L1667).
+Source: [src/db/queries/edges.rs:1668](../src/db/queries/edges.rs#L1668).
 
 ```sql
 SELECT file_path, name, id FROM nodes                    WHERE kind = 'function' AND lower(file_path) LIKE '%.go'                      AND name IN (                        SELECT name FROM nodes                        WHERE kind = 'function' AND lower(file_path) LIKE '%.go'                        GROUP BY name HAVING COUNT(*) >= 2                      )
@@ -1941,7 +1954,7 @@ SELECT file_path, name, id FROM nodes                    WHERE kind = 'function'
 
 #### Q0136 — `calls_edges_into`
 
-Source: [src/db/queries/edges.rs:1700](../src/db/queries/edges.rs#L1700).
+Source: [src/db/queries/edges.rs:1701](../src/db/queries/edges.rs#L1701).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = 'calls' AND target IN ({})
@@ -1949,7 +1962,7 @@ SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = 'calls' A
 
 #### Q0137 — `get_top_degree_nodes`
 
-Source: [src/db/queries/edges.rs:1740](../src/db/queries/edges.rs#L1740).
+Source: [src/db/queries/edges.rs:1741](../src/db/queries/edges.rs#L1741).
 
 ```sql
 SELECT id, SUM(inc) AS in_degree, SUM(outg) AS out_degree FROM ( SELECT target AS id, 1 AS inc, 0 AS outg FROM edges WHERE source <> target UNION ALL SELECT source AS id, 0 AS inc, 1 AS outg FROM edges WHERE source <> target ) GROUP BY id ORDER BY (in_degree + out_degree) DESC, id ASC LIMIT ?1
@@ -1957,7 +1970,7 @@ SELECT id, SUM(inc) AS in_degree, SUM(outg) AS out_degree FROM ( SELECT target A
 
 #### Q0138 — `delete_edges_by_source`
 
-Source: [src/db/queries/edges.rs:1787](../src/db/queries/edges.rs#L1787).
+Source: [src/db/queries/edges.rs:1788](../src/db/queries/edges.rs#L1788).
 
 ```sql
 DELETE FROM edges WHERE source = ?1
@@ -1965,7 +1978,7 @@ DELETE FROM edges WHERE source = ?1
 
 #### Q0139 — `delete_call_edges_at_sites`
 
-Source: [src/db/queries/edges.rs:1806](../src/db/queries/edges.rs#L1806).
+Source: [src/db/queries/edges.rs:1807](../src/db/queries/edges.rs#L1807).
 
 ```sql
 DELETE FROM edges
@@ -7313,13 +7326,13 @@ Source: [src/db/queries/edges.rs:1067](../src/db/queries/edges.rs#L1067).
         path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(Node, u64)>> {
-        let path_filter = match path_prefix {
+        let (seed_join, path_filter) = match path_prefix {
             Some(prefix) => {
-                let mut f = String::from("WHERE ");
-                push_path_prefix_filter(&mut f, "n.", prefix);
-                f
+                let mut f = String::from("AND ");
+                push_path_prefix_filter(&mut f, "seed.", prefix);
+                ("JOIN nodes seed ON seed.id = e.source", f)
             }
-            None => String::new(),
+            None => ("", String::new()),
         };
 
         // Track visited node IDs in `path` to avoid blowing up on cycles in the
@@ -7332,16 +7345,18 @@ Source: [src/db/queries/edges.rs:1067](../src/db/queries/edges.rs#L1067).
         // Note the predicate order in the recursive step: `h.depth < 50` is a
         // cheap integer compare and is evaluated before the path `instr`
         // string-scan, so cycles still under the depth bound short-circuit
-        // without paying for the substring search. Reducing the hierarchy to
-        // `(leaf_id, max_depth)` in an inner subquery before joining `nodes`
-        // means the `LIKE` path filter only runs against distinct leaves,
-        // not against the (potentially huge) full hierarchy table.
+        // without paying for the substring search. Scope only the starting
+        // nodes: ancestors outside the requested path still contribute to the
+        // maximum depth. The seed join allows the planner to start from the
+        // extends edges on sparse graphs, avoiding a scan of unrelated nodes.
+        // Unscoped requests retain the original seed without a nodes lookup.
         let sql = format!(
             "WITH RECURSIVE hierarchy(leaf_id, current_id, depth, path) AS (
                  SELECT e.source, e.target, 1,
                         ',' || e.source || ',' || e.target || ','
-                 FROM edges e
+                 FROM edges e {seed_join}
                  WHERE e.kind = 'extends'
+                   {path_filter}
                  UNION ALL
                  SELECT h.leaf_id, e.target, h.depth + 1,
                         h.path || e.target || ','
@@ -7361,7 +7376,6 @@ Source: [src/db/queries/edges.rs:1067](../src/db/queries/edges.rs#L1067).
                     ld.max_depth
              FROM leaf_depths ld
              JOIN nodes n ON ld.leaf_id = n.id
-             {path_filter}
              ORDER BY ld.max_depth DESC
              LIMIT ?1"
         );
@@ -7396,9 +7410,9 @@ Source: [src/db/queries/edges.rs:1067](../src/db/queries/edges.rs#L1067).
     }
 ```
 
-### `get_node_distribution` — src/db/queries/edges.rs:1158
+### `get_node_distribution` — src/db/queries/edges.rs:1159
 
-Source: [src/db/queries/edges.rs:1158](../src/db/queries/edges.rs#L1158).
+Source: [src/db/queries/edges.rs:1159](../src/db/queries/edges.rs#L1159).
 
 ```rust
     pub async fn get_node_distribution(
@@ -7446,9 +7460,9 @@ Source: [src/db/queries/edges.rs:1158](../src/db/queries/edges.rs#L1158).
     }
 ```
 
-### `get_call_edges` — src/db/queries/edges.rs:1205
+### `get_call_edges` — src/db/queries/edges.rs:1206
 
-Source: [src/db/queries/edges.rs:1205](../src/db/queries/edges.rs#L1205).
+Source: [src/db/queries/edges.rs:1206](../src/db/queries/edges.rs#L1206).
 
 ```rust
     pub async fn get_call_edges(&self, path_prefix: Option<&str>) -> Result<Vec<(String, String)>> {
@@ -7497,9 +7511,9 @@ Source: [src/db/queries/edges.rs:1205](../src/db/queries/edges.rs#L1205).
     }
 ```
 
-### `get_call_edges_with_lines` — src/db/queries/edges.rs:1253
+### `get_call_edges_with_lines` — src/db/queries/edges.rs:1254
 
-Source: [src/db/queries/edges.rs:1253](../src/db/queries/edges.rs#L1253).
+Source: [src/db/queries/edges.rs:1254](../src/db/queries/edges.rs#L1254).
 
 ```rust
     pub async fn get_call_edges_with_lines(
@@ -7552,9 +7566,9 @@ Source: [src/db/queries/edges.rs:1253](../src/db/queries/edges.rs#L1253).
     }
 ```
 
-### `get_complexity_ranked` — src/db/queries/edges.rs:1307
+### `get_complexity_ranked` — src/db/queries/edges.rs:1308
 
-Source: [src/db/queries/edges.rs:1307](../src/db/queries/edges.rs#L1307).
+Source: [src/db/queries/edges.rs:1308](../src/db/queries/edges.rs#L1308).
 
 ```rust
     pub async fn get_complexity_ranked(
@@ -7644,9 +7658,9 @@ Source: [src/db/queries/edges.rs:1307](../src/db/queries/edges.rs#L1307).
     }
 ```
 
-### `get_undocumented_public_symbols` — src/db/queries/edges.rs:1400
+### `get_undocumented_public_symbols` — src/db/queries/edges.rs:1401
 
-Source: [src/db/queries/edges.rs:1400](../src/db/queries/edges.rs#L1400).
+Source: [src/db/queries/edges.rs:1401](../src/db/queries/edges.rs#L1401).
 
 ```rust
     pub async fn get_undocumented_public_symbols(
@@ -7712,9 +7726,9 @@ Source: [src/db/queries/edges.rs:1400](../src/db/queries/edges.rs#L1400).
     }
 ```
 
-### `get_god_classes` — src/db/queries/edges.rs:1465
+### `get_god_classes` — src/db/queries/edges.rs:1466
 
-Source: [src/db/queries/edges.rs:1465](../src/db/queries/edges.rs#L1465).
+Source: [src/db/queries/edges.rs:1466](../src/db/queries/edges.rs#L1466).
 
 ```rust
     pub async fn get_god_classes(
@@ -7787,9 +7801,9 @@ Source: [src/db/queries/edges.rs:1465](../src/db/queries/edges.rs#L1465).
     }
 ```
 
-### `get_all_edges` — src/db/queries/edges.rs:1535
+### `get_all_edges` — src/db/queries/edges.rs:1536
 
-Source: [src/db/queries/edges.rs:1535](../src/db/queries/edges.rs#L1535).
+Source: [src/db/queries/edges.rs:1536](../src/db/queries/edges.rs#L1536).
 
 ```rust
     pub async fn get_all_edges(&self) -> Result<Vec<Edge>> {
@@ -7809,9 +7823,9 @@ Source: [src/db/queries/edges.rs:1535](../src/db/queries/edges.rs#L1535).
     }
 ```
 
-### `get_edges_by_kind` — src/db/queries/edges.rs:1556
+### `get_edges_by_kind` — src/db/queries/edges.rs:1557
 
-Source: [src/db/queries/edges.rs:1556](../src/db/queries/edges.rs#L1556).
+Source: [src/db/queries/edges.rs:1557](../src/db/queries/edges.rs#L1557).
 
 ```rust
     pub async fn get_edges_by_kind(&self, kind: EdgeKind) -> Result<Vec<Edge>> {
@@ -7831,9 +7845,9 @@ Source: [src/db/queries/edges.rs:1556](../src/db/queries/edges.rs#L1556).
     }
 ```
 
-### `get_edges_by_kinds` — src/db/queries/edges.rs:1577
+### `get_edges_by_kinds` — src/db/queries/edges.rs:1578
 
-Source: [src/db/queries/edges.rs:1577](../src/db/queries/edges.rs#L1577).
+Source: [src/db/queries/edges.rs:1578](../src/db/queries/edges.rs#L1578).
 
 ```rust
     pub async fn get_edges_by_kinds(&self, kinds: &[EdgeKind]) -> Result<Vec<Edge>> {
@@ -7862,9 +7876,9 @@ Source: [src/db/queries/edges.rs:1577](../src/db/queries/edges.rs#L1577).
     }
 ```
 
-### `variant_group_candidates` — src/db/queries/edges.rs:1628
+### `variant_group_candidates` — src/db/queries/edges.rs:1629
 
-Source: [src/db/queries/edges.rs:1628](../src/db/queries/edges.rs#L1628).
+Source: [src/db/queries/edges.rs:1629](../src/db/queries/edges.rs#L1629).
 
 ```rust
     pub async fn variant_group_candidates(&self) -> Result<Vec<(String, String)>> {
@@ -7900,9 +7914,9 @@ Source: [src/db/queries/edges.rs:1628](../src/db/queries/edges.rs#L1628).
     }
 ```
 
-### `go_variant_candidates` — src/db/queries/edges.rs:1666
+### `go_variant_candidates` — src/db/queries/edges.rs:1667
 
-Source: [src/db/queries/edges.rs:1666](../src/db/queries/edges.rs#L1666).
+Source: [src/db/queries/edges.rs:1667](../src/db/queries/edges.rs#L1667).
 
 ```rust
     pub async fn go_variant_candidates(&self) -> Result<Vec<(String, String, String)>> {
@@ -7929,9 +7943,9 @@ Source: [src/db/queries/edges.rs:1666](../src/db/queries/edges.rs#L1666).
     }
 ```
 
-### `calls_edges_into` — src/db/queries/edges.rs:1693
+### `calls_edges_into` — src/db/queries/edges.rs:1694
 
-Source: [src/db/queries/edges.rs:1693](../src/db/queries/edges.rs#L1693).
+Source: [src/db/queries/edges.rs:1694](../src/db/queries/edges.rs#L1694).
 
 ```rust
     pub async fn calls_edges_into(&self, targets: &[String]) -> Result<Vec<Edge>> {
@@ -7963,9 +7977,9 @@ Source: [src/db/queries/edges.rs:1693](../src/db/queries/edges.rs#L1693).
     }
 ```
 
-### `get_top_degree_nodes` — src/db/queries/edges.rs:1739
+### `get_top_degree_nodes` — src/db/queries/edges.rs:1740
 
-Source: [src/db/queries/edges.rs:1739](../src/db/queries/edges.rs#L1739).
+Source: [src/db/queries/edges.rs:1740](../src/db/queries/edges.rs#L1740).
 
 ```rust
     pub async fn get_top_degree_nodes(&self, limit: usize) -> Result<Vec<(String, u32, u32)>> {
@@ -8014,9 +8028,9 @@ Source: [src/db/queries/edges.rs:1739](../src/db/queries/edges.rs#L1739).
     }
 ```
 
-### `delete_edges_by_source` — src/db/queries/edges.rs:1785
+### `delete_edges_by_source` — src/db/queries/edges.rs:1786
 
-Source: [src/db/queries/edges.rs:1785](../src/db/queries/edges.rs#L1785).
+Source: [src/db/queries/edges.rs:1786](../src/db/queries/edges.rs#L1786).
 
 ```rust
     pub async fn delete_edges_by_source(&self, source_id: &str) -> Result<()> {
@@ -8031,9 +8045,9 @@ Source: [src/db/queries/edges.rs:1785](../src/db/queries/edges.rs#L1785).
     }
 ```
 
-### `delete_call_edges_at_sites` — src/db/queries/edges.rs:1799
+### `delete_call_edges_at_sites` — src/db/queries/edges.rs:1800
 
-Source: [src/db/queries/edges.rs:1799](../src/db/queries/edges.rs#L1799).
+Source: [src/db/queries/edges.rs:1800](../src/db/queries/edges.rs#L1800).
 
 ```rust
     pub async fn delete_call_edges_at_sites(&self, sites: &[(String, u32, String)]) -> Result<()> {
@@ -12837,6 +12851,35 @@ Source: [src/global_db.rs:682](../src/global_db.rs#L682).
             .is_ok_and(|n| n > 0)
     }
 ```
+
+## Scoped inheritance traversal (Refs #782)
+
+Q0121 uses Q0353 and its path predicate in the recursive seed, restricting
+starting nodes before expansion. The recursive step still follows ancestors
+across path boundaries;
+maximum-depth aggregation, cycle detection, the 50-hop bound, ordering, row
+shape, and limit binding remain unchanged. Unscoped requests retain the original
+seed without the nodes join. No schema or index change is required.
+
+The scoped seed join lets the planner start from inheritance edges on sparse
+graphs instead of materializing candidates from all nodes. Recursive state scales
+with reachable inheritance paths from matching starting nodes; the existing
+depth cap does not bound branching width. No retained cache, task,
+connection, or Rust-side graph collection is added. Regression fixtures compare
+scoped results with filtered global results across escaped paths, branching,
+cycles, self loops, external ancestors, missing scopes, limits and the depth cap.
+
+A synthetic SQLite 3.46.1 fixture with ANALYZE statistics compared identical
+results on 16,000 nodes in 800 chains, 15,200 extends edges, and eight selected
+starting nodes. After two warmups, seven alternating old/new runs with LIMIT 20
+had narrow-scope medians of 419.158 → 8.731 ms and generated 152,000 → 152
+recursive rows. Broad-scope medians were 441.083 → 453.042 ms; unscoped medians
+were 417.660 → 439.030 ms with identical recursive row counts and SQL apart
+from whitespace. Broad scopes can add seed-join overhead without saving much
+traversal. A sparse fixture with 116,000 nodes and three extends edges measured
+0.025 → 0.021 ms; its plan started from edges and looked up source nodes by ID.
+These local measurements depend on planner statistics and are not production
+or bundled-libSQL latency guarantees. Long-running RSS was not measured.
 
 ## Coverage and limitations
 

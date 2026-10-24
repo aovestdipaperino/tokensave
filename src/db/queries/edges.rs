@@ -1069,13 +1069,13 @@ impl Database {
         path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(Node, u64)>> {
-        let path_filter = match path_prefix {
+        let (seed_join, path_filter) = match path_prefix {
             Some(prefix) => {
-                let mut f = String::from("WHERE ");
-                push_path_prefix_filter(&mut f, "n.", prefix);
-                f
+                let mut f = String::from("AND ");
+                push_path_prefix_filter(&mut f, "seed.", prefix);
+                ("JOIN nodes seed ON seed.id = e.source", f)
             }
-            None => String::new(),
+            None => ("", String::new()),
         };
 
         // Track visited node IDs in `path` to avoid blowing up on cycles in the
@@ -1088,16 +1088,18 @@ impl Database {
         // Note the predicate order in the recursive step: `h.depth < 50` is a
         // cheap integer compare and is evaluated before the path `instr`
         // string-scan, so cycles still under the depth bound short-circuit
-        // without paying for the substring search. Reducing the hierarchy to
-        // `(leaf_id, max_depth)` in an inner subquery before joining `nodes`
-        // means the `LIKE` path filter only runs against distinct leaves,
-        // not against the (potentially huge) full hierarchy table.
+        // without paying for the substring search. Scope only the starting
+        // nodes: ancestors outside the requested path still contribute to the
+        // maximum depth. The seed join allows the planner to start from the
+        // extends edges on sparse graphs, avoiding a scan of unrelated nodes.
+        // Unscoped requests retain the original seed without a nodes lookup.
         let sql = format!(
             "WITH RECURSIVE hierarchy(leaf_id, current_id, depth, path) AS (
                  SELECT e.source, e.target, 1,
                         ',' || e.source || ',' || e.target || ','
-                 FROM edges e
+                 FROM edges e {seed_join}
                  WHERE e.kind = 'extends'
+                   {path_filter}
                  UNION ALL
                  SELECT h.leaf_id, e.target, h.depth + 1,
                         h.path || e.target || ','
@@ -1117,7 +1119,6 @@ impl Database {
                     ld.max_depth
              FROM leaf_depths ld
              JOIN nodes n ON ld.leaf_id = n.id
-             {path_filter}
              ORDER BY ld.max_depth DESC
              LIMIT ?1"
         );
