@@ -55,43 +55,35 @@ impl Database {
         if documents.is_empty() {
             return Ok(());
         }
-        self.conn()
-            .execute("BEGIN", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to begin executable body insert: {e}"),
-                operation: "insert_executable_body_documents".to_string(),
-            })?;
-        let stmt = self
-            .conn()
-            .prepare(
-                "INSERT INTO executable_body_fts (node_id, file_path, body) VALUES (?1, ?2, ?3)",
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to prepare executable body insert: {e}"),
-                operation: "insert_executable_body_documents".to_string(),
-            })?;
-        for document in documents {
-            stmt.execute(params![
-                document.node_id.as_str(),
-                document.file_path.as_str(),
-                document.body.as_str(),
-            ])
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to insert executable body: {e}"),
-                operation: "insert_executable_body_documents".to_string(),
-            })?;
-            stmt.reset();
+        let _write_guard = self.write_lock.lock().await;
+        let err = |e: libsql::Error| TokenSaveError::Database {
+            message: format!("failed to insert executable bodies: {e}"),
+            operation: "insert_executable_body_documents".to_string(),
+        };
+        let tx = self.conn().transaction().await.map_err(err)?;
+        let result: Result<()> =
+            async {
+                let stmt = tx.prepare(
+                "INSERT INTO executable_bodies (node_id, file_path, body) VALUES (?1, ?2, ?3)",
+            ).await.map_err(err)?;
+                for document in documents {
+                    stmt.execute(params![
+                        document.node_id.as_str(),
+                        document.file_path.as_str(),
+                        document.body.as_str()
+                    ])
+                    .await
+                    .map_err(err)?;
+                    stmt.reset();
+                }
+                Ok(())
+            }
+            .await;
+        if let Err(error) = result {
+            tx.rollback().await.map_err(err)?;
+            return Err(error);
         }
-        self.conn()
-            .execute("COMMIT", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to commit executable body insert: {e}"),
-                operation: "insert_executable_body_documents".to_string(),
-            })?;
+        tx.commit().await.map_err(err)?;
         Ok(())
     }
 

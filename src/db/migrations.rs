@@ -15,7 +15,7 @@ use crate::errors::{Result, TokenSaveError};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 19;
+const LATEST_VERSION: u32 = 20;
 
 /// Schema for the ambiguity record added in v17 (#412). Used by both
 /// `migrate_v17` and the fresh-schema path, which never replays migrations.
@@ -79,6 +79,68 @@ AFTER DELETE ON edges WHEN OLD.kind = 'implements' BEGIN
        AND trait_method_id IN (SELECT id FROM nodes WHERE parent_id = OLD.target);
 END;
 ";
+
+/// File-indexed body content; FTS stores postings without a second content copy.
+const EXECUTABLE_BODIES_SQL: &str = r"CREATE TABLE IF NOT EXISTS executable_bodies (
+    id INTEGER PRIMARY KEY,
+    node_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_executable_bodies_file ON executable_bodies(file_path);";
+
+const EXECUTABLE_BODY_FTS_SQL: &str = r"CREATE VIRTUAL TABLE IF NOT EXISTS executable_body_fts USING fts5(
+    node_id UNINDEXED, file_path UNINDEXED, body,
+    content='executable_bodies', content_rowid='id', tokenize='unicode61'
+);
+CREATE TRIGGER IF NOT EXISTS executable_bodies_insert AFTER INSERT ON executable_bodies BEGIN
+    INSERT INTO executable_body_fts(rowid, node_id, file_path, body)
+    VALUES (NEW.id, NEW.node_id, NEW.file_path, NEW.body);
+END;
+CREATE TRIGGER IF NOT EXISTS executable_bodies_delete AFTER DELETE ON executable_bodies BEGIN
+    INSERT INTO executable_body_fts(executable_body_fts, rowid, node_id, file_path, body)
+    VALUES ('delete', OLD.id, OLD.node_id, OLD.file_path, OLD.body);
+END;
+CREATE TRIGGER IF NOT EXISTS executable_bodies_update AFTER UPDATE ON executable_bodies BEGIN
+    INSERT INTO executable_body_fts(executable_body_fts, rowid, node_id, file_path, body)
+    VALUES ('delete', OLD.id, OLD.node_id, OLD.file_path, OLD.body);
+    INSERT INTO executable_body_fts(rowid, node_id, file_path, body)
+    VALUES (NEW.id, NEW.node_id, NEW.file_path, NEW.body);
+END;";
+
+/// Derived candidate membership, maintained even with foreign keys disabled.
+const AMBIGUOUS_CANDIDATES_SQL: &str = r"CREATE TABLE IF NOT EXISTS ambiguous_call_candidates (
+    from_node_id TEXT NOT NULL,
+    reference_name TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    candidate_node_id TEXT NOT NULL,
+    PRIMARY KEY (from_node_id, reference_name, line, candidate_node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ambiguous_candidates_node
+    ON ambiguous_call_candidates(candidate_node_id, from_node_id, reference_name, line);
+CREATE TRIGGER IF NOT EXISTS ambiguous_candidates_insert AFTER INSERT ON ambiguous_calls BEGIN
+    -- REPLACE does not necessarily fire DELETE triggers: clear the key here too.
+    DELETE FROM ambiguous_call_candidates
+    WHERE from_node_id = NEW.from_node_id AND reference_name = NEW.reference_name AND line = NEW.line;
+    INSERT OR IGNORE INTO ambiguous_call_candidates
+        (from_node_id, reference_name, line, candidate_node_id)
+    SELECT NEW.from_node_id, NEW.reference_name, NEW.line, value
+    FROM json_each(CASE WHEN json_valid(NEW.candidate_node_ids) THEN CASE WHEN json_type(NEW.candidate_node_ids) = 'array' THEN NEW.candidate_node_ids ELSE '[]' END ELSE '[]' END)
+    WHERE type = 'text';
+END;
+CREATE TRIGGER IF NOT EXISTS ambiguous_candidates_delete AFTER DELETE ON ambiguous_calls BEGIN
+    DELETE FROM ambiguous_call_candidates
+    WHERE from_node_id = OLD.from_node_id AND reference_name = OLD.reference_name AND line = OLD.line;
+END;
+CREATE TRIGGER IF NOT EXISTS ambiguous_candidates_update AFTER UPDATE ON ambiguous_calls BEGIN
+    DELETE FROM ambiguous_call_candidates
+    WHERE from_node_id = OLD.from_node_id AND reference_name = OLD.reference_name AND line = OLD.line;
+    INSERT OR IGNORE INTO ambiguous_call_candidates
+        (from_node_id, reference_name, line, candidate_node_id)
+    SELECT NEW.from_node_id, NEW.reference_name, NEW.line, value
+    FROM json_each(CASE WHEN json_valid(NEW.candidate_node_ids) THEN CASE WHEN json_type(NEW.candidate_node_ids) = 'array' THEN NEW.candidate_node_ids ELSE '[]' END ELSE '[]' END)
+    WHERE type = 'text';
+END;";
 
 /// Returns the highest schema version this build knows how to produce.
 #[must_use]
@@ -218,13 +280,6 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
             name, qualified_name, docstring, signature, search_terms,
             content='nodes', content_rowid='rowid',
             tokenize='porter unicode61'
-        );
-
-        CREATE VIRTUAL TABLE IF NOT EXISTS executable_body_fts USING fts5(
-            node_id UNINDEXED,
-            file_path UNINDEXED,
-            body,
-            tokenize='unicode61'
         );
 
         CREATE TABLE IF NOT EXISTS trait_dispatch_callers (
@@ -374,6 +429,7 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
         })?;
 
     migrate_v19(conn).await?;
+    migrate_v20(conn).await?;
     set_version(conn, LATEST_VERSION).await?;
     Ok(())
 }
@@ -521,6 +577,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         17 => migrate_v17(conn).await,
         18 => migrate_v18(conn).await,
         19 => migrate_v19(conn).await,
+        20 => migrate_v20(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -1800,5 +1857,50 @@ async fn migrate_v19(conn: &Connection) -> Result<()> {
         message: format!("v19: failed to index dispatch call deletion: {e}"),
         operation: "migrate_v19".to_string(),
     })?;
+    Ok(())
+}
+
+/// Move body content behind an ordinary file index and backfill candidate
+/// membership. The enclosing migration transaction owns all schema/data work.
+async fn migrate_v20(conn: &Connection) -> Result<()> {
+    let err = |e: libsql::Error| TokenSaveError::Database {
+        message: format!("v20: failed to index body/candidate storage: {e}"),
+        operation: "migrate_v20".to_string(),
+    };
+    let had_bodies = table_exists(conn, "executable_bodies").await?;
+    conn.execute_batch(EXECUTABLE_BODIES_SQL)
+        .await
+        .map_err(err)?;
+    if !had_bodies && table_exists(conn, "executable_body_fts").await? {
+        // Preserve rowids so MATCH+LIMIT visits the same document ordering.
+        conn.execute_batch(
+            "INSERT INTO executable_bodies(id, node_id, file_path, body)
+             SELECT rowid, node_id, file_path, body FROM executable_body_fts;
+             DROP TABLE executable_body_fts;",
+        )
+        .await
+        .map_err(err)?;
+    }
+    conn.execute_batch(EXECUTABLE_BODY_FTS_SQL)
+        .await
+        .map_err(err)?;
+    conn.execute(
+        "INSERT INTO executable_body_fts(executable_body_fts) VALUES('rebuild')",
+        (),
+    )
+    .await
+    .map_err(err)?;
+    if table_exists(conn, "ambiguous_calls").await? {
+        conn.execute_batch(AMBIGUOUS_CANDIDATES_SQL)
+            .await
+            .map_err(err)?;
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO ambiguous_call_candidates
+                (from_node_id, reference_name, line, candidate_node_id)
+             SELECT a.from_node_id, a.reference_name, a.line, j.value
+             FROM ambiguous_calls a, json_each(CASE WHEN json_valid(a.candidate_node_ids) THEN CASE WHEN json_type(a.candidate_node_ids) = 'array' THEN a.candidate_node_ids ELSE '[]' END ELSE '[]' END) j
+             WHERE j.type = 'text';",
+        ).await.map_err(err)?;
+    }
     Ok(())
 }
