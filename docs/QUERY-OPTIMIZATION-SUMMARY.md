@@ -12,7 +12,7 @@ This document consolidates the related SQL query optimizations, implementation s
 | Q0121 scoped inheritance seeds, unrestricted ancestors | [#782](https://github.com/aovestdipaperino/tokensave/issues/782) | [#783](https://github.com/aovestdipaperino/tokensave/pull/783) | 4,404 passed, four ignored |
 | Q0118/Q0130 ID/count ranking before full hydration | [#784](https://github.com/aovestdipaperino/tokensave/issues/784) | [#785](https://github.com/aovestdipaperino/tokensave/pull/785) | 4,405 passed, four ignored |
 | Q0227/Q0228 weighted FTS rank ordering | [#751](https://github.com/aovestdipaperino/tokensave/issues/751) | [#787](https://github.com/aovestdipaperino/tokensave/pull/787) | 4,404 passed, four ignored |
-| Benchmark review, consolidated summary, and agent rule | [#786](https://github.com/aovestdipaperino/tokensave/issues/786) | Separate summary PR; see tracking issue | Documentation/benchmark-only; no application change |
+| Benchmark review, consolidated summary, and agent rule | [#786](https://github.com/aovestdipaperino/tokensave/issues/786) | [#788](https://github.com/aovestdipaperino/tokensave/pull/788) | Documentation/benchmark-only; no application change |
 
 The test totals differ because these are separate branches with different dependencies. Each recorded run had zero failures and no filtered tests. Do not add these totals together.
 
