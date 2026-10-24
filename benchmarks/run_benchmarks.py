@@ -198,12 +198,18 @@ class TokensaveMcp:
             text=True,
             bufsize=1,
         )
-        self._request("initialize", {
-            "protocolVersion": "2025-03-26",
-            "capabilities": {},
-            "clientInfo": {"name": "tokensave-bench", "version": "0.1"},
-        })
-        self._notify("notifications/initialized", {})
+        try:
+            self._request("initialize", {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "tokensave-bench", "version": "0.1"},
+            })
+            self._notify("notifications/initialized", {})
+        except BaseException:
+            # Python does not call __exit__ when __enter__ fails, including
+            # KeyboardInterrupt during the initialization handshake.
+            self.__exit__()
+            raise
         return self
 
     def __exit__(self, *_exc) -> None:
@@ -214,11 +220,14 @@ class TokensaveMcp:
         except Exception:
             pass
         try:
-            self.proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.wait()
-        self.proc = None
+            try:
+                self.proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+        finally:
+            self.proc.stdout.close()
+            self.proc = None
 
     def _write(self, payload: dict) -> None:
         assert self.proc and self.proc.stdin
