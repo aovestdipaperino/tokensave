@@ -23,6 +23,7 @@ mod bare_invocation_stdout_test;
 mod bare_name_reachability_test;
 mod bash_extraction_test;
 mod batch_extraction_test;
+mod bench_repo_cleanup_test;
 mod bench_test;
 mod body_candidates_651_test;
 mod branch_add_if_enabled_test;
