@@ -116,41 +116,36 @@ flowchart TB
 
 ### 1. Install
 
-Choose one installation method:
+This is the `beta` branch. Beta builds are not published to Homebrew, Scoop, crates.io or the releases page, so `brew install`, `cargo install tokensave` and the prebuilt binaries install the latest stable release instead. Build the beta from source with the Rust toolchain:
 
-| Platform | Command |
-|---|---|
-| macOS (Homebrew) | `brew install aovestdipaperino/tap/tokensave` |
-| Any platform with Rust | `cargo install tokensave` |
-| Any platform with cargo-binstall | `cargo binstall tokensave` |
-
-On Windows with Scoop:
-
-```powershell
-scoop bucket add tokensave https://github.com/aovestdipaperino/scoop-bucket
-scoop install tokensave
+```bash
+cargo install --git https://github.com/aovestdipaperino/tokensave.git --branch beta --locked --force
 ```
 
-You can also download a [prebuilt binary](https://github.com/aovestdipaperino/tokensave/releases/latest) and add it to your `PATH`.
+Or clone the branch and build it yourself (the repository's pinned Rust toolchain is picked up automatically):
+
+```bash
+git clone --branch beta --single-branch https://github.com/aovestdipaperino/tokensave.git tokensave-beta
+cd tokensave-beta
+cargo build --release --locked
+```
+
+The binary is `target/release/tokensave` (`tokensave.exe` on Windows); put it on your `PATH`.
+
+The beta includes database schema migrations that trigger a full reindex on first use, so try it on a disposable checkout first. To go back to stable, reinstall with one of the commands on the [`master` README](https://github.com/aovestdipaperino/tokensave#1-install).
 
 <details>
 <summary>Installation alternatives and language tiers</summary>
 
-The default Cargo build includes all supported languages. For a smaller build:
+The default Cargo build includes all supported languages. For a smaller beta build:
 
 ```bash
-cargo install tokensave --no-default-features --features medium
-cargo install tokensave --no-default-features    # lite (smallest binary)
+BETA=https://github.com/aovestdipaperino/tokensave.git
+cargo install --git $BETA --branch beta --locked --force --no-default-features --features medium
+cargo install --git $BETA --branch beta --locked --force --no-default-features    # lite (smallest binary)
 ```
 
-Prebuilt release archives:
-
-| Platform | Archive |
-|---|---|
-| macOS (Apple Silicon) | `tokensave-vX.Y.Z-aarch64-macos.tar.gz` |
-| Linux (x86_64) | `tokensave-vX.Y.Z-x86_64-linux.tar.gz` |
-| Linux (ARM64) | `tokensave-vX.Y.Z-aarch64-linux.tar.gz` |
-| Windows (x86_64) | `tokensave-vX.Y.Z-x86_64-windows.zip` |
+No prebuilt beta archives are published. Prebuilt binaries on the [releases page](https://github.com/aovestdipaperino/tokensave/releases/latest) are stable releases only.
 
 </details>
 
