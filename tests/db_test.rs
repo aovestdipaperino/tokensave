@@ -1180,3 +1180,91 @@ async fn body_batches_bound_large_documents_and_roll_back_earlier_batches() {
         .await
         .unwrap();
 }
+
+/// The optimized rank column must retain explicit weighted BM25 scores, even
+/// when the table's persistent rank default is configured differently.
+#[tokio::test]
+async fn fts_rank_column_matches_weighted_bm25_and_filters_before_limit() {
+    let (_dir, db) = setup_db().await;
+    let mut nodes = Vec::new();
+    for i in 0..45 {
+        let id = format!("rank-{i:02}");
+        let name = if i % 3 == 0 {
+            "ranking_engine"
+        } else {
+            "helper"
+        };
+        let mut node = sample_node(&id, name, "src/ranking.rs");
+        node.docstring = Some(format!("{} éclair", "ranking engine ".repeat(i + 1)));
+        node.signature = Some(format!("fn helper_{}()", "ranking ".repeat(i % 5)));
+        if i < 12 {
+            node.kind = if i % 2 == 0 {
+                NodeKind::File
+            } else {
+                NodeKind::Doc
+            };
+        }
+        nodes.push(node);
+    }
+    db.insert_nodes(&nodes).await.unwrap();
+    db.conn().execute("INSERT INTO nodes_fts(nodes_fts, rank) VALUES ('rank', 'bm25(0.0, 0.0, 10.0, 0.0, 0.0)')", ()).await.unwrap();
+
+    for (raw, fts, phrase) in [
+        ("rank", "\"rank\"*", false),
+        ("engine", "\"engine\"*", false),
+        ("éclair", "\"éclair\"*", false),
+        ("missing", "\"missing\"*", false),
+        ("ranking engine", "\"ranking engine\"", true),
+    ] {
+        for bounded in [false, true] {
+            if bounded && phrase {
+                continue;
+            }
+            let kind_filter = if bounded {
+                "AND n.kind NOT IN ('file', 'doc')"
+            } else {
+                ""
+            };
+            let sql = format!("SELECT n.id, bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0) AS score FROM nodes_fts JOIN nodes n ON n.rowid = nodes_fts.rowid WHERE nodes_fts MATCH ?1 {kind_filter} ORDER BY score");
+            let mut rows = db.conn().query(&sql, libsql::params![fts]).await.unwrap();
+            let mut expected = Vec::new();
+            while let Some(row) = rows.next().await.unwrap() {
+                expected.push((row.get::<String>(0).unwrap(), -row.get::<f64>(1).unwrap()));
+            }
+            drop(rows);
+            for limit in [1, 3, 20, 100] {
+                let actual = if bounded {
+                    db.search_nodes_bounded(raw, limit).await.unwrap()
+                } else if phrase {
+                    db.search_nodes_phrase(raw, limit).await.unwrap()
+                } else {
+                    db.search_nodes(raw, limit).await.unwrap()
+                };
+                assert_eq!(actual.len(), expected.len().min(limit));
+                for (result, (_, score)) in actual.iter().zip(&expected) {
+                    assert!((result.score - score).abs() < 1e-12);
+                    let reference = expected
+                        .iter()
+                        .find(|(id, _)| id == &result.node.id)
+                        .unwrap();
+                    assert!((result.score - reference.1).abs() < 1e-12);
+                    let original = nodes.iter().find(|n| n.id == result.node.id).unwrap();
+                    assert_eq!(
+                        serde_json::to_value(&result.node).unwrap(),
+                        serde_json::to_value(original).unwrap()
+                    );
+                    if bounded {
+                        assert!(!matches!(result.node.kind, NodeKind::File | NodeKind::Doc));
+                    }
+                }
+            }
+        }
+    }
+    // General OR candidates and exact-phrase promotion remain separate channels.
+    let phrase = db.search_nodes_phrase("ranking engine", 3).await.unwrap();
+    let general = db.search_nodes("ranking engine", 3).await.unwrap();
+    assert_eq!(
+        phrase.iter().map(|r| &r.node.id).collect::<Vec<_>>(),
+        general.iter().map(|r| &r.node.id).collect::<Vec<_>>()
+    );
+}
