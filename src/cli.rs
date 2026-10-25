@@ -576,6 +576,15 @@ mod tests {
 
 #[derive(Subcommand)]
 pub enum ConfigAction {
+    /// Show or change global SQL debugging (restart MCP servers after changing)
+    DebugSql {
+        /// Enable or disable SQL diagnostics on stderr
+        #[arg(long, action = ArgAction::Set)]
+        enabled: Option<bool>,
+        /// Include EXPLAIN QUERY PLAN (requires enabled=true)
+        #[arg(long, action = ArgAction::Set)]
+        explain: Option<bool>,
+    },
     /// Show, run, or reset the machine-level hardware benchmark
     ///
     /// The benchmark measures CPUs, memory and parallel speedup once per

@@ -1,6 +1,6 @@
 # tokensave SQL query inventory
 
-Snapshot: combined query-optimization beta integration, source inspected on 2026-10-25 (Refs #786).
+Snapshot: beta SQL integration plus opt-in SQL diagnostics, source inspected on 2026-10-25 (Refs #786, #789).
 
 ## Scope and reading guide
 
@@ -12,9 +12,9 @@ Entries are grouped by source file and retain separate occurrences, even when SQ
 
 ## Inventory summary
 
-- SQL-bearing source files: **36**.
-- SQL literal/template occurrences: **350**.
-- Functions retained for construction/binding context: **173**.
+- SQL-bearing source files: **38**.
+- SQL literal/template occurrences: **373**.
+- Functions retained for construction/binding context: **186**.
 
 ## Source file index
 
@@ -25,6 +25,8 @@ Entries are grouped by source file and retain separate occurrences, even when SQ
 | [src/blame_engine.rs](../src/blame_engine.rs) | 16 |
 | [src/branch.rs](../src/branch.rs) | 2 |
 | [src/db/connection.rs](../src/db/connection.rs) | 11 |
+| [src/db/debug_sql.rs](../src/db/debug_sql.rs) | 7 |
+| [src/db/debug_sql/tests.rs](../src/db/debug_sql/tests.rs) | 16 |
 | [src/db/migrations.rs](../src/db/migrations.rs) | 60 |
 | [src/db/queries/clear.rs](../src/db/queries/clear.rs) | 1 |
 | [src/db/queries/edges.rs](../src/db/queries/edges.rs) | 55 |
@@ -255,7 +257,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 
 #### Q0024 — `try_open_read_only`
 
-Source: [src/db/connection.rs:226](../src/db/connection.rs#L226).
+Source: [src/db/connection.rs:228](../src/db/connection.rs#L228).
 
 ```sql
 PRAGMA query_only = 1; PRAGMA busy_timeout = 120000;
@@ -263,7 +265,7 @@ PRAGMA query_only = 1; PRAGMA busy_timeout = 120000;
 
 #### Q0025 — `try_open_read_only`
 
-Source: [src/db/connection.rs:234](../src/db/connection.rs#L234).
+Source: [src/db/connection.rs:236](../src/db/connection.rs#L236).
 
 ```sql
 PRAGMA user_version
@@ -271,7 +273,7 @@ PRAGMA user_version
 
 #### Q0026 — `checkpoint`
 
-Source: [src/db/connection.rs:301](../src/db/connection.rs#L301).
+Source: [src/db/connection.rs:303](../src/db/connection.rs#L303).
 
 ```sql
 PRAGMA wal_checkpoint(TRUNCATE);
@@ -279,7 +281,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 
 #### Q0027 — `optimize`
 
-Source: [src/db/connection.rs:313](../src/db/connection.rs#L313).
+Source: [src/db/connection.rs:315](../src/db/connection.rs#L315).
 
 ```sql
 VACUUM; ANALYZE;
@@ -287,7 +289,7 @@ VACUUM; ANALYZE;
 
 #### Q0028 — `size`
 
-Source: [src/db/connection.rs:327](../src/db/connection.rs#L327).
+Source: [src/db/connection.rs:329](../src/db/connection.rs#L329).
 
 ```sql
 SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()
@@ -295,7 +297,7 @@ SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()
 
 #### Q0029 — `quick_check`
 
-Source: [src/db/connection.rs:363](../src/db/connection.rs#L363).
+Source: [src/db/connection.rs:365](../src/db/connection.rs#L365).
 
 ```sql
 PRAGMA quick_check
@@ -303,7 +305,7 @@ PRAGMA quick_check
 
 #### Q0030 — `needs_bulk_load_finalization`
 
-Source: [src/db/connection.rs:394](../src/db/connection.rs#L394).
+Source: [src/db/connection.rs:396](../src/db/connection.rs#L396).
 
 ```sql
 SELECT name FROM sqlite_master WHERE type IN ('table', 'index')
@@ -311,7 +313,7 @@ SELECT name FROM sqlite_master WHERE type IN ('table', 'index')
 
 #### Q0031 — `rebuild_fts`
 
-Source: [src/db/connection.rs:423](../src/db/connection.rs#L423).
+Source: [src/db/connection.rs:425](../src/db/connection.rs#L425).
 
 ```sql
 INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')
@@ -319,7 +321,7 @@ INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')
 
 #### Q0032 — `apply_pragmas`
 
-Source: [src/db/connection.rs:440](../src/db/connection.rs#L440).
+Source: [src/db/connection.rs:442](../src/db/connection.rs#L442).
 
 ```sql
 PRAGMA page_size = 8192;
@@ -334,7 +336,7 @@ PRAGMA page_size = 8192;
 
 #### Q0033 — `begin_bulk_load`
 
-Source: [src/db/connection.rs:464](../src/db/connection.rs#L464).
+Source: [src/db/connection.rs:466](../src/db/connection.rs#L466).
 
 ```sql
 PRAGMA foreign_keys = OFF;
@@ -364,7 +366,7 @@ PRAGMA foreign_keys = OFF;
 
 #### Q0034 — `end_bulk_load`
 
-Source: [src/db/connection.rs:507](../src/db/connection.rs#L507).
+Source: [src/db/connection.rs:509](../src/db/connection.rs#L509).
 
 ```sql
 DELETE FROM edges
@@ -3216,7 +3218,7 @@ begin
 
 #### Q0255 — `open_at`
 
-Source: [src/global_db.rs:219](../src/global_db.rs#L219).
+Source: [src/global_db.rs:221](../src/global_db.rs#L221).
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -3226,7 +3228,7 @@ PRAGMA journal_mode = WAL;
 
 #### Q0256 — `open_at`
 
-Source: [src/global_db.rs:227](../src/global_db.rs#L227).
+Source: [src/global_db.rs:229](../src/global_db.rs#L229).
 
 ```sql
 CREATE TABLE IF NOT EXISTS projects (
@@ -3237,7 +3239,7 @@ CREATE TABLE IF NOT EXISTS projects (
 
 #### Q0257 — `open_at`
 
-Source: [src/global_db.rs:236](../src/global_db.rs#L236).
+Source: [src/global_db.rs:238](../src/global_db.rs#L238).
 
 ```sql
 CREATE TABLE IF NOT EXISTS turns (
@@ -3280,7 +3282,7 @@ CREATE TABLE IF NOT EXISTS turns (
 
 #### Q0258 — `open_at`
 
-Source: [src/global_db.rs:277](../src/global_db.rs#L277).
+Source: [src/global_db.rs:279](../src/global_db.rs#L279).
 
 ```sql
 CREATE TABLE IF NOT EXISTS meta (
@@ -3291,7 +3293,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 #### Q0259 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:303](../src/global_db.rs#L303).
+Source: [src/global_db.rs:305](../src/global_db.rs#L305).
 
 ```sql
 PRAGMA table_info(turns)
@@ -3299,7 +3301,7 @@ PRAGMA table_info(turns)
 
 #### Q0260 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:322](../src/global_db.rs#L322).
+Source: [src/global_db.rs:324](../src/global_db.rs#L324).
 
 ```sql
 ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'
@@ -3307,7 +3309,7 @@ ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'
 
 #### Q0261 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:329](../src/global_db.rs#L329).
+Source: [src/global_db.rs:331](../src/global_db.rs#L331).
 
 ```sql
 ALTER TABLE turns ADD COLUMN credits INTEGER
@@ -3315,7 +3317,7 @@ ALTER TABLE turns ADD COLUMN credits INTEGER
 
 #### Q0262 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:339](../src/global_db.rs#L339).
+Source: [src/global_db.rs:341](../src/global_db.rs#L341).
 
 ```sql
 ALTER TABLE turns ADD COLUMN tool_result_tokens INTEGER NOT NULL DEFAULT 0
@@ -3323,7 +3325,7 @@ ALTER TABLE turns ADD COLUMN tool_result_tokens INTEGER NOT NULL DEFAULT 0
 
 #### Q0263 — `migrate_project_paths`
 
-Source: [src/global_db.rs:358](../src/global_db.rs#L358).
+Source: [src/global_db.rs:360](../src/global_db.rs#L360).
 
 ```sql
 SELECT 1 FROM meta WHERE key = 'projects_path_normalized'
@@ -3331,7 +3333,7 @@ SELECT 1 FROM meta WHERE key = 'projects_path_normalized'
 
 #### Q0264 — `migrate_project_paths`
 
-Source: [src/global_db.rs:369](../src/global_db.rs#L369).
+Source: [src/global_db.rs:371](../src/global_db.rs#L371).
 
 ```sql
 SELECT path, tokens_saved FROM projects
@@ -3339,7 +3341,7 @@ SELECT path, tokens_saved FROM projects
 
 #### Q0265 — `migrate_project_paths`
 
-Source: [src/global_db.rs:398](../src/global_db.rs#L398).
+Source: [src/global_db.rs:400](../src/global_db.rs#L400).
 
 ```sql
 DELETE FROM projects
@@ -3347,7 +3349,7 @@ DELETE FROM projects
 
 #### Q0266 — `migrate_project_paths`
 
-Source: [src/global_db.rs:404](../src/global_db.rs#L404).
+Source: [src/global_db.rs:406](../src/global_db.rs#L406).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3355,7 +3357,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0267 — `migrate_project_paths`
 
-Source: [src/global_db.rs:414](../src/global_db.rs#L414).
+Source: [src/global_db.rs:416](../src/global_db.rs#L416).
 
 ```sql
 UPDATE savings_ledger SET project_path = ?1 WHERE project_path = ?2
@@ -3363,7 +3365,7 @@ UPDATE savings_ledger SET project_path = ?1 WHERE project_path = ?2
 
 #### Q0268 — `migrate_project_paths`
 
-Source: [src/global_db.rs:423](../src/global_db.rs#L423).
+Source: [src/global_db.rs:425](../src/global_db.rs#L425).
 
 ```sql
 INSERT OR REPLACE INTO meta (key, value) VALUES ('projects_path_normalized', '1')
@@ -3371,7 +3373,7 @@ INSERT OR REPLACE INTO meta (key, value) VALUES ('projects_path_normalized', '1'
 
 #### Q0269 — `upsert`
 
-Source: [src/global_db.rs:438](../src/global_db.rs#L438).
+Source: [src/global_db.rs:440](../src/global_db.rs#L440).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3380,7 +3382,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0270 — `get_project_tokens`
 
-Source: [src/global_db.rs:451](../src/global_db.rs#L451).
+Source: [src/global_db.rs:453](../src/global_db.rs#L453).
 
 ```sql
 SELECT tokens_saved FROM projects WHERE path = ?1
@@ -3388,7 +3390,7 @@ SELECT tokens_saved FROM projects WHERE path = ?1
 
 #### Q0271 — `global_tokens_saved`
 
-Source: [src/global_db.rs:468](../src/global_db.rs#L468).
+Source: [src/global_db.rs:470](../src/global_db.rs#L470).
 
 ```sql
 SELECT COALESCE(SUM(tokens_saved), 0) FROM projects
@@ -3396,7 +3398,7 @@ SELECT COALESCE(SUM(tokens_saved), 0) FROM projects
 
 #### Q0272 — `record_savings`
 
-Source: [src/global_db.rs:490](../src/global_db.rs#L490).
+Source: [src/global_db.rs:492](../src/global_db.rs#L492).
 
 ```sql
 INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_tokens) VALUES (?1, ?2, ?3, ?4, ?5)
@@ -3404,7 +3406,7 @@ INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_to
 
 #### Q0273 — `sum_savings`
 
-Source: [src/global_db.rs:504](../src/global_db.rs#L504).
+Source: [src/global_db.rs:506](../src/global_db.rs#L506).
 
 ```sql
 SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE project_path = ?1 AND ts >= ?2
@@ -3412,7 +3414,7 @@ SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - 
 
 #### Q0274 — `sum_savings`
 
-Source: [src/global_db.rs:507](../src/global_db.rs#L507).
+Source: [src/global_db.rs:509](../src/global_db.rs#L509).
 
 ```sql
 SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE ts >= ?1
@@ -3420,7 +3422,7 @@ SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - 
 
 #### Q0275 — `savings_history`
 
-Source: [src/global_db.rs:535](../src/global_db.rs#L535).
+Source: [src/global_db.rs:537](../src/global_db.rs#L537).
 
 ```sql
 SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE project_path = ?1 AND ts >= ?2 GROUP BY day ORDER BY day DESC
@@ -3428,7 +3430,7 @@ SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tok
 
 #### Q0276 — `savings_history`
 
-Source: [src/global_db.rs:541](../src/global_db.rs#L541).
+Source: [src/global_db.rs:543](../src/global_db.rs#L543).
 
 ```sql
 SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE ts >= ?1 GROUP BY day ORDER BY day DESC
@@ -3436,7 +3438,7 @@ SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tok
 
 #### Q0277 — `delete_project`
 
-Source: [src/global_db.rs:570](../src/global_db.rs#L570).
+Source: [src/global_db.rs:572](../src/global_db.rs#L572).
 
 ```sql
 DELETE FROM projects WHERE path = ?1
@@ -3444,7 +3446,7 @@ DELETE FROM projects WHERE path = ?1
 
 #### Q0278 — `delete_projects`
 
-Source: [src/global_db.rs:589](../src/global_db.rs#L589).
+Source: [src/global_db.rs:591](../src/global_db.rs#L591).
 
 ```sql
 DELETE FROM projects WHERE path IN ({})
@@ -3452,7 +3454,7 @@ DELETE FROM projects WHERE path IN ({})
 
 #### Q0279 — `list_project_paths`
 
-Source: [src/global_db.rs:605](../src/global_db.rs#L605).
+Source: [src/global_db.rs:607](../src/global_db.rs#L607).
 
 ```sql
 SELECT path FROM projects
@@ -3460,7 +3462,7 @@ SELECT path FROM projects
 
 #### Q0280 — `insert_turn`
 
-Source: [src/global_db.rs:623](../src/global_db.rs#L623).
+Source: [src/global_db.rs:625](../src/global_db.rs#L625).
 
 ```sql
 INSERT OR IGNORE INTO turns
@@ -3472,7 +3474,7 @@ INSERT OR IGNORE INTO turns
 
 #### Q0281 — `add_tool_result_tokens`
 
-Source: [src/global_db.rs:667](../src/global_db.rs#L667).
+Source: [src/global_db.rs:669](../src/global_db.rs#L669).
 
 ```sql
 UPDATE turns SET tool_result_tokens = tool_result_tokens + ?2 WHERE message_id = ?1
@@ -3480,7 +3482,7 @@ UPDATE turns SET tool_result_tokens = tool_result_tokens + ?2 WHERE message_id =
 
 #### Q0282 — `upsert_droid_turn`
 
-Source: [src/global_db.rs:686](../src/global_db.rs#L686).
+Source: [src/global_db.rs:688](../src/global_db.rs#L688).
 
 ```sql
 INSERT INTO turns
@@ -3522,7 +3524,7 @@ INSERT INTO turns
 
 #### Q0283 — `total_cost_since`
 
-Source: [src/global_db.rs:747](../src/global_db.rs#L747).
+Source: [src/global_db.rs:749](../src/global_db.rs#L749).
 
 ```sql
 SELECT COALESCE(SUM(cost_usd), 0.0) FROM turns WHERE timestamp >= ?1
@@ -3530,7 +3532,7 @@ SELECT COALESCE(SUM(cost_usd), 0.0) FROM turns WHERE timestamp >= ?1
 
 #### Q0284 — `total_tokens_since`
 
-Source: [src/global_db.rs:761](../src/global_db.rs#L761).
+Source: [src/global_db.rs:763](../src/global_db.rs#L763).
 
 ```sql
 SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM turns WHERE timestamp >= ?1
@@ -3538,7 +3540,7 @@ SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM turns WHERE timestamp
 
 #### Q0285 — `token_breakdown_since`
 
-Source: [src/global_db.rs:776](../src/global_db.rs#L776).
+Source: [src/global_db.rs:778](../src/global_db.rs#L778).
 
 ```sql
 SELECT COALESCE(SUM(input_tokens), 0),
@@ -3550,7 +3552,7 @@ SELECT COALESCE(SUM(input_tokens), 0),
 
 #### Q0286 — `cost_by_model_since`
 
-Source: [src/global_db.rs:806](../src/global_db.rs#L806).
+Source: [src/global_db.rs:808](../src/global_db.rs#L808).
 
 ```sql
 SELECT model, SUM(cost_usd),
@@ -3561,7 +3563,7 @@ SELECT model, SUM(cost_usd),
 
 #### Q0287 — `cost_by_category_since`
 
-Source: [src/global_db.rs:832](../src/global_db.rs#L832).
+Source: [src/global_db.rs:834](../src/global_db.rs#L834).
 
 ```sql
 SELECT category, SUM(cost_usd), COUNT(*)
@@ -3571,7 +3573,7 @@ SELECT category, SUM(cost_usd), COUNT(*)
 
 #### Q0288 — `nav_turns_since`
 
-Source: [src/global_db.rs:869](../src/global_db.rs#L869).
+Source: [src/global_db.rs:871](../src/global_db.rs#L871).
 
 ```sql
 SELECT tool_names, tool_result_tokens FROM turns WHERE timestamp >= ?1 AND agent = 'claude'
@@ -3579,7 +3581,7 @@ SELECT tool_names, tool_result_tokens FROM turns WHERE timestamp >= ?1 AND agent
 
 #### Q0289 — `cost_by_agent_since`
 
-Source: [src/global_db.rs:893](../src/global_db.rs#L893).
+Source: [src/global_db.rs:895](../src/global_db.rs#L895).
 
 ```sql
 SELECT agent,
@@ -3596,7 +3598,7 @@ SELECT agent,
 
 #### Q0290 — `get_parse_offset`
 
-Source: [src/global_db.rs:941](../src/global_db.rs#L941).
+Source: [src/global_db.rs:943](../src/global_db.rs#L943).
 
 ```sql
 SELECT byte_offset, mtime FROM parse_offsets WHERE file_path = ?1
@@ -3604,7 +3606,7 @@ SELECT byte_offset, mtime FROM parse_offsets WHERE file_path = ?1
 
 #### Q0291 — `set_parse_offset`
 
-Source: [src/global_db.rs:957](../src/global_db.rs#L957).
+Source: [src/global_db.rs:959](../src/global_db.rs#L959).
 
 ```sql
 INSERT INTO parse_offsets (file_path, byte_offset, mtime) VALUES (?1, ?2, ?3)
@@ -3613,7 +3615,7 @@ INSERT INTO parse_offsets (file_path, byte_offset, mtime) VALUES (?1, ?2, ?3)
 
 #### Q0292 — `checkpoint`
 
-Source: [src/global_db.rs:968](../src/global_db.rs#L968).
+Source: [src/global_db.rs:970](../src/global_db.rs#L970).
 
 ```sql
 PRAGMA wal_checkpoint(TRUNCATE);
@@ -3621,7 +3623,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 
 #### Q0293 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1068](../src/global_db.rs#L1068).
+Source: [src/global_db.rs:1070](../src/global_db.rs#L1070).
 
 ```sql
 DELETE FROM meta WHERE key = 'projects_path_normalized';
@@ -3630,7 +3632,7 @@ DELETE FROM meta WHERE key = 'projects_path_normalized';
 
 #### Q0294 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1080](../src/global_db.rs#L1080).
+Source: [src/global_db.rs:1082](../src/global_db.rs#L1082).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3638,7 +3640,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0295 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1089](../src/global_db.rs#L1089).
+Source: [src/global_db.rs:1091](../src/global_db.rs#L1091).
 
 ```sql
 INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_tokens) VALUES (42, ?1, 'tokensave_context', 1000, 100)
@@ -4093,6 +4095,194 @@ Source: [src/worktree.rs:273](../src/worktree.rs#L273).
 commit
 ```
 
+### src/db/debug_sql.rs
+
+#### Q0354 — `plan`
+
+Source: [src/db/debug_sql.rs:90](../src/db/debug_sql.rs#L90).
+
+```sql
+EXPLAIN QUERY PLAN {sql}
+```
+
+#### Q0355 — `transaction_with_behavior`
+
+Source: [src/db/debug_sql.rs:212](../src/db/debug_sql.rs#L212).
+
+```sql
+BEGIN DEFERRED
+```
+
+#### Q0356 — `transaction_with_behavior`
+
+Source: [src/db/debug_sql.rs:213](../src/db/debug_sql.rs#L213).
+
+```sql
+BEGIN IMMEDIATE
+```
+
+#### Q0357 — `transaction_with_behavior`
+
+Source: [src/db/debug_sql.rs:214](../src/db/debug_sql.rs#L214).
+
+```sql
+BEGIN EXCLUSIVE
+```
+
+#### Q0358 — `transaction_with_behavior`
+
+Source: [src/db/debug_sql.rs:215](../src/db/debug_sql.rs#L215).
+
+```sql
+BEGIN READONLY
+```
+
+#### Q0359 — `commit`
+
+Source: [src/db/debug_sql.rs:321](../src/db/debug_sql.rs#L321).
+
+```sql
+COMMIT
+```
+
+#### Q0360 — `rollback`
+
+Source: [src/db/debug_sql.rs:331](../src/db/debug_sql.rs#L331).
+
+```sql
+ROLLBACK
+```
+
+### src/db/debug_sql/tests.rs
+
+#### Q0361 — `fixture`
+
+Source: [src/db/debug_sql/tests.rs:14](../src/db/debug_sql/tests.rs#L14).
+
+```sql
+CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); CREATE INDEX item_name ON items(name);
+```
+
+#### Q0362 — `count`
+
+Source: [src/db/debug_sql/tests.rs:34](../src/db/debug_sql/tests.rs#L34).
+
+```sql
+SELECT count(*) FROM items
+```
+
+#### Q0363 — `disabled_delegates_without_records_or_statement_context`
+
+Source: [src/db/debug_sql/tests.rs:50](../src/db/debug_sql/tests.rs#L50).
+
+```sql
+INSERT INTO items(name) VALUES (?)
+```
+
+#### Q0364 — `trace_redacts_bindings_and_reports_errors_without_plans`
+
+Source: [src/db/debug_sql/tests.rs:63](../src/db/debug_sql/tests.rs#L63).
+
+```sql
+INSERT INTO items(name) VALUES (:name)
+```
+
+#### Q0365 — `trace_redacts_bindings_and_reports_errors_without_plans`
+
+Source: [src/db/debug_sql/tests.rs:68](../src/db/debug_sql/tests.rs#L68).
+
+```sql
+SELECT missing FROM items
+```
+
+#### Q0366 — `explains_index_with_real_bindings_and_never_replays_writes`
+
+Source: [src/db/debug_sql/tests.rs:84](../src/db/debug_sql/tests.rs#L84).
+
+```sql
+INSERT INTO items(name) VALUES (?)
+```
+
+#### Q0367 — `explains_index_with_real_bindings_and_never_replays_writes`
+
+Source: [src/db/debug_sql/tests.rs:89](../src/db/debug_sql/tests.rs#L89).
+
+```sql
+SELECT id FROM items WHERE name = ?
+```
+
+#### Q0368 — `diagnostic_failure_does_not_fail_valid_sql_or_recurse`
+
+Source: [src/db/debug_sql/tests.rs:115](../src/db/debug_sql/tests.rs#L115).
+
+```sql
+EXPLAIN QUERY PLAN SELECT * FROM items
+```
+
+#### Q0369 — `prepared_statements_transactions_and_batches_keep_behavior`
+
+Source: [src/db/debug_sql/tests.rs:130](../src/db/debug_sql/tests.rs#L130).
+
+```sql
+INSERT INTO items(name) VALUES (?)
+```
+
+#### Q0370 — `prepared_statements_transactions_and_batches_keep_behavior`
+
+Source: [src/db/debug_sql/tests.rs:139](../src/db/debug_sql/tests.rs#L139).
+
+```sql
+INSERT INTO items(name) VALUES (?)
+```
+
+#### Q0371 — `prepared_statements_transactions_and_batches_keep_behavior`
+
+Source: [src/db/debug_sql/tests.rs:144](../src/db/debug_sql/tests.rs#L144).
+
+```sql
+INSERT INTO items(name) VALUES ('batch'); INSERT INTO items(name) VALUES ('batch2');
+```
+
+#### Q0372 — `prepared_statements_transactions_and_batches_keep_behavior`
+
+Source: [src/db/debug_sql/tests.rs:148](../src/db/debug_sql/tests.rs#L148).
+
+```sql
+SELECT count(*) FROM items
+```
+
+#### Q0373 — `records_and_plans_are_bounded_during_repeated_use`
+
+Source: [src/db/debug_sql/tests.rs:174](../src/db/debug_sql/tests.rs#L174).
+
+```sql
+SELECT id FROM items WHERE name = ?
+```
+
+#### Q0374 — `records_and_plans_are_bounded_during_repeated_use`
+
+Source: [src/db/debug_sql/tests.rs:184](../src/db/debug_sql/tests.rs#L184).
+
+```sql
+SELECT 1 /*{}*/
+```
+
+#### Q0375 — `records_and_plans_are_bounded_during_repeated_use`
+
+Source: [src/db/debug_sql/tests.rs:189](../src/db/debug_sql/tests.rs#L189).
+
+```sql
+SELECT id FROM items
+```
+
+#### Q0376 — `dropping_transaction_still_rolls_back`
+
+Source: [src/db/debug_sql/tests.rs:205](../src/db/debug_sql/tests.rs#L205).
+
+```sql
+INSERT INTO items(name) VALUES (?)
+```
+
 ## Dynamic construction and binding context
 
 The following source functions contain SQL plus formatting, clause assembly, or shared SQL fragments. They preserve the branching logic, escaping, placeholder generation, value binding, and batch assembly needed to understand the templates above. Some formatting is only error-message construction; those functions are retained conservatively to avoid omitting relevant context. Helper-only builders are included separately below.
@@ -4510,9 +4700,9 @@ pub async fn copy_branch_db(parent_db: &Path, new_db_path: &Path) -> crate::erro
 }
 ```
 
-### `try_open_read_only` — src/db/connection.rs:212
+### `try_open_read_only` — src/db/connection.rs:214
 
-Source: [src/db/connection.rs:212](../src/db/connection.rs#L212).
+Source: [src/db/connection.rs:214](../src/db/connection.rs#L214).
 
 ```rust
     async fn try_open_read_only(db_path: &Path) -> Result<Self> {
@@ -4573,7 +4763,7 @@ Source: [src/db/connection.rs:212](../src/db/connection.rs#L212).
         }
 
         let database = Self {
-            conn,
+            conn: Connection::new(conn, "project"),
             _db: db,
             read_only: true,
             trait_dispatch_callers: RwLock::new(HashMap::new()),
@@ -4584,9 +4774,9 @@ Source: [src/db/connection.rs:212](../src/db/connection.rs#L212).
     }
 ```
 
-### `checkpoint` — src/db/connection.rs:299
+### `checkpoint` — src/db/connection.rs:301
 
-Source: [src/db/connection.rs:299](../src/db/connection.rs#L299).
+Source: [src/db/connection.rs:301](../src/db/connection.rs#L301).
 
 ```rust
     pub async fn checkpoint(&self) -> Result<()> {
@@ -4601,9 +4791,9 @@ Source: [src/db/connection.rs:299](../src/db/connection.rs#L299).
     }
 ```
 
-### `optimize` — src/db/connection.rs:311
+### `optimize` — src/db/connection.rs:313
 
-Source: [src/db/connection.rs:311](../src/db/connection.rs#L311).
+Source: [src/db/connection.rs:313](../src/db/connection.rs#L313).
 
 ```rust
     pub async fn optimize(&self) -> Result<()> {
@@ -4618,9 +4808,9 @@ Source: [src/db/connection.rs:311](../src/db/connection.rs#L311).
     }
 ```
 
-### `size` — src/db/connection.rs:323
+### `size` — src/db/connection.rs:325
 
-Source: [src/db/connection.rs:323](../src/db/connection.rs#L323).
+Source: [src/db/connection.rs:325](../src/db/connection.rs#L325).
 
 ```rust
     pub async fn size(&self) -> Result<u64> {
@@ -4657,9 +4847,9 @@ Source: [src/db/connection.rs:323](../src/db/connection.rs#L323).
     }
 ```
 
-### `quick_check` — src/db/connection.rs:360
+### `quick_check` — src/db/connection.rs:362
 
-Source: [src/db/connection.rs:360](../src/db/connection.rs#L360).
+Source: [src/db/connection.rs:362](../src/db/connection.rs#L362).
 
 ```rust
     pub async fn quick_check(&self) -> Result<bool> {
@@ -4684,9 +4874,9 @@ Source: [src/db/connection.rs:360](../src/db/connection.rs#L360).
     }
 ```
 
-### `needs_bulk_load_finalization` — src/db/connection.rs:390
+### `needs_bulk_load_finalization` — src/db/connection.rs:392
 
-Source: [src/db/connection.rs:390](../src/db/connection.rs#L390).
+Source: [src/db/connection.rs:392](../src/db/connection.rs#L392).
 
 ```rust
     pub async fn needs_bulk_load_finalization(&self) -> Result<bool> {
@@ -4717,9 +4907,9 @@ Source: [src/db/connection.rs:390](../src/db/connection.rs#L390).
     }
 ```
 
-### `rebuild_fts` — src/db/connection.rs:421
+### `rebuild_fts` — src/db/connection.rs:423
 
-Source: [src/db/connection.rs:421](../src/db/connection.rs#L421).
+Source: [src/db/connection.rs:423](../src/db/connection.rs#L423).
 
 ```rust
     pub async fn rebuild_fts(&self) -> Result<()> {
@@ -4734,12 +4924,12 @@ Source: [src/db/connection.rs:421](../src/db/connection.rs#L421).
     }
 ```
 
-### `apply_pragmas` — src/db/connection.rs:436
+### `apply_pragmas` — src/db/connection.rs:438
 
-Source: [src/db/connection.rs:436](../src/db/connection.rs#L436).
+Source: [src/db/connection.rs:438](../src/db/connection.rs#L438).
 
 ```rust
-    async fn apply_pragmas(conn: &Connection, db_file_size: u64) -> Result<()> {
+    async fn apply_pragmas(conn: &RawConnection, db_file_size: u64) -> Result<()> {
         let (cache_kb, mmap) = adaptive_cache_sizes(db_file_size);
         let busy_ms = busy_timeout_ms();
         conn.execute_batch(&format!(
@@ -4761,9 +4951,9 @@ Source: [src/db/connection.rs:436](../src/db/connection.rs#L436).
     }
 ```
 
-### `begin_bulk_load` — src/db/connection.rs:461
+### `begin_bulk_load` — src/db/connection.rs:463
 
-Source: [src/db/connection.rs:461](../src/db/connection.rs#L461).
+Source: [src/db/connection.rs:463](../src/db/connection.rs#L463).
 
 ```rust
     pub async fn begin_bulk_load(&self) -> Result<()> {
@@ -4802,9 +4992,9 @@ Source: [src/db/connection.rs:461](../src/db/connection.rs#L461).
     }
 ```
 
-### `end_bulk_load` — src/db/connection.rs:505
+### `end_bulk_load` — src/db/connection.rs:507
 
-Source: [src/db/connection.rs:505](../src/db/connection.rs#L505).
+Source: [src/db/connection.rs:507](../src/db/connection.rs#L507).
 
 ```rust
     pub async fn end_bulk_load(&self) -> Result<()> {
@@ -11341,9 +11531,9 @@ pub async fn audit(db: &Database, limit: usize) -> Result<EdgeAudit> {
 }
 ```
 
-### `delete_projects` — src/global_db.rs:580
+### `delete_projects` — src/global_db.rs:582
 
-Source: [src/global_db.rs:580](../src/global_db.rs#L580).
+Source: [src/global_db.rs:582](../src/global_db.rs#L582).
 
 ```rust
     pub async fn delete_projects(&self, project_paths: &[String]) -> usize {
@@ -11370,9 +11560,9 @@ Source: [src/global_db.rs:580](../src/global_db.rs#L580).
     }
 ```
 
-### `migration_merges_duplicates_and_drops_relative_rows` — src/global_db.rs:1055
+### `migration_merges_duplicates_and_drops_relative_rows` — src/global_db.rs:1057
 
-Source: [src/global_db.rs:1055](../src/global_db.rs#L1055).
+Source: [src/global_db.rs:1057](../src/global_db.rs#L1057).
 
 ```rust
     async fn migration_merges_duplicates_and_drops_relative_rows() {
@@ -12992,9 +13182,9 @@ Source: [src/db/queries/nodes.rs:78](../src/db/queries/nodes.rs#L78).
     }
 ```
 
-### `upsert` — src/global_db.rs:433
+### `upsert` — src/global_db.rs:435
 
-Source: [src/global_db.rs:433](../src/global_db.rs#L433).
+Source: [src/global_db.rs:435](../src/global_db.rs#L435).
 
 ```rust
     pub async fn upsert(&self, project_path: &Path, tokens_saved: u64) {
@@ -13010,9 +13200,9 @@ Source: [src/global_db.rs:433](../src/global_db.rs#L433).
     }
 ```
 
-### `upsert_droid_turn` — src/global_db.rs:683
+### `upsert_droid_turn` — src/global_db.rs:685
 
-Source: [src/global_db.rs:683](../src/global_db.rs#L683).
+Source: [src/global_db.rs:685](../src/global_db.rs#L685).
 
 ```rust
     pub async fn upsert_droid_turn(&self, turn: &crate::types::CostTurn) -> bool {
@@ -13073,6 +13263,355 @@ Source: [src/global_db.rs:683](../src/global_db.rs#L683).
             .await
             .is_ok_and(|n| n > 0)
     }
+```
+
+### `plan` — src/db/debug_sql.rs:83
+
+Source: [src/db/debug_sql.rs:83](../src/db/debug_sql.rs#L83).
+
+```rust
+    async fn plan(&self, sql: &str, params: &Params) -> Option<Value> {
+        let debug = self.debug.as_ref()?;
+        if !debug.explain {
+            return None;
+        }
+        // Only compile the plan, never execute the original statement here.
+        // Use the raw connection so diagnostics cannot recurse into themselves.
+        let plan_sql = format!("EXPLAIN QUERY PLAN {sql}");
+        let result: libsql::Result<Value> = async {
+            let mut rows = self.inner.query(&plan_sql, params.clone()).await?;
+            let mut plan = Vec::new();
+            while let Some(row) = rows.next().await? {
+                if plan.len() == MAX_PLAN_ROWS {
+                    return Ok(json!({"rows": plan, "truncated": true}));
+                }
+                let detail: String = row.get(3)?;
+                plan.push(json!({
+                    "id": row.get::<i64>(0)?,
+                    "parent": row.get::<i64>(1)?,
+                    "detail": bounded(&detail, MAX_DETAIL_BYTES),
+                    "detail_truncated": detail.len() > MAX_DETAIL_BYTES,
+                }));
+            }
+            Ok(json!({"rows": plan, "truncated": false}))
+        }
+        .await;
+        // Error text can contain values or user data. Keep the application
+        // error unchanged, but record only a diagnostic failure indicator.
+        Some(result.unwrap_or_else(|_| json!({"error": true})))
+    }
+```
+
+### `transaction_with_behavior` — src/db/debug_sql.rs:207
+
+Source: [src/db/debug_sql.rs:207](../src/db/debug_sql.rs#L207).
+
+```rust
+    pub async fn transaction_with_behavior(
+        &self,
+        behavior: libsql::TransactionBehavior,
+    ) -> libsql::Result<Transaction> {
+        let sql = match behavior {
+            libsql::TransactionBehavior::Deferred => "BEGIN DEFERRED",
+            libsql::TransactionBehavior::Immediate => "BEGIN IMMEDIATE",
+            libsql::TransactionBehavior::Exclusive => "BEGIN EXCLUSIVE",
+            libsql::TransactionBehavior::ReadOnly => "BEGIN READONLY",
+        };
+        let start = self.debug.as_ref().map(|_| Instant::now());
+        let result = self.inner.transaction_with_behavior(behavior).await;
+        if let Some(start) = start {
+            self.record("begin", sql, 0, start, result.is_ok(), None);
+        }
+        let inner = result?;
+        let connection = Self {
+            inner: (*inner).clone(),
+            debug: self.debug.clone(),
+        };
+        Ok(Transaction { inner, connection })
+    }
+```
+
+### `commit` — src/db/debug_sql.rs:316
+
+Source: [src/db/debug_sql.rs:316](../src/db/debug_sql.rs#L316).
+
+```rust
+    pub async fn commit(self) -> libsql::Result<()> {
+        let start = self.connection.debug.as_ref().map(|_| Instant::now());
+        let result = self.inner.commit().await;
+        if let Some(start) = start {
+            self.connection
+                .record("commit", "COMMIT", 0, start, result.is_ok(), None);
+        }
+        result
+    }
+```
+
+### `rollback` — src/db/debug_sql.rs:326
+
+Source: [src/db/debug_sql.rs:326](../src/db/debug_sql.rs#L326).
+
+```rust
+    pub async fn rollback(self) -> libsql::Result<()> {
+        let start = self.connection.debug.as_ref().map(|_| Instant::now());
+        let result = self.inner.rollback().await;
+        if let Some(start) = start {
+            self.connection
+                .record("rollback", "ROLLBACK", 0, start, result.is_ok(), None);
+        }
+        result
+    }
+```
+
+### `fixture` — src/db/debug_sql/tests.rs:8
+
+Source: [src/db/debug_sql/tests.rs:8](../src/db/debug_sql/tests.rs#L8).
+
+```rust
+async fn fixture(enabled: bool, explain: bool) -> (libsql::Database, Connection, Records) {
+    let db = libsql::Builder::new_local(":memory:")
+        .build()
+        .await
+        .unwrap();
+    let inner = db.connect().unwrap();
+    inner.execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); CREATE INDEX item_name ON items(name);")
+        .await.unwrap();
+    let records: Records = Arc::default();
+    let sink = records.clone();
+    let conn = Connection {
+        inner,
+        debug: enabled.then(|| {
+            Arc::new(DebugState {
+                database: "test",
+                connection_id: 0,
+                explain,
+                sequence: AtomicU64::new(0),
+                sink: Box::new(move |record| sink.lock().unwrap().push(record.clone())),
+            })
+        }),
+    };
+    (db, conn, records)
+}
+```
+
+### `count` — src/db/debug_sql/tests.rs:33
+
+Source: [src/db/debug_sql/tests.rs:33](../src/db/debug_sql/tests.rs#L33).
+
+```rust
+async fn count(conn: &Connection) -> i64 {
+    conn.query("SELECT count(*) FROM items", ())
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap()
+}
+```
+
+### `disabled_delegates_without_records_or_statement_context` — src/db/debug_sql/tests.rs:46
+
+Source: [src/db/debug_sql/tests.rs:46](../src/db/debug_sql/tests.rs#L46).
+
+```rust
+async fn disabled_delegates_without_records_or_statement_context() {
+    // Explain=true alone cannot activate debug mode.
+    let (_db, conn, records) = fixture(false, true).await;
+    let stmt = conn
+        .prepare("INSERT INTO items(name) VALUES (?)")
+        .await
+        .unwrap();
+    assert!(stmt.context.is_none());
+    assert_eq!(stmt.execute(["private"]).await.unwrap(), 1);
+    assert_eq!(count(&conn).await, 1);
+    assert!(records.lock().unwrap().is_empty());
+}
+```
+
+### `trace_redacts_bindings_and_reports_errors_without_plans` — src/db/debug_sql/tests.rs:60
+
+Source: [src/db/debug_sql/tests.rs:60](../src/db/debug_sql/tests.rs#L60).
+
+```rust
+async fn trace_redacts_bindings_and_reports_errors_without_plans() {
+    let (_db, conn, records) = fixture(true, false).await;
+    conn.execute(
+        "INSERT INTO items(name) VALUES (:name)",
+        libsql::named_params! {":name": "SECRET_BOUND_VALUE"},
+    )
+    .await
+    .unwrap();
+    assert!(conn.query("SELECT missing FROM items", ()).await.is_err());
+    let records = records.lock().unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["parameter_count"], 1);
+    assert_eq!(records[0]["ok"], true);
+    assert_eq!(records[1]["ok"], false);
+    assert_eq!(records[1]["sequence"], 1);
+    assert!(records.iter().all(|r| r["plan"].is_null()));
+    assert!(!serde_json::to_string(&*records)
+        .unwrap()
+        .contains("SECRET_BOUND_VALUE"));
+}
+```
+
+### `explains_index_with_real_bindings_and_never_replays_writes` — src/db/debug_sql/tests.rs:82
+
+Source: [src/db/debug_sql/tests.rs:82](../src/db/debug_sql/tests.rs#L82).
+
+```rust
+async fn explains_index_with_real_bindings_and_never_replays_writes() {
+    let (_db, conn, records) = fixture(true, true).await;
+    conn.execute("INSERT INTO items(name) VALUES (?)", ["SECRET_BOUND_VALUE"])
+        .await
+        .unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT id FROM items WHERE name = ?",
+            ["SECRET_BOUND_VALUE"],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+        1
+    );
+    assert_eq!(count(&conn).await, 1);
+    let records = records.lock().unwrap();
+    assert!(records[1]["plan"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["detail"].as_str().unwrap().contains("item_name")));
+    assert!(!serde_json::to_string(&*records)
+        .unwrap()
+        .contains("SECRET_BOUND_VALUE"));
+}
+```
+
+### `diagnostic_failure_does_not_fail_valid_sql_or_recurse` — src/db/debug_sql/tests.rs:111
+
+Source: [src/db/debug_sql/tests.rs:111](../src/db/debug_sql/tests.rs#L111).
+
+```rust
+async fn diagnostic_failure_does_not_fail_valid_sql_or_recurse() {
+    let (_db, conn, records) = fixture(true, true).await;
+    // Prefixing EXPLAIN again is invalid, but the original query is valid.
+    let mut rows = conn
+        .query("EXPLAIN QUERY PLAN SELECT * FROM items", ())
+        .await
+        .unwrap();
+    assert!(rows.next().await.unwrap().is_some());
+    let records = records.lock().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["ok"], true);
+    assert_eq!(records[0]["plan"]["error"], true);
+}
+```
+
+### `prepared_statements_transactions_and_batches_keep_behavior` — src/db/debug_sql/tests.rs:126
+
+Source: [src/db/debug_sql/tests.rs:126](../src/db/debug_sql/tests.rs#L126).
+
+```rust
+async fn prepared_statements_transactions_and_batches_keep_behavior() {
+    let (_db, conn, records) = fixture(true, true).await;
+    let tx = conn.transaction().await.unwrap();
+    let stmt = tx
+        .prepare("INSERT INTO items(name) VALUES (?)")
+        .await
+        .unwrap();
+    stmt.execute(["private"]).await.unwrap();
+    stmt.execute(["private2"]).await.unwrap();
+    drop(stmt);
+    tx.rollback().await.unwrap();
+    assert_eq!(count(&conn).await, 0);
+    let tx = conn.transaction().await.unwrap();
+    tx.execute("INSERT INTO items(name) VALUES (?)", ["committed"])
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    conn.execute_transactional_batch(
+        "INSERT INTO items(name) VALUES ('batch'); INSERT INTO items(name) VALUES ('batch2');",
+    )
+    .await
+    .unwrap();
+    let mut stmt = conn.prepare("SELECT count(*) FROM items").await.unwrap();
+    assert_eq!(stmt.query_row(()).await.unwrap().get::<i64>(0).unwrap(), 3);
+    stmt.finalize();
+    let records = records.lock().unwrap();
+    for op in [
+        "begin",
+        "prepare",
+        "statement_execute",
+        "statement_query",
+        "rollback",
+        "commit",
+        "transactional_batch",
+    ] {
+        assert!(records.iter().any(|r| r["operation"] == op), "missing {op}");
+    }
+    assert!(records
+        .iter()
+        .filter(|r| r["operation"] == "transactional_batch")
+        .all(|r| r["plan"].is_null()));
+}
+```
+
+### `records_and_plans_are_bounded_during_repeated_use` — src/db/debug_sql/tests.rs:170
+
+Source: [src/db/debug_sql/tests.rs:170](../src/db/debug_sql/tests.rs#L170).
+
+```rust
+async fn records_and_plans_are_bounded_during_repeated_use() {
+    let (_db, conn, records) = fixture(true, true).await;
+    for _ in 0..100 {
+        let mut rows = conn
+            .query("SELECT id FROM items WHERE name = ?", ["private"])
+            .await
+            .unwrap();
+        assert!(rows.next().await.unwrap().is_none());
+        // No production history: the test sink drains each record.
+        let mut records = records.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(serde_json::to_vec(&records[0]).unwrap().len() < 4096);
+        records.clear();
+    }
+    let sql = format!("SELECT 1 /*{}*/", "é".repeat(MAX_SQL_BYTES));
+    conn.query(&sql, ()).await.unwrap();
+    let record = records.lock().unwrap().pop().unwrap();
+    assert_eq!(record["sql_truncated"], true);
+    assert!(record["sql"].as_str().unwrap().len() <= MAX_SQL_BYTES);
+    let sql = std::iter::repeat_n("SELECT id FROM items", MAX_PLAN_ROWS + 5)
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ");
+    conn.query(&sql, ()).await.unwrap();
+    let record = records.lock().unwrap().pop().unwrap();
+    assert_eq!(record["plan"]["truncated"], true);
+    assert_eq!(
+        record["plan"]["rows"].as_array().unwrap().len(),
+        MAX_PLAN_ROWS
+    );
+}
+```
+
+### `dropping_transaction_still_rolls_back` — src/db/debug_sql/tests.rs:202
+
+Source: [src/db/debug_sql/tests.rs:202](../src/db/debug_sql/tests.rs#L202).
+
+```rust
+async fn dropping_transaction_still_rolls_back() {
+    let (_db, conn, _records) = fixture(true, true).await;
+    let tx = conn.transaction().await.unwrap();
+    tx.execute("INSERT INTO items(name) VALUES (?)", ["private"])
+        .await
+        .unwrap();
+    drop(tx);
+    assert_eq!(count(&conn).await, 0);
+}
 ```
 
 ## File deletion and dispatch-index context
@@ -13294,3 +13833,30 @@ investigation in #751 remains open.
 Coverage was checked against SQL-bearing string literals and database execution entry points (`query`, `execute`, `prepare`, and `execute_batch`) in the current `src/` tree. SQL passed through variables or constants is represented by the defining template and, for constructed SQL, its builder context. This static inventory does not enumerate concrete values supplied by users or runtime-generated batches. It includes historical migrations and inline tests; their presence does not imply that every statement runs on every invocation. Source line links apply to the recorded snapshot and may move after edits.
 
 The tokensave graph tools were consulted first, but reported a stale index and a different served checkout. The inventory therefore uses the current working-tree source rather than relying on graph contents. The inventory describes the current source, including the file-deletion and dispatch-index changes. Validation results for those changes are recorded separately; this inventory is not a performance benchmark.
+
+## SQL debugging construction and coverage (Refs #789)
+
+Q0354 and later retain new debug-only templates and inline test statements.
+`Connection::plan` prefixes the complete original statement with `EXPLAIN QUERY
+PLAN` and binds a temporary clone of its positional or named parameters. It uses
+the raw connection to avoid recursive instrumentation. Parameters are never
+rendered into SQL or records. EXPLAIN errors are represented by a boolean; they
+do not replace the original result. The BEGIN/COMMIT/ROLLBACK strings in the
+wrapper are diagnostic labels for libsql transaction APIs rather than additional
+SQL executions. Existing SQL bodies and bindings remain unchanged.
+
+Direct runtime helpers in `src/db/queries/mod.rs` now accept the debug connection
+so aggregates participate. `Database::conn()` returns that wrapper (which derefs
+to libsql for compatibility); explicit raw coercions bypass diagnostics. Project
+startup pragmas and migrations still receive the raw connection. Global database
+opening installs the wrapper before setup. Independent raw connections, SQLite
+trigger internals and row iteration are outside this runtime tracing surface.
+The static inventory continues to cover those application SQL statements.
+
+Each emitted record bounds SQL to 8 KiB, plans to 64 rows and details to 1 KiB per
+row. There is no retained production history or background work. Statement SQL,
+plan SQL and temporary binding clones are input-proportional and released with
+the statement/operation. Disabled operations allocate no diagnostic records, read
+no clocks and run no EXPLAIN. Enabled writes to stderr are synchronous and can
+apply backpressure. See the user guide's SQL debugging section for settings,
+logging and timing boundaries; issue #789 records validation and PR status.

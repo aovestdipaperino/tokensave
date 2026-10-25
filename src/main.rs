@@ -508,6 +508,27 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     json,
                 },
         } => commands::run_config_benchmark(force, show, reset, json),
+        Commands::Config {
+            action: cli::ConfigAction::DebugSql { enabled, explain },
+        } => {
+            let mut config = tokensave::user_config::UserConfig::load();
+            if let Some(enabled) = enabled {
+                config.debug_sql = enabled;
+            }
+            if let Some(explain) = explain {
+                config.debug_sql_explain = explain;
+            }
+            if (enabled.is_some() || explain.is_some()) && !config.save() {
+                return Err(tokensave::errors::TokenSaveError::Config {
+                    message: "failed to save global SQL debug settings".to_string(),
+                });
+            }
+            println!("debug_sql = {}", config.debug_sql);
+            println!("debug_sql_explain = {}", config.debug_sql_explain);
+            if config.debug_sql_explain && !config.debug_sql {
+                eprintln!("EXPLAIN is inactive until debug_sql is enabled.");
+            }
+        }
         Commands::Sync {
             path,
             force,

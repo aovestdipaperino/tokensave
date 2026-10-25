@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::RwLock;
 
-use libsql::{Builder, Connection, Database as LibsqlDatabase};
+use libsql::{Builder, Connection as RawConnection, Database as LibsqlDatabase};
+
+use super::debug_sql::Connection;
 
 use crate::errors::{Result, TokenSaveError};
 use crate::types::{Edge, Node};
@@ -134,7 +136,7 @@ impl Database {
         migrations::create_schema(&conn).await?;
 
         let database = Self {
-            conn,
+            conn: Connection::new(conn, "project"),
             _db: db,
             read_only: false,
             trait_dispatch_callers: RwLock::new(HashMap::new()),
@@ -182,7 +184,7 @@ impl Database {
         let migrated = migrations::migrate(&conn).await?;
 
         let database = Self {
-            conn,
+            conn: Connection::new(conn, "project"),
             _db: db,
             read_only: false,
             trait_dispatch_callers: RwLock::new(HashMap::new()),
@@ -267,7 +269,7 @@ impl Database {
         }
 
         let database = Self {
-            conn,
+            conn: Connection::new(conn, "project"),
             _db: db,
             read_only: true,
             trait_dispatch_callers: RwLock::new(HashMap::new()),
@@ -433,7 +435,7 @@ impl Database {
     ///
     /// `cache_size` and `mmap_size` are scaled to the on-disk DB size so
     /// small projects don't pay the 320 MB baseline of a large project.
-    async fn apply_pragmas(conn: &Connection, db_file_size: u64) -> Result<()> {
+    async fn apply_pragmas(conn: &RawConnection, db_file_size: u64) -> Result<()> {
         let (cache_kb, mmap) = adaptive_cache_sizes(db_file_size);
         let busy_ms = busy_timeout_ms();
         conn.execute_batch(&format!(
