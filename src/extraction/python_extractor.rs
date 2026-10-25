@@ -1,73 +1,18 @@
 /// Tree-sitter based Python source code extractor.
 ///
 /// Parses Python source files and emits nodes and edges for the code graph.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, PYTHON_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState, PythonClassAttrs};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from Python source files using tree-sitter.
 pub struct PythonExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-    /// Depth of class nesting. > 0 means we are inside a class.
-    class_depth: usize,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-            class_depth: 0,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl PythonExtractor {
     /// Extract code graph nodes and edges from a Python source file.
@@ -82,7 +27,7 @@ impl PythonExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -94,6 +39,7 @@ impl PythonExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -108,13 +54,17 @@ impl PythonExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -122,7 +72,7 @@ impl PythonExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -162,8 +112,17 @@ impl PythonExtractor {
             "decorated_definition" => Self::visit_decorated_definition(state, node),
             "import_statement" => Self::visit_import(state, node),
             "import_from_statement" => Self::visit_import_from(state, node),
-            "expression_statement" if state.class_depth == 0 => {
-                // Check for module-level assignments that look like constants.
+            "expression_statement" => {
+                // Check for module-level assignments that look like constants
+                // (module scope), or first-class value refs in a class-body
+                // assignment's RHS (class scope, #224: `class Registry:
+                // CALLBACKS = {"x": _class_callback}` — previously this arm
+                // was gated to `class_depth == 0` so a class-body assignment
+                // never reached `visit_assignment` at all, leaving
+                // `_class_callback` with no ref and reported dead).
+                // `visit_assignment` itself gates *Const-node creation* by
+                // class depth, so this doesn't turn class attributes into
+                // module Const nodes.
                 let mut cursor = node.walk();
                 if cursor.goto_first_child() {
                     loop {
@@ -176,16 +135,35 @@ impl PythonExtractor {
                         }
                     }
                 }
+                // A call in a module- or class-scope statement (`_KEYMAP =
+                // _build_keymap()`, or a bare `_setup()`) is a real call
+                // site. Call sites were only extracted from function bodies,
+                // so the callee had no incoming `calls` edge and
+                // `tokensave_dead_code` reported it dead. Attribute the call
+                // to the enclosing scope: the File node at module level, the
+                // class node in a class body.
+                if let Some(scope_id) = state.parent_node_id().map(str::to_string) {
+                    Self::extract_call_sites(state, node, &scope_id);
+                }
             }
-            _ => {}
+            // Any other statement at module or class scope (`if __name__ ==
+            // "__main__":`, `try`, `with`, `for`, `while`, `match`, `assert`,
+            // `raise`, ...) can hold call sites too. Extract them the same
+            // way; `extract_call_sites` stops at a nested def, so a function
+            // defined inside the block is not indexed here and its body is
+            // not attributed to this scope.
+            _ => {
+                if let Some(scope_id) = state.parent_node_id().map(str::to_string) {
+                    Self::extract_call_sites(state, node, &scope_id);
+                }
+            }
         }
     }
 
-    /// Extract a function definition. If inside a class (class_depth > 0), it becomes a Method.
+    /// Extract a function definition. If inside a class (`class_depth` > 0), it becomes a Method.
     fn visit_function(state: &mut ExtractionState, node: TsNode<'_>, is_async: bool) {
-        let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name = find_child_by_kind(node, "identifier")
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let in_class = state.class_depth > 0;
         let kind = if in_class {
@@ -194,7 +172,7 @@ impl PythonExtractor {
             NodeKind::Function
         };
         let visibility = Self::python_visibility(&name);
-        let signature = Self::extract_function_signature(state, node);
+        let signature = Some(Self::extract_function_signature(state, node));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -211,6 +189,7 @@ impl PythonExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -225,7 +204,13 @@ impl PythonExtractor {
             unsafe_blocks: metrics.unsafe_blocks,
             unchecked_calls: metrics.unchecked_calls,
             assertions: metrics.assertions,
+            cognitive_complexity: metrics.cognitive_complexity,
+            distinct_operators: metrics.distinct_operators,
+            distinct_operands: metrics.distinct_operands,
+            total_operators: metrics.total_operators,
+            total_operands: metrics.total_operands,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -236,24 +221,147 @@ impl PythonExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
+        // Parameter default values are a value position exactly like a call
+        // argument or assignment RHS (#224): `def invoke(callback=_default_cb)`
+        // previously produced no ref for `_default_cb` because the body scan
+        // below never looks at the sibling `parameters` node — so the default
+        // looked dead despite being wired up as the function's fallback.
+        // Scanned unconditionally (independent of whether a `block` body is
+        // present) and attributed to the function's own id.
+        if let Some(params) = node.child_by_field_name("parameters") {
+            let mut cursor = params.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    let p = cursor.node();
+                    if matches!(p.kind(), "default_parameter" | "typed_default_parameter") {
+                        if let Some(value) = p.child_by_field_name("value") {
+                            Self::scan_value_positions(state, value, &id);
+                        }
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+            // A default that is itself a call (`def f(x=_build())`) runs at
+            // definition time. The value scan above covers its arguments;
+            // this covers the callee.
+            Self::extract_call_sites(state, params, &id);
+        }
+
         // Extract call sites from the function body.
-        if let Some(body) = Self::find_child_by_kind(node, "block") {
+        if let Some(body) = find_child_by_kind(node, "block") {
             Self::extract_call_sites(state, body, &id);
+            Self::extract_receiver_typed_calls(state, node, body, &id);
+
+            // First-class function/value references (#224): e.g.
+            // `Spec(parse=_parse_text)` or `PARSERS = {"text": _parse_text}`
+            // written inside a function body. Bounded to call-argument
+            // values and assignment RHS — see `extract_value_refs`.
+            Self::extract_value_refs(state, body, &id);
+
+            // Recurse into nested function/class definitions (closures,
+            // locally-defined classes). `extract_call_sites` above
+            // deliberately stops at a nested def's boundary so it doesn't
+            // attribute the nested body's calls to the outer function; but
+            // nothing previously *visited* that nested def either, so it was
+            // never indexed and its own calls never became graph edges —
+            // e.g. a closure's call to a same-file helper left the helper
+            // looking dead (#224). Pushing this function onto the node
+            // stack attributes the nested def as its child, matching how
+            // `visit_class` already indexes a nested class's body.
+            state.node_stack.push((name.clone(), id.clone()));
+            // Imports written inside a function body were never visited, so a
+            // lazy import produced no Use node and was invisible to the module
+            // import graph (#334) — exactly the imports that matter most there,
+            // since a lazy import usually exists *because* of a cycle. Walked
+            // while this function is on the stack so the Use node's Contains
+            // parent is the function, which is what marks it lazy.
+            Self::visit_body_imports(state, body);
+            Self::visit_nested_defs(state, body);
+            state.node_stack.pop();
+        }
+    }
+
+    /// Walks a function body for `import` / `from … import` statements at any
+    /// nesting depth, stopping at nested definitions.
+    ///
+    /// A nested def's own imports are visited when that def is visited, so
+    /// descending into it here would attribute them to the wrong function.
+    fn visit_body_imports(state: &mut ExtractionState, node: TsNode<'_>) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                match child.kind() {
+                    "import_statement" => Self::visit_import(state, child),
+                    "import_from_statement" => Self::visit_import_from(state, child),
+                    "function_definition" | "decorated_definition" | "class_definition" => {}
+                    // `if`/`try`/`with` blocks are where conditional and
+                    // deferred imports actually live, so the walk has to reach
+                    // through them rather than only reading top-level statements.
+                    _ => Self::visit_body_imports(state, child),
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Walks a function body for nested `function_definition` /
+    /// `decorated_definition` / `class_definition` nodes — including ones
+    /// sitting inside `if`/`for`/`while`/`try`/`with` blocks, not just
+    /// direct statements — and visits each one. Descent stops the moment
+    /// such a node is found; that node's own body is walked when it is
+    /// visited (by `visit_function`/`visit_class` themselves), not here.
+    ///
+    /// A nested def is always a plain local function/class, never a class
+    /// *member*, regardless of how many enclosing methods it sits inside —
+    /// so `class_depth` is reset to 0 for the duration of this walk. Without
+    /// this, `visit_function` for a closure defined inside a method would
+    /// see the outer method's `class_depth > 0` and misclassify the closure
+    /// as a `Method`.
+    fn visit_nested_defs(state: &mut ExtractionState, node: TsNode<'_>) {
+        let saved_depth = state.class_depth;
+        state.class_depth = 0;
+        Self::visit_nested_defs_inner(state, node);
+        state.class_depth = saved_depth;
+    }
+
+    fn visit_nested_defs_inner(state: &mut ExtractionState, node: TsNode<'_>) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                match child.kind() {
+                    "function_definition" => {
+                        let is_async = Self::has_async_keyword(child);
+                        Self::visit_function(state, child, is_async);
+                    }
+                    "class_definition" => Self::visit_class(state, child),
+                    "decorated_definition" => Self::visit_decorated_definition(state, child),
+                    _ => Self::visit_nested_defs_inner(state, child),
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
         }
     }
 
     /// Extract a class definition.
     fn visit_class(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name = find_child_by_kind(node, "identifier")
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let visibility = Self::python_visibility(&name);
         let docstring = Self::extract_docstring(state, node);
-        let signature = Self::extract_class_signature(state, node);
+        let signature = Some(Self::extract_class_signature(state, node));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -268,6 +376,7 @@ impl PythonExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -282,7 +391,13 @@ impl PythonExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -293,27 +408,37 @@ impl PythonExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
         // Extract base classes (inheritance).
         Self::extract_base_classes(state, node, &id);
+        // A call in the class header (`class C(_make_base()):`) runs at
+        // definition time. `extract_base_classes` records the bases by name;
+        // this records the call.
+        if let Some(args) = find_child_by_kind(node, "argument_list") {
+            Self::extract_call_sites(state, args, &id);
+        }
 
         // Visit class body.
+        let attrs = Self::collect_class_attrs(state, node);
+        state.python_class_attrs.push(attrs);
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
-        if let Some(body) = Self::find_child_by_kind(node, "block") {
+        if let Some(body) = find_child_by_kind(node, "block") {
             Self::visit_children(state, body);
         }
         state.class_depth -= 1;
         state.node_stack.pop();
+        state.python_class_attrs.pop();
     }
 
     /// Extract a decorated definition (decorator + function or class).
     fn visit_decorated_definition(state: &mut ExtractionState, node: TsNode<'_>) {
         // First, find the inner definition (function_definition or class_definition).
-        let inner_def = Self::find_child_by_kind(node, "function_definition")
-            .or_else(|| Self::find_child_by_kind(node, "class_definition"));
+        let inner_def = find_child_by_kind(node, "function_definition")
+            .or_else(|| find_child_by_kind(node, "class_definition"));
 
         // Check if the inner def is an async function (could be wrapped in decorated_definition)
         let is_async = Self::has_async_keyword(node);
@@ -321,9 +446,8 @@ impl PythonExtractor {
         // Determine the inner definition's node ID ahead of time so we can
         // create Annotates edges from decorators to it.
         let inner_kind_and_name = if let Some(inner) = inner_def {
-            let name = Self::find_child_by_kind(inner, "identifier")
-                .map(|n| state.node_text(n))
-                .unwrap_or_else(|| "<anonymous>".to_string());
+            let name = find_child_by_kind(inner, "identifier")
+                .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
             let kind = match inner.kind() {
                 "class_definition" => NodeKind::Class,
                 _ => {
@@ -349,23 +473,14 @@ impl PythonExtractor {
                     let text = state.node_text(child);
                     // Get the decorator name (strip @ and potential arguments).
                     let raw = text.trim_start_matches('@');
-                    let name = raw
-                        .split('(')
-                        .next()
-                        .unwrap_or(raw)
-                        .trim()
-                        .to_string();
+                    let name = raw.split('(').next().unwrap_or(raw).trim().to_string();
                     let start_line = child.start_position().row as u32;
                     let end_line = child.end_position().row as u32;
                     let start_column = child.start_position().column as u32;
                     let end_column = child.end_position().column as u32;
                     let qualified_name = format!("{}::@{}", state.qualified_prefix(), name);
-                    let dec_id = generate_node_id(
-                        &state.file_path,
-                        &NodeKind::Decorator,
-                        &name,
-                        start_line,
-                    );
+                    let dec_id =
+                        generate_node_id(&state.file_path, &NodeKind::Decorator, &name, start_line);
 
                     let graph_node = Node {
                         id: dec_id.clone(),
@@ -374,6 +489,7 @@ impl PythonExtractor {
                         qualified_name,
                         file_path: state.file_path.clone(),
                         start_line,
+                        attrs_start_line: start_line,
                         end_line,
                         start_column,
                         end_column,
@@ -382,15 +498,47 @@ impl PythonExtractor {
                         visibility: Visibility::Private,
                         is_async: false,
                         branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                        loops: 0,
+                        returns: 0,
+                        max_nesting: 0,
+                        unsafe_blocks: 0,
+                        unchecked_calls: 0,
+                        assertions: 0,
+                        cognitive_complexity: 0,
+                        distinct_operators: 0,
+                        distinct_operands: 0,
+                        total_operators: 0,
+                        total_operands: 0,
+                        updated_at: state.timestamp,
+                        parent_id: None,
                     };
                     state.nodes.push(graph_node);
+
+                    // Applying a decorator calls it. A bare name (`@_register`,
+                    // `@_make()`) is a project-level reference worth an edge;
+                    // a dotted one (`@app.route`, `@status.setter`) names a
+                    // member of some object and is left alone, since its
+                    // trailing segment would bind to any same-named symbol.
+                    if !name.contains('.') {
+                        state.unresolved_refs.push(UnresolvedRef {
+                            from_node_id: dec_id.clone(),
+                            reference_name: name.clone(),
+                            reference_kind: EdgeKind::Calls,
+                            line: start_line,
+                            column: start_column,
+                            file_path: state.file_path.clone(),
+                        });
+                    }
+                    // The arguments of a decorator call (`@_register(_build())`)
+                    // run at definition time too, whatever the callee is.
+                    if let Some(args) = child
+                        .named_child(0)
+                        .filter(|n| n.kind() == "call")
+                        .and_then(|call| call.child_by_field_name("arguments"))
+                    {
+                        Self::extract_call_sites(state, args, &dec_id);
+                        Self::scan_value_positions(state, args, &dec_id);
+                    }
 
                     // Annotates edge from decorator to the decorated item.
                     if let Some((ref kind, ref inner_name, inner_line)) = inner_kind_and_name {
@@ -401,6 +549,7 @@ impl PythonExtractor {
                             target: target_id,
                             kind: EdgeKind::Annotates,
                             line: Some(start_line),
+                            resolved_by: None,
                         });
                     }
                 }
@@ -430,9 +579,8 @@ impl PythonExtractor {
                 if child.kind() == "dotted_name" || child.kind() == "aliased_import" {
                     let import_name = if child.kind() == "aliased_import" {
                         // aliased_import has a dotted_name child
-                        Self::find_child_by_kind(child, "dotted_name")
-                            .map(|n| state.node_text(n))
-                            .unwrap_or_else(|| state.node_text(child))
+                        find_child_by_kind(child, "dotted_name")
+                            .map_or_else(|| state.node_text(child), |n| state.node_text(n))
                     } else {
                         state.node_text(child)
                     };
@@ -448,8 +596,8 @@ impl PythonExtractor {
     /// Extract a from-import statement (e.g., `from os.path import join, exists`).
     fn visit_import_from(state: &mut ExtractionState, node: TsNode<'_>) {
         // Get the module being imported from.
-        let module_name = Self::find_child_by_kind(node, "dotted_name")
-            .or_else(|| Self::find_child_by_kind(node, "relative_import"))
+        let module_name = find_child_by_kind(node, "dotted_name")
+            .or_else(|| find_child_by_kind(node, "relative_import"))
             .map(|n| state.node_text(n))
             .unwrap_or_default();
 
@@ -458,8 +606,8 @@ impl PythonExtractor {
         let mut found_names = false;
 
         // Check for wildcard import: from X import *
-        if Self::find_child_by_kind(node, "wildcard_import").is_some() {
-            let full_name = format!("{}.*", module_name);
+        if find_child_by_kind(node, "wildcard_import").is_some() {
+            let full_name = format!("{module_name}.*");
             Self::create_use_node(state, &full_name, node);
             return;
         }
@@ -469,27 +617,17 @@ impl PythonExtractor {
         if cursor.goto_first_child() {
             loop {
                 let child = cursor.node();
-                match child.kind() {
-                    "dotted_name" => {
-                        // Skip the module name (first dotted_name) — only process
-                        // dotted_names that appear after "import" keyword.
-                        // We use position: module dotted_name is before "import",
-                        // imported names are after.
-                    }
-                    "aliased_import" => {
-                        // aliased_import has a dotted_name child for the original name
-                        let import_name = Self::find_child_by_kind(child, "dotted_name")
-                            .map(|n| state.node_text(n))
-                            .unwrap_or_else(|| state.node_text(child));
-                        let full_name = if module_name.is_empty() {
-                            import_name
-                        } else {
-                            format!("{}.{}", module_name, import_name)
-                        };
-                        Self::create_use_node(state, &full_name, node);
-                        found_names = true;
-                    }
-                    _ => {}
+                if child.kind() == "aliased_import" {
+                    // aliased_import has a dotted_name child for the original name
+                    let import_name = find_child_by_kind(child, "dotted_name")
+                        .map_or_else(|| state.node_text(child), |n| state.node_text(n));
+                    let full_name = if module_name.is_empty() {
+                        import_name
+                    } else {
+                        format!("{module_name}.{import_name}")
+                    };
+                    Self::create_use_node(state, &full_name, node);
+                    found_names = true;
                 }
                 if !cursor.goto_next_sibling() {
                     break;
@@ -505,11 +643,7 @@ impl PythonExtractor {
     }
 
     /// Extract individual import names from a from-import statement.
-    fn extract_from_import_names(
-        state: &mut ExtractionState,
-        node: TsNode<'_>,
-        module_name: &str,
-    ) {
+    fn extract_from_import_names(state: &mut ExtractionState, node: TsNode<'_>, module_name: &str) {
         // In tree-sitter-python, `from X import a, b` has children:
         // "from", dotted_name, "import", dotted_name, ",", dotted_name
         // We need to skip past the "import" keyword to find the imported names.
@@ -527,18 +661,17 @@ impl PythonExtractor {
                             let full_name = if module_name.is_empty() {
                                 import_name
                             } else {
-                                format!("{}.{}", module_name, import_name)
+                                format!("{module_name}.{import_name}")
                             };
                             Self::create_use_node(state, &full_name, node);
                         }
                         "aliased_import" => {
-                            let import_name = Self::find_child_by_kind(child, "dotted_name")
-                                .map(|n| state.node_text(n))
-                                .unwrap_or_else(|| state.node_text(child));
+                            let import_name = find_child_by_kind(child, "dotted_name")
+                                .map_or_else(|| state.node_text(child), |n| state.node_text(n));
                             let full_name = if module_name.is_empty() {
                                 import_name
                             } else {
-                                format!("{}.{}", module_name, import_name)
+                                format!("{module_name}.{import_name}")
                             };
                             Self::create_use_node(state, &full_name, node);
                         }
@@ -568,6 +701,7 @@ impl PythonExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -582,7 +716,13 @@ impl PythonExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -593,6 +733,7 @@ impl PythonExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
@@ -607,13 +748,22 @@ impl PythonExtractor {
         });
     }
 
-    /// Visit an assignment at module level and check if it's a constant (UPPER_CASE).
+    /// Visit an assignment at module level and check if it's a constant (`UPPER_CASE`).
     fn visit_assignment(state: &mut ExtractionState, node: TsNode<'_>) {
         // Get the left side of the assignment.
         let left = node.child_by_field_name("left");
+        let mut const_id: Option<String> = None;
         if let Some(left_node) = left {
             let name = state.node_text(left_node);
-            if Self::is_upper_snake_case(&name) {
+            // Only a *module-level* UPPER_SNAKE_CASE assignment becomes a
+            // Const node. A class-body assignment (`class Registry:
+            // CALLBACKS = {...}`) is a class attribute, not a module
+            // constant — it must not be indexed as one (that would change
+            // existing node counts, e.g. `Base.CLASS_VERSION` in the
+            // fixture). The RHS value-ref scan below still runs
+            // unconditionally, attributed to the enclosing class via
+            // `parent_node_id()` when no Const node is created (#224).
+            if state.class_depth == 0 && Self::is_upper_snake_case(&name) {
                 let start_line = node.start_position().row as u32;
                 let end_line = node.end_position().row as u32;
                 let start_column = node.start_position().column as u32;
@@ -629,6 +779,7 @@ impl PythonExtractor {
                     qualified_name,
                     file_path: state.file_path.clone(),
                     start_line,
+                    attrs_start_line: start_line,
                     end_line,
                     start_column,
                     end_column,
@@ -637,13 +788,19 @@ impl PythonExtractor {
                     visibility: Visibility::Pub,
                     is_async: false,
                     branches: 0,
-            loops: 0,
-            returns: 0,
-            max_nesting: 0,
-            unsafe_blocks: 0,
-            unchecked_calls: 0,
-            assertions: 0,
-            updated_at: state.timestamp,
+                    loops: 0,
+                    returns: 0,
+                    max_nesting: 0,
+                    unsafe_blocks: 0,
+                    unchecked_calls: 0,
+                    assertions: 0,
+                    cognitive_complexity: 0,
+                    distinct_operators: 0,
+                    distinct_operands: 0,
+                    total_operators: 0,
+                    total_operands: 0,
+                    updated_at: state.timestamp,
+                    parent_id: None,
                 };
                 state.nodes.push(graph_node);
 
@@ -651,11 +808,25 @@ impl PythonExtractor {
                 if let Some(parent_id) = state.parent_node_id() {
                     state.edges.push(Edge {
                         source: parent_id.to_string(),
-                        target: id,
+                        target: id.clone(),
                         kind: EdgeKind::Contains,
                         line: Some(start_line),
+                        resolved_by: None,
                     });
                 }
+                const_id = Some(id);
+            }
+        }
+
+        // First-class function/value references in the RHS (#224), e.g.
+        // `PARSERS = {"text": _parse_text}`. Runs regardless of LHS casing
+        // (not just the `UPPER_SNAKE_CASE` constants above) — attributed to
+        // the Const node when one was created, otherwise to the enclosing
+        // scope (the File node for a plain module-level assignment).
+        if let Some(rhs) = node.child_by_field_name("right") {
+            let source_id = const_id.or_else(|| state.parent_node_id().map(str::to_string));
+            if let Some(source_id) = source_id {
+                Self::scan_value_positions(state, rhs, &source_id);
             }
         }
     }
@@ -664,9 +835,9 @@ impl PythonExtractor {
     // Helper extraction methods
     // ----------------------------
 
-    /// Extract base classes from a class definition's argument_list.
+    /// Extract base classes from a class definition's `argument_list`.
     fn extract_base_classes(state: &mut ExtractionState, node: TsNode<'_>, class_id: &str) {
-        if let Some(arg_list) = Self::find_child_by_kind(node, "argument_list") {
+        if let Some(arg_list) = find_child_by_kind(node, "argument_list") {
             let mut cursor = arg_list.walk();
             if cursor.goto_first_child() {
                 loop {
@@ -710,43 +881,43 @@ impl PythonExtractor {
     }
 
     /// Extract the function signature (def name(params) or async def name(params)).
-    fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+    fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         // Use the block child's start byte to find where the body begins,
         // so we don't truncate at `:` inside type annotations.
-        if let Some(block) = Self::find_child_by_kind(node, "block") {
+        if let Some(block) = find_child_by_kind(node, "block") {
             let text = state.node_text(node);
             let block_offset = block.start_byte() - node.start_byte();
             let before_block = &text[..block_offset];
             // Strip the trailing `:` and whitespace before the block.
-            Some(before_block.trim().trim_end_matches(':').trim().to_string())
+            before_block.trim().trim_end_matches(':').trim().to_string()
         } else {
-            Some(state.node_text(node).trim().to_string())
+            state.node_text(node).trim().to_string()
         }
     }
 
     /// Extract the class signature (class Name or class Name(Base)).
-    fn extract_class_signature(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
-        if let Some(block) = Self::find_child_by_kind(node, "block") {
+    fn extract_class_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
+        if let Some(block) = find_child_by_kind(node, "block") {
             let text = state.node_text(node);
             let block_offset = block.start_byte() - node.start_byte();
             let before_block = &text[..block_offset];
-            Some(before_block.trim().trim_end_matches(':').trim().to_string())
+            before_block.trim().trim_end_matches(':').trim().to_string()
         } else {
-            Some(state.node_text(node).trim().to_string())
+            state.node_text(node).trim().to_string()
         }
     }
 
     /// Extract docstrings from the first statement in a function/class body.
-    /// Python convention: first expression_statement containing a string literal.
+    /// Python convention: first `expression_statement` containing a string literal.
     fn extract_docstring(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
-        let body = Self::find_child_by_kind(node, "block")?;
+        let body = find_child_by_kind(node, "block")?;
         let mut cursor = body.walk();
         if cursor.goto_first_child() {
             loop {
                 let child = cursor.node();
                 if child.kind() == "expression_statement" {
                     // Look for a string child.
-                    if let Some(string_node) = Self::find_child_by_kind(child, "string") {
+                    if let Some(string_node) = find_child_by_kind(child, "string") {
                         let text = state.node_text(string_node);
                         return Some(Self::strip_docstring_quotes(&text));
                     }
@@ -785,7 +956,7 @@ impl PythonExtractor {
         trimmed.to_string()
     }
 
-    /// Check if a function_definition (possibly inside decorated_definition) has async keyword.
+    /// Check if a `function_definition` (possibly inside `decorated_definition`) has async keyword.
     fn has_async_keyword(node: TsNode<'_>) -> bool {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -806,7 +977,319 @@ impl PythonExtractor {
         false
     }
 
-    /// Recursively find call nodes inside a given node and create unresolved Calls references.
+    /// Fully qualified name of the nearest enclosing class
+    /// (`file.py::Outer::Inner`), or None outside a class.
+    fn enclosing_class_qualified_name(state: &ExtractionState) -> Option<String> {
+        let idx = state
+            .node_stack
+            .iter()
+            .rposition(|(_, id)| id.starts_with("class:"))?;
+        let mut parts = vec![state.file_path.as_str()];
+        parts.extend(
+            state.node_stack[..=idx]
+                .iter()
+                .map(|(name, _)| name.as_str()),
+        );
+        Some(parts.join("::"))
+    }
+
+    /// `self.name` or `cls.name` -> `name`. Any other node -> None.
+    fn self_attribute_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        if node.kind() != "attribute" {
+            return None;
+        }
+        let object = node.child_by_field_name("object")?;
+        if object.kind() != "identifier"
+            || !matches!(state.node_text(object).as_str(), "self" | "cls")
+        {
+            return None;
+        }
+        Some(state.node_text(node.child_by_field_name("attribute")?))
+    }
+
+    /// Collect what a class body declares: the methods defined directly in
+    /// it (decorated or not), and every name bound through `self.<name> =`
+    /// or `cls.<name> =` anywhere inside it.
+    fn collect_class_attrs(state: &ExtractionState, class_node: TsNode<'_>) -> PythonClassAttrs {
+        let mut attrs = PythonClassAttrs::default();
+        let Some(body) = find_child_by_kind(class_node, "block") else {
+            return attrs;
+        };
+        let mut cursor = body.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let mut child = cursor.node();
+                let mut is_descriptor = false;
+                if child.kind() == "decorated_definition" {
+                    is_descriptor = Self::has_descriptor_decorator(state, child);
+                    if let Some(def) = child.child_by_field_name("definition") {
+                        child = def;
+                    }
+                }
+                match child.kind() {
+                    "function_definition" => {
+                        if let Some(name) = child.child_by_field_name("name") {
+                            let name = state.node_text(name);
+                            if is_descriptor {
+                                attrs.descriptors.insert(name.clone());
+                            }
+                            attrs.methods.insert(name);
+                        }
+                    }
+                    // A class-body binding (`hook = None`) overwrites a
+                    // same-named method defined before it.
+                    "expression_statement" => {
+                        if let Some(name) = child
+                            .named_child(0)
+                            .filter(|n| n.kind() == "assignment")
+                            .and_then(|a| a.child_by_field_name("left"))
+                            .filter(|left| left.kind() == "identifier")
+                        {
+                            attrs.assigned.insert(state.node_text(name));
+                        }
+                    }
+                    _ => {}
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        Self::collect_self_assignments(state, body, &mut attrs.assigned);
+        attrs
+    }
+
+    /// True if any decorator on `node` marks the method as a descriptor:
+    /// `@property`, `@cached_property`, `@functools.cached_property`, or
+    /// `@<name>.setter` / `.getter` / `.deleter`.
+    fn has_descriptor_decorator(state: &ExtractionState, node: TsNode<'_>) -> bool {
+        let mut cursor = node.walk();
+        if !cursor.goto_first_child() {
+            return false;
+        }
+        loop {
+            let child = cursor.node();
+            if child.kind() == "decorator" {
+                let text = state.node_text(child);
+                let name = text.trim_start_matches('@').trim();
+                let name = name.split('(').next().unwrap_or(name);
+                if matches!(
+                    name,
+                    "property" | "cached_property" | "functools.cached_property"
+                ) || name.ends_with(".setter")
+                    || name.ends_with(".getter")
+                    || name.ends_with(".deleter")
+                {
+                    return true;
+                }
+            }
+            if !cursor.goto_next_sibling() {
+                return false;
+            }
+        }
+    }
+
+    /// Walk a class body for `self.<name> =` / `cls.<name> =` bindings.
+    /// Stops at a nested class: its `self` is a different receiver.
+    fn collect_self_assignments(
+        state: &ExtractionState,
+        node: TsNode<'_>,
+        out: &mut std::collections::HashSet<String>,
+    ) {
+        if node.kind() == "class_definition" {
+            return;
+        }
+        if matches!(node.kind(), "assignment" | "augmented_assignment") {
+            if let Some(name) = node
+                .child_by_field_name("left")
+                .and_then(|left| Self::self_attribute_name(state, left))
+            {
+                out.insert(name);
+            }
+        }
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                Self::collect_self_assignments(state, cursor.node(), out);
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Type name of the nearest enclosing class (for `self` receivers).
+    fn enclosing_class_type(state: &ExtractionState) -> Option<String> {
+        state
+            .node_stack
+            .iter()
+            .rev()
+            .find(|(_, id)| id.starts_with("class:"))
+            .map(|(name, _)| name.clone())
+    }
+
+    /// Normalizes a Python type expression to a bare type name: take the last
+    /// `.`-segment, drop subscripts. `mod.Service` -> `Service`.
+    fn normalize_type_name(raw: &str) -> Option<String> {
+        let mut s = raw.trim();
+        if let Some(p) = s.find(['[', '(', ' ']) {
+            s = &s[..p];
+        }
+        let seg = s.rsplit('.').next().unwrap_or(s).trim();
+        let first = seg.chars().next()?;
+        if !first.is_alphabetic() && first != '_' {
+            return None;
+        }
+        Some(seg.to_string())
+    }
+
+    /// True if `name` looks like a class per PEP8 `CapWords` — the only cheap
+    /// signal that `Service()` is construction (Python has no `new`).
+    fn looks_like_class(name: &str) -> bool {
+        name.chars().next().is_some_and(char::is_uppercase)
+    }
+
+    /// Builds a `var-name -> type-name` table from typed parameters, annotated
+    /// or `ClassName()`-constructed assignments, and `self`.
+    fn collect_var_types(
+        state: &ExtractionState,
+        fn_node: TsNode<'_>,
+        self_type: Option<&str>,
+    ) -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::new();
+        if let Some(t) = self_type {
+            map.insert("self".to_string(), t.to_string());
+        }
+        if let Some(params) = fn_node.child_by_field_name("parameters") {
+            let mut cursor = params.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    let p = cursor.node();
+                    if p.kind() == "typed_parameter" {
+                        // typed_parameter: <identifier> : <type>
+                        let ident = p.named_child(0).filter(|n| n.kind() == "identifier");
+                        if let (Some(ident), Some(ty)) = (ident, p.child_by_field_name("type")) {
+                            if let Some(tn) = Self::normalize_type_name(&state.node_text(ty)) {
+                                map.insert(state.node_text(ident), tn);
+                            }
+                        }
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(body) = find_child_by_kind(fn_node, "block") {
+            Self::collect_assignment_types(state, body, &mut map);
+        }
+        map
+    }
+
+    /// Records assignment types: `x: T = ...` (annotation) or `x = T(...)`
+    /// where `T` is `CapWords`. Skips nested function/class scopes.
+    fn collect_assignment_types(
+        state: &ExtractionState,
+        node: TsNode<'_>,
+        map: &mut std::collections::HashMap<String, String>,
+    ) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let c = cursor.node();
+                if c.kind() == "assignment" {
+                    if let Some(lhs) = c.child_by_field_name("left") {
+                        if lhs.kind() == "identifier" {
+                            let ty = c
+                                .child_by_field_name("type")
+                                .and_then(|t| Self::normalize_type_name(&state.node_text(t)))
+                                .or_else(|| {
+                                    let rhs = c.child_by_field_name("right")?;
+                                    if rhs.kind() != "call" {
+                                        return None;
+                                    }
+                                    let callee = rhs.child_by_field_name("function")?;
+                                    if callee.kind() != "identifier" {
+                                        return None;
+                                    }
+                                    let name = state.node_text(callee);
+                                    Self::looks_like_class(&name).then_some(name)
+                                });
+                            if let Some(t) = ty {
+                                map.insert(state.node_text(lhs), t);
+                            }
+                        }
+                    }
+                }
+                if !matches!(c.kind(), "function_definition" | "class_definition") {
+                    Self::collect_assignment_types(state, c, map);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Emits a `Type::method` Calls ref for `recv.method(...)` whose receiver
+    /// type is known (#141).
+    fn emit_typed_method_calls(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        fn_node_id: &str,
+        var_types: &std::collections::HashMap<String, String>,
+    ) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "call" {
+                    if let Some(func) = child.child_by_field_name("function") {
+                        if func.kind() == "attribute" {
+                            if let (Some(obj), Some(attr)) = (
+                                func.child_by_field_name("object"),
+                                func.child_by_field_name("attribute"),
+                            ) {
+                                if obj.kind() == "identifier" {
+                                    if let Some(ty) = var_types.get(&state.node_text(obj)) {
+                                        let method = state.node_text(attr);
+                                        state.unresolved_refs.push(UnresolvedRef {
+                                            from_node_id: fn_node_id.to_string(),
+                                            reference_name: format!("{ty}::{method}"),
+                                            reference_kind: EdgeKind::Calls,
+                                            line: child.start_position().row as u32,
+                                            column: child.start_position().column as u32,
+                                            file_path: state.file_path.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if !matches!(child.kind(), "function_definition" | "class_definition") {
+                    Self::emit_typed_method_calls(state, child, fn_node_id, var_types);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Receiver-type-aware method-call extraction (#141), mirroring the Rust
+    /// pass.
+    fn extract_receiver_typed_calls(
+        state: &mut ExtractionState,
+        fn_node: TsNode<'_>,
+        body: TsNode<'_>,
+        fn_node_id: &str,
+    ) {
+        let self_type = Self::enclosing_class_type(state);
+        let var_types = Self::collect_var_types(state, fn_node, self_type.as_deref());
+        Self::emit_typed_method_calls(state, body, fn_node_id, &var_types);
+    }
+
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -831,14 +1314,166 @@ impl PythonExtractor {
                         Self::extract_call_sites(state, child, fn_node_id);
                     }
                     // Skip nested function definitions to avoid polluting call sites.
-                    "function_definition" => {}
-                    "class_definition" => {}
+                    "function_definition" | "class_definition" => {}
                     _ => {
                         Self::extract_call_sites(state, child, fn_node_id);
                     }
                 }
                 if !cursor.goto_next_sibling() {
                     break;
+                }
+            }
+        }
+    }
+
+    /// Walk a statement-level subtree (a function body, or anything reached
+    /// while looking for one) for `call`, `assignment`, and `return_statement`
+    /// nodes, and hand their value-bearing subtrees off to
+    /// `scan_value_positions` (#224: first-class function references such as
+    /// `Spec(parse=_parse_text)`, `PARSERS = {"text": _parse_text}`, or a
+    /// factory returning a nested closure by name (`return add`) never
+    /// produced any ref, so the referenced symbol looked dead).
+    ///
+    /// Stops at a nested `function_definition`/`class_definition` boundary —
+    /// that scope's own calls/assignments are handled when *it* is visited
+    /// (see `visit_nested_defs`), not here, to avoid attributing them twice.
+    ///
+    /// For a `call`, only its `arguments` are scanned (the `function`/callee
+    /// is already a `Calls` ref via `extract_call_sites`); the callee itself
+    /// is still walked so a call used as another call's callee (`f()()`) is
+    /// still found. For an `assignment`, only `right` is scanned as a value
+    /// position; `left` is walked (not scanned) so a subscript target like
+    /// `d[get_key()] = fn` still finds the nested call in the key. A
+    /// `return_statement` is scanned in full — its returned expression is
+    /// always a value position.
+    fn extract_value_refs(state: &mut ExtractionState, node: TsNode<'_>, source_id: &str) {
+        match node.kind() {
+            "function_definition" | "class_definition" => {}
+            // A bare `return add` (returning a nested def/callback by name,
+            // as the issue's `make_adder`/`add` repro does) is a value
+            // position exactly like a call argument or assignment RHS: the
+            // returned expression is scanned in full (its own nested calls'
+            // arguments, dict/list literals, etc. via `scan_value_positions`
+            // itself), without also walking into it a second time below.
+            "return_statement" => {
+                Self::scan_value_positions(state, node, source_id);
+            }
+            "call" => {
+                if let Some(args) = node.child_by_field_name("arguments") {
+                    Self::scan_value_positions(state, args, source_id);
+                }
+                if let Some(func) = node.child_by_field_name("function") {
+                    Self::extract_value_refs(state, func, source_id);
+                }
+            }
+            "assignment" => {
+                if let Some(rhs) = node.child_by_field_name("right") {
+                    Self::scan_value_positions(state, rhs, source_id);
+                }
+                if let Some(lhs) = node.child_by_field_name("left") {
+                    Self::extract_value_refs(state, lhs, source_id);
+                }
+            }
+            _ => {
+                let mut cursor = node.walk();
+                if cursor.goto_first_child() {
+                    loop {
+                        Self::extract_value_refs(state, cursor.node(), source_id);
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Recursively scan a bounded "value position" subtree (a call's
+    /// `argument_list`, or an assignment's RHS) for bare `identifier` nodes
+    /// used as a *value*, emitting a `Uses` ref for each. The resolver only
+    /// turns these into edges when the name matches a known project symbol,
+    /// so unresolved locals/stdlib names are dropped cheaply.
+    ///
+    /// Recurses into nested calls' own `arguments` (skipping their callee,
+    /// already covered elsewhere), `keyword_argument`/`pair` **values** only
+    /// (skipping keys), a nested `assignment`'s RHS only, and container
+    /// literals (list/dict/set/tuple). Stops at `attribute`/`subscript`
+    /// (attribute sub-names aren't standalone references), `lambda` (its
+    /// body is a separate anonymous scope), and nested def boundaries.
+    fn scan_value_positions(state: &mut ExtractionState, node: TsNode<'_>, source_id: &str) {
+        match node.kind() {
+            "identifier" => {
+                let name = state.node_text(node);
+                state.unresolved_refs.push(UnresolvedRef {
+                    from_node_id: source_id.to_string(),
+                    reference_name: name,
+                    reference_kind: EdgeKind::Uses,
+                    line: node.start_position().row as u32,
+                    column: node.start_position().column as u32,
+                    file_path: state.file_path.clone(),
+                });
+            }
+            // A method passed by reference through `self`/`cls`
+            // (`Thread(target=self._flush_loop)`, `schedule(self._tick, 1.0)`)
+            // is a use of that method. Only a name the enclosing class
+            // defines as a method, and never binds as an attribute
+            // (`self.status = 1`), counts: otherwise the read is a field.
+            // An assignment to a descriptor (`@property` + `.setter`)
+            // invokes it and does not shadow it.
+            // The ref carries the class's full qualified name
+            // (`a.py::Daemon::_flush_loop`), so it resolves to this class's
+            // method and not to a same-named class in another file. Any
+            // other attribute (`obj.attr`) is still skipped: its sub-name is
+            // not a standalone reference.
+            "attribute" => {
+                let Some(name) = Self::self_attribute_name(state, node) else {
+                    return;
+                };
+                let Some(attrs) = state.python_class_attrs.last() else {
+                    return;
+                };
+                if !attrs.methods.contains(&name)
+                    || (attrs.assigned.contains(&name) && !attrs.descriptors.contains(&name))
+                {
+                    return;
+                }
+                let Some(class_qn) = Self::enclosing_class_qualified_name(state) else {
+                    return;
+                };
+                state.unresolved_refs.push(UnresolvedRef {
+                    from_node_id: source_id.to_string(),
+                    reference_name: format!("{class_qn}::{name}"),
+                    reference_kind: EdgeKind::Uses,
+                    line: node.start_position().row as u32,
+                    column: node.start_position().column as u32,
+                    file_path: state.file_path.clone(),
+                });
+            }
+            "subscript" | "lambda" | "function_definition" | "class_definition" => {}
+            "call" => {
+                if let Some(args) = node.child_by_field_name("arguments") {
+                    Self::scan_value_positions(state, args, source_id);
+                }
+            }
+            "keyword_argument" | "pair" => {
+                if let Some(value) = node.child_by_field_name("value") {
+                    Self::scan_value_positions(state, value, source_id);
+                }
+            }
+            "assignment" => {
+                if let Some(rhs) = node.child_by_field_name("right") {
+                    Self::scan_value_positions(state, rhs, source_id);
+                }
+            }
+            _ => {
+                let mut cursor = node.walk();
+                if cursor.goto_first_child() {
+                    loop {
+                        Self::scan_value_positions(state, cursor.node(), source_id);
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -859,7 +1494,7 @@ impl PythonExtractor {
         }
     }
 
-    /// Check if a name is UPPER_SNAKE_CASE (module-level constant convention).
+    /// Check if a name is `UPPER_SNAKE_CASE` (module-level constant convention).
     fn is_upper_snake_case(name: &str) -> bool {
         if name.is_empty() {
             return false;
@@ -874,34 +1509,6 @@ impl PythonExtractor {
         let starts_ok = !name.starts_with(|c: char| c.is_ascii_digit());
         has_upper && all_valid && starts_ok
     }
-
-    /// Find the first named child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
-    /// Build the final ExtractionResult from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
-        }
-    }
 }
 
 impl crate::extraction::LanguageExtractor for PythonExtractor {
@@ -909,7 +1516,7 @@ impl crate::extraction::LanguageExtractor for PythonExtractor {
         &["py"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Python"
     }
 

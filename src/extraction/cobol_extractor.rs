@@ -4,8 +4,9 @@
 /// COBOL programs have a fixed structure: IDENTIFICATION, ENVIRONMENT, DATA,
 /// and PROCEDURE divisions. Paragraphs in the PROCEDURE DIVISION act as
 /// subroutines, and PERFORM statements are the primary call mechanism.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::types::{
@@ -14,59 +15,7 @@ use crate::types::{
 
 /// Extracts code graph nodes and edges from COBOL source files using tree-sitter.
 pub struct CobolExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-}
-
 impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-
     /// Extracts the full source line at a given byte offset.
     ///
     /// COBOL comment nodes in tree-sitter-cobol have zero-width byte ranges,
@@ -75,13 +24,11 @@ impl ExtractionState {
         let line_start = self.source[..byte_offset]
             .iter()
             .rposition(|&b| b == b'\n')
-            .map(|p| p + 1)
-            .unwrap_or(0);
+            .map_or(0, |p| p + 1);
         let line_end = self.source[byte_offset..]
             .iter()
             .position(|&b| b == b'\n')
-            .map(|p| byte_offset + p)
-            .unwrap_or(self.source.len());
+            .map_or(self.source.len(), |p| byte_offset + p);
         String::from_utf8_lossy(&self.source[line_start..line_end]).to_string()
     }
 }
@@ -93,13 +40,15 @@ impl CobolExtractor {
     /// `source` is the COBOL source code to parse.
     pub fn extract_cobol(file_path: &str, source: &str) -> ExtractionResult {
         let start = Instant::now();
+        let padded = Self::pad_short_final_line(source);
+        let source = padded.as_ref();
         let mut state = ExtractionState::new(file_path, source);
 
         let tree = match Self::parse_source(source) {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -111,6 +60,7 @@ impl CobolExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -125,13 +75,17 @@ impl CobolExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -139,7 +93,57 @@ impl CobolExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
+    }
+
+    /// Width of the COBOL fixed-format sequence area, columns 1 through 6.
+    const SEQUENCE_AREA_WIDTH: usize = 6;
+
+    /// Pads a final line of one to five characters out to six with spaces.
+    ///
+    /// The COBOL grammar does not terminate on a file whose last line is that
+    /// short (#498): it spins on the CPU indefinitely, and the only thing that
+    /// ever stopped it was the extraction worker's 60-second watchdog, which
+    /// then discarded the file and respawned the worker. A minute per file, on
+    /// `.cob`, `.cbl` and `.cpy` alike — and `.cpy` copybooks are fragments,
+    /// so an odd final line is likeliest exactly there.
+    ///
+    /// Six is not a guess. Columns 1-6 are the fixed-format sequence area, and
+    /// the boundary measured on the grammar sits exactly there: one to five
+    /// characters hangs, six or more parses in microseconds, with or without a
+    /// trailing newline. A short line *anywhere else* in the file is fine, so
+    /// only the last one is touched.
+    ///
+    /// The padding is trailing whitespace on the final line, which COBOL
+    /// ignores, and it is appended at the very end — so every byte offset in
+    /// the real source is unchanged and the padded text is what the extraction
+    /// state indexes, keeping the two in agreement.
+    ///
+    /// Borrowed when nothing needs doing, which is every ordinary file.
+    fn pad_short_final_line(source: &str) -> std::borrow::Cow<'_, str> {
+        // The last *content* line, which is not the text after the last
+        // newline: a file ending "a\n" has a final line of "a" and hangs just
+        // as one ending in a bare "a" does. Everything from that line's end
+        // onward — the trailing newline, and a `\r` before it — is kept and
+        // re-appended after the padding, so a CRLF file stays CRLF.
+        let body = source
+            .strip_suffix('\n')
+            .map_or(source, |b| b.strip_suffix('\r').unwrap_or(b));
+        let terminator = &source[body.len()..];
+
+        let final_line = body.rsplit('\n').next().unwrap_or("");
+        let width = final_line.chars().count();
+        if width == 0 || width >= Self::SEQUENCE_AREA_WIDTH {
+            return std::borrow::Cow::Borrowed(source);
+        }
+
+        let mut padded = String::with_capacity(source.len() + Self::SEQUENCE_AREA_WIDTH);
+        padded.push_str(body);
+        for _ in width..Self::SEQUENCE_AREA_WIDTH {
+            padded.push(' ');
+        }
+        padded.push_str(terminator);
+        std::borrow::Cow::Owned(padded)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -170,13 +174,12 @@ impl CobolExtractor {
 
     /// Visit a single AST node, dispatching on its type.
     fn visit_node(state: &mut ExtractionState, node: TsNode<'_>) {
-        match node.kind() {
-            "program_definition" => Self::visit_program_definition(state, node),
-            _ => {}
+        if node.kind() == "program_definition" {
+            Self::visit_program_definition(state, node);
         }
     }
 
-    /// Visit a program_definition node, which contains all four divisions.
+    /// Visit a `program_definition` node, which contains all four divisions.
     fn visit_program_definition(state: &mut ExtractionState, node: TsNode<'_>) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -197,7 +200,7 @@ impl CobolExtractor {
 
     /// Extract the PROGRAM-ID as a Module node.
     fn visit_identification_division(state: &mut ExtractionState, node: TsNode<'_>) {
-        let program_name_node = Self::find_child_by_kind(node, "program_name");
+        let program_name_node = find_child_by_kind(node, "program_name");
         if let Some(pn) = program_name_node {
             let name = state.node_text(pn);
             let start_line = node.start_position().row as u32;
@@ -221,6 +224,7 @@ impl CobolExtractor {
                 qualified_name,
                 file_path: state.file_path.clone(),
                 start_line,
+                attrs_start_line: start_line,
                 end_line,
                 start_column,
                 end_column,
@@ -235,7 +239,13 @@ impl CobolExtractor {
                 unsafe_blocks: 0,
                 unchecked_calls: 0,
                 assertions: 0,
+                cognitive_complexity: 0,
+                distinct_operators: 0,
+                distinct_operands: 0,
+                total_operators: 0,
+                total_operands: 0,
                 updated_at: state.timestamp,
+                parent_id: None,
             };
             state.nodes.push(graph_node);
 
@@ -246,6 +256,7 @@ impl CobolExtractor {
                     target: id.clone(),
                     kind: EdgeKind::Contains,
                     line: Some(start_line),
+                    resolved_by: None,
                 });
             }
 
@@ -313,7 +324,7 @@ impl CobolExtractor {
         docstring: Option<String>,
     ) {
         // Only extract 01-level items.
-        let level_node = Self::find_child_by_kind(node, "level_number");
+        let level_node = find_child_by_kind(node, "level_number");
         if let Some(ln) = level_node {
             let level_text = state.node_text(ln);
             if level_text.trim() != "01" {
@@ -323,14 +334,14 @@ impl CobolExtractor {
             return;
         }
 
-        let name_node = Self::find_child_by_kind(node, "entry_name");
+        let name_node = find_child_by_kind(node, "entry_name");
         let name = if let Some(n) = name_node {
             state.node_text(n)
         } else {
             return;
         };
 
-        let has_value = Self::find_child_by_kind(node, "value_clause").is_some();
+        let has_value = find_child_by_kind(node, "value_clause").is_some();
         let kind = if has_value {
             NodeKind::Const
         } else {
@@ -352,6 +363,7 @@ impl CobolExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -366,7 +378,13 @@ impl CobolExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -377,6 +395,7 @@ impl CobolExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -387,15 +406,19 @@ impl CobolExtractor {
     /// followed by statements. We group statements between paragraph headers
     /// into logical "function" bodies.
     fn visit_procedure_division(state: &mut ExtractionState, node: TsNode<'_>) {
-        // Collect all children for multi-pass grouping.
-        let child_count = node.child_count();
-        let mut children: Vec<TsNode<'_>> = Vec::new();
-        let mut i: usize = 0;
-        while i < child_count {
-            if let Some(child) = node.child(i as u32) {
-                children.push(child);
+        // Collect all children for multi-pass grouping. Walks via cursor
+        // (O(N)) instead of `node.child(i)` in a loop — `child(i)` is O(i),
+        // turning the seed into O(N²) on PROCEDURE DIVISIONs with hundreds
+        // of paragraphs.
+        let mut children: Vec<TsNode<'_>> = Vec::with_capacity(node.child_count());
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                children.push(cursor.node());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
             }
-            i += 1;
         }
 
         // Group: find paragraph_header nodes and associate them with their
@@ -436,7 +459,7 @@ impl CobolExtractor {
         }
     }
 
-    /// Gather preceding comment lines before a paragraph_header.
+    /// Gather preceding comment lines before a `paragraph_header`.
     fn gather_preceding_comments(
         state: &ExtractionState,
         children: &[TsNode<'_>],
@@ -477,10 +500,7 @@ impl CobolExtractor {
         let header = children[start_idx];
         let header_text = state.node_text(header);
         // Strip trailing period from paragraph name: "MAIN-PROGRAM." -> "MAIN-PROGRAM"
-        let name = header_text
-            .trim()
-            .trim_end_matches('.')
-            .to_string();
+        let name = header_text.trim().trim_end_matches('.').to_string();
 
         let start_line = header.start_position().row as u32;
         // End line is the last statement in this paragraph.
@@ -515,6 +535,7 @@ impl CobolExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -529,7 +550,13 @@ impl CobolExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -540,6 +567,7 @@ impl CobolExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
@@ -550,7 +578,11 @@ impl CobolExtractor {
     }
 
     /// Recursively extract PERFORM and CALL references from a node.
-    fn extract_call_sites_from_node(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
+    fn extract_call_sites_from_node(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        fn_node_id: &str,
+    ) {
         match node.kind() {
             "perform_statement_call_proc" => {
                 // PERFORM paragraph-name: field "procedure" -> perform_procedure -> label -> qualified_word -> WORD
@@ -619,41 +651,13 @@ impl CobolExtractor {
         }
     }
 
-    /// Extract the label name from a perform_procedure node.
+    /// Extract the label name from a `perform_procedure` node.
     fn extract_label_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         // perform_procedure -> label -> qualified_word -> WORD
-        let label = Self::find_child_by_kind(node, "label")?;
-        let qw = Self::find_child_by_kind(label, "qualified_word")?;
-        let word = Self::find_child_by_kind(qw, "WORD")?;
+        let label = find_child_by_kind(node, "label")?;
+        let qw = find_child_by_kind(label, "qualified_word")?;
+        let word = find_child_by_kind(qw, "WORD")?;
         Some(state.node_text(word))
-    }
-
-    /// Find the first child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
-    /// Build the final ExtractionResult from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
-        }
     }
 }
 
@@ -662,7 +666,7 @@ impl crate::extraction::LanguageExtractor for CobolExtractor {
         &["cob", "cbl", "cpy"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "COBOL"
     }
 

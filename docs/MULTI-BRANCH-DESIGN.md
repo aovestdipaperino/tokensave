@@ -192,7 +192,7 @@ Each branch DB is a full copy (~37MB in a typical project). Mitigation strategie
 3. **Copy-on-switch** — detect branch change, copy active DB to new branch path, reopen.
 4. **Prune stale branch DBs** — integrate into `tokensave doctor`, add TTL config.
 5. **Cross-branch impact tool** — `tokensave_branch_impact` MCP tool, open two DBs, diff graphs.
-6. **Daemon awareness** — the daemon watcher needs to detect branch switches (via HEAD change) and handle DB swapping.
+6. **Watcher awareness** — the embedded MCP file watcher needs to detect branch switches (via HEAD change) and handle DB swapping.
 
 ## Implementation Decisions
 

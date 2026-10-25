@@ -1,0 +1,44 @@
+{
+  "results": [
+    {
+      "repo": "fastapi",
+      "root": "/tmp/tokensave-bench/fastapi",
+      "token_savior": {
+        "cold_index_seconds": 6.212,
+        "cold_index_peak_memory_bytes": 68604258,
+        "total_files": 2715,
+        "total_lines": 351673,
+        "total_functions": 4322,
+        "total_classes": 638,
+        "symbol_table_size": 2740,
+        "warm_index_seconds": 1.575,
+        "find_symbol_avg_ms": 0.004,
+        "get_function_source_avg_ms": 0.133,
+        "get_change_impact_avg_ms": 24.374,
+        "cache_size_bytes": 5431616
+      },
+      "tokensave": {
+        "cold_index_seconds": 2.147,
+        "cold_index_peak_memory_bytes": 153567232,
+        "warm_index_seconds": 1.363,
+        "node_count": 29019,
+        "edge_count": 2876,
+        "file_count": 2677,
+        "files_by_language": {
+          "TOML": 1,
+          "Bash": 6,
+          "JavaScript": 4,
+          "Other": 1548,
+          "Python": 1118
+        },
+        "find_symbol_avg_ms": 0.136,
+        "get_function_source_avg_ms": 0.117,
+        "get_change_impact_avg_ms": 0.569,
+        "cache_size_bytes": 30040064
+      }
+    }
+  ],
+  "naive_source_size_bytes": {
+    "fastapi": 3788467
+  }
+}

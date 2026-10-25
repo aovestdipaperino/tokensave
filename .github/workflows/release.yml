@@ -4,6 +4,16 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Existing release tag to (re-)build and publish Windows assets for, e.g. v7.11.1.
+          Use this to recover a release whose SignPath approval timed out: it rebuilds the
+          Windows binaries and re-runs signing + the Scoop update against that release,
+          without touching the crate, the bottles or the Homebrew tap. Leave empty for a
+          plain build-only smoke run of the current branch.
+        required: false
+        type: string
 
 # Skip beta/prerelease tags — handled by release-beta.yml
 
@@ -14,9 +24,46 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  setup:
+    name: Resolve target tag
+    if: github.event_name == 'workflow_dispatch' || !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    outputs:
+      # The tag every downstream job builds and uploads against. On a release event this is
+      # the released tag; on a dispatch it is the `tag` input. GITHUB_REF_NAME is the branch
+      # for a dispatch, so jobs must use this instead of github.ref_name.
+      tag: ${{ steps.resolve.outputs.tag }}
+      # 'true' when there is a real release to upload assets to.
+      publish: ${{ steps.resolve.outputs.publish }}
+      # 'true' for a Windows-recovery dispatch: skip the unix archives, bottles, Homebrew
+      # and crates.io, all of which already succeeded on the original release run.
+      windows_only: ${{ steps.resolve.outputs.windows_only }}
+    steps:
+      - name: Resolve tag and mode
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            TAG="${GITHUB_REF_NAME}"; PUBLISH=true; WINDOWS_ONLY=false
+          elif [ -n "${INPUT_TAG}" ]; then
+            TAG="${INPUT_TAG}"; PUBLISH=true; WINDOWS_ONLY=true
+            # Fail fast on a typo'd tag rather than 40 minutes later at `gh release upload`.
+            gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null
+          else
+            TAG="${GITHUB_REF_NAME}"; PUBLISH=false; WINDOWS_ONLY=false
+          fi
+          {
+            echo "tag=${TAG}"
+            echo "publish=${PUBLISH}"
+            echo "windows_only=${WINDOWS_ONLY}"
+          } >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.name }}
-    if: github.event_name == 'workflow_dispatch' || !github.event.release.prerelease
+    needs: setup
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -28,62 +75,121 @@ jobs:
             bottle_tag: arm64_sonoma
             archive: tar.gz
           - name: x86_64-linux
-            runner: ubuntu-latest
+            runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             bottle_tag: x86_64_linux
             archive: tar.gz
           - name: aarch64-linux
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
           - name: x86_64-windows
             runner: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
+          - name: aarch64-windows
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            archive: zip
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.setup.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
       - name: Build release binary
+        # A Windows-recovery dispatch only needs the two Windows legs; the unix
+        # archives and bottles are already on the release.
+        if: matrix.archive == 'zip' || needs.setup.outputs.windows_only != 'true'
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Get version
         id: version
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${TAG#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        env:
+          TAG: ${{ needs.setup.outputs.tag }}
 
       # --- Binary archive (all platforms) ---
 
       - name: Package binary (unix)
-        if: matrix.archive == 'tar.gz'
+        if: matrix.archive == 'tar.gz' && needs.setup.outputs.windows_only != 'true'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../tokensave-${{ github.ref_name }}-${{ matrix.name }}.tar.gz tokensave
+          tar czf ../../../tokensave-${{ needs.setup.outputs.tag }}-${{ matrix.name }}.tar.gz tokensave
           cd ../../..
 
-      - name: Package binary (windows)
-        if: matrix.archive == 'zip'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/tokensave.exe -DestinationPath tokensave-${{ github.ref_name }}-${{ matrix.name }}.zip
-
-      - name: Upload binary archive
-        if: github.event_name == 'release'
+      - name: Upload binary archive (unix)
+        if: matrix.archive == 'tar.gz' && needs.setup.outputs.publish == 'true' && needs.setup.outputs.windows_only != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
-        run: gh release upload ${{ github.ref_name }} tokensave-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive }} --clobber
+        run: gh release upload ${{ needs.setup.outputs.tag }} tokensave-${{ needs.setup.outputs.tag }}-${{ matrix.name }}.${{ matrix.archive }} --clobber
+
+      # Hash the exact bytes just uploaded, on the leg that produced them
+      # (#525). Collected into SHA256SUMS by the checksums job, which
+      # `tokensave upgrade` verifies against before extracting.
+      - name: Record archive SHA256 (unix)
+        if: matrix.archive == 'tar.gz' && needs.setup.outputs.publish == 'true' && needs.setup.outputs.windows_only != 'true'
+        shell: bash
+        run: |
+          ASSET="tokensave-${{ needs.setup.outputs.tag }}-${{ matrix.name }}.${{ matrix.archive }}"
+          # macOS runners have no `sha256sum` (GNU coreutils); `shasum -a 256`
+          # is the BSD equivalent and prints the same `hash  name` format.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ASSET" > "${ASSET}.sha256"
+          else
+            shasum -a 256 "$ASSET" > "${ASSET}.sha256"
+          fi
+
+      - name: Upload checksum artifact (unix)
+        if: matrix.archive == 'tar.gz' && needs.setup.outputs.publish == 'true' && needs.setup.outputs.windows_only != 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: checksum-${{ matrix.name }}
+          path: "*.sha256"
+
+      # --- Windows: Authenticode signing via SignPath (build half) ---
+      # Production signing uses a SignPath Foundation certificate, which requires manual
+      # approval in the SignPath UI, so signing is split out into the sign-windows job.
+      # Here we only upload the unsigned .exe (upload-artifact wraps the single file in a
+      # ZIP) and record its artifact id so the signing job can submit it. This frees the
+      # Windows runner immediately instead of blocking it while a human approves.
+
+      - name: Upload unsigned binary for signing
+        if: matrix.archive == 'zip' && needs.setup.outputs.publish == 'true'
+        id: upload-unsigned
+        uses: actions/upload-artifact@v6
+        with:
+          # Per-target name: both Windows legs (x86_64 and aarch64) run this
+          # step, so a shared name would collide and only one would survive.
+          name: tokensave-windows-unsigned-${{ matrix.name }}
+          path: target/${{ matrix.target }}/release/tokensave.exe
+          if-no-files-found: error
+
+      - name: Record unsigned artifact id
+        if: matrix.archive == 'zip' && needs.setup.outputs.publish == 'true'
+        shell: bash
+        run: echo "${{ steps.upload-unsigned.outputs.artifact-id }}" > unsigned-artifact-id.txt
+
+      - name: Upload artifact id for signing job
+        if: matrix.archive == 'zip' && needs.setup.outputs.publish == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-unsigned-artifact-id-${{ matrix.name }}
+          path: unsigned-artifact-id.txt
+          if-no-files-found: error
 
       # --- Homebrew bottle (only for platforms with bottle_tag) ---
 
       - name: Package Homebrew bottle
-        if: matrix.bottle_tag && github.event_name == 'release'
+        if: matrix.bottle_tag && needs.setup.outputs.publish == 'true' && needs.setup.outputs.windows_only != 'true'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           BOTTLE_TAG="${{ matrix.bottle_tag }}"
@@ -93,19 +199,152 @@ jobs:
           tar czf "tokensave-${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" tokensave/
 
       - name: Upload bottle artifact
-        if: matrix.bottle_tag && github.event_name == 'release'
-        uses: actions/upload-artifact@v4
+        if: matrix.bottle_tag && needs.setup.outputs.publish == 'true' && needs.setup.outputs.windows_only != 'true'
+        uses: actions/upload-artifact@v6
         with:
           name: bottle-${{ matrix.bottle_tag }}
           path: "tokensave-*.bottle.tar.gz"
 
+  sign-windows:
+    name: Sign Windows binary (${{ matrix.name }})
+    if: always() && needs.setup.result == 'success' && needs.setup.outputs.publish == 'true'
+    needs: [setup, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # upload the signed zip to the release
+      actions: read     # let the SignPath action read the unsigned artifact
+    strategy:
+      # One signing request per Windows architecture. Independent so a slow
+      # approval on one does not block the other; both must land for update-scoop.
+      fail-fast: false
+      matrix:
+        name: [x86_64-windows, aarch64-windows]
+    steps:
+      - name: Download unsigned artifact id
+        uses: actions/download-artifact@v7
+        with:
+          name: windows-unsigned-artifact-id-${{ matrix.name }}
+
+      - name: Read unsigned artifact id
+        id: meta
+        run: echo "artifact-id=$(cat unsigned-artifact-id.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Submit signing request to SignPath (waits for manual approval)
+        # Production signing uses a SignPath Foundation certificate, which requires a
+        # human to approve the request in the SignPath UI. This step submits the request
+        # and blocks until it is approved + signed (or the timeout below elapses), then
+        # downloads the signed .exe into ./signed. If approval is slow and this times
+        # out, re-run this job — it submits a fresh request.
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: tokensave
+          # Production Foundation-cert policy (SignPath UI: Org > Projects > tokensave > Signing Policies).
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.meta.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+
+      - name: Package signed binary
+        env:
+          TAG: ${{ needs.setup.outputs.tag }}
+        run: |
+          cd signed
+          zip "../tokensave-${TAG}-${{ matrix.name }}.zip" tokensave.exe
+
+      - name: Upload signed binary archive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.setup.outputs.tag }}
+        # This job has no checkout, so gh can't infer the repo from git context.
+        run: gh release upload "${TAG}" "tokensave-${TAG}-${{ matrix.name }}.zip" --clobber --repo "$GITHUB_REPOSITORY"
+
+      # Hashed after signing, not before: signing rewrites the .exe, so a hash
+      # taken in the build job would never match what users download (#525).
+      - name: Record archive SHA256 (windows)
+        env:
+          TAG: ${{ needs.setup.outputs.tag }}
+        run: |
+          ASSET="tokensave-${TAG}-${{ matrix.name }}.zip"
+          sha256sum "$ASSET" > "${ASSET}.sha256"
+
+      - name: Upload checksum artifact (windows)
+        uses: actions/upload-artifact@v6
+        with:
+          name: checksum-${{ matrix.name }}
+          path: "*.sha256"
+
+  # Publishes the SHA256SUMS asset `tokensave upgrade` verifies against (#525).
+  #
+  # Merges into whatever SHA256SUMS the release already carries rather than
+  # replacing it. `upgrade` fails closed on a missing hash, so a partial run —
+  # a windows-only re-run, or a re-run of one leg — must not drop the other
+  # platforms' entries and block their upgrades. An asset that was re-uploaded
+  # necessarily ran its leg, so a fresh entry always wins over a stale one.
+  checksums:
+    name: Publish SHA256SUMS
+    if: always() && needs.setup.outputs.publish == 'true' && needs.sign-windows.result == 'success'
+    needs: [setup, build, sign-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download checksum artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: checksum-*
+          path: checksums
+          merge-multiple: true
+
+      - name: Assemble SHA256SUMS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.setup.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cat checksums/*.sha256 > new.txt
+
+          # Carry forward entries for assets this run did not rebuild.
+          mkdir -p existing
+          if gh release download "$TAG" --pattern SHA256SUMS --dir existing --clobber 2>/dev/null; then
+            awk '{ sub(/^\*/, "", $2); print $2 }' new.txt > fresh-names.txt
+            while read -r line; do
+              [ -n "$line" ] || continue
+              name=$(printf '%s' "$line" | awk '{ sub(/^\*/, "", $2); print $2 }')
+              grep -qxF "$name" fresh-names.txt || printf '%s\n' "$line"
+            done < existing/SHA256SUMS >> new.txt
+          fi
+
+          # Sorted so the asset is byte-stable regardless of leg completion
+          # order, which keeps a re-run from churning the file needlessly.
+          sort -k2 new.txt > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+          test -s SHA256SUMS
+
+      - name: Upload SHA256SUMS to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.setup.outputs.tag }}
+        run: gh release upload "$TAG" SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+
   update-homebrew:
     name: Update Homebrew tap
-    if: github.event_name == 'release' && !github.event.release.prerelease && !cancelled()
+    # `needs.build.result == 'success'` rather than only `!cancelled()`: the
+    # formula interpolates one sha per bottle, and a build leg that dies before
+    # packaging its bottle leaves that shell variable unset, so the tap gets
+    # published with an empty hash. Homebrew verifies the bottle against it, so
+    # installs on that platform fail outright. v7.12.0 shipped
+    # `arm64_sonoma: ""` exactly this way. A skipped tap update is recoverable;
+    # a published broken formula is live breakage for every user on that
+    # platform.
+    if: >-
+      github.event_name == 'release' && !github.event.release.prerelease
+      && !cancelled() && needs.build.result == 'success'
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Get version
         id: version
@@ -114,7 +353,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Download bottle artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: bottles
           merge-multiple: true
@@ -189,27 +428,56 @@ jobs:
           git diff --cached --quiet || git commit -m "tokensave ${VERSION}"
           git push
 
+  publish-crate:
+    name: Publish to crates.io
+    if: github.event_name == 'release' && !github.event.release.prerelease
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
   update-scoop:
     name: Update Scoop bucket
-    if: github.event_name == 'release' && !github.event.release.prerelease && !cancelled()
-    needs: build
+    if: always() && needs.sign-windows.result == 'success'
+    # Depends on sign-windows: it downloads the signed Windows zip from the release to hash it.
+    needs: [setup, sign-windows]
     runs-on: ubuntu-latest
     steps:
       - name: Get release info
         id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.setup.outputs.tag }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${TAG#v}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-          gh release download "${GITHUB_REF_NAME}" \
+          gh release download "${TAG}" \
             --repo "${{ github.repository }}" \
-            --pattern "tokensave-${GITHUB_REF_NAME}-x86_64-windows.zip" \
+            --pattern "tokensave-${TAG}-x86_64-windows.zip" \
+            --pattern "tokensave-${TAG}-aarch64-windows.zip" \
             --dir .
-          SHA256=$(sha256sum "tokensave-${GITHUB_REF_NAME}-x86_64-windows.zip" | cut -d' ' -f1)
+          # Fail loudly on a missing asset. `VAR=$(sha256sum missing)` would
+          # otherwise mask the error from `set -e` and publish an empty hash
+          # against a 404 URL (the WinARM regression this guards against).
+          for arch in x86_64-windows aarch64-windows; do
+            if [ ! -f "tokensave-${TAG}-${arch}.zip" ]; then
+              echo "::error::required release asset tokensave-${TAG}-${arch}.zip is missing — aborting Scoop update"
+              exit 1
+            fi
+          done
+          SHA256=$(sha256sum "tokensave-${TAG}-x86_64-windows.zip" | cut -d' ' -f1)
           echo "sha256_win64=${SHA256}" >> "$GITHUB_OUTPUT"
+          SHA256_ARM=$(sha256sum "tokensave-${TAG}-aarch64-windows.zip" | cut -d' ' -f1)
+          echo "sha256_winarm64=${SHA256_ARM}" >> "$GITHUB_OUTPUT"
 
       - name: Update Scoop manifest
         env:
@@ -218,6 +486,7 @@ jobs:
           VERSION="${{ steps.release.outputs.version }}"
           TAG="${{ steps.release.outputs.tag }}"
           SHA256="${{ steps.release.outputs.sha256_win64 }}"
+          SHA256_ARM="${{ steps.release.outputs.sha256_winarm64 }}"
 
           cat > tokensave.json << EOF
           {
@@ -229,6 +498,10 @@ jobs:
               "64bit": {
                 "url": "https://github.com/aovestdipaperino/tokensave/releases/download/${TAG}/tokensave-${TAG}-x86_64-windows.zip",
                 "hash": "${SHA256}"
+              },
+              "arm64": {
+                "url": "https://github.com/aovestdipaperino/tokensave/releases/download/${TAG}/tokensave-${TAG}-aarch64-windows.zip",
+                "hash": "${SHA256_ARM}"
               }
             },
             "bin": "tokensave.exe",
@@ -239,13 +512,16 @@ jobs:
               "architecture": {
                 "64bit": {
                   "url": "https://github.com/aovestdipaperino/tokensave/releases/download/v\$version/tokensave-v\$version-x86_64-windows.zip"
+                },
+                "arm64": {
+                  "url": "https://github.com/aovestdipaperino/tokensave/releases/download/v\$version/tokensave-v\$version-aarch64-windows.zip"
                 }
               }
             }
           }
           EOF
 
-          git clone "https://x-access-token:${SCOOP_GITHUB_TOKEN}@github.com/aovestdipaperino/scoop-tokensave.git" scoop-repo
+          git clone "https://x-access-token:${SCOOP_GITHUB_TOKEN}@github.com/aovestdipaperino/scoop-bucket.git" scoop-repo
           cd scoop-repo
           mkdir -p bucket
           cp ../tokensave.json bucket/tokensave.json

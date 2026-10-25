@@ -1,0 +1,21 @@
+{
+  "tool": "Valgrind Memcheck 3.26.0",
+  "leak_check": false,
+  "workload": "warmed no-project initialize followed by EOF",
+  "builds": {
+    "before": {
+      "allocations": 18178,
+      "frees": 17637,
+      "cumulative_bytes": 2374753,
+      "memory_access_errors": 0,
+      "sha256": "562a64c12c1846cba75c29f16d6bfdb5b550b2b5130642465ff3e59674fc6c4b"
+    },
+    "after": {
+      "allocations": 7547,
+      "frees": 7019,
+      "cumulative_bytes": 1356045,
+      "memory_access_errors": 0,
+      "sha256": "4962da1bbfc2bc796df58b829b158c78f2de4de1579e18ef958af1945f934ddf"
+    }
+  }
+}

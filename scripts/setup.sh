@@ -117,5 +117,4 @@ fi
 
 echo ""
 echo "Setup complete. Next steps:"
-echo "  1. cd into your project and run: tokensave sync"
-echo "  2. Start a new Claude Code session — tokensave tools are now available"
+echo "  1. Start a new Claude Code session — tokensave tools are now available"

@@ -1,16 +1,19 @@
+use tempfile::TempDir;
 use tokensave::db::Database;
 use tokensave::types::*;
-use tempfile::TempDir;
 
-/// Helper: create a temp database and return (Database, TempDir).
-/// The TempDir is returned so that it stays alive for the duration of the test.
-async fn setup_db() -> (Database, TempDir) {
+/// Helper: create a temp database and return (TempDir, Database).
+///
+/// The `TempDir` comes first so that it is the last binding declared at each
+/// call site and therefore the last dropped: the database must close before the
+/// directory is removed, or Windows refuses the removal and leaks it (#367).
+async fn setup_db() -> (TempDir, Database) {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("test.db");
     let (db, _) = Database::initialize(&db_path)
         .await
         .expect("failed to initialize database");
-    (db, dir)
+    (dir, db)
 }
 
 /// Helper: create a sample node with reasonable defaults.
@@ -22,6 +25,7 @@ fn sample_node(id: &str, name: &str, file_path: &str) -> Node {
         qualified_name: format!("crate::{name}"),
         file_path: file_path.to_string(),
         start_line: 1,
+        attrs_start_line: 1,
         end_line: 10,
         start_column: 0,
         end_column: 1,
@@ -36,7 +40,13 @@ fn sample_node(id: &str, name: &str, file_path: &str) -> Node {
         unsafe_blocks: 0,
         unchecked_calls: 0,
         assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
         updated_at: 1000,
+        parent_id: None,
     }
 }
 
@@ -46,6 +56,7 @@ fn sample_edge(source: &str, target: &str, kind: EdgeKind) -> Edge {
         target: target.to_string(),
         kind,
         line: Some(5),
+        resolved_by: None,
     }
 }
 
@@ -57,6 +68,7 @@ fn sample_file(path: &str) -> FileRecord {
         modified_at: 1000,
         indexed_at: 2000,
         node_count: 3,
+        kind: Default::default(),
     }
 }
 
@@ -66,7 +78,7 @@ fn sample_file(path: &str) -> FileRecord {
 
 #[tokio::test]
 async fn test_get_nodes_by_kind() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let mut func_node = sample_node("n1", "my_func", "src/lib.rs");
     func_node.kind = NodeKind::Function;
@@ -118,7 +130,7 @@ async fn test_get_nodes_by_kind() {
 
 #[tokio::test]
 async fn test_get_all_nodes() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let nodes: Vec<Node> = (0..5)
         .map(|i| sample_node(&format!("all-{i}"), &format!("func_{i}"), "src/lib.rs"))
@@ -136,7 +148,7 @@ async fn test_get_all_nodes() {
 
 #[tokio::test]
 async fn test_get_all_edges() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let n1 = sample_node("ea", "fa", "src/lib.rs");
     let n2 = sample_node("eb", "fb", "src/lib.rs");
@@ -160,7 +172,7 @@ async fn test_get_all_edges() {
 
 #[tokio::test]
 async fn test_insert_edges_batch() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let nodes: Vec<Node> = (0..4)
         .map(|i| sample_node(&format!("be-{i}"), &format!("f{i}"), "src/lib.rs"))
@@ -172,17 +184,23 @@ async fn test_insert_edges_batch() {
         sample_edge("be-1", "be-2", EdgeKind::Uses),
         sample_edge("be-2", "be-3", EdgeKind::Contains),
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
+    // Contains is denormalized into nodes.parent_id since v9, so only the
+    // two non-Contains edges actually land in the edges table.
     let all = db.get_all_edges().await.expect("get_all_edges failed");
-    assert_eq!(all.len(), 3);
+    assert_eq!(all.len(), 2);
+    let be_3 = db
+        .get_node_by_id("be-3")
+        .await
+        .expect("get_node_by_id failed")
+        .expect("be-3 should exist");
+    assert_eq!(be_3.parent_id.as_deref(), Some("be-2"));
 }
 
 #[tokio::test]
 async fn test_insert_edges_empty() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
     db.insert_edges(&[])
         .await
         .expect("insert_edges with empty slice should succeed");
@@ -191,12 +209,263 @@ async fn test_insert_edges_empty() {
 }
 
 // -------------------------------------------------------------------------
+// insert_edges — missing-node scenarios (#58)
+// -------------------------------------------------------------------------
+
+/// Both source and target are missing — edge must be silently skipped.
+#[tokio::test]
+async fn test_insert_edges_both_endpoints_missing() {
+    let (_dir, db) = setup_db().await;
+
+    let edges = vec![sample_edge("ghost-a", "ghost-b", EdgeKind::Calls)];
+    db.insert_edges(&edges)
+        .await
+        .expect("insert_edges should not fail for missing endpoints");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert!(
+        all.is_empty(),
+        "edge with two missing endpoints must be skipped"
+    );
+}
+
+/// Source exists but target is missing — edge must be skipped.
+#[tokio::test]
+async fn test_insert_edges_missing_target() {
+    let (_dir, db) = setup_db().await;
+
+    let node = sample_node("src-ok", "func_a", "src/lib.rs");
+    db.insert_nodes(&[node]).await.expect("insert_nodes failed");
+
+    let edges = vec![sample_edge("src-ok", "no-such-target", EdgeKind::Calls)];
+    db.insert_edges(&edges)
+        .await
+        .expect("insert_edges should not fail for missing target");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert!(all.is_empty(), "edge with missing target must be skipped");
+}
+
+/// Target exists but source is missing — edge must be skipped.
+#[tokio::test]
+async fn test_insert_edges_missing_source() {
+    let (_dir, db) = setup_db().await;
+
+    let node = sample_node("tgt-ok", "func_b", "src/lib.rs");
+    db.insert_nodes(&[node]).await.expect("insert_nodes failed");
+
+    let edges = vec![sample_edge("no-such-source", "tgt-ok", EdgeKind::Uses)];
+    db.insert_edges(&edges)
+        .await
+        .expect("insert_edges should not fail for missing source");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert!(all.is_empty(), "edge with missing source must be skipped");
+}
+
+/// Mixed batch: some edges valid, some with missing endpoints.
+/// Valid edges must be inserted; invalid ones silently skipped.
+#[tokio::test]
+async fn test_insert_edges_mixed_valid_and_missing() {
+    let (_dir, db) = setup_db().await;
+
+    let nodes = vec![
+        sample_node("mx-a", "fa", "src/a.rs"),
+        sample_node("mx-b", "fb", "src/a.rs"),
+        sample_node("mx-c", "fc", "src/b.rs"),
+    ];
+    db.insert_nodes(&nodes).await.expect("insert_nodes failed");
+
+    let edges = vec![
+        sample_edge("mx-a", "mx-b", EdgeKind::Calls),   // valid
+        sample_edge("mx-a", "ghost-1", EdgeKind::Uses), // missing target
+        sample_edge("ghost-2", "mx-c", EdgeKind::Contains), // missing source
+        sample_edge("mx-b", "mx-c", EdgeKind::Calls),   // valid
+        sample_edge("ghost-3", "ghost-4", EdgeKind::Uses), // both missing
+    ];
+    db.insert_edges(&edges)
+        .await
+        .expect("insert_edges should not fail for mixed batch");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert_eq!(
+        all.len(),
+        2,
+        "only edges with both endpoints present must be inserted"
+    );
+}
+
+/// Singular insert_edge also skips when target is missing.
+#[tokio::test]
+async fn test_insert_edge_singular_missing_target() {
+    let (_dir, db) = setup_db().await;
+
+    let node = sample_node("se-a", "fa", "src/lib.rs");
+    db.insert_nodes(&[node]).await.expect("insert_nodes failed");
+
+    let edge = sample_edge("se-a", "missing", EdgeKind::Calls);
+    db.insert_edge(&edge)
+        .await
+        .expect("insert_edge should not fail for missing target");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert!(all.is_empty());
+}
+
+/// Singular insert_edge also skips when source is missing.
+#[tokio::test]
+async fn test_insert_edge_singular_missing_source() {
+    let (_dir, db) = setup_db().await;
+
+    let node = sample_node("se-b", "fb", "src/lib.rs");
+    db.insert_nodes(&[node]).await.expect("insert_nodes failed");
+
+    let edge = sample_edge("missing", "se-b", EdgeKind::Uses);
+    db.insert_edge(&edge)
+        .await
+        .expect("insert_edge should not fail for missing source");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert!(all.is_empty());
+}
+
+/// Singular insert_edge works normally when both endpoints exist.
+#[tokio::test]
+async fn test_insert_edge_singular_valid() {
+    let (_dir, db) = setup_db().await;
+
+    let nodes = vec![
+        sample_node("sv-a", "fa", "src/lib.rs"),
+        sample_node("sv-b", "fb", "src/lib.rs"),
+    ];
+    db.insert_nodes(&nodes).await.expect("insert_nodes failed");
+
+    let edge = sample_edge("sv-a", "sv-b", EdgeKind::Calls);
+    db.insert_edge(&edge).await.expect("insert_edge failed");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].source, "sv-a");
+    assert_eq!(all[0].target, "sv-b");
+}
+
+/// Duplicate edges (same source/target/kind) are ignored via INSERT OR IGNORE.
+#[tokio::test]
+async fn test_insert_edges_duplicate_ignored() {
+    let (_dir, db) = setup_db().await;
+
+    let nodes = vec![
+        sample_node("dup-a", "fa", "src/lib.rs"),
+        sample_node("dup-b", "fb", "src/lib.rs"),
+    ];
+    db.insert_nodes(&nodes).await.expect("insert_nodes failed");
+
+    let edges = vec![
+        sample_edge("dup-a", "dup-b", EdgeKind::Calls),
+        sample_edge("dup-a", "dup-b", EdgeKind::Calls), // duplicate
+    ];
+    db.insert_edges(&edges).await.expect("insert_edges failed");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert_eq!(all.len(), 1, "duplicate edge must be ignored");
+}
+
+/// Cross-file edges inserted after all nodes are present succeed.
+/// This simulates the incremental sync reordering fix.
+#[tokio::test]
+async fn test_insert_edges_cross_file_after_all_nodes() {
+    let (_dir, db) = setup_db().await;
+
+    // Simulate phase 1: insert nodes from two different files
+    let nodes_file_a = vec![sample_node("cf-a1", "func_a", "src/a.rs")];
+    let nodes_file_b = vec![sample_node("cf-b1", "func_b", "src/b.rs")];
+    db.insert_nodes(&nodes_file_a)
+        .await
+        .expect("insert_nodes a failed");
+    db.insert_nodes(&nodes_file_b)
+        .await
+        .expect("insert_nodes b failed");
+
+    // Simulate phase 2: insert cross-file edges after all nodes are in
+    let edges = vec![
+        sample_edge("cf-a1", "cf-b1", EdgeKind::Calls), // a.rs -> b.rs
+        sample_edge("cf-b1", "cf-a1", EdgeKind::Uses),  // b.rs -> a.rs
+    ];
+    db.insert_edges(&edges).await.expect("insert_edges failed");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert_eq!(
+        all.len(),
+        2,
+        "cross-file edges must succeed when nodes are present"
+    );
+}
+
+/// Large batch with many missing endpoints does not abort the transaction.
+#[tokio::test]
+async fn test_insert_edges_large_batch_with_missing() {
+    let (_dir, db) = setup_db().await;
+
+    // Only insert one node
+    let node = sample_node("lb-0", "f0", "src/lib.rs");
+    db.insert_nodes(&[node]).await.expect("insert_nodes failed");
+
+    // Create 100 edges, all referencing missing targets
+    let edges: Vec<Edge> = (0..100)
+        .map(|i| sample_edge("lb-0", &format!("missing-{i}"), EdgeKind::Calls))
+        .collect();
+    db.insert_edges(&edges)
+        .await
+        .expect("insert_edges should not abort on large batch with missing endpoints");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert!(
+        all.is_empty(),
+        "all edges with missing targets must be skipped"
+    );
+}
+
+/// Edges with None line values and missing endpoints are handled correctly.
+#[tokio::test]
+async fn test_insert_edges_null_line_with_missing() {
+    let (_dir, db) = setup_db().await;
+
+    let nodes = vec![
+        sample_node("nl-a", "fa", "src/lib.rs"),
+        sample_node("nl-b", "fb", "src/lib.rs"),
+    ];
+    db.insert_nodes(&nodes).await.expect("insert_nodes failed");
+
+    let edges = vec![
+        Edge {
+            source: "nl-a".to_string(),
+            target: "nl-b".to_string(),
+            kind: EdgeKind::Calls,
+            line: None, // valid, null line,
+            resolved_by: None,
+        },
+        Edge {
+            source: "nl-a".to_string(),
+            target: "missing".to_string(),
+            kind: EdgeKind::Uses,
+            line: None, // missing target, null line,
+            resolved_by: None,
+        },
+    ];
+    db.insert_edges(&edges).await.expect("insert_edges failed");
+
+    let all = db.get_all_edges().await.expect("get_all_edges failed");
+    assert_eq!(all.len(), 1, "only the valid edge should be inserted");
+    assert!(all[0].line.is_none());
+}
+
+// -------------------------------------------------------------------------
 // insert_all (bulk)
 // -------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_insert_all_bulk() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let nodes = vec![
         sample_node("bulk-1", "func_a", "src/a.rs"),
@@ -231,7 +500,7 @@ async fn test_insert_all_bulk() {
 
 #[tokio::test]
 async fn test_delete_edges_by_source() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let nodes: Vec<Node> = ["ds-a", "ds-b", "ds-c"]
         .iter()
@@ -244,9 +513,7 @@ async fn test_delete_edges_by_source() {
         sample_edge("ds-a", "ds-c", EdgeKind::Uses),
         sample_edge("ds-b", "ds-c", EdgeKind::Calls),
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     db.delete_edges_by_source("ds-a")
         .await
@@ -264,7 +531,7 @@ async fn test_delete_edges_by_source() {
 
 #[tokio::test]
 async fn test_get_ranked_nodes_by_edge_kind_incoming() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // Create target nodes that receive calls
     let target_a = sample_node("rt-a", "popular", "src/lib.rs");
@@ -284,12 +551,10 @@ async fn test_get_ranked_nodes_by_edge_kind_incoming() {
         sample_edge("rt-c3", "rt-a", EdgeKind::Calls),
         sample_edge("rt-c1", "rt-b", EdgeKind::Calls),
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     let ranked = db
-        .get_ranked_nodes_by_edge_kind(&EdgeKind::Calls, None, true, 10)
+        .get_ranked_nodes_by_edge_kind(&EdgeKind::Calls, None, true, None, 10)
         .await
         .expect("get_ranked_nodes_by_edge_kind failed");
 
@@ -303,7 +568,7 @@ async fn test_get_ranked_nodes_by_edge_kind_incoming() {
 
 #[tokio::test]
 async fn test_get_ranked_nodes_by_edge_kind_outgoing() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let caller = sample_node("ro-caller", "big_caller", "src/lib.rs");
     let target1 = sample_node("ro-t1", "t1", "src/lib.rs");
@@ -316,12 +581,10 @@ async fn test_get_ranked_nodes_by_edge_kind_outgoing() {
         sample_edge("ro-caller", "ro-t1", EdgeKind::Calls),
         sample_edge("ro-caller", "ro-t2", EdgeKind::Calls),
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     let ranked = db
-        .get_ranked_nodes_by_edge_kind(&EdgeKind::Calls, None, false, 10)
+        .get_ranked_nodes_by_edge_kind(&EdgeKind::Calls, None, false, None, 10)
         .await
         .expect("get_ranked_nodes_by_edge_kind failed");
 
@@ -332,7 +595,7 @@ async fn test_get_ranked_nodes_by_edge_kind_outgoing() {
 
 #[tokio::test]
 async fn test_get_ranked_nodes_by_edge_kind_with_node_filter() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let mut func_node = sample_node("rnf-1", "func1", "src/lib.rs");
     func_node.kind = NodeKind::Function;
@@ -350,18 +613,11 @@ async fn test_get_ranked_nodes_by_edge_kind_with_node_filter() {
         sample_edge("rnf-c", "rnf-1", EdgeKind::Calls),
         sample_edge("rnf-c", "rnf-2", EdgeKind::Calls),
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     // Filter to only Function nodes
     let ranked = db
-        .get_ranked_nodes_by_edge_kind(
-            &EdgeKind::Calls,
-            Some(&NodeKind::Function),
-            true,
-            10,
-        )
+        .get_ranked_nodes_by_edge_kind(&EdgeKind::Calls, Some(&NodeKind::Function), true, None, 10)
         .await
         .expect("get_ranked_nodes_by_edge_kind failed");
 
@@ -375,7 +631,7 @@ async fn test_get_ranked_nodes_by_edge_kind_with_node_filter() {
 
 #[tokio::test]
 async fn test_get_largest_nodes() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let mut small = sample_node("ln-small", "small_fn", "src/lib.rs");
     small.start_line = 1;
@@ -394,7 +650,7 @@ async fn test_get_largest_nodes() {
         .expect("insert_nodes failed");
 
     let largest = db
-        .get_largest_nodes(None, 10)
+        .get_largest_nodes(None, None, 10)
         .await
         .expect("get_largest_nodes failed");
 
@@ -410,7 +666,7 @@ async fn test_get_largest_nodes() {
 
 #[tokio::test]
 async fn test_get_largest_nodes_with_kind_filter() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let mut func = sample_node("lk-func", "big_fn", "src/lib.rs");
     func.kind = NodeKind::Function;
@@ -427,7 +683,7 @@ async fn test_get_largest_nodes_with_kind_filter() {
         .expect("insert_nodes failed");
 
     let largest = db
-        .get_largest_nodes(Some(&NodeKind::Function), 10)
+        .get_largest_nodes(Some(&NodeKind::Function), None, 10)
         .await
         .expect("get_largest_nodes failed");
 
@@ -437,7 +693,7 @@ async fn test_get_largest_nodes_with_kind_filter() {
 
 #[tokio::test]
 async fn test_get_largest_nodes_respects_limit() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let nodes: Vec<Node> = (0..10)
         .map(|i| {
@@ -450,7 +706,7 @@ async fn test_get_largest_nodes_respects_limit() {
     db.insert_nodes(&nodes).await.expect("insert_nodes failed");
 
     let largest = db
-        .get_largest_nodes(None, 3)
+        .get_largest_nodes(None, None, 3)
         .await
         .expect("get_largest_nodes failed");
 
@@ -463,7 +719,7 @@ async fn test_get_largest_nodes_respects_limit() {
 
 #[tokio::test]
 async fn test_get_file_coupling_fan_in() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // Nodes in different files
     let n1 = sample_node("fc-1", "f1", "src/a.rs");
@@ -479,12 +735,10 @@ async fn test_get_file_coupling_fan_in() {
         sample_edge("fc-2", "fc-1", EdgeKind::Calls),
         sample_edge("fc-3", "fc-4", EdgeKind::Uses),
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     let coupling = db
-        .get_file_coupling(true, 10)
+        .get_file_coupling(true, None, 10)
         .await
         .expect("get_file_coupling failed");
 
@@ -496,7 +750,7 @@ async fn test_get_file_coupling_fan_in() {
 
 #[tokio::test]
 async fn test_get_file_coupling_fan_out() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let n1 = sample_node("fco-1", "f1", "src/a.rs");
     let n2 = sample_node("fco-2", "f2", "src/b.rs");
@@ -510,12 +764,10 @@ async fn test_get_file_coupling_fan_out() {
         sample_edge("fco-1", "fco-2", EdgeKind::Calls),
         sample_edge("fco-1", "fco-3", EdgeKind::Uses),
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     let coupling = db
-        .get_file_coupling(false, 10)
+        .get_file_coupling(false, None, 10)
         .await
         .expect("get_file_coupling failed");
 
@@ -530,7 +782,7 @@ async fn test_get_file_coupling_fan_out() {
 
 #[tokio::test]
 async fn test_get_inheritance_depth() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // Create a chain: Child extends Parent extends GrandParent
     let mut grandparent = sample_node("ih-gp", "GrandParent", "src/lib.rs");
@@ -552,20 +804,20 @@ async fn test_get_inheritance_depth() {
             target: "ih-p".to_string(),
             kind: EdgeKind::Extends,
             line: None,
+            resolved_by: None,
         },
         Edge {
             source: "ih-p".to_string(),
             target: "ih-gp".to_string(),
             kind: EdgeKind::Extends,
             line: None,
+            resolved_by: None,
         },
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     let depths = db
-        .get_inheritance_depth(10)
+        .get_inheritance_depth(None, 10)
         .await
         .expect("get_inheritance_depth failed");
 
@@ -578,13 +830,88 @@ async fn test_get_inheritance_depth() {
     assert_eq!(depths[1].1, 1);
 }
 
+/// Regression: `get_inheritance_depth` previously had no cycle detection.
+/// Rust trait bounds + generics can create supertrait cycles (or huge
+/// near-cycles) — on the polkadot-sdk codebase (959 `extends` edges) the
+/// recursive CTE would explode and never finish within 60 s. Test that
+/// a 2-node cycle does not hang and reports finite depths.
+#[tokio::test]
+async fn test_get_inheritance_depth_terminates_on_cycle() {
+    let (_dir, db) = setup_db().await;
+
+    // A and B extend each other (cycle).
+    let mut a = sample_node("ih-cy-a", "A", "src/lib.rs");
+    a.kind = NodeKind::Trait;
+    let mut b = sample_node("ih-cy-b", "B", "src/lib.rs");
+    b.kind = NodeKind::Trait;
+    // C extends A — should still be reported with finite depth despite A↔B cycle.
+    let mut c = sample_node("ih-cy-c", "C", "src/lib.rs");
+    c.kind = NodeKind::Trait;
+
+    db.insert_nodes(&[a, b, c])
+        .await
+        .expect("insert_nodes failed");
+
+    let edges = vec![
+        Edge {
+            source: "ih-cy-a".into(),
+            target: "ih-cy-b".into(),
+            kind: EdgeKind::Extends,
+            line: None,
+            resolved_by: None,
+        },
+        Edge {
+            source: "ih-cy-b".into(),
+            target: "ih-cy-a".into(),
+            kind: EdgeKind::Extends,
+            line: None,
+            resolved_by: None,
+        },
+        Edge {
+            source: "ih-cy-c".into(),
+            target: "ih-cy-a".into(),
+            kind: EdgeKind::Extends,
+            line: None,
+            resolved_by: None,
+        },
+    ];
+    db.insert_edges(&edges).await.expect("insert_edges failed");
+
+    let start = std::time::Instant::now();
+    let depths = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        db.get_inheritance_depth(None, 10),
+    )
+    .await
+    .expect("get_inheritance_depth must not hang on a cycle")
+    .expect("get_inheritance_depth returned an error");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "cycle case should be fast; took {:?}",
+        elapsed
+    );
+
+    // All three nodes participate in the extends graph; each must appear
+    // exactly once with a finite, bounded depth.
+    assert_eq!(depths.len(), 3, "expected A, B, C each once");
+    for (node, depth) in &depths {
+        assert!(
+            *depth < 50,
+            "depth must be bounded for node {}: got {}",
+            node.id,
+            depth
+        );
+    }
+}
+
 // -------------------------------------------------------------------------
 // get_node_distribution
 // -------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_get_node_distribution_no_prefix() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let mut n1 = sample_node("nd-1", "f1", "src/a.rs");
     n1.kind = NodeKind::Function;
@@ -613,7 +940,7 @@ async fn test_get_node_distribution_no_prefix() {
 
 #[tokio::test]
 async fn test_get_node_distribution_with_prefix() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let mut n1 = sample_node("ndp-1", "f1", "src/a/foo.rs");
     n1.kind = NodeKind::Function;
@@ -640,7 +967,7 @@ async fn test_get_node_distribution_with_prefix() {
 
 #[tokio::test]
 async fn test_get_call_edges() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let n1 = sample_node("ce-1", "f1", "src/lib.rs");
     let n2 = sample_node("ce-2", "f2", "src/lib.rs");
@@ -654,11 +981,12 @@ async fn test_get_call_edges() {
         sample_edge("ce-2", "ce-3", EdgeKind::Calls),
         sample_edge("ce-1", "ce-3", EdgeKind::Uses), // not a call edge
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
-    let call_edges = db.get_call_edges().await.expect("get_call_edges failed");
+    let call_edges = db
+        .get_call_edges(None)
+        .await
+        .expect("get_call_edges failed");
 
     assert_eq!(call_edges.len(), 2);
     // Should only return calls edges
@@ -673,7 +1001,7 @@ async fn test_get_call_edges() {
 
 #[tokio::test]
 async fn test_get_complexity_ranked_no_filter() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // Returns (Node, lines, fan_out, fan_in, score)
     // score = lines + fan_out*3 + fan_in
@@ -696,13 +1024,11 @@ async fn test_get_complexity_ranked_no_filter() {
 
     // cx-1 calls cx-t (fan_out = 1)
     let edges = vec![sample_edge("cx-1", "cx-t", EdgeKind::Calls)];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     // No node_kind filter -> defaults to function + method
     let ranked = db
-        .get_complexity_ranked(None, 10)
+        .get_complexity_ranked(None, None, 10)
         .await
         .expect("get_complexity_ranked failed");
 
@@ -718,7 +1044,7 @@ async fn test_get_complexity_ranked_no_filter() {
 
 #[tokio::test]
 async fn test_get_complexity_ranked_with_filter() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let mut n1 = sample_node("cxf-1", "fn1", "src/lib.rs");
     n1.kind = NodeKind::Function;
@@ -735,7 +1061,7 @@ async fn test_get_complexity_ranked_with_filter() {
         .expect("insert_nodes failed");
 
     let ranked = db
-        .get_complexity_ranked(Some(&NodeKind::Function), 10)
+        .get_complexity_ranked(Some(&NodeKind::Function), None, 10)
         .await
         .expect("get_complexity_ranked failed");
 
@@ -749,7 +1075,7 @@ async fn test_get_complexity_ranked_with_filter() {
 
 #[tokio::test]
 async fn test_get_undocumented_public_symbols() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // Undocumented public function
     let mut undoc_pub = sample_node("udp-1", "undoc_fn", "src/lib.rs");
@@ -800,7 +1126,7 @@ async fn test_get_undocumented_public_symbols() {
 
 #[tokio::test]
 async fn test_get_undocumented_public_symbols_with_prefix() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let mut n1 = sample_node("udpp-1", "f1", "src/a/foo.rs");
     n1.kind = NodeKind::Function;
@@ -825,13 +1151,101 @@ async fn test_get_undocumented_public_symbols_with_prefix() {
     assert_eq!(undoc[0].file_path, "src/a/foo.rs");
 }
 
+#[tokio::test]
+async fn test_get_undocumented_public_symbols_includes_singleton_methods() {
+    let (_dir, db) = setup_db().await;
+
+    let mut undocumented = sample_node("udps-1", "publish", "app/publisher.rb");
+    undocumented.kind = NodeKind::SingletonMethod;
+    undocumented.visibility = Visibility::Pub;
+    undocumented.docstring = None;
+
+    let mut documented = sample_node("udps-2", "run", "app/publisher.rb");
+    documented.kind = NodeKind::SingletonMethod;
+    documented.visibility = Visibility::Pub;
+    documented.docstring = Some("Runs the publisher".to_string());
+
+    db.insert_nodes(&[undocumented, documented])
+        .await
+        .expect("insert_nodes failed");
+
+    let undoc = db
+        .get_undocumented_public_symbols(None, 100)
+        .await
+        .expect("get_undocumented_public_symbols failed");
+
+    assert_eq!(undoc.len(), 1);
+    assert_eq!(undoc[0].id, "udps-1");
+    assert_eq!(undoc[0].kind, NodeKind::SingletonMethod);
+}
+
+/// Regression: doc_coverage previously excluded `field`, `enum_variant`,
+/// `const`, `static`, and `type_alias`, so a Rust file full of `pub`
+/// undocumented struct fields reported total_undocumented: 0. Those kinds
+/// must be reported when public and undocumented.
+#[tokio::test]
+async fn test_get_undocumented_public_symbols_includes_fields_and_variants() {
+    let (_dir, db) = setup_db().await;
+
+    let mut field = sample_node("udpa-1", "freq", "src/lib.rs");
+    field.kind = NodeKind::Field;
+    field.visibility = Visibility::Pub;
+    field.docstring = None;
+
+    let mut variant = sample_node("udpa-2", "Lowpass", "src/lib.rs");
+    variant.kind = NodeKind::EnumVariant;
+    variant.visibility = Visibility::Pub;
+    variant.docstring = None;
+
+    let mut const_node = sample_node("udpa-3", "DEFAULT_Q", "src/lib.rs");
+    const_node.kind = NodeKind::Const;
+    const_node.visibility = Visibility::Pub;
+    const_node.docstring = None;
+
+    let mut static_node = sample_node("udpa-4", "GLOBAL", "src/lib.rs");
+    static_node.kind = NodeKind::Static;
+    static_node.visibility = Visibility::Pub;
+    static_node.docstring = None;
+
+    let mut alias = sample_node("udpa-5", "Peq", "src/lib.rs");
+    alias.kind = NodeKind::TypeAlias;
+    alias.visibility = Visibility::Pub;
+    alias.docstring = None;
+
+    // Documented field — should not appear.
+    let mut documented = sample_node("udpa-6", "documented_field", "src/lib.rs");
+    documented.kind = NodeKind::Field;
+    documented.visibility = Visibility::Pub;
+    documented.docstring = Some("good docs".to_string());
+
+    db.insert_nodes(&[field, variant, const_node, static_node, alias, documented])
+        .await
+        .expect("insert_nodes failed");
+
+    let undoc = db
+        .get_undocumented_public_symbols(None, 100)
+        .await
+        .expect("get_undocumented_public_symbols failed");
+
+    let ids: Vec<&str> = undoc.iter().map(|n| n.id.as_str()).collect();
+    assert!(ids.contains(&"udpa-1"), "field should be reported");
+    assert!(ids.contains(&"udpa-2"), "enum_variant should be reported");
+    assert!(ids.contains(&"udpa-3"), "const should be reported");
+    assert!(ids.contains(&"udpa-4"), "static should be reported");
+    assert!(ids.contains(&"udpa-5"), "type_alias should be reported");
+    assert!(
+        !ids.contains(&"udpa-6"),
+        "documented field must be filtered"
+    );
+}
+
 // -------------------------------------------------------------------------
 // get_god_classes
 // -------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_get_god_classes() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // A struct with many contained members
     let mut class_node = sample_node("gc-class", "GodClass", "src/lib.rs");
@@ -860,32 +1274,34 @@ async fn test_get_god_classes() {
             target: "gc-m1".to_string(),
             kind: EdgeKind::Contains,
             line: None,
+            resolved_by: None,
         },
         Edge {
             source: "gc-class".to_string(),
             target: "gc-m2".to_string(),
             kind: EdgeKind::Contains,
             line: None,
+            resolved_by: None,
         },
         Edge {
             source: "gc-class".to_string(),
             target: "gc-f1".to_string(),
             kind: EdgeKind::Contains,
             line: None,
+            resolved_by: None,
         },
         Edge {
             source: "gc-class".to_string(),
             target: "gc-ctor".to_string(),
             kind: EdgeKind::Contains,
             line: None,
+            resolved_by: None,
         },
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
     let god_classes = db
-        .get_god_classes(10)
+        .get_god_classes(None, 10)
         .await
         .expect("get_god_classes failed");
 
@@ -906,7 +1322,7 @@ async fn test_get_god_classes() {
 
 #[tokio::test]
 async fn test_upsert_files_batch() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let files = vec![
         sample_file("src/a.rs"),
@@ -914,9 +1330,7 @@ async fn test_upsert_files_batch() {
         sample_file("src/c.rs"),
     ];
 
-    db.upsert_files(&files)
-        .await
-        .expect("upsert_files failed");
+    db.upsert_files(&files).await.expect("upsert_files failed");
 
     let all = db.get_all_files().await.expect("get_all_files failed");
     assert_eq!(all.len(), 3);
@@ -929,6 +1343,7 @@ async fn test_upsert_files_batch() {
         modified_at: 5000,
         indexed_at: 6000,
         node_count: 99,
+        kind: Default::default(),
     }];
 
     db.upsert_files(&updated_files)
@@ -946,7 +1361,7 @@ async fn test_upsert_files_batch() {
 
 #[tokio::test]
 async fn test_upsert_files_empty() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
     db.upsert_files(&[])
         .await
         .expect("upsert_files with empty slice should succeed");
@@ -958,7 +1373,7 @@ async fn test_upsert_files_empty() {
 
 #[tokio::test]
 async fn test_delete_file() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let file = sample_file("src/target.rs");
     db.upsert_file(&file).await.expect("upsert_file failed");
@@ -968,10 +1383,7 @@ async fn test_delete_file() {
     db.insert_node(&node).await.expect("insert_node failed");
 
     // Verify file exists before delete
-    let before = db
-        .get_file("src/target.rs")
-        .await
-        .expect("get_file failed");
+    let before = db.get_file("src/target.rs").await.expect("get_file failed");
     assert!(before.is_some());
 
     db.delete_file("src/target.rs")
@@ -979,10 +1391,7 @@ async fn test_delete_file() {
         .expect("delete_file failed");
 
     // File record should be gone
-    let after = db
-        .get_file("src/target.rs")
-        .await
-        .expect("get_file failed");
+    let after = db.get_file("src/target.rs").await.expect("get_file failed");
     assert!(after.is_none());
 
     // Associated nodes should also be gone
@@ -999,15 +1408,10 @@ async fn test_delete_file() {
 
 #[tokio::test]
 async fn test_get_all_files() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
-    let files = vec![
-        sample_file("src/a.rs"),
-        sample_file("src/b.rs"),
-    ];
-    db.upsert_files(&files)
-        .await
-        .expect("upsert_files failed");
+    let files = vec![sample_file("src/a.rs"), sample_file("src/b.rs")];
+    db.upsert_files(&files).await.expect("upsert_files failed");
 
     let all = db.get_all_files().await.expect("get_all_files failed");
     assert_eq!(all.len(), 2);
@@ -1022,7 +1426,7 @@ async fn test_get_all_files() {
 
 #[tokio::test]
 async fn test_last_index_time_empty() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let time = db.last_index_time().await.expect("last_index_time failed");
     assert_eq!(time, 0);
@@ -1030,7 +1434,7 @@ async fn test_last_index_time_empty() {
 
 #[tokio::test]
 async fn test_last_index_time_with_files() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let mut f1 = sample_file("src/a.rs");
     f1.indexed_at = 1000;
@@ -1055,7 +1459,7 @@ async fn test_last_index_time_with_files() {
 
 #[tokio::test]
 async fn test_metadata_get_set() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // Non-existent key returns None
     let val = db
@@ -1091,7 +1495,7 @@ async fn test_metadata_get_set() {
 
 #[tokio::test]
 async fn test_metadata_multiple_keys() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     db.set_metadata("key1", "val1")
         .await
@@ -1121,7 +1525,7 @@ async fn test_metadata_multiple_keys() {
 
 #[tokio::test]
 async fn test_get_nodes_by_dir() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let mut n1 = sample_node("dir-1", "f1", "src/a/foo.rs");
     n1.kind = NodeKind::Function;
@@ -1152,7 +1556,7 @@ async fn test_get_nodes_by_dir() {
 
 #[tokio::test]
 async fn test_get_nodes_by_dir_multiple_kinds() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let mut n1 = sample_node("dirk-1", "f1", "src/a/foo.rs");
     n1.kind = NodeKind::Function;
@@ -1177,7 +1581,7 @@ async fn test_get_nodes_by_dir_multiple_kinds() {
 
 #[tokio::test]
 async fn test_get_nodes_by_dir_empty_kinds() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let n1 = sample_node("dire-1", "f1", "src/a/foo.rs");
     db.insert_node(&n1).await.expect("insert_node failed");
@@ -1197,7 +1601,7 @@ async fn test_get_nodes_by_dir_empty_kinds() {
 
 #[tokio::test]
 async fn test_get_internal_edges() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let n1 = sample_node("ie-1", "f1", "src/lib.rs");
     let n2 = sample_node("ie-2", "f2", "src/lib.rs");
@@ -1213,15 +1617,9 @@ async fn test_get_internal_edges() {
         sample_edge("ie-1", "ie-4", EdgeKind::Calls), // external (target not in subset)
         sample_edge("ie-4", "ie-1", EdgeKind::Calls), // external (source not in subset)
     ];
-    db.insert_edges(&edges)
-        .await
-        .expect("insert_edges failed");
+    db.insert_edges(&edges).await.expect("insert_edges failed");
 
-    let subset = vec![
-        "ie-1".to_string(),
-        "ie-2".to_string(),
-        "ie-3".to_string(),
-    ];
+    let subset = vec!["ie-1".to_string(), "ie-2".to_string(), "ie-3".to_string()];
 
     let internal = db
         .get_internal_edges(&subset)
@@ -1239,7 +1637,7 @@ async fn test_get_internal_edges() {
 
 #[tokio::test]
 async fn test_get_internal_edges_empty() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let result = db
         .get_internal_edges(&[])
@@ -1254,7 +1652,7 @@ async fn test_get_internal_edges_empty() {
 
 #[tokio::test]
 async fn test_insert_unresolved_refs_batch() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let node = sample_node("ur-node", "my_func", "src/lib.rs");
     db.insert_node(&node).await.expect("insert_node failed");
@@ -1299,7 +1697,7 @@ async fn test_insert_unresolved_refs_batch() {
 
 #[tokio::test]
 async fn test_insert_unresolved_refs_empty() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
     db.insert_unresolved_refs(&[])
         .await
         .expect("insert_unresolved_refs with empty slice should succeed");
@@ -1311,7 +1709,7 @@ async fn test_insert_unresolved_refs_empty() {
 
 #[tokio::test]
 async fn test_search_nodes_ranking_order() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // Node whose name exactly contains the query term should rank higher
     let mut exact_match = sample_node("sr-1", "process_data", "src/lib.rs");
@@ -1344,13 +1742,47 @@ async fn test_search_nodes_ranking_order() {
     assert!(results[0].score > 0.0, "score should be positive");
 }
 
+#[tokio::test]
+async fn test_search_nodes_like_fallback_escapes_wildcards() {
+    let (_dir, db) = setup_db().await;
+
+    let mut target = sample_node("t", "my_function", "src/lib.rs");
+    target.qualified_name = "crate::my_function".to_string();
+    let mut x = sample_node("x", "myXfunction", "src/lib.rs");
+    x.qualified_name = "crate::myXfunction".to_string();
+    let mut pct = sample_node("pct", "my%function", "src/lib.rs");
+    pct.qualified_name = "crate::my%function".to_string();
+
+    db.insert_nodes(&[target, x, pct])
+        .await
+        .expect("insert_nodes failed");
+
+    // Wipe FTS so search_nodes falls through to the LIKE fallback.
+    db.conn()
+        .execute_batch("DELETE FROM nodes_fts;")
+        .await
+        .expect("wipe FTS failed");
+
+    let results = db
+        .search_nodes("my_function", 10)
+        .await
+        .expect("search_nodes failed");
+    assert_eq!(
+        results.len(),
+        1,
+        "LIKE fallback must escape `_`/`%` in the query: only `my_function` should match, got {}",
+        results.len()
+    );
+    assert_eq!(results[0].node.id, "t");
+}
+
 // -------------------------------------------------------------------------
 // insert_all — verify all data via get_all_*
 // -------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_insert_all_comprehensive() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let nodes = vec![
         sample_node("ia-1", "alpha", "src/a.rs"),
@@ -1382,15 +1814,23 @@ async fn test_insert_all_comprehensive() {
     assert!(node_ids.contains(&"ia-1"));
     assert!(node_ids.contains(&"ia-4"));
 
-    // Verify edges
+    // Verify edges. The Contains edge ia-3 → ia-4 is denormalized into
+    // ia-4's parent_id since v9, so the edges table holds only the two
+    // remaining kinds.
     let all_edges = db.get_all_edges().await.expect("get_all_edges failed");
-    assert_eq!(all_edges.len(), 3);
+    assert_eq!(all_edges.len(), 2);
     let edge_pairs: Vec<(&str, &str)> = all_edges
         .iter()
         .map(|e| (e.source.as_str(), e.target.as_str()))
         .collect();
     assert!(edge_pairs.contains(&("ia-1", "ia-2")));
-    assert!(edge_pairs.contains(&("ia-3", "ia-4")));
+    assert!(edge_pairs.contains(&("ia-2", "ia-3")));
+    let ia_4 = db
+        .get_node_by_id("ia-4")
+        .await
+        .expect("get_node_by_id failed")
+        .expect("ia-4 should exist");
+    assert_eq!(ia_4.parent_id.as_deref(), Some("ia-3"));
 
     // Verify files
     let all_files = db.get_all_files().await.expect("get_all_files failed");
@@ -1414,7 +1854,7 @@ async fn test_insert_all_comprehensive() {
 
 #[tokio::test]
 async fn test_get_nodes_by_kind_same_file_multiple_kinds() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let mut func = sample_node("kmf-1", "func_a", "src/mixed.rs");
     func.kind = NodeKind::Function;
@@ -1463,7 +1903,7 @@ async fn test_get_nodes_by_kind_same_file_multiple_kinds() {
 
 #[tokio::test]
 async fn test_get_complexity_ranked_by_branches_and_nesting() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // High complexity: many branches + deep nesting + large body
     let mut complex = sample_node("cxb-1", "complex_fn", "src/lib.rs");
@@ -1496,7 +1936,7 @@ async fn test_get_complexity_ranked_by_branches_and_nesting() {
         .expect("insert_nodes failed");
 
     let ranked = db
-        .get_complexity_ranked(None, 10)
+        .get_complexity_ranked(None, None, 10)
         .await
         .expect("get_complexity_ranked failed");
 
@@ -1514,7 +1954,7 @@ async fn test_get_complexity_ranked_by_branches_and_nesting() {
 
 #[tokio::test]
 async fn test_get_god_classes_multiple_classes() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // Big class with many members
     let mut big_class = sample_node("gcm-big", "BigClass", "src/lib.rs");
@@ -1543,16 +1983,55 @@ async fn test_get_god_classes_multiple_classes() {
         .expect("insert_nodes failed");
 
     let edges = vec![
-        Edge { source: "gcm-big".into(), target: "gcm-m1".into(), kind: EdgeKind::Contains, line: None },
-        Edge { source: "gcm-big".into(), target: "gcm-m2".into(), kind: EdgeKind::Contains, line: None },
-        Edge { source: "gcm-big".into(), target: "gcm-m3".into(), kind: EdgeKind::Contains, line: None },
-        Edge { source: "gcm-big".into(), target: "gcm-f1".into(), kind: EdgeKind::Contains, line: None },
-        Edge { source: "gcm-big".into(), target: "gcm-f2".into(), kind: EdgeKind::Contains, line: None },
-        Edge { source: "gcm-small".into(), target: "gcm-sm1".into(), kind: EdgeKind::Contains, line: None },
+        Edge {
+            source: "gcm-big".into(),
+            target: "gcm-m1".into(),
+            kind: EdgeKind::Contains,
+            line: None,
+            resolved_by: None,
+        },
+        Edge {
+            source: "gcm-big".into(),
+            target: "gcm-m2".into(),
+            kind: EdgeKind::Contains,
+            line: None,
+            resolved_by: None,
+        },
+        Edge {
+            source: "gcm-big".into(),
+            target: "gcm-m3".into(),
+            kind: EdgeKind::Contains,
+            line: None,
+            resolved_by: None,
+        },
+        Edge {
+            source: "gcm-big".into(),
+            target: "gcm-f1".into(),
+            kind: EdgeKind::Contains,
+            line: None,
+            resolved_by: None,
+        },
+        Edge {
+            source: "gcm-big".into(),
+            target: "gcm-f2".into(),
+            kind: EdgeKind::Contains,
+            line: None,
+            resolved_by: None,
+        },
+        Edge {
+            source: "gcm-small".into(),
+            target: "gcm-sm1".into(),
+            kind: EdgeKind::Contains,
+            line: None,
+            resolved_by: None,
+        },
     ];
     db.insert_edges(&edges).await.expect("insert_edges failed");
 
-    let god = db.get_god_classes(10).await.expect("get_god_classes failed");
+    let god = db
+        .get_god_classes(None, 10)
+        .await
+        .expect("get_god_classes failed");
 
     // BigClass should be first (5 total), SmallClass second (1 total)
     assert_eq!(god.len(), 2);
@@ -1574,11 +2053,13 @@ async fn test_get_god_classes_multiple_classes() {
 
 #[tokio::test]
 async fn test_edge_line_none_and_some() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let n1 = sample_node("eln-1", "f1", "src/lib.rs");
     let n2 = sample_node("eln-2", "f2", "src/lib.rs");
-    db.insert_nodes(&[n1, n2]).await.expect("insert_nodes failed");
+    db.insert_nodes(&[n1, n2])
+        .await
+        .expect("insert_nodes failed");
 
     // Insert edge with line = None
     let edge_no_line = Edge {
@@ -1586,8 +2067,11 @@ async fn test_edge_line_none_and_some() {
         target: "eln-2".to_string(),
         kind: EdgeKind::Calls,
         line: None,
+        resolved_by: None,
     };
-    db.insert_edge(&edge_no_line).await.expect("insert_edge failed");
+    db.insert_edge(&edge_no_line)
+        .await
+        .expect("insert_edge failed");
 
     // Insert edge with line = Some(42)
     let edge_with_line = Edge {
@@ -1595,8 +2079,11 @@ async fn test_edge_line_none_and_some() {
         target: "eln-2".to_string(),
         kind: EdgeKind::Calls,
         line: Some(42),
+        resolved_by: None,
     };
-    db.insert_edge(&edge_with_line).await.expect("insert_edge failed");
+    db.insert_edge(&edge_with_line)
+        .await
+        .expect("insert_edge failed");
 
     let all = db.get_all_edges().await.expect("get_all_edges failed");
     // Both should exist (unique constraint includes line)
@@ -1609,11 +2096,13 @@ async fn test_edge_line_none_and_some() {
 
 #[tokio::test]
 async fn test_edge_unique_constraint_dedup() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     let n1 = sample_node("euc-1", "f1", "src/lib.rs");
     let n2 = sample_node("euc-2", "f2", "src/lib.rs");
-    db.insert_nodes(&[n1, n2]).await.expect("insert_nodes failed");
+    db.insert_nodes(&[n1, n2])
+        .await
+        .expect("insert_nodes failed");
 
     // Insert the exact same edge twice — should be deduplicated by INSERT OR IGNORE
     let edge = Edge {
@@ -1621,9 +2110,12 @@ async fn test_edge_unique_constraint_dedup() {
         target: "euc-2".to_string(),
         kind: EdgeKind::Calls,
         line: Some(10),
+        resolved_by: None,
     };
     db.insert_edge(&edge).await.expect("insert_edge failed");
-    db.insert_edge(&edge).await.expect("second insert should not fail");
+    db.insert_edge(&edge)
+        .await
+        .expect("second insert should not fail");
 
     let all = db.get_all_edges().await.expect("get_all_edges failed");
     assert_eq!(all.len(), 1, "duplicate edge should be ignored");
@@ -1635,7 +2127,7 @@ async fn test_edge_unique_constraint_dedup() {
 
 #[tokio::test]
 async fn test_get_internal_edges_larger_set() {
-    let (db, _dir) = setup_db().await;
+    let (_dir, db) = setup_db().await;
 
     // Create 10 nodes
     let nodes: Vec<Node> = (0..10)
@@ -1665,5 +2157,759 @@ async fn test_get_internal_edges_larger_set() {
 
     // Edge 4->5 should NOT be in internal because 5 is not in subset
     let has_external = internal.iter().any(|e| e.target == "iel-5");
-    assert!(!has_external, "edge to node outside subset should be excluded");
+    assert!(
+        !has_external,
+        "edge to node outside subset should be excluded"
+    );
+}
+
+#[tokio::test]
+async fn test_fts_name_match_outranks_docstring_match() {
+    let (_dir, db) = setup_db().await;
+
+    // Node A: search term in name
+    let node_a = Node {
+        id: "function:aaa".to_string(),
+        kind: NodeKind::Function,
+        name: "sync_data".to_string(),
+        qualified_name: "src/lib.rs::sync_data".to_string(),
+        file_path: "src/lib.rs".to_string(),
+        start_line: 1,
+        attrs_start_line: 1,
+        end_line: 5,
+        start_column: 0,
+        end_column: 1,
+        signature: Some("pub fn sync_data()".to_string()),
+        docstring: None,
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
+        updated_at: 0,
+        parent_id: None,
+    };
+    db.insert_node(&node_a).await.unwrap();
+
+    // Node B: search term only in docstring
+    let node_b = Node {
+        id: "function:bbb".to_string(),
+        kind: NodeKind::Function,
+        name: "upload_report".to_string(),
+        qualified_name: "src/lib.rs::upload_report".to_string(),
+        file_path: "src/lib.rs".to_string(),
+        start_line: 10,
+        attrs_start_line: 10,
+        end_line: 15,
+        start_column: 0,
+        end_column: 1,
+        signature: Some("pub fn upload_report()".to_string()),
+        docstring: Some(
+            "This function runs after sync completes to upload the sync report".to_string(),
+        ),
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
+        updated_at: 0,
+        parent_id: None,
+    };
+    db.insert_node(&node_b).await.unwrap();
+
+    let results = db.search_nodes("sync", 10).await.unwrap();
+    assert!(results.len() >= 2, "both nodes should match 'sync'");
+    assert_eq!(
+        results[0].node.id, "function:aaa",
+        "name match should rank first"
+    );
+}
+
+#[tokio::test]
+async fn test_batch_incoming_call_counts() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (db, _) = Database::initialize(&dir.path().join("test.db"))
+        .await
+        .unwrap();
+
+    for (id, name) in [("fn:a", "alpha"), ("fn:b", "beta"), ("fn:c", "gamma")] {
+        db.insert_node(&Node {
+            id: id.to_string(),
+            kind: NodeKind::Function,
+            name: name.to_string(),
+            qualified_name: format!("src/lib.rs::{name}"),
+            file_path: "src/lib.rs".to_string(),
+            start_line: 1,
+            attrs_start_line: 1,
+            end_line: 5,
+            start_column: 0,
+            end_column: 1,
+            signature: None,
+            docstring: None,
+            visibility: Visibility::Pub,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: 0,
+            parent_id: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    // alpha has 2 callers, beta has 1, gamma has 0
+    for (src, tgt) in [("fn:b", "fn:a"), ("fn:c", "fn:a"), ("fn:c", "fn:b")] {
+        db.insert_edge(&Edge {
+            source: src.to_string(),
+            target: tgt.to_string(),
+            kind: EdgeKind::Calls,
+            line: None,
+            resolved_by: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    let counts = db
+        .batch_incoming_call_counts(&["fn:a".to_string(), "fn:b".to_string(), "fn:c".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(*counts.get("fn:a").unwrap_or(&0), 2);
+    assert_eq!(*counts.get("fn:b").unwrap_or(&0), 1);
+    assert_eq!(
+        counts.get("fn:c"),
+        None,
+        "gamma has 0 callers so should be absent"
+    );
+}
+
+/// Regression test: a node whose signature contains non-UTF-8 bytes (e.g. from
+/// a Latin-1 encoded source file) must not crash `row_to_node`. The lossy
+/// fallback replaces invalid bytes with U+FFFD.
+#[tokio::test]
+async fn test_non_utf8_signature_does_not_crash() {
+    let (_dir, db) = setup_db().await;
+
+    // Insert a node with a BLOB signature containing 0xFF (invalid UTF-8)
+    // via raw SQL — the Rust insert_node API only accepts valid Strings.
+    db.conn()
+        .execute(
+            "INSERT INTO nodes (id, kind, name, qualified_name, file_path, \
+             start_line, end_line, start_column, end_column, \
+             docstring, signature, visibility, is_async, \
+             branches, loops, returns, max_nesting, \
+             unsafe_blocks, unchecked_calls, assertions, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, \
+                     ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+            libsql::params![
+                "function:bad_utf8",
+                "function",
+                "render",
+                "src/view.cpp::render",
+                "src/view.cpp",
+                1i64,
+                10i64,
+                0i64,
+                50i64,
+                // docstring with a Latin-1 copyright symbol (0xA9) — invalid UTF-8
+                libsql::Value::Blob(b"Renders the sc\xe8ne with \xa9 effects".to_vec()),
+                // signature with 0xFF byte
+                libsql::Value::Blob(b"void render(const std::string& sc\xe8ne)".to_vec()),
+                "public",
+                0i64,
+                0i64,
+                0i64,
+                0i64,
+                0i64,
+                0i64,
+                0i64,
+                0i64,
+                0i64,
+            ],
+        )
+        .await
+        .unwrap();
+
+    // This used to fail with "invalid utf-8 sequence of 1 bytes from index N"
+    let node = db.get_node_by_id("function:bad_utf8").await;
+    assert!(
+        node.is_ok(),
+        "get_node_by_id should not fail on non-UTF-8: {:?}",
+        node.err()
+    );
+    let node = node.unwrap();
+    assert!(node.is_some(), "node should exist");
+    let node = node.unwrap();
+    assert_eq!(node.name, "render");
+    // The invalid bytes are replaced with U+FFFD (replacement character)
+    assert!(node.signature.is_some());
+    assert!(node.docstring.is_some());
+}
+
+// -------------------------------------------------------------------------
+// get_incoming_edges_bulk
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_get_incoming_edges_bulk_returns_all_targets() {
+    let (_dir, db) = setup_db().await;
+
+    let nodes = vec![
+        sample_node("caller_a", "caller_a", "src/lib.rs"),
+        sample_node("caller_b", "caller_b", "src/lib.rs"),
+        sample_node("target_x", "target_x", "src/lib.rs"),
+        sample_node("target_y", "target_y", "src/lib.rs"),
+        sample_node("isolated", "isolated", "src/lib.rs"),
+    ];
+    db.insert_nodes(&nodes).await.expect("insert_nodes failed");
+
+    let edges = vec![
+        sample_edge("caller_a", "target_x", EdgeKind::Calls),
+        sample_edge("caller_b", "target_x", EdgeKind::Calls),
+        sample_edge("caller_a", "target_y", EdgeKind::Calls),
+        sample_edge("caller_a", "isolated", EdgeKind::Uses),
+    ];
+    db.insert_edges(&edges).await.expect("insert_edges failed");
+
+    let target_ids = vec!["target_x".to_string(), "target_y".to_string()];
+    let result = db
+        .get_incoming_edges_bulk(&target_ids, &[EdgeKind::Calls])
+        .await
+        .expect("get_incoming_edges_bulk failed");
+
+    // 2 callers of target_x + 1 caller of target_y = 3 edges via Calls.
+    assert_eq!(result.len(), 3);
+    assert!(result.iter().all(|e| e.kind == EdgeKind::Calls));
+    assert!(result
+        .iter()
+        .any(|e| e.target == "target_x" && e.source == "caller_a"));
+    assert!(result
+        .iter()
+        .any(|e| e.target == "target_x" && e.source == "caller_b"));
+    assert!(result
+        .iter()
+        .any(|e| e.target == "target_y" && e.source == "caller_a"));
+}
+
+#[tokio::test]
+async fn test_get_incoming_edges_bulk_empty_kinds_returns_all_kinds() {
+    let (_dir, db) = setup_db().await;
+
+    let nodes = vec![
+        sample_node("a", "a", "src/lib.rs"),
+        sample_node("b", "b", "src/lib.rs"),
+    ];
+    db.insert_nodes(&nodes).await.expect("insert_nodes failed");
+
+    let edges = vec![
+        sample_edge("a", "b", EdgeKind::Calls),
+        sample_edge("a", "b", EdgeKind::Uses),
+    ];
+    db.insert_edges(&edges).await.expect("insert_edges failed");
+
+    let result = db
+        .get_incoming_edges_bulk(&["b".to_string()], &[])
+        .await
+        .expect("get_incoming_edges_bulk failed");
+
+    // Empty kinds should return both edges.
+    assert_eq!(result.len(), 2);
+}
+
+#[tokio::test]
+async fn test_get_incoming_edges_bulk_empty_input() {
+    let (_dir, db) = setup_db().await;
+    let result = db
+        .get_incoming_edges_bulk(&[], &[])
+        .await
+        .expect("should not fail on empty input");
+    assert!(result.is_empty());
+}
+
+// -------------------------------------------------------------------------
+// get_nodes_by_qualified_name
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_get_nodes_by_qualified_name_returns_all_matches() {
+    let (_dir, db) = setup_db().await;
+
+    // Two nodes with the same qualified name (e.g. overloaded methods or
+    // multiple impl blocks). Both should come back.
+    let mut a = sample_node("a", "render", "src/foo.rs");
+    a.qualified_name = "crate::foo::render".to_string();
+    let mut b = sample_node("b", "render", "src/bar.rs");
+    b.qualified_name = "crate::foo::render".to_string();
+    let mut c = sample_node("c", "other", "src/foo.rs");
+    c.qualified_name = "crate::foo::other".to_string();
+
+    db.insert_nodes(&[a, b, c])
+        .await
+        .expect("insert_nodes failed");
+
+    let hits = db
+        .get_nodes_by_qualified_name("crate::foo::render")
+        .await
+        .expect("query failed");
+    assert_eq!(hits.len(), 2);
+    assert!(hits
+        .iter()
+        .all(|n| n.qualified_name == "crate::foo::render"));
+
+    let none = db
+        .get_nodes_by_qualified_name("crate::missing")
+        .await
+        .expect("query failed");
+    assert!(none.is_empty());
+}
+
+#[tokio::test]
+async fn test_get_nodes_by_qualified_name_like_escapes_wildcards() {
+    let (_dir, db) = setup_db().await;
+
+    let mut target = sample_node("t", "bar_baz", "src/foo.rs");
+    target.qualified_name = "crate::foo::bar_baz".to_string();
+    let mut x = sample_node("x", "barXbaz", "src/foo.rs");
+    x.qualified_name = "crate::foo::barXbaz".to_string();
+    let mut pct = sample_node("pct", "bar%baz", "src/foo.rs");
+    pct.qualified_name = "crate::foo::bar%baz".to_string();
+
+    db.insert_nodes(&[target, x, pct])
+        .await
+        .expect("insert_nodes failed");
+
+    // A partial qname (no `crate::` prefix) forces the `::` LIKE fallback:
+    // the exact-match path returns nothing, so the suffix scan runs. A `_` or
+    // `%` in the qname must not act as a wildcard — only the exact `bar_baz`
+    // should match, not the `barXbaz`/`bar%baz` near-misses.
+    let hits = db
+        .get_nodes_by_qualified_name("foo::bar_baz")
+        .await
+        .expect("query failed");
+    assert_eq!(
+        hits.len(),
+        1,
+        "LIKE fallback must escape `_`/`%` in the qname: only `crate::foo::bar_baz` should match, got {}",
+        hits.len()
+    );
+    assert_eq!(hits[0].qualified_name, "crate::foo::bar_baz");
+}
+
+// -------------------------------------------------------------------------
+// attrs_start_line round-trip + backfill
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_attrs_start_line_round_trips_through_db() {
+    let (_dir, db) = setup_db().await;
+
+    let mut n = sample_node("n", "documented_fn", "src/lib.rs");
+    n.start_line = 10;
+    // Doc-comment block starts 4 lines above the function signature.
+    n.attrs_start_line = 6;
+    db.insert_node(&n).await.expect("insert failed");
+
+    let fetched = db
+        .get_node_by_id("n")
+        .await
+        .expect("query failed")
+        .expect("node missing");
+    assert_eq!(fetched.start_line, 10);
+    assert_eq!(fetched.attrs_start_line, 6);
+}
+
+// -------------------------------------------------------------------------
+// get_test_annotated_node_ids
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_get_test_annotated_node_ids_finds_test_functions() {
+    let (_dir, db) = setup_db().await;
+
+    // A source function and a test function in the same file.
+    let src_fn = sample_node("fn_prod", "production_code", "src/lib.rs");
+    let mut test_fn = sample_node("fn_test", "test_production_code", "src/lib.rs");
+    test_fn.start_line = 20;
+
+    // The #[test] annotation node.
+    let mut annot = sample_node("annot_test", "test", "src/lib.rs");
+    annot.kind = NodeKind::AnnotationUsage;
+    annot.start_line = 19;
+    annot.signature = Some("#[test]".to_string());
+
+    db.insert_nodes(&[src_fn, test_fn, annot])
+        .await
+        .expect("insert_nodes failed");
+
+    // Annotates edge: #[test] -> test function.
+    let edge = sample_edge("annot_test", "fn_test", EdgeKind::Annotates);
+    db.insert_edges(&[edge]).await.expect("insert_edges failed");
+
+    // Query with both candidates; only the annotated one should be returned.
+    let candidates = vec!["fn_prod".to_string(), "fn_test".to_string()];
+    let result = db
+        .get_test_annotated_node_ids(&candidates)
+        .await
+        .expect("query failed");
+    assert_eq!(result.len(), 1);
+    assert!(result.contains("fn_test"));
+    assert!(!result.contains("fn_prod"));
+}
+
+#[tokio::test]
+async fn test_get_test_annotated_node_ids_empty_input() {
+    let (_dir, db) = setup_db().await;
+    let result = db
+        .get_test_annotated_node_ids(&[])
+        .await
+        .expect("should not fail on empty input");
+    assert!(result.is_empty());
+}
+
+#[tokio::test]
+async fn test_get_files_with_test_annotations() {
+    let (_dir, db) = setup_db().await;
+
+    // Two files: one with inline tests, one without.
+    let src_fn = sample_node("fn1", "foo", "src/lib.rs");
+    let mut test_fn = sample_node("fn2", "test_foo", "src/lib.rs");
+    test_fn.start_line = 30;
+    let other_fn = sample_node("fn3", "bar", "src/other.rs");
+
+    let mut annot = sample_node("annot1", "test", "src/lib.rs");
+    annot.kind = NodeKind::AnnotationUsage;
+    annot.start_line = 29;
+
+    db.insert_nodes(&[src_fn, test_fn, other_fn, annot])
+        .await
+        .expect("insert_nodes failed");
+
+    let edge = sample_edge("annot1", "fn2", EdgeKind::Annotates);
+    db.insert_edges(&[edge]).await.expect("insert_edges failed");
+
+    let result = db
+        .get_files_with_test_annotations()
+        .await
+        .expect("query failed");
+    assert!(result.contains("src/lib.rs"));
+    assert!(!result.contains("src/other.rs"));
+}
+
+fn make_annotation(id: &str, name: &str, file: &str) -> Node {
+    let mut n = sample_node(id, name, file);
+    n.kind = NodeKind::AnnotationUsage;
+    n
+}
+
+#[tokio::test]
+async fn test_get_annotation_histogram_groups_and_counts() {
+    let (_dir, db) = setup_db().await;
+    let target1 = sample_node("t1", "fn1", "src/a.rs");
+    let target2 = sample_node("t2", "fn2", "src/a.rs");
+    let target3 = sample_node("t3", "fn3", "src/b.rs");
+    let a1 = make_annotation("a1", "test", "src/a.rs");
+    let a2 = make_annotation("a2", "test", "src/a.rs");
+    let a3 = make_annotation("a3", "cfg", "src/b.rs");
+    db.insert_nodes(&[target1, target2, target3, a1, a2, a3])
+        .await
+        .expect("insert_nodes failed");
+    db.insert_edges(&[
+        sample_edge("a1", "t1", EdgeKind::Annotates),
+        sample_edge("a2", "t2", EdgeKind::Annotates),
+        sample_edge("a3", "t3", EdgeKind::Annotates),
+    ])
+    .await
+    .expect("insert_edges failed");
+
+    let hist = db
+        .get_annotation_histogram(None)
+        .await
+        .expect("histogram query failed");
+    // Expect [("test", 2), ("cfg", 1)] sorted by count desc.
+    assert_eq!(hist[0], ("test".to_string(), 2));
+    assert_eq!(hist[1], ("cfg".to_string(), 1));
+}
+
+#[tokio::test]
+async fn test_get_annotation_histogram_filters_by_path_prefix() {
+    let (_dir, db) = setup_db().await;
+    let t1 = sample_node("t1", "fn1", "src/a.rs");
+    let t2 = sample_node("t2", "fn2", "src/b.rs");
+    let a1 = make_annotation("a1", "test", "src/a.rs");
+    let a2 = make_annotation("a2", "test", "src/b.rs");
+    db.insert_nodes(&[t1, t2, a1, a2])
+        .await
+        .expect("insert_nodes failed");
+    db.insert_edges(&[
+        sample_edge("a1", "t1", EdgeKind::Annotates),
+        sample_edge("a2", "t2", EdgeKind::Annotates),
+    ])
+    .await
+    .expect("insert_edges failed");
+
+    let hist = db
+        .get_annotation_histogram(Some("src/a.rs"))
+        .await
+        .expect("histogram failed");
+    assert_eq!(hist, vec![("test".to_string(), 1)]);
+}
+
+#[tokio::test]
+async fn test_get_annotation_sites_joins_via_annotates_edge() {
+    let (_dir, db) = setup_db().await;
+    let target = sample_node("t1", "my_fn", "src/lib.rs");
+    let annot = make_annotation("a1", "tokio::test", "src/lib.rs");
+    db.insert_nodes(&[target, annot])
+        .await
+        .expect("insert_nodes failed");
+    db.insert_edges(&[sample_edge("a1", "t1", EdgeKind::Annotates)])
+        .await
+        .expect("insert_edges failed");
+
+    let sites = db
+        .get_annotation_sites(Some("tokio::test"), None, None, 10)
+        .await
+        .expect("sites query failed");
+    assert_eq!(sites.len(), 1);
+    let s = &sites[0];
+    assert_eq!(s["annotation"], "tokio::test");
+    assert_eq!(s["target"]["name"], "my_fn");
+    assert_eq!(s["target"]["file"], "src/lib.rs");
+}
+
+#[tokio::test]
+async fn test_get_annotation_sites_filters_target_kind() {
+    let (_dir, db) = setup_db().await;
+    let fn_target = sample_node("fn1", "the_fn", "src/lib.rs");
+    let mut struct_target = sample_node("st1", "TheStruct", "src/lib.rs");
+    struct_target.kind = NodeKind::Struct;
+    let a1 = make_annotation("a1", "derive", "src/lib.rs");
+    let a2 = make_annotation("a2", "derive", "src/lib.rs");
+    db.insert_nodes(&[fn_target, struct_target, a1, a2])
+        .await
+        .expect("insert_nodes failed");
+    db.insert_edges(&[
+        sample_edge("a1", "fn1", EdgeKind::Annotates),
+        sample_edge("a2", "st1", EdgeKind::Annotates),
+    ])
+    .await
+    .expect("insert_edges failed");
+
+    let sites = db
+        .get_annotation_sites(Some("derive"), None, Some("struct"), 10)
+        .await
+        .expect("sites failed");
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0]["target"]["kind"], "struct");
+    assert_eq!(sites[0]["target"]["name"], "TheStruct");
+}
+
+#[tokio::test]
+async fn test_get_annotation_sites_no_name_returns_all() {
+    let (_dir, db) = setup_db().await;
+    let t1 = sample_node("t1", "fn1", "src/a.rs");
+    let t2 = sample_node("t2", "fn2", "src/a.rs");
+    let a1 = make_annotation("a1", "test", "src/a.rs");
+    let a2 = make_annotation("a2", "cfg", "src/a.rs");
+    db.insert_nodes(&[t1, t2, a1, a2])
+        .await
+        .expect("insert_nodes failed");
+    db.insert_edges(&[
+        sample_edge("a1", "t1", EdgeKind::Annotates),
+        sample_edge("a2", "t2", EdgeKind::Annotates),
+    ])
+    .await
+    .expect("insert_edges failed");
+
+    let sites = db
+        .get_annotation_sites(None, Some("src/a.rs"), None, 10)
+        .await
+        .expect("sites failed");
+    assert_eq!(sites.len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// #418: predicates and aggregation pushed into SQL
+// ---------------------------------------------------------------------------
+
+/// An independent tally of the intended semantics, as the oracle the SQL
+/// aggregate is checked against.
+///
+/// Derived from the in-memory tally `handle_hotspots` used to do, with one
+/// deliberate difference: a self-edge counts toward neither degree (#431). The
+/// old tally counted it toward both, which #418/#430 preserved so a performance
+/// change would not reorder a ranking; this is the change that is about the
+/// question.
+fn degrees_in_memory(edges: &[Edge], limit: usize) -> Vec<(String, u32, u32)> {
+    use std::collections::HashMap;
+    let mut acc: HashMap<String, (u32, u32)> = HashMap::new();
+    for e in edges {
+        if e.source == e.target {
+            continue;
+        }
+        acc.entry(e.source.clone()).or_insert((0, 0)).1 += 1;
+        acc.entry(e.target.clone()).or_insert((0, 0)).0 += 1;
+    }
+    let mut v: Vec<(String, u32, u32)> = acc.into_iter().map(|(k, (i, o))| (k, i, o)).collect();
+    // The tie-break the SQL adds; the original sorted a HashMap's order.
+    v.sort_by(|a, b| (b.1 + b.2).cmp(&(a.1 + a.2)).then(a.0.cmp(&b.0)));
+    v.truncate(limit);
+    v
+}
+
+#[tokio::test]
+async fn test_get_edges_by_kind_pushes_the_predicate_down() {
+    let (_dir, db) = setup_db().await;
+    for n in ["a", "b", "c"] {
+        db.insert_node(&sample_node(n, n, "src/lib.rs"))
+            .await
+            .unwrap();
+    }
+    let edges = vec![
+        sample_edge("a", "b", EdgeKind::Calls),
+        sample_edge("b", "c", EdgeKind::Calls),
+        sample_edge("a", "c", EdgeKind::Uses),
+        sample_edge("c", "a", EdgeKind::Implements),
+    ];
+    db.insert_edges(&edges).await.unwrap();
+
+    let calls = db.get_edges_by_kind(EdgeKind::Calls).await.unwrap();
+    assert_eq!(calls.len(), 2, "got {calls:?}");
+    assert!(calls.iter().all(|e| e.kind == EdgeKind::Calls));
+
+    // The filtered query and a post-hoc filter over everything must agree.
+    let filtered_in_memory: Vec<_> = db
+        .get_all_edges()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == EdgeKind::Calls)
+        .collect();
+    let mut a: Vec<_> = calls.iter().map(|e| (&e.source, &e.target)).collect();
+    let mut b: Vec<_> = filtered_in_memory
+        .iter()
+        .map(|e| (&e.source, &e.target))
+        .collect();
+    a.sort_unstable();
+    b.sort_unstable();
+    assert_eq!(a, b);
+
+    assert!(db
+        .get_edges_by_kind(EdgeKind::Extends)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_get_top_degree_nodes_matches_the_in_memory_tally() {
+    let (_dir, db) = setup_db().await;
+    for n in ["hub", "x", "y", "z", "lonely"] {
+        db.insert_node(&sample_node(n, n, "src/lib.rs"))
+            .await
+            .unwrap();
+    }
+    let edges = vec![
+        // hub: 3 in, 1 out = 4
+        sample_edge("x", "hub", EdgeKind::Calls),
+        sample_edge("y", "hub", EdgeKind::Calls),
+        sample_edge("z", "hub", EdgeKind::Uses),
+        sample_edge("hub", "x", EdgeKind::Calls),
+        // a self-edge, which the in-memory tally counted toward both degrees
+        sample_edge("y", "y", EdgeKind::Calls),
+    ];
+    db.insert_edges(&edges).await.unwrap();
+
+    let all = db.get_all_edges().await.unwrap();
+    for limit in [1usize, 3, 10] {
+        let sql = db.get_top_degree_nodes(limit).await.unwrap();
+        assert_eq!(
+            sql,
+            degrees_in_memory(&all, limit),
+            "SQL aggregate disagreed with the in-memory tally at limit {limit}"
+        );
+        assert!(sql.len() <= limit, "limit not applied: {sql:?}");
+    }
+
+    let top = db.get_top_degree_nodes(1).await.unwrap();
+    assert_eq!(top, vec![("hub".to_string(), 3, 1)]);
+
+    // A node with no edges at all does not appear: it has no row to group.
+    let all_rows = db.get_top_degree_nodes(100).await.unwrap();
+    assert!(!all_rows.iter().any(|(id, _, _)| id == "lonely"));
+
+    // #431: the self-edge on `y` counts toward neither degree, so `y` keeps
+    // only its outgoing call to `hub`. A recursive call does not make a symbol
+    // look more connected to the rest of the graph than it is.
+    let y = all_rows.iter().find(|(id, _, _)| id == "y").unwrap();
+    assert_eq!(
+        (y.1, y.2),
+        (0, 1),
+        "y calls hub and itself; only the call to hub is a connection"
+    );
+}
+
+#[tokio::test]
+async fn test_get_top_degree_nodes_breaks_ties_deterministically() {
+    let (_dir, db) = setup_db().await;
+    for n in ["caller", "aaa", "bbb", "ccc"] {
+        db.insert_node(&sample_node(n, n, "src/lib.rs"))
+            .await
+            .unwrap();
+    }
+    // Three targets with one incoming edge each: an exact three-way tie.
+    db.insert_edges(&[
+        sample_edge("caller", "ccc", EdgeKind::Calls),
+        sample_edge("caller", "aaa", EdgeKind::Calls),
+        sample_edge("caller", "bbb", EdgeKind::Calls),
+    ])
+    .await
+    .unwrap();
+
+    let first = db.get_top_degree_nodes(10).await.unwrap();
+    for _ in 0..5 {
+        assert_eq!(
+            db.get_top_degree_nodes(10).await.unwrap(),
+            first,
+            "repeated queries over an unchanged index must agree"
+        );
+    }
+    let tied: Vec<&str> = first
+        .iter()
+        .filter(|(_, i, o)| i + o == 1)
+        .map(|(id, _, _)| id.as_str())
+        .collect();
+    assert_eq!(
+        tied,
+        vec!["aaa", "bbb", "ccc"],
+        "equal degrees must come back in id order, not in an arbitrary one"
+    );
 }

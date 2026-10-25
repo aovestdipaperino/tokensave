@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-protobuf")]
+
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::ProtoExtractor;
 use tokensave::types::*;
@@ -41,7 +43,12 @@ fn test_proto_imports() {
         .iter()
         .filter(|n| n.kind == NodeKind::Use)
         .collect();
-    assert_eq!(imports.len(), 2, "expected 2 imports, got {}", imports.len());
+    assert_eq!(
+        imports.len(),
+        2,
+        "expected 2 imports, got {}",
+        imports.len()
+    );
     assert!(imports
         .iter()
         .any(|n| n.name == "google/protobuf/timestamp.proto"));
@@ -112,11 +119,7 @@ fn test_proto_enum() {
         "LogLevel should have docstring"
     );
     assert!(
-        enums[0]
-            .docstring
-            .as_ref()
-            .unwrap()
-            .contains("log level"),
+        enums[0].docstring.as_ref().unwrap().contains("log level"),
         "docstring: {:?}",
         enums[0].docstring
     );
@@ -241,9 +244,16 @@ fn test_proto_docstrings() {
         .iter()
         .find(|n| n.kind == NodeKind::ProtoMessage && n.name == "Endpoint")
         .unwrap();
-    assert!(endpoint.docstring.is_some(), "Endpoint should have docstring");
     assert!(
-        endpoint.docstring.as_ref().unwrap().contains("network endpoint"),
+        endpoint.docstring.is_some(),
+        "Endpoint should have docstring"
+    );
+    assert!(
+        endpoint
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("network endpoint"),
         "docstring: {:?}",
         endpoint.docstring
     );

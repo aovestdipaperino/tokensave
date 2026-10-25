@@ -3,6 +3,9 @@
 //! All the formatting and layout logic for `tokensave status` output,
 //! extracted from main.rs to keep the CLI entry point focused on dispatch.
 
+use std::fmt::Write as _;
+use std::path::Path;
+
 use crate::types::GraphStats;
 
 /// Formats a token count as a compact string (e.g. "1.2M", "45.3k").
@@ -72,13 +75,26 @@ fn format_cell(label: &str, value: &str, width: usize) -> String {
 }
 
 /// Builds a horizontal separator line (e.g. ├──┬──┤).
-fn table_separator(left: char, mid: char, right: char, cell_width: usize, num_cols: usize) -> String {
+fn table_separator(
+    left: char,
+    mid: char,
+    right: char,
+    cell_width: usize,
+    num_cols: usize,
+) -> String {
     let mut line = String::from(left);
     for i in 0..num_cols {
         line.push_str(&"─".repeat(cell_width));
         line.push(if i < num_cols - 1 { mid } else { right });
     }
     line
+}
+
+/// Data for the cost row in the status header.
+pub struct CostRow {
+    pub today_cost: f64,
+    pub week_cost: f64,
+    pub efficiency_pct: f64,
 }
 
 /// Prints only the header section of the status table (version, tokens, sync times).
@@ -89,6 +105,37 @@ pub struct BranchInfo {
     pub is_fallback: bool,
 }
 
+/// Formats the canonical project root row shared by both status layouts.
+pub fn format_project_row(project_root: &Path) -> String {
+    format!("Project: {}", project_root.display())
+}
+
+/// Formats a project root row within the requested visible width.
+pub fn format_bounded_project_row(project_root: &Path, max_width: usize) -> String {
+    let text = format_project_row(project_root);
+    if text.chars().count() <= max_width {
+        text
+    } else {
+        const LABEL: &str = "Project: ";
+        let label_len = LABEL.chars().count();
+        if max_width <= label_len {
+            return LABEL.chars().take(max_width).collect();
+        }
+
+        let tail_width = max_width - label_len - 1;
+        let tail: String = text
+            .chars()
+            .rev()
+            .take(tail_width)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        format!("{LABEL}…{tail}")
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn print_status_header(
     stats: &GraphStats,
     tokens_saved: u64,
@@ -96,6 +143,8 @@ pub fn print_status_header(
     worldwide: Option<u64>,
     country_flags: &[String],
     branch_info: Option<&BranchInfo>,
+    cost_info: Option<&CostRow>,
+    project_root: Option<&Path>,
 ) {
     let num_cols = 3;
     let mut sorted_kinds: Vec<_> = stats.nodes_by_kind.iter().collect();
@@ -106,14 +155,26 @@ pub fn print_status_header(
     println!("{}", table_separator('╭', '─', '╮', cell_width, num_cols));
     print_version_flags_row(country_flags, inner_width);
     print_tokens_row(tokens_saved, global_tokens_saved, worldwide, inner_width);
-    print_sync_row(stats.last_sync_at, stats.last_full_sync_at, inner_width);
+    if let Some(ci) = cost_info {
+        print_cost_row(ci, inner_width);
+    }
+    print_sync_row(
+        stats.last_sync_at,
+        stats.last_full_sync_at,
+        stats.last_sync_duration_ms,
+        inner_width,
+    );
     if let Some(bi) = branch_info {
         print_branch_row(bi, inner_width);
+    }
+    if let Some(root) = project_root {
+        print_project_row(root, inner_width);
     }
     println!("{}", table_separator('╰', '─', '╯', cell_width, num_cols));
 }
 
 /// Prints the status output as a compact bordered table.
+#[allow(clippy::too_many_arguments)]
 pub fn print_status_table(
     stats: &GraphStats,
     tokens_saved: u64,
@@ -121,12 +182,19 @@ pub fn print_status_table(
     worldwide: Option<u64>,
     country_flags: &[String],
     branch_info: Option<&BranchInfo>,
+    cost_info: Option<&CostRow>,
+    project_root: Option<&Path>,
+    details: bool,
 ) {
     let num_cols = 3;
-    debug_assert!(stats.file_count > 0 || stats.node_count == 0,
-        "print_status_table: node_count should be 0 when file_count is 0");
-    debug_assert!(stats.node_count >= stats.file_count || stats.file_count == 0,
-        "print_status_table: node_count should be >= file_count");
+    debug_assert!(
+        stats.file_count > 0 || stats.node_count == 0,
+        "print_status_table: node_count should be 0 when file_count is 0"
+    );
+    debug_assert!(
+        stats.node_count >= stats.file_count || stats.file_count == 0,
+        "print_status_table: node_count should be >= file_count"
+    );
 
     let mut sorted_kinds: Vec<_> = stats.nodes_by_kind.iter().collect();
     sorted_kinds.sort_by_key(|(k, _)| (*k).clone());
@@ -138,16 +206,27 @@ pub fn print_status_table(
     println!("{}", table_separator('╭', '─', '╮', cell_width, num_cols));
     print_version_flags_row(country_flags, inner_width);
     print_tokens_row(tokens_saved, global_tokens_saved, worldwide, inner_width);
-    print_sync_row(stats.last_sync_at, stats.last_full_sync_at, inner_width);
+    if let Some(ci) = cost_info {
+        print_cost_row(ci, inner_width);
+    }
+    print_sync_row(
+        stats.last_sync_at,
+        stats.last_full_sync_at,
+        stats.last_sync_duration_ms,
+        inner_width,
+    );
     if let Some(bi) = branch_info {
         print_branch_row(bi, inner_width);
+    }
+    if let Some(root) = project_root {
+        print_project_row(root, inner_width);
     }
     println!("{}", table_separator('├', '┬', '┤', cell_width, num_cols));
 
     let stats_rows = build_stats_rows(stats, num_cols);
     print_table_rows(&stats_rows, cell_width, num_cols);
 
-    if !sorted_kinds.is_empty() {
+    if details && !sorted_kinds.is_empty() {
         println!("{}", table_separator('├', '┼', '┤', cell_width, num_cols));
         print_kind_rows(&sorted_kinds, num_kind_rows, num_cols, cell_width);
     }
@@ -159,30 +238,57 @@ pub fn print_status_table(
 const MAX_CELL_WIDTH: usize = 32;
 
 /// Maximum number of country flags to display in the title row.
-/// Derived from MAX_CELL_WIDTH: available = 3*32 = 96, title ~16, gap 2 → 78 cols for flags.
+/// Derived from `MAX_CELL_WIDTH`: available = 3*32 = 96, title ~16, gap 2 → 78 cols for flags.
 /// Each flag = 3 cols (2 emoji + 1 space), first = 2 → fits 26; use 25 for margin.
 const MAX_DISPLAY_FLAGS: usize = 25;
 
-/// Compute cell width from the widest node-kind entry, capped at MAX_CELL_WIDTH.
+/// Compute cell width from the widest node-kind entry, capped at `MAX_CELL_WIDTH`.
 fn compute_cell_width(sorted_kinds: &[(&String, &u64)]) -> usize {
-    let max_kind_len = sorted_kinds.iter().map(|(k, _)| k.len()).max().unwrap_or(10);
-    let max_count_len = sorted_kinds.iter().map(|(_, c)| format_number(**c).len()).max().unwrap_or(5);
+    let max_kind_len = sorted_kinds
+        .iter()
+        .map(|(k, _)| k.len())
+        .max()
+        .unwrap_or(10);
+    let max_count_len = sorted_kinds
+        .iter()
+        .map(|(_, c)| format_number(**c).len())
+        .max()
+        .unwrap_or(5);
     (max_kind_len + max_count_len + 3).clamp(22, MAX_CELL_WIDTH)
 }
 
 /// Print the top title row: version (left) + country flags (right).
+/// Returns a shuffled copy of `flags` using xorshift64 seeded from time + PID.
+///
+/// Avoids pulling in `rand` for what is purely a cosmetic per-render shuffle.
+fn shuffle_flags(flags: &[String]) -> Vec<String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let mut out = flags.to_vec();
+    if out.len() < 2 {
+        return out;
+    }
+    let mut state: u64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0xdead_beef_cafe_babe, |d| d.as_nanos() as u64)
+        .wrapping_add(u64::from(std::process::id()));
+    if state == 0 {
+        state = 0xdead_beef_cafe_babe;
+    }
+    for i in (1..out.len()).rev() {
+        // xorshift64
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let j = (state % (i as u64 + 1)) as usize;
+        out.swap(i, j);
+    }
+    out
+}
+
 fn print_version_flags_row(country_flags: &[String], inner_width: usize) {
     let version = env!("CARGO_PKG_VERSION");
-    let daemon_running = crate::daemon::running_daemon_pid().is_some();
-    let title = if daemon_running {
-        format!("😈 TokenSave v{version}")
-    } else {
-        format!("   TokenSave v{version}")
-    };
-    // "😈 " is 3 display columns (2-wide emoji + space) but 6 bytes;
-    // "   " is 3 display columns and 3 bytes.
-    // Display width = byte len minus the overhead of the emoji bytes.
-    let title_display_width = if daemon_running { title.len() - 2 } else { title.len() };
+    let title = format!("   TokenSave v{version}");
+    let title_display_width = title.len();
     let available = inner_width.saturating_sub(2);
 
     if country_flags.is_empty() {
@@ -191,13 +297,15 @@ fn print_version_flags_row(country_flags: &[String], inner_width: usize) {
         return;
     }
 
-    // Build flags string, capped at MAX_DISPLAY_FLAGS and fitting within available width
-    let capped = &country_flags[..country_flags.len().min(MAX_DISPLAY_FLAGS)];
-    let has_overflow = country_flags.len() > MAX_DISPLAY_FLAGS;
+    // Shuffle on each render so a different sample is shown when the list is
+    // longer than `MAX_DISPLAY_FLAGS` and gets truncated by available width.
+    let shuffled = shuffle_flags(country_flags);
+    let capped = &shuffled[..shuffled.len().min(MAX_DISPLAY_FLAGS)];
+    let has_overflow = shuffled.len() > MAX_DISPLAY_FLAGS;
     let mut flags_str = String::new();
     let mut display_width = 0;
     let flag_width = 2; // emoji flags are 2 columns wide
-    // Reserve space for title + at least 2 spaces gap
+                        // Reserve space for title + at least 2 spaces gap
     let max_flags_width = available.saturating_sub(title_display_width + 2);
     for (i, flag) in capped.iter().enumerate() {
         let needed = if i == 0 { flag_width } else { 1 + flag_width };
@@ -236,7 +344,10 @@ fn print_tokens_row(
         match global_tokens_saved {
             Some(global) => {
                 parts.push(format!("Project ~{}", format_token_count(tokens_saved)));
-                parts.push(format!("All projects ~{}", format_token_count(tokens_saved + global)));
+                parts.push(format!(
+                    "All projects ~{}",
+                    format_token_count(tokens_saved + global)
+                ));
             }
             None => {
                 parts.push(format!("Saved ~{}", format_token_count(tokens_saved)));
@@ -249,33 +360,51 @@ fn print_tokens_row(
     };
     let available = inner_width.saturating_sub(2);
     let pad = available.saturating_sub(tokens_text.len());
-    println!(
-        "│ {}\x1b[32m{}\x1b[0m │",
-        " ".repeat(pad),
-        tokens_text
-    );
+    println!("│ {}\x1b[32m{}\x1b[0m │", " ".repeat(pad), tokens_text);
+}
+
+fn format_duration_ms(ms: u64) -> String {
+    if ms == 0 {
+        return String::new();
+    }
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    }
 }
 
 /// Print the third title row: last sync and full sync timestamps, right-aligned in dim.
-fn print_sync_row(last_sync_at: u64, last_full_sync_at: u64, inner_width: usize) {
+fn print_sync_row(
+    last_sync_at: u64,
+    last_full_sync_at: u64,
+    last_sync_duration_ms: u64,
+    inner_width: usize,
+) {
+    let duration = format_duration_ms(last_sync_duration_ms);
+    let sync_part = if duration.is_empty() {
+        format!("Last sync {}", format_relative_time(last_sync_at))
+    } else {
+        format!(
+            "Last sync {} ({})",
+            format_relative_time(last_sync_at),
+            duration
+        )
+    };
     let sync_text = format!(
-        "Last sync {}  Full sync {}",
-        format_relative_time(last_sync_at),
-        format_relative_time(last_full_sync_at),
+        "{}  Full sync {}",
+        sync_part,
+        format_relative_time(last_full_sync_at)
     );
     let available = inner_width.saturating_sub(2);
     let pad = available.saturating_sub(sync_text.len());
-    println!(
-        "│ {}\x1b[2m{}\x1b[0m │",
-        " ".repeat(pad),
-        sync_text,
-    );
+    println!("│ {}\x1b[2m{}\x1b[0m │", " ".repeat(pad), sync_text);
 }
 
 fn print_branch_row(info: &BranchInfo, inner_width: usize) {
     let mut text = format!("Branch: {}", info.branch);
     if let Some(ref parent) = info.parent {
-        text.push_str(&format!("  (from {parent})"));
+        let _ = write!(text, "  (from {parent})");
     }
     if info.is_fallback {
         text.push_str("  \x1b[33m[fallback]\x1b[0m");
@@ -287,11 +416,36 @@ fn print_branch_row(info: &BranchInfo, inner_width: usize) {
     println!("│ {}{} │", " ".repeat(pad), text);
 }
 
+fn print_project_row(project_root: &Path, inner_width: usize) {
+    let available = inner_width.saturating_sub(2);
+    let bounded = format_bounded_project_row(project_root, available);
+    let pad = available.saturating_sub(bounded.chars().count());
+    println!("│ {}{} │", " ".repeat(pad), bounded);
+}
+
+/// Print the cost summary row: today's cost, 7-day cost, efficiency ratio.
+fn print_cost_row(cost_info: &CostRow, inner_width: usize) {
+    let mut parts = Vec::new();
+    if cost_info.today_cost >= 0.001 {
+        parts.push(format!("Today ${:.2}", cost_info.today_cost));
+    }
+    if cost_info.week_cost >= 0.001 {
+        parts.push(format!("7d ${:.2}", cost_info.week_cost));
+    }
+    if cost_info.efficiency_pct > 0.0 {
+        parts.push(format!("Efficiency {:.0}%", cost_info.efficiency_pct));
+    }
+    if parts.is_empty() {
+        return;
+    }
+    let text = parts.join("  ");
+    let available = inner_width.saturating_sub(2);
+    let pad = available.saturating_sub(text.len());
+    println!("│ {}\x1b[36m{}\x1b[0m │", " ".repeat(pad), text);
+}
+
 /// Build the stats rows (files/nodes/edges, DB size, languages).
-fn build_stats_rows<'a>(
-    stats: &'a GraphStats,
-    num_cols: usize,
-) -> Vec<Vec<(&'a str, String)>> {
+fn build_stats_rows(stats: &GraphStats, num_cols: usize) -> Vec<Vec<(&str, String)>> {
     let mut sorted_langs: Vec<_> = stats.files_by_language.iter().collect();
     sorted_langs.sort_by(|a, b| b.1.cmp(a.1));
 
@@ -347,8 +501,62 @@ fn print_table_rows(rows: &[Vec<(&str, String)>], cell_width: usize, num_cols: u
     }
 }
 
+pub fn print_gain_total(project: &str, range: &str, saved_tokens: u64, calls: u64, usd: f64) {
+    let saved_str = format_token_count(saved_tokens);
+    println!("  {:<28} {:>12}", "Scope", project);
+    println!("  {:<28} {:>12}", "Range", range);
+    println!("  {:<28} {:>12}", "Tool calls", calls);
+    println!("  {:<28} {:>12}", "Tokens saved", saved_str);
+    println!(
+        "  {:<28} {:>12}",
+        "USD saved (Sonnet input)",
+        format!("${usd:.2}")
+    );
+}
+
+pub fn print_gain_history<F: Fn(u64) -> f64>(rows: &[crate::global_db::SavingsDay], to_usd: F) {
+    println!(
+        "  {:<12} {:>10} {:>8} {:>10}",
+        "Day (UTC)", "Tokens", "Calls", "USD"
+    );
+    for r in rows {
+        let days_since_epoch = r.day / 86_400;
+        let date = format_yyyy_mm_dd(days_since_epoch);
+        let saved_str = format_token_count(r.saved_tokens);
+        let usd = to_usd(r.saved_tokens);
+        println!(
+            "  {:<12} {:>10} {:>8} {:>10}",
+            date,
+            saved_str,
+            r.calls,
+            format!("${usd:.2}")
+        );
+    }
+}
+
+/// Convert "days since 1970-01-01 UTC" into "YYYY-MM-DD" without external deps
+/// (Howard Hinnant's civil-from-days algorithm).
+fn format_yyyy_mm_dd(z: i64) -> String {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = i64::from(yoe) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 /// Print node kinds in column-major order.
-fn print_kind_rows(sorted_kinds: &[(&String, &u64)], num_kind_rows: usize, num_cols: usize, cell_width: usize) {
+fn print_kind_rows(
+    sorted_kinds: &[(&String, &u64)],
+    num_kind_rows: usize,
+    num_cols: usize,
+    cell_width: usize,
+) {
     for r in 0..num_kind_rows {
         print!("│");
         for c in 0..num_cols {
@@ -361,5 +569,23 @@ fn print_kind_rows(sorted_kinds: &[(&String, &u64)], num_kind_rows: usize, num_c
             }
             print!("{}", if c < num_cols - 1 { "│" } else { "│\n" });
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod gain_format_tests {
+    use super::format_yyyy_mm_dd;
+
+    #[test]
+    fn epoch_is_1970_01_01() {
+        assert_eq!(format_yyyy_mm_dd(0), "1970-01-01");
+    }
+
+    #[test]
+    fn known_date_2026_05_15() {
+        // 2026-05-15 = 20_588 days since 1970-01-01.
+        // (Verified by Howard Hinnant civil-from-days algorithm.)
+        assert_eq!(format_yyyy_mm_dd(20_588), "2026-05-15");
     }
 }

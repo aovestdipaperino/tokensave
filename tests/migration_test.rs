@@ -1,15 +1,19 @@
 use libsql::{Builder, Connection, Database as LibsqlDatabase};
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
-use tokensave::db::migrations::{create_schema, migrate};
+use tokensave::db::migrations::{create_schema, latest_version, migrate};
 use tokensave::db::Database;
+use tokensave::errors::TokenSaveError;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /// Creates a raw libsql database in a temp directory.
-/// Returns (Connection, Database, TempDir) — all three must stay alive.
-async fn create_raw_db() -> (Connection, LibsqlDatabase, TempDir) {
+/// Returns (TempDir, Connection, Database) — all three must stay alive, and the
+/// `TempDir` comes first so it is the last dropped: the connection must close
+/// before the directory is removed, or Windows leaks it (#367).
+async fn create_raw_db() -> (TempDir, Connection, LibsqlDatabase) {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("test.db");
     let db = Builder::new_local(&db_path)
@@ -24,7 +28,7 @@ async fn create_raw_db() -> (Connection, LibsqlDatabase, TempDir) {
     )
     .await
     .expect("failed to apply pragmas");
-    (conn, db, dir)
+    (dir, conn, db)
 }
 
 /// Sets PRAGMA user_version on the connection.
@@ -47,6 +51,16 @@ async fn get_user_version(conn: &Connection) -> u32 {
         .expect("user_version should return a row");
     let v: i64 = row.get(0).expect("failed to read user_version value");
     v as u32
+}
+
+fn sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
+    let mut path = db_path.as_os_str().to_os_string();
+    path.push(suffix);
+    path.into()
+}
+
+fn file_bytes(path: &Path) -> Vec<u8> {
+    std::fs::read(path).expect("failed to read database bytes")
 }
 
 /// Checks whether a table exists in sqlite_master.
@@ -79,18 +93,32 @@ async fn index_exists(conn: &Connection, index_name: &str) -> bool {
         .is_some()
 }
 
+/// Checks whether a trigger exists in sqlite_master.
+async fn trigger_exists(conn: &Connection, trigger_name: &str) -> bool {
+    let mut rows = conn
+        .query(
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND name=?1",
+            libsql::params![trigger_name],
+        )
+        .await
+        .expect("failed to query sqlite_master");
+    rows.next()
+        .await
+        .expect("failed to read sqlite_master row")
+        .is_some()
+}
+
 /// Checks whether a column exists on a table via PRAGMA table_info.
 async fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
     let mut rows = conn
         .query(&format!("PRAGMA table_info({table})"), ())
         .await
         .expect("failed to query table_info");
-    while let Some(row) = rows
-        .next()
-        .await
-        .expect("failed to read table_info row")
-    {
-        let name: String = row.get_str(1).expect("failed to read column name").to_string();
+    while let Some(row) = rows.next().await.expect("failed to read table_info row") {
+        let name: String = row
+            .get_str(1)
+            .expect("failed to read column name")
+            .to_string();
         if name == column {
             return true;
         }
@@ -239,16 +267,16 @@ async fn apply_v4(conn: &Connection) {
 // Tests
 // ---------------------------------------------------------------------------
 
-/// create_schema on a fresh database sets user_version to 5 and creates all tables.
+/// `create_schema` on a fresh database sets the latest version and creates all tables.
 #[tokio::test]
 async fn test_create_schema_fresh_db() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
 
     create_schema(&conn)
         .await
         .expect("create_schema should succeed");
 
-    assert_eq!(get_user_version(&conn).await, 6);
+    assert_eq!(get_user_version(&conn).await, latest_version());
     assert!(table_exists(&conn, "nodes").await);
     assert!(table_exists(&conn, "edges").await);
     assert!(table_exists(&conn, "files").await);
@@ -256,12 +284,13 @@ async fn test_create_schema_fresh_db() {
     assert!(table_exists(&conn, "vectors").await);
     assert!(table_exists(&conn, "metadata").await);
     assert!(table_exists(&conn, "nodes_fts").await);
+    assert!(table_exists(&conn, "executable_body_fts").await);
 }
 
 /// create_schema is idempotent — calling it twice does not error.
 #[tokio::test]
 async fn test_create_schema_idempotent() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
 
     create_schema(&conn)
         .await
@@ -270,30 +299,31 @@ async fn test_create_schema_idempotent() {
         .await
         .expect("second create_schema should succeed");
 
-    assert_eq!(get_user_version(&conn).await, 6);
+    assert_eq!(get_user_version(&conn).await, latest_version());
 }
 
 /// migrate returns false when already at the latest version.
 #[tokio::test]
 async fn test_migrate_already_latest_returns_false() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
 
     create_schema(&conn)
         .await
         .expect("create_schema should succeed");
 
-    let migrated = migrate(&conn)
-        .await
-        .expect("migrate should succeed");
+    let migrated = migrate(&conn).await.expect("migrate should succeed");
 
-    assert!(!migrated, "migrate should return false when already at v6");
-    assert_eq!(get_user_version(&conn).await, 6);
+    assert!(
+        !migrated,
+        "migrate should return false when already at latest"
+    );
+    assert_eq!(get_user_version(&conn).await, latest_version());
 }
 
-/// migrate from v0 (completely empty database) applies all migrations to v6.
+/// migrate from v0 (completely empty database) applies all migrations to latest.
 #[tokio::test]
 async fn test_migrate_from_v0() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
 
     // user_version defaults to 0 on a fresh database
     assert_eq!(get_user_version(&conn).await, 0);
@@ -302,8 +332,11 @@ async fn test_migrate_from_v0() {
         .await
         .expect("migrate from v0 should succeed");
 
-    assert!(migrated, "migrate should return true when migrations were applied");
-    assert_eq!(get_user_version(&conn).await, 6);
+    assert!(
+        migrated,
+        "migrate should return true when migrations were applied"
+    );
+    assert_eq!(get_user_version(&conn).await, latest_version());
 
     // All expected tables should exist
     assert!(table_exists(&conn, "nodes").await);
@@ -313,6 +346,7 @@ async fn test_migrate_from_v0() {
     assert!(table_exists(&conn, "vectors").await);
     assert!(table_exists(&conn, "metadata").await);
     assert!(table_exists(&conn, "nodes_fts").await);
+    assert!(table_exists(&conn, "executable_body_fts").await);
 
     // V3 complexity columns should exist
     assert!(column_exists(&conn, "nodes", "branches").await);
@@ -332,7 +366,7 @@ async fn test_migrate_from_v0() {
 /// migrate from v1 (tables exist, no metadata, no complexity columns) to v5.
 #[tokio::test]
 async fn test_migrate_from_v1() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_v1_schema(&conn).await;
 
     assert_eq!(get_user_version(&conn).await, 1);
@@ -344,7 +378,7 @@ async fn test_migrate_from_v1() {
         .expect("migrate from v1 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 6);
+    assert_eq!(get_user_version(&conn).await, latest_version());
 
     // V2: metadata table
     assert!(table_exists(&conn, "metadata").await);
@@ -367,7 +401,7 @@ async fn test_migrate_from_v1() {
 /// migrate from v2 (has metadata, no complexity columns) to v5.
 #[tokio::test]
 async fn test_migrate_from_v2() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_v1_schema(&conn).await;
     apply_v2(&conn).await;
 
@@ -380,7 +414,7 @@ async fn test_migrate_from_v2() {
         .expect("migrate from v2 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 6);
+    assert_eq!(get_user_version(&conn).await, latest_version());
 
     // V3 columns
     assert!(column_exists(&conn, "nodes", "branches").await);
@@ -396,7 +430,7 @@ async fn test_migrate_from_v2() {
 /// migrate from v3 (has complexity columns, no safety columns) to v5.
 #[tokio::test]
 async fn test_migrate_from_v3() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_v1_schema(&conn).await;
     apply_v2(&conn).await;
     apply_v3(&conn).await;
@@ -410,7 +444,7 @@ async fn test_migrate_from_v3() {
         .expect("migrate from v3 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 6);
+    assert_eq!(get_user_version(&conn).await, latest_version());
 
     // V4 columns
     assert!(column_exists(&conn, "nodes", "unsafe_blocks").await);
@@ -424,7 +458,7 @@ async fn test_migrate_from_v3() {
 /// migrate from v4 (has all columns, no edge dedup) to v5.
 #[tokio::test]
 async fn test_migrate_from_v4() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_v1_schema(&conn).await;
     apply_v2(&conn).await;
     apply_v3(&conn).await;
@@ -438,7 +472,7 @@ async fn test_migrate_from_v4() {
         .expect("migrate from v4 should succeed");
 
     assert!(migrated);
-    assert_eq!(get_user_version(&conn).await, 6);
+    assert_eq!(get_user_version(&conn).await, latest_version());
 
     assert!(index_exists(&conn, "idx_edges_unique").await);
 }
@@ -446,7 +480,7 @@ async fn test_migrate_from_v4() {
 /// V5 migration actually deduplicates edge rows.
 #[tokio::test]
 async fn test_v5_deduplicates_edges() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_v1_schema(&conn).await;
     apply_v2(&conn).await;
     apply_v3(&conn).await;
@@ -493,9 +527,16 @@ async fn test_v5_deduplicates_edges() {
             .query("SELECT COUNT(*) FROM edges", ())
             .await
             .expect("failed to count edges");
-        let row = rows.next().await.expect("failed to read row").expect("should have row");
+        let row = rows
+            .next()
+            .await
+            .expect("failed to read row")
+            .expect("should have row");
         let count_before: i64 = row.get(0).expect("failed to read count");
-        assert_eq!(count_before, 8, "should have 8 rows (5 + 3 duplicates) before migration");
+        assert_eq!(
+            count_before, 8,
+            "should have 8 rows (5 + 3 duplicates) before migration"
+        );
     }
 
     // Run migration (v4 -> v5)
@@ -509,7 +550,11 @@ async fn test_v5_deduplicates_edges() {
         .query("SELECT COUNT(*) FROM edges", ())
         .await
         .expect("failed to count edges after migration");
-    let row = rows.next().await.expect("failed to read row").expect("should have row");
+    let row = rows
+        .next()
+        .await
+        .expect("failed to read row")
+        .expect("should have row");
     let count_after: i64 = row.get(0).expect("failed to read count");
     assert_eq!(
         count_after, 2,
@@ -520,7 +565,7 @@ async fn test_v5_deduplicates_edges() {
 /// After full migration from v0, all expected indexes exist.
 #[tokio::test]
 async fn test_indexes_exist_after_full_migration() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
 
     migrate(&conn)
         .await
@@ -547,9 +592,9 @@ async fn test_indexes_exist_after_full_migration() {
     assert!(index_exists(&conn, "idx_unresolved_refs_file_path").await);
 }
 
-/// Database::initialize creates a v6 database.
+/// Database::initialize creates a database at the latest schema version.
 #[tokio::test]
-async fn test_database_initialize_creates_v6() {
+async fn test_database_initialize_creates_latest_version() {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("init_test.db");
 
@@ -569,7 +614,7 @@ async fn test_database_initialize_creates_v6() {
         .expect("failed to read row")
         .expect("should have row");
     let version: i64 = row.get(0).expect("failed to read version");
-    assert_eq!(version, 6);
+    assert_eq!(version as u32, latest_version());
 }
 
 /// Database::open on an already-current database does not re-migrate.
@@ -578,7 +623,7 @@ async fn test_database_open_no_migration_needed() {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("open_test.db");
 
-    // Initialize creates a v6 database
+    // Initialize creates a database at the latest schema version
     let (db, _) = Database::initialize(&db_path)
         .await
         .expect("Database::initialize should succeed");
@@ -595,9 +640,9 @@ async fn test_database_open_no_migration_needed() {
     );
 }
 
-/// Database::open on a v1 database migrates to v6.
+/// Database::open on a v1 database migrates to the latest schema version.
 #[tokio::test]
-async fn test_database_open_migrates_v1_to_v6() {
+async fn test_database_open_migrates_v1_to_latest() {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("open_v1_test.db");
 
@@ -617,14 +662,14 @@ async fn test_database_open_migrates_v1_to_v6() {
         create_v1_schema(&conn).await;
     }
 
-    // Open via Database::open — should detect v1 and migrate to v6
+    // Open via Database::open — should detect v1 and migrate to latest
     let (db, migrated) = Database::open(&db_path)
         .await
         .expect("Database::open should succeed");
 
     assert!(migrated, "opening a v1 database should trigger migration");
 
-    // Verify the schema is now v6
+    // Verify the schema is now at latest
     let mut rows = db
         .conn()
         .query("PRAGMA user_version", ())
@@ -636,13 +681,389 @@ async fn test_database_open_migrates_v1_to_v6() {
         .expect("failed to read row")
         .expect("should have row");
     let version: i64 = row.get(0).expect("failed to read version");
-    assert_eq!(version, 6);
+    assert_eq!(version as u32, latest_version());
+}
+
+#[tokio::test]
+async fn read_only_open_current_schema_queries_without_writes_or_byte_changes() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let db_path = dir.path().join("read_only.db");
+    let (db, _) = Database::initialize(&db_path)
+        .await
+        .expect("failed to initialize database");
+    db.close();
+    let before = file_bytes(&db_path);
+
+    let db = Database::open_read_only(&db_path)
+        .await
+        .expect("read-only open should succeed");
+
+    let mut rows = db
+        .conn()
+        .query("PRAGMA user_version", ())
+        .await
+        .expect("read-only query should succeed");
+    let row = rows
+        .next()
+        .await
+        .expect("failed to read result")
+        .expect("query should return a row");
+    assert_eq!(
+        row.get::<i64>(0).expect("failed to read schema version") as u32,
+        latest_version()
+    );
+
+    let write_error = db
+        .conn()
+        .execute(
+            "INSERT INTO metadata (key, value) VALUES ('read_only', 'must fail')",
+            (),
+        )
+        .await
+        .expect_err("writes must fail on a read-only connection");
+    assert!(
+        write_error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("readonly"),
+        "unexpected write error: {write_error}"
+    );
+
+    db.close();
+    assert_eq!(file_bytes(&db_path), before);
+}
+
+#[tokio::test]
+async fn read_only_open_rejects_old_schema_without_migration_or_byte_changes() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let db_path = dir.path().join("read_only_old.db");
+    {
+        let raw_db = Builder::new_local(&db_path)
+            .build()
+            .await
+            .expect("failed to build libsql database");
+        let conn = raw_db.connect().expect("failed to connect");
+        create_v1_schema(&conn).await;
+    }
+    let before = file_bytes(&db_path);
+
+    let error = Database::open_read_only(&db_path)
+        .await
+        .err()
+        .expect("old schemas must be rejected");
+
+    assert!(
+        matches!(
+            &error,
+            TokenSaveError::Config { message } if message.contains("schema version")
+        ),
+        "unexpected schema error: {error}"
+    );
+    assert_eq!(file_bytes(&db_path), before);
+}
+
+#[tokio::test]
+async fn read_only_open_rejects_newer_schema_as_config_error_without_byte_changes() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let db_path = dir.path().join("read_only_newer.db");
+    let (db, _) = Database::initialize(&db_path)
+        .await
+        .expect("failed to initialize database");
+    db.conn()
+        .execute(
+            &format!("PRAGMA user_version = {}", latest_version() + 1),
+            (),
+        )
+        .await
+        .expect("failed to set future schema version");
+    db.checkpoint()
+        .await
+        .expect("failed to checkpoint database");
+    db.close();
+    let before = file_bytes(&db_path);
+
+    let error = Database::open_read_only(&db_path)
+        .await
+        .err()
+        .expect("newer schemas must be rejected");
+
+    assert!(
+        matches!(
+            &error,
+            TokenSaveError::Config { message } if message.contains("schema version")
+        ),
+        "unexpected schema error: {error}"
+    );
+    assert_eq!(file_bytes(&db_path), before);
+}
+
+#[tokio::test]
+async fn read_only_open_reads_active_non_empty_wal() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let db_path = dir.path().join("read_only_live_wal.db");
+    let raw_db = Builder::new_local(&db_path)
+        .build()
+        .await
+        .expect("failed to build libsql database");
+    let conn = raw_db.connect().expect("failed to connect");
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;")
+        .await
+        .expect("failed to configure WAL");
+    create_schema(&conn)
+        .await
+        .expect("failed to create current schema");
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('active_wal', 'visible')",
+        (),
+    )
+    .await
+    .expect("failed to write active WAL row");
+
+    let wal_path = sidecar_path(&db_path, "-wal");
+    assert!(
+        std::fs::metadata(&wal_path)
+            .expect("live WAL should exist")
+            .len()
+            > 0,
+        "live WAL should be non-empty"
+    );
+
+    let db = Database::open_read_only(&db_path)
+        .await
+        .expect("read-only open should coordinate with an active WAL");
+    let mut rows = db
+        .conn()
+        .query("SELECT value FROM metadata WHERE key = 'active_wal'", ())
+        .await
+        .expect("failed to query active WAL row");
+    let row = rows
+        .next()
+        .await
+        .expect("failed to read active WAL row")
+        .expect("active WAL row should be visible");
+    assert_eq!(
+        row.get_str(0).expect("failed to read active WAL value"),
+        "visible"
+    );
+}
+
+#[tokio::test]
+async fn read_only_open_remains_valid_while_writer_writes_and_checkpoints() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let db_path = dir.path().join("read_only_concurrent.db");
+    let (initialized, _) = Database::initialize(&db_path)
+        .await
+        .expect("failed to initialize database");
+    initialized.close();
+
+    let writer_db = Builder::new_local(&db_path)
+        .build()
+        .await
+        .expect("failed to build writer database");
+    let writer = writer_db.connect().expect("failed to connect writer");
+    writer
+        .execute_batch("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;")
+        .await
+        .expect("failed to configure writer WAL");
+
+    let reader = Database::open_read_only(&db_path)
+        .await
+        .expect("failed to open reader");
+    writer
+        .execute(
+            "INSERT INTO metadata (key, value) VALUES ('concurrent', 'visible')",
+            (),
+        )
+        .await
+        .expect("writer insert should succeed");
+    writer
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .await
+        .expect("writer checkpoint should succeed");
+
+    let mut rows = reader
+        .conn()
+        .query("SELECT value FROM metadata WHERE key = 'concurrent'", ())
+        .await
+        .expect("reader should remain valid after checkpoint");
+    let row = rows
+        .next()
+        .await
+        .expect("failed to read concurrent row")
+        .expect("reader should see the checkpointed write");
+    assert_eq!(
+        row.get_str(0).expect("failed to read concurrent value"),
+        "visible"
+    );
+}
+
+#[tokio::test]
+async fn read_only_open_accepts_relative_database_path() {
+    let cwd = std::env::current_dir().expect("failed to read current directory");
+    let dir = TempDir::new_in(&cwd).expect("failed to create temp dir under current directory");
+    let db_path = dir.path().join("relative.db");
+    let relative_path = db_path
+        .strip_prefix(&cwd)
+        .expect("temporary database should be under current directory");
+    let (db, _) = Database::initialize(&db_path)
+        .await
+        .expect("failed to initialize database");
+    db.close();
+
+    let db = Database::open_read_only(relative_path)
+        .await
+        .expect("read-only open should accept a relative path");
+    assert_eq!(get_user_version(db.conn()).await, latest_version());
+}
+
+/// V13 repairs v12 databases missing the trait-dispatch cache table.
+#[tokio::test]
+async fn test_migrate_v13_repairs_missing_trait_dispatch_cache() {
+    let (_dir, conn, _db) = create_raw_db().await;
+    create_schema(&conn)
+        .await
+        .expect("create_schema should succeed");
+
+    conn.execute("DROP TABLE trait_dispatch_callers", ())
+        .await
+        .expect("failed to remove trait dispatch cache table");
+    set_user_version(&conn, 12).await;
+
+    assert!(migrate(&conn).await.expect("v13 migration should succeed"));
+    assert_eq!(get_user_version(&conn).await, latest_version());
+    assert!(table_exists(&conn, "trait_dispatch_callers").await);
+    assert!(index_exists(&conn, "idx_trait_dispatch_callers_concrete").await);
+}
+
+/// V14 removes phantom `annotates` edges that target an `annotation_usage`
+/// node (the bug fixed alongside this migration), but leaves every
+/// legitimate `annotates` edge — direct extractor-emitted and resolver-
+/// resolved alike — untouched.
+#[tokio::test]
+async fn test_v14_removes_phantom_annotates_edges() {
+    let (_dir, conn, _db) = create_raw_db().await;
+    create_schema(&conn)
+        .await
+        .expect("create_schema should succeed");
+    set_user_version(&conn, 13).await;
+
+    let insert_node = |id: &str, kind: &str| {
+        format!(
+            "INSERT INTO nodes (id, kind, name, qualified_name, file_path, start_line, end_line, start_column, end_column, updated_at) \
+             VALUES ('{id}', '{kind}', '{id}', '{id}', 'src/lib.rs', 1, 1, 0, 1, 1000)"
+        )
+    };
+
+    // Two annotation_usage nodes in the same file, with a phantom
+    // usage-to-usage `annotates` edge between them plus a phantom self-edge.
+    conn.execute(&insert_node("usage1", "annotation_usage"), ())
+        .await
+        .expect("failed to insert usage1");
+    conn.execute(&insert_node("usage2", "annotation_usage"), ())
+        .await
+        .expect("failed to insert usage2");
+
+    // A legitimate direct edge: usage -> the item it annotates.
+    conn.execute(&insert_node("fn1", "function"), ())
+        .await
+        .expect("failed to insert fn1");
+
+    // The `@Retention @interface Foo {}` direct-edge case: a usage naming a
+    // real Annotation declaration is a legitimate extractor-emitted edge, not
+    // a resolver-produced usage-to-usage phantom.
+    conn.execute(&insert_node("usage3", "annotation_usage"), ())
+        .await
+        .expect("failed to insert usage3");
+    conn.execute(&insert_node("decl1", "annotation"), ())
+        .await
+        .expect("failed to insert decl1");
+
+    // A phantom edge targeting a `decorator` node: decorator nodes are only
+    // ever emitted at the application site, never the declaration, so a
+    // usage -> decorator edge is the same phantom class as usage -> usage.
+    conn.execute(&insert_node("usage4", "annotation_usage"), ())
+        .await
+        .expect("failed to insert usage4");
+    conn.execute(&insert_node("dec1", "decorator"), ())
+        .await
+        .expect("failed to insert dec1");
+
+    // A legitimate direct edge with a decorator as *source*: proves the
+    // delete keys on target kind, not on `decorator` appearing anywhere in
+    // the edge.
+    conn.execute(&insert_node("fn2", "function"), ())
+        .await
+        .expect("failed to insert fn2");
+
+    conn.execute(
+        "INSERT INTO edges (source, target, kind, line) VALUES ('usage1', 'usage2', 'annotates', 1)",
+        (),
+    )
+    .await
+    .expect("failed to insert phantom cross-node edge");
+    conn.execute(
+        "INSERT INTO edges (source, target, kind, line) VALUES ('usage1', 'usage1', 'annotates', 1)",
+        (),
+    )
+    .await
+    .expect("failed to insert phantom self-edge");
+    conn.execute(
+        "INSERT INTO edges (source, target, kind, line) VALUES ('usage2', 'fn1', 'annotates', 1)",
+        (),
+    )
+    .await
+    .expect("failed to insert legitimate direct edge");
+    conn.execute(
+        "INSERT INTO edges (source, target, kind, line) VALUES ('usage3', 'decl1', 'annotates', 1)",
+        (),
+    )
+    .await
+    .expect("failed to insert direct annotation-usage-to-declaration edge");
+    conn.execute(
+        "INSERT INTO edges (source, target, kind, line) VALUES ('usage4', 'dec1', 'annotates', 1)",
+        (),
+    )
+    .await
+    .expect("failed to insert phantom usage-to-decorator edge");
+    conn.execute(
+        "INSERT INTO edges (source, target, kind, line) VALUES ('dec1', 'fn2', 'annotates', 1)",
+        (),
+    )
+    .await
+    .expect("failed to insert legitimate decorator-as-source edge");
+
+    assert!(migrate(&conn).await.expect("v14 migration should succeed"));
+    assert_eq!(get_user_version(&conn).await, latest_version());
+
+    let mut rows = conn
+        .query(
+            "SELECT source, target FROM edges WHERE kind = 'annotates' ORDER BY source",
+            (),
+        )
+        .await
+        .expect("failed to query surviving annotates edges");
+    let mut surviving = Vec::new();
+    while let Some(row) = rows.next().await.expect("failed to read row") {
+        let source: String = row.get(0).expect("failed to read source");
+        let target: String = row.get(1).expect("failed to read target");
+        surviving.push((source, target));
+    }
+
+    assert_eq!(
+        surviving,
+        vec![
+            ("dec1".to_string(), "fn2".to_string()),
+            ("usage2".to_string(), "fn1".to_string()),
+            ("usage3".to_string(), "decl1".to_string()),
+        ],
+        "only edges not targeting an annotation_usage or decorator node should survive the v14 repair"
+    );
 }
 
 /// After create_schema, all v5 columns on nodes exist.
 #[tokio::test]
 async fn test_create_schema_has_all_node_columns() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_schema(&conn)
         .await
         .expect("create_schema should succeed");
@@ -669,6 +1090,7 @@ async fn test_create_schema_has_all_node_columns() {
         "unchecked_calls",
         "assertions",
         "updated_at",
+        "attrs_start_line",
     ];
     for col in &expected_columns {
         assert!(
@@ -681,7 +1103,7 @@ async fn test_create_schema_has_all_node_columns() {
 /// V5 unique index prevents duplicate edge insertion.
 #[tokio::test]
 async fn test_v5_unique_index_prevents_duplicates() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
     create_schema(&conn)
         .await
         .expect("create_schema should succeed");
@@ -726,7 +1148,7 @@ async fn test_v5_unique_index_prevents_duplicates() {
 /// FTS triggers exist after migration from v0.
 #[tokio::test]
 async fn test_fts_triggers_exist_after_migration() {
-    let (conn, _db, _dir) = create_raw_db().await;
+    let (_dir, conn, _db) = create_raw_db().await;
 
     migrate(&conn)
         .await
@@ -749,4 +1171,521 @@ async fn test_fts_triggers_exist_after_migration() {
             "trigger '{trigger}' should exist after migration"
         );
     }
+}
+
+#[tokio::test]
+async fn test_v8_creates_memory_tables() {
+    let (_dir, conn, _db) = create_raw_db().await;
+    create_schema(&conn).await.unwrap();
+
+    // memory_decisions table exists with expected columns
+    let mut rows = conn
+        .query(
+            "SELECT name FROM pragma_table_info('memory_decisions') ORDER BY cid",
+            (),
+        )
+        .await
+        .unwrap();
+    let mut cols = Vec::new();
+    while let Some(row) = rows.next().await.unwrap() {
+        cols.push(row.get::<String>(0).unwrap());
+    }
+    assert_eq!(
+        cols,
+        vec!["id", "text", "reason", "created_at", "files", "tags"]
+    );
+
+    // memory_code_areas table exists
+    let mut rows = conn
+        .query(
+            "SELECT name FROM pragma_table_info('memory_code_areas') ORDER BY cid",
+            (),
+        )
+        .await
+        .unwrap();
+    let mut cols = Vec::new();
+    while let Some(row) = rows.next().await.unwrap() {
+        cols.push(row.get::<String>(0).unwrap());
+    }
+    assert_eq!(
+        cols,
+        vec![
+            "id",
+            "path",
+            "description",
+            "last_touched_at",
+            "touch_count"
+        ]
+    );
+
+    // FTS table exists
+    let mut rows = conn
+        .query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='memory_decisions_fts'",
+            (),
+        )
+        .await
+        .unwrap();
+    assert!(
+        rows.next().await.unwrap().is_some(),
+        "memory_decisions_fts missing"
+    );
+
+    // All three FTS triggers exist
+    let mut rows = conn
+        .query(
+            "SELECT name FROM sqlite_master WHERE type='trigger' \
+             AND name IN ('memory_decisions_fts_insert', 'memory_decisions_fts_delete', 'memory_decisions_fts_update') \
+             ORDER BY name",
+            (),
+        )
+        .await
+        .unwrap();
+    let mut trigger_names = Vec::new();
+    while let Some(row) = rows.next().await.unwrap() {
+        trigger_names.push(row.get::<String>(0).unwrap());
+    }
+    assert_eq!(
+        trigger_names,
+        vec![
+            "memory_decisions_fts_delete",
+            "memory_decisions_fts_insert",
+            "memory_decisions_fts_update",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_v7_to_latest_upgrade_path() {
+    let (_dir, conn, _db) = create_raw_db().await;
+
+    create_schema(&conn).await.unwrap();
+    conn.execute("PRAGMA user_version = 7", ()).await.unwrap();
+    // Drop the v8+ tables to simulate a true v7 starting state
+    conn.execute("DROP TABLE IF EXISTS memory_decisions_fts", ())
+        .await
+        .unwrap();
+    conn.execute("DROP TABLE IF EXISTS memory_decisions", ())
+        .await
+        .unwrap();
+    conn.execute("DROP TABLE IF EXISTS memory_code_areas", ())
+        .await
+        .unwrap();
+    conn.execute("DROP TABLE IF EXISTS read_cache", ())
+        .await
+        .unwrap();
+
+    let did_migrate = migrate(&conn).await.unwrap();
+    assert!(did_migrate, "expected migrate() to return true");
+
+    let mut rows = conn.query("PRAGMA user_version", ()).await.unwrap();
+    let row = rows.next().await.unwrap().unwrap();
+    let v: i64 = row.get(0).unwrap();
+    assert_eq!(v as u32, latest_version());
+
+    let mut rows = conn
+        .query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN \
+             ('memory_decisions','memory_code_areas','memory_decisions_fts','read_cache') ORDER BY name",
+            (),
+        )
+        .await
+        .unwrap();
+    let mut names = Vec::new();
+    while let Some(row) = rows.next().await.unwrap() {
+        names.push(row.get::<String>(0).unwrap());
+    }
+    assert_eq!(
+        names,
+        vec![
+            "memory_code_areas",
+            "memory_decisions",
+            "memory_decisions_fts",
+            "read_cache",
+        ]
+    );
+}
+
+/// V9 adds the `read_cache` table used by `tokensave_read`.
+#[tokio::test]
+async fn test_migrate_v9_adds_read_cache() {
+    let (_dir, conn, _db) = create_raw_db().await;
+    migrate(&conn).await.expect("migrate should succeed");
+
+    assert!(
+        table_exists(&conn, "read_cache").await,
+        "v9 migration should create the read_cache table"
+    );
+    assert!(
+        index_exists(&conn, "idx_read_cache_session").await,
+        "v9 migration should create idx_read_cache_session"
+    );
+}
+
+/// V15 restores secondary indexes and FTS triggers dropped by an interrupted
+/// bulk load, even when the dirty sentinel is absent (#358).
+#[tokio::test]
+async fn test_migrate_v15_restores_missing_indexes_and_triggers() {
+    let (_dir, conn, _db) = create_raw_db().await;
+    create_schema(&conn)
+        .await
+        .expect("create_schema should succeed");
+
+    // Simulate an interrupted bulk load: drop all indexes and FTS triggers
+    // exactly as `begin_bulk_load` does, leaving the DB unindexed.
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_nodes_kind;
+         DROP INDEX IF EXISTS idx_nodes_name;
+         DROP INDEX IF EXISTS idx_nodes_qualified_name;
+         DROP INDEX IF EXISTS idx_nodes_file_path;
+         DROP INDEX IF EXISTS idx_nodes_file_path_start_line;
+         DROP INDEX IF EXISTS idx_edges_source;
+         DROP INDEX IF EXISTS idx_edges_target;
+         DROP INDEX IF EXISTS idx_edges_kind;
+         DROP INDEX IF EXISTS idx_edges_source_kind;
+         DROP INDEX IF EXISTS idx_edges_target_kind;
+         DROP INDEX IF EXISTS idx_edges_unique;
+         DROP INDEX IF EXISTS idx_unresolved_refs_from_node_id;
+         DROP INDEX IF EXISTS idx_unresolved_refs_reference_name;
+         DROP INDEX IF EXISTS idx_unresolved_refs_file_path;
+         DROP TRIGGER IF EXISTS nodes_fts_insert;
+         DROP TRIGGER IF EXISTS nodes_fts_delete;
+         DROP TRIGGER IF EXISTS nodes_fts_update;
+         DROP TRIGGER IF EXISTS trait_dispatch_call_insert;
+         DROP TRIGGER IF EXISTS trait_dispatch_implements_insert;
+         DROP TRIGGER IF EXISTS trait_dispatch_call_delete;
+         DROP TRIGGER IF EXISTS trait_dispatch_implements_delete;",
+    )
+    .await
+    .expect("failed to simulate interrupted bulk load");
+    set_user_version(&conn, 14).await;
+
+    // Run migrations - v15 should recreate everything.
+    assert!(migrate(&conn).await.expect("v15 migration should succeed"));
+    assert_eq!(get_user_version(&conn).await, latest_version());
+
+    // Node indexes
+    assert!(index_exists(&conn, "idx_nodes_kind").await);
+    assert!(index_exists(&conn, "idx_nodes_name").await);
+    assert!(index_exists(&conn, "idx_nodes_qualified_name").await);
+    assert!(index_exists(&conn, "idx_nodes_file_path").await);
+    assert!(index_exists(&conn, "idx_nodes_file_path_start_line").await);
+
+    // Edge indexes
+    assert!(index_exists(&conn, "idx_edges_source_kind").await);
+    assert!(index_exists(&conn, "idx_edges_target_kind").await);
+    assert!(index_exists(&conn, "idx_edges_kind").await);
+    assert!(index_exists(&conn, "idx_edges_unique").await);
+
+    // Unresolved refs indexes
+    assert!(index_exists(&conn, "idx_unresolved_refs_from_node_id").await);
+    assert!(index_exists(&conn, "idx_unresolved_refs_reference_name").await);
+    assert!(index_exists(&conn, "idx_unresolved_refs_file_path").await);
+
+    // FTS triggers exist (the core heal - without these the FTS index
+    // goes stale on every later sync).
+    assert!(trigger_exists(&conn, "nodes_fts_insert").await);
+    assert!(trigger_exists(&conn, "nodes_fts_delete").await);
+    assert!(trigger_exists(&conn, "nodes_fts_update").await);
+
+    // Trait-dispatch triggers (also dropped by begin_bulk_load).
+    assert!(trigger_exists(&conn, "trait_dispatch_call_insert").await);
+    assert!(trigger_exists(&conn, "trait_dispatch_implements_insert").await);
+    assert!(trigger_exists(&conn, "trait_dispatch_call_delete").await);
+    assert!(trigger_exists(&conn, "trait_dispatch_implements_delete").await);
+}
+
+/// V15 is idempotent - running it on an already-healthy DB is a no-op.
+#[tokio::test]
+async fn test_migrate_v15_idempotent_on_healthy_db() {
+    let (_dir, conn, _db) = create_raw_db().await;
+    create_schema(&conn)
+        .await
+        .expect("create_schema should succeed");
+    set_user_version(&conn, 14).await;
+
+    assert!(migrate(&conn).await.expect("migrate should succeed"));
+    assert_eq!(get_user_version(&conn).await, latest_version());
+
+    // All indexes still present - no error, no data loss.
+    assert!(index_exists(&conn, "idx_edges_unique").await);
+    assert!(index_exists(&conn, "idx_nodes_file_path").await);
+    assert!(index_exists(&conn, "idx_unresolved_refs_from_node_id").await);
+}
+
+/// #359: `migrate_v15` must be a safe no-op on a partial schema. A DB whose
+/// `nodes` table predates `parent_id` and that has no `edges` /
+/// `unresolved_refs` / `nodes_fts` (an old or hand-rolled schema) must migrate
+/// without erroring on `no such table: edges` or `no such column: parent_id`.
+/// It still restores the node indexes it can, and never touches `parent_id`
+/// (which bulk load does not drop) or the absent tables.
+#[tokio::test]
+async fn test_migrate_v15_partial_schema_does_not_error() {
+    let (_dir, conn, _db) = create_raw_db().await;
+    // A minimal, pre-`parent_id` nodes table and nothing else.
+    conn.execute_batch(
+        "CREATE TABLE nodes (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL,
+            qualified_name TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            start_column INTEGER NOT NULL,
+            end_column INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );",
+    )
+    .await
+    .expect("create minimal nodes table");
+    // Only v15 runs.
+    set_user_version(&conn, 14).await;
+
+    assert!(
+        migrate(&conn)
+            .await
+            .expect("v15 must not error on a partial schema"),
+        "a pending v15 migration should report as run"
+    );
+    assert_eq!(get_user_version(&conn).await, latest_version());
+
+    // Restores the node indexes it can…
+    assert!(index_exists(&conn, "idx_nodes_kind").await);
+    assert!(index_exists(&conn, "idx_nodes_file_path_start_line").await);
+    // …without touching parent_id (never dropped by bulk load) or the absent
+    // edges table.
+    assert!(!column_exists(&conn, "nodes", "parent_id").await);
+    assert!(!index_exists(&conn, "idx_nodes_parent_id").await);
+    assert!(!index_exists(&conn, "idx_edges_source_kind").await);
+}
+
+/// `(type, notnull)` of `edges.resolved_by`, or `None` when it is absent.
+async fn resolved_by_column(conn: &Connection) -> Option<(String, i64)> {
+    let mut rows = conn
+        .query("PRAGMA table_info(edges)", ())
+        .await
+        .expect("table_info");
+    while let Some(row) = rows.next().await.expect("table_info row") {
+        let name: String = row.get(1).expect("name");
+        if name == "resolved_by" {
+            return Some((row.get(2).expect("type"), row.get(3).expect("notnull")));
+        }
+    }
+    None
+}
+
+/// Inserts two nodes, `a` and `b`, if missing.
+async fn insert_node_pair(conn: &Connection) {
+    for id in ["a", "b"] {
+        conn.execute(
+            &format!(
+                "INSERT OR IGNORE INTO nodes (id, kind, name, qualified_name, file_path, start_line, \
+                 end_line, start_column, end_column, updated_at) \
+                 VALUES ('{id}', 'function', '{id}', '{id}', 'x.rs', 0, 0, 0, 0, 0)"
+            ),
+            (),
+        )
+        .await
+        .expect("insert node");
+    }
+}
+
+/// Inserts an `a -> b` edge with the given `resolved_by` SQL literal.
+async fn insert_edge_with(conn: &Connection, resolved_by: &str) {
+    insert_node_pair(conn).await;
+    conn.execute(
+        &format!(
+            "INSERT INTO edges (source, target, kind, line, resolved_by) \
+             VALUES ('a', 'b', 'calls', 1, {resolved_by})"
+        ),
+        (),
+    )
+    .await
+    .expect("insert edge");
+}
+
+/// A fresh schema carries the v18 column: nullable INTEGER.
+#[tokio::test]
+async fn test_fresh_schema_has_integer_resolved_by() {
+    let (_dir, conn, _db) = create_raw_db().await;
+    create_schema(&conn).await.expect("create_schema");
+    assert_eq!(
+        resolved_by_column(&conn).await,
+        Some(("INTEGER".to_string(), 0))
+    );
+    insert_edge_with(&conn, "NULL").await;
+}
+
+/// V18 adds `edges.resolved_by` to a v17 database that lacks it, leaving the
+/// existing rows NULL.
+#[tokio::test]
+async fn test_migrate_v18_adds_resolved_by() {
+    let (_dir, conn, _db) = create_raw_db().await;
+    create_schema(&conn).await.expect("create_schema");
+    conn.execute_batch("ALTER TABLE edges DROP COLUMN resolved_by;")
+        .await
+        .expect("simulate a v17 edges table");
+    assert_eq!(resolved_by_column(&conn).await, None);
+    insert_node_pair(&conn).await;
+    conn.execute(
+        "INSERT INTO edges (source, target, kind, line) VALUES ('a', 'b', 'calls', 1)",
+        (),
+    )
+    .await
+    .expect("insert v17 edge");
+    set_user_version(&conn, 17).await;
+
+    assert!(migrate(&conn).await.expect("v18 migration"));
+    assert_eq!(get_user_version(&conn).await, latest_version());
+    assert_eq!(
+        resolved_by_column(&conn).await,
+        Some(("INTEGER".to_string(), 0))
+    );
+    let mut rows = conn
+        .query("SELECT resolved_by FROM edges", ())
+        .await
+        .expect("select");
+    let row = rows.next().await.expect("row").expect("one edge");
+    assert_eq!(row.get::<Option<i64>>(0).expect("value"), None);
+}
+
+/// V18 replaces the leftover `resolved_by TEXT NOT NULL DEFAULT 'direct'`
+/// column the 5.0-beta v8 migration added, which would reject NULL and
+/// stringify codes. That migration also indexed it, and `DROP COLUMN`
+/// refuses an indexed column, so the fixture carries the index too.
+#[tokio::test]
+async fn test_migrate_v18_replaces_legacy_text_column() {
+    let (_dir, conn, _db) = create_raw_db().await;
+    create_schema(&conn).await.expect("create_schema");
+    conn.execute_batch(
+        "ALTER TABLE edges DROP COLUMN resolved_by;
+         ALTER TABLE edges ADD COLUMN resolved_by TEXT NOT NULL DEFAULT 'direct';
+         CREATE INDEX idx_edges_resolved_by ON edges(resolved_by);",
+    )
+    .await
+    .expect("simulate the legacy column");
+    insert_edge_with(&conn, "'direct'").await;
+    set_user_version(&conn, 17).await;
+
+    assert!(migrate(&conn).await.expect("v18 migration"));
+    assert_eq!(get_user_version(&conn).await, latest_version());
+    assert_eq!(
+        resolved_by_column(&conn).await,
+        Some(("INTEGER".to_string(), 0))
+    );
+    assert!(!index_exists(&conn, "idx_edges_resolved_by").await);
+    // The legacy value is gone, NULL is accepted, and a code stays an integer.
+    conn.execute("DELETE FROM edges", ()).await.expect("clear");
+    insert_edge_with(&conn, "NULL").await;
+    conn.execute("UPDATE edges SET resolved_by = 3", ())
+        .await
+        .expect("update");
+    let mut rows = conn
+        .query("SELECT typeof(resolved_by) FROM edges", ())
+        .await
+        .expect("select");
+    let row = rows.next().await.expect("row").expect("one edge");
+    assert_eq!(row.get::<String>(0).expect("typeof"), "integer");
+}
+
+/// A database whose column is already the v18 shape is left alone.
+#[tokio::test]
+async fn test_migrate_v18_is_idempotent() {
+    let (_dir, conn, _db) = create_raw_db().await;
+    create_schema(&conn).await.expect("create_schema");
+    set_user_version(&conn, 17).await;
+    assert!(migrate(&conn).await.expect("v18 on an up-to-date column"));
+    assert_eq!(
+        resolved_by_column(&conn).await,
+        Some(("INTEGER".to_string(), 0))
+    );
+}
+
+/// A failed migration names the way out, and `sync --force`'s open rebuilds
+/// the database instead of failing the same way again.
+#[tokio::test]
+async fn test_failed_migration_is_recoverable_by_a_forced_rebuild() {
+    use tokensave::tokensave::TokenSave;
+    let dir = TempDir::new().expect("temp dir");
+    std::fs::write(
+        dir.path().join("lib.rs"),
+        "pub fn f() {}\npub fn g() { f() }\n",
+    )
+    .expect("write source");
+    let cg = TokenSave::init(dir.path()).await.expect("init");
+    cg.index_all().await.expect("index");
+    drop(cg);
+
+    // Make v18 fail: a legacy column that a view depends on cannot be dropped.
+    let db_path = dir.path().join(".tokensave").join("tokensave.db");
+    {
+        let db = Builder::new_local(&db_path).build().await.expect("db");
+        let conn = db.connect().expect("conn");
+        conn.execute_batch(
+            "ALTER TABLE edges DROP COLUMN resolved_by;
+             ALTER TABLE edges ADD COLUMN resolved_by TEXT NOT NULL DEFAULT 'direct';
+             CREATE VIEW legacy_provenance AS SELECT resolved_by FROM edges;
+             PRAGMA user_version = 17;",
+        )
+        .await
+        .expect("simulate a v17 database whose migration fails");
+    }
+
+    let err = match TokenSave::open(dir.path()).await {
+        Ok(_) => panic!("the migration should fail"),
+        Err(e) => e.to_string(),
+    };
+    assert!(err.contains("tokensave sync --force"), "{err}");
+
+    let cg = TokenSave::open_rebuilding_failed_migration(dir.path())
+        .await
+        .expect("a forced rebuild recovers");
+    assert!(!cg.get_nodes_by_name("f").await.expect("query").is_empty());
+}
+
+/// A failed migration is not rebuilt while another tokensave process holds
+/// the project's sync lock: deleting the database under it would leave that
+/// process writing to an unlinked file.
+#[tokio::test]
+async fn test_forced_rebuild_is_refused_while_the_sync_lock_is_held() {
+    use tokensave::tokensave::TokenSave;
+    let dir = TempDir::new().expect("temp dir");
+    std::fs::write(dir.path().join("lib.rs"), "pub fn f() {}\n").expect("write source");
+    let cg = TokenSave::init(dir.path()).await.expect("init");
+    cg.index_all().await.expect("index");
+    drop(cg);
+
+    let db_path = dir.path().join(".tokensave").join("tokensave.db");
+    {
+        let db = Builder::new_local(&db_path).build().await.expect("db");
+        let conn = db.connect().expect("conn");
+        conn.execute_batch(
+            "ALTER TABLE edges DROP COLUMN resolved_by;
+             ALTER TABLE edges ADD COLUMN resolved_by TEXT NOT NULL DEFAULT 'direct';
+             CREATE VIEW legacy_provenance AS SELECT resolved_by FROM edges;
+             PRAGMA user_version = 17;",
+        )
+        .await
+        .expect("simulate a v17 database whose migration fails");
+    }
+    let before = std::fs::read(&db_path).expect("read db");
+
+    // A live process (this one) holds the sync lock.
+    let lock = dir.path().join(".tokensave").join("sync.lock");
+    std::fs::write(&lock, std::process::id().to_string()).expect("write lock");
+
+    let err = match TokenSave::open_rebuilding_failed_migration(dir.path()).await {
+        Ok(_) => panic!("the rebuild must be refused"),
+        Err(e) => e.to_string(),
+    };
+    assert!(err.contains("Not rebuilding the database"), "{err}");
+    assert_eq!(std::fs::read(&db_path).expect("read db"), before);
+
+    // Once the lock is gone the same call rebuilds.
+    std::fs::remove_file(&lock).expect("release lock");
+    let cg = TokenSave::open_rebuilding_failed_migration(dir.path())
+        .await
+        .expect("rebuild");
+    assert!(!cg.get_nodes_by_name("f").await.expect("query").is_empty());
 }

@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-msbasic2")]
+
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::MsBasic2Extractor;
 use tokensave::types::*;
@@ -111,11 +113,7 @@ fn test_msbasic2_docstrings() {
         "LOG_A_MESSAGE should have docstring"
     );
     assert!(
-        log_fn
-            .docstring
-            .as_ref()
-            .unwrap()
-            .contains("LOG A MESSAGE"),
+        log_fn.docstring.as_ref().unwrap().contains("LOG A MESSAGE"),
         "docstring: {:?}",
         log_fn.docstring
     );

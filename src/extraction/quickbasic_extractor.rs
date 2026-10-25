@@ -1,14 +1,14 @@
-/// Tree-sitter based QuickBasic 4.5 source code extractor.
+/// Tree-sitter based `QuickBasic` 4.5 source code extractor.
 ///
-/// QuickBasic 4.5 is a superset of QBasic with separate compilation,
+/// `QuickBasic` 4.5 is a superset of `QBasic` with separate compilation,
 /// `$INCLUDE` metacommands, `REDIM`, and compiled `.EXE` output.
-/// The grammar is identical to QBasic (parsed by `tree-sitter-qbasic`),
+/// The grammar is identical to `QBasic` (parsed by `tree-sitter-qbasic`),
 /// so this extractor delegates to `QBasicExtractor` for all extraction
 /// and registers the QuickBasic-specific file extensions (`.bi`, `.bm`).
 use crate::extraction::qbasic_extractor::QBasicExtractor;
 use crate::types::ExtractionResult;
 
-/// Extracts code graph nodes and edges from QuickBasic 4.5 source files.
+/// Extracts code graph nodes and edges from `QuickBasic` 4.5 source files.
 ///
 /// Uses the same tree-sitter grammar and extraction logic as
 /// [`QBasicExtractor`] — the languages are syntactically identical.
@@ -19,7 +19,7 @@ impl crate::extraction::LanguageExtractor for QuickBasicExtractor {
         &["bi", "bm"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "QuickBASIC"
     }
 

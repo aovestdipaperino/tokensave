@@ -15,7 +15,7 @@ Everything runs locally. Your code never leaves your machine.
 3. [Connecting to Your Agent](#connecting-to-your-agent)
 4. [Exploring Your Codebase from the CLI](#exploring-your-codebase-from-the-cli)
 5. [Keeping the Index Fresh](#keeping-the-index-fresh)
-6. [The Background Daemon](#the-background-daemon)
+6. [How the MCP Server Refreshes the Index](#how-the-mcp-server-refreshes-the-index)
 7. [Checking Your Setup with Doctor](#checking-your-setup-with-doctor)
 8. [Finding Affected Tests](#finding-affected-tests)
 9. [MCP Tools for AI Agents](#mcp-tools-for-ai-agents)
@@ -40,7 +40,7 @@ brew install aovestdipaperino/tap/tokensave
 **Scoop (Windows):**
 
 ```powershell
-scoop bucket add tokensave https://github.com/aovestdipaperino/scoop-tokensave
+scoop bucket add tokensave https://github.com/aovestdipaperino/scoop-bucket
 scoop install tokensave
 ```
 
@@ -53,8 +53,8 @@ cargo install tokensave
 If you only work with a subset of languages, you can install a smaller binary:
 
 ```bash
-cargo install tokensave --features medium        # 20 languages
-cargo install tokensave --no-default-features    # 11 languages (lite)
+cargo install tokensave --features medium        # lite + 9 more languages
+cargo install tokensave --no-default-features    # lite tier only
 ```
 
 **Prebuilt binaries:**
@@ -69,7 +69,7 @@ Navigate to any project directory and run:
 
 ```bash
 cd /path/to/your/project
-tokensave sync
+tokensave init
 ```
 
 Tokensave will scan every supported source file, extract symbols (functions, classes, methods, imports, type relationships, complexity metrics), and store everything in a local database at `.tokensave/tokensave.db`. You'll see a spinner with file-by-file progress and an ETA.
@@ -88,9 +88,19 @@ tokensave status --short
 
 For machine-readable output, use `--json`.
 
+### Why `init` and `sync` are separate
+
+Initialization (`tokensave init`) and incremental updates (`tokensave sync`) are deliberately separate commands.
+
+Tokensave installs a global git post-commit hook that runs `tokensave sync` after every commit to keep the index fresh. If `sync` were allowed to create a new database when none existed, it would silently bootstrap a `.tokensave/` directory in every git repository on your machine -- even ones you never intended to index. By requiring an explicit `init`, only projects you opt into get a database. The hook runs harmlessly (exits with a non-zero status, output suppressed) in all other repos.
+
+In short:
+- **`tokensave init`** -- one-time setup. Creates the database and performs a full index. Errors if already initialized.
+- **`tokensave sync`** -- ongoing updates. Requires an existing database. Errors if the project was never initialized.
+
 ### Incremental syncs
 
-After the initial full index, every subsequent `tokensave sync` is incremental. It detects which files changed since the last sync (via content hashing) and only re-indexes those files. On a typical commit-sized change, this takes under a second.
+After the initial full index, every subsequent `tokensave sync` is incremental. It detects which files changed since the last sync (via content hashing) and only re-indexes those files; files deleted from disk are pruned from the graph along with their symbols and edges. On a typical commit-sized change, this takes under a second.
 
 ### Force re-index
 
@@ -116,6 +126,29 @@ The `--doctor` flag lists every file that was added, modified, or removed during
 tokensave sync --doctor
 ```
 
+### Diagnosing slow syncs
+
+If a sync appears stuck or is taking longer than expected, add `--verbose` (`-v`) to see per-phase diagnostics with file counts and timings:
+
+```bash
+tokensave sync --verbose
+```
+
+Example output:
+
+```
+  [verbose] scanned 10432 files in 2.3s
+  [verbose] stat-checked 10432 files in 0.1s
+  [verbose] changes: 3 new, 847 stat-changed, 0 removed, 9582 unchanged
+  [verbose] hashed 850 files in 1.2s (0 read errors)
+  [verbose] content check: 12 modified, 838 mtime-only
+  [verbose] indexed 15 files (204 nodes, 189 edges) in 0.3s
+  [verbose] resolved 39841 references in 0.5s
+✔ sync done — 3 added, 12 modified, 0 removed in 4412ms
+```
+
+This also works with `--force` for full re-index diagnostics.
+
 ### Respecting .gitignore
 
 By default, tokensave respects your `.gitignore` rules and skips ignored files during indexing. You can check the current setting or toggle it:
@@ -132,6 +165,54 @@ Don't forget to add `.tokensave` to your `.gitignore` so the database doesn't ge
 echo .tokensave >> .gitignore
 ```
 
+#### Projects without a Git repository
+
+`.gitignore` filtering does **not** require a Git repository. tokensave reads
+ignore files directly rather than asking Git, so a `.gitignore` in your project
+root is honored even when there is no `.git` directory — useful under TFVC,
+Perforce, SVN, or no version control at all.
+
+What a non-repo project does lose is the exclude sources Git itself supplies:
+`.git/info/exclude` and your global excludes file. If you need SCM-independent
+rules, set `exclude` globs in `.tokensave/config.json`:
+
+```json
+{
+  "exclude": ["**/build/**", "**/obj/**", "bin/**"]
+}
+```
+
+`tokensave init --skip-folder <dir>` writes to that same list.
+
+#### Indexing hidden directories
+
+By default, tokensave prunes all hidden directories (dot-prefixed) during the file walk to avoid indexing massive dependency and config folders (like `.venv`, `.cargo`, or `.next`).
+
+If your project contains code in hidden directories (e.g., `.github/scripts/`), you must explicitly opt-in via the `include` array in `.tokensave/config.json`. **Crucially, you must include both the directory and its contents**, because the walker prunes at the directory level before glob matching happens:
+
+```json
+{
+  "include": [
+    ".github",
+    ".github/**"
+  ]
+}
+```
+
+#### Indexing a gitignored path
+
+`include` does not override `.gitignore`. To index one specific path that a `.gitignore` rule covers (for example generated code inside one repo of a multi-repo workspace) without turning gitignore handling off for the whole project, list it in `force_include`:
+
+```json
+{
+  "force_include": [
+    "services/api/generated/**"
+  ]
+}
+```
+
+Only files matching these globs are un-ignored; every other `.gitignore` rule keeps applying. The walk starts at the glob's leading literal directories (`services/api/generated` above), so prefer a specific prefix over a leading `**`. `exclude` globs still win over `force_include`, and the size limit still applies. Hidden paths the glob names are admitted too, so `include` is not needed alongside it.
+
 ---
 
 ## Connecting to Your Agent
@@ -144,27 +225,91 @@ Tokensave works as an MCP (Model Context Protocol) server. AI coding agents conn
 tokensave install
 ```
 
-This is the default. It registers the MCP server in `~/.claude/settings.json`, grants tool permissions so Claude doesn't have to ask you every time, installs a `PreToolUse` hook that redirects Claude away from spawning expensive Explore agents, and adds prompt rules to `~/.claude/CLAUDE.md` that tell Claude to prefer tokensave tools.
+This is the default. It registers the MCP server in `~/.claude/settings.json`, grants tool permissions so Claude doesn't have to ask you every time, installs a `PreToolUse` hook that redirects Claude away from spawning expensive Explore agents and away from symbol-shaped grep/rg searches that a tokensave tool answers more cheaply, and writes prompt rules to `~/.claude/rules/tokensave.md` that tell Claude to prefer tokensave tools.
+
+That rules file is rewritten on install and on upgrade so improvements to the rules reach you. To add rules of your own, write them below its last line (the `tokensave-managed rules end here` marker): text there is kept on every refresh. To keep the whole file as yours, for example a team-maintained version, set `manage_rules = false` in `~/.tokensave/config.toml`. Install, reinstall, the upgrade resync and uninstall then leave every tokensave rules file alone, and `doctor` reports it as user-managed. `TOKENSAVE_MANAGE_RULES=0` does the same for one run.
+
+By default the tool grant is an explicit list (one `permissions.allow` entry per tool). Pass `--wildcard-permissions` to grant them via a single compact `mcp__tokensave__*` entry instead — both forms are fully honored by Claude Code, so this is purely a preference. The choice is remembered in `~/.tokensave/config.toml` (`wildcard_permissions`) for global installs; pass `--explicit-permissions` to switch back.
 
 ### Other agents
 
-Tokensave supports nine agents. Pass `--agent` to install for a specific one:
+Tokensave supports many agents. Pass `--agent` to install for a specific one:
 
 ```bash
 tokensave install --agent claude      # Claude Code (default)
 tokensave install --agent opencode    # OpenCode
 tokensave install --agent codex       # OpenAI Codex CLI
 tokensave install --agent gemini      # Gemini CLI
-tokensave install --agent copilot     # GitHub Copilot CLI
+tokensave install --agent qwen        # Qwen Code
+tokensave install --agent copilot     # GitHub Copilot (VS Code, JetBrains, CLI)
 tokensave install --agent cursor      # Cursor
+tokensave install --agent droid       # Factory Droid
 tokensave install --agent zed         # Zed
 tokensave install --agent cline       # Cline
 tokensave install --agent roo-code    # Roo Code
+tokensave install --agent antigravity # Antigravity (Windsurf)
+tokensave install --agent kilo        # Kilo CLI
+tokensave install --agent kiro        # AWS Kiro
+tokensave install --agent kimi        # Moonshot Kimi CLI
+tokensave install --agent vibe        # Mistral Vibe
+tokensave install --agent grok        # Grok Build (xAI)
+tokensave install --agent auggie      # AugmentCode
+tokensave install --agent pi          # Pi (pi.dev)
+tokensave install --agent plank       # Plank (macOS only)
 ```
+
+Repeat `--agent` to install several agents in one run — the permission grant
+and the git-hook prompt only fire once per command:
+
+```bash
+tokensave install --agent claude --agent cursor --agent droid
+```
+
+You can also pre-decide the global git `post-commit` hook prompt — useful in
+bash scripts and onboarding playbooks where a `read_line` would otherwise block:
+
+```bash
+tokensave install --git-hook yes   # install the hook without asking
+tokensave install --git-hook no    # skip the hook without asking
+tokensave install --git-hook default  # preserve the interactive prompt (default when flag is omitted)
+```
+
+To remove the hooks again, see [Removing the git hooks](#removing-the-git-hooks).
 
 Each agent gets an appropriate configuration: MCP server registration, tool permissions (where the agent supports them), and prompt rules in the agent's instruction file.
 
-The install is idempotent — safe to run again after upgrading tokensave. You'll also be offered the option to set up a global git post-commit hook and the background daemon (more on those below).
+Kiro setup registers tokensave in `~/.kiro/settings/mcp.json`, writes steering to
+`~/.kiro/steering/tokensave.md`, and writes a tokensave-managed agent that loads
+that steering as a resource while keeping Kiro's default prompt. The managed
+agent exposes all configured tools and pre-approves Kiro built-ins plus the
+tokensave MCP server, then adds hooks that block research delegation until
+tokensave MCP tools have been tried and sync the index after Kiro writes files.
+If you already have a different custom default agent or a user-managed
+`tokensave` agent, tokensave leaves it alone and prints a warning.
+
+The install is idempotent — safe to run again after upgrading tokensave. You'll also be offered the option to set up a global git post-commit hook (more on that below).
+
+#### Config backups
+
+Whenever tokensave rewrites an agent config file — on `install`, on `uninstall`, or when the `doctor` auto-repairs hooks — it first copies the original to a sibling `.bak` file in the same directory. For example:
+
+- `~/.codex/config.toml` → `~/.codex/config.toml.bak`
+- `~/.cursor/mcp.json` → `~/.cursor/mcp.json.bak`
+- `~/.claude.json` → `~/.claude.json.bak`
+
+If anything goes wrong (a typo, an unexpected rewrite, an unknown bug), restore with `cp <path>.bak <path>`. The `.bak` is always the **exact bytes** of whatever was on disk just before the write; tokensave never deletes or rotates it, so the most recent backup is the file you want.
+
+### Project-local install
+
+By default `tokensave install` registers the MCP server in your **global** agent config (e.g. `~/.claude.json`). To register tokensave for just the current project instead, add `--local`:
+
+```bash
+tokensave install --local --agent claude
+```
+
+This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`. Supported agents: **claude, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie, omp, plank, pi** (each writes its own project file, e.g. `.cursor/mcp.json`, `.factory/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`, `.augment/settings.json`, `.omp/mcp.json`, `.mcp.json` for plank, `.pi/mcp.json` and `./AGENTS.md` for pi). Other agents have no project-scoped config and report an error with `--local`.
+
+Remove a project-local install with `tokensave uninstall --local`.
 
 ### Removing an integration
 
@@ -222,6 +367,20 @@ tokensave serve
 
 This starts the MCP server over stdio. You normally don't need to run this yourself — the agent integration handles it. But it's useful for debugging or connecting custom tools.
 
+#### Starting outside a project
+
+If `serve` starts in a folder that is not inside an indexed project (a scratch folder, a session with no project, or `-p` pointing at a folder with no index), it no longer exits. It starts with **no default project**: `initialize` succeeds and lists the registered projects, and every tool call passes `graph_root` with one of them. `tokensave_status` without `graph_root` answers with that list. Any other call without `graph_root` gets an error that names the registered projects. An explicit `-p` without an index never falls back to another project; without `-p`, the only registered project is still served as before.
+
+### Working from a subdirectory
+
+You can open your AI agent from any subdirectory of an indexed project. Tokensave will walk up the directory tree to find the nearest `.tokensave/` database — similar to how git finds `.git/`.
+
+When the MCP server starts from a subdirectory, listing tools like `tokensave_files`, `tokensave_search`, and `tokensave_context` automatically scope their results to that subdirectory. This is useful in monorepos or large projects where you want to focus on one area.
+
+Graph traversal tools (`tokensave_callers`, `tokensave_callees`, `tokensave_impact`, etc.) remain unscoped so you can still follow connections across directory boundaries.
+
+You can always override the automatic scope by passing an explicit `path` parameter to any tool. `tokensave_status` shows the active scope prefix when one is in effect.
+
 ---
 
 ## Keeping the Index Fresh
@@ -235,6 +394,66 @@ Run `tokensave sync` whenever you want. It's incremental and fast.
 ### Post-commit hook
 
 During `tokensave install`, you'll be offered a global git `post-commit` hook. If you accept, tokensave will automatically sync in the background after every git commit across all your repos. The hook is a no-op in repos that don't have a `.tokensave/` directory.
+
+If you're scripting the install (CI, dotfiles bootstrap, onboarding playbook), pass `--git-hook yes` to install the hook without prompting, or `--git-hook no` to skip it. Omitting the flag preserves the interactive prompt.
+
+#### Per-repository hooks instead of global ones
+
+The global hooks work by claiming `core.hooksPath`, which is a **single
+machine-wide setting**. It overrides git's default of a separate `.git/hooks`
+per checkout, so every repository on the machine is forced to share one hook
+directory — which is wrong if your projects need different tooling (#455).
+
+Per-repository hooks avoid that entirely. They go in the repository's own hook
+directory and touch no git config at all, so nothing else on the machine
+changes:
+
+```bash
+tokensave githooks on --local      # install into this repository only
+tokensave githooks --local         # show what this repository has
+tokensave githooks off --local     # remove them from this repository
+```
+
+`tokensave init` offers them for you. Accept and the three hooks are installed;
+decline and nothing is written. It only asks on a terminal, so scripted and CI
+installs are unaffected, and it stays quiet when tokensave's global hooks are
+already installed — a repository covered by both would sync twice per commit.
+
+```bash
+tokensave init --git-hook       # install without asking
+tokensave init --no-git-hook    # don't ask, don't install
+```
+
+Writing is additive: a repository that already has a `post-commit` — husky,
+pre-commit, or one you wrote — keeps everything it had and gains a marked
+tokensave section. Linked worktrees share the checkout's hook directory, which
+is what git itself reads, so installing from inside a worktree does the right
+thing.
+
+One thing to watch: if a `core.hooksPath` is set for the repository, from any
+config scope, git reads hooks from *there* and never looks at the repository's
+own directory. Local hooks would be written but never run, so tokensave says so
+rather than reporting a success that is not one.
+
+#### Removing the git hooks
+
+The hooks are global and outlive every agent integration, so removing tokensave from your agents does not stop them on its own (#420). Two ways to remove them:
+
+```bash
+tokensave githooks              # show what is installed, and where
+tokensave githooks off          # remove tokensave's global hooks
+tokensave githooks off --local  # remove this repository's own hooks
+tokensave uninstall             # removes the hooks along with all agent integrations
+tokensave uninstall --keep-git-hooks   # ...or keep them
+```
+
+Removal is deliberately conservative:
+
+- A hook file that contains anything you wrote keeps that content, and loses only tokensave's marked section.
+- A hook file that is nothing but tokensave's own content is deleted.
+- `core.hooksPath` is unset, and the hooks directory removed, only when it is tokensave's own default (`~/.config/git/hooks`), it is left empty, and this run actually removed a tokensave hook. A path you configured yourself is never touched.
+
+If the directory still holds hooks tokensave did not write, it is left in place and the command says so.
 
 You can also set it up manually:
 
@@ -254,52 +473,320 @@ cp scripts/post-commit .git/hooks/post-commit
 chmod +x .git/hooks/post-commit
 ```
 
-### Background daemon
+### The MCP server
 
-The daemon watches all your tracked projects for file changes and syncs automatically. See the next section.
+When you start the tokensave MCP server (e.g. via your agent), it refreshes the index on demand as you use it. See the next section.
 
 ---
 
-## The Background Daemon
+## How the MCP Server Refreshes the Index
 
-The background daemon monitors all projects you've indexed and runs incremental syncs whenever files change on disk. This means your index is always up to date, even between commits.
+The server keeps the index fresh on demand rather than by watching the
+filesystem, in two places:
 
-### Starting the daemon
+- **When the server connects**, a catch-up sync reconciles changes made
+  while no server was running.
+- **At the start of every MCP tool call**, a staleness check walks the
+  project tree — the same gitignore-aware walk `tokensave sync` uses — and
+  re-indexes what changed. That check is gated by a 30-second cooldown, so
+  calls inside the same window cost at most one walk.
+
+So an edit is picked up by the next tool call once the cooldown has
+elapsed, not the moment you save. If you need the index current sooner,
+run `tokensave sync`.
+
+There is no background watcher and no daemon. `tokensave serve` embedded an
+OS-level watcher from 6.0.0, when daemon mode was removed, until `f7f7c9b`
+removed it in 6.1.1 (#80); the CHANGELOG entry for that release attributes the
+removal to CPU and memory pressure on large monorepos. The watcher is older
+than the embedding: `ProjectWatcher` arrived in 3.5.0, driven then by the
+daemon and the CLI. The on-demand model is its replacement.
+
+Multiple MCP servers on the same project (e.g. two agents) coordinate via
+a per-project sync lock: only one sync runs at a time.
+
+### Concurrent tool calls
+
+The server answers read-only tool calls side by side, up to four at a time
+(#685). A read-only call only reads the graph, so several of them can run
+without interfering, and a burst of parallel searches no longer queues behind
+each other the way a request-at-a-time server made it.
+
+Calls that change the index — an edit, a rename, a sync — still run alone, in
+the order they arrived, so they never overlap each other or a read-only call.
+Responses carry the id of their request, so a client that sends several
+requests before reading the answers matches them by id, not by order.
+
+### What an automatic sync will not do
+
+Both refreshes above are *automatic* — you did not ask for them — so they
+are bounded, and they decline rather than run in two cases:
+
+- **The project has no indexed files.** Building the first index is
+  `tokensave init`'s job: it is explicit, it reports progress, and you chose
+  the directory. A background task will not index a project from scratch by
+  inference. Without this, a server started in a directory that was never
+  initialised would try to index the whole tree — on a home directory that
+  reached tens of gigabytes of memory before anyone noticed (#396).
+- **More than `max_auto_sync_files` files are stale** (default 2000). The
+  30-second cooldown bounds how *often* a sync runs, never what one costs,
+  so the file count is capped separately.
+- **The working tree has moved to a different branch than the server is
+  serving.** A running server resolves its branch once, at startup, so a
+  `git checkout` underneath it does not change which database it holds.
+  Syncing then would write the new branch's files into the old branch's
+  index, which is how `main` ends up holding a file that only ever existed
+  on `feature` (#400). While the drift lasts, local graph tools also refuse
+  to answer from the old branch's index: the call fails with an error naming
+  both branches and the recovery action. Restart the MCP server to serve the
+  new branch; `tokensave_status` stays callable so you can see what is being
+  served. This applies only to projects using per-branch databases — a
+  single-index project is unaffected by a checkout.
+
+Either way the server prints what it skipped and what to run. `tokensave sync`
+is deliberately unbounded and is the supported way to index a large change on
+purpose. To change the ceiling, set `max_auto_sync_files` in
+`.tokensave/config.json`; `0` disables the file-count check (the empty-index
+guard always applies).
+
+The `watcher_debounce` setting in `~/.tokensave/config.toml` is left over
+from that watcher. It is still accepted, but nothing reads it, and the
+30-second cooldown is not configurable.
+
+### Interrupting a sync
+
+`Ctrl-C` and `kill` stop a sync in progress rather than waiting for it to
+finish. A sync polls for the request in the phases that dominate its runtime —
+the parallel extraction pass and the per-file write loop — so on a large tree
+it stops in well under a second instead of minutes.
+
+Stopping is always safe. The index keeps its stale marker, so the next sync
+redoes the abandoned work, and the sync lock is released so that next sync can
+run at all. What the message tells you is how far it got:
+
+- *"no partial results were committed"* — it stopped before anything was
+  written.
+- *"partway through writing"* — some files were updated and others were not.
+  This is the same state a power cut would leave, and the next `tokensave
+  sync` resolves it.
+
+An MCP server is subject to the same thing: a `kill` during its automatic
+catch-up sync now takes effect during the sync rather than after it.
+
+### Index scope warnings
+
+A `serve` warns on stderr, once at startup, about an index whose *scope* looks
+wrong rather than whose contents do:
+
+- **Your home directory is initialised as a project.** Every server started
+  there indexes your whole home tree. This is reported wherever you are
+  standing, because the whole problem with this state is that nobody is
+  standing in it when it does the damage (#450).
+- **The index is larger than 5 GB.** A server maps the whole file.
+
+Both are warnings, not refusals, and the server starts normally. An index that
+already exists is a working setup, and refusing it retroactively would decide
+for you which of your projects stop working. If you meant it, set
+`suppress_scope_warning: true` in `.tokensave/config.json` to stop being told.
+`tokensave doctor` reports the same two conditions and ignores the switch.
+
+### Orphaned servers
+
+On Unix, a `serve` whose launching process has died exits on its own within
+about 30 seconds. A host that exits without closing the server's stdin used to
+leave the server running indefinitely with its whole index mapped, to be found
+and killed by hand (#450). This covers a *dead* parent only; duplicate servers
+under a still-live host are a host-side problem (#436).
+
+### Bounding a host that leaks servers
+
+Some MCP hosts start a **new** server per subagent and keep every one of them
+alive after the subagent that used it has finished. They are all children of
+the same still-live supervisor, so nothing ever closes their stdin and the EOF
+that would normally stop them never arrives; each one goes on holding its index
+open. A four-server pile-up measured on Windows cost roughly 113 MB private
+memory and 922 handles.
+
+This is the host's bug — the same hosts retain duplicate fleets of unrelated
+MCP servers too — and tokensave cannot detect it: a parent-PID watchdog has
+nothing to key on, because the parent is alive. What tokensave can do is stop
+waiting:
 
 ```bash
-tokensave daemon
+tokensave serve --idle-timeout-secs 900
 ```
 
-This forks into the background. To run it in the foreground (useful for debugging), pass `--foreground`:
+The server exits after that many seconds with no request, through the ordinary
+graceful shutdown (counters persisted, WAL checkpointed, registry entry
+removed).
+
+**Off by default, and check one thing before turning it on.** Whether this is
+safe depends on your host starting a fresh server when a tool is called after
+an idle exit. Most do; tokensave cannot verify it for yours, and if yours does
+not, tools stop working until the host is restarted. Try it on one project
+first.
+
+Two things it deliberately does not do:
+
+- **It never interrupts a request.** The deadline is evaluated only while the
+  server is parked waiting for the next request, and the timer restarts each
+  time it parks — so a request slower than the timeout cannot be cut off, and a
+  server busier than its timeout never expires.
+- **It never cuts off startup work.** A deadline landing while the startup
+  catch-up sync or a version-bump reindex is still running is deferred, and
+  waits out another full window.
+
+This is host-integration policy rather than project state, so it lives on the
+command line only — there is no config-file equivalent, and `tokensave install`
+does not add it to generated host config for you.
+
+### Finding which server holds an index
+
+A `serve` process keeps an exclusive handle on its database for as long as it
+runs — file watching is why the process is long-lived, and the handle comes
+with it. So an indexed directory cannot be deleted while a client has a server
+up. On Linux and macOS the delete succeeds and the space is reclaimed when the
+last handle closes; on Windows it fails outright:
+
+```
+Remove-Item: The process cannot access the file
+'...\.tokensave\tokensave.db' because it is being used by another process.
+```
+
+This bites most often on git worktrees: a worktree per task, each one indexed,
+each one cleaned up afterwards. `git worktree remove` deregisters the worktree
+even when the file delete fails, which leaves git metadata pruned and the
+directory still on disk.
+
+`tokensave servers` names the holder:
 
 ```bash
-tokensave daemon --foreground
+tokensave servers
 ```
 
-### Checking daemon status
+```
+  PID  VERSION  PROJECT
+87904   7.11.0  /Users/you/Code/app/worktrees/feature-x
+```
+
+A per-branch database is not derivable from the project root, so it is shown
+on its own line when it is not the default `<project>/.tokensave/tokensave.db`.
+
+Most servers carry no project in their command line — the host supplies it
+through the global database or MCP `initialize` roots rather than `--path` — so
+a process lister cannot answer this and neither can `ps`.
+
+#### Reading the registry directly
+
+Each running server writes `~/.tokensave/servers/<pid>.json`. Wrappers should
+read these files rather than shelling out; `tokensave servers --json` emits the
+same objects.
+
+```json
+{
+  "pid": 87904,
+  "started_at": 1788099755,
+  "project_path": "/Users/you/Code/app",
+  "argv_path": "/Users/you/Code/app",
+  "db_path": "/Users/you/Code/app/.tokensave/tokensave.db",
+  "version": "7.11.0"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `pid` | OS process id; also the filename stem |
+| `started_at` | Process start time, Unix epoch seconds, as the OS reports it. With `pid` this survives PID reuse |
+| `project_path` | The project root the server resolved and is serving |
+| `argv_path` | The root as given on the command line, or `null` when the host supplied it another way |
+| `db_path` | The database actually held open — **match on this** for the index → process direction |
+| `version` | The tokensave version serving, so a stale binary is visible |
+
+The registry lives in the global directory rather than beside the index on
+purpose: a PID file inside `.tokensave/` would sit in the one directory whose
+defining problem is that it cannot be deleted, and would vanish with the
+checkout being cleaned up.
+
+Entries are removed on clean exit. A hard kill skips that, so stale entries are
+also reaped whenever a server starts and whenever the registry is read — an
+entry never outlives one listing.
+
+#### There is no `servers --stop`
+
+Stopping is deliberately left to you. MCP clients restart their servers, so
+"stop them all" does not converge: new processes appear while old ones are
+being killed. Terminating is only safe for someone who knows whether the host
+is running and can stop it first, which tokensave cannot know. Identify the
+holder here, then stop the client — or kill that one PID, which `serve` now
+honours (a `SIGTERM` used to be ignored; fixed in #436/#450).
+
+### Strict mode: refuse worktree content mismatches
+
+Branch drift is now refused by default (see the sync safeguards above), so
+`strict_tree` remains relevant only to the separate different-worktree
+mismatch described here: the index belongs to a **different git worktree**
+than the one you are in. Branch drift, where the server is serving a
+**different branch** than your working tree is on, no longer needs the
+opt-in (see
+[BRANCHING-USER-GUIDE.md](BRANCHING-USER-GUIDE.md#how-syncing-interacts-with-branches)).
+
+For a different git worktree, tokensave answers with a warning by default,
+or refuses when `strict_tree` is enabled.
+
+For worktree-heavy or branch-heavy workflows, a warning may not be enough. An
+agent rule that says "always check tokensave before reading files" inherits the
+wrong-tree answer with no signal anything is off, and an empty result reads as
+"no such symbol" rather than "wrong tree". If a wrong answer is worse than no
+answer for you, set `strict_tree` in `.tokensave/config.json`:
+
+```json
+{
+  "strict_tree": true
+}
+```
+
+Every `tokensave_*` tool then **fails** with an error naming both trees (or both
+branches) and the remedy, instead of answering. `tokensave_status` stays
+callable so you can still see what is being served and why the refusal
+happened.
+
+It stays off by default deliberately: sharing one index across a family of
+worktrees is a legitimate setup, and turning that into a hard error without
+being asked would be a bad surprise. Nothing new is detected when you enable
+it — the same conditions were already detected, this only changes whether they
+warn or refuse.
+
+### CLI-Only Workflows
+
+If you don't keep an agent attached, no MCP server is running to refresh the
+index. Use a git post-commit hook to refresh it on commit:
 
 ```bash
-tokensave daemon --status
+cp scripts/post-commit .git/hooks/post-commit
+chmod +x .git/hooks/post-commit
 ```
 
-### Stopping the daemon
+Or run `tokensave sync` manually when you need a fresh index.
 
-```bash
-tokensave daemon --stop
-```
+### Upgrading from 5.x
 
-### Autostart on boot
+The standalone `tokensave daemon` command and its system-service autostart
+were removed in 6.0.0. If you had a daemon autostart installed under 5.x,
+remove it manually.
 
-You can register the daemon as a system service so it starts automatically when you log in:
+If you don't remember the exact service/plist name, list them first:
 
-```bash
-tokensave daemon --enable-autostart    # install launchd (macOS) / systemd (Linux) / Windows Service
-tokensave daemon --disable-autostart   # remove the autostart service
-```
+- macOS: `launchctl list | grep tokensave`
+- Linux: `systemctl --user list-units | grep tokensave`
+- Windows: `sc.exe query state= all | findstr -i tokensave`
 
-### Upgrade-aware restarts
+Then remove the entry matching your install:
 
-When you upgrade tokensave (via `brew upgrade`, `cargo install`, `scoop update`, or any other method), the running daemon detects that its binary has been replaced and automatically restarts with the new version. You don't need to manually stop and start it.
+- macOS: `launchctl unload ~/Library/LaunchAgents/com.tokensave.daemon.plist && rm ~/Library/LaunchAgents/com.tokensave.daemon.plist`
+- Linux: `systemctl --user disable --now tokensave-daemon && rm ~/.config/systemd/user/tokensave-daemon.service`
+- Windows: `sc.exe delete tokensave-daemon` (from an elevated terminal)
+
+Once your agent is attached, the MCP server keeps the index fresh on its own.
 
 ---
 
@@ -316,7 +803,7 @@ It verifies:
 - **Binary** — location and version
 - **Current project** — whether a `.tokensave/` index exists and the database is healthy
 - **Global database** — the cross-project database at `~/.tokensave/global.db`
-- **User config** — `~/.tokensave/config.toml` and upload settings
+- **User config** — `~/.tokensave/config.toml` (plus machine-local `state.toml`) and upload settings
 - **Agent integrations** — MCP server registration, hook installation, tool permissions, prompt rules
 - **Network** — connectivity to the worldwide counter and GitHub releases API
 
@@ -327,7 +814,10 @@ To check only a specific agent:
 ```bash
 tokensave doctor --agent claude
 tokensave doctor --agent codex
+tokensave doctor --agent kiro
 ```
+
+The accepted agent values are the same values supported by `tokensave install --agent`.
 
 ---
 
@@ -362,17 +852,92 @@ tokensave affected src/lib.rs --quiet            # just file paths, no decoratio
 
 ## MCP Tools for AI Agents
 
-When running as an MCP server, tokensave exposes 34 tools that AI agents can call. Here's what they do, grouped by purpose.
+When running as an MCP server, tokensave exposes more than 80 tools that AI agents can call. The most commonly used are grouped below by purpose; run `tokensave tool` for the complete list with one-line descriptions.
+
+### Listing fewer tools
+
+A client sends the schema of every listed tool on every turn, before any tool is called, so the full list costs context whether or not the tools are used. By default the server lists 11 core tools: `context`, `search`, `status`, `read`, `body`, `files`, `callers`, `callees`, `impact`, `str_replace` and `multi_str_replace`, plus `tokensave_more`, which lists the tools of one area (`analysis`, `edit`, `git`, `memory`, `navigate`, or `all`) for the rest of the session. The server announces the change, so the client fetches the list again. The `initialize` instructions name the core tools and the areas, so an agent that has not seen a tool's schema still knows how to reach it.
+
+The setting chooses what is listed, not what runs: a tool that is not listed still answers a call, so permission lists and hooks keep working. To list every tool, set `"tools": "full"` in `.tokensave/config.json` or `TOKENSAVE_TOOLS=full` (the environment variable wins). A `"tools": "full"` written by 7.13.0, which wrote that value into every config it saved, is read as the old default; set it again after upgrading to keep the full list.
 
 ### Core exploration
 
 | Tool | What it does |
 |------|-------------|
 | `tokensave_context` | Given a task description, returns relevant symbols, relationships, and code snippets. This is the go-to starting point for any coding task. |
-| `tokensave_search` | Find symbols by name. Supports filtering by kind (function, class, method, etc.). |
+| `tokensave_search` | Find symbols by name. Supports filtering by kind (function, class, method, etc.), or `literal: true` for an exact-substring scan of file contents. |
 | `tokensave_node` | Get full details for a specific symbol: source code, location, complexity metrics, and relationships. |
 | `tokensave_files` | List indexed files, optionally filtered by directory or glob pattern. |
 | `tokensave_status` | Index statistics: file counts, symbol counts, language distribution, and tokens saved. |
+| `tokensave_annotations` | Attribute/annotation/decorator introspection: histogram of all annotations in the project, or per-site listings filtered by name, file, or target kind. |
+| `tokensave_doc` | Companion Markdown documentation for a source file: the doc's content, every file it covers, and whether the code changed after the doc was last touched. Often answers the question without reading the file at all. |
+| `tokensave_dependencies` | Package-manifest introspection across 17 ecosystems: workspace summary with license surface and version drift, per-package lookup, and per-member listings. |
+
+#### Literal search: finding strings, not symbols
+
+`tokensave_search` with `literal: true` is a different question from the
+default: an exact-substring, case-sensitive scan of file *contents*, which
+finds text that lives inside function bodies and never appears in a symbol
+name -- a runtime error message, a feature-flag key, a route. Each hit is
+reported as `file` / `line` / `text`, plus the innermost symbol enclosing it
+(`enclosing: null` where there is none).
+
+It reads bytes and needs no parser, but it scans the files the index holds, so
+its reach is the index's reach. A file gets indexed when a language extractor
+handles its extension **or** when the extension is listed in
+`artifact_extensions` (see the artifacts section in `README.md`). A tracked
+`.html` template or `.css` stylesheet is usually neither, and templates and
+stylesheets are exactly where a flag's user-facing label or a CSS class
+actually lives -- so add those extensions to `artifact_extensions` and run
+`tokensave sync -f` if you want "where is this string used" answered across
+them.
+
+When a literal search could not reach every tracked file, the response carries
+an `unscanned` block giving the number of files and a per-extension breakdown,
+so a partial answer is never mistaken for a complete one:
+
+```json
+{
+  "literal": true, "query": "someFlag", "count": 1,
+  "matches": [ { "file": "config/index.js", "line": 1, "text": "..." } ],
+  "unscanned": {
+    "files": 2,
+    "extensions": [ { "extension": "html", "files": 1 },
+                    { "extension": "css", "files": 1 } ],
+    "reason": "The index holds no row for these tracked files, ...",
+    "remedy": "... add its extension to `artifact_extensions` ..."
+  }
+}
+```
+
+Files you excluded yourself are not reported there: config `exclude` globs,
+project query-ignore rules, and the call's own `path_include`/`path_exclude`
+and scope prefix all apply to the report as well as to the scan, so it names
+only files you asked about and the index could not answer for.
+
+Two arguments bound how long a literal scan runs and how much it counts:
+
+- `exact_total` (default `true`) keeps counting past the limit, so `total` is
+  the number of matches in the whole project. Pass `false` to stop the scan
+  as soon as `limit` matches are found: the scan then reads only part of the
+  project and answers sooner.
+- `timeout_ms` (default `30000`, `0` disables it) ends the scan when the
+  budget runs out and answers with the matches found so far.
+
+Either way the response says what it is: `total_exact` is `false` when the
+scan did not reach the end of the project, and `total` is then a lower bound
+rather than the number of matches in the project. A scan that ran out of time
+also carries `timed_out: true` and a note saying so.
+
+```json
+{
+  "literal": true, "query": "someFlag", "count": 10,
+  "total": 10, "total_exact": false, "truncated": true,
+  "timed_out": true,
+  "note": "The scan reached its time budget and stopped early. ...",
+  "matches": [ ... ]
+}
+```
 
 ### Navigating relationships
 
@@ -383,13 +948,27 @@ When running as an MCP server, tokensave exposes 34 tools that AI agents can cal
 | `tokensave_impact` | Trace the full blast radius of changing a symbol — everything that could be affected. |
 | `tokensave_affected` | Find test files affected by source file changes. |
 | `tokensave_similar` | Find symbols with similar names (useful for naming patterns or related code). |
-| `tokensave_rename_preview` | Preview all references to a symbol before renaming it. |
+| `tokensave_rename` | Rename a symbol at its definition and at every reference the graph records. Dry run by default: lists the sites by file with a confidence class and shows a unified diff. Graph-based, not binding-aware — see [Renaming a symbol](#renaming-a-symbol). The old `tokensave_rename_preview` name still works as a dry-run alias. |
+
+#### Renaming a symbol
+
+`tokensave_rename` renames a symbol at its definition and at every reference the code graph records. It is graph-based, **not binding-aware**: references come from tokensave's name-based resolver, not from each language's scope rules, so a shadowing local, a dynamic call or a `**kwargs` splat can be missed or attributed to the wrong symbol. Each site carries a confidence class, taken from how the resolver bound it (`resolved_by`, stored on every edge since schema v18):
+
+| Class | Meaning | Edited? |
+|-------|---------|---------|
+| `exact` | Bound by a qualified path, a typed receiver, an import, or a name no other symbol carries, and located to one token | Yes |
+| `heuristic` | Bound by a name-based fallback (the tail of `recv.method`, scoring among same-named candidates, a blocklisted common name, a build variant), an override paired by name, or a token that could not be told apart from another on the same line | Only with `allow_heuristic: true` |
+| `ambiguous` | A call the resolver could not decide between this symbol and others | Never |
+| `text_only` | A whole-word mention the graph does not link: a comment, string, doc, or an unlinked identifier in code | Never |
+
+A dry run (the default) returns the plan and a unified diff. Applying refuses while any site is `heuristic` or `ambiguous`, or an unlinked identifier mentions the name, unless `allow_heuristic` is set. The apply is all-or-nothing: every edited file must still parse with tree-sitter without new error nodes, keywords and non-identifiers are refused, and so is a name already used in the same scope. Mentions past the listing cap are counted but not listed, and they still gate an apply, as does a file that mentions the name but is too large or unreadable to check. Lines and columns are 1-based; a column counts bytes, not characters. Only indexed files are scanned, so a file the indexer skips (over `max_file_size`, 1 MB by default, or excluded) is not checked for mentions. Writes follow symlinks, including links that point outside the project: the target file is edited and the link is kept. The edited files are reindexed together and their references re-resolved, so the renamed symbol keeps its callers.
 
 ### Code quality analysis
 
 | Tool | What it does |
 |------|-------------|
-| `tokensave_dead_code` | Find unreachable symbols — functions with no callers. |
+| `tokensave_dead_code` | Find unreachable symbols — functions with no callers. Symbols that are a candidate for an ambiguous call are excluded, since "maybe called" is not "uncalled". |
+| `tokensave_ambiguous_calls` | List call sites where several targets tied and no edge was created, with each candidate's name, kind, file, and line. |
 | `tokensave_unused_imports` | Find import statements that are never referenced. |
 | `tokensave_circular` | Detect circular file dependencies. |
 | `tokensave_recursion` | Detect recursive and mutually-recursive call cycles. |
@@ -398,6 +977,31 @@ When running as an MCP server, tokensave exposes 34 tools that AI agents can cal
 | `tokensave_hotspots` | Find the most connected symbols (highest call count). These are high-risk areas. |
 | `tokensave_doc_coverage` | Find public symbols missing documentation. |
 | `tokensave_simplify_scan` | Quality analysis of changed files: duplications, dead code, complexity, coupling. |
+
+### Health & quality signals
+
+| Tool | What it does |
+|------|-------------|
+| `tokensave_health` | Composite quality signal (0–10000) from five structural dimensions (acyclicity, depth, equality, redundancy, modularity) with a low-weight penalty for `/// skip-test-coverage` overuse. The single number to track over time. |
+| `tokensave_gini` | Gini inequality coefficient for any metric (complexity, lines, fan-in, fan-out, members). Finds god files and uneven distributions. |
+| `tokensave_dependency_depth` | Longest file-level dependency chains — the critical paths where upstream changes ripple through the most layers. |
+| `tokensave_dsm` | Design Structure Matrix showing file dependencies as clusters, density stats, or an NxN grid. Reveals hidden coupling patterns. |
+| `tokensave_test_risk` | Risk-weighted test gaps combining complexity, coupling, git churn, and test coverage. Answers "where should the next test go?" |
+
+### Test Coverage Conventions
+
+#### `/// skip-test-coverage`
+
+Mark functions that are genuinely untestable in unit tests (e.g. infrastructure-dependent, framework-invoked, or private helpers tested only transitively):
+
+```rust
+/// skip-test-coverage
+pub async fn produce(&mut self, topic: &str, batch: Bytes) -> io::Result<i64> { ... }
+```
+
+Marked functions are excluded from `tokensave_test_risk` coverage calculations, giving you an accurate picture of testable-code coverage. The `skipped` count appears in the summary so you can track how many functions use the annotation.
+
+**Health penalty:** The `coverage_discipline` dimension (visible in `tokensave_health` and `tokensave_session_start`/`session_end`) penalises overuse. Each skipped function lowers the score proportionally — a few genuine exclusions have negligible impact, but marking 50%+ of your codebase as untestable will visibly reduce your quality signal. This encourages using the annotation for its intended purpose rather than as a way to game coverage numbers.
 
 ### Structural analysis
 
@@ -420,6 +1024,7 @@ When running as an MCP server, tokensave exposes 34 tools that AI agents can cal
 | `tokensave_commit_context` | Semantic summary of uncommitted changes, useful for drafting commit messages. |
 | `tokensave_pr_context` | Semantic diff between git refs for pull request descriptions. |
 | `tokensave_test_map` | Source-to-test mapping at the symbol level, with uncovered symbol detection. |
+| `tokensave_test_coverage` | Per-file/symbol/test-fn coverage rollup with transitive call-edge expansion: which tests cover a symbol, what a test exercises, or a whole-file tested/untested summary. |
 
 ### Porting tools
 
@@ -428,31 +1033,135 @@ When running as an MCP server, tokensave exposes 34 tools that AI agents can cal
 | `tokensave_port_status` | Compare symbols between source/target directories to track cross-language porting progress. |
 | `tokensave_port_order` | Topological sort of symbols for porting — tells you what to port first based on dependencies. |
 
-All tools are read-only and safe to call in parallel.
+### Session management
+
+| Tool | What it does |
+|------|-------------|
+| `tokensave_session_start` | Save current health metrics as a baseline before starting work. |
+| `tokensave_session_end` | Compare current health against the baseline to detect structural degradation during the session. |
+
+Discovery and analysis tools are read-only and safe to call in parallel. Session baseline tools write/remove `.tokensave/session_baseline.json`, memory-recording tools update the project database, and edit tools modify source files.
+
+---
+
+## Finding missed opportunities: `tokensave discover`
+
+`tokensave discover` looks back over ingested Claude Code turns and reports
+navigation a graph query could have served more cheaply.
+
+```bash
+tokensave discover                 # last 30 days
+tokensave discover --since 7d      # today, 7d, 30d, month, all
+tokensave discover --json
+```
+
+A turn is counted only when **every** tool it used was `Read`, `Grep` or
+`Glob`. A turn that also edited a file, ran Bash or delegated to an agent is
+left out entirely, so an edit turn's cost is never attributed to navigation.
+Turns are bucketed by the strongest signal present, `Grep` over `Glob` over
+`Read`, and each bucket names the tokensave query that would have answered the
+same question.
+
+### Reading the two token columns
+
+**Addressable** is the size of the tool results those turns injected into the
+conversation — the text a graph query could have returned more compactly. It is
+measured from the transcript, per `tool_result` block.
+
+**Recoverable** is half of that, and is a deliberately conservative lower
+bound rather than a measurement. A graph query is not free: it returns a
+compact slice where a `Read` returned a whole file, so it replaces most of the
+payload rather than all of it.
+
+Three limits are worth knowing, because each one makes the report an
+under-count rather than an over-claim:
+
+- Bash-based navigation (`grep`, `find`, `cat`, `rg`) is invisible here. Only
+  the literal tool name `Bash` is recorded, never the command text, so those
+  turns are not counted at all.
+- Turns ingested before tokensave 7.11.1 carry no measured result size and
+  contribute nothing. The figure comes from transcript lines the database does
+  not keep, so it is not backfilled; a range reaching back before you upgraded
+  will say so rather than printing a bare zero.
+- Only Claude Code turns are analyzed.
+
+Before 7.11.1 the addressable column summed a turn's `input_tokens`, which
+under prompt caching is only the uncached remainder of the prompt — a
+single-digit figure per turn that had nothing to do with what a `Read` put into
+the conversation (#474).
+
+---
+
+## Auditing resolution quality: `tokensave audit-edges`
+
+When tokensave binds a reference to a symbol it cannot actually reach, the
+result is a *phantom edge*: the graph asserts a relationship the code does not
+have. `audit-edges` counts them.
+
+```bash
+tokensave audit-edges              # human-readable summary
+tokensave audit-edges --top 25     # list more of the collided targets
+tokensave audit-edges --json
+```
+
+```
+Edge audit — /path/to/project
+  total edges                          21454
+  in gated languages (py/js/ts)        18022
+    cross-file                          9310
+    sole-candidate                      1533
+      without reachability evidence      485   <- diff this between commits
+
+Most-collided targets:
+     218 edges from  147 files  src/controllers/help_tab.py:478  p (function)
+      36 edges from   22 files  src/helpers/instructions_posture.py:741  total (method)
+```
+
+**Read the last figure comparatively, not absolutely.** It is meaningful as a
+difference between two indexes of the same tree — index one commit, index
+another, compare — which is how a change to resolution is evaluated. A single
+number in isolation says little, because some collisions are legitimate.
+
+An edge is counted when all of these hold: the source file is Python,
+JavaScript or TypeScript (the languages where a bare name alone is not evidence
+of a binding); the edge crosses a file boundary; the target is the *only*
+symbol of that name in the whole index; and the source file carries no evidence
+it can reach the target — not the same directory, not importing that name, not
+importing the class that owns it.
+
+The "most-collided targets" list is usually the more actionable half. A short
+name on a nested helper — `p`, `total`, `files`, `right` — becomes the sole
+candidate for every stray reference to that name in the project, so one
+badly-placed closure can absorb hundreds of edges.
+
+This deliberately does not classify files as production or test. An earlier
+metric counted edges crossing into `tests/`, which cannot see a phantom whose
+two ends are both production code — on one 515-file project that was 485 of
+1,216 such edges, invisible (#536).
 
 ---
 
 ## Supported Languages
 
-Tokensave supports 31 languages, organized into three tiers. Each tier includes all the languages from the tier below it.
+Tokensave supports more than 50 languages, organized into three tiers. Each tier includes all the languages from the tier below it. See the README for the full table with file extensions and feature flags.
 
-### Lite (11 languages)
+### Lite
 
-Always compiled. The smallest binary for the most popular languages.
+Always compiled. The smallest binary for the most popular languages, plus Svelte and Astro (script-block extraction via the TypeScript extractor).
 
-Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, C#, Swift
+Rust, Go, Java, Scala, TypeScript, JavaScript, Python, C, C++, Kotlin, C#, Swift, Svelte, Astro
 
-### Medium (Lite + 9 = 20 languages)
+### Medium (Lite + 9)
 
 Adds scripting, config, and additional systems languages.
 
-Dart, Pascal, PHP, Ruby, Bash, Protobuf, PowerShell, Nix, VB.NET
+Dart, Pascal, PHP, Ruby (including `.rake` task files), Bash, Protobuf, PowerShell, Nix, VB.NET
 
-### Full (Medium + 11 = 31 languages)
+### Full (Medium + everything else, the default)
 
-Everything, including legacy and niche languages.
+Everything: legacy, niche, shader, and document languages.
 
-Lua, Zig, Objective-C, Perl, Batch/CMD, Fortran, COBOL, MS BASIC 2.0, GW-BASIC, QBasic, QuickBASIC 4.5
+ActionScript, Lua, Zig, Objective-C, Perl, Batch/CMD, Fortran, COBOL, MS BASIC 2.0, GW-BASIC, QBasic, QuickBASIC 4.5, Dockerfile, GLSL, WGSL, HLSL, Metal, Markdown, R, SQL, Julia, Haskell, OCaml, Clojure, Erlang, Elixir, F#, F*, Quint, TOML, Lean, SystemVerilog, VHDL
 
 ### Mixing individual languages
 
@@ -522,7 +1231,30 @@ The `upgrade` command downloads the latest release from GitHub and replaces the 
 tokensave upgrade
 ```
 
-It automatically stops the background daemon before replacing the binary and restarts it afterwards if it was running. Beta and stable are separate update channels — a beta build only sees beta releases and vice versa.
+Every download is checked against the `SHA256SUMS` file published with the
+release, before it is unpacked. If the hash does not match, or the release
+publishes no sums file at all, the upgrade **stops and installs nothing**:
+
+```
+✘ downloaded archive does not match the SHA256 published for it — refusing to install.
+```
+
+That is deliberate rather than cautious. Skipping the check when the sums file
+is simply missing would mean anyone able to suppress one small file gets an
+unverified install, which is the whole thing the check exists to prevent. If you
+see this, retry — a release whose CI has not finished may not have published
+its sums yet. Checksums protect against a corrupted or substituted download;
+they are not a signature, so they cannot vouch for the release pipeline itself.
+
+Beta and stable are separate update channels — a beta build only sees beta releases and vice versa. Any attached MCP servers will continue running with the previous binary until you restart your agent.
+
+If other tokensave processes (usually MCP servers) are running, `upgrade` lists them and asks whether to kill them first. Pass `--kill` to terminate them without being asked:
+
+```bash
+tokensave upgrade --kill
+```
+
+When nothing else is running, no prompt appears. In non-interactive runs the upgrade continues without killing anything unless `--kill` is given. The launcher that started the current `tokensave` process (a Scoop shim, a shell, or any other ancestor) is never listed as a killable process, even if it's itself named `tokensave`/`tokensave.exe` — only unrelated tokensave processes are candidates. If a requested kill (via `--kill` or answering `y`) cannot signal every listed process, the upgrade aborts instead of proceeding; stop the remaining process(es) manually and retry.
 
 You can also update through your package manager:
 
@@ -532,11 +1264,13 @@ scoop update tokensave          # Scoop
 cargo install tokensave         # Cargo
 ```
 
-After upgrading, it's good practice to re-run install (to pick up any new tool permissions or prompt rules) and force a re-index:
+Upgrades are zero-touch: you normally do **not** need to re-run `install` or `sync --force` by hand. Tokensave compares the version that last ran against the running one and performs exactly the maintenance that transition requires — refreshing every registered agent's config on a minor or major bump, and rebuilding project indexes on a major one. That refresh is silent; it will not print install output in front of your next `init` or `sync`. It also rewrites tokensave's own section of any git hooks already installed (the global ones, and the current repository's), so hook fixes reach you too; it never installs a hook you didn't have. `tokensave reinstall` does the same on demand, and `doctor` reports a hook whose tokensave section is out of date. See [TOKENSAVE-VERSIONING.md](../TOKENSAVE-VERSIONING.md) for the full rules.
+
+The two cases where you should still step in:
 
 ```bash
-tokensave install
-tokensave sync --force
+tokensave install      # after a "could not refresh tokensave config" or stale-install warning
+tokensave sync --force # to rebuild an index you suspect is wrong
 ```
 
 ---
@@ -544,6 +1278,319 @@ tokensave sync --force
 ## Configuration Files
 
 Tokensave stores data in two places.
+
+### Configuration and environment overrides
+
+`.tokensave/config.json` is generated as ordinary JSON. It includes an
+`_comment` metadata field explaining that `TOKENSAVE_*` environment variables
+override matching config values when set. This is especially relevant for
+`TOKENSAVE_AUTO_TRACK`, `TOKENSAVE_REPORT_SAVINGS`, and
+`TOKENSAVE_UPDATE_CHECK`.
+
+### RAM usage profiles
+
+Add `"memory_usage": "balanced"` to your existing `.tokensave/config.json`.
+The accepted values are `low`, `balanced` (default, including legacy configs),
+and `performance`. Invalid values report the supported choices. Settings apply
+when the project opens; restart the MCP server after editing them.
+
+| Profile | Simultaneous extraction parsers | Tradeoff |
+| --- | --- | --- |
+| `low` | At most one | Lowest concurrent parser scratch space and subprocess overhead; slower extraction. |
+| `balanced` | At most two | Limits parser memory on machines with many CPUs. |
+| `performance` | CPU profile ceiling | Existing CPU-selected extraction throughput. |
+
+The effective extraction limit is the minimum of the RAM profile, CPU profile,
+pending files and (for subprocesses) `TOKENSAVE_WORKERS`. The in-process fallback
+processes bounded parallel slices with the same ceiling. Workers are owned and
+reaped by the existing extraction pool; cancellation and freshness bounds are
+unchanged. No memory-pressure polling or artificial sleeps are added.
+
+Limits apply per extraction operation, not as a shared budget across projects.
+These profiles **do not cap total RAM or guarantee against out-of-memory errors**.
+They bound live parsers and their source buffers, syntax trees and subprocess
+heaps. The file queue, completed extraction results and resolver graph still
+scale with the indexed project; they are released by the existing request
+lifecycle. A single large source file can still require substantial memory.
+Hashing, database caches and resolution retain their existing policies. Choose
+`performance` to preserve the previous parser concurrency when RAM headroom
+permits; the new `balanced` default may slow indexing on machines with more
+than two extraction workers.
+
+Compare equivalent original/candidate builds using the resource harness below
+with `--profile-field memory_usage`. It fixes `cpu_usage` to `performance` for
+both binaries so that CPU policy does not hide the parser-memory tradeoff.
+The harness records full/incremental/unchanged sync, repeated runs, process-tree
+RSS and CPU, throughput, elapsed time, independent MCP latency and graph equality.
+Sampled RSS can miss brief peaks and counts shared pages multiple times; it is
+not proof of an absence of leaks or a bound on all workloads.
+
+### Automatic RAM safeguards
+
+RAM profiles and automatic safeguards work together. Before each nonempty
+extraction operation that could run more than one parser, tokensave samples
+available physical RAM using its existing system-memory library. On Linux,
+readable cgroup v1/v2 headroom exposed by that library also lowers the available
+budget. No swap allowance is counted. A probe failure keeps the configured
+ceiling; a successfully measured zero is treated as low memory.
+
+The check reserves half the available headroom for the parent and other
+activity, then estimates one parser slot per 128 MiB of the remaining half.
+For example, 512 MiB available permits at most two parsers; 256 MiB permits
+one. The result can only lower the CPU/RAM/file ceilings and the subprocess
+environment limit can lower it further. It applies in `performance` mode too,
+and emits a diagnostic when it reduces the profile ceiling. Both subprocess
+and in-process extraction obey the same snapshot-derived limit. Empty work
+and CPU/RAM/file ceilings of one avoid the probe.
+
+This is a best-effort preflight heuristic, **not a memory reservation or a hard
+RSS limit**. One parser is always allowed to make progress, even with zero
+headroom. A large file can exceed the estimate. Other projects can consume RAM
+following the snapshot, and completed graph data and resolution still grow
+with input size. Only cgroup limits visible to the bundled library are used;
+nested or ancestor limits it cannot expose are not guaranteed to be detected.
+
+There is no background task, idle polling, retry loop or artificial sleep.
+The check runs again at the next extraction operation; it does not resize an
+already-running subprocess pool or monitor pressure that arrives mid-extraction.
+Existing cancellation, reaping and on-demand freshness bounds remain in place.
+
+### CPU usage profiles
+
+tokensave picks a profile for you from a **machine-level hardware benchmark**.
+CPU count, parallel throughput and memory belong to the machine, not to a
+repository, so the benchmark runs once per machine. Its result is saved in
+`~/.tokensave/benchmark.toml` (`%USERPROFILE%\.tokensave\benchmark.toml` on
+Windows), and every project without its own `cpu_usage` uses it.
+
+The first `tokensave init` on a machine runs the benchmark, which normally takes
+well under a second:
+
+```text
+No global hardware benchmark found.
+Running initial hardware benchmark...
+  Measured:    8 CPUs, 7.6 GiB memory (5.5 GiB available), 4.3x speedup on 8 threads
+  Recommended: balanced profile, 4 workers (4.3 CPUs of parallel throughput; resources are moderate or shared)
+Global benchmark results saved to /home/you/.tokensave/benchmark.toml.
+Initialized TokenSave at /path/to/project
+CPU usage profile: balanced (from the global hardware benchmark)
+```
+
+Every later `init`, on any repository, reuses the saved result without
+measuring:
+
+```text
+Using cached global hardware benchmark.
+Initialized TokenSave at /path/to/other-project
+CPU usage profile: balanced (from the global hardware benchmark)
+```
+
+`sync`, `serve` and MCP tool calls never run the benchmark. They only read
+the saved result when a project opens.
+
+The benchmark reads the CPUs this process may use (`available_parallelism`,
+which honors affinity and cgroup CPU quotas) and total and available memory
+(including a visible cgroup memory limit). It then times a fixed CPU-bound
+workload on one thread and on up to 16 threads. The measured speedup gives the
+*effective* CPUs, which can be lower than the CPU count on throttled
+containers, shared vCPUs or a busy machine. The profile is chosen as follows:
+
+| Selected | When |
+| --- | --- |
+| `low` | Total memory under 3 GiB, available memory under 1 GiB, at most 2 CPUs, or under 2.5 effective CPUs. |
+| `performance` | At least 6 effective CPUs, at least 60% parallel efficiency, at least 16 GiB total memory and at least 8 GiB available. |
+| `balanced` | Everything else, and whenever a probe fails. |
+
+#### Managing the global benchmark
+
+```bash
+tokensave config benchmark           # Reuse a valid saved result, or measure and save one
+tokensave config benchmark --force   # Measure again even if a valid result is saved
+tokensave config benchmark --show    # Print the saved result, its validity and the settings (never measures)
+tokensave config benchmark --reset   # Delete the saved result; the next init measures again
+tokensave config benchmark --show --json   # Machine-readable output (all forms accept --json)
+```
+
+`--force`, `--show` and `--reset` are mutually exclusive; combining them is a
+usage error (exit code 2). A run that cannot save its result, and a run while
+the benchmark is disabled, exit with code 1.
+
+Run `--force` after the first benchmark ran on a busy machine. Hardware changes
+are detected automatically. `tokensave tune [path]` still works: it measures
+again, saves the result as the global benchmark, and updates the project's
+`cpu_usage` if the project pins one. `tokensave tune --dry-run` only prints the
+recommendation and also works where no project is initialized.
+
+**When a saved result is measured again.** A saved result survives restarts,
+other repositories, `init`, `sync` and upgrades that leave the benchmark alone.
+`init` measures again only when one of these applies:
+
+- the file is missing, malformed or incomplete;
+- its schema version or benchmark algorithm version differs from the running
+  release;
+- the CPU count changed;
+- total memory changed by more than 10%.
+
+Available memory is recorded but not compared, so momentary memory pressure
+never invalidates the result; extraction already adapts to the current
+headroom at run time (see [Automatic RAM safeguards](#automatic-ram-safeguards)).
+Results never expire by age.
+
+**Concurrency and failures.** Simultaneous `init`s coordinate through an
+advisory lock (`benchmark.toml.lock`, released by the OS if a process dies),
+so only one of them measures and the others reuse its result. The file is
+replaced by an atomic rename, so a failed or interrupted write keeps the
+previous valid result. If the result can't be saved (for example, the home
+directory is read-only), `init` prints a warning, uses the built-in default
+`balanced`, and still initializes the project.
+
+#### Settings and precedence
+
+The effective profile is resolved when a project opens, highest precedence
+first:
+
+1. `TOKENSAVE_CPU_USAGE=<low|balanced|performance>`, a per-run override. An
+   unrecognized value is ignored with a warning.
+2. `cpu_usage` in the project's `.tokensave/config.json`. `tokensave init
+   --cpu-usage <profile>` writes it.
+3. `cpu_usage` in `~/.tokensave/config.toml`, a machine-wide manual profile.
+4. The saved global hardware benchmark, when it is enabled and valid.
+5. The built-in default, `balanced`.
+
+The benchmark runs only when level 4 would actually be used: `init` skips it
+when `--cpu-usage`, `TOKENSAVE_CPU_USAGE`, a project `cpu_usage` or a global
+`cpu_usage` is set.
+
+Global benchmark settings live in `~/.tokensave/config.toml`:
+
+```toml
+cpu_usage = "balanced"   # optional machine-wide profile; beats the benchmark
+
+[benchmark]
+enabled = true    # false: never run the benchmark and ignore saved results
+auto_run = true   # false: use a valid saved result, but never measure automatically
+```
+
+With `auto_run = false`, `init` uses a valid saved result but never measures;
+run `tokensave config benchmark` yourself when you want one. With
+`enabled = false`, or with a global `cpu_usage`, tokensave runs no benchmark at
+all.
+
+To pin a profile for one project, set `"cpu_usage"` in its
+`.tokensave/config.json`:
+
+```json
+{
+  "cpu_usage": "balanced"
+}
+```
+
+This snippet is a field to add to your existing file, not a replacement for
+its required fields. Without `cpu_usage` the project follows the global
+settings above; invalid values are rejected with the supported choices.
+
+**Projects initialized before the global benchmark.** Earlier releases
+always wrote `cpu_usage` into `.tokensave/config.json`, so existing projects
+keep exactly the profile they have, as a project pin. No reinitialization is
+needed. To make an existing project follow the global benchmark, delete its
+`cpu_usage` line. Per-project results from earlier releases aren't copied into
+the global cache, because nothing records whether a stored profile was
+measured or chosen by hand, so the first `init` after upgrading measures once.
+
+| Profile | Worker ceiling | Choose it when |
+| --- | --- | --- |
+| `low` | One worker | Other applications need CPU capacity, or several servers run together. |
+| `balanced` | Half the available CPUs, rounded up | Everyday interactive use (default). |
+| `performance` | All available CPUs | Index completion time matters most and spare capacity is available. |
+
+The OS reports available parallelism; failure to query it falls back to one
+worker. On small machines profiles can have the same limit. These are worker
+concurrency limits, **not strict CPU-percentage caps**: one worker can fully
+occupy a CPU. Single-threaded scanning, graph assembly and database work remain
+single-threaded. There are no artificial delays or polling loops.
+
+The policy covers subprocess and in-process extraction, parallel file-stat
+checks, changed-file hashing, artifact hashing, and reference resolution in
+full indexing, explicit sync, and automatic MCP sync. `TOKENSAVE_WORKERS=N`
+can further lower the subprocess extraction limit; it cannot raise the profile
+ceiling. Shared lazy Rayon pools keep project handles from each creating their
+own indexing threads; interactive MCP work keeps its existing runtime.
+
+Settings are captured when a project is opened. Restart `tokensave serve` after
+editing this field; the next CLI invocation reads it automatically. No config
+watcher is installed. Existing on-demand sync cooldowns and file-count bounds
+remain in effect. A profile does not make same-project tool calls concurrent
+with a server's own synchronous sync; resource availability for other requests
+and processes still depends on workload and scheduling.
+
+For reproducible Linux resource measurements, build the original and candidate
+with identical Cargo flags and run:
+
+```bash
+python3 benchmarks/cpu_profiles.py \
+  --baseline /path/to/original/target/debug/tokensave \
+  --candidate target/debug/tokensave --output /tmp/cpu-results.json
+```
+
+Both executables must retain the name `tokensave` so subprocess isolation stays
+enabled. The standard-library-only harness measures process-tree CPU and sampled
+aggregate RSS for full indexing, changed-file sync and unchanged sync on a
+repeatable mixed Rust/Python workload. It also measures MCP search latency from
+an independent session during each run, measures two competing CPU-bound
+processes, and compares node, edge and file-content hashes against the original
+for each operation. Changed-file sync edits 16 Rust/Python source files by default;
+`--changed-files 0` measures a whole-tree change. `--repo PATH`
+uses a copy of an existing source tree instead. Sampled peaks can miss short
+spikes, aggregate RSS double-counts shared pages, and warm caches affect timings;
+results are workload-specific rather than universal performance guarantees.
+The resource sampler requires Linux; runtime profiles use portable Rust
+facilities. Debug-build timings do not predict release throughput.
+
+The benchmark acceptance checks are identical graph hashes for every profile
+and operation, successful concurrent MCP requests, and lower sampled peak CPU
+for `low` on a multicore host. Competing-process throughput provides a direct
+contention comparison. Throughput and latency remain descriptive rather than
+flaky CI timing assertions.
+
+Measured example: Linux/WSL2, eight available CPUs, debug builds, three
+repetitions per profile and two competing CPU-bound processes. The tables show
+full-indexing medians; CPU peaks and RSS are sampled, and MCP p95 is the median
+of per-run p95 values. The real-source workload is the extraction subtree at
+revision `2e71033`, not the whole Tokensave repository. The measured runtime
+was `6af3267`; these measurements predate the subsequent upstream merge and
+do not measure the merged tip.
+
+Generated Rust/Python: 240 indexed files, 19680 nodes, 19200 edges.
+
+| Profile | Time (s) | CPU avg / peak (%) | RSS (MiB) | Files/s | MCP p95 (ms) | Competing hashes/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| original | 22.79 | 171 / 648 | 350.6 | 10.5 | 68.0 | 24359 |
+| low | 26.34 | 99 / 116 | 128.6 | 9.1 | 31.4 | 27794 |
+| balanced | 22.70 | 149 / 408 | 239.8 | 10.6 | 37.0 | 25259 |
+| performance | 18.81 | 166 / 667 | 394.0 | 12.8 | 40.9 | 27745 |
+
+
+
+Tokensave extraction sources: 72 indexed files, 3131 nodes, 6390 edges.
+
+| Profile | Time (s) | CPU avg / peak (%) | RSS (MiB) | Files/s | MCP p95 (ms) | Competing hashes/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| original | 5.34 | 182 / 606 | 409.5 | 13.5 | 67.6 | 27787 |
+| low | 8.13 | 81 / 108 | 121.4 | 8.9 | 61.4 | 31896 |
+| balanced | 6.06 | 159 / 419 | 245.7 | 11.9 | 62.2 | 26621 |
+| performance | 6.72 | 165 / 656 | 404.0 | 10.7 | 98.8 | 29159 |
+
+
+
+In these workloads, `low` reduced median sampled peak CPU by about 82% and
+increased competing-work throughput by about 14–15%, while taking longer to
+finish indexing. Higher concurrency did not consistently improve completion
+time: `performance` was slower than the original on the real-source workload.
+These measurements demonstrate resource tradeoffs, not a universal speedup.
+All 72 operation measurements preserved graph hashes and completed concurrent
+MCP searches successfully. [Raw measurements and all sync summaries](../benchmarks/cpu-profile-results.json)
+include full indexing, 16-file edits and unchanged sync. Sequential database
+work can dominate unchanged sync and is unaffected by worker limits.
 
 ### Per-project: `.tokensave/`
 
@@ -553,33 +1600,292 @@ Created inside each project you index. Contains:
 
 Add `.tokensave` to your `.gitignore`.
 
+#### Production paths named like test directories
+
+If a production route or feature directory has a name such as `test`, add a
+`source_path_overrides` glob to the generated `.tokensave/config.json`:
+
+```json
+"source_path_overrides": ["components/test/**"]
+```
+
+The override affects test/source classification only; the files are indexed
+either way. Explicit test markers such as `__tests__/`, `*.test.*`, and
+`*.spec.*` still count as tests inside an overridden path. Restart the
+tokensave MCP server after editing the config; no re-index is required.
+
+### Custom language extensions
+
+Add `language_aliases` to the existing `.tokensave/config.json`; keep its other
+settings. For a legacy Perl repository with `lib/Example.pm`, `t/basic.t`, and
+`t/integration.t`:
+
+```json
+"language_aliases": {
+  ".t": "perl",
+  ".ep": "perl"
+}
+```
+
+Both native `.pm` files and aliased `.t`/`.ep` files use the Perl extractor,
+producing symbols for search, context, and file discovery. Perl must be enabled
+in the installed binary (`full` or `lang-perl`). Language names are
+case-insensitive; registered extensions such as `pl` are also accepted.
+Extension keys are trimmed, lowercased, and may start with one dot. Conflicting
+normalized keys (such as `.T` and `t`) are rejected. Use one mapping per extension.
+Aliases may deliberately replace a built-in association.
+
+Use the existing `.tokensave/project.json` for path-specific languages:
+
+```json
+{
+  "version": 1,
+  "entries": [
+    { "path": "legacy/special.t", "language": "python" },
+    { "path": "t/**/*.t", "language": "perl" },
+    { "path": "templates/**/*.ep", "language": "perl" }
+  ]
+}
+```
+
+Dispatch precedence is literal file entries with a language, glob entries with
+a language, extension aliases, built-in detection (including C/C++ header
+routing), artifact tracking, then skipping. Within either entry group the first
+match wins. Paths use forward slashes; backslash inputs are normalized. Globs
+remain case-sensitive, while aliases match extensions case-insensitively.
+A manifest entry without a language retains existing default dispatch semantics.
+
+Run `tokensave sync` after changing mappings; `tokensave sync -f` forces a full
+rebuild. Mapping changes reprocess the current indexed files once, even when
+contents and timestamps are unchanged, and remove files no longer admitted.
+Each branch database records its own dispatch revision. A running MCP server
+picks changes up through its existing freshness checks and automatic-sync
+limits; a large mapping change may require explicit `tokensave sync`.
+Initialization preserves an existing config, so mappings can be supplied before
+`tokensave init`. No separate `language_patterns` setting is needed.
+
+Aliases mean **symbol extraction**; `artifact_extensions` means path and literal
+content search with no symbols. Unknown extensions are never automatically
+assigned a parser. For `.patch`, `.ldif`, `.jsonnet`, or `.libsonnet` with no
+installed extractor, opt into artifact tracking if useful; JSONnet syntax needs
+a dedicated extractor for symbols. `.template` and `.ep` have no universal
+language: choose an appropriate installed extractor or artifact tracking.
+An HTML alias parses HTML only, not embedded template languages.
+
+Keep credentials such as `.pem` excluded rather than making them searchable.
+Mapped source and artifacts containing NUL bytes after decoding are skipped.
+This is a lightweight binary check, not full format detection; do not map binary
+formats to source languages. BOM-marked UTF-16 source remains supported.
+Exclusions, hidden-directory policy, gitignore, and file-size limits still apply. Aliases do not bypass those protections or enable disabled
+language features. `sync --doctor` reports skipped counts and configuration
+options; JSON result fields retain their existing shape.
+### Optional: automatic language detection
+
+Unknown extensions and extensionless scripts can be indexed using existing
+extractors when their contents provide strong language evidence. Enable this
+opt-in fallback in `.tokensave/config.json`:
+
+```json
+"language_detection": {
+  "enabled": true,
+  "max_bytes": 4096,
+  "cache_results": true
+}
+```
+
+Restart the MCP server after changing configuration, then run `tokensave sync`.
+Set `enabled` to `false` to restore extension-only discovery. Existing manifest
+language overrides and registered extensions always take precedence and bypass
+this detector. No extension mapping is added.
+
+Detection first recognizes exact interpreter names in absolute shebangs,
+including `/usr/bin/env` and `env -S`: Python, Bash-compatible shells, Node.js,
+and Ruby, when their extractors are installed. Otherwise it requires multiple
+syntax signals for Python, Rust, JavaScript, TypeScript, Go, Ruby, C or C++.
+These evidence rules are heuristic, not calibrated confidence probabilities;
+ambiguous files and unknown shebang interpreters remain unsupported. A short
+valid program may intentionally be left unclassified. No interpreter runs and
+no parser is tried speculatively.
+
+Only a bounded prefix is read for discovery: `max_bytes` defaults to 4096 and
+must be between 128 and 65536. Discovery reads up to four extra bytes to
+recognize a truncated UTF-8 codepoint at the sample boundary; that partial
+codepoint is ignored. A leading UTF-8 BOM is stripped before classification.
+Unknown fields inside `language_detection` are configuration errors and prevent
+the project from opening, so misspelled settings are reported immediately.
+Binary/control bytes, invalid UTF-8 within that
+prefix, and common certificate/private-key formats are rejected. Normal file
+size, exclude, hidden-directory, and gitignore policies still apply. Successful
+detection invokes the actual extractor, making symbols available to search and
+MCP context tools. Unclassified files retain the existing artifact fallback.
+
+A process-local FIFO caches up to 4096 positive and negative decisions, without
+retaining source text. File timestamp (including Unix change time), size,
+settings, extractor availability, and absolute worktree path form its key.
+Eviction or process restart causes another bounded prefix read. Incremental
+indexing still uses the existing file hashes; branch-local metadata records
+settings changes so unchanged unknown files can be reclassified. Forced reindex
+uses the same detector. Discovery reads a prefix before extraction reads the
+source; extraction reuses its existing source buffer for detection. Known
+extensions incur no detection reads. Warm server scans reuse cached decisions;
+a new CLI process starts with an empty detection cache.
+
+`tokensave sync --verbose` reports examined files, shebang/content decisions,
+unsupported counts, cache hits and detection time. Counters are process-local;
+concurrent scans can contribute to the same snapshot. Existing unsupported
+extension summaries remain available. Normal and machine-readable outputs keep
+their existing shape. Benchmark the synthetic 10,000 recognized-file and
+500 unknown-file workloads with `cargo bench --bench language_detection --
+recognized-off` (also `recognized-on`, `unknown-off`, `unknown-on`).
+
+### Optional: `.tokensave/project.json` — explicit index entries
+
+Alongside `config.json` (walker policy: excludes, size limits, gitignore), you can add a `project.json` manifest listing files or globs to index explicitly, each with an optional `language` override that forces a specific extractor:
+
+```json
+{
+  "version": 1,
+  "entries": [
+    { "path": "homedir/.bash_profile", "language": "bash" },
+    { "path": "homedir/.bashrc.d/*.shrc", "language": "bash" },
+    { "path": "~/.bash_aliases", "language": "bash" }
+  ]
+}
+```
+
+This solves two problems that extension-based dispatch cannot:
+
+- **Extensionless or oddly-named files.** `.bash_profile`, `.bashrc`, `*.shrc` and friends are valid Bash but have no `.sh`/`.bash` extension, so they are normally skipped. A manifest entry makes them indexable and the `language` override picks the extractor. This works for any language, not just shell.
+- **Files outside the project root.** Absolute and `~/…` paths (glob-capable) opt in external files — for example your real dotfiles under `$HOME` while the git project only documents them. External files are stored in the graph under their resolved absolute path.
+
+Semantics:
+
+- Entries are **additive**: the normal project walk still happens; `project.json` never removes files. `config.json` excludes and `max_file_size` still apply to in-project entries.
+- `language` accepts any supported language name (case-insensitive; a registered extension like `sh` also works). An unknown language fails the sync with an error listing the valid names.
+- Hidden (dot-prefixed) paths matched by an entry are walked automatically — no separate `include` glob needed.
+- External paths are opt-in and project-local; only add paths you trust, since their content is parsed and indexed.
+
+### Companion Markdown documentation
+
+A large file often has a short prose explanation next to it. Tokensave indexes
+those explanations so an agent can read the summary instead of the 3000-line
+class. Two conventions are discovered, and both work at once:
+
+- **Sidecar** — `BigClass.cs` next to `BigClass.readme.md`. No configuration:
+  the doc is matched by filename and travels with the code in review.
+- **Docs directory** — `tokensave-docs/` at the project root, where each
+  Markdown file declares which files it covers with an `applies_to` glob list
+  in YAML front matter. One doc can cover a whole family of files:
+
+  ```markdown
+  ---
+  applies_to:
+    - "**/*.es8.cs"
+    - "src/legacy/**/*.cs"
+  ---
+
+  These files target the ES8 runtime; prefer the ES7 variants for new work.
+  ```
+
+Rename or relocate the directory with `docs_dir` in `.tokensave/config.json`,
+or disable docs-directory discovery entirely by setting it to an empty string
+(sidecar discovery is unaffected):
+
+```json
+"docs_dir": "architecture-notes"
+```
+
+Retrieve a file's documentation with `tokensave_doc`, which returns the doc
+path, its content, every file that doc covers, and a `doc_stale` signal (true
+when the covered code was committed after the doc; `null` when there is no git
+history to compare against). `tokensave_entities` also reports `has_doc` and
+`doc_path`, so an agent can see that a summary exists *before* deciding to read
+the file. Docs whose globs match nothing are dropped rather than indexed, and
+unparseable front matter degrades to "covers nothing" instead of failing the
+sync. Section-level anchors (line ranges, `m:MethodName`) are not supported
+yet — granularity is whole-doc.
+
 ### Per-user: `~/.tokensave/`
 
 Created in your home directory. Contains:
 
-- `config.toml` — user preferences (upload opt-in/out, cached version info, pending upload count)
+- `config.toml` — stable user preferences. This is the only file meant to be
+  version-controlled (e.g. checked into a dotfiles repo).
+- `state.toml` — machine-local, frequently-changing state: cached version/pricing/flag
+  info and check timestamps (harmless to lose), but also `pending_upload`
+  (tokens accumulated locally but not yet uploaded — deleting it forfeits
+  that count) and `installed_agents` (this machine's install bookkeeping —
+  deleting it can cause the next upgrade to treat agents as not installed).
+  Regenerated automatically on every run, but don't delete it casually and
+  don't track it in a dotfiles repo — it churns on almost every run.
 - `global.db` — cross-project database that tracks tokens saved across all your projects
 
 The `config.toml` is plain TOML and fully transparent:
 
 ```toml
-upload_enabled = true       # set to false to stop uploading
-pending_upload = 4823       # tokens waiting to be uploaded
-last_upload_at = 1711375200 # last successful upload timestamp
-last_worldwide_total = 1000000
-last_worldwide_fetch_at = 1711375200
+upload_enabled = true        # set to false to stop uploading
+watcher_debounce = "2s"      # inert; left over from the watcher removed in 6.1.1
+extraction_timeout_secs = 60 # per-file extraction timeout
+wildcard_permissions = false # true = grant Claude Code tools via one "mcp__tokensave__*" entry
+manage_rules = true          # false = leave ~/.claude/rules/tokensave.md and other rules files to you
 ```
+
+`state.toml` holds everything else (`pending_upload`, `last_upload_at`,
+`cached_latest_version`, `installed_agents`, and similar cached/timestamp
+fields). If you're upgrading from a version that only had `config.toml`, the
+state fields are read from your existing file once and then migrated into
+`state.toml` automatically on the next save — no data is lost.
 
 ---
 
 ## Troubleshooting
+
+### Checking index integrity
+
+Run `tokensave verify [path]` before attempting recovery. Verification bypasses
+agent maintenance, telemetry, migrations and automatic indexing. It opens the
+selected database read-only and checks one committed SQLite snapshot. Concurrent
+uncommitted writes are invisible; source files and branch metadata are not part
+of that snapshot, so rerun after a writer or editor finishes if necessary.
+
+`tokensave verify --deep` adds SQLite `integrity_check` and content hashes using
+the indexer's BOM/legacy text decoding. The default uses `quick_check` and source
+modification times. `SOURCE_STALE` and `SOURCE_MISSING` are normal source drift,
+not evidence of corruption; use ordinary incremental `tokensave sync` after
+confirming those changes. Structural findings include incompatible schema,
+invalid SHA-256 fingerprints, dangling edges/references/parents, orphan symbols
+and vectors, and dispatch records with missing endpoints. Branch metadata is
+checked for malformed JSON, missing default entries/databases and unsafe paths.
+An untracked current branch produces `BRANCH_FALLBACK` and stops verification
+rather than comparing another branch's database against the current source.
+
+Use `--json` for a report with `completed`, `checked_files`, `findings`, `omitted`
+and `diagnostics`. Each diagnostic has a stable `code`, `severity`, `entity`,
+`action` and `repair_status`. Relationship findings aggregate affected record
+counts. Exit codes: **0** clean, **1** completed with findings (including source
+warnings), **2** incomplete or unsupported. At most 1,000 diagnostics are retained;
+`findings` still counts all findings, and `omitted` reports the excess. Deep reads
+are limited to 16 MiB per source file; skipped/unreadable files produce warnings.
+Branch metadata is limited to 1 MiB. SQLite's page cache is capped at 8 MiB;
+SQLite integrity checks can require additional engine-managed memory and CPU.
+The read snapshot can delay WAL truncation while a concurrent writer commits;
+run deep checks during a quiet period for very large or busy indexes.
+
+This initial implementation is a read-only foundation. `--repair` returns
+`REPAIR_UNSUPPORTED` and exit 2 without opening the database or making changes.
+Targeted repair, operation-journal/interrupted-sync detection, discovery of
+unindexed source files, full-text index consistency, and semantic validation of
+relationships/ambiguous-call candidates are deferred. No automatic full rebuild
+or index deletion occurs. Preserve a backup before manually recovering structural
+corruption. Symlink targets outside the project are reported without reading them;
+filesystem changes during verification can require a second run.
 
 ### "tokensave not initialized"
 
 The `.tokensave/` directory doesn't exist in your current project. Run:
 
 ```bash
-tokensave sync
+tokensave init
 ```
 
 ### MCP server not connecting
@@ -600,11 +1906,11 @@ Some symbols aren't showing up.
 
 ### Indexing is slow on first run
 
-The initial full index of a large project can take a few seconds. This is normal.
+The initial full index of a large project can take a few seconds. This is normal. Use `tokensave sync --verbose` to see which phase is taking the longest.
 
 - Subsequent syncs are incremental and much faster
 - Use `tokensave sync` (not `--force`) for day-to-day updates
-- The post-commit hook and daemon run in the background so they never block you
+- The post-commit hook syncs in the background so it never blocks you; the MCP server's staleness walk runs inline on a tool call, at most once every 30 seconds
 
 ### Stale install warning
 
@@ -615,6 +1921,37 @@ tokensave install
 ```
 
 This updates tool permissions, hooks, and prompt rules to match the new version.
+
+### "could not refresh tokensave config for: ..."
+
+After an upgrade you may see:
+
+```
+warning: could not refresh tokensave config for: copilot.
+  Run tokensave install to see the error.
+```
+
+The automatic post-upgrade refresh could not write one agent's config. The usual causes are an agent that is registered but no longer installed, or a config file in a read-only or centrally-managed location. Everything else was refreshed, and tokensave will not retry that path on every subsequent command — run `tokensave install` when convenient to see the specific error, or `tokensave uninstall --agent <name>` to stop tracking an agent you no longer use.
+
+### "agent config references Cargo build output"
+
+Installing from a source build persists the exact binary you invoked, which is
+usually what you want — but when that binary lives under `target/debug`,
+`target/release`, or `target/<triple>/{debug,release}`, `cargo clean` or
+deleting the worktree leaves your hooks and MCP entries pointing at a file that
+no longer exists. Tokensave now names the path when this happens:
+
+```
+warning: agent config references Cargo build output:
+  /repo/target/debug/tokensave
+  `cargo clean` or removing its worktree will break tokensave hooks and MCP servers.
+  Re-run `tokensave install` from a stable `cargo install`, Homebrew, or release binary.
+```
+
+Nothing is rewritten for you — substituting some other binary found on `PATH`
+could silently install an older version than the one you chose. Re-run
+`tokensave install` from a `cargo install`ed, Homebrew, or downloaded release
+binary when you want the configured path to be durable.
 
 ### Getting help
 

@@ -1,0 +1,580 @@
+use std::time::Instant;
+
+use crate::extraction::ts_state::ExtractionState;
+use tree_sitter::{Node as TsNode, Parser, Tree};
+
+use crate::types::{
+    generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
+};
+
+pub struct ElixirExtractor;
+
+/// `ExUnit` block macros whose bodies contain real calls worth graphing.
+///
+/// These are macro invocations, not language constructs, so tree-sitter sees
+/// ordinary `call` nodes with a `do_block`. Deliberately excludes `doctest`:
+/// it generates tests from `@doc` examples at compile time, so there is no
+/// call expression in the source to attribute. Linking `doctest Foo` to every
+/// function in `Foo` would fabricate coverage, and parsing free-form `iex>`
+/// prose to find the real calls is a separate problem. Doctests are therefore
+/// not modelled, and `test_risk` will report a doctest-only function as
+/// untested — wrong, but honestly wrong rather than silently overstated (#387).
+const EXUNIT_BLOCK_MACROS: &[&str] = &["test", "describe", "setup", "setup_all"];
+
+impl ElixirExtractor {
+    pub fn extract_elixir(file_path: &str, source: &str) -> ExtractionResult {
+        let start = Instant::now();
+        let mut state = ExtractionState::new(file_path, source);
+
+        let tree = match Self::parse_source(source) {
+            Ok(t) => t,
+            Err(msg) => {
+                state.errors.push(msg);
+                return state.build_result(start);
+            }
+        };
+
+        let file_node = Node {
+            id: generate_node_id(file_path, &NodeKind::File, file_path, 0),
+            kind: NodeKind::File,
+            name: file_path.to_string(),
+            qualified_name: file_path.to_string(),
+            file_path: file_path.to_string(),
+            start_line: 0,
+            attrs_start_line: 0,
+            end_line: source.lines().count().saturating_sub(1) as u32,
+            start_column: 0,
+            end_column: 0,
+            signature: None,
+            docstring: None,
+            visibility: Visibility::Pub,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: state.timestamp,
+            parent_id: None,
+        };
+        let file_node_id = file_node.id.clone();
+        state.nodes.push(file_node);
+        state.node_stack.push((file_path.to_string(), file_node_id));
+
+        let root = tree.root_node();
+        Self::visit_children(&mut state, root);
+
+        state.node_stack.pop();
+        state.build_result(start)
+    }
+
+    fn parse_source(source: &str) -> Result<Tree, String> {
+        let mut parser = Parser::new();
+        let language = crate::extraction::ts_provider::language("elixir");
+        parser
+            .set_language(&language)
+            .map_err(|e| format!("failed to load Elixir grammar: {e}"))?;
+        parser
+            .parse(source, None)
+            .ok_or_else(|| "tree-sitter parse returned None".to_string())
+    }
+
+    fn visit_children(state: &mut ExtractionState, node: TsNode<'_>) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                Self::visit_node(state, cursor.node());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn visit_node(state: &mut ExtractionState, node: TsNode<'_>) {
+        if node.kind() != "call" {
+            Self::visit_children(state, node);
+            return;
+        }
+
+        // In Elixir's tree-sitter grammar, def/defmodule/etc. are `call` nodes.
+        // The function being called is the first child (target/function).
+        let head = Self::call_head(state, node);
+        match head.as_deref() {
+            Some("defmodule") => Self::visit_defmodule(state, node),
+            Some("def" | "defp") => {
+                Self::visit_def(state, node, head.as_deref() == Some("defp"));
+            }
+            Some("defmacro" | "defmacrop") => Self::visit_defmacro(state, node),
+            Some("defstruct") => Self::visit_defstruct(state, node),
+            Some("import" | "require" | "use" | "alias") => {
+                Self::visit_use(state, node);
+            }
+            Some(head) if EXUNIT_BLOCK_MACROS.contains(&head) => {
+                Self::visit_exunit_block(state, node);
+            }
+            _ => Self::visit_children(state, node),
+        }
+    }
+
+    /// Attributes the calls inside an `ExUnit` block to the enclosing binding.
+    ///
+    /// `test "..." do ... end` and friends are macro invocations, so the block
+    /// has no named symbol of its own to own its calls. `extract_calls` is
+    /// otherwise only ever reached with a `def`'s id, which is why every call
+    /// in every `ExUnit` test was previously attributed to nothing and never
+    /// became an edge — leaving `tokensave_affected` empty and
+    /// `tokensave_test_risk` reporting `coverage_pct: 0.0` for functions that
+    /// were plainly tested (#387).
+    ///
+    /// The enclosing `defmodule` owns them, matching how #346 attributed calls
+    /// inside a TypeScript arrow passed as an argument to its enclosing
+    /// binding. The alternative — synthesising a node per test from the string
+    /// literal — would give `affected` the ability to name *which* test, at the
+    /// cost of inventing graph nodes with no declaration behind them.
+    ///
+    /// `extract_calls` recurses, so a `describe` block covers the `test` blocks
+    /// nested inside it. This returns without visiting children for that
+    /// reason: descending as well would record every nested call twice.
+    fn visit_exunit_block(state: &mut ExtractionState, node: TsNode<'_>) {
+        let Some(owner) = state.parent_node_id().map(String::from) else {
+            // Outside any module (a bare script). Nothing to attribute to, and
+            // inventing an owner would be worse than recording nothing.
+            return;
+        };
+        if let Some(body) = Self::find_do_block(node) {
+            Self::extract_calls(state, body, &owner);
+        }
+    }
+
+    fn visit_defmodule(state: &mut ExtractionState, node: TsNode<'_>) {
+        // defmodule MyModule do ... end
+        let name = Self::call_arg_name(state, node).unwrap_or_else(|| "?".to_string());
+        let start_line = node.start_position().row as u32;
+        let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
+        let id = generate_node_id(&state.file_path, &NodeKind::Module, &name, start_line);
+
+        let graph_node = Node {
+            id: id.clone(),
+            kind: NodeKind::Module,
+            name: name.clone(),
+            qualified_name,
+            file_path: state.file_path.clone(),
+            start_line,
+            attrs_start_line: start_line,
+            end_line: node.end_position().row as u32,
+            start_column: node.start_position().column as u32,
+            end_column: node.end_position().column as u32,
+            signature: None,
+            docstring: None,
+            visibility: Visibility::Pub,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: state.timestamp,
+            parent_id: None,
+        };
+        state.nodes.push(graph_node);
+
+        if let Some(parent_id) = state.parent_node_id() {
+            state.edges.push(Edge {
+                source: parent_id.to_string(),
+                target: id.clone(),
+                kind: EdgeKind::Contains,
+                line: Some(start_line),
+                resolved_by: None,
+            });
+        }
+
+        state.node_stack.push((name, id));
+        // Recurse into the do_block body.
+        if let Some(body) = Self::find_do_block(node) {
+            Self::visit_children(state, body);
+        }
+        state.node_stack.pop();
+    }
+
+    fn visit_def(state: &mut ExtractionState, node: TsNode<'_>, is_private: bool) {
+        // def name(args) do ... end
+        let name = Self::call_arg_name(state, node).unwrap_or_else(|| "?".to_string());
+        let start_line = node.start_position().row as u32;
+        let sig = Self::first_line(state, node);
+        let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
+        let id = generate_node_id(&state.file_path, &NodeKind::Function, &name, start_line);
+        let visibility = if is_private {
+            Visibility::Private
+        } else {
+            Visibility::Pub
+        };
+
+        // Extract @doc attribute from preceding attribute call.
+        let docstring = Self::extract_doc(state, node);
+
+        let graph_node = Node {
+            id: id.clone(),
+            kind: NodeKind::Function,
+            name,
+            qualified_name,
+            file_path: state.file_path.clone(),
+            start_line,
+            attrs_start_line: start_line,
+            end_line: node.end_position().row as u32,
+            start_column: node.start_position().column as u32,
+            end_column: node.end_position().column as u32,
+            signature: sig,
+            docstring,
+            visibility,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: state.timestamp,
+            parent_id: None,
+        };
+        state.nodes.push(graph_node);
+
+        if let Some(parent_id) = state.parent_node_id() {
+            state.edges.push(Edge {
+                source: parent_id.to_string(),
+                target: id.clone(),
+                kind: EdgeKind::Contains,
+                line: Some(start_line),
+                resolved_by: None,
+            });
+        }
+
+        if let Some(body) = Self::find_do_block(node) {
+            Self::extract_calls(state, body, &id);
+        }
+    }
+
+    fn visit_defmacro(state: &mut ExtractionState, node: TsNode<'_>) {
+        let name = Self::call_arg_name(state, node).unwrap_or_else(|| "?".to_string());
+        let start_line = node.start_position().row as u32;
+        let sig = Self::first_line(state, node);
+        let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
+        let id = generate_node_id(&state.file_path, &NodeKind::Function, &name, start_line);
+
+        let graph_node = Node {
+            id: id.clone(),
+            kind: NodeKind::Function,
+            name,
+            qualified_name,
+            file_path: state.file_path.clone(),
+            start_line,
+            attrs_start_line: start_line,
+            end_line: node.end_position().row as u32,
+            start_column: node.start_position().column as u32,
+            end_column: node.end_position().column as u32,
+            signature: sig,
+            docstring: None,
+            visibility: Visibility::Pub,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: state.timestamp,
+            parent_id: None,
+        };
+        state.nodes.push(graph_node);
+
+        if let Some(parent_id) = state.parent_node_id() {
+            state.edges.push(Edge {
+                source: parent_id.to_string(),
+                target: id,
+                kind: EdgeKind::Contains,
+                line: Some(start_line),
+                resolved_by: None,
+            });
+        }
+    }
+
+    fn visit_defstruct(state: &mut ExtractionState, node: TsNode<'_>) {
+        // defstruct is a macro that defines a struct in the current module.
+        // Emit as a Class node using the enclosing module name.
+        let name = state
+            .node_stack
+            .last()
+            .map_or_else(|| "?".to_string(), |(n, _)| n.clone());
+        let start_line = node.start_position().row as u32;
+        let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
+        let id = generate_node_id(&state.file_path, &NodeKind::Class, &name, start_line);
+        let sig = Self::first_line(state, node);
+
+        let graph_node = Node {
+            id: id.clone(),
+            kind: NodeKind::Class,
+            name,
+            qualified_name,
+            file_path: state.file_path.clone(),
+            start_line,
+            attrs_start_line: start_line,
+            end_line: node.end_position().row as u32,
+            start_column: node.start_position().column as u32,
+            end_column: node.end_position().column as u32,
+            signature: sig,
+            docstring: None,
+            visibility: Visibility::Pub,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: state.timestamp,
+            parent_id: None,
+        };
+        state.nodes.push(graph_node);
+
+        if let Some(parent_id) = state.parent_node_id() {
+            state.edges.push(Edge {
+                source: parent_id.to_string(),
+                target: id,
+                kind: EdgeKind::Contains,
+                line: Some(start_line),
+                resolved_by: None,
+            });
+        }
+    }
+
+    fn visit_use(state: &mut ExtractionState, node: TsNode<'_>) {
+        let text = state.node_text(node);
+        let start_line = node.start_position().row as u32;
+        let name = Self::call_arg_name(state, node).unwrap_or_else(|| "?".to_string());
+        let id = generate_node_id(&state.file_path, &NodeKind::Use, &name, start_line);
+
+        let graph_node = Node {
+            id: id.clone(),
+            kind: NodeKind::Use,
+            name,
+            qualified_name: format!("{}::use", state.file_path),
+            file_path: state.file_path.clone(),
+            start_line,
+            attrs_start_line: start_line,
+            end_line: node.end_position().row as u32,
+            start_column: node.start_position().column as u32,
+            end_column: node.end_position().column as u32,
+            signature: Some(text.trim().to_string()),
+            docstring: None,
+            visibility: Visibility::Private,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: state.timestamp,
+            parent_id: None,
+        };
+        state.nodes.push(graph_node);
+        if let Some(parent_id) = state.parent_node_id() {
+            state.edges.push(Edge {
+                source: parent_id.to_string(),
+                target: id,
+                kind: EdgeKind::Contains,
+                line: Some(start_line),
+                resolved_by: None,
+            });
+        }
+    }
+
+    /// Returns the identifier of the function being called (the `call` head).
+    fn call_head(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        // In tree-sitter-elixir, call has a `target` field or first named child is the callee.
+        if let Some(target) = node.child_by_field_name("target") {
+            return Some(state.node_text(target));
+        }
+        // Fall back: first identifier child.
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "identifier" {
+                    return Some(state.node_text(child));
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        None
+    }
+
+    /// Returns the name from the first argument of a call (e.g. module name in defmodule).
+    fn call_arg_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        // Look for the `arguments` child, then find the first alias/identifier/call.
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "arguments" {
+                    // First named child of arguments.
+                    if let Some(arg) = child.named_child(0) {
+                        return Some(state.node_text(arg));
+                    }
+                }
+                // For `def name(args)` the function name might be directly a `call`
+                // child (a call of name/args).
+                if child.kind() == "call" {
+                    if let Some(inner_head) = Self::call_head(state, child) {
+                        return Some(inner_head);
+                    }
+                }
+                if child.kind() == "alias" || child.kind() == "identifier" {
+                    let text = state.node_text(child);
+                    // Skip the defmodule/def keyword itself.
+                    if !matches!(
+                        text.as_str(),
+                        "defmodule"
+                            | "def"
+                            | "defp"
+                            | "defmacro"
+                            | "defmacrop"
+                            | "defstruct"
+                            | "import"
+                            | "require"
+                            | "use"
+                            | "alias"
+                    ) {
+                        return Some(text);
+                    }
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        None
+    }
+
+    /// Finds a `do_block` child for recursing into body.
+    fn find_do_block(node: TsNode<'_>) -> Option<TsNode<'_>> {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "do_block" || child.kind() == "body" {
+                    return Some(child);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        None
+    }
+
+    fn extract_doc(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        // @doc "..." precedes def as a sibling call node.
+        let prev = node.prev_named_sibling()?;
+        if prev.kind() == "call" {
+            let head = Self::call_head(state, prev)?;
+            if head == "@doc" {
+                let text = state.node_text(prev);
+                return Some(text);
+            }
+        }
+        None
+    }
+
+    fn extract_calls(state: &mut ExtractionState, node: TsNode<'_>, fn_id: &str) {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                if child.kind() == "call" {
+                    let head = Self::call_head(state, child);
+                    if let Some(name) = head {
+                        if !matches!(
+                            name.as_str(),
+                            "def" | "defp" | "defmacro" | "defmacrop" | "defmodule"
+                        ) {
+                            state.unresolved_refs.push(UnresolvedRef {
+                                from_node_id: fn_id.to_string(),
+                                reference_name: name,
+                                reference_kind: EdgeKind::Calls,
+                                line: child.start_position().row as u32,
+                                column: child.start_position().column as u32,
+                                file_path: state.file_path.clone(),
+                            });
+                        }
+                    }
+                    Self::extract_calls(state, child, fn_id);
+                } else {
+                    Self::extract_calls(state, child, fn_id);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn first_line(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        let text = state.node_text(node);
+        text.lines().next().map(|l| l.trim().to_string())
+    }
+}
+
+impl crate::extraction::LanguageExtractor for ElixirExtractor {
+    fn extensions(&self) -> &[&str] {
+        &["ex", "exs"]
+    }
+
+    fn language_name(&self) -> &'static str {
+        "Elixir"
+    }
+
+    fn extract(&self, file_path: &str, source: &str) -> ExtractionResult {
+        Self::extract_elixir(file_path, source)
+    }
+}

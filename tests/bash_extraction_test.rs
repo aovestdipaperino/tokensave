@@ -1,5 +1,7 @@
-use tokensave::extraction::LanguageExtractor;
+#![cfg(feature = "lang-bash")]
+
 use tokensave::extraction::BashExtractor;
+use tokensave::extraction::LanguageExtractor;
 use tokensave::types::*;
 
 #[test]
@@ -14,7 +16,13 @@ fn test_bash_extract_functions() {
         .iter()
         .filter(|n| n.kind == NodeKind::Function)
         .collect();
-    assert_eq!(fns.len(), 5, "expected 5 functions, got {}: {:?}", fns.len(), fns.iter().map(|n| &n.name).collect::<Vec<_>>());
+    assert_eq!(
+        fns.len(),
+        5,
+        "expected 5 functions, got {}: {:?}",
+        fns.len(),
+        fns.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
     assert!(fns.iter().any(|n| n.name == "log"));
     assert!(fns.iter().any(|n| n.name == "validate_config"));
     assert!(fns.iter().any(|n| n.name == "connect"));
@@ -34,7 +42,13 @@ fn test_bash_extract_readonly_consts() {
         .iter()
         .filter(|n| n.kind == NodeKind::Const)
         .collect();
-    assert_eq!(consts.len(), 2, "expected 2 consts, got {}: {:?}", consts.len(), consts.iter().map(|n| &n.name).collect::<Vec<_>>());
+    assert_eq!(
+        consts.len(),
+        2,
+        "expected 2 consts, got {}: {:?}",
+        consts.len(),
+        consts.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
     assert!(consts.iter().any(|n| n.name == "MAX_RETRIES"));
     assert!(consts.iter().any(|n| n.name == "DEFAULT_PORT"));
 }
@@ -85,7 +99,9 @@ fn test_bash_call_sites() {
     );
     // main calls validate_config
     assert!(
-        call_refs.iter().any(|r| r.reference_name == "validate_config"),
+        call_refs
+            .iter()
+            .any(|r| r.reference_name == "validate_config"),
         "should find validate_config call"
     );
 }
@@ -103,7 +119,11 @@ fn test_bash_docstrings() {
         .find(|n| n.kind == NodeKind::Function && n.name == "log")
         .expect("log function not found");
     assert!(
-        log_fn.docstring.as_ref().unwrap().contains("Logs a message"),
+        log_fn
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Logs a message"),
         "docstring: {:?}",
         log_fn.docstring
     );
@@ -114,7 +134,11 @@ fn test_bash_docstrings() {
         .find(|n| n.kind == NodeKind::Function && n.name == "connect")
         .expect("connect function not found");
     assert!(
-        connect_fn.docstring.as_ref().unwrap().contains("Connects to the remote server"),
+        connect_fn
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Connects to the remote server"),
         "docstring: {:?}",
         connect_fn.docstring
     );
@@ -125,7 +149,11 @@ fn test_bash_docstrings() {
         .find(|n| n.kind == NodeKind::Function && n.name == "main")
         .expect("main function not found");
     assert!(
-        main_fn.docstring.as_ref().unwrap().contains("Main entry point"),
+        main_fn
+            .docstring
+            .as_ref()
+            .unwrap()
+            .contains("Main entry point"),
         "docstring: {:?}",
         main_fn.docstring
     );

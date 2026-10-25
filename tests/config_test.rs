@@ -1,11 +1,11 @@
-use tokensave::config::*;
 use tempfile::TempDir;
+use tokensave::config::*;
 
 #[test]
 fn test_default_config_has_exclude_patterns() {
     let config = TokenSaveConfig::default();
-    assert!(config.exclude.iter().any(|p| p == "target/**"));
-    assert!(config.exclude.iter().any(|p| p == ".git/**"));
+    assert!(config.exclude.iter().any(|p| p == "**/target/**"));
+    assert!(config.exclude.iter().any(|p| p == "**/.git/**"));
 }
 
 #[test]
@@ -16,6 +16,17 @@ fn test_save_and_load_config() {
     let loaded = load_config(dir.path()).unwrap();
     assert_eq!(config.version, loaded.version);
     assert_eq!(config.exclude, loaded.exclude);
+}
+
+#[test]
+fn test_generated_config_explains_environment_overrides() {
+    let dir = TempDir::new().unwrap();
+    save_config(dir.path(), &TokenSaveConfig::default()).unwrap();
+
+    let text = std::fs::read_to_string(dir.path().join(".tokensave").join("config.json")).unwrap();
+    assert!(text.contains("\"_comment\""));
+    assert!(text.contains("TOKENSAVE_* environment variables override"));
+    assert!(serde_json::from_str::<TokenSaveConfig>(&text).is_ok());
 }
 
 #[test]
@@ -44,6 +55,43 @@ fn test_config_serde_roundtrip() {
 }
 
 #[test]
+fn test_default_last_indexed_version_is_empty() {
+    let config = TokenSaveConfig::default();
+    assert_eq!(config.last_indexed_version, "");
+}
+
+#[test]
+fn test_last_indexed_version_persists() {
+    let dir = TempDir::new().unwrap();
+    let config = TokenSaveConfig {
+        last_indexed_version: "7.0.0".to_string(),
+        ..TokenSaveConfig::default()
+    };
+    save_config(dir.path(), &config).unwrap();
+    let loaded = load_config(dir.path()).unwrap();
+    assert_eq!(loaded.last_indexed_version, "7.0.0");
+}
+
+#[test]
+fn test_legacy_config_without_last_indexed_version_loads_empty() {
+    let dir = TempDir::new().unwrap();
+    let tokensave_dir = dir.path().join(".tokensave");
+    std::fs::create_dir_all(&tokensave_dir).unwrap();
+    // Pre-7.0 config that predates the `last_indexed_version` field.
+    let legacy_json = r#"{
+        "version": 1,
+        "root_dir": ".",
+        "exclude": ["target/**"],
+        "max_file_size": 1048576,
+        "extract_docstrings": true,
+        "track_call_sites": true
+    }"#;
+    std::fs::write(tokensave_dir.join("config.json"), legacy_json).unwrap();
+    let loaded = load_config(dir.path()).unwrap();
+    assert_eq!(loaded.last_indexed_version, "");
+}
+
+#[test]
 fn test_legacy_config_with_include_field_still_loads() {
     let dir = TempDir::new().unwrap();
     let tokensave_dir = dir.path().join(".tokensave");
@@ -61,7 +109,8 @@ fn test_legacy_config_with_include_field_still_loads() {
     }"#;
     std::fs::write(tokensave_dir.join("config.json"), legacy_json).unwrap();
     let loaded = load_config(dir.path()).unwrap();
-    assert_eq!(loaded.version, 1);
+    // Loading migrates a version 1 config to the current schema (#576).
+    assert_eq!(loaded.version, tokensave::config::CONFIG_VERSION);
     assert!(loaded.exclude.contains(&"target/**".to_string()));
 }
 
@@ -138,16 +187,409 @@ fn test_add_to_gitignore_adds_newline_if_missing() {
     assert!(content.contains("target/\n.tokensave\n"));
 }
 
+// ── add_to_git_info_exclude ─────────────────────────────────────────────────
+
+fn git_init(path: &std::path::Path) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("init")
+        .arg("-q")
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn test_add_to_git_info_exclude_creates_entry() {
+    let dir = TempDir::new().unwrap();
+    git_init(dir.path());
+    add_to_git_info_exclude(dir.path());
+    let content =
+        std::fs::read_to_string(dir.path().join(".git").join("info").join("exclude")).unwrap();
+    assert!(content.contains(".tokensave/"));
+    assert!(content.ends_with('\n'));
+    // The tracked .gitignore must be left untouched.
+    assert!(!dir.path().join(".gitignore").exists());
+}
+
+#[test]
+fn test_add_to_git_info_exclude_is_idempotent() {
+    let dir = TempDir::new().unwrap();
+    git_init(dir.path());
+    add_to_git_info_exclude(dir.path());
+    add_to_git_info_exclude(dir.path());
+    let content =
+        std::fs::read_to_string(dir.path().join(".git").join("info").join("exclude")).unwrap();
+    assert_eq!(content.matches(".tokensave/").count(), 1);
+}
+
+#[test]
+fn test_add_to_git_info_exclude_appends_to_existing() {
+    let dir = TempDir::new().unwrap();
+    git_init(dir.path());
+    // git init already seeds info/exclude with comment lines; append after them.
+    add_to_git_info_exclude(dir.path());
+    let exclude =
+        std::fs::read_to_string(dir.path().join(".git").join("info").join("exclude")).unwrap();
+    assert!(exclude.contains(".tokensave/\n"));
+}
+
+#[test]
+fn test_add_to_git_info_exclude_makes_git_ignore_it() {
+    let dir = TempDir::new().unwrap();
+    git_init(dir.path());
+    add_to_git_info_exclude(dir.path());
+    // Verify git honors the entry, isolated from the developer's global
+    // excludes file (which may already ignore .tokensave) via an empty
+    // GIT_CONFIG_GLOBAL, so the assertion is deterministic.
+    let empty_global = dir.path().join("empty_gitconfig");
+    std::fs::write(&empty_global, "").unwrap();
+    let status = std::process::Command::new("git")
+        .env("GIT_CONFIG_GLOBAL", &empty_global)
+        .arg("-C")
+        .arg(dir.path())
+        .arg("check-ignore")
+        .arg("-q")
+        .arg(".tokensave/")
+        .status()
+        .unwrap();
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "info/exclude entry should make git ignore .tokensave/"
+    );
+}
+
+#[test]
+fn test_add_to_git_info_exclude_outside_repo_is_noop() {
+    let dir = TempDir::new().unwrap();
+    // No `git init` — not a repository.
+    add_to_git_info_exclude(dir.path());
+    assert!(!dir.path().join(".git").exists());
+    assert!(!dir.path().join(".gitignore").exists());
+}
+
+// ── non-git scan warning (#283) ─────────────────────────────────────────────
+
+#[test]
+fn test_non_git_warning_without_gitignore_warns_about_unconstrained_walk() {
+    let dir = TempDir::new().unwrap();
+    let warning = non_git_scan_warning(dir.path());
+    assert!(
+        warning.contains("no `.gitignore` here"),
+        "with nothing to constrain the walk the size caution is the point: {warning}"
+    );
+    assert!(
+        warning.contains("`.tokensave/config.json`"),
+        "the caution should point at the available remedies: {warning}"
+    );
+}
+
+#[test]
+fn test_non_git_warning_with_gitignore_does_not_claim_filtering_is_off() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "build/\n").unwrap();
+    let warning = non_git_scan_warning(dir.path());
+    assert!(
+        warning.contains("still applies"),
+        "a root .gitignore is honored without a git repo and the message must say so: {warning}"
+    );
+    assert!(
+        !warning.contains("will not apply"),
+        "the old wording asserted the opposite of what the scanner does: {warning}"
+    );
+    assert!(
+        warning.contains(".git/info/exclude"),
+        "what is genuinely lost outside a repo should still be named: {warning}"
+    );
+}
+
+// ── exclusion helpers report what they actually did (#288) ──────────────────
+
+#[test]
+fn test_add_to_git_info_exclude_outside_repo_reports_failure() {
+    let dir = TempDir::new().unwrap();
+    // No `git init` — the entry cannot be written, so the caller must not
+    // print "Added .tokensave/ to .git/info/exclude".
+    assert!(
+        !add_to_git_info_exclude(dir.path()),
+        "outside a repository the helper must report that it wrote nothing"
+    );
+}
+
+#[test]
+fn test_add_to_git_info_exclude_reports_success() {
+    let dir = TempDir::new().unwrap();
+    git_init(dir.path());
+    assert!(add_to_git_info_exclude(dir.path()));
+    // Already present: the desired end state holds, so this still reports true.
+    assert!(add_to_git_info_exclude(dir.path()));
+}
+
+#[test]
+fn test_add_to_gitignore_reports_success() {
+    let dir = TempDir::new().unwrap();
+    assert!(add_to_gitignore(dir.path()));
+    assert!(dir.path().join(".gitignore").exists());
+}
+
+#[test]
+fn test_add_to_gitignore_reports_failure_when_unwritable() {
+    let dir = TempDir::new().unwrap();
+    // A directory where the file belongs makes the write fail.
+    std::fs::create_dir(dir.path().join(".gitignore")).unwrap();
+    assert!(
+        !add_to_gitignore(dir.path()),
+        "a failed write must not be reported as success"
+    );
+}
+
 // ── resolve_path ────────────────────────────────────────────────────────────
 
 #[test]
 fn test_resolve_path_with_value() {
-    let result = resolve_path(Some("/tmp/myproject".to_string()));
-    assert_eq!(result, std::path::PathBuf::from("/tmp/myproject"));
+    // An absolute argument is passed through verbatim. On Windows that requires
+    // a drive: `/tmp/myproject` is rooted but driveless, so it is not absolute
+    // there and is resolved against the current drive instead.
+    let absolute = if cfg!(windows) {
+        r"C:\tmp\myproject"
+    } else {
+        "/tmp/myproject"
+    };
+    let result = resolve_path(Some(absolute.to_string()));
+    assert_eq!(result, std::path::PathBuf::from(absolute));
+}
+
+#[cfg(windows)]
+#[test]
+fn resolve_path_gives_a_driveless_rooted_path_the_current_drive() {
+    let result = resolve_path(Some(r"\tmp\myproject".to_string()));
+    assert!(
+        result.is_absolute(),
+        "a driveless rooted path must gain a drive, got {}",
+        result.display()
+    );
+    assert!(result.ends_with(r"tmp\myproject"));
 }
 
 #[test]
 fn test_resolve_path_none_uses_cwd() {
     let result = resolve_path(None);
     assert!(!result.as_os_str().is_empty());
+}
+
+#[test]
+fn resolve_path_makes_dot_absolute() {
+    let result = resolve_path(Some(".".to_string()));
+    assert!(
+        result.is_absolute(),
+        "`.` must resolve to an absolute path, got {}",
+        result.display()
+    );
+    assert_eq!(result, std::env::current_dir().unwrap());
+}
+
+#[test]
+fn resolve_path_resolves_parent_segments_without_touching_the_filesystem() {
+    let result = resolve_path(Some("nested/../sibling".to_string()));
+    assert!(result.is_absolute());
+    assert_eq!(result, std::env::current_dir().unwrap().join("sibling"));
+    assert!(
+        !result.to_string_lossy().contains(".."),
+        "`..` must be resolved, got {}",
+        result.display()
+    );
+}
+
+#[test]
+fn resolve_path_makes_a_relative_argument_absolute() {
+    let result = resolve_path(Some("nested/child".to_string()));
+    assert!(
+        result.is_absolute(),
+        "a relative argument must resolve to an absolute path, got {}",
+        result.display()
+    );
+    assert!(result.ends_with("nested/child"));
+}
+
+#[test]
+fn resolve_path_leaves_an_absolute_argument_alone() {
+    let absolute = if cfg!(windows) {
+        r"C:\projects\myproject"
+    } else {
+        "/tmp/myproject"
+    };
+    let result = resolve_path(Some(absolute.to_string()));
+    assert_eq!(result, std::path::PathBuf::from(absolute));
+}
+
+#[test]
+fn resolve_path_with_discovery_makes_dot_absolute() {
+    let result = tokensave::config::resolve_path_with_discovery(Some(".".to_string()));
+    assert!(
+        result.is_absolute(),
+        "`.` must resolve to an absolute path, got {}",
+        result.display()
+    );
+}
+
+#[test]
+fn resolve_path_with_discovery_makes_a_relative_argument_absolute() {
+    let result = tokensave::config::resolve_path_with_discovery(Some("nested/child".to_string()));
+    assert!(result.is_absolute());
+    assert!(result.ends_with("nested/child"));
+}
+
+#[test]
+fn test_discover_project_root_finds_parent() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".tokensave")).unwrap();
+    std::fs::write(root.join(".tokensave").join("tokensave.db"), b"fake").unwrap();
+    let child = root.join("src").join("mcp");
+    std::fs::create_dir_all(&child).unwrap();
+
+    let found = tokensave::config::discover_project_root(&child);
+    assert_eq!(found, Some(root.to_path_buf()));
+}
+
+#[test]
+fn test_discover_project_root_returns_none() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let found = tokensave::config::discover_project_root(dir.path());
+    assert!(found.is_none());
+}
+
+#[test]
+fn test_discover_project_root_at_root_itself() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".tokensave")).unwrap();
+    std::fs::write(root.join(".tokensave").join("tokensave.db"), b"fake").unwrap();
+
+    let found = tokensave::config::discover_project_root(root);
+    assert_eq!(found, Some(root.to_path_buf()));
+}
+
+#[test]
+fn cpu_usage_defaults_and_legacy_configs() {
+    use tokensave::cpu::CpuUsage;
+    // A new project pins nothing: it follows the global settings (#752).
+    assert_eq!(TokenSaveConfig::default().cpu_usage, None);
+    let written = serde_json::to_value(TokenSaveConfig::default()).unwrap();
+    assert!(written.get("cpu_usage").is_none(), "{written}");
+    // Configs written before #752 always carried `cpu_usage`; it stays a pin.
+    let mut legacy = written;
+    legacy["cpu_usage"] = serde_json::json!("balanced");
+    let config: TokenSaveConfig = serde_json::from_value(legacy).unwrap();
+    assert_eq!(config.cpu_usage, Some(CpuUsage::Balanced));
+    // An explicit null means unset.
+    let mut null = serde_json::to_value(TokenSaveConfig::default()).unwrap();
+    null["cpu_usage"] = serde_json::Value::Null;
+    let config: TokenSaveConfig = serde_json::from_value(null).unwrap();
+    assert_eq!(config.cpu_usage, None);
+}
+
+#[test]
+fn cpu_usage_profiles_round_trip_through_existing_config() {
+    use tokensave::cpu::CpuUsage;
+    for profile in [CpuUsage::Low, CpuUsage::Balanced, CpuUsage::Performance] {
+        let dir = TempDir::new().unwrap();
+        let config = TokenSaveConfig {
+            cpu_usage: Some(profile),
+            ..Default::default()
+        };
+        save_config(dir.path(), &config).unwrap();
+        assert_eq!(load_config(dir.path()).unwrap().cpu_usage, Some(profile));
+    }
+}
+
+#[test]
+fn invalid_cpu_usage_reports_valid_choices_and_config_path() {
+    let dir = TempDir::new().unwrap();
+    save_config(dir.path(), &TokenSaveConfig::default()).unwrap();
+    let path = dir.path().join(".tokensave").join("config.json");
+    for invalid in [serde_json::json!("turbo"), serde_json::json!(2)] {
+        let mut config = serde_json::to_value(TokenSaveConfig::default()).unwrap();
+        config["cpu_usage"] = invalid;
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let error = load_config(dir.path()).unwrap_err().to_string();
+        assert!(error.contains("config.json"), "{error}");
+        if config["cpu_usage"].is_string() {
+            for choice in ["low", "balanced", "performance"] {
+                assert!(error.contains(choice), "{error}");
+            }
+        }
+    }
+}
+
+#[test]
+fn memory_usage_defaults_and_legacy_configs() {
+    use tokensave::memory::MemoryUsage;
+    assert_eq!(
+        TokenSaveConfig::default().memory_usage,
+        MemoryUsage::Balanced
+    );
+    let mut legacy = serde_json::to_value(TokenSaveConfig::default()).unwrap();
+    legacy.as_object_mut().unwrap().remove("memory_usage");
+    let config: TokenSaveConfig = serde_json::from_value(legacy).unwrap();
+    assert_eq!(config.memory_usage, MemoryUsage::Balanced);
+}
+
+#[test]
+fn memory_usage_profiles_round_trip_through_existing_config() {
+    use tokensave::memory::MemoryUsage;
+    for profile in [
+        MemoryUsage::Low,
+        MemoryUsage::Balanced,
+        MemoryUsage::Performance,
+    ] {
+        let dir = TempDir::new().unwrap();
+        let config = TokenSaveConfig {
+            memory_usage: profile,
+            ..Default::default()
+        };
+        save_config(dir.path(), &config).unwrap();
+        assert_eq!(load_config(dir.path()).unwrap().memory_usage, profile);
+    }
+}
+
+#[test]
+fn invalid_memory_usage_reports_valid_choices_and_config_path() {
+    let dir = TempDir::new().unwrap();
+    save_config(dir.path(), &TokenSaveConfig::default()).unwrap();
+    let path = dir.path().join(".tokensave").join("config.json");
+    for invalid in [serde_json::json!("turbo"), serde_json::json!(2)] {
+        let mut config = serde_json::to_value(TokenSaveConfig::default()).unwrap();
+        config["memory_usage"] = invalid;
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let error = load_config(dir.path()).unwrap_err().to_string();
+        assert!(error.contains("config.json"), "{error}");
+        if config["memory_usage"].is_string() {
+            for choice in ["low", "balanced", "performance"] {
+                assert!(error.contains(choice), "{error}");
+            }
+        }
+    }
+}
+
+#[test]
+fn test_configured_cpu_usage_distinguishes_missing_from_default() {
+    let dir = TempDir::new().unwrap();
+    assert_eq!(configured_cpu_usage(dir.path()).unwrap(), None);
+
+    let tokensave_dir = get_tokensave_dir(dir.path());
+    std::fs::create_dir_all(&tokensave_dir).unwrap();
+    std::fs::write(get_config_path(dir.path()), r#"{"version": 2}"#).unwrap();
+    assert_eq!(configured_cpu_usage(dir.path()).unwrap(), None);
+
+    std::fs::write(get_config_path(dir.path()), r#"{"cpu_usage": "balanced"}"#).unwrap();
+    assert_eq!(
+        configured_cpu_usage(dir.path()).unwrap(),
+        Some(tokensave::cpu::CpuUsage::Balanced)
+    );
+
+    std::fs::write(get_config_path(dir.path()), r#"{"cpu_usage": "turbo"}"#).unwrap();
+    assert!(configured_cpu_usage(dir.path()).is_err());
 }

@@ -8,7 +8,11 @@ fn test_rust_file_node_is_root() {
     let extractor = RustExtractor;
     let result = extractor.extract("test.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let files: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::File).collect();
+    let files: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::File)
+        .collect();
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].name, "test.rs");
 }
@@ -26,13 +30,29 @@ fn helper() {}
     let extractor = RustExtractor;
     let result = extractor.extract("math.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
-    assert_eq!(fns.len(), 2, "expected 2 functions, got: {:?}", fns.iter().map(|n| &n.name).collect::<Vec<_>>());
+    let fns: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function)
+        .collect();
+    assert_eq!(
+        fns.len(),
+        2,
+        "expected 2 functions, got: {:?}",
+        fns.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
     let add_fn = fns.iter().find(|f| f.name == "add").expect("add not found");
     assert_eq!(add_fn.visibility, Visibility::Pub);
-    assert!(add_fn.docstring.as_deref().unwrap_or("").contains("Adds two numbers"));
+    assert!(add_fn
+        .docstring
+        .as_deref()
+        .unwrap_or("")
+        .contains("Adds two numbers"));
     assert!(add_fn.signature.as_deref().unwrap_or("").contains("fn add"));
-    let helper = fns.iter().find(|f| f.name == "helper").expect("helper not found");
+    let helper = fns
+        .iter()
+        .find(|f| f.name == "helper")
+        .expect("helper not found");
     assert_eq!(helper.visibility, Visibility::Private);
 }
 
@@ -46,7 +66,11 @@ pub async fn fetch_data() -> String {
     let extractor = RustExtractor;
     let result = extractor.extract("async.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    let fns: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function)
+        .collect();
     assert_eq!(fns.len(), 1);
     assert!(fns[0].is_async, "expected async function");
 }
@@ -63,15 +87,32 @@ pub struct Point {
     let extractor = RustExtractor;
     let result = extractor.extract("types.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let structs: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Struct).collect();
+    let structs: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Struct)
+        .collect();
     assert_eq!(structs.len(), 1);
     assert_eq!(structs[0].name, "Point");
     assert_eq!(structs[0].visibility, Visibility::Pub);
 
-    let fields: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Field).collect();
-    assert_eq!(fields.len(), 3, "expected 3 fields, got: {:?}", fields.iter().map(|n| &n.name).collect::<Vec<_>>());
-    assert!(fields.iter().any(|f| f.name == "x" && f.visibility == Visibility::Pub));
-    assert!(fields.iter().any(|f| f.name == "label" && f.visibility == Visibility::Private));
+    let fields: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Field)
+        .collect();
+    assert_eq!(
+        fields.len(),
+        3,
+        "expected 3 fields, got: {:?}",
+        fields.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
+    assert!(fields
+        .iter()
+        .any(|f| f.name == "x" && f.visibility == Visibility::Pub));
+    assert!(fields
+        .iter()
+        .any(|f| f.name == "label" && f.visibility == Visibility::Private));
 }
 
 #[test]
@@ -86,11 +127,24 @@ pub enum Color {
     let extractor = RustExtractor;
     let result = extractor.extract("color.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let enums: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Enum).collect();
+    let enums: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Enum)
+        .collect();
     assert_eq!(enums.len(), 1);
     assert_eq!(enums[0].name, "Color");
-    let variants: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::EnumVariant).collect();
-    assert_eq!(variants.len(), 3, "expected 3 variants, got: {:?}", variants.iter().map(|n| &n.name).collect::<Vec<_>>());
+    let variants: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::EnumVariant)
+        .collect();
+    assert_eq!(
+        variants.len(),
+        3,
+        "expected 3 variants, got: {:?}",
+        variants.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
     assert!(variants.iter().any(|v| v.name == "Red"));
     assert!(variants.iter().any(|v| v.name == "Blue"));
 }
@@ -106,10 +160,18 @@ pub trait Drawable {
     let extractor = RustExtractor;
     let result = extractor.extract("draw.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let traits: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Trait).collect();
+    let traits: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Trait)
+        .collect();
     assert_eq!(traits.len(), 1);
     assert_eq!(traits[0].name, "Drawable");
-    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+    let methods: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Method)
+        .collect();
     assert_eq!(methods.len(), 2);
 }
 
@@ -131,10 +193,23 @@ impl Rect {
     let extractor = RustExtractor;
     let result = extractor.extract("rect.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let impls: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Impl).collect();
+    let impls: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Impl)
+        .collect();
     assert_eq!(impls.len(), 1);
-    let methods: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
-    assert_eq!(methods.len(), 2, "methods: {:?}", methods.iter().map(|n| &n.name).collect::<Vec<_>>());
+    let methods: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Method)
+        .collect();
+    assert_eq!(
+        methods.len(),
+        2,
+        "methods: {:?}",
+        methods.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
     assert!(methods.iter().any(|m| m.name == "new"));
     assert!(methods.iter().any(|m| m.name == "area"));
     // Contains edges from impl to methods
@@ -150,8 +225,17 @@ use std::io::{self, Read};
     let extractor = RustExtractor;
     let result = extractor.extract("imports.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let uses: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
-    assert_eq!(uses.len(), 2, "expected 2 use decls, got: {:?}", uses.iter().map(|n| &n.name).collect::<Vec<_>>());
+    let uses: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Use)
+        .collect();
+    assert_eq!(
+        uses.len(),
+        2,
+        "expected 2 use decls, got: {:?}",
+        uses.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -163,10 +247,18 @@ static COUNTER: u32 = 0;
     let extractor = RustExtractor;
     let result = extractor.extract("consts.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let consts: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Const).collect();
+    let consts: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Const)
+        .collect();
     assert_eq!(consts.len(), 1);
     assert_eq!(consts[0].name, "MAX_SIZE");
-    let statics: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Static).collect();
+    let statics: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Static)
+        .collect();
     assert_eq!(statics.len(), 1);
     assert_eq!(statics[0].name, "COUNTER");
 }
@@ -179,7 +271,11 @@ pub type Result<T> = std::result::Result<T, Error>;
     let extractor = RustExtractor;
     let result = extractor.extract("types.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let aliases: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::TypeAlias).collect();
+    let aliases: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::TypeAlias)
+        .collect();
     assert_eq!(aliases.len(), 1);
     assert_eq!(aliases[0].name, "Result");
 }
@@ -194,13 +290,98 @@ pub mod inner {
     let extractor = RustExtractor;
     let result = extractor.extract("lib.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let modules: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Module).collect();
+    let modules: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Module)
+        .collect();
     assert_eq!(modules.len(), 1);
     assert_eq!(modules[0].name, "inner");
     // The function inside the module should be extracted too
-    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    let fns: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function)
+        .collect();
     assert_eq!(fns.len(), 1);
     assert_eq!(fns[0].name, "foo");
+}
+
+#[test]
+fn test_rust_cfg_test_module_annotations() {
+    let source = r#"
+pub fn production_code() -> i32 { 42 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_production_code() {
+        assert_eq!(production_code(), 42);
+    }
+}
+"#;
+    let extractor = RustExtractor;
+    let result = extractor.extract("src/lib.rs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    // The tests module should exist.
+    let modules: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Module && n.name == "tests")
+        .collect();
+    assert_eq!(modules.len(), 1, "expected 'tests' module");
+
+    // #[cfg(test)] should produce an AnnotationUsage annotating the module.
+    let cfg_annotations: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Annotates && e.target == modules[0].id)
+        .collect();
+    assert!(
+        !cfg_annotations.is_empty(),
+        "expected #[cfg(test)] to annotate the 'tests' module"
+    );
+    let cfg_source = result
+        .nodes
+        .iter()
+        .find(|n| n.id == cfg_annotations[0].source)
+        .expect("annotation source node");
+    assert_eq!(cfg_source.kind, NodeKind::AnnotationUsage);
+    assert_eq!(cfg_source.name, "cfg");
+    assert!(
+        cfg_source
+            .signature
+            .as_deref()
+            .unwrap_or("")
+            .contains("cfg(test)"),
+        "annotation signature should contain cfg(test)"
+    );
+
+    // #[test] should annotate the test function.
+    let test_fn = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Function && n.name == "test_production_code")
+        .expect("test function");
+    let test_annotations: Vec<_> = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Annotates && e.target == test_fn.id)
+        .collect();
+    assert!(
+        !test_annotations.is_empty(),
+        "expected #[test] to annotate the test function"
+    );
+    let test_annot = result
+        .nodes
+        .iter()
+        .find(|n| n.id == test_annotations[0].source)
+        .expect("test annotation node");
+    assert_eq!(test_annot.kind, NodeKind::AnnotationUsage);
+    assert_eq!(test_annot.name, "test");
 }
 
 #[test]
@@ -220,13 +401,25 @@ fn complex(x: i32) -> i32 {
     let extractor = RustExtractor;
     let result = extractor.extract("complex.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    let fns: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function)
+        .collect();
     assert_eq!(fns.len(), 1);
     let f = &fns[0];
-    assert!(f.branches >= 2, "expected >= 2 branches, got {}", f.branches);
+    assert!(
+        f.branches >= 2,
+        "expected >= 2 branches, got {}",
+        f.branches
+    );
     assert!(f.loops >= 1, "expected >= 1 loop, got {}", f.loops);
     assert!(f.returns >= 1, "expected >= 1 return, got {}", f.returns);
-    assert!(f.max_nesting >= 2, "expected >= 2 nesting, got {}", f.max_nesting);
+    assert!(
+        f.max_nesting >= 2,
+        "expected >= 2 nesting, got {}",
+        f.max_nesting
+    );
 }
 
 #[test]
@@ -242,11 +435,23 @@ fn risky(v: Option<i32>) -> i32 {
     let extractor = RustExtractor;
     let result = extractor.extract("risky.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let fns: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+    let fns: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function)
+        .collect();
     assert_eq!(fns.len(), 1);
     let f = &fns[0];
-    assert!(f.unsafe_blocks >= 1, "expected >= 1 unsafe block, got {}", f.unsafe_blocks);
-    assert!(f.unchecked_calls >= 1, "expected >= 1 unchecked call (unwrap), got {}", f.unchecked_calls);
+    assert!(
+        f.unsafe_blocks >= 1,
+        "expected >= 1 unsafe block, got {}",
+        f.unsafe_blocks
+    );
+    assert!(
+        f.unchecked_calls >= 1,
+        "expected >= 1 unchecked call (unwrap), got {}",
+        f.unchecked_calls
+    );
 }
 
 #[test]
@@ -260,8 +465,16 @@ pub struct Foo {
     let extractor = RustExtractor;
     let result = extractor.extract("foo.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let derives: Vec<_> = result.unresolved_refs.iter().filter(|r| r.reference_kind == EdgeKind::DerivesMacro).collect();
-    assert!(derives.len() >= 2, "expected >= 2 DerivesMacro refs for #[derive(Debug, Clone)], got {}", derives.len());
+    let derives: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::DerivesMacro)
+        .collect();
+    assert!(
+        derives.len() >= 2,
+        "expected >= 2 DerivesMacro refs for #[derive(Debug, Clone)], got {}",
+        derives.len()
+    );
 }
 
 #[test]
@@ -277,7 +490,10 @@ fn helper() {}
     let result = extractor.extract("calls.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     assert!(
-        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Calls),
+        result
+            .unresolved_refs
+            .iter()
+            .any(|r| r.reference_kind == EdgeKind::Calls),
         "expected Calls refs"
     );
 }
@@ -300,11 +516,18 @@ impl Greet for Bot {
     let extractor = RustExtractor;
     let result = extractor.extract("greet.rs", source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let impls: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Impl).collect();
+    let impls: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Impl)
+        .collect();
     assert_eq!(impls.len(), 1);
     // The impl should reference the trait
     assert!(
-        result.unresolved_refs.iter().any(|r| r.reference_kind == EdgeKind::Implements),
+        result
+            .unresolved_refs
+            .iter()
+            .any(|r| r.reference_kind == EdgeKind::Implements),
         "expected Implements ref for `impl Greet for Bot`"
     );
 }
@@ -314,7 +537,11 @@ fn test_rust_empty_source() {
     let extractor = RustExtractor;
     let result = extractor.extract("empty.rs", "");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let files: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::File).collect();
+    let files: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::File)
+        .collect();
     assert_eq!(files.len(), 1);
 }
 
@@ -417,5 +644,252 @@ pub struct Config {
         annotates_refs.len(),
         annots.len(),
         "each AnnotationUsage should have an Annotates unresolved ref"
+    );
+}
+
+#[test]
+fn test_attrs_start_line_walks_back_over_doc_comments_and_attrs() {
+    let source = r#"
+/// First doc line.
+/// Second doc line.
+#[inline]
+#[must_use]
+pub fn double(x: i32) -> i32 {
+    x * 2
+}
+
+pub fn no_attrs(y: i32) -> i32 {
+    y
+}
+"#;
+    let result = RustExtractor.extract("doc.rs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let double = result
+        .nodes
+        .iter()
+        .find(|n| n.name == "double")
+        .expect("double not found");
+    let no_attrs = result
+        .nodes
+        .iter()
+        .find(|n| n.name == "no_attrs")
+        .expect("no_attrs not found");
+
+    // `double` has 2 doc lines + 2 attribute lines preceding `pub fn double`.
+    // Source is 0-indexed by tree-sitter. With the leading newline, the first
+    // doc comment is at row 1 and `pub fn double` is at row 5.
+    assert!(
+        double.attrs_start_line < double.start_line,
+        "attrs_start_line ({}) should be < start_line ({}) when leading docs/attrs present",
+        double.attrs_start_line,
+        double.start_line
+    );
+    assert_eq!(
+        double.start_line - double.attrs_start_line,
+        4,
+        "expected attrs_start_line to walk back over 2 doc + 2 attribute lines"
+    );
+
+    // `no_attrs` has nothing leading it that should count — its blank gap means
+    // the walk stops, so attrs_start_line == start_line.
+    assert_eq!(no_attrs.attrs_start_line, no_attrs.start_line);
+}
+
+#[test]
+fn test_emit_type_refs_for_struct_fields() {
+    let source = r#"
+pub struct Container {
+    pub name: String,
+    pub items: Vec<MyItem>,
+    count: usize,
+}
+"#;
+    let result = RustExtractor.extract("c.rs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let type_of_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::TypeOf)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    assert!(
+        type_of_refs.contains(&"String"),
+        "expected TypeOf ref to String, got {type_of_refs:?}"
+    );
+    assert!(
+        type_of_refs.contains(&"Vec"),
+        "expected TypeOf ref to Vec, got {type_of_refs:?}"
+    );
+    assert!(
+        type_of_refs.contains(&"MyItem"),
+        "expected TypeOf ref to MyItem (inner generic), got {type_of_refs:?}"
+    );
+}
+
+#[test]
+fn test_emit_type_refs_for_function_signatures() {
+    let source = r#"
+pub fn make(name: String, count: usize) -> Result<MyType, MyError> {
+    todo!()
+}
+"#;
+    let result = RustExtractor.extract("f.rs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let type_of: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::TypeOf)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    let returns: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Returns)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+
+    assert!(
+        type_of.contains(&"String"),
+        "param TypeOf String missing: {type_of:?}"
+    );
+    assert!(
+        returns.contains(&"Result"),
+        "Returns Result missing: {returns:?}"
+    );
+    assert!(
+        returns.contains(&"MyType"),
+        "Returns MyType missing: {returns:?}"
+    );
+    assert!(
+        returns.contains(&"MyError"),
+        "Returns MyError missing: {returns:?}"
+    );
+}
+
+#[test]
+fn test_rust_call_inside_macro_invocation() {
+    let source = r#"
+fn check_count(n: usize) -> bool { n > 0 }
+
+fn test_check() {
+    assert!(check_count(5));
+    println!("{}", check_count(3));
+}
+"#;
+    let extractor = RustExtractor;
+    let result = extractor.extract("src/lib.rs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let test_fn = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Function && n.name == "test_check")
+        .expect("test_check function");
+
+    let call_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.from_node_id == test_fn.id && r.reference_kind == EdgeKind::Calls)
+        .collect();
+    let ref_names: Vec<&str> = call_refs
+        .iter()
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    assert!(
+        ref_names.contains(&"check_count"),
+        "expected call to check_count inside macro, got: {ref_names:?}"
+    );
+}
+
+#[test]
+fn test_rust_method_call_on_instance() {
+    let source = r#"
+struct Foo;
+impl Foo {
+    fn new() -> Self { Foo }
+    fn bar(&self) -> i32 { 42 }
+}
+
+fn use_foo() {
+    let f = Foo::new();
+    let _ = f.bar();
+}
+"#;
+    let extractor = RustExtractor;
+    let result = extractor.extract("src/lib.rs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let use_fn = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Function && n.name == "use_foo")
+        .expect("use_foo function");
+
+    let call_refs: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.from_node_id == use_fn.id && r.reference_kind == EdgeKind::Calls)
+        .collect();
+    let ref_names: Vec<&str> = call_refs
+        .iter()
+        .map(|r| r.reference_name.as_str())
+        .collect();
+
+    // Foo::new() produces "Foo::new" — should resolve via qualified match.
+    assert!(
+        ref_names.contains(&"Foo::new"),
+        "expected Foo::new call, got: {ref_names:?}"
+    );
+    // f.bar() should also produce "bar" (method-name hint).
+    assert!(
+        ref_names.contains(&"bar"),
+        "expected 'bar' method-name ref from f.bar(), got: {ref_names:?}"
+    );
+}
+
+/// #141: a method call through a typed binding (`recv.method()`) must emit a
+/// receiver-qualified `Type::method` Calls ref so the resolver can bind it to
+/// the correct impl when several types define a method of the same name.
+/// Covers the three type sources: constructor RHS, typed parameter, and `self`.
+#[test]
+fn test_receiver_typed_method_calls() {
+    let source = r#"
+struct Renderer;
+
+impl Renderer {
+    fn render(&self) {}
+
+    fn run(&self) {
+        // self receiver -> enclosing impl type
+        self.render();
+    }
+}
+
+fn via_ctor() {
+    let mut r = Renderer::new();
+    r.render();
+}
+
+fn via_param(r: &mut Renderer) {
+    r.render();
+}
+"#;
+    let extractor = RustExtractor;
+    let result = extractor.extract("render.rs", source);
+
+    let has_ref = |name: &str| {
+        result.unresolved_refs.iter().any(|u| {
+            u.reference_name == name && u.reference_kind == tokensave::types::EdgeKind::Calls
+        })
+    };
+
+    assert!(
+        has_ref("Renderer::render"),
+        "expected a Renderer::render call ref from the constructor/param/self receivers, got: {:?}",
+        result
+            .unresolved_refs
+            .iter()
+            .map(|u| &u.reference_name)
+            .collect::<Vec<_>>()
     );
 }

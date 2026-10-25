@@ -1,0 +1,3 @@
+# Force LF line endings for test fixtures — tree-sitter grammars
+# expect Unix line endings and produce wrong parse trees with CRLF.
+tests/fixtures/** text eol=lf

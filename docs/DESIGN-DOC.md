@@ -53,7 +53,7 @@ src/
   config.rs           Per-project config (exclude patterns, limits)
   errors.rs           Error types (thiserror)
   sync.rs             Content hashing, stale/new/removed file detection
-  user_config.rs      User-level config (~/.tokensave/config.toml)
+  user_config.rs      User-level config: stable prefs in ~/.tokensave/config.toml, volatile cached/timestamp state in ~/.tokensave/state.toml
   cloud.rs            Cloudflare Worker counter, GitHub release checks
   global_db.rs        Cross-project token tracking (~/.tokensave/global.db)
 
@@ -94,7 +94,7 @@ src/
     mod.rs            Agent trait, registry, shared helpers, git hooks
     claude.rs         Claude Code: MCP in ~/.claude.json, hooks, permissions
     codex.rs          Codex CLI: MCP in ~/.codex/config.toml, AGENTS.md
-    opencode.rs       OpenCode: MCP in opencode.json, OPENCODE.md
+    opencode.rs       OpenCode: MCP in ~/.config/opencode/opencode.json, ~/.config/opencode/AGENTS.md
     gemini.rs         Gemini CLI: MCP in ~/.gemini/settings.json, GEMINI.md
 ```
 
@@ -288,25 +288,30 @@ tool.
 
 ### Tool Categories
 
-The 37 MCP tools fall into several categories:
+The 80+ MCP tools fall into several categories (representative, not exhaustive —
+see the README tool tables or `tokensave tool` for the full list):
 
 | Category        | Tools                                                    |
 |-----------------|----------------------------------------------------------|
-| Search          | search, context, node, files, diff_context               |
+| Search          | search, context, node, files, diff_context, annotations  |
 | Navigation      | callers, callees, impact, affected                       |
 | Analysis        | complexity, dead_code, god_class, circular, coupling     |
 | Metrics         | rank, hotspots, largest, distribution, inheritance_depth |
 | Quality         | doc_coverage, unused_imports, recursion                  |
-| Refactoring     | rename_preview, similar, module_api                      |
+| Health          | health, gini, dsm, dependency_depth, test_risk           |
+| Refactoring     | rename, similar, module_api                              |
+| Edit primitives | str_replace, multi_str_replace, insert_at                |
 | Git/CI          | changelog, commit_context, pr_context                    |
-| Quality Scan    | simplify_scan, test_map, type_hierarchy                  |
+| Testing         | simplify_scan, test_map, test_coverage, type_hierarchy   |
+| Dependencies    | dependencies                                             |
 | Porting         | port_status, port_order                                  |
-| Branching       | branch_search, branch_diff                               |
+| Branching       | branch_search, branch_diff, branch_list                  |
+| Sessions        | session_start, session_end, record_decision              |
 | Status          | status                                                   |
 
-Each tool is defined in `mcp/tools.rs` with a JSON Schema for its parameters.
-`handle_tool_call` deserializes the arguments, calls the appropriate `TokenSave`
-method, and formats the result.
+Each tool is defined in `src/mcp/tools/definitions.rs` with a JSON Schema for its
+parameters. `handle_tool_call` (in `src/mcp/tools/handlers/`) deserializes the
+arguments, calls the appropriate `TokenSave` method, and formats the result.
 
 ## Agent Integration
 
@@ -338,7 +343,7 @@ graph TB
 
         PROMPT --> P1["Claude: ~/.claude/CLAUDE.md"]
         PROMPT --> P2["Codex: ~/.codex/AGENTS.md"]
-        PROMPT --> P3["OpenCode: OPENCODE.md"]
+        PROMPT --> P3["OpenCode: ~/.config/opencode/AGENTS.md"]
         PROMPT --> P4["Gemini: ~/.gemini/GEMINI.md"]
     end
 ```
@@ -379,7 +384,7 @@ The system uses `tokio` for async I/O but most work is CPU-bound (tree-sitter pa
 or SQLite-bound. Key concurrency points:
 
 - The MCP server processes one JSON-RPC request at a time (single stdio stream)
-- The git post-commit hook runs `tokensave sync` in the background (`&`)
+- The git post-commit hook runs `tokensave sync` in the background (`&`). `sync` requires an existing database -- it will not create one. This prevents the hook from silently bootstrapping indexes in repos that were never initialized with `tokensave init`.
 - SQLite WAL mode + busy timeout handles concurrent access gracefully
 - Version checks and counter uploads run on background threads during `sync`
 

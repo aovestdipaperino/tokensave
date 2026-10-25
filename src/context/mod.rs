@@ -4,5 +4,14 @@ pub mod builder;
 /// Formats task context as Markdown or JSON.
 pub mod formatter;
 
+/// Re-ranking of search candidates using structural signals.
+pub mod ranking;
+
+/// Cross-session cache backing `tokensave_read`.
+pub mod read_cache;
+
+/// Mode dispatchers (`full`, `lines`, `map`, `signatures`) for `tokensave_read`.
+pub mod read_modes;
+
 pub use builder::{extract_symbols_from_query, ContextBuilder};
-pub use formatter::{format_context_as_json, format_context_as_markdown};
+pub use formatter::{compact_signature, format_context_as_json, format_context_as_markdown};

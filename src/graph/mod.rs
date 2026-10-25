@@ -4,5 +4,17 @@ pub mod traversal;
 /// Query operations for analyzing the code graph.
 pub mod queries;
 
+/// Tarjan's strongly-connected-components algorithm.
+pub mod scc;
+
+/// Module-level import graph, cycles, and cut simulation.
+pub mod imports;
+
+/// Structural health analysis algorithms.
+pub mod health;
+
+/// Git integration helpers for churn analysis.
+pub mod git;
+
 pub use queries::{GraphQueryManager, NodeMetrics};
 pub use traversal::GraphTraverser;

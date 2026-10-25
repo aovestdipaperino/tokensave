@@ -1,0 +1,1466 @@
+//! Git/branch/diff tool handlers: `diff_context`, `commit_context`, `pr_context`,
+//! `changelog`, `branch_list`, `branch_search`, `branch_diff`, `affected`, and
+//! git helper functions.
+
+use std::collections::{HashMap, HashSet};
+
+use serde_json::{json, Value};
+
+use super::super::ToolResult;
+use super::{file_arg, serialize_bounded_json, truncate_response, unique_file_paths};
+use crate::errors::{Result, TokenSaveError};
+use crate::tokensave::TokenSave;
+
+/// Handles `tokensave_affected` tool calls.
+pub(super) async fn handle_affected(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let files: Vec<String> = args
+        .get("files")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                .collect()
+        })
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: files (array of strings)".to_string(),
+        })?;
+
+    let max_depth = args
+        .get("depth")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(5, |v| v.min(10) as usize);
+
+    let custom_filter = args.get("filter").and_then(|v| v.as_str());
+    let custom_glob = custom_filter.and_then(|p| glob::Pattern::new(p).ok());
+
+    // Inline-test source files are test-bearing targets even though their path
+    // does not match the standalone test-file heuristic.
+    let files_with_inline_tests = cg
+        .get_files_with_test_annotations()
+        .await
+        .unwrap_or_default();
+    let matches_test_target = |path: &str| -> bool {
+        if let Some(ref g) = custom_glob {
+            g.matches(path)
+        } else {
+            cg.is_test_file(path)
+        }
+    };
+
+    let mut affected: HashSet<String> = HashSet::new();
+    let mut recommended: HashSet<String> = HashSet::new();
+    let mut classified: Vec<Value> = Vec::new();
+    let mut inline_sources: HashMap<String, usize> = HashMap::new();
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: std::collections::VecDeque<(String, usize)> = std::collections::VecDeque::new();
+
+    let changed_crates: HashSet<std::path::PathBuf> = files
+        .iter()
+        .filter_map(|file| cargo_package_root(cg.project_root(), file))
+        .collect();
+
+    for file in &files {
+        if matches_test_target(file) {
+            affected.insert(file.clone());
+            recommended.insert(file.clone());
+            classified.push(json!({
+                "file": file,
+                "category": "direct_changed_test",
+                "distance": 0,
+                "confidence": "high",
+            }));
+        } else if custom_glob.is_none() && files_with_inline_tests.contains(file) {
+            inline_sources.insert(file.clone(), 0);
+        }
+        if visited.insert(file.clone()) {
+            queue.push_back((file.clone(), 0));
+        }
+    }
+
+    while let Some((file, depth)) = queue.pop_front() {
+        if depth >= max_depth {
+            continue;
+        }
+        let dependents = cg.get_file_dependents(&file).await?;
+        for dep in dependents {
+            if !visited.insert(dep.clone()) {
+                continue;
+            }
+            let distance = depth + 1;
+            if matches_test_target(&dep) {
+                affected.insert(dep.clone());
+                let same_crate = cargo_package_root(cg.project_root(), &dep)
+                    .is_some_and(|root| changed_crates.contains(&root));
+                let (category, confidence, is_recommended) = if !same_crate {
+                    ("cross_crate_consumer", "medium", false)
+                } else if distance == 1 {
+                    ("direct_symbol_test", "high", true)
+                } else if distance >= 3 {
+                    ("transitive_low_confidence", "low", false)
+                } else {
+                    ("same_crate_integration", "medium", true)
+                };
+                if is_recommended {
+                    recommended.insert(dep.clone());
+                }
+                classified.push(json!({
+                    "file": dep,
+                    "category": category,
+                    "distance": distance,
+                    "confidence": confidence,
+                }));
+            } else {
+                if custom_glob.is_none() && files_with_inline_tests.contains(&dep) {
+                    inline_sources.insert(dep.clone(), distance);
+                }
+                queue.push_back((dep, distance));
+            }
+        }
+    }
+
+    for (file, distance) in &inline_sources {
+        affected.insert(file.clone());
+        let same_crate = cargo_package_root(cg.project_root(), file)
+            .is_some_and(|root| changed_crates.contains(&root));
+        let (confidence, is_recommended) = if *distance == 0 {
+            ("high", true)
+        } else if !same_crate {
+            ("medium", false)
+        } else if *distance == 1 {
+            ("high", true)
+        } else if *distance >= 3 {
+            ("low", false)
+        } else {
+            ("medium", true)
+        };
+        if is_recommended {
+            recommended.insert(file.clone());
+        }
+        classified.push(json!({
+            "file": file,
+            "category": "inline_test_source",
+            "distance": distance,
+            "confidence": confidence,
+        }));
+    }
+
+    let mut result: Vec<String> = affected.into_iter().collect();
+    result.sort();
+    let mut recommended_tests: Vec<String> = recommended.into_iter().collect();
+    recommended_tests.sort();
+    classified.sort_by(|a, b| {
+        a["distance"]
+            .as_u64()
+            .cmp(&b["distance"].as_u64())
+            .then_with(|| a["file"].as_str().cmp(&b["file"].as_str()))
+    });
+    let mut inline_test_sources: Vec<Value> = inline_sources
+        .into_iter()
+        .map(|(file, distance)| json!({"file": file, "distance": distance}))
+        .collect();
+    inline_test_sources.sort_by(|a, b| a["file"].as_str().cmp(&b["file"].as_str()));
+
+    let touched_files = unique_file_paths(
+        result.iter().map(String::as_str).chain(
+            inline_test_sources
+                .iter()
+                .filter_map(|item| item["file"].as_str()),
+        ),
+    );
+    let count = result.len();
+    let output = json!({
+        "changed_files": files,
+        "affected_tests": result,
+        "recommended_tests": recommended_tests,
+        "classified_candidates": classified,
+        "inline_test_sources": inline_test_sources,
+        "count": count,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Finds the nearest Cargo package containing a project-relative path.
+fn cargo_package_root(
+    project_root: &std::path::Path,
+    relative: &str,
+) -> Option<std::path::PathBuf> {
+    let mut directory = project_root.join(relative).parent()?.to_path_buf();
+    loop {
+        if directory.join("Cargo.toml").is_file() {
+            return Some(directory);
+        }
+        if directory == project_root || !directory.pop() {
+            return None;
+        }
+    }
+}
+
+/// Lists in a `diff_context` payload that may lose elements when the response
+/// would otherwise exceed the size limit, least useful first. The impact radius
+/// is the unbounded one — a wide change can reach thousands of symbols — while
+/// `changed_files` is the caller's own input and stays whole.
+const DIFF_CONTEXT_SHEDABLE: &[&str] = &["impacted_symbols", "affected_tests", "modified_symbols"];
+
+/// Lists in a `changelog` payload that may lose elements, least useful first.
+const CHANGELOG_SHEDABLE: &[&str] = &["symbols_in_changed_files", "files_not_indexed"];
+
+/// Lists in a `commit_context` payload that may lose elements. `symbols_by_role`
+/// is a map of arrays rather than an array, so it is not shedable here; a commit
+/// touching enough files to blow the limit falls back to the bounded note.
+const COMMIT_CONTEXT_SHEDABLE: &[&str] = &["recent_commits", "changed_files"];
+
+/// Handles `tokensave_diff_context` tool calls.
+/// Structured diff-context payload (value + touched files), shared by the public
+/// `handle_diff_context` tool and the `handle_diff` aggregator. Returning the raw
+/// `Value` instead of a pre-formatted, truncated string lets `handle_diff` nest
+/// structured data without re-parsing.
+async fn diff_context_value(cg: &TokenSave, args: Value) -> Result<(Value, Vec<String>)> {
+    debug_assert!(
+        args.is_object(),
+        "handle_diff_context expects an object argument"
+    );
+    let files: Vec<String> = args
+        .get("files")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                .collect()
+        })
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: files (array of strings)".to_string(),
+        })?;
+
+    let depth = args
+        .get("depth")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(2, |v| v.min(10) as usize);
+
+    let mut modified_symbols: Vec<Value> = Vec::new();
+    let mut modified_seen: HashSet<String> = HashSet::new();
+    let mut impacted_symbols: Vec<Value> = Vec::new();
+    let mut impacted_seen: HashSet<String> = HashSet::new();
+    let mut affected_tests: HashSet<String> = HashSet::new();
+    let mut all_touched_files: Vec<String> = Vec::new();
+    // Callers can (and in the wild do) pass the same path twice — e.g. when
+    // synthesising the list from a directory walk that double-counts symlinked
+    // or canonicalised entries. Dedup early so downstream loops don't emit
+    // the same node N times for the same path.
+    let files: Vec<String> = {
+        let mut seen: HashSet<String> = HashSet::new();
+        files
+            .into_iter()
+            .filter(|f| seen.insert(f.clone()))
+            .collect()
+    };
+
+    // Pre-compute files containing inline test modules.
+    let files_with_inline_tests = cg
+        .get_files_with_test_annotations()
+        .await
+        .unwrap_or_default();
+    let has_tests = |path: &str| cg.is_test_file(path) || files_with_inline_tests.contains(path);
+
+    // First pass: gather all modified symbols.
+    let mut modified_ids: Vec<String> = Vec::new();
+    for file in &files {
+        let nodes = cg.get_nodes_by_file(file).await?;
+        for node in &nodes {
+            all_touched_files.push(node.file_path.clone());
+            // Dedup by node id: `get_nodes_by_file` can return the same node
+            // twice if the index contains duplicates from re-extraction, and
+            // even when it doesn't, callers may legitimately want one entry
+            // per node — never one entry per (file, node) pair.
+            if !modified_seen.insert(node.id.clone()) {
+                continue;
+            }
+            modified_symbols.push(json!({
+                "id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": super::display_line(node.start_line),
+            }));
+            modified_ids.push(node.id.clone());
+        }
+    }
+
+    // Single multi-source BFS over the union of impact radii. Sharing a
+    // `visited` set means each downstream node is walked at most once, even
+    // when many modified symbols reach it through diamond dependencies — the
+    // old per-symbol loop re-traversed the same subtree N times.
+    let impacted = cg.get_impact_radius_multi(&modified_ids, depth).await?;
+    for impacted_node in &impacted {
+        // Drop seeds: callers want impacted symbols distinct from the
+        // modified ones, mirroring the old per-node `if impacted.id == node.id`.
+        if modified_seen.contains(&impacted_node.id) {
+            continue;
+        }
+        if !impacted_seen.insert(impacted_node.id.clone()) {
+            continue;
+        }
+        impacted_symbols.push(json!({
+            "id": impacted_node.id,
+            "name": impacted_node.name,
+            "kind": impacted_node.kind.as_str(),
+            "file": impacted_node.file_path,
+            "line": super::display_line(impacted_node.start_line),
+        }));
+        if has_tests(&impacted_node.file_path) {
+            affected_tests.insert(impacted_node.file_path.clone());
+        }
+    }
+
+    // Also run affected-tests BFS at file level
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: std::collections::VecDeque<(String, usize)> = std::collections::VecDeque::new();
+    for file in &files {
+        if has_tests(file) {
+            affected_tests.insert(file.clone());
+        }
+        if visited.insert(file.clone()) {
+            queue.push_back((file.clone(), 0));
+        }
+    }
+    while let Some((file, d)) = queue.pop_front() {
+        if d >= depth {
+            continue;
+        }
+        let dependents = cg.get_file_dependents(&file).await?;
+        for dep in dependents {
+            if !visited.insert(dep.clone()) {
+                continue;
+            }
+            if has_tests(&dep) {
+                affected_tests.insert(dep.clone());
+            } else {
+                queue.push_back((dep, d + 1));
+            }
+        }
+    }
+
+    let mut tests_sorted: Vec<String> = affected_tests.into_iter().collect();
+    tests_sorted.sort();
+
+    let touched_files = unique_file_paths(
+        all_touched_files
+            .iter()
+            .map(std::string::String::as_str)
+            .chain(files.iter().map(std::string::String::as_str)),
+    );
+
+    let output = json!({
+        "changed_files": files,
+        "modified_symbols": modified_symbols,
+        "impacted_symbols_count": impacted_symbols.len(),
+        "impacted_symbols": impacted_symbols,
+        "affected_tests": tests_sorted,
+    });
+
+    Ok((output, touched_files))
+}
+
+pub(super) async fn handle_diff_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let (output, touched_files) = diff_context_value(cg, args).await?;
+    // Shed list elements rather than slicing the serialized string: the text we
+    // return is parsed as JSON by callers, and prefix truncation handed them a
+    // half-written object (#486). `impacted_symbols_count` still carries the
+    // true total, and `truncated` names whatever was dropped.
+    let formatted = serialize_bounded_json(&output, DIFF_CONTEXT_SHEDABLE);
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": formatted }]
+        }),
+        touched_files,
+    })
+}
+
+/// Diff two git refs and return the list of changed file paths.
+fn git_diff_files(
+    project_root: &std::path::Path,
+    from_ref: &str,
+    to_ref: &str,
+) -> std::result::Result<Vec<String>, String> {
+    let repo = gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
+
+    let from_tree = repo
+        .rev_parse_single(from_ref)
+        .map_err(|e| format!("cannot resolve '{from_ref}': {e}"))?
+        .object()
+        .map_err(|e| format!("cannot read object for '{from_ref}': {e}"))?
+        .peel_to_tree()
+        .map_err(|e| format!("cannot peel '{from_ref}' to tree: {e}"))?;
+
+    let to_tree = repo
+        .rev_parse_single(to_ref)
+        .map_err(|e| format!("cannot resolve '{to_ref}': {e}"))?
+        .object()
+        .map_err(|e| format!("cannot read object for '{to_ref}': {e}"))?
+        .peel_to_tree()
+        .map_err(|e| format!("cannot peel '{to_ref}' to tree: {e}"))?;
+
+    let mut changed = Vec::new();
+    from_tree
+        .changes()
+        .map_err(|e| format!("diff init failed: {e}"))?
+        .for_each_to_obtain_tree(&to_tree, |change| {
+            use gix::object::tree::diff::Change;
+            // `for_each_to_obtain_tree` walks one level at a time — if an
+            // entire subtree was added, deleted, or moved, the entry's
+            // `entry_mode` is a tree, not a blob. We only want file paths
+            // downstream, so skip tree entries before pushing. The earlier
+            // `is_dir()` fallback after-the-fact missed deletions, where the
+            // path no longer exists on disk.
+            match &change {
+                Change::Addition {
+                    location,
+                    entry_mode,
+                    ..
+                }
+                | Change::Modification {
+                    location,
+                    entry_mode,
+                    ..
+                }
+                | Change::Deletion {
+                    location,
+                    entry_mode,
+                    ..
+                } => {
+                    if !entry_mode.is_tree() {
+                        changed.push(location.to_string());
+                    }
+                }
+                Change::Rewrite {
+                    source_location,
+                    location,
+                    source_entry_mode,
+                    entry_mode,
+                    ..
+                } => {
+                    if !source_entry_mode.is_tree() {
+                        changed.push(source_location.to_string());
+                    }
+                    if !entry_mode.is_tree() {
+                        changed.push(location.to_string());
+                    }
+                }
+            }
+            Ok::<_, std::convert::Infallible>(std::ops::ControlFlow::Continue(()))
+        })
+        .map_err(|e| format!("tree diff failed: {e}"))?;
+
+    // Belt-and-suspenders: even with the entry_mode check above, drop any
+    // path that resolves to a directory on disk for additions/modifications.
+    // Pure deletions can't be checked this way (the path is gone), which is
+    // exactly why entry_mode.is_tree() above is the load-bearing filter.
+    changed.retain(|p| !project_root.join(p).is_dir());
+    Ok(changed)
+}
+
+/// Returns file paths changed in the working tree (unstaged + staged, or staged-only).
+fn git_changed_files(
+    project_root: &std::path::Path,
+    staged_only: bool,
+) -> std::result::Result<Vec<String>, String> {
+    let repo = gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
+
+    let head_tree = repo
+        .head()
+        .map_err(|e| format!("cannot read HEAD: {e}"))?
+        .peel_to_commit()
+        .map_err(|e| format!("cannot peel HEAD to commit: {e}"))?
+        .tree()
+        .map_err(|e| format!("cannot read HEAD tree: {e}"))?;
+
+    // Compare HEAD tree against the index (staged changes)
+    let index = repo
+        .index()
+        .map_err(|e| format!("cannot read index: {e}"))?;
+
+    let mut changed = HashSet::new();
+
+    // Walk the index to find files that differ from HEAD
+    for entry in index.entries() {
+        let path = entry.path(&index);
+        let path_str = String::from_utf8_lossy(path.as_ref()).to_string();
+        if path_str.is_empty() {
+            continue;
+        }
+
+        // Check if file exists in HEAD tree
+        let head_entry = head_tree
+            .lookup_entry_by_path(std::path::Path::new(&path_str))
+            .ok()
+            .flatten();
+
+        match head_entry {
+            Some(he) => {
+                // File exists in both - check if content differs
+                if he.object_id() != entry.id {
+                    changed.insert(path_str);
+                }
+            }
+            None => {
+                // New file (in index but not in HEAD)
+                changed.insert(path_str);
+            }
+        }
+    }
+
+    // If not staged_only, also check working-tree modifications via mtime
+    if !staged_only {
+        for entry in index.entries() {
+            let path = entry.path(&index);
+            let path_str = String::from_utf8_lossy(path.as_ref()).to_string();
+            if path_str.is_empty() {
+                continue;
+            }
+            let full_path = project_root.join(&path_str);
+            if let Ok(meta) = std::fs::metadata(&full_path) {
+                use std::time::UNIX_EPOCH;
+                let mtime = meta
+                    .modified()
+                    .unwrap_or(UNIX_EPOCH)
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as u32;
+                // gix index entry stores mtime; if disk mtime is newer, file is modified
+                if mtime > entry.stat.mtime.secs {
+                    changed.insert(path_str);
+                }
+            }
+        }
+    }
+
+    let mut result: Vec<String> = changed.into_iter().collect();
+    result.sort();
+    Ok(result)
+}
+
+/// Returns the last N commit subjects from HEAD.
+fn git_recent_commits(
+    project_root: &std::path::Path,
+    count: usize,
+) -> std::result::Result<Vec<String>, String> {
+    let repo = gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
+
+    let mut commits = Vec::new();
+    let head = repo
+        .head()
+        .map_err(|e| format!("cannot read HEAD: {e}"))?
+        .into_peeled_id()
+        .map_err(|e| format!("cannot peel HEAD: {e}"))?;
+
+    let mut current_id = head.detach();
+
+    for _ in 0..count {
+        let commit = repo
+            .find_object(current_id)
+            .map_err(|e| format!("cannot find object: {e}"))?
+            .try_into_commit()
+            .map_err(|e| format!("not a commit: {e}"))?;
+
+        let message = commit
+            .message_raw()
+            .map_err(|e| format!("cannot read commit message: {e}"))?;
+        let subject = String::from_utf8_lossy(message.as_ref())
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        commits.push(subject);
+
+        let parent_id = commit.parent_ids().next().map(gix::Id::detach);
+        match parent_id {
+            Some(pid) => current_id = pid,
+            None => break,
+        }
+    }
+
+    Ok(commits)
+}
+
+/// Returns commit subjects between two refs.
+fn git_commit_log(
+    project_root: &std::path::Path,
+    base_ref: &str,
+    head_ref: &str,
+) -> std::result::Result<Vec<Value>, String> {
+    let repo = gix::open(project_root).map_err(|e| format!("failed to open git repo: {e}"))?;
+
+    let base_id = repo
+        .rev_parse_single(base_ref)
+        .map_err(|e| format!("cannot resolve '{base_ref}': {e}"))?
+        .detach();
+
+    let head_id = repo
+        .rev_parse_single(head_ref)
+        .map_err(|e| format!("cannot resolve '{head_ref}': {e}"))?
+        .detach();
+
+    let mut commits = Vec::new();
+    let mut current_id = head_id;
+
+    // Walk back from head until we hit base (max 100 commits)
+    for _ in 0..100 {
+        if current_id == base_id {
+            break;
+        }
+        let commit = repo
+            .find_object(current_id)
+            .map_err(|e| format!("cannot find object: {e}"))?
+            .try_into_commit()
+            .map_err(|e| format!("not a commit: {e}"))?;
+
+        let message = commit
+            .message_raw()
+            .map_err(|e| format!("cannot read message: {e}"))?;
+        let subject = String::from_utf8_lossy(message.as_ref())
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        let short_id = format!("{:.7}", commit.id);
+        commits.push(json!({"hash": short_id, "subject": subject}));
+
+        let parent_id = commit.parent_ids().next().map(gix::Id::detach);
+        match parent_id {
+            Some(pid) => current_id = pid,
+            None => break,
+        }
+    }
+
+    Ok(commits)
+}
+
+/// Classify a file path into a semantic role.
+///
+/// Inline tests inside source files don't make the file's role "test" —
+/// that bucket is reserved for files that exist purely to host tests
+/// (the path-based check). A `src/foo.rs` with a `#[cfg(test)] mod tests`
+/// at the bottom still has role "source".
+#[allow(clippy::ptr_arg)]
+fn classify_file_role(
+    path: &str,
+    _files_with_inline_tests: &HashSet<String>,
+    source_path_overrides: &[String],
+) -> &'static str {
+    if crate::tokensave::is_test_file_with_source_overrides(path, source_path_overrides) {
+        return "test";
+    }
+    let lower = path.to_lowercase();
+    let ext = std::path::Path::new(&lower)
+        .extension()
+        .and_then(|e| e.to_str());
+    // Config files
+    if matches!(
+        ext,
+        Some("toml" | "yaml" | "yml" | "json" | "lock" | "ini" | "cfg")
+    ) || lower.contains("config")
+    {
+        return "config";
+    }
+    // Documentation
+    if matches!(ext, Some("md" | "rst" | "txt"))
+        || lower.starts_with("docs/")
+        || lower.starts_with("doc/")
+    {
+        return "docs";
+    }
+    "source"
+}
+
+/// Handles `tokensave_changelog` tool calls.
+/// Structured changelog payload (value + touched files), shared by the public
+/// `handle_changelog` tool and the `handle_diff` aggregator.
+async fn changelog_value(cg: &TokenSave, args: Value) -> Result<(Value, Vec<String>)> {
+    debug_assert!(
+        args.is_object(),
+        "handle_changelog expects an object argument"
+    );
+    let from_ref = args
+        .get("from_ref")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: from_ref".to_string(),
+        })?;
+
+    let to_ref =
+        args.get("to_ref")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: to_ref".to_string(),
+            })?;
+
+    // Use gix to diff the two trees
+    let changed_files: Vec<String> = match git_diff_files(cg.project_root(), from_ref, to_ref) {
+        Ok(files) => files,
+        Err(e) => {
+            return Ok((json!({ "error": format!("git diff failed: {e}") }), vec![]));
+        }
+    };
+
+    // For each changed file, get current symbols from the graph
+    let mut added: Vec<Value> = Vec::new();
+    let mut modified: Vec<Value> = Vec::new();
+    let mut file_symbols: HashMap<String, Vec<Value>> = HashMap::new();
+
+    for file in &changed_files {
+        let nodes = cg.get_nodes_by_file(file).await?;
+        let symbols: Vec<Value> = nodes
+            .iter()
+            .map(|n| {
+                json!({
+                    "id": n.id,
+                    "name": n.name,
+                    "kind": n.kind.as_str(),
+                    "file": n.file_path,
+                    "line": super::display_line(n.start_line),
+                    "signature": n.signature,
+                })
+            })
+            .collect();
+
+        if symbols.is_empty() {
+            // File was likely removed or not indexed
+            modified.push(json!({
+                "file": file,
+                "status": "removed_or_not_indexed",
+            }));
+        } else {
+            for sym in &symbols {
+                added.push(sym.clone());
+            }
+        }
+        file_symbols.insert(file.clone(), symbols);
+    }
+
+    let touched_files: Vec<String> = changed_files.clone();
+
+    let result = json!({
+        "from_ref": from_ref,
+        "to_ref": to_ref,
+        "changed_file_count": changed_files.len(),
+        "changed_files": changed_files,
+        "symbols_in_changed_files": added,
+        "files_not_indexed": modified,
+    });
+
+    Ok((result, touched_files))
+}
+
+pub(super) async fn handle_changelog(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let (result, touched_files) = changelog_value(cg, args).await?;
+    let formatted = serialize_bounded_json(&result, CHANGELOG_SHEDABLE);
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": formatted }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_commit_context` tool calls.
+/// Structured commit-context payload (value + touched files), shared by the
+/// public `handle_commit_context` tool and the `handle_diff` aggregator so the
+/// latter can nest structured data without re-parsing a formatted string.
+async fn commit_context_value(cg: &TokenSave, args: Value) -> Result<(Value, Vec<String>)> {
+    let staged_only = args
+        .get("staged_only")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let changed_files = match git_changed_files(cg.project_root(), staged_only) {
+        Ok(files) => files,
+        Err(e) => {
+            return Ok((json!({ "error": format!("git error: {e}") }), vec![]));
+        }
+    };
+
+    if changed_files.is_empty() {
+        return Ok((json!({ "message": "No changes detected." }), vec![]));
+    }
+
+    // Pre-compute files with inline test modules.
+    let files_with_inline_tests = cg
+        .get_files_with_test_annotations()
+        .await
+        .unwrap_or_default();
+
+    let mut file_roles: Vec<Value> = Vec::new();
+    let mut symbols_by_role: HashMap<&str, Vec<Value>> = HashMap::new();
+
+    for file in &changed_files {
+        let role = classify_file_role(
+            file,
+            &files_with_inline_tests,
+            &cg.get_config().source_path_overrides,
+        );
+        let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
+        file_roles.push(json!({"file": file, "role": role, "symbols": nodes.len()}));
+
+        // Config files (Cargo.toml, *.yaml, package.json, ...) explode into
+        // one node per key. Surface a single summary entry per file instead
+        // — agents only need to know "Cargo.toml changed, N keys touched",
+        // not the name of every dependency listed.
+        if role == "config" {
+            symbols_by_role.entry(role).or_default().push(json!({
+                "file": file,
+                "kind": "config_summary",
+                "config_keys": nodes.len(),
+            }));
+            continue;
+        }
+        for node in &nodes {
+            symbols_by_role.entry(role).or_default().push(json!({
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": super::display_line(node.start_line),
+            }));
+        }
+    }
+
+    let has_tests = file_roles.iter().any(|f| f["role"] == "test");
+    let has_source = file_roles.iter().any(|f| f["role"] == "source");
+    let category = match (has_source, has_tests) {
+        (true, true) => "feature/fix (source + tests)",
+        (true, false) => "feature/fix/refactor",
+        (false, true) => "test",
+        (false, false) => "chore/docs/config",
+    };
+
+    let recent_commits = git_recent_commits(cg.project_root(), 5).unwrap_or_default();
+
+    let total_symbols: usize = symbols_by_role.values().map(std::vec::Vec::len).sum();
+    let output = json!({
+        "changed_files": file_roles,
+        "symbols_by_role": symbols_by_role,
+        "suggested_category": category,
+        "recent_commits": recent_commits,
+        "summary": format!("{} file(s) changed, {} symbol(s) affected", changed_files.len(), total_symbols),
+    });
+
+    Ok((output, changed_files))
+}
+
+pub(super) async fn handle_commit_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let (output, touched_files) = commit_context_value(cg, args).await?;
+    let formatted = serialize_bounded_json(&output, COMMIT_CONTEXT_SHEDABLE);
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": formatted}]}),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_pr_context` tool calls.
+pub(super) async fn handle_pr_context(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let tokensave_dir = crate::config::get_tokensave_dir(cg.project_root());
+    let meta = crate::branch_meta::load_branch_meta(&tokensave_dir);
+    let default_branch = meta.as_ref().map_or("main", |m| m.default_branch.as_str());
+    let base = args
+        .get("base_ref")
+        .and_then(|v| v.as_str())
+        .unwrap_or(default_branch);
+    let head = args
+        .get("head_ref")
+        .and_then(|v| v.as_str())
+        .unwrap_or("HEAD");
+
+    let changed_files = match git_diff_files(cg.project_root(), base, head) {
+        Ok(files) => files,
+        Err(e) => {
+            return Ok(ToolResult {
+                value: json!({"content": [{"type": "text", "text": format!("git error: {}", e)}]}),
+                touched_files: vec![],
+            });
+        }
+    };
+
+    let commits = git_commit_log(cg.project_root(), base, head).unwrap_or_default();
+
+    let mut symbols_added: Vec<Value> = Vec::new();
+    let mut symbols_modified: Vec<Value> = Vec::new();
+    let mut test_files_changed: Vec<String> = Vec::new();
+    let mut impacted_modules: HashSet<String> = HashSet::new();
+
+    // Pre-compute files with inline test modules.
+    let files_with_inline_tests = cg
+        .get_files_with_test_annotations()
+        .await
+        .unwrap_or_default();
+    let has_tests = |path: &str| cg.is_test_file(path) || files_with_inline_tests.contains(path);
+
+    for file in &changed_files {
+        if has_tests(file) {
+            test_files_changed.push(file.clone());
+        }
+
+        let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
+
+        // Config files explode into one node per key — Cargo.toml with 50
+        // dependencies blows past the response budget. Treat them as a
+        // single summary symbol attributed to `symbols_modified` (they're
+        // never "added" since the file pre-exists in a typical PR).
+        if classify_file_role(
+            file,
+            &files_with_inline_tests,
+            &cg.get_config().source_path_overrides,
+        ) == "config"
+        {
+            symbols_modified.push(json!({
+                "file": file,
+                "kind": "config_summary",
+                "config_keys": nodes.len(),
+            }));
+            continue;
+        }
+
+        for node in &nodes {
+            let sym = json!({
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": super::display_line(node.start_line),
+            });
+
+            // Check if this symbol has callers outside changed files — if so, it's
+            // a modification to an existing API. Otherwise it's likely new.
+            let callers = cg.get_callers(&node.id, 1).await.unwrap_or_default();
+            let has_external_callers = callers
+                .iter()
+                .any(|(c, _)| !changed_files.contains(&c.file_path));
+
+            if has_external_callers {
+                symbols_modified.push(sym);
+                // Track impacted modules
+                for (caller, _) in &callers {
+                    if !changed_files.contains(&caller.file_path) {
+                        #[allow(clippy::map_unwrap_or)]
+                        let dir = caller
+                            .file_path
+                            .rfind('/')
+                            .map(|i| &caller.file_path[..i])
+                            .unwrap_or(&caller.file_path);
+                        impacted_modules.insert(dir.to_string());
+                    }
+                }
+            } else {
+                symbols_added.push(sym);
+            }
+        }
+    }
+
+    // Find transitively affected test files
+    let mut affected_tests: HashSet<String> = HashSet::new();
+    for file in &changed_files {
+        if has_tests(file) {
+            continue;
+        }
+        let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
+        for node in &nodes {
+            let impact = cg.get_impact_radius(&node.id, 2).await.unwrap_or_default();
+            for impacted in &impact.nodes {
+                if has_tests(&impacted.file_path) {
+                    affected_tests.insert(impacted.file_path.clone());
+                }
+            }
+        }
+    }
+
+    let mut impacted_sorted: Vec<String> = impacted_modules.into_iter().collect();
+    impacted_sorted.sort();
+    let mut affected_sorted: Vec<String> = affected_tests.into_iter().collect();
+    affected_sorted.sort();
+
+    let output = json!({
+        "base": base,
+        "head": head,
+        "commits": commits,
+        "files_changed": changed_files.len(),
+        "symbols_added": symbols_added.len(),
+        "symbols_modified": symbols_modified.len(),
+        "added": symbols_added,
+        "modified": symbols_modified,
+        "test_files_changed": test_files_changed,
+        "affected_tests": affected_sorted,
+        "impacted_modules": impacted_sorted,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+        touched_files: changed_files,
+    })
+}
+
+// ── Cross-branch tools ─────────────────────────────────────────────────
+
+/// Handles `tokensave_branch_list` tool calls.
+pub(super) fn handle_branch_list(cg: &TokenSave) -> ToolResult {
+    let tokensave_dir = crate::config::get_tokensave_dir(cg.project_root());
+    let current = cg.active_branch();
+
+    let meta = crate::branch_meta::load_branch_meta(&tokensave_dir);
+    let branches: Vec<Value> = match meta {
+        Some(ref meta) => meta
+            .branches
+            .iter()
+            .map(|(name, entry)| {
+                let db_path = tokensave_dir.join(&entry.db_file);
+                let size_bytes = db_path.metadata().map_or(0, |m| m.len());
+                json!({
+                    "name": name,
+                    "parent": entry.parent,
+                    "size_bytes": size_bytes,
+                    "last_synced_at": entry.last_synced_at,
+                    "is_current": current == Some(name.as_str()),
+                    "is_default": Some(name.as_str()) == meta.default_branch.as_str().into(),
+                })
+            })
+            .collect(),
+        None => vec![],
+    };
+
+    let result = json!({
+        "branch_count": branches.len(),
+        "current_branch": current,
+        "branches": branches,
+    });
+
+    let output = serde_json::to_string_pretty(&result).unwrap_or_default();
+    ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files: vec![],
+    }
+}
+
+/// Handles `tokensave_branch_search` tool calls.
+pub(super) async fn handle_branch_search(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let branch =
+        args.get("branch")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: branch".to_string(),
+            })?;
+    let query =
+        args.get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: query".to_string(),
+            })?;
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(500) as usize);
+
+    let branch_cg = TokenSave::open_branch(cg.project_root(), branch).await?;
+    let results = branch_cg.search(query, limit).await?;
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.node.id,
+                "name": r.node.name,
+                "kind": r.node.kind.as_str(),
+                "file": r.node.file_path,
+                "line": super::display_line(r.node.start_line),
+                "signature": r.node.signature,
+                "score": r.score,
+                "branch": branch,
+            })
+        })
+        .collect();
+
+    let output = serde_json::to_string_pretty(&items).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_branch_diff` tool calls.
+///
+/// Compares code graphs between two branches. For each symbol present in
+/// either branch, reports whether it was added, removed, or changed
+/// (signature differs).
+pub(super) async fn handle_branch_diff(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let project_root = cg.project_root();
+    let tokensave_dir = crate::config::get_tokensave_dir(project_root);
+
+    // Resolve base and head branches
+    let meta = crate::branch_meta::load_branch_meta(&tokensave_dir).ok_or_else(|| {
+        TokenSaveError::Config {
+            message: "no branch tracking configured — run `tokensave branch add` first".to_string(),
+        }
+    })?;
+
+    let base_name = args
+        .get("base")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&meta.default_branch);
+    let head_name = args
+        .get("head")
+        .and_then(|v| v.as_str())
+        .or_else(|| cg.active_branch())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "cannot determine head branch — specify it explicitly".to_string(),
+        })?;
+
+    if args
+        .get("quality")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        if file_arg(&args).is_some() || args.get("kind").is_some() {
+            return Err(TokenSaveError::Config {
+                message: "quality comparison is global; file/kind filters are unsupported".into(),
+            });
+        }
+        let options = serde_json::from_value::<crate::quality_diff::QualityOptions>(
+            args.get("thresholds").cloned().unwrap_or_else(|| json!({})),
+        )
+        .map_err(|e| TokenSaveError::Config {
+            message: format!("invalid quality thresholds: {e}"),
+        })?;
+        let mut report =
+            crate::quality_diff::compare(project_root, base_name, head_name, &options).await?;
+        let total = report.findings.len();
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .unwrap_or(20)
+            .min(500) as usize;
+        report
+            .findings
+            .sort_by_key(|f| (f.status == "unchanged", f.code.clone(), f.identity.clone()));
+        report.findings.truncate(limit);
+        let output = json!({"report": report, "total_findings": total, "returned_findings": total.min(limit), "truncated": total > limit});
+        return Ok(ToolResult {
+            value: json!({"content": [{"type": "text", "text": serde_json::to_string(&output).map_err(|e| TokenSaveError::Config { message: e.to_string() })?}]}),
+            touched_files: vec![],
+        });
+    }
+
+    if base_name == head_name {
+        // pr_context returns empty arrays for the same-ref case; do the same here
+        // so callers get a consistent shape and can simply check the summary.
+        let result = json!({
+            "base": base_name,
+            "head": head_name,
+            "note": format!("base and head are the same branch: '{base_name}'"),
+            "summary": { "added": 0, "removed": 0, "changed": 0 },
+            "added": [],
+            "removed": [],
+            "changed": [],
+        });
+        let output = serde_json::to_string_pretty(&result).unwrap_or_default();
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": truncate_response(&output) }]
+            }),
+            touched_files: vec![],
+        });
+    }
+
+    let file_filter = file_arg(&args);
+    let kind_filter = args.get("kind").and_then(|v| v.as_str());
+
+    let base_cg = TokenSave::open_branch(project_root, base_name).await?;
+    let head_cg = if cg.active_branch() == Some(head_name) && !cg.is_fallback() {
+        None // use the already-open cg
+    } else {
+        Some(TokenSave::open_branch(project_root, head_name).await?)
+    };
+    let head_ref = head_cg.as_ref().unwrap_or(cg);
+
+    // Collect nodes from both branches
+    let base_files = base_cg.get_all_files().await?;
+    let head_files = head_ref.get_all_files().await?;
+
+    // Build file sets for filtering — only compare files present in either branch
+    let base_file_set: HashSet<&str> = base_files.iter().map(|f| f.path.as_str()).collect();
+    let head_file_set: HashSet<&str> = head_files.iter().map(|f| f.path.as_str()).collect();
+    let all_files: HashSet<&str> = base_file_set.union(&head_file_set).copied().collect();
+
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut changed = Vec::new();
+    let mut touched = Vec::new();
+
+    for file_path in &all_files {
+        if let Some(filter) = file_filter {
+            if !file_path.starts_with(filter) && *file_path != filter {
+                continue;
+            }
+        }
+
+        let base_nodes = base_cg
+            .get_nodes_by_file(file_path)
+            .await
+            .unwrap_or_default();
+        let head_nodes = head_ref
+            .get_nodes_by_file(file_path)
+            .await
+            .unwrap_or_default();
+
+        // Index by qualified_name for matching
+        let base_map: HashMap<&str, &crate::types::Node> = base_nodes
+            .iter()
+            .map(|n| (n.qualified_name.as_str(), n))
+            .collect();
+        let head_map: HashMap<&str, &crate::types::Node> = head_nodes
+            .iter()
+            .map(|n| (n.qualified_name.as_str(), n))
+            .collect();
+
+        // Added: in head but not in base
+        for (qn, node) in &head_map {
+            if let Some(filter) = kind_filter {
+                if node.kind.as_str() != filter {
+                    continue;
+                }
+            }
+            if !base_map.contains_key(qn) {
+                added.push(json!({
+                    "name": node.name,
+                    "qualified_name": node.qualified_name,
+                    "kind": node.kind.as_str(),
+                    "file": node.file_path,
+                    "line": super::display_line(node.start_line),
+                    "signature": node.signature,
+                }));
+                touched.push(node.file_path.clone());
+            }
+        }
+
+        // Removed: in base but not in head
+        for (qn, node) in &base_map {
+            if let Some(filter) = kind_filter {
+                if node.kind.as_str() != filter {
+                    continue;
+                }
+            }
+            if !head_map.contains_key(qn) {
+                removed.push(json!({
+                    "name": node.name,
+                    "qualified_name": node.qualified_name,
+                    "kind": node.kind.as_str(),
+                    "file": node.file_path,
+                    "line": super::display_line(node.start_line),
+                    "signature": node.signature,
+                }));
+                touched.push(node.file_path.clone());
+            }
+        }
+
+        // Changed: in both but signature differs
+        for (qn, head_node) in &head_map {
+            if let Some(filter) = kind_filter {
+                if head_node.kind.as_str() != filter {
+                    continue;
+                }
+            }
+            if let Some(base_node) = base_map.get(qn) {
+                if base_node.signature != head_node.signature {
+                    changed.push(json!({
+                        "name": head_node.name,
+                        "qualified_name": head_node.qualified_name,
+                        "kind": head_node.kind.as_str(),
+                        "file": head_node.file_path,
+                        "line": super::display_line(head_node.start_line),
+                        "base_signature": base_node.signature,
+                        "head_signature": head_node.signature,
+                    }));
+                    touched.push(head_node.file_path.clone());
+                }
+            }
+        }
+    }
+
+    let result = json!({
+        "base": base_name,
+        "head": head_name,
+        "summary": {
+            "added": added.len(),
+            "removed": removed.len(),
+            "changed": changed.len(),
+        },
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+    });
+
+    let output = serde_json::to_string_pretty(&result).unwrap_or_default();
+    let touched_files = unique_file_paths(touched.iter().map(std::string::String::as_str));
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_diff` — orchestrates over `changelog`, `commit_context`,
+/// and `diff_context` based on arguments, returning a uniform envelope.
+pub(super) async fn handle_diff(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let from = args
+        .get("from")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let to = args.get("to").and_then(|v| v.as_str()).map(str::to_string);
+
+    // Dispatch table:
+    //  - `path` set      → diff_context
+    //  - `from` + `to`   → changelog
+    //  - `from` only     → changelog with to=HEAD
+    //  - none of above   → commit_context (working tree vs HEAD)
+    //
+    // Each delegate returns its structured `Value` directly. We deliberately do
+    // NOT route through the public `handle_*` wrappers: those format their
+    // payload with `to_string_pretty` and then `truncate_response`, so re-parsing
+    // the returned text back into JSON (the old `extract_value` path) blew up with
+    // "delegated tool returned non-JSON text" whenever the inner payload exceeded
+    // MAX_RESPONSE_CHARS — or was a plain status line like "No changes detected.".
+    // Composing the raw `Value` and truncating exactly once, here at the edge, is
+    // the fix.
+    let (delegated, payload): (String, Value) = if let Some(path) = &path {
+        let inner_args = json!({"files": [path]});
+        let (value, _) = diff_context_value(cg, inner_args).await?;
+        ("diff_context".to_string(), value)
+    } else if let (Some(from), Some(to)) = (from.clone(), to.clone()) {
+        let inner_args = json!({"from_ref": from, "to_ref": to});
+        let (value, _) = changelog_value(cg, inner_args).await?;
+        ("changelog".to_string(), value)
+    } else if let Some(from) = from.clone() {
+        let inner_args = json!({"from_ref": from, "to_ref": "HEAD"});
+        let (value, _) = changelog_value(cg, inner_args).await?;
+        ("changelog".to_string(), value)
+    } else {
+        let (value, _) = commit_context_value(cg, json!({})).await?;
+        ("commit_context".to_string(), value)
+    };
+
+    let envelope = json!({
+        "from": from.unwrap_or_else(|| "HEAD".to_string()),
+        "to": to.unwrap_or_else(|| "WORKING_TREE".to_string()),
+        "delegated_to": delegated,
+        "changes": payload,
+    });
+    // Same JSON-validity contract as `handle_diff_context` (#486): bound the
+    // nested payload's lists, never the serialized text.
+    let base: &[&str] = match delegated.as_str() {
+        "diff_context" => DIFF_CONTEXT_SHEDABLE,
+        "changelog" => CHANGELOG_SHEDABLE,
+        _ => COMMIT_CONTEXT_SHEDABLE,
+    };
+    let shedable: Vec<String> = base.iter().map(|f| format!("changes.{f}")).collect();
+    let shedable: Vec<&str> = shedable.iter().map(String::as_str).collect();
+    let formatted = serialize_bounded_json(&envelope, &shedable);
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": formatted}]}),
+        touched_files: vec![],
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    #[test]
+    fn config_files_classified_as_config_not_source() {
+        let empty: HashSet<String> = HashSet::new();
+        assert_eq!(classify_file_role("Cargo.toml", &empty, &[]), "config");
+        assert_eq!(classify_file_role("package.json", &empty, &[]), "config");
+        assert_eq!(classify_file_role("foo.yaml", &empty, &[]), "config");
+        assert_eq!(classify_file_role("config.ini", &empty, &[]), "config");
+    }
+
+    /// Regression for bug #3 follow-up: a source file with `#[cfg(test)] mod
+    /// tests` at the bottom is still a source file — its role must not flip
+    /// to "test" just because it contains inline tests. Only the path-based
+    /// `is_test_file` check governs role classification.
+    #[test]
+    fn source_file_with_inline_tests_keeps_source_role() {
+        let mut with_inline: HashSet<String> = HashSet::new();
+        with_inline.insert("src/lib.rs".to_string());
+        assert_eq!(
+            classify_file_role("src/lib.rs", &with_inline, &[]),
+            "source"
+        );
+    }
+
+    #[test]
+    fn path_based_test_files_classify_as_test() {
+        let empty: HashSet<String> = HashSet::new();
+        assert_eq!(
+            classify_file_role("tests/integration.rs", &empty, &[]),
+            "test"
+        );
+        assert_eq!(classify_file_role("src/foo_test.rs", &empty, &[]), "test");
+    }
+
+    #[test]
+    fn source_override_preserves_explicit_test_markers() {
+        let empty: HashSet<String> = HashSet::new();
+        let overrides = vec!["components/test/**".to_string()];
+
+        assert_eq!(
+            classify_file_role("components/test/Widget.tsx", &empty, &overrides),
+            "source"
+        );
+        assert_eq!(
+            classify_file_role(
+                "components/test/__tests__/Widget.test.tsx",
+                &empty,
+                &overrides,
+            ),
+            "test"
+        );
+    }
+
+    /// Regression: `handle_diff` used to re-parse each delegate's already
+    /// formatted-and-`truncate_response`d text back into JSON via the old
+    /// `extract_value`. When a delegate emitted non-JSON text — a status line
+    /// like "No changes detected." / "git error: …", or a payload truncated past
+    /// `MAX_RESPONSE_CHARS` — the re-parse failed with "delegated tool returned
+    /// non-JSON text" and the whole call errored. Composing the delegate's
+    /// structured `Value` directly must always yield a parseable envelope, even
+    /// when the underlying git query itself fails (here: a non-git temp dir).
+    #[tokio::test]
+    async fn handle_diff_composes_valid_json_without_reparse() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cg = TokenSave::init(dir.path()).await.unwrap();
+
+        let result = handle_diff(&cg, serde_json::json!({})).await.unwrap();
+        let text = result
+            .value
+            .pointer("/content/0/text")
+            .and_then(|v| v.as_str())
+            .expect("tool result must carry text");
+        let envelope: serde_json::Value =
+            serde_json::from_str(text).expect("handle_diff envelope must be valid JSON");
+        assert_eq!(envelope["delegated_to"], "commit_context");
+        assert!(envelope
+            .get("changes")
+            .is_some_and(serde_json::Value::is_object));
+    }
+}

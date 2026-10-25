@@ -81,6 +81,21 @@ impl BranchMeta {
         }
     }
 
+    /// Removes all tracked branches except the default. Returns removed entries.
+    pub fn remove_all_branches(&mut self) -> Vec<(String, BranchEntry)> {
+        let default = self.default_branch.clone();
+        let removed: Vec<(String, BranchEntry)> = self
+            .branches
+            .keys()
+            .filter(|name| *name != &default)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|name| self.branches.remove(&name).map(|e| (name, e)))
+            .collect();
+        removed
+    }
+
     /// Returns true if the given branch is tracked.
     pub fn is_tracked(&self, name: &str) -> bool {
         self.branches.contains_key(name)
@@ -107,11 +122,35 @@ pub fn load_branch_meta(tokensave_dir: &Path) -> Option<BranchMeta> {
 }
 
 /// Saves branch metadata to `.tokensave/branch-meta.json`.
+///
+/// The write is atomic: the JSON is written to a temporary file in the same
+/// directory, flushed to disk, then renamed over the target. A concurrent
+/// `track_branch_copy` or an interrupted write can therefore never leave a
+/// torn `branch-meta.json` behind (the rename is atomic on POSIX and Windows).
 pub fn save_branch_meta(tokensave_dir: &Path, meta: &BranchMeta) -> std::io::Result<()> {
+    use std::io::Write;
     let path = tokensave_dir.join(BRANCH_META_FILENAME);
-    let json = serde_json::to_string_pretty(meta)
-        .map_err(std::io::Error::other)?;
-    std::fs::write(path, json)
+    let json = serde_json::to_string_pretty(meta).map_err(std::io::Error::other)?;
+    let dir = path.parent().unwrap_or(tokensave_dir);
+    // Unique temp name in the same directory so the final rename is atomic and
+    // two concurrent writers cannot clobber each other's temp file.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let tmp = dir.join(format!(
+        ".{BRANCH_META_FILENAME}.{}.{nanos}.tmp",
+        std::process::id()
+    ));
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(json.as_bytes())?;
+        f.sync_all()?;
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Returns the path to the `branches/` subdirectory, creating it if needed.
@@ -151,8 +190,37 @@ pub fn format_timestamp(ts: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_branch_meta_is_atomic_and_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut meta = BranchMeta::new("main");
+        meta.add_branch("feature/foo", "branches/feature_foo.db", "main");
+        save_branch_meta(dir.path(), &meta).unwrap();
+
+        // The live file loads back intact.
+        let loaded = load_branch_meta(dir.path()).unwrap();
+        assert!(loaded.is_tracked("feature/foo"));
+
+        // No leftover temp file next to it (only branch-meta.json remains).
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(entries, vec![BRANCH_META_FILENAME.to_string()]);
+
+        // Overwriting is also clean (rename over an existing file).
+        meta.add_branch("feature/bar", "branches/feature_bar.db", "main");
+        save_branch_meta(dir.path(), &meta).unwrap();
+        let entries2: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(entries2, vec![BRANCH_META_FILENAME.to_string()]);
+    }
 
     #[test]
     fn new_meta_has_default_branch() {
@@ -168,10 +236,7 @@ mod tests {
         let mut meta = BranchMeta::new("main");
         meta.add_branch("feature/foo", "branches/feature_foo.db", "main");
         assert!(meta.is_tracked("feature/foo"));
-        assert_eq!(
-            meta.branches["feature/foo"].parent.as_deref(),
-            Some("main")
-        );
+        assert_eq!(meta.branches["feature/foo"].parent.as_deref(), Some("main"));
 
         let removed = meta.remove_branch("feature/foo");
         assert!(removed.is_some());

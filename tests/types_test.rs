@@ -1,5 +1,38 @@
 use tokensave::types::*;
 
+fn make_node(id: &str, name: &str) -> Node {
+    Node {
+        id: id.to_string(),
+        kind: NodeKind::Function,
+        name: name.to_string(),
+        qualified_name: name.to_string(),
+        file_path: "src/lib.rs".to_string(),
+        start_line: 1,
+        attrs_start_line: 1,
+        end_line: 5,
+        start_column: 0,
+        end_column: 0,
+        signature: None,
+        docstring: None,
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
+        updated_at: 0,
+        parent_id: None,
+    }
+}
+
 #[test]
 fn node_kind_as_str_roundtrip() {
     let kinds = vec![
@@ -11,6 +44,8 @@ fn node_kind_as_str_roundtrip() {
         NodeKind::Trait,
         NodeKind::Function,
         NodeKind::Method,
+        NodeKind::SingletonMethod,
+        NodeKind::Route,
         NodeKind::Impl,
         NodeKind::Const,
         NodeKind::Static,
@@ -116,6 +151,7 @@ fn node_serde_roundtrip() {
         qualified_name: "crate::module::my_function".to_string(),
         file_path: "src/module.rs".to_string(),
         start_line: 10,
+        attrs_start_line: 10,
         end_line: 20,
         start_column: 0,
         end_column: 1,
@@ -130,7 +166,13 @@ fn node_serde_roundtrip() {
         unsafe_blocks: 0,
         unchecked_calls: 0,
         assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
         updated_at: 1700000000,
+        parent_id: None,
     };
 
     let json = serde_json::to_string(&node).expect("failed to serialize Node");
@@ -159,6 +201,7 @@ fn edge_serde_roundtrip() {
         target: "function:bbbb".to_string(),
         kind: EdgeKind::Calls,
         line: Some(15),
+        resolved_by: None,
     };
 
     let json = serde_json::to_string(&edge).expect("failed to serialize Edge");
@@ -274,5 +317,107 @@ fn test_new_edge_kinds_roundtrip() {
     for (kind, expected_str) in kinds {
         assert_eq!(kind.as_str(), expected_str);
         assert_eq!(EdgeKind::from_str(expected_str), Some(kind));
+    }
+}
+
+#[test]
+fn visibility_as_str_and_from_str_roundtrip() {
+    let cases = [
+        (Visibility::Pub, "public"),
+        (Visibility::PubCrate, "pub_crate"),
+        (Visibility::PubSuper, "pub_super"),
+        (Visibility::Private, "private"),
+    ];
+    for (vis, s) in cases {
+        assert_eq!(vis.as_str(), s);
+        assert_eq!(Visibility::from_str(s), Some(vis));
+    }
+    // "pub" is an alias for "public"
+    assert_eq!(Visibility::from_str("pub"), Some(Visibility::Pub));
+    assert!(Visibility::from_str("unknown").is_none());
+}
+
+#[test]
+fn extraction_result_sanitize_no_empty_names() {
+    let good = make_node("function:aaa", "good_fn");
+    let bad = make_node("function:bbb", "");
+
+    let edge_good_to_good = Edge {
+        source: "function:aaa".to_string(),
+        target: "function:aaa".to_string(),
+        kind: EdgeKind::Calls,
+        line: None,
+        resolved_by: None,
+    };
+    let edge_involving_bad = Edge {
+        source: "function:bbb".to_string(),
+        target: "function:aaa".to_string(),
+        kind: EdgeKind::Calls,
+        line: None,
+        resolved_by: None,
+    };
+    let unresolved_bad = UnresolvedRef {
+        from_node_id: "function:bbb".to_string(),
+        reference_name: "something".to_string(),
+        reference_kind: EdgeKind::Uses,
+        line: 1,
+        column: 0,
+        file_path: "src/lib.rs".to_string(),
+    };
+
+    let mut result = ExtractionResult {
+        nodes: vec![good, bad],
+        edges: vec![edge_good_to_good.clone(), edge_involving_bad],
+        unresolved_refs: vec![unresolved_bad],
+        errors: vec![],
+        duration_ms: 0,
+    };
+
+    result.sanitize();
+
+    assert_eq!(result.nodes.len(), 1, "empty-name node should be removed");
+    assert_eq!(
+        result.edges.len(),
+        1,
+        "edge referencing bad node should be removed"
+    );
+    assert_eq!(edge_good_to_good.source, result.edges[0].source);
+    assert!(
+        result.unresolved_refs.is_empty(),
+        "unresolved ref from bad node should be removed"
+    );
+    assert_eq!(
+        result.errors.len(),
+        1,
+        "sanitize should log a stripped-node error"
+    );
+}
+
+#[test]
+fn extraction_result_sanitize_noop_when_clean() {
+    let node = make_node("function:abc", "my_fn");
+    let mut result = ExtractionResult {
+        nodes: vec![node],
+        edges: vec![],
+        unresolved_refs: vec![],
+        errors: vec![],
+        duration_ms: 0,
+    };
+    result.sanitize();
+    assert_eq!(result.nodes.len(), 1);
+    assert!(result.errors.is_empty());
+}
+
+#[test]
+fn traversal_direction_serde_roundtrip() {
+    let cases = [
+        TraversalDirection::Outgoing,
+        TraversalDirection::Incoming,
+        TraversalDirection::Both,
+    ];
+    for dir in cases {
+        let json = serde_json::to_string(&dir).unwrap();
+        let back: TraversalDirection = serde_json::from_str(&json).unwrap();
+        assert_eq!(dir, back);
     }
 }

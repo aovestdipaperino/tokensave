@@ -1,0 +1,27 @@
+# Repos exercised by scripts/mcp_probe/probe.py.
+#
+# Each entry needs a .tokensave/tokensave.db already indexed. The driver
+# spawns `tokensave serve` with cwd=path and talks JSON-RPC over stdio.
+#
+# Edit paths to match your machine. CI / shared setups should override via
+# the TOKENSAVE_PROBE_REPOS env var (path to an alternative repos.toml).
+
+[[repos]]
+name = "sotf"
+path = "/Users/pierre/src/sotf"
+languages = ["rust"]
+
+[[repos]]
+name = "sonium"
+path = "/Users/pierre/src/sonium"
+languages = ["rust"]
+
+[[repos]]
+name = "scirs"
+path = "/Volumes/home_ext1/Src/scirs"
+languages = ["rust"]
+
+[[repos]]
+name = "polkadot"
+path = "/Volumes/home_ext1/Src/0parity/polkadot-sdk"
+languages = ["rust"]

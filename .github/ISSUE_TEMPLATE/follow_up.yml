@@ -1,0 +1,33 @@
+name: Maintainer follow-up
+description: Track a maintainer-requested follow-up or narrowly scoped proposal
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for maintainer-invited follow-ups and focused proposals.
+        Use the bug report form for reproduced user-visible failures.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Link the originating issue, pull request, or maintainer request.
+    validations:
+      required: true
+
+  - type: textarea
+    id: gap
+    attributes:
+      label: Gap
+      description: Describe the current limitation or maintenance gap.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the focused change and its intended boundaries.
+    validations:
+      required: true

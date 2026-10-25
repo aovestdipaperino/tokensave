@@ -1,0 +1,2263 @@
+//! Graph traversal tool handlers: `search`, `context`, `callers`, `callees`,
+//! `impact`, `node`, `similar`, `callers_for`, `by_qualified_name`,
+//! `signature`.
+
+use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
+use std::path::Path;
+
+use serde_json::{json, Value};
+
+use crate::context::format_context_as_markdown;
+use crate::cpu::CpuUsage;
+use crate::errors::{Result, TokenSaveError};
+use crate::tokensave::TokenSave;
+use crate::types::{BuildContextOptions, EdgeKind, Node, NodeKind, Visibility};
+
+use super::super::ToolResult;
+use super::symbol_target::{self, KindRanking, Target};
+use super::{
+    effective_path, file_arg, filter_by_path_lists, filter_by_scope, parse_string_array,
+    require_node_id, truncate_response, truncate_response_keep_tail, unique_file_paths,
+    SessionState,
+};
+
+/// Rounds a derived health metric to two decimal places for compact JSON.
+fn round2_health(x: f64) -> f64 {
+    (x * 100.0).round() / 100.0
+}
+
+/// Halstead volume for a node from its stored token counts (issue #150).
+fn halstead_vol_for(n: &crate::types::Node) -> f64 {
+    crate::extraction::complexity::halstead_volume(
+        n.distinct_operators,
+        n.distinct_operands,
+        n.total_operators,
+        n.total_operands,
+    )
+}
+
+/// Halstead difficulty for a node from its stored token counts (issue #150).
+fn halstead_diff_for(n: &crate::types::Node) -> f64 {
+    crate::extraction::complexity::halstead_difficulty(
+        n.distinct_operators,
+        n.distinct_operands,
+        n.total_operands,
+    )
+}
+
+/// Errors when `node_id` matches no node in the graph.
+///
+/// Traversal queries return an empty result set for an unknown ID, which is
+/// indistinguishable from a valid "no callers/callees found" — so a typo'd ID
+/// or a symbol *name* passed where an ID is expected (the #109 CLI nit:
+/// `tokensave tool callers Helper`) read like clean answers. Fail loudly and
+/// point at the name-based lookups instead.
+async fn require_existing_node(cg: &TokenSave, node_id: &str) -> Result<Node> {
+    cg.get_node(node_id)
+        .await?
+        .ok_or_else(|| TokenSaveError::Config {
+            message: format!(
+                "node not found: '{node_id}'. `node_id` expects a graph node ID \
+                 (e.g. from tokensave_search results); to look up by symbol name \
+                 use {} or tokensave_search.",
+                crate::mcp::tools::reachable_tool_name("tokensave_callers_for")
+            ),
+        })
+}
+
+/// Handles `tokensave_search` tool calls.
+pub(super) async fn handle_search(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+    session: Option<&SessionState>,
+) -> Result<ToolResult> {
+    let query =
+        args.get("query")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: query".to_string(),
+            })?;
+
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(500) as usize);
+
+    let literal = args
+        .get("literal")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let format = args
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text");
+
+    let ids = args
+        .get("ids")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let path_include = parse_string_array(&args, "path_include");
+    let path_exclude = parse_string_array(&args, "path_exclude");
+
+    if literal {
+        // Literal mode reads the project's files rather than its symbols, so
+        // it has two options the ranked path does not need (#685): whether to
+        // keep counting past the limit for an exact total, and when to give
+        // up on the scan.
+        let exact_total = args
+            .get("exact_total")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        // `0` turns the budget off: the scan then runs to the end of the
+        // project, however long that takes.
+        let timeout_ms = args
+            .get("timeout_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(LITERAL_SCAN_DEFAULT_TIMEOUT_MS);
+        let timeout = (timeout_ms > 0).then(|| std::time::Duration::from_millis(timeout_ms));
+        return handle_literal_search(
+            cg,
+            query,
+            limit,
+            scope_prefix,
+            &path_include,
+            &path_exclude,
+            format,
+            ids,
+            exact_total,
+            timeout,
+            session,
+        )
+        .await;
+    }
+
+    // Fetch one extra result: if it survives every filter, more matches exist
+    // than `limit`, and the text header says so instead of passing a capped
+    // answer off as the complete set (#645).
+    let probe_limit = limit.saturating_add(1);
+    let mut results = if path_include.is_empty() && path_exclude.is_empty() {
+        let results = cg.search(query, probe_limit).await?;
+        filter_by_scope(results, scope_prefix, |r| &r.node.file_path)
+    } else {
+        // Path filters drop candidates after the ranked search, so fetch a
+        // larger set first to keep `limit` satisfiable post-filter.
+        let candidate_limit = limit.saturating_mul(5).max(50);
+        let results = cg.search(query, candidate_limit).await?;
+        let results = filter_by_scope(results, scope_prefix, |r| &r.node.file_path);
+        let mut results =
+            filter_by_path_lists(results, &path_include, &path_exclude, |r| &r.node.file_path);
+        results.truncate(probe_limit);
+        results
+    };
+
+    // Project-level query-ignore: drop results matching .tokensave/queryignore.
+    let query_ignore = crate::config::load_query_ignore(cg.project_root());
+    if !query_ignore.is_empty() {
+        results.retain(|r| !query_ignore.is_ignored(&r.node.file_path));
+    }
+    let truncated = results.len() > limit;
+    results.truncate(limit);
+
+    let touched_files = unique_file_paths(results.iter().map(|r| r.node.file_path.as_str()));
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|r| {
+            let mut item = json!({
+                "name": r.node.name,
+                "kind": r.node.kind.as_str(),
+                "file": r.node.file_path,
+                "line": super::display_line(r.node.start_line),
+                "end_line": super::display_line(r.node.end_line),
+                "signature": r.node.signature.as_deref().map(crate::context::compact_signature),
+                "score": r.score,
+            });
+            if ids {
+                item["id"] = json!(r.node.id);
+            }
+            item
+        })
+        .collect();
+
+    // An empty array is where a cross-repo session gives up and concludes the
+    // symbol does not exist, so this is the one place the sibling graphs are
+    // worth naming (#375). Shape only changes when there is nothing to return.
+    let item_count = items.len();
+    let text_output = if format == "text" {
+        let mut text = if truncated {
+            format!(
+                "count: {item_count} (truncated: more matches exist; raise `limit` to see them)\n\n"
+            )
+        } else {
+            format!("count: {item_count}\n\n")
+        };
+        for item in &items {
+            let file = item["file"].as_str().unwrap_or_default();
+            let line = item["line"].as_u64().unwrap_or(0);
+            let end_line = item["end_line"].as_u64().unwrap_or(line);
+            let name = item["name"].as_str().unwrap_or_default();
+            let kind = item["kind"].as_str().unwrap_or_default();
+            // `ids: true` must reach the default text format too, so the id
+            // can feed callers/callees/impact/node without a json round trip
+            // (#646).
+            let id = item["id"]
+                .as_str()
+                .map(|id| format!(" [id: {id}]"))
+                .unwrap_or_default();
+            match item["signature"].as_str() {
+                Some(sig) => {
+                    let _ = writeln!(
+                        text,
+                        "{file}:{line}-{end_line}: {name} ({kind}){id} — {sig}"
+                    );
+                }
+                None => {
+                    let _ = writeln!(text, "{file}:{line}-{end_line}: {name} ({kind}){id}");
+                }
+            }
+        }
+        Some(text)
+    } else {
+        None
+    };
+
+    let payload = match super::sibling_note(items.is_empty(), cg.project_root()).await {
+        Some(note) => note,
+        None => Value::Array(items),
+    };
+
+    if let Some(mut text) = text_output {
+        if let Some(note) = payload.as_str() {
+            text.push_str(note);
+            text.push('\n');
+        }
+        return Ok(ToolResult {
+            value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
+            touched_files,
+        });
+    }
+
+    let output = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// How many distinct extensions the unscanned report names before rolling the
+/// rest into a `and N more extension(s)` tail, so a repository full of tracked
+/// assets cannot turn one search response into a directory listing.
+const MAX_UNSCANNED_EXTS: usize = 8;
+
+/// Describes the tracked files a literal search could not look inside, or
+/// `None` when there are none (or when git cannot tell us).
+///
+/// Literal search reads bytes rather than symbols, but it iterates the `files`
+/// table, so it can only reach a file the index holds a row for: a file whose
+/// extension has an extractor, or one listed in `artifact_extensions` (#323).
+/// A tracked `.html` template has neither, so its matches were missing from
+/// the response with nothing to say so — `count` read as complete (#442).
+///
+/// The caller's own narrowing (`path_include`/`path_exclude`, the scope
+/// prefix, project query-ignore) is applied here too, so this reports only
+/// files the caller actually asked about; the extension tally is what makes
+/// the remedy actionable, since `artifact_extensions` is configured by
+/// extension.
+fn unscanned_report(
+    cg: &TokenSave,
+    indexed_paths: &HashSet<String>,
+    scope_prefix: Option<&str>,
+    path_include: &[String],
+    path_exclude: &[String],
+) -> Option<Value> {
+    let borrowed: HashSet<&str> = indexed_paths.iter().map(String::as_str).collect();
+    let unindexed = cg.unindexed_tracked_files(&borrowed)?;
+    if unindexed.is_empty() {
+        return None;
+    }
+
+    let query_ignore = crate::config::load_query_ignore(cg.project_root());
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut total = 0usize;
+    for path in filter_by_path_lists(unindexed, path_include, path_exclude, |p| p.as_str()) {
+        if let Some(prefix) = scope_prefix {
+            if !path.starts_with(prefix) {
+                continue;
+            }
+        }
+        if query_ignore.is_ignored(&path) {
+            continue;
+        }
+        total += 1;
+        let ext = std::path::Path::new(&path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map_or_else(|| "(no extension)".to_string(), str::to_ascii_lowercase);
+        *counts.entry(ext).or_insert(0) += 1;
+    }
+    if total == 0 {
+        return None;
+    }
+
+    let mut by_count: Vec<(String, usize)> = counts.into_iter().collect();
+    by_count.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let listed = by_count.len().min(MAX_UNSCANNED_EXTS);
+    let extensions: Vec<Value> = by_count[..listed]
+        .iter()
+        .map(|(ext, count)| json!({ "extension": ext, "files": count }))
+        .collect();
+    let more = by_count.len().saturating_sub(listed);
+
+    let mut report = json!({
+        "files": total,
+        "extensions": extensions,
+        "reason": "The index holds no row for these tracked files, so their contents were \
+                   not searched and this result may be incomplete.",
+        "remedy": "Literal search covers any file the index tracks, parsed or not. To include \
+                   one of these formats, add its extension to `artifact_extensions` in \
+                   .tokensave/config.json and run `tokensave sync -f`. Files skipped for \
+                   their path (a hidden directory, an `exclude` glob) need the path in \
+                   `include[]` instead, as `tokensave init` suggests. Until then, grep \
+                   reaches them.",
+    });
+    if more > 0 {
+        if let Some(object) = report.as_object_mut() {
+            object.insert("more_extensions".to_string(), json!(more));
+        }
+    }
+    Some(report)
+}
+
+/// Pointer carried by the compact `unscanned` block on repeat literal searches.
+/// It used to name a `tokensave_files --unscanned` option that does not exist
+/// (#667); the full breakdown is in the first literal search of the session.
+const UNSCANNED_COMPACT_HINT: &str =
+    "breakdown and remedy shown by this session's first literal search; grep reaches these files";
+
+/// Upper bound on the size of a single source file scanned in literal mode.
+/// Files larger than this are skipped defensively — they are almost always
+/// generated/vendored blobs, and reading them would blow the scan's latency
+/// budget for no useful runtime-error-string hit.
+const LITERAL_SCAN_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Files scanned per parallel chunk.
+///
+/// The scan holds a chunk's hits in memory before it materializes them, so
+/// the chunk bounds what one step of the scan can retain: at most one file's
+/// content per worker, plus one file's hit text per file in the chunk. A
+/// chunk is released before the next one is scanned.
+const LITERAL_SCAN_CHUNK: usize = 8;
+
+/// How long a literal scan may run before it answers with what it found.
+///
+/// A scan that reaches the budget says so and reports `total` as a lower
+/// bound, rather than holding the call while the rest of the project is read
+/// (#685). The budget is generous: a parallel scan of a large repository
+/// finishes well inside it, and it only trips on a scan that is pathologically
+/// slow. `timeout_ms: 0` turns it off.
+const LITERAL_SCAN_DEFAULT_TIMEOUT_MS: u64 = 30_000;
+
+/// One file's literal hits.
+struct LiteralScan {
+    /// How many lines in the file matched, including the ones past the cap.
+    count: usize,
+    /// The matching lines kept for materialization: the 0-based line index
+    /// and the trimmed line text.
+    hits: Vec<(u32, String)>,
+}
+
+/// Scans one indexed file for the literal query.
+///
+/// Returns the number of matching lines and the first `budget` of them.
+fn scan_literal_file(project_root: &Path, path: &str, query: &str, budget: usize) -> LiteralScan {
+    // #685: the indexed size is stale — a file that grew after indexing
+    // (logs, generated blobs) would be read in full, and a path that
+    // became a FIFO or device would block the read forever. Stat fresh,
+    // skip non-regular files, and bound the read by the current size.
+    // shortcut: a file swapped in between stat and read still races;
+    // close it with open+fstat+take if that ever bites.
+    let abs_path = project_root.join(path);
+    let Ok(meta) = std::fs::metadata(&abs_path) else {
+        return LiteralScan {
+            count: 0,
+            hits: Vec::new(),
+        };
+    };
+    if !meta.file_type().is_file() || meta.len() > LITERAL_SCAN_MAX_FILE_BYTES {
+        return LiteralScan {
+            count: 0,
+            hits: Vec::new(),
+        };
+    }
+    let Ok(source) = crate::sync::read_source_file(&abs_path) else {
+        return LiteralScan {
+            count: 0,
+            hits: Vec::new(),
+        };
+    };
+
+    let mut count = 0usize;
+    let mut hits = Vec::new();
+    for (idx, line) in source.lines().enumerate() {
+        if !line.contains(query) {
+            continue;
+        }
+        count += 1;
+        if hits.len() < budget {
+            hits.push((idx as u32, line.trim().to_string()));
+        }
+    }
+    LiteralScan { count, hits }
+}
+
+/// Scans one chunk of files for the literal query, in parallel.
+///
+/// The scan is blocking file I/O, so it runs in `spawn_blocking` and inside
+/// the project's CPU profile pool (#685): the pool bounds how many files are
+/// read at once by the configured profile, and the chunk bounds how many hits
+/// are retained. Results come back in the order the paths were given, so the
+/// caller still reports matches in file order.
+async fn scan_literal_chunk(
+    project_root: &Path,
+    paths: &[String],
+    query: &str,
+    budget: usize,
+    cpu: CpuUsage,
+) -> Result<Vec<LiteralScan>> {
+    let project_root = project_root.to_path_buf();
+    let paths = paths.to_vec();
+    let query = query.to_string();
+    let scanned = tokio::task::spawn_blocking(move || {
+        cpu.run(|| {
+            use rayon::prelude::*;
+            paths
+                .par_iter()
+                .map(|path| scan_literal_file(&project_root, path, &query, budget))
+                .collect::<Vec<_>>()
+        })
+    })
+    .await
+    .map_err(|error| TokenSaveError::Config {
+        message: format!("literal search scan failed: {error}"),
+    })??;
+    Ok(scanned)
+}
+
+/// Literal (exact-substring, case-sensitive) search over the source text of the
+/// project's indexed files.
+///
+/// Unlike the FTS/semantic path, this finds strings that live *inside* function
+/// bodies — e.g. a runtime error message like `provider destroyed` — which are
+/// never present in symbol names or signatures. Each match is reported as a
+/// `{ file, line, text, enclosing, enclosing_id }` location. Scanning is
+/// deterministic (files sorted by path). Only the first `limit` matches are
+/// materialized. By default the scan keeps counting past them so the response
+/// can report the exact `total` and whether it was `truncated` (#645); with
+/// `exact_total` off it stops at the limit instead, and a `timeout` ends the
+/// scan early. Either way the response says whether the total is exact
+/// (`total_exact`) rather than passing a partial count off as the whole
+/// project.
+#[allow(clippy::too_many_arguments)]
+async fn handle_literal_search(
+    cg: &TokenSave,
+    query: &str,
+    limit: usize,
+    scope_prefix: Option<&str>,
+    path_include: &[String],
+    path_exclude: &[String],
+    format: &str,
+    ids: bool,
+    exact_total: bool,
+    timeout: Option<std::time::Duration>,
+    session: Option<&SessionState>,
+) -> Result<ToolResult> {
+    if query.is_empty() {
+        return Err(TokenSaveError::Config {
+            message: "literal search requires a non-empty query".to_string(),
+        });
+    }
+
+    let project_root = cg.project_root();
+    let mut files = cg.get_all_files().await?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    // Every path the index holds a row for, captured *before* the caller's own
+    // filters narrow the scan. The unscanned report below distinguishes "the
+    // index has no row for this file" (#442) from "the caller filtered it
+    // out", and only the first is worth telling them about.
+    let indexed_paths: HashSet<String> = files.iter().map(|f| f.path.clone()).collect();
+    // Honor the same `path_include`/`path_exclude` substring filters the
+    // ranked search path applies — literal mode used to ignore them (#258).
+    // `path_exclude` takes precedence, matching `filter_by_path_lists`.
+    files = filter_by_path_lists(files, path_include, path_exclude, |f| f.path.as_str());
+
+    // Project-level query-ignore applies to literal mode too — it used to
+    // return before the ranked path's queryignore filter, so suppressed
+    // paths (vendored trees, changelogs) still leaked into literal hits.
+    let query_ignore = crate::config::load_query_ignore(project_root);
+    if !query_ignore.is_empty() {
+        files.retain(|f| !query_ignore.is_ignored(&f.path));
+    }
+
+    let mut matches: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    // Every match in scope, including those past `limit`. Counting the rest is
+    // a substring test per line of files the scan would have read anyway on a
+    // query with few hits, and it turns a capped `count` into an honest
+    // "showing N of M" (#645). With `exact_total` off the scan stops at the
+    // limit instead, and `total` is then only a lower bound.
+    let mut total: usize = 0;
+
+    // The scan reads and matches every indexed file, so it is the slow part
+    // of a literal search (#685). It runs in chunks, in parallel, inside the
+    // project's CPU profile pool, and off the async runtime so a long scan
+    // does not block the server's other work. The scope prefix filters the
+    // scan set up front, so a scoped search does not read files it will not
+    // report on.
+    if let Some(prefix) = scope_prefix {
+        files.retain(|f| f.path.starts_with(prefix));
+    }
+    let cpu = cg.cpu_usage();
+    let scan_paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+
+    // A scan that runs past its budget answers with what it found and says so,
+    // rather than holding the call until the whole project has been read.
+    // The deadline is checked between chunks, so the overshoot is bounded by
+    // one chunk.
+    let deadline = timeout.map(|budget| std::time::Instant::now() + budget);
+    // Whether the scan reached the end of the project. A scan that stopped
+    // early cannot report an exact total.
+    let mut complete = true;
+    let mut timed_out = false;
+
+    for chunk in scan_paths.chunks(LITERAL_SCAN_CHUNK) {
+        if let Some(deadline) = deadline {
+            if std::time::Instant::now() >= deadline {
+                complete = false;
+                timed_out = true;
+                break;
+            }
+        }
+        // Once the response is full the scan still runs to the end of the
+        // project — the exact `total` needs it (#645) — but it stops keeping
+        // hit text it will not report.
+        let budget = limit.saturating_sub(matches.len());
+        let scans = scan_literal_chunk(project_root, chunk, query, budget, cpu).await?;
+        for (path, scan) in chunk.iter().zip(scans) {
+            total += scan.count;
+            if scan.hits.is_empty() {
+                continue;
+            }
+            // The node lookup is one database round-trip, so it happens only
+            // for the files that matched (#685).
+            let nodes = cg.get_nodes_by_file(path).await.unwrap_or_default();
+
+            for (line0, text) in scan.hits {
+                if matches.len() >= limit {
+                    break;
+                }
+                let line_no = line0 + 1;
+                // Innermost node whose [start_line, end_line] covers the match.
+                // Node spans are stored 0-based, so compare with the 0-based index
+                // — comparing the 1-based display line attributed hits to the
+                // *next* adjacent symbol (#203).
+                let enclosing = nodes
+                    .iter()
+                    .filter(|n| n.start_line <= line0 && line0 <= n.end_line)
+                    .min_by_key(|n| n.end_line.saturating_sub(n.start_line));
+
+                let enclosing_name = enclosing.as_ref().map(|n| n.name.clone());
+                let enclosing_id = enclosing.as_ref().map(|n| n.id.clone());
+                let mut match_value = json!({
+                    "file": path,
+                    "line": line_no,
+                    "text": text,
+                    "enclosing": enclosing_name,
+                });
+                if ids {
+                    match_value["enclosing_id"] = json!(enclosing_id);
+                }
+                matches.push(match_value);
+                if !touched.contains(path) {
+                    touched.push(path.clone());
+                }
+            }
+        }
+        // The caller asked not to pay for an exact total, so the scan stops
+        // here: the matches found so far are the answer.
+        if !exact_total && matches.len() >= limit {
+            complete = false;
+            break;
+        }
+    }
+    // A scan that stopped early cannot claim an exact total, and the answer
+    // is a capped one: there are at least as many matches as were counted.
+    let total_exact = complete;
+    let truncated = !total_exact || total > matches.len();
+
+    let touched_files = unique_file_paths(touched.iter().map(String::as_str));
+    let mut payload = json!({
+        "literal": true,
+        "query": query,
+        "count": matches.len(),
+        "total": total,
+        // Whether `total` is the exact number of matches in the project. A
+        // scan that stopped at the limit or ran out of time reports a lower
+        // bound instead, and says so rather than passing it off as the whole
+        // project (#442).
+        "total_exact": total_exact,
+        "truncated": truncated,
+        "matches": matches,
+    });
+    if timed_out {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("timed_out".to_string(), json!(true));
+            object.insert(
+                "note".to_string(),
+                json!(
+                    "The scan reached its time budget and stopped early. The matches \
+                     shown are the ones found so far; `total` is a lower bound, not the \
+                     number of matches in the project. Narrow the search with \
+                     `path_include`, or raise `timeout_ms`."
+                ),
+            );
+        }
+    }
+    // A literal answer that scanned only part of the project must say so:
+    // `count` otherwise reads as "these are all the occurrences" (#442).
+    if let Some(unscanned) =
+        unscanned_report(cg, &indexed_paths, scope_prefix, path_include, path_exclude)
+    {
+        let files = unscanned["files"].as_u64().unwrap_or(0);
+        let compact = json!({ "files": files, "hint": UNSCANNED_COMPACT_HINT });
+        let should_compact = session.is_some_and(|session| {
+            let root = cg.project_root().to_string_lossy().to_string();
+            let mut shown = session
+                .unscanned_shown
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            !shown.insert(root)
+        });
+        let value = if should_compact { compact } else { unscanned };
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("unscanned".to_string(), value);
+        }
+    }
+    if format == "text" {
+        let mut text = if timed_out {
+            format!(
+                "count: {} of at least {total} (timed out; the scan stopped early, so \
+                 `total` is a lower bound)\n\n",
+                matches.len()
+            )
+        } else if !total_exact {
+            format!(
+                "count: {} of at least {total} (truncated; the scan stopped at the limit, \
+                 so `total` is a lower bound)\n\n",
+                matches.len()
+            )
+        } else if truncated {
+            format!(
+                "count: {} of {total} (truncated; raise `limit` to see more)\n\n",
+                matches.len()
+            )
+        } else {
+            format!("count: {}\n\n", matches.len())
+        };
+        for m in &matches {
+            let file = m["file"].as_str().unwrap_or_default();
+            let line = m["line"].as_u64().unwrap_or(0);
+            let line_text = m["text"].as_str().unwrap_or_default();
+            // With `ids: true`, name the enclosing symbol and its id so the
+            // text format can feed callers/callees/impact/node (#646).
+            match m.get("enclosing_id").and_then(Value::as_str) {
+                Some(enclosing_id) => {
+                    let enclosing = m["enclosing"].as_str().unwrap_or_default();
+                    let _ = writeln!(
+                        text,
+                        "{file}:{line}: {line_text} [in {enclosing}, id: {enclosing_id}]"
+                    );
+                }
+                None => {
+                    let _ = writeln!(text, "{file}:{line}: {line_text}");
+                }
+            }
+        }
+        if let Some(unscanned) = payload.get("unscanned") {
+            let files = unscanned["files"].as_u64().unwrap_or(0);
+            if let Some(extensions) = unscanned.get("extensions").and_then(Value::as_array) {
+                let _ = writeln!(text, "unscanned: {files} files");
+                for entry in extensions {
+                    let ext = entry["extension"].as_str().unwrap_or_default();
+                    let count = entry["files"].as_u64().unwrap_or(0);
+                    let _ = writeln!(text, "  - {ext}: {count}");
+                }
+                if let Some(reason) = unscanned.get("reason").and_then(Value::as_str) {
+                    let _ = writeln!(text, "reason: {reason}");
+                }
+                if let Some(remedy) = unscanned.get("remedy").and_then(Value::as_str) {
+                    let _ = writeln!(text, "remedy: {remedy}");
+                }
+            } else {
+                let _ = writeln!(text, "unscanned: {files} files ({UNSCANNED_COMPACT_HINT})");
+            }
+        }
+        return Ok(ToolResult {
+            value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
+            touched_files,
+        });
+    }
+    let output = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_context` tool calls.
+pub(super) async fn handle_context(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let task = args
+        .get("task")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: task".to_string(),
+        })?;
+
+    let max_nodes = args
+        .get("max_nodes")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(20, |v| v.min(100) as usize);
+
+    let include_code = args
+        .get("include_code")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let max_code_blocks = args
+        .get("max_code_blocks")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(5, |v| v.min(20) as usize);
+
+    // Absent means "no line cap"; a requested 0 is clamped to 1, since an empty
+    // snippet is strictly worse than no snippet at all.
+    let max_code_lines = args
+        .get("max_code_lines")
+        .and_then(serde_json::Value::as_u64)
+        .map(|v| v.clamp(1, 1000) as usize);
+
+    let mode = args
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("explore");
+
+    let extra_keywords: Vec<String> = args
+        .get("keywords")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let exclude_node_ids: std::collections::HashSet<String> = args
+        .get("exclude_node_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let merge_adjacent = args
+        .get("merge_adjacent")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let max_per_file: Option<usize> = args
+        .get("max_per_file")
+        .and_then(serde_json::Value::as_u64)
+        .map(|v| v as usize)
+        .or(Some((max_nodes / 3).max(3)));
+
+    let path_prefix = effective_path(&args, scope_prefix).map(String::from);
+
+    let path_include = parse_string_array(&args, "path_include");
+    let path_exclude = parse_string_array(&args, "path_exclude");
+
+    // Project-level query-ignore: applied to entry-point candidates inside
+    // build_context (mirrors how path_prefix is threaded through options).
+    let query_ignore = crate::config::load_query_ignore(cg.project_root());
+
+    let options = BuildContextOptions {
+        max_nodes,
+        max_code_blocks,
+        include_code,
+        extra_keywords,
+        exclude_node_ids,
+        merge_adjacent,
+        max_per_file,
+        path_prefix,
+        path_include,
+        path_exclude,
+        query_ignore,
+        max_code_lines,
+        ..Default::default()
+    };
+
+    let context = cg.build_context(task, &options).await?;
+    let touched_files = unique_file_paths(
+        context
+            .subgraph
+            .nodes
+            .iter()
+            .map(|n| n.file_path.as_str())
+            .chain(
+                context
+                    .related_files
+                    .iter()
+                    .map(std::string::String::as_str),
+            ),
+    );
+    let mut output = format_context_as_markdown(&context);
+
+    // Plan mode: append extension points, test coverage, and dependency info
+    if mode == "plan" {
+        output.push_str("\n### Extension Points\n");
+        let mut found_extension = false;
+        for node in &context.subgraph.nodes {
+            if matches!(node.kind, NodeKind::Trait | NodeKind::Interface)
+                && node.visibility == Visibility::Pub
+            {
+                let implementors = cg.get_callers(&node.id, 1).await.unwrap_or_default();
+                let impl_count = implementors
+                    .iter()
+                    .filter(|(_, e)| matches!(e.kind, crate::types::EdgeKind::Implements))
+                    .count();
+                let _ = writeln!(
+                    output,
+                    "- **{}** ({}) - {}:{} ({} implementors)",
+                    node.name,
+                    node.kind.as_str(),
+                    node.file_path,
+                    super::display_line(node.start_line),
+                    impl_count,
+                );
+                found_extension = true;
+            }
+        }
+        if !found_extension {
+            output.push_str("_No public traits/interfaces found in context._\n");
+        }
+
+        // Test coverage for related files
+        let file_paths: Vec<String> = context
+            .subgraph
+            .nodes
+            .iter()
+            .map(|n| n.file_path.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        if !file_paths.is_empty() {
+            output.push_str("\n### Test Coverage\n");
+            let mut test_files: HashSet<String> = HashSet::new();
+            for file in &file_paths {
+                let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
+                for node in &nodes {
+                    let callers = cg.get_callers(&node.id, 2).await.unwrap_or_default();
+                    let caller_ids: Vec<String> =
+                        callers.iter().map(|(n, _)| n.id.clone()).collect();
+                    let test_annotated = cg
+                        .get_test_annotated_node_ids(&caller_ids)
+                        .await
+                        .unwrap_or_default();
+                    for (caller, _) in &callers {
+                        if cg.is_test_file(&caller.file_path) || test_annotated.contains(&caller.id)
+                        {
+                            test_files.insert(caller.file_path.clone());
+                        }
+                    }
+                }
+            }
+            if test_files.is_empty() {
+                output.push_str("_No test files found covering these modules._\n");
+            } else {
+                let mut sorted: Vec<_> = test_files.into_iter().collect();
+                sorted.sort();
+                for tf in &sorted {
+                    let _ = writeln!(output, "- {tf}");
+                }
+            }
+        }
+    }
+
+    if !context.seen_node_ids.is_empty() {
+        let _ = write!(
+            output,
+            "\nseen_node_ids: {}\n",
+            serde_json::to_string(&context.seen_node_ids).unwrap_or_default()
+        );
+    }
+
+    // See the matching note in `handle_search` (#375): a context request that
+    // found nothing is exactly when a sibling graph is worth naming.
+    if context.subgraph.nodes.is_empty() {
+        let siblings = super::sibling_projects(cg.project_root()).await;
+        if !siblings.is_empty() {
+            let _ = write!(
+                output,
+                "\n### Other initialized projects\n{}\n\n{}\n",
+                siblings
+                    .iter()
+                    .map(|path| format!("- `{path}`"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                super::SIBLING_HINT,
+            );
+        }
+    }
+
+    Ok(ToolResult {
+        value: json!({
+            // Keep everything from the Retrieval footer down: the footer,
+            // `seen_node_ids`, and any sibling hint are the small,
+            // load-bearing tail of this response, and plain prefix
+            // truncation would cut exactly those whenever the Code
+            // section is large.
+            "content": [{ "type": "text", "text": truncate_response_keep_tail(&output, "### Retrieval") }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_callers` tool calls.
+///
+/// Takes a `node_id`, or a `symbol` answered for each of up to
+/// `max_matches` matches, overloads together (#669). At most `limit`
+/// callers are listed per match, with `total` and `truncated` (#645).
+pub(super) async fn handle_callers(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    // Default to direct callers only. `get_callers` is a transitive BFS, so a
+    // larger default silently mixed 2-/3-hop callers into the same flat list
+    // with no way to tell them apart (#171). Callers who want transitive
+    // results opt in with max_depth > 1 and read the per-item `depth`.
+    let max_depth = args
+        .get("max_depth")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(1, |v| v.clamp(1, 10) as usize);
+
+    let resolve_dispatch = args
+        .get("resolve_dispatch")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let limit = symbol_target::result_limit(&args, Some(symbol_target::RESULT_LIMIT_DEFAULT))
+        .unwrap_or(symbol_target::RESULT_LIMIT_DEFAULT);
+
+    let target =
+        symbol_target::resolve_target(cg, &args, scope_prefix, KindRanking::Definition).await?;
+    let (output, touched_files) = match target {
+        Target::NodeId(node_id) => {
+            let _target = require_existing_node(cg, &node_id).await?;
+            let items = caller_items(cg, &[node_id], max_depth, resolve_dispatch).await?;
+            single_node_list("callers", items, limit)
+        }
+        Target::Symbol(matches) => {
+            let mut bodies = Vec::with_capacity(matches.answered.len());
+            let mut files = Vec::new();
+            for group in &matches.answered {
+                let items = caller_items(cg, &group.ids(), max_depth, resolve_dispatch).await?;
+                let body = symbol_target::capped_list("callers", items, limit);
+                push_item_files(body.get("callers"), &mut files);
+                bodies.push(body);
+            }
+            let files = unique_file_paths(files.iter().map(String::as_str));
+            (matches.to_json(bodies), files)
+        }
+    };
+
+    let output = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Today's single-node list output: the bare array when it fits `limit`,
+/// otherwise `{count, total, truncated, <key>: [...]}` (#669).
+fn single_node_list(key: &str, items: Vec<Value>, limit: usize) -> (Value, Vec<String>) {
+    let output = if items.len() > limit {
+        Value::Object(symbol_target::capped_list(key, items, limit))
+    } else {
+        Value::Array(items)
+    };
+    let mut files = Vec::new();
+    push_item_files(output.get(key).or(Some(&output)), &mut files);
+    (output, unique_file_paths(files.iter().map(String::as_str)))
+}
+
+/// Appends the `file` of every item in `items` to `files`.
+fn push_item_files(items: Option<&Value>, files: &mut Vec<String>) {
+    let items = items
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    files.extend(
+        items
+            .iter()
+            .filter_map(|item| item.get("file").and_then(Value::as_str))
+            .map(str::to_string),
+    );
+}
+
+/// Callers of every node in `node_ids` (one node, or a group of overloads),
+/// merged so a caller of several overloads is listed once with all its call
+/// lines and its smallest depth.
+async fn caller_items(
+    cg: &TokenSave,
+    node_ids: &[String],
+    max_depth: usize,
+    resolve_dispatch: bool,
+) -> Result<Vec<Value>> {
+    let mut items: Vec<Value> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for node_id in node_ids {
+        for item in caller_items_for(cg, node_id, max_depth, resolve_dispatch).await? {
+            let id = item["node_id"].as_str().unwrap_or_default().to_string();
+            let Some(&at) = index.get(&id) else {
+                index.insert(id, items.len());
+                items.push(item);
+                continue;
+            };
+            let existing = &mut items[at];
+            let mut lines: Vec<u64> = existing["lines"]
+                .as_array()
+                .into_iter()
+                .chain(item["lines"].as_array())
+                .flatten()
+                .filter_map(Value::as_u64)
+                .collect();
+            lines.sort_unstable();
+            lines.dedup();
+            existing["lines"] = json!(lines);
+            if item["depth"].as_u64() < existing["depth"].as_u64() {
+                existing["depth"] = item["depth"].clone();
+            }
+        }
+    }
+    Ok(items)
+}
+
+/// Callers of one node, as `tokensave_callers` lists them.
+async fn caller_items_for(
+    cg: &TokenSave,
+    node_id: &str,
+    max_depth: usize,
+    resolve_dispatch: bool,
+) -> Result<Vec<Value>> {
+    let results = if resolve_dispatch && cg.has_trait_dispatch_callers(node_id) {
+        cg.get_callers_with_dispatch_depth(node_id, max_depth)
+            .await?
+    } else {
+        cg.get_callers_with_depth(node_id, max_depth)
+            .await?
+            .into_iter()
+            .map(|(node, edge, depth)| (node, edge, depth, None))
+            .collect()
+    };
+
+    // The traversal keeps one edge per caller, but the graph stores one edge
+    // per call site. Fetch every edge into the targets the callers were
+    // reached through, so each caller can list all of its call lines (#672).
+    let reached_targets: Vec<String> = results
+        .iter()
+        .map(|(_, edge, _, _)| edge.target.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let mut call_lines: HashMap<(String, String, EdgeKind), Vec<u32>> = HashMap::new();
+    if !reached_targets.is_empty() {
+        for e in cg.get_incoming_edges_bulk(&reached_targets, &[]).await? {
+            if let Some(line) = e.line {
+                call_lines
+                    .entry((e.source, e.target, e.kind))
+                    .or_default()
+                    .push(line);
+            }
+        }
+    }
+
+    Ok(results
+        .iter()
+        .map(|(node, edge, depth, dispatch_from)| {
+            // The call-site line (where the caller invokes the target),
+            // taken from the edge. Older edges predating call-site tracking
+            // have no line; fall back to the caller's declaration line.
+            let line = super::display_line(edge.line.unwrap_or(node.start_line));
+            let mut lines: Vec<u32> = call_lines
+                .get(&(edge.source.clone(), edge.target.clone(), edge.kind))
+                .map(|ls| ls.iter().map(|&l| super::display_line(l)).collect())
+                .unwrap_or_default();
+            lines.push(line);
+            lines.sort_unstable();
+            lines.dedup();
+            json!({
+                "node_id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": line,
+                // Every line where this caller invokes the target, ascending.
+                // `line` is always among them (#672).
+                "lines": lines,
+                // The caller's own declaration line, kept so both are available.
+                "def_line": super::display_line(node.start_line),
+                // Last line of the caller's own span (#674), so
+                // `def_line..=end_line` locates it without fetching a body.
+                "end_line": super::display_line(node.end_line),
+                // BFS hop count: 1 = direct caller, 2+ = transitive.
+                "depth": depth,
+                "edge_kind": edge.kind.as_str(),
+                "dispatch_via_trait": dispatch_from.is_some(),
+                "dispatch_from": dispatch_from,
+            })
+        })
+        .collect())
+}
+
+/// Handles `tokensave_callees` tool calls.
+///
+/// Beyond the direct `Calls` edges, this handler also surfaces *trait
+/// dispatch targets*: when a callee is a method whose enclosing scope is a
+/// trait, the concrete impl methods reachable through that trait are added
+/// to the result list and tagged with `dispatch_via_trait: true`. The
+/// original trait-method entry is preserved so callers can still see what
+/// they statically called.
+///
+/// Dispatch resolution skipped when `resolve_dispatch=false` is passed.
+///
+/// Takes a `node_id` or a `symbol`, and caps each match at `limit`, as
+/// `tokensave_callers` does (#669).
+pub(super) async fn handle_callees(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let max_depth = args
+        .get("max_depth")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(3, |v| v.min(10) as usize);
+
+    let resolve_dispatch = args
+        .get("resolve_dispatch")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let limit = symbol_target::result_limit(&args, Some(symbol_target::RESULT_LIMIT_DEFAULT))
+        .unwrap_or(symbol_target::RESULT_LIMIT_DEFAULT);
+
+    let target =
+        symbol_target::resolve_target(cg, &args, scope_prefix, KindRanking::Definition).await?;
+    let (output, touched_files) = match target {
+        Target::NodeId(node_id) => {
+            let _target = require_existing_node(cg, &node_id).await?;
+            let items = callee_items(cg, &[node_id], max_depth, resolve_dispatch).await?;
+            single_node_list("callees", items, limit)
+        }
+        Target::Symbol(matches) => {
+            let mut bodies = Vec::with_capacity(matches.answered.len());
+            let mut files = Vec::new();
+            for group in &matches.answered {
+                let items = callee_items(cg, &group.ids(), max_depth, resolve_dispatch).await?;
+                let body = symbol_target::capped_list("callees", items, limit);
+                push_item_files(body.get("callees"), &mut files);
+                bodies.push(body);
+            }
+            let files = unique_file_paths(files.iter().map(String::as_str));
+            (matches.to_json(bodies), files)
+        }
+    };
+
+    let output = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Callees of every node in `node_ids` (one node, or a group of overloads),
+/// each callee listed once.
+async fn callee_items(
+    cg: &TokenSave,
+    node_ids: &[String],
+    max_depth: usize,
+    resolve_dispatch: bool,
+) -> Result<Vec<Value>> {
+    let mut items: Vec<Value> = Vec::new();
+    let mut listed: HashSet<String> = HashSet::new();
+    for node_id in node_ids {
+        for item in callee_items_for(cg, node_id, max_depth, resolve_dispatch).await? {
+            let id = item["node_id"].as_str().unwrap_or_default().to_string();
+            if listed.insert(id) {
+                items.push(item);
+            }
+        }
+    }
+    Ok(items)
+}
+
+/// Callees of one node, as `tokensave_callees` lists them.
+async fn callee_items_for(
+    cg: &TokenSave,
+    node_id: &str,
+    max_depth: usize,
+    resolve_dispatch: bool,
+) -> Result<Vec<Value>> {
+    let results = cg.get_callees(node_id, max_depth).await?;
+    let mut seen: HashSet<String> = results.iter().map(|(n, _)| n.id.clone()).collect();
+
+    let mut items: Vec<Value> = results
+        .iter()
+        .map(|(node, edge)| {
+            json!({
+                "node_id": node.id,
+                "name": node.name,
+                "kind": node.kind.as_str(),
+                "file": node.file_path,
+                "line": super::display_line(node.start_line),
+                "end_line": super::display_line(node.end_line),
+                "edge_kind": edge.kind.as_str(),
+                "dispatch_via_trait": false,
+            })
+        })
+        .collect();
+
+    if resolve_dispatch {
+        for (callee, _) in &results {
+            let impls = cg.get_trait_dispatch_targets(callee).await?;
+            for impl_method in impls {
+                if !seen.insert(impl_method.id.clone()) {
+                    continue;
+                }
+                items.push(json!({
+                    "node_id": impl_method.id,
+                    "name": impl_method.name,
+                    "kind": impl_method.kind.as_str(),
+                    "file": impl_method.file_path,
+                    "line": super::display_line(impl_method.start_line),
+                    "end_line": super::display_line(impl_method.end_line),
+                    "edge_kind": "calls",
+                    "dispatch_via_trait": true,
+                    "dispatch_from": callee.id.clone(),
+                }));
+            }
+        }
+    }
+    Ok(items)
+}
+
+/// Handles `tokensave_find_exact_symbol` tool calls. Bare-name lookup against
+/// `idx_nodes_name` — no BM25 scoring, no fuzzy match, no qualified-name
+/// suffix walk. Returns every node whose `name` column equals the query
+/// exactly. Useful when you already know the symbol and want the apples-to-
+/// apples cost of an index hit instead of `tokensave_search`'s ranked query.
+pub(super) async fn handle_find_exact_symbol(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: name".to_string(),
+        })?;
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(20, |v| v.min(200) as usize);
+
+    let mut nodes = cg.get_nodes_by_name(name).await?;
+    nodes = filter_by_scope(nodes, scope_prefix, |n| &n.file_path);
+    if nodes.len() > limit {
+        nodes.truncate(limit);
+    }
+
+    let touched_files = unique_file_paths(nodes.iter().map(|n| n.file_path.as_str()));
+
+    let items: Vec<Value> = nodes
+        .iter()
+        .map(|n| {
+            json!({
+                "id": n.id,
+                "name": n.name,
+                "qualified_name": n.qualified_name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "line": super::display_line(n.start_line),
+                "signature": n.signature.as_deref().map(crate::context::compact_signature),
+            })
+        })
+        .collect();
+
+    let body = json!({
+        "name": name,
+        "count": items.len(),
+        "matches": items,
+    });
+    let formatted = serde_json::to_string_pretty(&body).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_call_chain` tool calls. Finds the shortest directed
+/// call path from `from_id` to `to_id` along outgoing `Calls` edges.
+pub(super) async fn handle_call_chain(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let from_id = args
+        .get("from_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: from_id".to_string(),
+        })?;
+    let to_id =
+        args.get("to_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: to_id".to_string(),
+            })?;
+    let max_depth = args
+        .get("max_depth")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(8, |v| v.clamp(1, 20) as usize);
+
+    let path = cg.get_call_chain(from_id, to_id, max_depth).await?;
+    let (touched_files, body) = if let Some(steps) = path {
+        let files = unique_file_paths(steps.iter().map(|(n, _)| n.file_path.as_str()));
+        let items: Vec<Value> = steps
+            .iter()
+            .map(|(n, edge)| {
+                json!({
+                    "id": n.id,
+                    "name": n.name,
+                    "kind": n.kind.as_str(),
+                    "file": n.file_path,
+                    "line": super::display_line(n.start_line),
+                    "edge_kind": edge.as_ref().map(|e| e.kind.as_str()),
+                })
+            })
+            .collect();
+        (
+            files,
+            json!({
+                "found": true,
+                "length": items.len(),
+                "steps": items,
+            }),
+        )
+    } else {
+        (
+            Vec::new(),
+            json!({
+                "found": false,
+                "length": 0,
+                "steps": [],
+                "message": format!("no directed call chain from {from_id} to {to_id} within {max_depth} hops"),
+            }),
+        )
+    };
+
+    let formatted = serde_json::to_string_pretty(&body).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_file_dependents` tool calls.
+pub(super) async fn handle_file_dependents(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let file = file_arg(&args).ok_or_else(|| TokenSaveError::Config {
+        message: "missing required parameter: file (alias: path)".to_string(),
+    })?;
+
+    let dependents = cg.get_file_dependents(file).await?;
+    let touched_files = dependents.clone();
+    let body = json!({
+        "file": file,
+        "count": dependents.len(),
+        "dependents": dependents,
+    });
+    let formatted = serde_json::to_string_pretty(&body).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_impact` tool calls.
+///
+/// Takes a `node_id` or a `symbol` (#669). At most `limit` nodes are listed
+/// per match; `node_count` stays the full count, and `count`, `total` and
+/// `truncated` report the cut (#645).
+pub(super) async fn handle_impact(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let max_depth = args
+        .get("max_depth")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(3, |v| v.min(10) as usize);
+    let limit = symbol_target::result_limit(&args, Some(symbol_target::RESULT_LIMIT_DEFAULT))
+        .unwrap_or(symbol_target::RESULT_LIMIT_DEFAULT);
+
+    let target =
+        symbol_target::resolve_target(cg, &args, scope_prefix, KindRanking::Definition).await?;
+    let mut files = Vec::new();
+    let output = match target {
+        Target::NodeId(node_id) => {
+            let body = impact_body(cg, &[node_id], max_depth, limit).await?;
+            push_item_files(body.get("nodes"), &mut files);
+            Value::Object(body)
+        }
+        Target::Symbol(matches) => {
+            let mut bodies = Vec::with_capacity(matches.answered.len());
+            for group in &matches.answered {
+                let body = impact_body(cg, &group.ids(), max_depth, limit).await?;
+                push_item_files(body.get("nodes"), &mut files);
+                bodies.push(body);
+            }
+            matches.to_json(bodies)
+        }
+    };
+    let touched_files = unique_file_paths(files.iter().map(String::as_str));
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// The impact radius of every node in `node_ids` (one node, or a group of
+/// overloads), with nodes and edges merged across them.
+async fn impact_body(
+    cg: &TokenSave,
+    node_ids: &[String],
+    max_depth: usize,
+    limit: usize,
+) -> Result<serde_json::Map<String, Value>> {
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut node_seen: HashSet<String> = HashSet::new();
+    // Overloads can share dependents, so their edges are counted once each;
+    // a single node's count is the traversal's, as before.
+    let mut edge_keys: HashSet<(String, String, EdgeKind, Option<u32>)> = HashSet::new();
+    let mut edge_count = 0usize;
+    for node_id in node_ids {
+        let subgraph = cg.get_impact_radius(node_id, max_depth).await?;
+        for n in subgraph.nodes {
+            if node_seen.insert(n.id.clone()) {
+                nodes.push(n);
+            }
+        }
+        for e in subgraph.edges {
+            if node_ids.len() == 1 || edge_keys.insert((e.source, e.target, e.kind, e.line)) {
+                edge_count += 1;
+            }
+        }
+    }
+
+    let items: Vec<Value> = nodes
+        .iter()
+        .map(|n| {
+            json!({
+                "id": n.id,
+                "name": n.name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "line": super::display_line(n.start_line),
+                "end_line": super::display_line(n.end_line),
+            })
+        })
+        .collect();
+
+    let mut body = serde_json::Map::new();
+    body.insert("node_count".to_string(), json!(nodes.len()));
+    body.insert("edge_count".to_string(), json!(edge_count));
+    body.extend(symbol_target::capped_list("nodes", items, limit));
+    Ok(body)
+}
+
+/// Handles `tokensave_node` tool calls.
+pub(super) async fn handle_node(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let node_id = require_node_id(&args)?;
+
+    let node = cg.get_node(node_id).await?;
+
+    match node {
+        Some(n) => {
+            let touched_files = vec![n.file_path.clone()];
+            let file_size_bytes = cg.get_file_size_bytes(&n.file_path).await;
+            // For type-kind nodes, also surface the `#[derive(...)]` macros
+            // attached. Costs one extra edge query per node lookup; skipped
+            // for non-type kinds where derives never apply.
+            let derives: Vec<Value> = if matches!(
+                n.kind,
+                NodeKind::Struct
+                    | NodeKind::Enum
+                    | NodeKind::Union
+                    | NodeKind::CaseClass
+                    | NodeKind::DataClass
+                    | NodeKind::Record
+                    | NodeKind::PascalRecord
+            ) {
+                cg.get_derives_for_node(&n.id)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|name| {
+                        let look = crate::derive_table::enrich(&name);
+                        json!({
+                            "derive": look.derive_name,
+                            "trait": look.known.as_ref().map(|k| k.trait_path),
+                            "methods": look.known.as_ref().map(|k| k.methods.to_vec()),
+                            "well_known": look.known.is_some(),
+                        })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let output = json!({
+                "id": n.id,
+                "name": n.name,
+                "kind": n.kind.as_str(),
+                "qualified_name": n.qualified_name,
+                "file": n.file_path,
+                "start_line": super::display_line(n.start_line),
+                "end_line": super::display_line(n.end_line),
+                "signature": n.signature.as_deref().map(crate::context::compact_signature),
+                "docstring": n.docstring,
+                "visibility": n.visibility.as_str(),
+                "is_async": n.is_async,
+                "branches": n.branches,
+                "loops": n.loops,
+                "returns": n.returns,
+                "max_nesting": n.max_nesting,
+                "unsafe_blocks": n.unsafe_blocks,
+                "unchecked_calls": n.unchecked_calls,
+                "assertions": n.assertions,
+                "cyclomatic_complexity": n.branches + 1,
+                "cognitive_complexity": n.cognitive_complexity,
+                "halstead_volume": round2_health(halstead_vol_for(&n)),
+                "halstead_difficulty": round2_health(halstead_diff_for(&n)),
+                "halstead_effort": round2_health(
+                    crate::extraction::complexity::halstead_effort(
+                        halstead_vol_for(&n),
+                        halstead_diff_for(&n),
+                    )
+                ),
+                "maintainability_index": round2_health(
+                    crate::extraction::complexity::maintainability_index(
+                        halstead_vol_for(&n),
+                        n.branches + 1,
+                        n.end_line.saturating_sub(n.start_line) + 1,
+                    )
+                ),
+                "cost_to_expand": cost_to_expand(&n, file_size_bytes),
+                "derives": derives,
+            });
+            let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+            Ok(ToolResult {
+                value: json!({
+                    "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+                }),
+                touched_files,
+            })
+        }
+        None => Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": format!("Node not found: {}", node_id) }]
+            }),
+            touched_files: vec![],
+        }),
+    }
+}
+
+/// Handles `tokensave_similar` tool calls.
+pub(super) async fn handle_similar(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    debug_assert!(
+        args.is_object(),
+        "handle_similar expects an object argument"
+    );
+    let symbol =
+        args.get("symbol")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TokenSaveError::Config {
+                message: "missing required parameter: symbol".to_string(),
+            })?;
+
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(10, |v| v.min(100) as usize);
+
+    // Use FTS search first
+    let mut results = cg.search(symbol, limit).await?;
+
+    // If FTS didn't return enough, supplement with substring matching
+    if results.len() < limit {
+        // The substring match runs in SQL rather than over every node (#410).
+        // `LIKE '%x%'` cannot use an index, but it keeps the rows that miss out
+        // of the process instead of materialising the table to discard them.
+        let lower_symbol = symbol.to_ascii_lowercase();
+        let candidates = cg
+            .db()
+            .get_nodes_filtered(&crate::db::NodeFilter::new().name_contains(&lower_symbol))
+            .await?;
+        let existing_ids: HashSet<String> = results.iter().map(|r| r.node.id.clone()).collect();
+
+        let mut substring_matches: Vec<crate::types::SearchResult> = candidates
+            .into_iter()
+            .filter(|n| {
+                !existing_ids.contains(&n.id)
+                    && (n.name.to_ascii_lowercase().contains(&lower_symbol)
+                        || n.qualified_name
+                            .to_ascii_lowercase()
+                            .contains(&lower_symbol))
+            })
+            .map(|n| crate::types::SearchResult {
+                node: n,
+                score: 0.5,
+            })
+            .collect();
+
+        substring_matches.truncate(limit.saturating_sub(results.len()));
+        results.extend(substring_matches);
+    }
+
+    let touched_files = unique_file_paths(results.iter().map(|r| r.node.file_path.as_str()));
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.node.id,
+                "name": r.node.name,
+                "kind": r.node.kind.as_str(),
+                "file": r.node.file_path,
+                "line": super::display_line(r.node.start_line),
+                "signature": r.node.signature.as_deref().map(crate::context::compact_signature),
+                "score": r.score,
+            })
+        })
+        .collect();
+
+    let output = serde_json::to_string_pretty(&items).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_callers_for` tool calls — bulk caller lookup over many IDs.
+pub(super) async fn handle_callers_for(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let node_ids: Vec<String> = args
+        .get("node_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if node_ids.is_empty() {
+        return Err(TokenSaveError::Config {
+            message: "callers_for requires non-empty node_ids".to_string(),
+        });
+    }
+
+    // Default to "calls" but allow any kind (or empty string for all kinds).
+    let kind_arg = args.get("kind").and_then(|v| v.as_str()).unwrap_or("calls");
+    let kinds: Vec<EdgeKind> = if kind_arg.is_empty() {
+        Vec::new()
+    } else {
+        match EdgeKind::from_str(kind_arg) {
+            Some(k) => vec![k],
+            None => {
+                return Err(TokenSaveError::Config {
+                    message: format!("unknown edge kind: {kind_arg}"),
+                });
+            }
+        }
+    };
+
+    let max_per_item = args
+        .get("max_per_item")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(1000usize, |v| v.min(10_000) as usize);
+
+    let edges = cg.get_incoming_edges_bulk(&node_ids, &kinds).await?;
+
+    // Group source IDs by target. Cap each list at max_per_item.
+    let mut by_target: HashMap<String, Vec<String>> = HashMap::new();
+    let mut truncated = false;
+    for edge in edges {
+        let entry = by_target.entry(edge.target).or_default();
+        if entry.len() < max_per_item {
+            entry.push(edge.source);
+        } else {
+            truncated = true;
+        }
+    }
+
+    // Ensure every requested ID appears in the response, even if no callers.
+    let result_map: HashMap<&String, Vec<String>> = node_ids
+        .iter()
+        .map(|id| (id, by_target.remove(id).unwrap_or_default()))
+        .collect();
+
+    let output = json!({
+        "callers": result_map,
+        "truncated": truncated,
+        "max_per_item": max_per_item,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Handles `tokensave_by_qualified_name` — cross-run node lookup by name.
+pub(super) async fn handle_by_qualified_name(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let qname = args
+        .get("qualified_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: qualified_name".to_string(),
+        })?;
+
+    let nodes = cg.get_nodes_by_qualified_name(qname).await?;
+    let touched_files = unique_file_paths(nodes.iter().map(|n| n.file_path.as_str()));
+
+    let items: Vec<Value> = nodes
+        .iter()
+        .map(|n| {
+            json!({
+                "node_id": n.id,
+                "name": n.name,
+                "qualified_name": n.qualified_name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "start_line": super::display_line(n.start_line),
+                "attrs_start_line": super::display_line(n.attrs_start_line),
+                "end_line": super::display_line(n.end_line),
+            })
+        })
+        .collect();
+
+    let output = serde_json::to_string_pretty(&items).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_signature` — signature-only lookup (no body) by
+/// qualified name or node ID. Returns the public-API surface of a symbol so
+/// callers can avoid reading the source file just to inspect the signature.
+pub(super) async fn handle_signature(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let qname = args.get("qualified_name").and_then(|v| v.as_str());
+    let node_id = args
+        .get("node_id")
+        .or_else(|| args.get("id"))
+        .and_then(|v| v.as_str());
+
+    if qname.is_none() && node_id.is_none() {
+        return Err(TokenSaveError::Config {
+            message: "missing required parameter: qualified_name or node_id".to_string(),
+        });
+    }
+
+    let nodes = if let Some(id) = node_id {
+        match cg.get_node(id).await? {
+            Some(n) => vec![n],
+            None => vec![],
+        }
+    } else if let Some(q) = qname {
+        cg.get_nodes_by_qualified_name(q).await?
+    } else {
+        vec![]
+    };
+
+    let touched_files = unique_file_paths(nodes.iter().map(|n| n.file_path.as_str()));
+
+    let mut items: Vec<Value> = Vec::with_capacity(nodes.len());
+    for n in &nodes {
+        let file_size_bytes = cg.get_file_size_bytes(&n.file_path).await;
+        items.push(json!({
+            "node_id": n.id,
+            "name": n.name,
+            "qualified_name": n.qualified_name,
+            "kind": n.kind.as_str(),
+            "visibility": n.visibility.as_str(),
+            "is_async": n.is_async,
+            "signature": n.signature.as_deref().map(crate::context::compact_signature),
+            "docstring": n.docstring,
+            "file": n.file_path,
+            "start_line": super::display_line(n.start_line),
+            "attrs_start_line": super::display_line(n.attrs_start_line),
+            "end_line": super::display_line(n.end_line),
+            "cost_to_expand": cost_to_expand(n, file_size_bytes),
+        }));
+    }
+
+    let output = serde_json::to_string_pretty(&items).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_impls` — index of `impl Trait for Type` blocks.
+///
+/// Both `trait` and `type` arguments are optional. With neither, every impl
+/// in the graph is returned (capped by `limit`). Surfaces trait-dispatch
+/// information that is otherwise hidden behind raw `Implements` edges.
+pub(super) async fn handle_impls(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let trait_filter = args.get("trait").and_then(|v| v.as_str());
+    let type_filter = args.get("type").and_then(|v| v.as_str());
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(100, |v| v.min(1000) as usize);
+
+    let mut results = cg.get_impls(trait_filter, type_filter).await?;
+    let truncated = results.len() > limit;
+    results.truncate(limit);
+
+    let touched_files = unique_file_paths(
+        results
+            .iter()
+            .map(|(impl_node, _)| impl_node.file_path.as_str()),
+    );
+
+    let items: Vec<Value> = results
+        .iter()
+        .map(|(impl_node, trait_node)| {
+            json!({
+                "impl_id": impl_node.id,
+                "type": impl_node.name,
+                "qualified_name": impl_node.qualified_name,
+                "trait": trait_node.as_ref().map(|t| t.name.clone()),
+                "trait_qualified_name": trait_node.as_ref().map(|t| t.qualified_name.clone()),
+                "trait_id": trait_node.as_ref().map(|t| t.id.clone()),
+                "file": impl_node.file_path,
+                "start_line": super::display_line(impl_node.start_line),
+                "end_line": super::display_line(impl_node.end_line),
+                "signature": impl_node.signature,
+            })
+        })
+        .collect();
+
+    let output = json!({
+        "count": items.len(),
+        "truncated": truncated,
+        "impls": items,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_derives` — lists `#[derive(...)]` macros on a type
+/// and the trait + method names each one synthesizes (per the static
+/// `derive_table`). Accepts either `node_id` or `qualified_name`.
+pub(super) async fn handle_derives(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let qname = args.get("qualified_name").and_then(|v| v.as_str());
+    let node_id = args
+        .get("node_id")
+        .or_else(|| args.get("id"))
+        .and_then(|v| v.as_str());
+    if qname.is_none() && node_id.is_none() {
+        return Err(TokenSaveError::Config {
+            message: "missing required parameter: qualified_name or node_id".to_string(),
+        });
+    }
+
+    let nodes = if let Some(id) = node_id {
+        match cg.get_node(id).await? {
+            Some(n) => vec![n],
+            None => vec![],
+        }
+    } else if let Some(q) = qname {
+        cg.get_nodes_by_qualified_name(q).await?
+    } else {
+        vec![]
+    };
+
+    let touched_files = unique_file_paths(nodes.iter().map(|n| n.file_path.as_str()));
+
+    let mut items: Vec<Value> = Vec::with_capacity(nodes.len());
+    for n in &nodes {
+        let derive_names = cg.get_derives_for_node(&n.id).await?;
+        let derives: Vec<Value> = derive_names
+            .iter()
+            .map(|name| {
+                let look = crate::derive_table::enrich(name);
+                json!({
+                    "derive": look.derive_name,
+                    "trait": look.known.as_ref().map(|k| k.trait_path),
+                    "methods": look.known.as_ref().map(|k| k.methods.to_vec()),
+                    "source": look.known.as_ref().map(|k| k.source),
+                    "well_known": look.known.is_some(),
+                })
+            })
+            .collect();
+        items.push(json!({
+            "node_id": n.id,
+            "name": n.name,
+            "kind": n.kind.as_str(),
+            "qualified_name": n.qualified_name,
+            "file": n.file_path,
+            "start_line": super::display_line(n.start_line),
+            "derives": derives,
+        }));
+    }
+
+    let output = serde_json::to_string_pretty(&items).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_annotations` tool calls.
+///
+/// Two modes:
+/// - **Histogram** (no `name`, no `target_kind`): top annotation names by
+///   usage count across the project (or under `file` prefix).
+/// - **Sites**: rows of `{annotation, target}` joined via the `annotates`
+///   edge, filtered by `name` / `file` / `target_kind`.
+pub(super) async fn handle_annotations(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let name = args.get("name").and_then(|v| v.as_str());
+    let file = file_arg(&args);
+    let target_kind = args.get("target_kind").and_then(|v| v.as_str());
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(50usize, |n| n.min(500) as usize);
+
+    // Histogram mode: no name, no target_kind filter — return aggregate counts.
+    let want_histogram = name.is_none() && target_kind.is_none();
+
+    if want_histogram {
+        let hist = cg.get_annotation_histogram(file).await?;
+        let total: u64 = hist.iter().map(|(_, n)| *n).sum();
+        let rows: Vec<Value> = hist
+            .into_iter()
+            .take(limit)
+            .map(|(n, c)| json!({ "annotation": n, "count": c }))
+            .collect();
+        let output = json!({
+            "mode": "histogram",
+            "total_usages": total,
+            "scope": file.unwrap_or(""),
+            "annotations": rows,
+        });
+        let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+        return Ok(ToolResult {
+            value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+            touched_files: Vec::new(),
+        });
+    }
+
+    let sites = cg
+        .get_annotation_sites(name, file, target_kind, limit)
+        .await?;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut touched_files: Vec<String> = Vec::new();
+    for v in &sites {
+        if let Some(fp) = v
+            .get("target")
+            .and_then(|t| t.get("file"))
+            .and_then(|f| f.as_str())
+        {
+            if seen.insert(fp.to_string()) {
+                touched_files.push(fp.to_string());
+            }
+        }
+    }
+    let output = json!({
+        "mode": "sites",
+        "filter": {
+            "name": name.unwrap_or(""),
+            "file": file.unwrap_or(""),
+            "target_kind": target_kind.unwrap_or(""),
+        },
+        "count": sites.len(),
+        "sites": sites,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+        touched_files,
+    })
+}
+
+/// Approximate token cost of expanding a node's body and its full file.
+///
+/// `body` uses ~20 tokens/line (≈80 chars/line at 4 chars/token), tuned for
+/// Rust source — denser languages like Haskell or Python will be over-estimated
+/// by ~2-3x and ultra-terse declarations (one-line `use`, single-line `pub fn`)
+/// resolve to the single-line floor of 20 tokens. Good enough to decide whether
+/// to set `include_code=true`; not a reliable absolute count.
+/// `full_file` uses `size_bytes / 4` from the indexed `files.size`.
+pub(super) fn cost_to_expand(node: &crate::types::Node, file_size_bytes: u64) -> Value {
+    let line_count = node
+        .end_line
+        .saturating_sub(node.start_line)
+        .saturating_add(1);
+    let body_tokens = u64::from(line_count) * 20;
+    let full_file_tokens = file_size_bytes / 4;
+    json!({
+        "body": body_tokens,
+        "full_file": full_file_tokens,
+    })
+}
+
+/// Handles `tokensave_implementations` — trait / method implementor lookup.
+pub(super) async fn handle_implementations(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let trait_name = args.get("trait").and_then(|v| v.as_str());
+    let method_name = args.get("method").and_then(|v| v.as_str());
+
+    if trait_name.is_none() && method_name.is_none() {
+        return Err(TokenSaveError::Config {
+            message: "tokensave_implementations requires either 'trait' or 'method'".to_string(),
+        });
+    }
+    if trait_name.is_some() && method_name.is_some() {
+        return Err(TokenSaveError::Config {
+            message: "tokensave_implementations: 'trait' and 'method' are mutually exclusive"
+                .to_string(),
+        });
+    }
+
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(20, |v| v.clamp(1, 200) as usize);
+
+    // Bodies are opt-in (#674): by default every result is a location —
+    // file, `line..=end_line`, signature — and the caller fetches only the
+    // bodies it needs with tokensave_body / tokensave_read.
+    let bodies = args
+        .get("bodies")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let project_root = cg.project_root().to_path_buf();
+    let mut entries: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+
+    if let Some(name) = trait_name {
+        let candidates = cg
+            .db()
+            .search_nodes_by_exact_name(&[name.to_string()], 50)
+            .await?;
+        let trait_nodes: Vec<&crate::types::Node> = candidates
+            .iter()
+            .filter(|n| {
+                matches!(
+                    n.kind,
+                    NodeKind::Trait | NodeKind::Interface | NodeKind::InterfaceType
+                )
+            })
+            .collect();
+        if trait_nodes.is_empty() {
+            return Ok(ToolResult {
+                value: json!({
+                    "content": [{ "type": "text", "text": format!("No trait or interface named '{name}' found.") }]
+                }),
+                touched_files: vec![],
+            });
+        }
+
+        for trait_node in trait_nodes {
+            let implementors = cg
+                .db()
+                .get_incoming_edges(&trait_node.id, &[EdgeKind::Implements])
+                .await?;
+            for edge in implementors {
+                let Some(impl_node) = cg.db().get_node_by_id(&edge.source).await? else {
+                    continue;
+                };
+                if scope_prefix.is_some_and(|p| !impl_node.file_path.starts_with(p)) {
+                    continue;
+                }
+                let methods = collect_methods(cg, &impl_node, &project_root, bodies).await?;
+                if !touched.contains(&impl_node.file_path) {
+                    touched.push(impl_node.file_path.clone());
+                }
+                entries.push(json!({
+                    "type": impl_node.name,
+                    "qualified_name": impl_node.qualified_name,
+                    "kind": impl_node.kind.as_str(),
+                    "file": impl_node.file_path,
+                    "line": super::display_line(impl_node.start_line),
+                    "end_line": super::display_line(impl_node.end_line),
+                    "trait": trait_node.qualified_name,
+                    "methods": methods,
+                }));
+                if entries.len() >= limit {
+                    break;
+                }
+            }
+            if entries.len() >= limit {
+                break;
+            }
+        }
+    } else if let Some(name) = method_name {
+        let nodes = cg
+            .db()
+            .search_nodes_by_exact_name(&[name.to_string()], limit * 4)
+            .await?;
+        let method_nodes: Vec<&crate::types::Node> = nodes
+            .iter()
+            .filter(|n| {
+                matches!(
+                    n.kind,
+                    NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+                )
+            })
+            .filter(|n| scope_prefix.is_none_or(|p| n.file_path.starts_with(p)))
+            .take(limit)
+            .collect();
+        if method_nodes.is_empty() {
+            return Ok(ToolResult {
+                value: json!({
+                    "content": [{ "type": "text", "text": format!("No function or method named '{name}' found.") }]
+                }),
+                touched_files: vec![],
+            });
+        }
+        for n in method_nodes {
+            if !touched.contains(&n.file_path) {
+                touched.push(n.file_path.clone());
+            }
+            let mut entry = json!({
+                "name": n.name,
+                "qualified_name": n.qualified_name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "line": super::display_line(n.start_line),
+                "end_line": super::display_line(n.end_line),
+                "signature": n.signature.as_deref().map(crate::context::compact_signature),
+            });
+            if bodies {
+                entry["body"] = json!(read_body(&project_root, n));
+            }
+            entries.push(entry);
+        }
+    }
+
+    let payload = json!({
+        "match_count": entries.len(),
+        "implementations": entries,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+/// Lists the methods on an implementing type's body, each with its
+/// `line..=end_line` span and signature; `bodies` adds the source text.
+async fn collect_methods(
+    cg: &TokenSave,
+    impl_node: &crate::types::Node,
+    project_root: &std::path::Path,
+    bodies: bool,
+) -> Result<Vec<Value>> {
+    let children = cg.db().get_children_of(&impl_node.id).await?;
+    let mut out: Vec<Value> = Vec::new();
+    for child in children {
+        if !matches!(
+            child.kind,
+            NodeKind::Method | NodeKind::SingletonMethod | NodeKind::Function
+        ) {
+            continue;
+        }
+        let mut method = json!({
+            "name": child.name,
+            "kind": child.kind.as_str(),
+            "line": super::display_line(child.start_line),
+            "end_line": super::display_line(child.end_line),
+            "signature": child.signature,
+        });
+        if bodies {
+            method["body"] = json!(read_body(project_root, &child));
+        }
+        out.push(method);
+    }
+    Ok(out)
+}
+
+/// Source text of `node`'s span, read from disk.
+fn read_body(project_root: &std::path::Path, node: &crate::types::Node) -> String {
+    let abs_path = project_root.join(&node.file_path);
+    match crate::sync::read_source_file(&abs_path) {
+        Ok(source) => super::info::extract_lines(&source, node.start_line, node.end_line),
+        Err(_) => String::from("<file unreadable>"),
+    }
+}

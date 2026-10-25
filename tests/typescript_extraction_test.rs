@@ -481,10 +481,7 @@ export class Child extends Base implements Printable {
         .iter()
         .filter(|r| r.reference_kind == EdgeKind::Extends)
         .collect();
-    assert!(
-        !extends_refs.is_empty(),
-        "should have Extends ref for Base"
-    );
+    assert!(!extends_refs.is_empty(), "should have Extends ref for Base");
     assert!(extends_refs.iter().any(|r| r.reference_name == "Base"));
 
     // Check for Implements unresolved ref
@@ -721,4 +718,248 @@ enum Direction {
         .collect();
     assert_eq!(enums.len(), 1);
     assert_eq!(enums[0].visibility, Visibility::Private); // not exported
+}
+
+/// #141: a method call through a typed binding must emit `Type::method` so the
+/// resolver can disambiguate between classes that share a method name.
+#[test]
+fn test_receiver_typed_method_calls_ts() {
+    let source = r#"
+class Alpha { handle(): number { return 1; } }
+class Beta { handle(): number { return 2; } }
+function run(): number {
+  const a = new Alpha();
+  const b: Beta = new Beta();
+  return a.handle() + b.handle();
+}
+"#;
+    let result = TypeScriptExtractor.extract("svc.ts", source);
+    let names: Vec<&str> = result
+        .unresolved_refs
+        .iter()
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"Alpha::handle"),
+        "expected Alpha::handle, got {names:?}"
+    );
+    assert!(
+        names.contains(&"Beta::handle"),
+        "expected Beta::handle, got {names:?}"
+    );
+}
+
+// --- Regression tests for issues #205, #206, #209, #210, #211 ---
+
+fn calls_from(result: &ExtractionResult, from_name_contains: &str) -> Vec<String> {
+    let ids: Vec<&str> = result
+        .nodes
+        .iter()
+        .filter(|n| n.name.contains(from_name_contains))
+        .map(|n| n.id.as_str())
+        .collect();
+    result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Calls && ids.contains(&r.from_node_id.as_str()))
+        .map(|r| r.reference_name.clone())
+        .collect()
+}
+
+#[test]
+fn test_ts_signature_with_destructured_params_not_truncated() {
+    // #205
+    let source = r#"
+export function StatCard({ label, value, icon, color, suffix = "" }: StatCardProps) {
+    return null;
+}
+"#;
+    let result = TypeScriptExtractor.extract("card.tsx", source);
+    let f = result.nodes.iter().find(|n| n.name == "StatCard").unwrap();
+    let sig = f.signature.as_deref().unwrap();
+    assert!(sig.contains("StatCardProps"), "signature truncated: {sig}");
+    assert!(sig.contains("suffix"), "signature truncated: {sig}");
+}
+
+#[test]
+fn test_ts_calls_inside_nested_arrow_callbacks() {
+    // #209
+    let source = r#"
+function helper() {}
+
+function Host() {
+    useMemo(() => helper(), []);
+    return null;
+}
+
+const HostArrow = () => helper();
+"#;
+    let result = TypeScriptExtractor.extract("host.tsx", source);
+    let host_calls = calls_from(&result, "Host");
+    assert!(
+        host_calls.iter().any(|c| c == "helper"),
+        "Host calls: {host_calls:?}"
+    );
+    let arrow_calls = calls_from(&result, "HostArrow");
+    assert!(
+        arrow_calls.iter().any(|c| c == "helper"),
+        "HostArrow calls: {arrow_calls:?}"
+    );
+}
+
+#[test]
+fn test_tsx_jsx_render_creates_call_ref() {
+    // #210
+    let source = r#"
+function Child() { return null; }
+function Parent() { return <Child />; }
+const ParentExpr = () => <Child />;
+function Wrapper() { return <div><Child prop={1}>x</Child></div>; }
+"#;
+    let result = TypeScriptExtractor.extract("parent.tsx", source);
+    for host in ["Parent", "ParentExpr", "Wrapper"] {
+        let calls = calls_from(&result, host);
+        assert!(
+            calls.iter().any(|c| c == "Child"),
+            "{host} should reference Child, got {calls:?}"
+        );
+        // Lowercase intrinsic tags must not be referenced.
+        assert!(
+            !calls.iter().any(|c| c == "div"),
+            "{host} refs div: {calls:?}"
+        );
+    }
+}
+
+#[test]
+fn test_ts_vitest_describe_it_indexed() {
+    // #211
+    let source = r#"
+import { describe, it, expect } from "vitest";
+import { formatDate, parseDate } from "./date";
+
+describe("date utils", () => {
+    it("formats a date", () => {
+        expect(formatDate(new Date())).toBe("x");
+    });
+    it("parses a date", () => {
+        parseDate("2024-01-01");
+    });
+});
+"#;
+    let result = TypeScriptExtractor.extract("date.test.ts", source);
+    let test_nodes: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function)
+        .collect();
+    assert!(
+        test_nodes
+            .iter()
+            .any(|n| n.name.contains("describe date utils")),
+        "missing describe node: {:?}",
+        test_nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
+    assert!(test_nodes
+        .iter()
+        .any(|n| n.name.contains("it formats a date")));
+    let fmt_calls = calls_from(&result, "it formats a date");
+    assert!(fmt_calls.iter().any(|c| c == "formatDate"), "{fmt_calls:?}");
+    let parse_calls = calls_from(&result, "it parses a date");
+    assert!(
+        parse_calls.iter().any(|c| c == "parseDate"),
+        "{parse_calls:?}"
+    );
+}
+
+#[test]
+fn test_mjs_node_test_callback_indexed() {
+    // #219: .mjs files were skipped by the registry entirely, so node:test
+    // callbacks in colocated *.test.mjs files were invisible to test-coverage
+    // tooling. This exercises the extractor directly against the JS grammar
+    // path used for .mjs, mirroring the vitest describe/it case (#211).
+    let source = r#"
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { add } from '../src/add.js';
+
+test('adds two numbers', () => {
+    assert.equal(add(1, 2), 3);
+});
+"#;
+    let result = TypeScriptExtractor.extract("add.test.mjs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let test_nodes: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function)
+        .collect();
+    assert!(
+        test_nodes
+            .iter()
+            .any(|n| n.name.contains("test adds two numbers")),
+        "missing test callback node: {:?}",
+        test_nodes.iter().map(|n| &n.name).collect::<Vec<_>>()
+    );
+    let calls = calls_from(&result, "test adds two numbers");
+    assert!(calls.iter().any(|c| c == "assert.equal" || c == "equal"));
+}
+
+#[test]
+fn test_cjs_file_parses_as_javascript() {
+    // #219: .cjs is CommonJS JavaScript, not TypeScript, and must route
+    // through the same grammar as .js/.mjs.
+    let source = r#"
+const add = (a, b) => a + b;
+
+module.exports = { add };
+"#;
+    let result = TypeScriptExtractor.extract("add.cjs", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert!(result
+        .nodes
+        .iter()
+        .any(|n| n.kind == NodeKind::ArrowFunction && n.name == "add"));
+}
+
+#[test]
+fn test_ts_decorators_on_class_methods_and_params() {
+    // #206
+    let source = r#"
+@Controller("admin")
+export class AdminController {
+    @Get(":id")
+    findOne(@Param("id") id: string) {
+        return id;
+    }
+
+    @Post()
+    create(@Body() dto: CreateDto) {
+        return dto;
+    }
+}
+"#;
+    let result = TypeScriptExtractor.extract("admin.controller.ts", source);
+    let decorators: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Decorator)
+        .map(|n| n.name.clone())
+        .collect();
+    for want in ["Controller", "Get", "Post", "Param", "Body"] {
+        assert!(
+            decorators.contains(&want.to_string()),
+            "missing @{want}: {decorators:?}"
+        );
+    }
+    let annotate_edges = result
+        .edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Annotates)
+        .count();
+    assert!(
+        annotate_edges >= 5,
+        "expected >=5 Annotates edges, got {annotate_edges}"
+    );
 }

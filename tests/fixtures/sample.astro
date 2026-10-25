@@ -1,0 +1,29 @@
+---
+import Hero from './Hero.astro';
+import type { CollectionEntry } from 'astro:content';
+
+interface Props {
+  title: string;
+  description?: string;
+  entry?: CollectionEntry<'blog'>;
+}
+
+const { title, description = 'Default description' } = Astro.props;
+
+export function formatTitle(t: string): string {
+  return t.trim().toUpperCase();
+}
+
+const greeting = `Hello, ${title}!`;
+---
+
+<html lang="en">
+  <head>
+    <title>{title}</title>
+    <meta name="description" content={description} />
+  </head>
+  <body>
+    <Hero title={title} />
+    <p>{greeting}</p>
+  </body>
+</html>

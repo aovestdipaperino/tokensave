@@ -1,11 +1,12 @@
 /// Tree-sitter based Batch/CMD source code extractor.
 ///
 /// Parses Windows Batch (.bat/.cmd) source files and emits nodes and edges for the code graph.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::ComplexityMetrics;
+use crate::extraction::ts_state::ExtractionState;
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -13,57 +14,23 @@ use crate::types::{
 /// Extracts code graph nodes and edges from Batch/CMD source files using tree-sitter.
 pub struct BatchExtractor;
 
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
+/// Collects the direct children of `parent` into a `Vec` via cursor walk.
+///
+/// Tree-sitter's `parent.child(i)` is O(i) — it walks sibling links — so a
+/// `for i in 0..N { parent.child(i) }` loop is O(N²). Materializing once
+/// up front gives O(N) build + O(1) lookups for the rest of the extraction.
+fn collect_children(parent: TsNode<'_>) -> Vec<TsNode<'_>> {
+    let mut out = Vec::with_capacity(parent.child_count());
+    let mut cursor = parent.walk();
+    if cursor.goto_first_child() {
+        loop {
+            out.push(cursor.node());
+            if !cursor.goto_next_sibling() {
+                break;
+            }
         }
     }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
+    out
 }
 
 impl BatchExtractor {
@@ -79,7 +46,7 @@ impl BatchExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -91,6 +58,7 @@ impl BatchExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -105,13 +73,17 @@ impl BatchExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -119,7 +91,7 @@ impl BatchExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -139,26 +111,25 @@ impl BatchExtractor {
     /// Batch files use labels as function-like constructs. Labels are top-level
     /// siblings in the AST (not containers). We group code between consecutive
     /// labels as the body of each label's "function".
+    ///
+    /// Children are materialized into a `Vec` once via a cursor (O(N)), and
+    /// downstream helpers index into that slice instead of calling
+    /// `root.child(i)` repeatedly — tree-sitter's `child(i)` is O(i), so the
+    /// previous index loops were O(N²) on large `.bat` files. See `complexity.rs`
+    /// for the same fix on the universal hot path.
     fn visit_top_level(state: &mut ExtractionState, root: TsNode<'_>) {
-        let child_count = root.child_count();
-        let mut i: usize = 0;
+        let children = collect_children(root);
 
-        while i < child_count {
-            let child = match root.child(i as u32) {
-                Some(c) => c,
-                None => { i += 1; continue; }
-            };
-
+        for (i, child) in children.iter().enumerate() {
             match child.kind() {
                 "label" => {
-                    Self::visit_label(state, root, i);
+                    Self::visit_label(state, &children, i);
                 }
                 "variable_assignment" => {
-                    Self::visit_variable_assignment(state, child);
+                    Self::visit_variable_assignment(state, *child);
                 }
                 _ => {}
             }
-            i += 1;
         }
     }
 
@@ -166,10 +137,9 @@ impl BatchExtractor {
     ///
     /// In Batch, labels (:Name) serve as subroutine entry points.
     /// The body extends from the label to the next label or end of file.
-    fn visit_label(state: &mut ExtractionState, root: TsNode<'_>, label_index: usize) {
-        let label_node = match root.child(label_index as u32) {
-            Some(n) => n,
-            None => return,
+    fn visit_label(state: &mut ExtractionState, children: &[TsNode<'_>], label_index: usize) {
+        let Some(&label_node) = children.get(label_index) else {
+            return;
         };
 
         let label_text = state.node_text(label_node);
@@ -185,24 +155,19 @@ impl BatchExtractor {
         let start_column = label_node.start_position().column as u32;
 
         // Find the end line: scan forward to the next label or end of file.
-        let child_count = root.child_count();
         let mut end_line = label_node.end_position().row as u32;
         let mut end_column = label_node.end_position().column as u32;
-        let mut j = label_index + 1;
-        while j < child_count {
-            if let Some(sibling) = root.child(j as u32) {
-                if sibling.kind() == "label" {
-                    // End just before the next label.
-                    break;
-                }
-                end_line = sibling.end_position().row as u32;
-                end_column = sibling.end_position().column as u32;
+        for sibling in children.iter().skip(label_index + 1) {
+            if sibling.kind() == "label" {
+                // End just before the next label.
+                break;
             }
-            j += 1;
+            end_line = sibling.end_position().row as u32;
+            end_column = sibling.end_position().column as u32;
         }
 
         let signature = Some(label_text.trim().to_string());
-        let docstring = Self::extract_docstring(state, root, label_index);
+        let docstring = Self::extract_docstring(state, children, label_index);
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &kind, &name, start_line);
         let metrics = ComplexityMetrics::default();
@@ -214,6 +179,7 @@ impl BatchExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -228,7 +194,13 @@ impl BatchExtractor {
             unsafe_blocks: metrics.unsafe_blocks,
             unchecked_calls: metrics.unchecked_calls,
             assertions: metrics.assertions,
+            cognitive_complexity: metrics.cognitive_complexity,
+            distinct_operators: metrics.distinct_operators,
+            distinct_operands: metrics.distinct_operands,
+            total_operators: metrics.total_operators,
+            total_operands: metrics.total_operands,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -239,11 +211,12 @@ impl BatchExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
         // Extract call sites from siblings belonging to this label's body.
-        Self::extract_label_call_sites(state, root, label_index, &id);
+        Self::extract_label_call_sites(state, children, label_index, &id);
     }
 
     /// Extract a `set VAR=value` variable assignment as a Const node.
@@ -260,8 +233,11 @@ impl BatchExtractor {
             .unwrap_or(&text);
 
         // Handle /a, /p options
-        let after_opts = if after_set.starts_with("/a ") || after_set.starts_with("/A ") ||
-                            after_set.starts_with("/p ") || after_set.starts_with("/P ") {
+        let after_opts = if after_set.starts_with("/a ")
+            || after_set.starts_with("/A ")
+            || after_set.starts_with("/p ")
+            || after_set.starts_with("/P ")
+        {
             &after_set[3..]
         } else {
             after_set
@@ -287,6 +263,7 @@ impl BatchExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -301,7 +278,13 @@ impl BatchExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -312,6 +295,7 @@ impl BatchExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -323,10 +307,12 @@ impl BatchExtractor {
     /// Extract docstrings from `REM` or `::` comment lines preceding a label.
     ///
     /// Looks backward from the label's position in the root children list
-    /// for consecutive comment nodes.
+    /// for consecutive comment nodes. Takes a `&[TsNode]` slice (built once
+    /// by `visit_top_level`) instead of the root node — see the cursor
+    /// rationale on `visit_top_level`.
     fn extract_docstring(
         state: &ExtractionState,
-        root: TsNode<'_>,
+        children: &[TsNode<'_>],
         label_index: usize,
     ) -> Option<String> {
         let mut comments: Vec<String> = Vec::new();
@@ -334,7 +320,7 @@ impl BatchExtractor {
 
         while idx > 0 {
             idx -= 1;
-            let prev = root.child(idx as u32)?;
+            let prev = *children.get(idx)?;
             if prev.kind() == "comment" {
                 let text = state.node_text(prev);
                 let stripped = text
@@ -365,25 +351,19 @@ impl BatchExtractor {
     /// Looks for `call_stmt` nodes and extracts the callee label name.
     fn extract_label_call_sites(
         state: &mut ExtractionState,
-        root: TsNode<'_>,
+        children: &[TsNode<'_>],
         label_index: usize,
         fn_node_id: &str,
     ) {
-        let child_count = root.child_count();
-        let mut j = label_index + 1;
-
-        while j < child_count {
-            if let Some(sibling) = root.child(j as u32) {
-                if sibling.kind() == "label" {
-                    break;
-                }
-                Self::extract_call_sites_recursive(state, sibling, fn_node_id);
+        for sibling in children.iter().skip(label_index + 1) {
+            if sibling.kind() == "label" {
+                break;
             }
-            j += 1;
+            Self::extract_call_sites_recursive(state, *sibling, fn_node_id);
         }
     }
 
-    /// Recursively find call_stmt nodes and create unresolved Calls references.
+    /// Recursively find `call_stmt` nodes and create unresolved Calls references.
     fn extract_call_sites_recursive(
         state: &mut ExtractionState,
         node: TsNode<'_>,
@@ -436,17 +416,6 @@ impl BatchExtractor {
         }
         None
     }
-
-    /// Build the final ExtractionResult from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
-        }
-    }
 }
 
 impl crate::extraction::LanguageExtractor for BatchExtractor {
@@ -454,7 +423,7 @@ impl crate::extraction::LanguageExtractor for BatchExtractor {
         &["bat", "cmd"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Batch"
     }
 

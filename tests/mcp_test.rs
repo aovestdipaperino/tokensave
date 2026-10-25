@@ -1,6 +1,6 @@
+use serde_json::json;
 use tokensave::mcp::tools::*;
 use tokensave::mcp::transport::*;
-use serde_json::json;
 
 #[test]
 fn test_parse_jsonrpc_request() {
@@ -93,7 +93,51 @@ fn test_all_error_codes() {
 #[test]
 fn test_tool_definitions_count() {
     let tools = get_tool_definitions();
-    assert_eq!(tools.len(), 37);
+    // `tokensave_ast_grep_rewrite` is registered conditionally on whether
+    // the external `ast-grep` binary is on PATH — hide-when-missing so
+    // agents never receive a tool that will instantly fail.
+    let expected = if tokensave::mcp::tools::ast_grep_available() {
+        88
+    } else {
+        87
+    };
+    assert_eq!(tools.len(), expected);
+    // `tokensave_doc` (#154) must be advertised, or the handler is unreachable.
+    assert!(tools.iter().any(|t| t.name == "tokensave_doc"));
+}
+
+#[test]
+fn test_write_and_exec_tools_are_not_read_only() {
+    // Tools that mutate files or run subprocesses must advertise
+    // `readOnlyHint: false`, otherwise harnesses that auto-approve read-only
+    // tools will edit files / run `cargo test` without prompting. See #94.
+    let write_or_exec = [
+        "tokensave_str_replace",
+        "tokensave_multi_str_replace",
+        "tokensave_insert_at",
+        "tokensave_replace_symbol",
+        "tokensave_insert_at_symbol",
+        "tokensave_run_affected_tests",
+        "tokensave_ast_grep_rewrite",
+        "tokensave_delete_symbol",
+        "tokensave_replace_lines",
+    ];
+    let tools = get_tool_definitions();
+    for name in write_or_exec {
+        let Some(tool) = tools.iter().find(|t| t.name == name) else {
+            // ast_grep_rewrite is registered only when ast-grep is on PATH.
+            continue;
+        };
+        let annotations = tool
+            .annotations
+            .as_ref()
+            .unwrap_or_else(|| panic!("tool '{name}' has no annotations"));
+        assert_eq!(
+            annotations["readOnlyHint"],
+            serde_json::Value::Bool(false),
+            "write/exec tool '{name}' must have readOnlyHint: false"
+        );
+    }
 }
 
 #[test]
@@ -149,4 +193,19 @@ fn test_request_with_string_id() {
     let request: JsonRpcRequest = serde_json::from_value(msg).unwrap();
     assert_eq!(request.id, serde_json::Value::String("req-42".to_string()));
     assert_eq!(request.method, "ping");
+}
+
+#[test]
+fn test_blame_and_log_tools_registered() {
+    let tools = get_tool_definitions();
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"tokensave_blame"));
+    assert!(names.contains(&"tokensave_log"));
+}
+
+#[test]
+fn diff_tool_appears_in_definitions() {
+    let tools = get_tool_definitions();
+    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"tokensave_diff"));
 }

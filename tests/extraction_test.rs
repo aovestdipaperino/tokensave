@@ -341,8 +341,11 @@ fn test_language_registry_finds_scala_extractor() {
 #[test]
 fn test_language_registry_returns_none_for_unknown() {
     let registry = LanguageRegistry::new();
-    assert!(registry.extractor_for_file("style.css").is_none());
-    assert!(registry.extractor_for_file("README.md").is_none());
+    // `.css` used to stand here as the example of an unhandled extension; it
+    // gained an extractor in #507, so the case is now an extension nothing
+    // claims.
+    assert!(registry.extractor_for_file("archive.tar.gz").is_none());
+    assert!(registry.extractor_for_file("README.unknown").is_none());
 }
 
 #[test]
@@ -354,4 +357,80 @@ fn test_language_registry_supported_extensions() {
     assert!(exts.contains(&"java"));
     assert!(exts.contains(&"scala"));
     assert!(exts.contains(&"sc"));
+    // #219: .mjs/.cjs/.mts/.cts must be registered or the sync walker silently
+    // skips those files instead of indexing them as JavaScript/TypeScript.
+    assert!(exts.contains(&"mjs"));
+    assert!(exts.contains(&"cjs"));
+    assert!(exts.contains(&"mts"));
+    assert!(exts.contains(&"cts"));
+    #[cfg(feature = "lang-terraform")]
+    {
+        // #495: Terraform/OpenTofu configurations and variable assignments.
+        assert!(exts.contains(&"tf"));
+        assert!(exts.contains(&"tfvars"));
+        assert_eq!(
+            registry
+                .extractor_for_language("Terraform")
+                .map(|extractor| extractor.language_name()),
+            Some("Terraform")
+        );
+    }
+    // #262: Minecraft datapack functions.
+    #[cfg(feature = "lang-mcfunction")]
+    assert!(exts.contains(&"mcfunction"));
+    // #270: Godot shaders route through the GLSL extractor.
+    #[cfg(feature = "lang-glsl")]
+    {
+        assert!(exts.contains(&"gdshader"));
+        assert!(exts.contains(&"gdshaderinc"));
+    }
+}
+
+#[cfg(feature = "lang-mcfunction")]
+#[test]
+fn test_language_registry_finds_mcfunction_extractor() {
+    // #262: .mcfunction files were filtered out before extraction because
+    // the extension was unregistered.
+    let registry = LanguageRegistry::new();
+    for path in [
+        "data/example/function/a.mcfunction",
+        "data/example/functions/legacy.mcfunction",
+        "world/datapacks/pack/data/ns/function/deep/nested.mcfunction",
+    ] {
+        assert!(
+            registry.extractor_for_file(path).is_some(),
+            "no extractor found for {path}"
+        );
+    }
+}
+
+#[cfg(feature = "lang-glsl")]
+#[test]
+fn test_language_registry_finds_gdshader_extractor() {
+    // #270: .gdshader files were filtered out before extraction because
+    // the extension was unregistered.
+    let registry = LanguageRegistry::new();
+    assert!(registry
+        .extractor_for_file("shaders/wind.gdshader")
+        .is_some());
+    assert!(registry
+        .extractor_for_file("shaders/common.gdshaderinc")
+        .is_some());
+}
+
+#[test]
+fn test_language_registry_extractor_for_mjs_and_cjs_files() {
+    // #219: extractor_for_file drives whether sync indexes the file at all,
+    // so this only needs to confirm a match is found for each extension.
+    // (language_name() is a constant on TypeScriptExtractor regardless of
+    // extension, so it can't distinguish JS from TS here; grammar routing
+    // for .mjs/.cjs is covered by the parse tests in
+    // typescript_extraction_test.rs instead.)
+    let registry = LanguageRegistry::new();
+    for path in ["foo.mjs", "foo.cjs", "foo.mts", "foo.cts"] {
+        assert!(
+            registry.extractor_for_file(path).is_some(),
+            "no extractor found for {path}"
+        );
+    }
 }

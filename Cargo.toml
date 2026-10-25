@@ -1,7 +1,10 @@
 [package]
 name = "tokensave"
-version = "4.5.1-beta.1"
+version = "7.16.0"
 edition = "2021"
+rust-version = "1.95.0"
+# Integration tests are declared explicitly below: see tests/integration.rs.
+autotests = false
 description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, Python, C, C++, Kotlin, C#, Swift, and many more codebases"
 license = "MIT"
 repository = "https://github.com/aovestdipaperino/tokensave"
@@ -9,6 +12,42 @@ homepage = "https://github.com/aovestdipaperino/tokensave"
 readme = "README.md"
 keywords = ["code-intelligence", "knowledge-graph", "mcp", "tree-sitter", "claude"]
 categories = ["development-tools", "command-line-utilities"]
+exclude = [
+    ".mcpregistry_*",
+    ".rtk/",
+    ".claude/",
+    "CLAUDE.md",
+    "cache/",
+    "docs/LSP-INTEGRATION.md",
+    "docs/TOKENSAVE-ALTERNATIVES.md",
+    "docs/TOKENSAVIOR-REPORT.md",
+    "generated-illustrations/",
+    "local-only/",
+    ".worktrees/",
+]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target-arch }-{ target-family }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-aarch64-macos.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-x86_64-linux.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-aarch64-linux.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-x86_64-windows.zip"
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-aarch64-windows.zip"
+pkg-fmt = "zip"
+
 
 [features]
 default = ["full"]
@@ -18,13 +57,15 @@ default = ["full"]
 lite = []
 
 medium = ["lang-dart", "lang-pascal", "lang-php", "lang-ruby", "lang-bash", "lang-protobuf", "lang-powershell", "lang-nix", "lang-vbnet"]
-full = ["medium", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic"]
+full = ["medium", "lang-actionscript", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic", "lang-dockerfile", "lang-glsl", "lang-wgsl", "lang-hlsl", "lang-metal", "lang-cuda", "lang-markdown", "lang-r", "lang-sql", "lang-julia", "lang-haskell", "lang-ocaml", "lang-clojure", "lang-erlang", "lang-elixir", "lang-fsharp", "lang-fstar", "lang-quint", "lang-toml", "lang-terraform", "lang-lean", "lang-gdscript", "lang-xaml", "lang-mcfunction", "lang-systemverilog", "lang-canvas", "lang-html", "lang-css", "lang-vhdl"]
 
-# Language features (all grammars provided by tokensave-large-treesitters)
+# Language features (grammars come from tokensave-large-treesitters unless noted).
+# ActionScript is vendored; Terraform uses the direct tree-sitter-hcl dependency.
+lang-actionscript = []
 lang-dart = []
 lang-pascal = []
 lang-php = []
-lang-ruby = []
+lang-ruby = [] # Ruby source, ERB and Slim templates share the Ruby grammar.
 lang-bash = []
 lang-protobuf = []
 lang-powershell = []
@@ -40,6 +81,36 @@ lang-cobol = []
 lang-msbasic2 = []
 lang-gwbasic = []
 lang-qbasic = []
+lang-dockerfile = []
+lang-glsl = []
+lang-wgsl = []
+lang-hlsl = ["dep:tree-sitter-hlsl"]
+lang-systemverilog = ["dep:tree-sitter-systemverilog"]
+lang-vhdl = ["dep:tree-sitter-vhdl"]
+lang-metal = []
+lang-cuda = []
+lang-markdown = []
+# Obsidian Canvas: plain JSON, no tree-sitter grammar (#459).
+lang-canvas = []
+lang-r = []
+lang-sql = []
+lang-julia = []
+lang-haskell = []
+lang-ocaml = []
+lang-clojure = []
+lang-erlang = []
+lang-elixir = []
+lang-fsharp = []
+lang-fstar = []
+lang-quint = []
+lang-toml = []
+lang-terraform = ["dep:tree-sitter-hcl"]
+lang-html = ["dep:tree-sitter-html"]
+lang-css = ["dep:tree-sitter-css"]
+lang-lean = []
+lang-gdscript = []
+lang-xaml = []
+lang-mcfunction = []
 test-transport = []
 
 [lib]
@@ -52,14 +123,24 @@ path = "src/main.rs"
 [dependencies]
 libsql = "0.9.30"
 tree-sitter = "0.26"
-tokensave-large-treesitters = "0.2"
+tree-sitter-language = "0.1"
+tokensave-large-treesitters = { version = "0.5.0", git = "https://github.com/aovestdipaperino/tokensave-large-treesitters" }
+# Force tree-sitter-dart 0.2 — 0.1 fails to wrap top-level declarations
+# in `top_level_variable_declaration` / `function_declaration` nodes,
+# breaking the dart extractor and most dart_extraction_test cases.
+# medium-treesitters declares `tree-sitter-dart = "0.1"` which won't
+# pick up 0.2 via SemVer; pulling it directly here forces the lock file
+# to resolve to 0.2 for the whole workspace.
+tree-sitter-dart = "0.2"
+dekobon-tree-sitter-groovy = "0.2"
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 ndarray = "0.17"
 clap = { version = "4.6", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 toml = "1"
-ureq = { version = "3", features = ["json"] }
+yaml-rust2 = "0.10"
+ureq = { version = "3", features = ["json", "platform-verifier"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 thiserror = "2"
@@ -70,16 +151,29 @@ glob = "0.3"
 walkdir = "2"
 ignore = "0.4"
 gix = { version = "0.81", default-features = false, features = ["revision", "blob-diff", "sha1"] }
-dialoguer = "0.12"
 dirs = "6"
-daemon-kit = "0.1.4"
-notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 hex = "0.4"
+# Exclusive-create temp files/dirs for the upgrade download (#525): the old
+# predictable `/tmp/tokensave_upgrade_<pid>` path was followed through symlinks.
+tempfile = "3"
 rayon = "1"
+bincode = "1.3"
+getrandom = "0.2"
 self-replace = "1"
 memmap2 = "0.9"
 crossterm = "0.28"
 fs2 = "0.4"
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+tree-sitter-hlsl = { version = "0.2.0", optional = true }
+tree-sitter-systemverilog = { version = "0.4", optional = true }
+tree-sitter-hcl = { version = "1.1", optional = true }
+tree-sitter-html = { version = "0.23", optional = true }
+tree-sitter-css = { version = "0.25", optional = true }
+tree-sitter-vhdl = { version = "1.4", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+# Its self-pipe falls back to write when a sandbox denies socket sends.
+signal-hook = "0.3"
 
 [target.'cfg(not(windows))'.dependencies]
 flate2 = "1"
@@ -91,6 +185,127 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 
 [build-dependencies]
 logo-art = "0.2"
+cc = "1"
+
+# Probe for the OS trust store before asking ureq to validate against it.
+# `rustls-platform-verifier` loads Linux/BSD roots through this same crate and
+# hard-errors when the store is empty, with no fallback to the bundled roots
+# (#526 follow-up), so tokensave checks first and keeps the bundled set when
+# the OS has nothing to offer. Not needed on macOS/Windows, which query OS
+# APIs with no equivalent failure.
+[target.'cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))'.dependencies]
+rustls-native-certs = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
+criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+
+# All integration tests share one binary (tests/integration.rs). The targets
+# after it stay separate because they mutate process-global state that the
+# concurrently running tests in a shared binary would observe.
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+# sets TOKENSAVE_AUTOSYNC_BUDGET_MS, read by every sync
+[[test]]
+name = "autosync_budget_test"
+path = "tests/autosync_budget_test.rs"
+
+# raises the process-global cancellation flag
+[[test]]
+name = "cancel_shutdown_test"
+path = "tests/cancel_shutdown_test.rs"
+
+# sets HOME/USERPROFILE
+[[test]]
+name = "global_git_hooks_failure_test"
+path = "tests/global_git_hooks_failure_test.rs"
+
+# sets HOME/USERPROFILE
+[[test]]
+name = "global_git_hooks_forwarder_failure_test"
+path = "tests/global_git_hooks_forwarder_failure_test.rs"
+
+# sets HOME/USERPROFILE
+[[test]]
+name = "global_git_hooks_partial_failure_test"
+path = "tests/global_git_hooks_partial_failure_test.rs"
+
+# sets TOKENSAVE_FULL_RESOLVE, read by every resolve
+[[test]]
+name = "incremental_resolution_test"
+path = "tests/incremental_resolution_test.rs"
+
+# sets TOKENSAVE_BUSY_TIMEOUT_MS
+[[test]]
+name = "rebuild_lock_test"
+path = "tests/rebuild_lock_test.rs"
+
+# sets GIT_CONFIG_*, inherited by every git child
+[[test]]
+name = "local_git_hooks_shadow_test"
+path = "tests/local_git_hooks_shadow_test.rs"
+
+# rewrites PATH and OMP_PROFILE/PI_PROFILE
+[[test]]
+name = "omp_agent_test"
+path = "tests/omp_agent_test.rs"
+
+# sets PI_CODING_AGENT_DIR
+[[test]]
+name = "pi_agent_test"
+path = "tests/pi_agent_test.rs"
+
+# sets TOKENSAVE_OPENCODE_VERSION
+[[test]]
+name = "opencode_agent_test"
+path = "tests/opencode_agent_test.rs"
+
+# sets SSL_CERT_FILE/SSL_CERT_DIR
+[[test]]
+name = "tls_root_fallback_test"
+path = "tests/tls_root_fallback_test.rs"
+
+[[bench]]
+name = "language_detection"
+harness = false
+
+[[bench]]
+name = "large_repos"
+harness = false
+
+# libsql 0.9.30 closes every local connection twice (`sqlite3_close_v2` on an
+# already-freed `sqlite3` handle), which is a use-after-free on every platform
+# and an intermittent STATUS_ACCESS_VIOLATION on Windows (#367, #308). See
+# `vendor/libsql/src/local/connection.rs` for the one-line fix and the upstream
+# references. `vendor/libsql` is a copy of the published 0.9.30 crate: its
+# sources are unchanged apart from that one function, and its examples, tests,
+# benches, test assets, lockfile and contributor notes are dropped, with
+# `[lints]` and `[workspace]` tables added to its manifest and upstream's MIT
+# licence kept alongside it. Drop this
+# patch — and the vendored copy — as soon as a libsql release carries the fix;
+# `tests/vendored_libsql_test.rs` fails if the two drift apart.
+[patch.crates-io]
+libsql = { path = "vendor/libsql" }
+
+# Faster test compilation, reduced debuginfo bloat (216.7 MiB vs 395.3 MiB per test binary, -45%),
+# while preserving line tables for backtraces and panic locations.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+# Incremental state is ~as large as the artifacts it caches and kache does not
+# cache incremental builds, so it only costs disk for test builds.
+incremental = false
+
+# Release builds bundle 50+ tree-sitter grammars plus SQLite; without LTO and
+# a single codegen unit the binary balloons to ~170 MB (#562). `panic = "abort"`
+# is deliberately omitted: `safe_extract` relies on `catch_unwind` to skip a
+# panicking file instead of aborting the whole sync.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+

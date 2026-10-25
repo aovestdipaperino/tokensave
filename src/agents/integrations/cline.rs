@@ -1,0 +1,207 @@
+//! Cline agent integration.
+//!
+//! Handles registration of the tokensave MCP server in Cline's
+//! `cline_mcp_settings.json` under the `mcpServers.tokensave` key.
+
+use std::path::{Path, PathBuf};
+
+use serde_json::json;
+
+use crate::errors::Result;
+
+use super::*;
+
+/// Cline agent.
+pub struct ClineIntegration;
+
+/// Returns the Cline VS Code extension global storage directory.
+fn cline_ext_dir(home: &Path) -> PathBuf {
+    super::vscode_data_dir(home)
+        .join("User")
+        .join("globalStorage")
+        .join("saoudrizwan.claude-dev")
+}
+
+impl AgentIntegration for ClineIntegration {
+    fn name(&self) -> &'static str {
+        "Cline"
+    }
+
+    fn id(&self) -> &'static str {
+        "cline"
+    }
+
+    fn install(&self, ctx: &InstallContext) -> Result<()> {
+        let settings_path = cline_ext_dir(&ctx.home)
+            .join("settings")
+            .join("cline_mcp_settings.json");
+
+        if let Some(parent) = settings_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+
+        let backup = backup_config_file(&settings_path)?;
+        let mut settings = match load_json_file_strict(&settings_path) {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(ref b) = backup {
+                    crate::agent_note!("  Backup preserved at: {}", b.display());
+                }
+                return Err(e);
+            }
+        };
+        let bin = crate::agents::preserve_mcp_command(
+            settings.pointer("/mcpServers/tokensave/command"),
+            &ctx.tokensave_bin,
+        );
+        settings["mcpServers"]["tokensave"] = json!({
+            "command": bin,
+            "args": ["serve"],
+            "disabled": false
+        });
+
+        safe_write_json_file(&settings_path, &settings, backup.as_deref())?;
+        crate::agent_note!(
+            "\x1b[32m✔\x1b[0m Added tokensave MCP server to {}",
+            settings_path.display()
+        );
+
+        crate::agent_note!();
+        crate::agent_note!("Setup complete. Next steps:");
+        crate::agent_note!("  1. cd into your project and run: tokensave init");
+        crate::agent_note!("  2. Restart VS Code — tokensave tools are now available in Cline");
+        Ok(())
+    }
+
+    fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
+        let settings_path = cline_ext_dir(&ctx.home)
+            .join("settings")
+            .join("cline_mcp_settings.json");
+        uninstall_mcp_server(&settings_path);
+
+        crate::agent_note!();
+        crate::agent_note!("Uninstall complete. Tokensave has been removed from Cline.");
+        crate::agent_note!("Restart VS Code for changes to take effect.");
+        Ok(())
+    }
+
+    fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
+        crate::agent_note!("\n\x1b[1mCline integration\x1b[0m");
+        doctor_check_settings(dc, &ctx.home);
+    }
+
+    fn is_detected(&self, home: &Path) -> bool {
+        cline_ext_dir(home).is_dir()
+    }
+
+    fn primary_config_path(&self, home: &Path) -> Option<PathBuf> {
+        Some(
+            cline_ext_dir(home)
+                .join("settings")
+                .join("cline_mcp_settings.json"),
+        )
+    }
+
+    fn has_tokensave(&self, home: &Path) -> bool {
+        let settings_path = cline_ext_dir(home)
+            .join("settings")
+            .join("cline_mcp_settings.json");
+        if !settings_path.exists() {
+            return false;
+        }
+        let json = load_json_file(&settings_path);
+        json.get("mcpServers")
+            .and_then(|v| v.get("tokensave"))
+            .is_some()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Uninstall helpers
+// ---------------------------------------------------------------------------
+
+/// Remove MCP server entry from Cline's `cline_mcp_settings.json`.
+fn uninstall_mcp_server(settings_path: &Path) {
+    if !settings_path.exists() {
+        crate::agent_note!("  {} not found, skipping", settings_path.display());
+        return;
+    }
+
+    let Ok(contents) = std::fs::read_to_string(settings_path) else {
+        return;
+    };
+    let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return;
+    };
+
+    let Some(servers) = settings
+        .get_mut("mcpServers")
+        .and_then(|v| v.as_object_mut())
+    else {
+        crate::agent_note!(
+            "  No tokensave MCP server in {}, skipping",
+            settings_path.display()
+        );
+        return;
+    };
+
+    if servers.remove("tokensave").is_none() {
+        crate::agent_note!(
+            "  No tokensave MCP server in {}, skipping",
+            settings_path.display()
+        );
+        return;
+    }
+
+    let is_empty = settings.as_object().is_some_and(|o| {
+        o.iter()
+            .all(|(k, v)| k == "mcpServers" && v.as_object().is_some_and(serde_json::Map::is_empty))
+    });
+
+    if is_empty {
+        std::fs::remove_file(settings_path).ok();
+        crate::agent_note!(
+            "\x1b[32m✔\x1b[0m Removed {} (was empty)",
+            settings_path.display()
+        );
+    } else if backup_and_write_json(settings_path, &settings) {
+        crate::agent_note!(
+            "\x1b[32m✔\x1b[0m Removed tokensave MCP server from {}",
+            settings_path.display()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Healthcheck helpers
+// ---------------------------------------------------------------------------
+
+/// Check Cline's `cline_mcp_settings.json` has tokensave MCP server registered.
+fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
+    let settings_path = cline_ext_dir(home)
+        .join("settings")
+        .join("cline_mcp_settings.json");
+
+    if !settings_path.exists() {
+        dc.warn(&format!(
+            "{} not found — run `tokensave install --agent cline` if you use Cline",
+            settings_path.display()
+        ));
+        return;
+    }
+
+    let settings = load_json_file(&settings_path);
+    let server = settings.get("mcpServers").and_then(|v| v.get("tokensave"));
+
+    if server.and_then(|v| v.as_object()).is_some() {
+        dc.pass(&format!(
+            "MCP server registered in {}",
+            settings_path.display()
+        ));
+    } else {
+        dc.fail(&format!(
+            "MCP server NOT registered in {} — run `tokensave install --agent cline`",
+            settings_path.display()
+        ));
+    }
+}

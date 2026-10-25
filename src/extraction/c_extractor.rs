@@ -2,70 +2,18 @@
 ///
 /// Parses C source files and emits nodes and edges for the code graph.
 /// Handles `.c` and `.h` files.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, C_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, has_child_kind, ExtractionState};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from C source files using tree-sitter.
 pub struct CExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl CExtractor {
     /// Extract code graph nodes and edges from a C source file.
@@ -74,13 +22,16 @@ impl CExtractor {
     /// `source` is the C source code to parse.
     pub fn extract_source(file_path: &str, source: &str) -> ExtractionResult {
         let start = Instant::now();
+        // Space-for-byte, so every offset below still addresses the real file.
+        let blanked = crate::extraction::c_api_macro::blank_declaration_macros(source);
+        let source = blanked.as_deref().unwrap_or(source);
         let mut state = ExtractionState::new(file_path, source);
 
         let tree = match Self::parse_source(source) {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -92,6 +43,7 @@ impl CExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -106,7 +58,13 @@ impl CExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
@@ -118,7 +76,7 @@ impl CExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -158,6 +116,14 @@ impl CExtractor {
             "enum_specifier" => Self::visit_standalone_enum(state, node),
             "preproc_def" => Self::visit_preproc_def(state, node),
             "preproc_include" => Self::visit_preproc_include(state, node),
+            // A conditional block carries no symbol itself, but its body does.
+            // Without this every declaration inside an `#if` / `#ifdef` is
+            // invisible -- which silently drops whole files: the `#ifndef FOO_H`
+            // include-guard idiom wraps an entire header. Both arms of an
+            // `#if/#else` are extracted: deciding which one compiles needs a
+            // preprocessor, and dropping both is strictly worse.
+            "preproc_if" | "preproc_ifdef" | "preproc_else" | "preproc_elif"
+            | "preproc_elifdef" => Self::visit_children(state, node),
             _ => {
                 // For other node types, skip. Comments are picked up as docstrings.
             }
@@ -177,9 +143,9 @@ impl CExtractor {
             Visibility::Pub
         };
 
-        let name = Self::extract_function_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
-        let signature = Self::extract_function_signature(state, node);
+        let name =
+            Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
+        let signature = Some(Self::extract_function_signature(state, node));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -196,6 +162,7 @@ impl CExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -210,7 +177,13 @@ impl CExtractor {
             unsafe_blocks: metrics.unsafe_blocks,
             unchecked_calls: metrics.unchecked_calls,
             assertions: metrics.assertions,
+            cognitive_complexity: metrics.cognitive_complexity,
+            distinct_operators: metrics.distinct_operators,
+            distinct_operands: metrics.distinct_operands,
+            total_operators: metrics.total_operators,
+            total_operands: metrics.total_operands,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -221,26 +194,27 @@ impl CExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
         // Extract call sites from the function body.
-        if let Some(body) = Self::find_child_by_kind(node, "compound_statement") {
+        if let Some(body) = find_child_by_kind(node, "compound_statement") {
             Self::extract_call_sites(state, body, &id);
         }
     }
 
-    /// Extract the function name from a function_definition or declaration node.
+    /// Extract the function name from a `function_definition` or declaration node.
     /// The name is typically inside a `function_declarator` -> `identifier`.
     fn extract_function_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         // Look for function_declarator which contains the name
         if let Some(declarator) = Self::find_descendant_by_kind(node, "function_declarator") {
             // The function name is the identifier child of the function_declarator
-            if let Some(ident) = Self::find_child_by_kind(declarator, "identifier") {
+            if let Some(ident) = find_child_by_kind(declarator, "identifier") {
                 return Some(state.node_text(ident));
             }
             // Could also be inside a pointer_declarator -> function_declarator
-            if let Some(ident) = Self::find_child_by_kind(declarator, "parenthesized_declarator") {
+            if let Some(ident) = find_child_by_kind(declarator, "parenthesized_declarator") {
                 // For function pointer patterns, try finding identifier deeper
                 if let Some(inner_ident) = Self::find_descendant_by_kind(ident, "identifier") {
                     return Some(state.node_text(inner_ident));
@@ -251,14 +225,13 @@ impl CExtractor {
     }
 
     /// Extract the function signature (everything except the body).
-    fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+    fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         let text = state.node_text(node);
         if let Some(brace_pos) = text.find('{') {
-            Some(text[..brace_pos].trim().to_string())
+            crate::extraction::collapse_ws(text[..brace_pos].trim())
         } else {
             // For declarations without a body (prototypes), use the full text without semicolon
-            let trimmed = text.trim().trim_end_matches(';').trim().to_string();
-            Some(trimmed)
+            crate::extraction::collapse_ws(text.trim().trim_end_matches(';').trim())
         }
     }
 
@@ -277,9 +250,9 @@ impl CExtractor {
 
         // Check if this is a standalone struct/union/enum declaration
         // (e.g., `struct Foo { ... };`)
-        if Self::has_child_kind(node, "struct_specifier")
-            || Self::has_child_kind(node, "union_specifier")
-            || Self::has_child_kind(node, "enum_specifier")
+        if has_child_kind(node, "struct_specifier")
+            || has_child_kind(node, "union_specifier")
+            || has_child_kind(node, "enum_specifier")
         {
             // These are handled by their own visitor when they appear as standalone declarations
             // with a body. Visit children to catch them.
@@ -300,10 +273,12 @@ impl CExtractor {
             Visibility::Pub
         };
 
-        let name = Self::extract_function_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let text = state.node_text(node);
-        let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
+        let signature = Some(crate::extraction::collapse_ws(
+            text.trim().trim_end_matches(';').trim(),
+        ));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -319,6 +294,7 @@ impl CExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -333,7 +309,13 @@ impl CExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -344,6 +326,7 @@ impl CExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -363,7 +346,9 @@ impl CExtractor {
         };
 
         let text = state.node_text(node);
-        let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
+        let signature = Some(crate::extraction::collapse_ws(
+            text.trim().trim_end_matches(';').trim(),
+        ));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -379,6 +364,7 @@ impl CExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -393,7 +379,13 @@ impl CExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -404,6 +396,7 @@ impl CExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -411,26 +404,34 @@ impl CExtractor {
     /// Extract a variable name from a declaration node.
     fn extract_variable_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         // Look for init_declarator first (e.g., `int x = 0;`)
-        if let Some(init_decl) = Self::find_child_by_kind(node, "init_declarator") {
-            // The identifier is the first child of init_declarator
-            if let Some(ident) = Self::find_child_by_kind(init_decl, "identifier") {
-                return Some(state.node_text(ident));
+        if let Some(init_decl) = find_child_by_kind(node, "init_declarator") {
+            if let Some(name) = Self::declarator_identifier(state, init_decl) {
+                return Some(name);
             }
-            // Could be a pointer declarator: `int *x = NULL;`
-            if let Some(ptr_decl) = Self::find_child_by_kind(init_decl, "pointer_declarator") {
-                if let Some(ident) = Self::find_child_by_kind(ptr_decl, "identifier") {
-                    return Some(state.node_text(ident));
+        }
+        // No initializer (e.g., `int x;`, `char *name;`, `const char* const T[];`)
+        Self::declarator_identifier(state, node)
+    }
+
+    /// Declarators nest, so `const char* const T[]` wraps the identifier twice. `function_declarator`
+    /// is deliberately absent - `visit_declaration` routes a prototype before the name is asked.
+    fn declarator_identifier(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                match child.kind() {
+                    "identifier" => return Some(state.node_text(child)),
+                    "pointer_declarator" | "array_declarator" | "parenthesized_declarator" => {
+                        if let Some(name) = Self::declarator_identifier(state, child) {
+                            return Some(name);
+                        }
+                    }
+                    _ => {}
                 }
-            }
-        }
-        // Direct identifier child (e.g., `int x;`)
-        if let Some(ident) = Self::find_child_by_kind(node, "identifier") {
-            return Some(state.node_text(ident));
-        }
-        // Pointer declarator without init (e.g., `char *name;`)
-        if let Some(ptr_decl) = Self::find_child_by_kind(node, "pointer_declarator") {
-            if let Some(ident) = Self::find_child_by_kind(ptr_decl, "identifier") {
-                return Some(state.node_text(ident));
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
             }
         }
         None
@@ -440,22 +441,22 @@ impl CExtractor {
     // type_definition (typedef)
     // -------------------------------------------------------
 
-    /// Visit a type_definition node (typedef).
+    /// Visit a `type_definition` node (typedef).
     fn visit_type_definition(state: &mut ExtractionState, node: TsNode<'_>) {
         // Check for typedef struct { ... } Name;
-        if let Some(struct_spec) = Self::find_child_by_kind(node, "struct_specifier") {
+        if let Some(struct_spec) = find_child_by_kind(node, "struct_specifier") {
             Self::visit_typedef_struct(state, node, struct_spec);
             return;
         }
 
         // Check for typedef union { ... } Name;
-        if let Some(union_spec) = Self::find_child_by_kind(node, "union_specifier") {
+        if let Some(union_spec) = find_child_by_kind(node, "union_specifier") {
             Self::visit_typedef_union(state, node, union_spec);
             return;
         }
 
         // Check for typedef enum { ... } Name;
-        if let Some(enum_spec) = Self::find_child_by_kind(node, "enum_specifier") {
+        if let Some(enum_spec) = find_child_by_kind(node, "enum_specifier") {
             Self::visit_typedef_enum(state, node, enum_spec);
             return;
         }
@@ -502,10 +503,13 @@ impl CExtractor {
             qualified_name: typedef_qualified,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: docstring.clone(),
             visibility: Visibility::Pub,
             is_async: false,
@@ -516,7 +520,13 @@ impl CExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(typedef_graph_node);
 
@@ -526,14 +536,14 @@ impl CExtractor {
                 target: typedef_id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
         // Also create a Struct node if it has a body
-        if Self::find_child_by_kind(struct_spec, "field_declaration_list").is_some() {
-            let struct_name = Self::find_child_by_kind(struct_spec, "type_identifier")
-                .map(|n| state.node_text(n))
-                .unwrap_or_else(|| typedef_name.clone());
+        if find_child_by_kind(struct_spec, "field_declaration_list").is_some() {
+            let struct_name = find_child_by_kind(struct_spec, "type_identifier")
+                .map_or_else(|| typedef_name.clone(), |n| state.node_text(n));
 
             Self::create_struct_node(state, &struct_name, struct_spec, docstring);
         }
@@ -570,10 +580,13 @@ impl CExtractor {
             qualified_name: typedef_qualified,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: docstring.clone(),
             visibility: Visibility::Pub,
             is_async: false,
@@ -584,7 +597,13 @@ impl CExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(typedef_graph_node);
 
@@ -594,14 +613,14 @@ impl CExtractor {
                 target: typedef_id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
         // Also create a Union node if it has a body
-        if Self::find_child_by_kind(union_spec, "field_declaration_list").is_some() {
-            let union_name = Self::find_child_by_kind(union_spec, "type_identifier")
-                .map(|n| state.node_text(n))
-                .unwrap_or_else(|| typedef_name.clone());
+        if find_child_by_kind(union_spec, "field_declaration_list").is_some() {
+            let union_name = find_child_by_kind(union_spec, "type_identifier")
+                .map_or_else(|| typedef_name.clone(), |n| state.node_text(n));
 
             Self::create_union_node(state, &union_name, union_spec, docstring);
         }
@@ -638,10 +657,13 @@ impl CExtractor {
             qualified_name: typedef_qualified,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: docstring.clone(),
             visibility: Visibility::Pub,
             is_async: false,
@@ -652,7 +674,13 @@ impl CExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(typedef_graph_node);
 
@@ -662,14 +690,14 @@ impl CExtractor {
                 target: typedef_id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
         // Also create an Enum node if it has a body
-        if Self::find_child_by_kind(enum_spec, "enumerator_list").is_some() {
-            let enum_name = Self::find_child_by_kind(enum_spec, "type_identifier")
-                .map(|n| state.node_text(n))
-                .unwrap_or_else(|| typedef_name.clone());
+        if find_child_by_kind(enum_spec, "enumerator_list").is_some() {
+            let enum_name = find_child_by_kind(enum_spec, "type_identifier")
+                .map_or_else(|| typedef_name.clone(), |n| state.node_text(n));
 
             Self::create_enum_node(state, &enum_name, enum_spec, docstring);
         }
@@ -679,12 +707,10 @@ impl CExtractor {
     fn visit_typedef_function_pointer(state: &mut ExtractionState, node: TsNode<'_>) {
         // For `typedef int (*compare_fn)(const void *, const void *);`
         // The name is inside the parenthesized_declarator within the function_declarator
-        let name = Self::extract_function_pointer_typedef_name(state, node)
-            .unwrap_or_else(|| {
-                // Fallback: try the standard typedef name extraction
-                Self::find_typedef_name(state, node)
-                    .unwrap_or_else(|| "<anonymous>".to_string())
-            });
+        let name = Self::extract_function_pointer_typedef_name(state, node).unwrap_or_else(|| {
+            // Fallback: try the standard typedef name extraction
+            Self::find_typedef_name(state, node).unwrap_or_else(|| "<anonymous>".to_string())
+        });
 
         let text = state.node_text(node);
         let docstring = Self::extract_docstring(state, node);
@@ -702,10 +728,13 @@ impl CExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
@@ -716,7 +745,13 @@ impl CExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -726,6 +761,7 @@ impl CExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -739,15 +775,11 @@ impl CExtractor {
         // function_declarator -> parenthesized_declarator -> pointer_declarator -> identifier
         // or function_declarator -> parenthesized_declarator -> identifier
         if let Some(func_decl) = Self::find_descendant_by_kind(node, "function_declarator") {
-            if let Some(paren_decl) =
-                Self::find_child_by_kind(func_decl, "parenthesized_declarator")
-            {
+            if let Some(paren_decl) = find_child_by_kind(func_decl, "parenthesized_declarator") {
                 if let Some(ident) = Self::find_descendant_by_kind(paren_decl, "identifier") {
                     return Some(state.node_text(ident));
                 }
-                if let Some(ident) =
-                    Self::find_descendant_by_kind(paren_decl, "type_identifier")
-                {
+                if let Some(ident) = Self::find_descendant_by_kind(paren_decl, "type_identifier") {
                     return Some(state.node_text(ident));
                 }
             }
@@ -757,8 +789,8 @@ impl CExtractor {
 
     /// Extract a simple typedef (e.g., `typedef unsigned long ulong;`).
     fn visit_simple_typedef(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_typedef_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::find_typedef_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
 
         let text = state.node_text(node);
         let docstring = Self::extract_docstring(state, node);
@@ -776,10 +808,13 @@ impl CExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
@@ -790,7 +825,13 @@ impl CExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -800,12 +841,13 @@ impl CExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
 
-    /// Find the typedef name, which is usually the last type_identifier child of the
-    /// type_definition node.
+    /// Find the typedef name, which is usually the last `type_identifier` child of the
+    /// `type_definition` node.
     fn find_typedef_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         // The typedef name is typically the last type_identifier direct child
         let mut last_type_id = None;
@@ -831,12 +873,11 @@ impl CExtractor {
     /// Visit a standalone struct specifier (e.g., `struct Point { int x; int y; };`).
     fn visit_standalone_struct(state: &mut ExtractionState, node: TsNode<'_>) {
         // Only handle if it has a body (field_declaration_list)
-        if Self::find_child_by_kind(node, "field_declaration_list").is_none() {
+        if find_child_by_kind(node, "field_declaration_list").is_none() {
             return;
         }
-        let name = Self::find_child_by_kind(node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name = find_child_by_kind(node, "type_identifier")
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         // Skip anonymous structs that are not inside a typedef
         if name == "<anonymous>" {
@@ -849,12 +890,11 @@ impl CExtractor {
 
     /// Visit a standalone union specifier.
     fn visit_standalone_union(state: &mut ExtractionState, node: TsNode<'_>) {
-        if Self::find_child_by_kind(node, "field_declaration_list").is_none() {
+        if find_child_by_kind(node, "field_declaration_list").is_none() {
             return;
         }
-        let name = Self::find_child_by_kind(node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name = find_child_by_kind(node, "type_identifier")
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         if name == "<anonymous>" {
             return;
@@ -866,12 +906,11 @@ impl CExtractor {
 
     /// Visit a standalone enum specifier.
     fn visit_standalone_enum(state: &mut ExtractionState, node: TsNode<'_>) {
-        if Self::find_child_by_kind(node, "enumerator_list").is_none() {
+        if find_child_by_kind(node, "enumerator_list").is_none() {
             return;
         }
-        let name = Self::find_child_by_kind(node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name = find_child_by_kind(node, "type_identifier")
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         if name == "<anonymous>" {
             return;
@@ -899,7 +938,9 @@ impl CExtractor {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Struct, name, start_line);
         let text = state.node_text(spec_node);
-        let signature = text.find('{').map(|pos| text[..pos].trim().to_string());
+        let signature = text
+            .find('{')
+            .map(|pos| crate::extraction::collapse_ws(text[..pos].trim()));
 
         let graph_node = Node {
             id: id.clone(),
@@ -908,6 +949,7 @@ impl CExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -922,7 +964,13 @@ impl CExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -933,6 +981,7 @@ impl CExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
@@ -956,7 +1005,9 @@ impl CExtractor {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Union, name, start_line);
         let text = state.node_text(spec_node);
-        let signature = text.find('{').map(|pos| text[..pos].trim().to_string());
+        let signature = text
+            .find('{')
+            .map(|pos| crate::extraction::collapse_ws(text[..pos].trim()));
 
         let graph_node = Node {
             id: id.clone(),
@@ -965,6 +1016,7 @@ impl CExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -979,7 +1031,13 @@ impl CExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -990,6 +1048,7 @@ impl CExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
@@ -999,7 +1058,7 @@ impl CExtractor {
         state.node_stack.pop();
     }
 
-    /// Create an Enum node with EnumVariant children.
+    /// Create an Enum node with `EnumVariant` children.
     fn create_enum_node(
         state: &mut ExtractionState,
         name: &str,
@@ -1013,7 +1072,9 @@ impl CExtractor {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Enum, name, start_line);
         let text = state.node_text(spec_node);
-        let signature = text.find('{').map(|pos| text[..pos].trim().to_string());
+        let signature = text
+            .find('{')
+            .map(|pos| crate::extraction::collapse_ws(text[..pos].trim()));
 
         let graph_node = Node {
             id: id.clone(),
@@ -1022,6 +1083,7 @@ impl CExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -1036,7 +1098,13 @@ impl CExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1047,6 +1115,7 @@ impl CExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
@@ -1062,9 +1131,8 @@ impl CExtractor {
 
     /// Extract a preprocessor #define.
     fn visit_preproc_def(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name = find_child_by_kind(node, "identifier")
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -1086,10 +1154,11 @@ impl CExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(text.trim())),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -1100,7 +1169,13 @@ impl CExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1111,6 +1186,7 @@ impl CExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -1118,15 +1194,17 @@ impl CExtractor {
     /// Extract a preprocessor #include.
     fn visit_preproc_include(state: &mut ExtractionState, node: TsNode<'_>) {
         // The include path is in a string_literal or system_lib_string child
-        let path = Self::find_child_by_kind(node, "string_literal")
-            .or_else(|| Self::find_child_by_kind(node, "system_lib_string"))
-            .map(|n| {
-                let text = state.node_text(n);
-                // Strip quotes/angle brackets
-                text.trim_matches(|c| c == '"' || c == '<' || c == '>')
-                    .to_string()
-            })
-            .unwrap_or_else(|| "<unknown>".to_string());
+        let path = find_child_by_kind(node, "string_literal")
+            .or_else(|| find_child_by_kind(node, "system_lib_string"))
+            .map_or_else(
+                || "<unknown>".to_string(),
+                |n| {
+                    let text = state.node_text(n);
+                    // Strip quotes/angle brackets
+                    text.trim_matches(|c| c == '"' || c == '<' || c == '>')
+                        .to_string()
+                },
+            );
 
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -1143,10 +1221,11 @@ impl CExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(text.trim())),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -1157,7 +1236,13 @@ impl CExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1168,6 +1253,7 @@ impl CExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -1178,29 +1264,37 @@ impl CExtractor {
 
     /// Extract fields from a struct or union specifier.
     fn extract_struct_fields(state: &mut ExtractionState, spec_node: TsNode<'_>) {
-        if let Some(field_list) = Self::find_child_by_kind(spec_node, "field_declaration_list") {
-            let mut cursor = field_list.walk();
-            if cursor.goto_first_child() {
-                loop {
-                    let child = cursor.node();
-                    if child.kind() == "field_declaration" {
-                        Self::extract_single_field(state, child);
-                    }
-                    if !cursor.goto_next_sibling() {
-                        break;
-                    }
+        if let Some(field_list) = find_child_by_kind(spec_node, "field_declaration_list") {
+            Self::extract_fields_in(state, field_list);
+        }
+    }
+
+    /// A guarded member is extracted from every branch, as at file scope, since deciding which one
+    /// compiles needs a preprocessor.
+    fn extract_fields_in(state: &mut ExtractionState, list: TsNode<'_>) {
+        let mut cursor = list.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                match child.kind() {
+                    "field_declaration" => Self::extract_single_field(state, child),
+                    "preproc_if" | "preproc_ifdef" | "preproc_else" | "preproc_elif"
+                    | "preproc_elifdef" => Self::extract_fields_in(state, child),
+                    _ => {}
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
                 }
             }
         }
     }
 
-    /// Extract a single field from a field_declaration node.
+    /// Extract a single field from a `field_declaration` node.
     fn extract_single_field(state: &mut ExtractionState, node: TsNode<'_>) {
         // In C, the field name is a field_identifier child of the field_declaration
         // or inside a field_declarator child.
         let name = Self::find_descendant_by_kind(node, "field_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -1217,10 +1311,13 @@ impl CExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -1231,7 +1328,13 @@ impl CExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1242,13 +1345,14 @@ impl CExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
 
-    /// Extract enum variants from an enum_specifier node.
+    /// Extract enum variants from an `enum_specifier` node.
     fn extract_enum_variants(state: &mut ExtractionState, enum_spec: TsNode<'_>) {
-        if let Some(enumerator_list) = Self::find_child_by_kind(enum_spec, "enumerator_list") {
+        if let Some(enumerator_list) = find_child_by_kind(enum_spec, "enumerator_list") {
             let mut cursor = enumerator_list.walk();
             if cursor.goto_first_child() {
                 loop {
@@ -1264,11 +1368,10 @@ impl CExtractor {
         }
     }
 
-    /// Extract a single enumerator as an EnumVariant node.
+    /// Extract a single enumerator as an `EnumVariant` node.
     fn extract_single_enumerator(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name = find_child_by_kind(node, "identifier")
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -1276,12 +1379,7 @@ impl CExtractor {
         let start_column = node.start_position().column as u32;
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-        let id = generate_node_id(
-            &state.file_path,
-            &NodeKind::EnumVariant,
-            &name,
-            start_line,
-        );
+        let id = generate_node_id(&state.file_path, &NodeKind::EnumVariant, &name, start_line);
 
         let graph_node = Node {
             id: id.clone(),
@@ -1290,10 +1388,11 @@ impl CExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(text.trim())),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -1304,7 +1403,13 @@ impl CExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1315,6 +1420,7 @@ impl CExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -1323,7 +1429,7 @@ impl CExtractor {
     // Call site extraction
     // -------------------------------------------------------
 
-    /// Recursively find call_expression nodes and create unresolved Calls references.
+    /// Recursively find `call_expression` nodes and create unresolved Calls references.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -1433,28 +1539,6 @@ impl CExtractor {
         false
     }
 
-    /// Check if a node has a direct child of the given kind.
-    fn has_child_kind(node: TsNode<'_>, kind: &str) -> bool {
-        Self::find_child_by_kind(node, kind).is_some()
-    }
-
-    /// Find the first direct child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
     /// Find the first descendant of a node with a given kind (recursive search).
     fn find_descendant_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
         let mut cursor = node.walk();
@@ -1475,17 +1559,6 @@ impl CExtractor {
         }
         None
     }
-
-    /// Build the final ExtractionResult from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
-        }
-    }
 }
 
 impl crate::extraction::LanguageExtractor for CExtractor {
@@ -1493,7 +1566,7 @@ impl crate::extraction::LanguageExtractor for CExtractor {
         &["c", "h"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "C"
     }
 

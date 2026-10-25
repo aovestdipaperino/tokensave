@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration for tokensave.
+
+  The release workflow uploads `tokensave.exe` via actions/upload-artifact, which
+  wraps the single file in a ZIP. SignPath therefore receives a zip-file whose
+  root contains tokensave.exe, which is Authenticode-signed and returned.
+
+  Paste the contents of this file into the SignPath portal:
+    Project "tokensave" -> Artifact Configurations -> (default) -> Edit.
+  Keep this file in sync with the portal so the signed structure is reviewable in git.
+
+  Docs: https://docs.signpath.io/artifact-configuration/
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="tokensave.exe">
+      <authenticode-sign/>
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

@@ -14,7 +14,34 @@ pub struct GraphTraverser<'a> {
     db: &'a Database,
 }
 
+/// True for a node kind that an `instantiates` edge can connect: the same
+/// set the resolver accepts as a target for one. Every other kind, which is
+/// every function and method, keeps the single-kind query, so a graph with
+/// no hierarchy pays nothing for it.
+fn is_hierarchy_kind(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Module | NodeKind::Interface | NodeKind::InterfaceType
+    )
+}
+
+/// The edge kinds a callers or callees step follows from a node.
+fn edge_kinds_for(hierarchy: bool) -> &'static [EdgeKind] {
+    if hierarchy {
+        &[EdgeKind::Calls, EdgeKind::Instantiates]
+    } else {
+        &[EdgeKind::Calls]
+    }
+}
+
 impl<'a> GraphTraverser<'a> {
+    /// Whether the start node of a traversal can carry `instantiates` edges.
+    /// A node that is not in the graph follows calls only.
+    async fn is_hierarchy_node(&self, node_id: &str) -> Result<bool> {
+        let nodes = self.db.get_nodes_by_ids(&[node_id.to_string()]).await?;
+        Ok(nodes.first().is_some_and(|n| is_hierarchy_kind(&n.kind)))
+    }
+
     /// Creates a new `GraphTraverser` backed by the given database.
     pub fn new(db: &'a Database) -> Self {
         Self { db }
@@ -26,8 +53,14 @@ impl<'a> GraphTraverser<'a> {
     /// node kind filter, direction, and result limit. Returns a `Subgraph`
     /// containing the discovered nodes and the edges used to reach them.
     pub async fn traverse_bfs(&self, start_id: &str, opts: &TraversalOptions) -> Result<Subgraph> {
-        debug_assert!(!start_id.is_empty(), "traverse_bfs called with empty start_id");
-        debug_assert!(opts.max_depth > 0, "traverse_bfs max_depth must be positive");
+        debug_assert!(
+            !start_id.is_empty(),
+            "traverse_bfs called with empty start_id"
+        );
+        debug_assert!(
+            opts.max_depth > 0,
+            "traverse_bfs max_depth must be positive"
+        );
         let mut visited: HashSet<String> = HashSet::new();
         let mut result_nodes: Vec<Node> = Vec::new();
         let mut result_edges: Vec<Edge> = Vec::new();
@@ -39,7 +72,7 @@ impl<'a> GraphTraverser<'a> {
         // Optionally include the start node.
         if let Some(start_node) = self.db.get_node_by_id(start_id).await? {
             visited.insert(start_id.to_string());
-            if opts.include_start && self.node_matches_filter(&start_node, opts) {
+            if opts.include_start && Self::node_matches_filter(&start_node, opts) {
                 roots.push(start_id.to_string());
                 result_nodes.push(start_node);
             }
@@ -63,53 +96,80 @@ impl<'a> GraphTraverser<'a> {
                 break;
             }
 
-            let edges = self.get_edges_for_direction(&current_id, edge_filter, &opts.direction).await?;
+            let mut edges = self
+                .get_edges_for_direction(&current_id, edge_filter, &opts.direction)
+                .await?;
+
+            // Order `calls` edges ahead of reference/other edges before they
+            // seed the FIFO queue. Under a tight `opts.limit`, this lets the
+            // subgraph fill with structural call relationships before fanning
+            // out to references. Stable so DB order is preserved within a kind.
+            // (`contains` edges were denormalized in v9 and are expanded above
+            // via `get_children_of`, so they need no ordering here.)
+            edges.sort_by_key(|edge| edge_kind_priority(edge.kind));
+
+            let neighbor_ids: Vec<String> = edges
+                .iter()
+                .map(|edge| Self::neighbor_id(edge, &current_id, &opts.direction))
+                .filter(|id| !visited.contains(id))
+                .collect();
+
+            if neighbor_ids.is_empty() {
+                continue;
+            }
+
+            let neighbor_nodes = self.db.get_nodes_by_ids(&neighbor_ids).await?;
+            let neighbor_map: std::collections::HashMap<String, Node> = neighbor_nodes
+                .into_iter()
+                .map(|n| (n.id.clone(), n))
+                .collect();
 
             for edge in edges {
-                let neighbor_id = self.neighbor_id(&edge, &current_id, &opts.direction);
+                let neighbor_id = Self::neighbor_id(&edge, &current_id, &opts.direction);
 
                 if visited.contains(&neighbor_id) {
                     continue;
                 }
+
+                let Some(neighbor_node) = neighbor_map.get(&neighbor_id) else {
+                    continue;
+                };
+
                 visited.insert(neighbor_id.clone());
 
-                if let Some(neighbor_node) = self.db.get_node_by_id(&neighbor_id).await? {
-                    if self.node_matches_filter(&neighbor_node, opts) {
-                        // For Incoming traversals, if we discovered a container
-                        // (class/struct/trait/interface/module), also enqueue its
-                        // children so callers of methods appear in the container's
-                        // impact radius.
-                        if opts.direction == TraversalDirection::Incoming
-                            && is_container_kind(&neighbor_node.kind)
-                        {
-                            let children = self
-                                .get_edges_for_direction(
-                                    &neighbor_id,
-                                    &[EdgeKind::Contains],
-                                    &TraversalDirection::Outgoing,
-                                )
-                                .await?;
-                            for child_edge in children {
-                                let child_id = self.neighbor_id(
-                                    &child_edge,
-                                    &neighbor_id,
-                                    &TraversalDirection::Outgoing,
-                                );
-                                if !visited.contains(&child_id) {
-                                    visited.insert(child_id.clone());
-                                    result_edges.push(child_edge);
-                                    queue.push_back((child_id, depth + 1));
-                                }
+                if Self::node_matches_filter(neighbor_node, opts) {
+                    if opts.direction == TraversalDirection::Incoming
+                        && is_container_kind(&neighbor_node.kind)
+                    {
+                        // Children are now queried via parent_id, not via
+                        // outgoing Contains edges (denormalized in v9).
+                        // Synthesize Contains-shaped Edge values so callers
+                        // that inspect `result_edges` see the same shape.
+                        let children = self.db.get_children_of(&neighbor_id).await?;
+                        for child in children {
+                            if !visited.contains(&child.id) {
+                                visited.insert(child.id.clone());
+                                result_edges.push(crate::types::Edge {
+                                    source: neighbor_id.clone(),
+                                    target: child.id.clone(),
+                                    kind: EdgeKind::Contains,
+                                    line: None,
+                                    resolved_by: None,
+                                });
+                                queue.push_back((child.id, depth + 1));
                             }
                         }
-
-                        result_nodes.push(neighbor_node);
-                        if result_nodes.len() >= opts.limit as usize {
-                            result_edges.push(edge);
-                            break;
-                        }
                     }
-                    result_edges.push(edge);
+
+                    result_nodes.push(neighbor_node.clone());
+                    result_edges.push(edge.clone());
+                    queue.push_back((neighbor_id, depth + 1));
+
+                    if result_nodes.len() >= opts.limit as usize {
+                        break;
+                    }
+                } else {
+                    result_edges.push(edge.clone());
                     queue.push_back((neighbor_id, depth + 1));
                 }
             }
@@ -131,8 +191,14 @@ impl<'a> GraphTraverser<'a> {
     /// Uses an iterative approach with an explicit stack to avoid async
     /// recursion issues.
     pub async fn traverse_dfs(&self, start_id: &str, opts: &TraversalOptions) -> Result<Subgraph> {
-        debug_assert!(!start_id.is_empty(), "traverse_dfs called with empty start_id");
-        debug_assert!(opts.max_depth > 0, "traverse_dfs max_depth must be positive");
+        debug_assert!(
+            !start_id.is_empty(),
+            "traverse_dfs called with empty start_id"
+        );
+        debug_assert!(
+            opts.max_depth > 0,
+            "traverse_dfs max_depth must be positive"
+        );
         let mut visited: HashSet<String> = HashSet::new();
         let mut result_nodes: Vec<Node> = Vec::new();
         let mut result_edges: Vec<Edge> = Vec::new();
@@ -140,7 +206,7 @@ impl<'a> GraphTraverser<'a> {
 
         if let Some(start_node) = self.db.get_node_by_id(start_id).await? {
             visited.insert(start_id.to_string());
-            if opts.include_start && self.node_matches_filter(&start_node, opts) {
+            if opts.include_start && Self::node_matches_filter(&start_node, opts) {
                 roots.push(start_id.to_string());
                 result_nodes.push(start_node);
             }
@@ -166,25 +232,49 @@ impl<'a> GraphTraverser<'a> {
                 break;
             }
 
-            let edges = self.get_edges_for_direction(&current_id, edge_filter, &opts.direction).await?;
+            let edges = self
+                .get_edges_for_direction(&current_id, edge_filter, &opts.direction)
+                .await?;
+
+            let neighbor_ids: Vec<String> = edges
+                .iter()
+                .map(|edge| Self::neighbor_id(edge, &current_id, &opts.direction))
+                .filter(|id| !visited.contains(id))
+                .collect();
+
+            if neighbor_ids.is_empty() {
+                continue;
+            }
+
+            let neighbor_nodes = self.db.get_nodes_by_ids(&neighbor_ids).await?;
+            let neighbor_map: std::collections::HashMap<String, Node> = neighbor_nodes
+                .into_iter()
+                .map(|n| (n.id.clone(), n))
+                .collect();
 
             for edge in edges {
-                let neighbor_id = self.neighbor_id(&edge, &current_id, &opts.direction);
+                let neighbor_id = Self::neighbor_id(&edge, &current_id, &opts.direction);
 
                 if visited.contains(&neighbor_id) {
                     continue;
                 }
+
+                let Some(neighbor_node) = neighbor_map.get(&neighbor_id) else {
+                    continue;
+                };
+
                 visited.insert(neighbor_id.clone());
 
-                if let Some(neighbor_node) = self.db.get_node_by_id(&neighbor_id).await? {
-                    if self.node_matches_filter(&neighbor_node, opts) {
-                        result_nodes.push(neighbor_node);
-                        if result_nodes.len() >= opts.limit as usize {
-                            result_edges.push(edge);
-                            break;
-                        }
+                if Self::node_matches_filter(neighbor_node, opts) {
+                    result_nodes.push(neighbor_node.clone());
+                    result_edges.push(edge.clone());
+                    stack.push((neighbor_id, depth + 1));
+
+                    if result_nodes.len() >= opts.limit as usize {
+                        break;
                     }
-                    result_edges.push(edge);
+                } else {
+                    result_edges.push(edge.clone());
                     stack.push((neighbor_id, depth + 1));
                 }
             }
@@ -201,39 +291,174 @@ impl<'a> GraphTraverser<'a> {
     ///
     /// Follows incoming `Calls` edges to find callers transitively.
     pub async fn get_callers(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
+        Ok(self
+            .get_callers_with_depth(node_id, max_depth)
+            .await?
+            .into_iter()
+            .map(|(node, edge, _depth)| (node, edge))
+            .collect())
+    }
+
+    /// Like [`get_callers`], but each result carries the BFS depth at which the
+    /// caller was reached: `1` for a direct caller, `2` for a caller of a direct
+    /// caller, and so on. Lets callers distinguish direct from transitive
+    /// results instead of flattening every hop into one undifferentiated list.
+    ///
+    /// [`get_callers`]: Self::get_callers
+    pub async fn get_callers_with_depth(
+        &self,
+        node_id: &str,
+        max_depth: usize,
+    ) -> Result<Vec<(Node, Edge, usize)>> {
         debug_assert!(!node_id.is_empty(), "get_callers called with empty node_id");
         debug_assert!(max_depth > 0, "get_callers max_depth must be positive");
-        let mut results: Vec<(Node, Edge)> = Vec::new();
+        let mut results: Vec<(Node, Edge, usize)> = Vec::new();
         let mut visited: HashSet<String> = HashSet::new();
         visited.insert(node_id.to_string());
 
-        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-        queue.push_back((node_id.to_string(), 0));
+        let mut queue: VecDeque<(String, usize, bool)> = VecDeque::new();
+        queue.push_back((
+            node_id.to_string(),
+            0,
+            self.is_hierarchy_node(node_id).await?,
+        ));
 
-        while let Some((current_id, depth)) = queue.pop_front() {
+        while let Some((current_id, depth, hierarchy)) = queue.pop_front() {
             if depth >= max_depth {
                 continue;
             }
 
             let edges = self
                 .db
-                .get_incoming_edges(&current_id, &[EdgeKind::Calls])
+                .get_incoming_edges(&current_id, edge_kinds_for(hierarchy))
                 .await?;
+
+            let caller_ids: Vec<String> = edges
+                .iter()
+                .map(|e| e.source.clone())
+                .filter(|id| !visited.contains(id))
+                .collect();
+
+            if caller_ids.is_empty() {
+                continue;
+            }
+
+            let caller_nodes = self.db.get_nodes_by_ids(&caller_ids).await?;
+            let caller_map: std::collections::HashMap<String, Node> = caller_nodes
+                .into_iter()
+                .map(|n| (n.id.clone(), n))
+                .collect();
 
             for edge in edges {
                 let caller_id = &edge.source;
                 if visited.contains(caller_id) {
                     continue;
                 }
-                visited.insert(caller_id.clone());
 
-                if let Some(caller_node) = self.db.get_node_by_id(caller_id).await? {
-                    queue.push_back((caller_id.clone(), depth + 1));
-                    results.push((caller_node, edge));
+                if let Some(caller_node) = caller_map.get(caller_id) {
+                    visited.insert(caller_id.clone());
+                    queue.push_back((
+                        caller_id.clone(),
+                        depth + 1,
+                        is_hierarchy_kind(&caller_node.kind),
+                    ));
+                    // `depth` is the hop count of `current_id`; the caller we
+                    // just found is one hop further out.
+                    results.push((caller_node.clone(), edge, depth + 1));
                 }
             }
         }
 
+        Ok(results)
+    }
+
+    /// Traverses callers while resolving generic calls to a concrete trait impl
+    /// in the first incoming-edge query. The optional string identifies the
+    /// trait method through which the caller dispatches.
+    pub async fn get_callers_with_dispatch_depth(
+        &self,
+        node_id: &str,
+        max_depth: usize,
+    ) -> Result<Vec<(Node, Edge, usize, Option<String>)>> {
+        debug_assert!(!node_id.is_empty(), "get_callers called with empty node_id");
+        debug_assert!(max_depth > 0, "get_callers max_depth must be positive");
+        let mut results: Vec<(Node, Edge, usize, Option<String>)> = Vec::new();
+        let mut visited: HashSet<String> = HashSet::new();
+        visited.insert(node_id.to_string());
+
+        let mut queue: VecDeque<(String, usize, bool)> = VecDeque::new();
+        queue.push_back((
+            node_id.to_string(),
+            0,
+            self.is_hierarchy_node(node_id).await?,
+        ));
+
+        while let Some((current_id, depth, hierarchy)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+            let edges = self
+                .db
+                .get_incoming_edges(&current_id, edge_kinds_for(hierarchy))
+                .await?;
+            let caller_ids: HashSet<String> = edges
+                .iter()
+                .map(|edge| edge.source.clone())
+                .filter(|id| !visited.contains(id))
+                .collect();
+            let caller_nodes = if caller_ids.is_empty() {
+                Vec::new()
+            } else {
+                self.db
+                    .get_nodes_by_ids(&caller_ids.into_iter().collect::<Vec<_>>())
+                    .await?
+            };
+            let caller_map: std::collections::HashMap<String, Node> = caller_nodes
+                .into_iter()
+                .map(|node| (node.id.clone(), node))
+                .collect();
+
+            for edge in edges {
+                let caller_id = &edge.source;
+                if visited.contains(caller_id) {
+                    continue;
+                }
+                if let Some(caller_node) = caller_map.get(caller_id) {
+                    visited.insert(caller_id.clone());
+                    queue.push_back((
+                        caller_id.clone(),
+                        depth + 1,
+                        is_hierarchy_kind(&caller_node.kind),
+                    ));
+                    results.push((caller_node.clone(), edge, depth + 1, None));
+                }
+            }
+
+            if depth == 0 {
+                for (caller, edge, dispatch_from, has_upstream) in
+                    self.db.cached_trait_dispatch_callers(&current_id)
+                {
+                    if visited.contains(&caller.id) {
+                        if let Some(existing) = results
+                            .iter_mut()
+                            .find(|(node, _, _, _)| node.id == caller.id)
+                        {
+                            existing.3 = Some(dispatch_from);
+                        }
+                        continue;
+                    }
+                    visited.insert(caller.id.clone());
+                    if has_upstream {
+                        queue.push_back((
+                            caller.id.clone(),
+                            depth + 1,
+                            is_hierarchy_kind(&caller.kind),
+                        ));
+                    }
+                    results.push((caller, edge, depth + 1, Some(dispatch_from)));
+                }
+            }
+        }
         Ok(results)
     }
 
@@ -247,29 +472,53 @@ impl<'a> GraphTraverser<'a> {
         let mut visited: HashSet<String> = HashSet::new();
         visited.insert(node_id.to_string());
 
-        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-        queue.push_back((node_id.to_string(), 0));
+        let mut queue: VecDeque<(String, usize, bool)> = VecDeque::new();
+        queue.push_back((
+            node_id.to_string(),
+            0,
+            self.is_hierarchy_node(node_id).await?,
+        ));
 
-        while let Some((current_id, depth)) = queue.pop_front() {
+        while let Some((current_id, depth, hierarchy)) = queue.pop_front() {
             if depth >= max_depth {
                 continue;
             }
 
             let edges = self
                 .db
-                .get_outgoing_edges(&current_id, &[EdgeKind::Calls])
+                .get_outgoing_edges(&current_id, edge_kinds_for(hierarchy))
                 .await?;
+
+            let callee_ids: Vec<String> = edges
+                .iter()
+                .map(|e| e.target.clone())
+                .filter(|id| !visited.contains(id))
+                .collect();
+
+            if callee_ids.is_empty() {
+                continue;
+            }
+
+            let callee_nodes = self.db.get_nodes_by_ids(&callee_ids).await?;
+            let callee_map: std::collections::HashMap<String, Node> = callee_nodes
+                .into_iter()
+                .map(|n| (n.id.clone(), n))
+                .collect();
 
             for edge in edges {
                 let callee_id = &edge.target;
                 if visited.contains(callee_id) {
                     continue;
                 }
-                visited.insert(callee_id.clone());
 
-                if let Some(callee_node) = self.db.get_node_by_id(callee_id).await? {
-                    queue.push_back((callee_id.clone(), depth + 1));
-                    results.push((callee_node, edge));
+                if let Some(callee_node) = callee_map.get(callee_id) {
+                    visited.insert(callee_id.clone());
+                    queue.push_back((
+                        callee_id.clone(),
+                        depth + 1,
+                        is_hierarchy_kind(&callee_node.kind),
+                    ));
+                    results.push((callee_node.clone(), edge));
                 }
             }
         }
@@ -282,8 +531,14 @@ impl<'a> GraphTraverser<'a> {
     ///
     /// Performs a BFS over incoming edges of all kinds up to `max_depth`.
     pub async fn get_impact_radius(&self, node_id: &str, max_depth: usize) -> Result<Subgraph> {
-        debug_assert!(!node_id.is_empty(), "get_impact_radius called with empty node_id");
-        debug_assert!(max_depth > 0, "get_impact_radius max_depth must be positive");
+        debug_assert!(
+            !node_id.is_empty(),
+            "get_impact_radius called with empty node_id"
+        );
+        debug_assert!(
+            max_depth > 0,
+            "get_impact_radius max_depth must be positive"
+        );
         let opts = TraversalOptions {
             max_depth: max_depth as u32,
             edge_kinds: None,
@@ -295,12 +550,64 @@ impl<'a> GraphTraverser<'a> {
         self.traverse_bfs(node_id, &opts).await
     }
 
+    /// Same as `get_impact_radius` but seeded from many nodes with a shared
+    /// `visited` set. Avoids the quadratic re-traversal that happens when
+    /// callers loop `get_impact_radius` per modified symbol — diamond
+    /// dependencies (one downstream node reachable from many sources) get
+    /// walked once instead of N times.
+    ///
+    /// Returns every reachable node, including the seeds themselves.
+    pub async fn get_impact_radius_multi(
+        &self,
+        seed_ids: &[String],
+        max_depth: usize,
+    ) -> Result<Vec<Node>> {
+        debug_assert!(
+            max_depth > 0,
+            "get_impact_radius_multi max_depth must be positive"
+        );
+        if seed_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut visited: HashSet<String> = seed_ids.iter().cloned().collect();
+        let seed_nodes = self.db.get_nodes_by_ids(seed_ids).await?;
+        let mut result_nodes: Vec<Node> = seed_nodes;
+        let mut queue: VecDeque<(String, usize)> =
+            seed_ids.iter().map(|id| (id.clone(), 0usize)).collect();
+
+        while let Some((current_id, depth)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+            let edges = self.db.get_incoming_edges(&current_id, &[]).await?;
+            let neighbor_ids: Vec<String> = edges
+                .into_iter()
+                .map(|e| e.source)
+                .filter(|id| visited.insert(id.clone()))
+                .collect();
+            if neighbor_ids.is_empty() {
+                continue;
+            }
+            let neighbor_nodes = self.db.get_nodes_by_ids(&neighbor_ids).await?;
+            for node in neighbor_nodes {
+                queue.push_back((node.id.clone(), depth + 1));
+                result_nodes.push(node);
+            }
+        }
+
+        Ok(result_nodes)
+    }
+
     /// Builds a bidirectional call graph around a node.
     ///
     /// Combines BFS over outgoing `Calls` edges (callees) and BFS over
     /// incoming `Calls` edges (callers) up to the specified `depth`.
     pub async fn get_call_graph(&self, node_id: &str, depth: usize) -> Result<Subgraph> {
-        debug_assert!(!node_id.is_empty(), "get_call_graph called with empty node_id");
+        debug_assert!(
+            !node_id.is_empty(),
+            "get_call_graph called with empty node_id"
+        );
         debug_assert!(depth > 0, "get_call_graph depth must be positive");
         // Outgoing (callees)
         let outgoing_opts = TraversalOptions {
@@ -343,11 +650,7 @@ impl<'a> GraphTraverser<'a> {
 
         // Deduplicate edges by (source, target, kind).
         let mut seen_edges: HashSet<(String, String, String)> = HashSet::new();
-        for edge in outgoing_sub
-            .edges
-            .into_iter()
-            .chain(incoming_sub.edges.into_iter())
-        {
+        for edge in outgoing_sub.edges.into_iter().chain(incoming_sub.edges) {
             let key = (
                 edge.source.clone(),
                 edge.target.clone(),
@@ -370,7 +673,10 @@ impl<'a> GraphTraverser<'a> {
     /// Follows both outgoing (traits this node implements) and incoming
     /// (nodes that implement this trait) `Implements` edges.
     pub async fn get_type_hierarchy(&self, node_id: &str) -> Result<Subgraph> {
-        debug_assert!(!node_id.is_empty(), "get_type_hierarchy called with empty node_id");
+        debug_assert!(
+            !node_id.is_empty(),
+            "get_type_hierarchy called with empty node_id"
+        );
         let opts = TraversalOptions {
             max_depth: 10,
             edge_kinds: Some(vec![EdgeKind::Implements]),
@@ -487,6 +793,88 @@ impl<'a> GraphTraverser<'a> {
         Ok(Some(path))
     }
 
+    /// Finds the shortest *directed* path from `from_id` to `to_id`, following
+    /// only outgoing edges of the given kinds. `max_depth` bounds the BFS so a
+    /// runaway call graph can't OOM us. Returns `None` if no path exists.
+    ///
+    /// Use this for "call chain from A to B" semantics: BFS expands only along
+    /// edges where A is the source, which models actual flow of execution. The
+    /// older `find_path` does a bidirectional walk that's right for "are these
+    /// connected at all" but wrong for directed-chain queries.
+    pub async fn find_path_directed(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        edge_kinds: &[EdgeKind],
+        max_depth: usize,
+    ) -> Result<Option<GraphPath>> {
+        debug_assert!(!from_id.is_empty(), "find_path_directed: empty from_id");
+        debug_assert!(!to_id.is_empty(), "find_path_directed: empty to_id");
+        if from_id == to_id {
+            if let Some(node) = self.db.get_node_by_id(from_id).await? {
+                return Ok(Some(vec![(node, None)]));
+            }
+            return Ok(None);
+        }
+
+        let mut parent_map: std::collections::HashMap<String, (String, Edge)> =
+            std::collections::HashMap::new();
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+        visited.insert(from_id.to_string());
+        queue.push_back((from_id.to_string(), 0));
+
+        let mut found = false;
+        while let Some((current_id, depth)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+            let outgoing = self.db.get_outgoing_edges(&current_id, edge_kinds).await?;
+            for edge in outgoing {
+                let neighbor = edge.target.clone();
+                if visited.contains(&neighbor) {
+                    continue;
+                }
+                visited.insert(neighbor.clone());
+                let is_target = neighbor == to_id;
+                parent_map.insert(neighbor.clone(), (current_id.clone(), edge));
+                if is_target {
+                    found = true;
+                    break;
+                }
+                queue.push_back((neighbor, depth + 1));
+            }
+            if found {
+                break;
+            }
+        }
+
+        if !found {
+            return Ok(None);
+        }
+
+        let mut path_ids: Vec<(String, Option<Edge>)> = Vec::new();
+        let mut current = to_id.to_string();
+        while current != from_id {
+            if let Some((parent, edge)) = parent_map.remove(&current) {
+                path_ids.push((current, Some(edge)));
+                current = parent;
+            } else {
+                return Ok(None);
+            }
+        }
+        path_ids.push((from_id.to_string(), None));
+        path_ids.reverse();
+
+        let mut path: Vec<(Node, Option<Edge>)> = Vec::new();
+        for (id, edge) in path_ids {
+            if let Some(node) = self.db.get_node_by_id(&id).await? {
+                path.push((node, edge));
+            }
+        }
+        Ok(Some(path))
+    }
+
     // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
@@ -514,7 +902,7 @@ impl<'a> GraphTraverser<'a> {
     /// For outgoing: the neighbor is `edge.target`.
     /// For incoming: the neighbor is `edge.source`.
     /// For both: whichever end is not `current_id`.
-    fn neighbor_id(&self, edge: &Edge, current_id: &str, direction: &TraversalDirection) -> String {
+    fn neighbor_id(edge: &Edge, current_id: &str, direction: &TraversalDirection) -> String {
         match direction {
             TraversalDirection::Outgoing => edge.target.clone(),
             TraversalDirection::Incoming => edge.source.clone(),
@@ -529,13 +917,27 @@ impl<'a> GraphTraverser<'a> {
     }
 
     /// Checks whether a node passes the optional `node_kinds` filter.
-    fn node_matches_filter(&self, node: &Node, opts: &TraversalOptions) -> bool {
+    fn node_matches_filter(node: &Node, opts: &TraversalOptions) -> bool {
         if let Some(ref kinds) = opts.node_kinds {
             if !kinds.is_empty() {
                 return kinds.contains(&node.kind);
             }
         }
         true
+    }
+}
+
+/// BFS/DFS visitation priority for an edge kind: lower is visited first.
+///
+/// `Calls` edges (structural call relationships) are prioritized over
+/// reference and other edges so a budget-limited traversal fills with call
+/// structure before fanning out to weaker references. `Contains` edges were
+/// denormalized in v9 (children come via `parent_id`) and do not flow through
+/// this path, so they are grouped with the default tier.
+fn edge_kind_priority(kind: EdgeKind) -> u8 {
+    match kind {
+        EdgeKind::Calls => 0,
+        _ => 1,
     }
 }
 
@@ -551,4 +953,32 @@ fn is_container_kind(kind: &NodeKind) -> bool {
             | NodeKind::Impl
             | NodeKind::Enum
     )
+}
+
+#[cfg(test)]
+mod hierarchy_edge_kinds {
+    use super::*;
+
+    /// A function or method keeps the single-kind query, so a graph with no
+    /// `instantiates` edges pays nothing for the hierarchy rule.
+    #[test]
+    fn only_hierarchy_kinds_follow_instantiates() {
+        assert!(is_hierarchy_kind(&NodeKind::Module));
+        assert!(is_hierarchy_kind(&NodeKind::Interface));
+        assert!(is_hierarchy_kind(&NodeKind::InterfaceType));
+        for kind in [
+            NodeKind::Function,
+            NodeKind::Method,
+            NodeKind::Class,
+            NodeKind::Struct,
+            NodeKind::Package,
+        ] {
+            assert!(!is_hierarchy_kind(&kind), "{kind:?}");
+        }
+        assert_eq!(edge_kinds_for(false), &[EdgeKind::Calls]);
+        assert_eq!(
+            edge_kinds_for(true),
+            &[EdgeKind::Calls, EdgeKind::Instantiates]
+        );
+    }
 }

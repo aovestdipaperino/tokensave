@@ -13,14 +13,18 @@ use tempfile::TempDir;
 use tokensave::db::Database;
 use tokensave::types::*;
 
-/// Helper: create a temp database and return (Database, TempDir, db_path).
-async fn setup_db() -> (Database, TempDir, std::path::PathBuf) {
+/// Helper: create a temp database and return (TempDir, Database, db_path).
+///
+/// The `TempDir` comes first so that it is the last binding declared at each
+/// call site and therefore the last dropped: the database must close before the
+/// directory is removed, or Windows refuses the removal and leaks it (#367).
+async fn setup_db() -> (TempDir, Database, std::path::PathBuf) {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("test.db");
     let (db, _) = Database::initialize(&db_path)
         .await
         .expect("failed to initialize database");
-    (db, dir, db_path)
+    (dir, db, db_path)
 }
 
 /// Helper: create a sample node.
@@ -32,6 +36,7 @@ fn sample_node(id: &str, name: &str) -> Node {
         qualified_name: format!("crate::{name}"),
         file_path: "src/lib.rs".to_string(),
         start_line: 1,
+        attrs_start_line: 1,
         end_line: 10,
         start_column: 0,
         end_column: 1,
@@ -46,7 +51,13 @@ fn sample_node(id: &str, name: &str) -> Node {
         unsafe_blocks: 0,
         unchecked_calls: 0,
         assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
         updated_at: 1000,
+        parent_id: None,
     }
 }
 
@@ -54,23 +65,29 @@ fn sample_node(id: &str, name: &str) -> Node {
 
 #[tokio::test]
 async fn quick_check_passes_on_healthy_db() {
-    let (db, _dir, _path) = setup_db().await;
-    assert!(db.quick_check().await.unwrap(), "fresh database should pass quick_check");
+    let (_dir, db, _path) = setup_db().await;
+    assert!(
+        db.quick_check().await.unwrap(),
+        "fresh database should pass quick_check"
+    );
 }
 
 #[tokio::test]
 async fn quick_check_passes_after_inserts() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
     let nodes: Vec<Node> = (0..50)
         .map(|i| sample_node(&format!("n{i}"), &format!("func_{i}")))
         .collect();
     db.insert_nodes(&nodes).await.unwrap();
-    assert!(db.quick_check().await.unwrap(), "database with data should pass quick_check");
+    assert!(
+        db.quick_check().await.unwrap(),
+        "database with data should pass quick_check"
+    );
 }
 
 #[tokio::test]
 async fn quick_check_detects_page_level_corruption() {
-    let (db, _dir, db_path) = setup_db().await;
+    let (_dir, db, db_path) = setup_db().await;
 
     // Insert enough data to create multiple pages
     let nodes: Vec<Node> = (0..100)
@@ -97,7 +114,9 @@ async fn quick_check_detects_page_level_corruption() {
     }
 
     // Reopen — quick_check should detect the corruption
-    let (db2, _) = Database::open(&db_path).await.expect("open should succeed even with corruption");
+    let (db2, _) = Database::open(&db_path)
+        .await
+        .expect("open should succeed even with corruption");
     let intact = db2.quick_check().await.unwrap();
     assert!(!intact, "quick_check should detect page-level corruption");
 }
@@ -106,14 +125,14 @@ async fn quick_check_detects_page_level_corruption() {
 
 #[tokio::test]
 async fn rebuild_fts_on_fresh_db() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
     // rebuild on empty db should not error
     db.rebuild_fts().await.unwrap();
 }
 
 #[tokio::test]
 async fn rebuild_fts_restores_search_after_fts_damage() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
 
     let nodes = vec![
         sample_node("a1", "process_data"),
@@ -129,9 +148,7 @@ async fn rebuild_fts_restores_search_after_fts_damage() {
     // This simulates what happens when begin_bulk_load clears FTS but
     // end_bulk_load never runs (crash during indexing).
     db.conn()
-        .execute_batch(
-            "DELETE FROM nodes_fts;",
-        )
+        .execute_batch("DELETE FROM nodes_fts;")
         .await
         .unwrap();
 
@@ -151,7 +168,7 @@ async fn rebuild_fts_restores_search_after_fts_damage() {
 
 #[tokio::test]
 async fn search_nodes_falls_back_to_like_when_fts_empty() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
 
     let nodes = vec![sample_node("b1", "my_function")];
     db.insert_nodes(&nodes).await.unwrap();
@@ -173,34 +190,30 @@ async fn search_nodes_falls_back_to_like_when_fts_empty() {
 
 #[tokio::test]
 async fn bulk_load_preserves_synchronous_normal() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
 
     db.begin_bulk_load().await.unwrap();
 
     // Check that synchronous is still NORMAL (1) not OFF (0)
-    let mut rows = db
-        .conn()
-        .query("PRAGMA synchronous", ())
-        .await
-        .unwrap();
+    let mut rows = db.conn().query("PRAGMA synchronous", ()).await.unwrap();
     let row = rows.next().await.unwrap().unwrap();
     let sync_value: i64 = row.get(0).unwrap();
     // NORMAL = 1, OFF = 0, FULL = 2
-    assert_eq!(sync_value, 1, "synchronous should be NORMAL (1) during bulk load, not OFF (0)");
+    assert_eq!(
+        sync_value, 1,
+        "synchronous should be NORMAL (1) during bulk load, not OFF (0)"
+    );
 
     db.end_bulk_load().await.unwrap();
 }
 
 #[tokio::test]
 async fn bulk_load_round_trip_preserves_data() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
 
     db.begin_bulk_load().await.unwrap();
 
-    let nodes = vec![
-        sample_node("c1", "alpha"),
-        sample_node("c2", "beta"),
-    ];
+    let nodes = vec![sample_node("c1", "alpha"), sample_node("c2", "beta")];
     db.insert_nodes(&nodes).await.unwrap();
 
     db.end_bulk_load().await.unwrap();
@@ -216,7 +229,8 @@ async fn bulk_load_round_trip_preserves_data() {
 #[test]
 fn is_corruption_error_matches_malformed() {
     let e = tokensave::errors::TokenSaveError::Database {
-        message: "failed to read search result: SQLite failure: `database disk image is malformed`".to_string(),
+        message: "failed to read search result: SQLite failure: `database disk image is malformed`"
+            .to_string(),
         operation: "search_nodes".to_string(),
     };
     assert!(Database::is_corruption_error(&e));
@@ -259,7 +273,11 @@ fn dirty_sentinel_lifecycle() {
     assert!(!dirty_path.exists());
 
     // Write sentinel
-    std::fs::write(&dirty_path, format!("pid={}\nversion=test", std::process::id())).unwrap();
+    std::fs::write(
+        &dirty_path,
+        format!("pid={}\nversion=test", std::process::id()),
+    )
+    .unwrap();
     assert!(dirty_path.exists());
 
     // Read contents
@@ -347,12 +365,15 @@ async fn corrupt_db_detected_and_repaired_on_reopen() {
     std::fs::remove_file(&wal).ok();
 
     let (db3, _) = Database::initialize(&db_path).await.unwrap();
-    assert!(db3.quick_check().await.unwrap(), "fresh db after recovery should be healthy");
+    assert!(
+        db3.quick_check().await.unwrap(),
+        "fresh db after recovery should be healthy"
+    );
 }
 
 #[tokio::test]
 async fn fts_corruption_healed_by_search_nodes() {
-    let (db, _dir, _path) = setup_db().await;
+    let (_dir, db, _path) = setup_db().await;
 
     // Insert data so FTS has content
     let nodes = vec![
@@ -382,4 +403,145 @@ async fn fts_corruption_healed_by_search_nodes() {
         !results.is_empty(),
         "search should recover via self-healing or LIKE fallback"
     );
+}
+
+// ─── Bulk-load edge dedup + interrupted-finalization recovery (#318) ──────
+
+/// Returns `true` if an index named `name` exists on the database.
+async fn index_exists(db: &Database, name: &str) -> bool {
+    let mut rows = db
+        .conn()
+        .query("SELECT name FROM sqlite_master WHERE type = 'index'", ())
+        .await
+        .unwrap();
+    while let Some(row) = rows.next().await.unwrap() {
+        let n: String = row.get(0).unwrap();
+        if n == name {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns the total number of rows in the `edges` table.
+async fn edge_count(db: &Database) -> i64 {
+    let mut rows = db
+        .conn()
+        .query("SELECT COUNT(*) FROM edges", ())
+        .await
+        .unwrap();
+    rows.next().await.unwrap().unwrap().get(0).unwrap()
+}
+
+/// `begin_bulk_load` drops `idx_edges_unique`, so `INSERT OR IGNORE` can no
+/// longer dedupe during the load. `end_bulk_load` must therefore collapse any
+/// duplicate rows *before* it recreates the unique index — otherwise that
+/// `CREATE UNIQUE INDEX` fails on the duplicates and the graph is left
+/// permanently un-indexed (#318).
+#[tokio::test]
+async fn end_bulk_load_dedupes_edges_before_unique_index() {
+    let (_dir, db, _path) = setup_db().await;
+
+    db.insert_nodes(&[sample_node("s", "src_fn"), sample_node("t", "dst_fn")])
+        .await
+        .unwrap();
+
+    db.begin_bulk_load().await.unwrap();
+    db.conn()
+        .execute_batch(
+            "INSERT INTO edges (source, target, kind, line) VALUES ('s', 't', 'calls', 5);
+             INSERT INTO edges (source, target, kind, line) VALUES ('s', 't', 'calls', 5);
+             INSERT INTO edges (source, target, kind, line) VALUES ('s', 't', 'calls', 5);",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        edge_count(&db).await,
+        3,
+        "duplicates must be present before finalization"
+    );
+
+    db.end_bulk_load().await.unwrap();
+
+    assert_eq!(
+        edge_count(&db).await,
+        1,
+        "end_bulk_load must collapse duplicate edge tuples"
+    );
+    assert!(
+        index_exists(&db, "idx_edges_unique").await,
+        "the unique dedup index must exist after finalization"
+    );
+}
+
+/// A bulk load interrupted between `begin_bulk_load` and `end_bulk_load`
+/// leaves the graph un-indexed and possibly duplicated. `quick_check` passes
+/// (the B-tree is intact), so `TokenSave::open` must detect the missing
+/// `idx_edges_unique` on a dirty reopen and finalize the load — dedup and
+/// rebuild the indexes — rather than serve the broken graph as-is (#318).
+#[tokio::test]
+async fn open_finalizes_interrupted_bulk_load() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::write(
+        project.join("src").join("lib.rs"),
+        "fn caller() { callee(); }\nfn callee() {}\n",
+    )
+    .unwrap();
+
+    {
+        let cg = tokensave::tokensave::TokenSave::init(project)
+            .await
+            .unwrap();
+        cg.index_all().await.unwrap();
+
+        // Simulate a crash mid-bulk-load: the dedup index is dropped and
+        // duplicate edges are injected, exactly as a repeated or interrupted
+        // load would leave the table.
+        cg.db().begin_bulk_load().await.unwrap();
+        cg.db()
+            .conn()
+            .execute_batch(
+                "INSERT INTO edges (source, target, kind, line)
+                 SELECT source, target, kind, line FROM edges;",
+            )
+            .await
+            .unwrap();
+        assert!(
+            !index_exists(cg.db(), "idx_edges_unique").await,
+            "precondition: bulk load dropped the unique index"
+        );
+    }
+
+    // The dirty sentinel a killed process would have left behind.
+    std::fs::write(
+        project.join(".tokensave").join("dirty"),
+        "pid=0\nversion=test",
+    )
+    .unwrap();
+
+    let cg = tokensave::tokensave::TokenSave::open(project)
+        .await
+        .unwrap();
+
+    assert!(
+        index_exists(cg.db(), "idx_edges_unique").await,
+        "recovery must recreate idx_edges_unique"
+    );
+    let mut rows = cg
+        .db()
+        .conn()
+        .query(
+            "SELECT COUNT(*) FROM (
+                 SELECT 1 FROM edges
+                 GROUP BY source, target, kind, COALESCE(line, -1)
+                 HAVING COUNT(*) > 1
+             )",
+            (),
+        )
+        .await
+        .unwrap();
+    let dup_groups: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+    assert_eq!(dup_groups, 0, "recovery must remove duplicate edges");
 }

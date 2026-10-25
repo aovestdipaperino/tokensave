@@ -3,55 +3,66 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-use crate::db::Database;
-use crate::errors::Result;
-
 /// Read a source file to a UTF-8 string, transparently handling UTF-16 LE/BE
-/// (detected via BOM). Returns an IO error only when the file genuinely cannot
-/// be read or decoded.
+/// (detected via BOM). Invalid non-BOM UTF-8 sequences are replaced with the
+/// Unicode replacement character so legacy-encoded source can still be parsed.
+/// Returns an IO error only when the file cannot be read or BOM-marked UTF-16
+/// cannot be decoded.
 pub fn read_source_file(path: &Path) -> std::io::Result<String> {
-    let bytes = std::fs::read(path)?;
+    decode_source_bytes(&std::fs::read(path)?)
+}
 
+/// Shared indexer/verifier/quality-diff decoding, for filesystem and Git blob
+/// reads alike; callers own the input read and its bounds.
+pub(crate) fn decode_source_bytes(bytes: &[u8]) -> std::io::Result<String> {
     // UTF-16 LE BOM: FF FE
     if bytes.starts_with(&[0xFF, 0xFE]) {
-        let u16s: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect();
-        return String::from_utf16(&u16s).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        });
+        let (pairs, _) = bytes[2..].as_chunks::<2>();
+        let u16s: Vec<u16> = pairs.iter().copied().map(u16::from_le_bytes).collect();
+        return String::from_utf16(&u16s)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
     }
 
     // UTF-16 BE BOM: FE FF
     if bytes.starts_with(&[0xFE, 0xFF]) {
-        let u16s: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
-            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
-            .collect();
-        return String::from_utf16(&u16s).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        });
+        let (pairs, _) = bytes[2..].as_chunks::<2>();
+        let u16s: Vec<u16> = pairs.iter().copied().map(u16::from_be_bytes).collect();
+        return String::from_utf16(&u16s)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
     }
 
     // Strip UTF-8 BOM if present, then validate
-    let start = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) { 3 } else { 0 };
-    String::from_utf8(bytes[start..].to_vec()).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-    })
+    let start = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        3
+    } else {
+        0
+    };
+    match String::from_utf8(bytes[start..].to_vec()) {
+        Ok(source) => Ok(source),
+        Err(error) => Ok(String::from_utf8_lossy(error.as_bytes()).into_owned()),
+    }
 }
 
-/// Get filesystem mtime (seconds since epoch) and size for pre-filter.
+/// Get filesystem mtime (nanoseconds since epoch) and size for the incremental
+/// sync pre-filter.
+///
+/// Nanosecond — not second — resolution is deliberate (#259). The pre-filter
+/// treats a file as unchanged when both its stored mtime and size match, and
+/// only then skips re-hashing it. At second resolution, an edit that lands in
+/// the *same wall-clock second* as the last index and happens to preserve the
+/// byte size (common when a build tool or editor rewrites an HTML file's
+/// embedded script structure in place) is indistinguishable from no change, so
+/// the stale index is served indefinitely. Nanosecond mtime shrinks that blind
+/// window to effectively zero. The returned value feeds `FileRecord::modified_at`,
+/// which is compared only against itself across syncs, so the unit change is
+/// self-contained (older second-granular records simply trigger one re-hash on
+/// the first sync after upgrade, which the content-hash check then resolves).
 pub fn file_stat(path: &Path) -> Option<(i64, u64)> {
     let meta = std::fs::metadata(path).ok()?;
     let mtime = meta.modified().ok()?;
-    let secs = mtime
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs() as i64;
-    Some((secs, meta.len()))
+    let nanos = mtime.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos() as i64;
+    Some((nanos, meta.len()))
 }
-
 
 /// Compute SHA-256 content hash of file content.
 pub fn content_hash(content: &str) -> String {
@@ -61,40 +72,44 @@ pub fn content_hash(content: &str) -> String {
     hex::encode(result)
 }
 
-/// Find files whose stored content hash differs from the current hash.
-pub async fn find_stale_files(db: &Database, current_hashes: &[(String, String)]) -> Result<Vec<String>> {
-    let mut stale = Vec::new();
-    for (path, current_hash) in current_hashes {
-        if let Some(file_record) = db.get_file(path).await? {
-            if file_record.content_hash != *current_hash {
-                stale.push(path.clone());
-            }
-        }
-    }
-    Ok(stale)
-}
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::fs::{File, OpenOptions};
+    use std::io::Write;
+    use std::time::{Duration, UNIX_EPOCH};
 
-/// Find files that exist on disk but not in the database.
-pub async fn find_new_files(db: &Database, current_files: &[String]) -> Result<Vec<String>> {
-    let mut new_files = Vec::new();
-    for path in current_files {
-        if db.get_file(path).await?.is_none() {
-            new_files.push(path.clone());
-        }
-    }
-    Ok(new_files)
-}
+    /// Regression for #259: `file_stat` must expose sub-second mtime resolution
+    /// so the incremental-sync pre-filter can tell apart two edits that land in
+    /// the same wall-clock second while keeping the same byte size. At the old
+    /// second granularity both mtimes collapsed to the same value and the second
+    /// edit was served stale.
+    #[test]
+    fn file_stat_distinguishes_same_second_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("page.html");
 
-/// Find files that are in the database but no longer exist on disk.
-pub async fn find_removed_files(db: &Database, current_files: &[String]) -> Result<Vec<String>> {
-    let all_db_files = db.get_all_files().await?;
-    let current_set: std::collections::HashSet<&str> =
-        current_files.iter().map(|s| s.as_str()).collect();
-    let mut removed = Vec::new();
-    for file_record in &all_db_files {
-        if !current_set.contains(file_record.path.as_str()) {
-            removed.push(file_record.path.clone());
-        }
+        // Two identical-size contents, so `size` cannot disambiguate them.
+        let mut f = File::create(&path).unwrap();
+        f.write_all(b"<b>AAAA</b>").unwrap();
+        f.sync_all().unwrap();
+
+        // Same second, 1 ms apart.
+        let base = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        f.set_modified(base).unwrap();
+        let (mtime_a, size_a) = file_stat(&path).unwrap();
+
+        let mut f2 = OpenOptions::new().write(true).open(&path).unwrap();
+        f2.write_all(b"<b>BBBB</b>").unwrap();
+        f2.sync_all().unwrap();
+        f2.set_modified(base + Duration::from_millis(1)).unwrap();
+        let (mtime_b, size_b) = file_stat(&path).unwrap();
+
+        assert_eq!(size_a, size_b, "sizes are equal by construction");
+        assert_ne!(
+            mtime_a, mtime_b,
+            "sub-second edits within the same second must yield distinct mtimes"
+        );
     }
-    Ok(removed)
 }

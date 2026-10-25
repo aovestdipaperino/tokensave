@@ -27,8 +27,33 @@ fn def(name: &str, title: &str, description: &str, input_schema: Value) -> ToolD
     }
 }
 
+/// Write/exec annotations: tools that mutate files or run subprocesses.
+fn read_write(title: &str) -> Value {
+    json!({
+        "readOnlyHint": false,
+        "title": title
+    })
+}
+
+/// Build a `ToolDefinition` for a tool that writes files or executes
+/// subprocesses (`readOnlyHint: false`, no `_meta`).
+fn def_rw(name: &str, title: &str, description: &str, input_schema: Value) -> ToolDefinition {
+    ToolDefinition {
+        name: name.to_string(),
+        description: description.to_string(),
+        input_schema,
+        annotations: Some(read_write(title)),
+        meta: None,
+    }
+}
+
 /// Build a `ToolDefinition` with `readOnlyHint` AND `anthropic/alwaysLoad`.
-fn def_always_load(name: &str, title: &str, description: &str, input_schema: Value) -> ToolDefinition {
+fn def_always_load(
+    name: &str,
+    title: &str,
+    description: &str,
+    input_schema: Value,
+) -> ToolDefinition {
     ToolDefinition {
         name: name.to_string(),
         description: description.to_string(),
@@ -38,51 +63,579 @@ fn def_always_load(name: &str, title: &str, description: &str, input_schema: Val
     }
 }
 
+/// `graph_root` description for a tool that answers about one graph.
+///
+/// It used to be one 457-byte paragraph repeated verbatim on every one of the
+/// 53 graph-scoped tools, re-sent every turn before any tool is called
+/// (#576). Each description is now one sentence; the full cross-project rules
+/// go once per session in [`GRAPH_SELECTOR_INSTRUCTIONS`]. Only the tools in
+/// [`FEDERATABLE_TOOLS`](crate::mcp::graph_scope::FEDERATABLE_TOOLS) mention
+/// the array form, because only they accept it.
+///
+/// The schema keeps `anyOf` everywhere: an array reaching a single-graph tool
+/// is rejected at the call with a message that names the tools that accept
+/// one, and narrowing the schema instead would turn that into an opaque
+/// validation error.
+///
+/// Like [`CONTEXT_DESCRIPTION`], these must stay constant: a changed byte
+/// invalidates the client's cached prompt prefix.
+const GRAPH_ROOT_DESCRIPTION: &str =
+    "Absolute root of another initialized project to query. Omit for the served project.";
+
+/// `graph_root` description for the tools that accept an array of roots.
+const GRAPH_ROOT_FEDERATED_DESCRIPTION: &str =
+    "Absolute root of another initialized project to query, or an array of roots to query \
+     together. Omit for the served project.";
+
+/// `graph_branch` description.
+const GRAPH_BRANCH_DESCRIPTION: &str =
+    "Tracked branch to query within graph_root. Requires graph_root.";
+
+/// The cross-project rules that the `graph_root` descriptions no longer carry
+/// (#576). The server sends this once per session in its instructions.
+pub const GRAPH_SELECTOR_INSTRUCTIONS: &str =
+    " A tool with a graph_root parameter can query another initialized project: pass that \
+     project's absolute root, and graph_branch to select one of its tracked branches. \
+     tokensave_search and tokensave_files also accept an array of roots and answer across all \
+     of them at once, interleaving results by rank; roots that are worktrees of a repository \
+     already named are collapsed, and the response says which. Every other tool answers about \
+     a single graph and rejects an array.";
+
+fn graph_root_description(tool: &str) -> &'static str {
+    if crate::mcp::graph_scope::FEDERATABLE_TOOLS.contains(&tool) {
+        GRAPH_ROOT_FEDERATED_DESCRIPTION
+    } else {
+        GRAPH_ROOT_DESCRIPTION
+    }
+}
+
+/// Add the explicit selectors and metadata used by tools that can query any
+/// initialized graph.
+fn graph_scoped(mut definition: ToolDefinition) -> ToolDefinition {
+    let Some(properties) = definition
+        .input_schema
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+    else {
+        panic!("tool input schema must have object properties");
+    };
+    properties.insert(
+        "graph_root".to_string(),
+        json!({
+            // `anyOf` rather than `"type": ["string", "array"]` (#440): JSON
+            // Schema permits a union in `type`, but Gemini's
+            // function-declaration proto validates `items` against a single
+            // `Type.ARRAY` and rejects the whole request — every tool in it,
+            // not just this one. `anyOf` says the same thing and passes.
+            "anyOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "string" } }
+            ],
+            "description": graph_root_description(&definition.name)
+        }),
+    );
+    properties.insert(
+        "graph_branch".to_string(),
+        json!({
+            "type": "string",
+            "description": GRAPH_BRANCH_DESCRIPTION
+        }),
+    );
+
+    let Some(meta) = definition
+        .meta
+        .get_or_insert_with(|| json!({}))
+        .as_object_mut()
+    else {
+        panic!("tool metadata must be an object");
+    };
+    meta.insert("tokensave/graphScoped".to_string(), json!(true));
+    definition
+}
+
+/// Whether a tool definition explicitly supports selecting another graph.
+pub fn is_graph_scoped_tool(definition: &ToolDefinition) -> bool {
+    definition
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("tokensave/graphScoped"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Mark a tool that stays callable but is never sent in `tools/list`: an
+/// alias kept so existing callers and permission lists keep working while
+/// new callers see only its replacement.
+fn hidden(mut definition: ToolDefinition) -> ToolDefinition {
+    let Some(meta) = definition
+        .meta
+        .get_or_insert_with(|| json!({}))
+        .as_object_mut()
+    else {
+        panic!("tool metadata must be an object");
+    };
+    meta.insert("tokensave/hidden".to_string(), json!(true));
+    definition
+}
+
+/// Whether a tool is a hidden alias (see [`hidden`]).
+pub fn is_hidden_tool(definition: &ToolDefinition) -> bool {
+    definition
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("tokensave/hidden"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Mark a read-only local-graph tool that has no `graph_root`/`graph_branch`
+/// selectors, so the branch-drift gate refuses it once the served branch has
+/// drifted. Deriving the refused set from this marker (instead of a
+/// hard-coded name list) keeps the gate covering any future selector-less
+/// local graph tool automatically.
+fn local_graph_no_selectors(mut definition: ToolDefinition) -> ToolDefinition {
+    let Some(meta) = definition
+        .meta
+        .get_or_insert_with(|| json!({}))
+        .as_object_mut()
+    else {
+        panic!("tool metadata must be an object");
+    };
+    meta.insert("tokensave/localGraphNoSelectors".to_string(), json!(true));
+    definition
+}
+
+/// Whether a tool reads the served local graph but cannot select another one.
+pub fn is_selectorless_local_graph_tool(definition: &ToolDefinition) -> bool {
+    definition
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("tokensave/localGraphNoSelectors"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The `tokensave_context` description.
+///
+/// The description must stay stable across re-indexes so MCP clients that
+/// fingerprint the system prompt (tool schemas are spliced into it) keep their
+/// prompt cache. Anything volatile — the live node count, for instance — is
+/// surfaced in tool *results* (see `tokensave_status`), never in this schema
+/// text. See issue #260.
+///
+/// This is why the call budget is gone rather than merely relaxed: it was
+/// computed from the graph's node count, so its value moved as the project
+/// grew across a size tier, and every move rewrote these bytes. Because the
+/// description sits inside the system prompt, a changed byte invalidates the
+/// whole cached prefix — the client discards the cache and pays to rebuild it,
+/// so a budget meant to save tokens was quietly blowing up the prompt cache
+/// and costing far more than the calls it discouraged. Keep this a `const`;
+/// never derive any part of it from graph state.
+pub const CONTEXT_DESCRIPTION: &str = "Build an AI-ready context for a task description. \
+     Returns relevant symbols, relationships, and optionally code snippets. \
+     The output includes a `### Retrieval` section: when it lists zero-hit terms, \
+     re-query once with `keywords` synonyms for them (or use tokensave_search); \
+     a `match: fts-only` tier means weak lexical matches, so verify entry points \
+     before building on them.";
+
 /// Returns the list of all tool definitions exposed by this MCP server.
+///
+/// Tools whose backing dependency is missing on the current host are
+/// filtered out so the model never sees a tool that will immediately
+/// fail when called. Currently this only affects `tokensave_ast_grep_rewrite`,
+/// which shells out to the `ast-grep` binary.
 pub fn get_tool_definitions() -> Vec<ToolDefinition> {
-    let definitions = vec![
-        def_search(),
-        def_context(),
-        def_callers(),
-        def_callees(),
-        def_impact(),
-        def_node(),
-        def_status(),
-        def_files(),
+    let mut definitions = vec![
+        graph_scoped(def_search()),
+        graph_scoped(def_context()),
+        graph_scoped(def_callers()),
+        graph_scoped(def_callees()),
+        graph_scoped(def_impact()),
+        graph_scoped(def_node()),
+        graph_scoped(def_status()),
+        graph_scoped(def_files()),
         def_affected(),
-        def_dead_code(),
+        graph_scoped(def_dead_code()),
+        graph_scoped(def_ambiguous_calls()),
         def_diff_context(),
-        def_module_api(),
-        def_circular(),
-        def_hotspots(),
-        def_similar(),
-        def_rename_preview(),
-        def_unused_imports(),
-        def_rank(),
-        def_largest(),
-        def_coupling(),
-        def_inheritance_depth(),
-        def_distribution(),
-        def_recursion(),
-        def_complexity(),
-        def_doc_coverage(),
-        def_god_class(),
+        graph_scoped(def_module_api()),
+        graph_scoped(def_circular()),
+        graph_scoped(def_imports()),
+        graph_scoped(def_hotspots()),
+        graph_scoped(def_similar()),
+        graph_scoped(def_rename_preview()),
+        graph_scoped(def_unused_imports()),
+        graph_scoped(def_rank()),
+        graph_scoped(def_largest()),
+        graph_scoped(def_coupling()),
+        graph_scoped(def_inheritance_depth()),
+        graph_scoped(def_distribution()),
+        graph_scoped(def_recursion()),
+        graph_scoped(def_complexity()),
+        graph_scoped(def_doc_coverage()),
+        graph_scoped(def_god_class()),
         def_changelog(),
         def_port_status(),
         def_port_order(),
         def_commit_context(),
         def_pr_context(),
         def_simplify_scan(),
-        def_test_map(),
-        def_type_hierarchy(),
+        graph_scoped(def_test_map()),
+        graph_scoped(def_type_hierarchy()),
         def_branch_search(),
         def_branch_diff(),
         def_branch_list(),
+        def_str_replace(),
+        def_multi_str_replace(),
+        def_insert_at(),
+        def_delete_symbol(),
+        def_replace_lines(),
+        def_ast_grep_rewrite(),
+        def_rename(),
+        graph_scoped(def_gini()),
+        graph_scoped(def_dependency_depth()),
+        graph_scoped(def_health()),
+        def_redundancy(),
+        def_runtime(),
+        graph_scoped(def_dsm()),
+        graph_scoped(def_test_risk()),
+        graph_scoped(def_test_coverage()),
+        def_dependencies(),
+        def_session_start(),
+        def_session_end(),
+        graph_scoped(def_body()),
+        graph_scoped(def_doc()),
+        graph_scoped(def_todos()),
+        graph_scoped(def_callers_for()),
+        graph_scoped(def_by_qualified_name()),
+        graph_scoped(def_signature()),
+        graph_scoped(def_impls()),
+        def_diagnose(),
+        graph_scoped(def_derives()),
+        graph_scoped(def_annotations()),
+        def_run_affected_tests(),
+        def_record_decision(),
+        def_record_code_area(),
+        def_session_recall(),
+        graph_scoped(def_read()),
+        graph_scoped(def_entities()),
+        graph_scoped(def_implementations()),
+        graph_scoped(def_unsafe_patterns()),
+        def_diagnostics(),
+        def_config(),
+        graph_scoped(def_signature_search()),
+        graph_scoped(def_constructors()),
+        graph_scoped(def_field_sites()),
+        graph_scoped(def_call_chain()),
+        graph_scoped(def_file_dependents()),
+        def_replace_symbol(),
+        def_insert_at_symbol(),
+        graph_scoped(def_find_exact_symbol()),
+        def_blame(),
+        def_log(),
+        def_diff(),
     ];
-    debug_assert!(!definitions.is_empty(), "get_tool_definitions returned empty list");
-    debug_assert!(definitions.iter().all(|d| d.name.starts_with("tokensave_")),
-        "all tool definitions must have 'tokensave_' prefix");
+    if !ast_grep_available() {
+        definitions.retain(|d| d.name != "tokensave_ast_grep_rewrite");
+    }
+    debug_assert!(
+        !definitions.is_empty(),
+        "get_tool_definitions returned empty list"
+    );
+    debug_assert!(
+        definitions.iter().all(|d| d.name.starts_with("tokensave_")),
+        "all tool definitions must have 'tokensave_' prefix"
+    );
     definitions
+}
+
+/// Whether a tool definition describes a tool that only reads the graph.
+///
+/// Mirrors the `readOnlyHint` annotation the definitions publish, so the
+/// server and its clients agree on which tools may run at the same time
+/// (#685). A read-only call does not change the index, so the server can
+/// answer two of them at once; anything else still runs alone.
+///
+/// The server derives the set of such tools from the same registry pass it
+/// already builds at startup, so the answer costs nothing beyond the names.
+pub fn is_read_only_tool(definition: &ToolDefinition) -> bool {
+    definition
+        .annotations
+        .as_ref()
+        .and_then(|annotations| annotations.get("readOnlyHint"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The tools that [`Toolset::Core`](crate::config::Toolset::Core) lists (#576).
+///
+/// Exploration (`context`, `search`, `status`), reading (`read`, `body`,
+/// `files`), the call graph (`callers`, `callees`, `impact`) and the two
+/// string edits. Every `anthropic/alwaysLoad` tool must be here: those are the
+/// tools the server instructions send an agent to first.
+pub const CORE_TOOLS: &[&str] = &[
+    "tokensave_context",
+    "tokensave_search",
+    "tokensave_status",
+    "tokensave_read",
+    "tokensave_body",
+    "tokensave_files",
+    "tokensave_callers",
+    "tokensave_callees",
+    "tokensave_impact",
+    "tokensave_str_replace",
+    "tokensave_multi_str_replace",
+];
+
+/// The tool that lists more tools when the core toolset is active (#576).
+pub const MORE_TOOL: &str = "tokensave_more";
+
+/// The areas that [`MORE_TOOL`] can list: name, summary, tools.
+///
+/// The last area has no tool list. It is the catch-all: a tool that is not in
+/// [`CORE_TOOLS`] and not named by another area belongs to it, so a new tool
+/// is reachable without an edit here.
+pub const TOOL_AREAS: &[(&str, &str, &[&str])] = &[
+    (
+        "analysis",
+        "code-quality metrics and audits: complexity, coupling, cycles, dead code, hotspots, \
+         health, test risk and coverage, diagnostics, package dependencies",
+        &[
+            "tokensave_gini",
+            "tokensave_god_class",
+            "tokensave_dsm",
+            "tokensave_distribution",
+            "tokensave_redundancy",
+            "tokensave_hotspots",
+            "tokensave_complexity",
+            "tokensave_coupling",
+            "tokensave_circular",
+            "tokensave_largest",
+            "tokensave_rank",
+            "tokensave_health",
+            "tokensave_doc_coverage",
+            "tokensave_recursion",
+            "tokensave_test_risk",
+            "tokensave_test_coverage",
+            "tokensave_test_map",
+            "tokensave_simplify_scan",
+            "tokensave_unsafe_patterns",
+            "tokensave_dead_code",
+            "tokensave_unused_imports",
+            "tokensave_todos",
+            "tokensave_diagnostics",
+            "tokensave_diagnose",
+            "tokensave_inheritance_depth",
+            "tokensave_dependency_depth",
+            "tokensave_dependencies",
+        ],
+    ),
+    (
+        "edit",
+        "symbol-level and line-level edits, ast-grep rewrite, graph-based rename",
+        &[
+            "tokensave_insert_at",
+            "tokensave_delete_symbol",
+            "tokensave_replace_lines",
+            "tokensave_ast_grep_rewrite",
+            "tokensave_replace_symbol",
+            "tokensave_insert_at_symbol",
+            "tokensave_rename",
+        ],
+    ),
+    (
+        "git",
+        "commit, PR, diff, blame, log and changelog context, affected tests, tracked branches",
+        &[
+            "tokensave_changelog",
+            "tokensave_commit_context",
+            "tokensave_pr_context",
+            "tokensave_diff_context",
+            "tokensave_diff",
+            "tokensave_blame",
+            "tokensave_log",
+            "tokensave_affected",
+            "tokensave_run_affected_tests",
+            "tokensave_branch_search",
+            "tokensave_branch_diff",
+            "tokensave_branch_list",
+        ],
+    ),
+    (
+        "memory",
+        "session notes and recorded decisions",
+        &[
+            "tokensave_session_start",
+            "tokensave_session_end",
+            "tokensave_session_recall",
+            "tokensave_record_decision",
+            "tokensave_record_code_area",
+        ],
+    ),
+    (
+        "navigate",
+        "more symbol lookups: node, signature, implementations, type hierarchy, imports, \
+         call chains, field and constructor sites",
+        &[],
+    ),
+];
+
+/// The area of a tool that is not in [`CORE_TOOLS`].
+pub fn tool_area(name: &str) -> &'static str {
+    TOOL_AREAS
+        .iter()
+        .find(|(_, _, tools)| tools.contains(&name))
+        .or(TOOL_AREAS.last())
+        .map_or("navigate", |(area, _, _)| area)
+}
+
+/// A tool name for a hint in a tool result, with how to list it when the core
+/// toolset hides it (#576): `tokensave_doc (via tokensave_more area
+/// "navigate" if not listed)`. A core tool is returned as is.
+pub fn reachable_tool_name(name: &str) -> String {
+    if CORE_TOOLS.contains(&name) {
+        return name.to_string();
+    }
+    format!(
+        "{name} (via {MORE_TOOL} area \"{}\" if not listed)",
+        tool_area(name)
+    )
+}
+
+/// True when `area` is `"all"` or the name of an entry in [`TOOL_AREAS`].
+pub fn is_tool_area(area: &str) -> bool {
+    area == "all" || TOOL_AREAS.iter().any(|(name, _, _)| *name == area)
+}
+
+/// The `initialize` instructions sentence for the core toolset (#576): which
+/// tools are listed, and which areas [`MORE_TOOL`] can add.
+///
+/// A client that defers tool schemas (Claude Code) shows the model the server
+/// instructions before any schema, so this map is how a session learns that a
+/// tool it was told to use, such as `tokensave_node`, is one call away. It is
+/// sent once per session, not once per turn.
+pub fn core_toolset_instructions() -> String {
+    use std::fmt::Write;
+    let mut text = format!(
+        " Only the core tools are listed: {}. To list more, call {MORE_TOOL} with an area:",
+        CORE_TOOLS.join(", ")
+    );
+    for (area, summary, _) in TOOL_AREAS {
+        let _ = write!(text, " {area} ({summary}),");
+    }
+    text.push_str(" or all.");
+    text
+}
+
+fn def_more() -> ToolDefinition {
+    use std::fmt::Write;
+    let mut description = "List more tokensave tools. Only the core tools are listed at the \
+                           start, to keep the tool schemas small. Call this with an area, and \
+                           the tools of that area are listed from then on. Areas:"
+        .to_string();
+    let mut areas: Vec<&str> = Vec::new();
+    for (area, summary, _) in TOOL_AREAS {
+        let _ = write!(description, "\n• {area} — {summary}");
+        areas.push(area);
+    }
+    areas.push("all");
+    def(
+        MORE_TOOL,
+        "List More Tools",
+        &description,
+        json!({
+            "type": "object",
+            "properties": {
+                "area": { "type": "string", "enum": areas, "description": "The area to list, or \"all\"." }
+            },
+            "required": ["area"]
+        }),
+    )
+}
+
+/// Every tool an agent can be granted at install time: all of
+/// [`get_tool_definitions`] plus [`MORE_TOOL`].
+///
+/// `tokensave_more` is not in [`get_tool_definitions`] because the full
+/// toolset never lists it, but the core toolset is the default (#576), so a
+/// permission list without it prompts on the first call that lists more tools.
+pub fn get_installable_tool_definitions() -> Vec<ToolDefinition> {
+    let mut definitions = get_tool_definitions();
+    definitions.push(def_more());
+    definitions
+}
+
+/// Returns the tool definitions that `tools/list` sends for `toolset`.
+///
+/// [`get_tool_definitions`] stays the source of truth for everything else
+/// (dispatch, permission lists, the branch-drift gate): a tool that is not
+/// listed is hidden, not removed.
+///
+/// With [`Toolset::Core`](crate::config::Toolset::Core) the list is the core
+/// tools, the tools of each area in `revealed_areas`, and [`MORE_TOOL`] while
+/// an area is still hidden.
+pub fn get_listed_tool_definitions(
+    toolset: crate::config::Toolset,
+    revealed_areas: &std::collections::BTreeSet<String>,
+) -> Vec<ToolDefinition> {
+    let mut definitions = get_tool_definitions();
+    definitions.retain(|d| !is_hidden_tool(d));
+    if toolset == crate::config::Toolset::Full {
+        return definitions;
+    }
+    let all = revealed_areas.contains("all")
+        || TOOL_AREAS
+            .iter()
+            .all(|(area, _, _)| revealed_areas.contains(*area));
+    if !all {
+        definitions.retain(|d| {
+            CORE_TOOLS.contains(&d.name.as_str()) || revealed_areas.contains(tool_area(&d.name))
+        });
+        definitions.push(def_more());
+    }
+    definitions
+}
+
+/// True when a definition is marked `anthropic/alwaysLoad` — i.e. its schema
+/// is loaded into the model's context immediately, rather than being deferred
+/// and fetched on demand (via `ToolSearch`).
+pub(crate) fn is_always_load(def: &ToolDefinition) -> bool {
+    def.meta
+        .as_ref()
+        .and_then(|m| m.get("anthropic/alwaysLoad"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Returns only the tool definitions that are loaded into the model's context
+/// up front (`anthropic/alwaysLoad`: currently `tokensave_search`,
+/// `tokensave_context`, `tokensave_status`, and the structural call-graph
+/// tools `tokensave_impact` and `tokensave_callees`, see #333).
+///
+/// The remaining ~80 tools are deferred — their full schemas never enter the
+/// context unless the client fetches one on demand — so only this primary
+/// subset should count toward the one-time schema-overhead estimate. Charging
+/// the whole `tools/list` payload assumed every schema was resident, which
+/// over-stated the up-front context cost by more than an order of magnitude.
+pub fn get_always_load_tool_definitions() -> Vec<ToolDefinition> {
+    get_tool_definitions()
+        .into_iter()
+        .filter(is_always_load)
+        .collect()
+}
+
+/// Returns true when the external `ast-grep` binary is on PATH. Result is
+/// cached after the first check so we don't fork a subprocess on every
+/// `tools/list` request.
+pub fn ast_grep_available() -> bool {
+    use std::sync::OnceLock;
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        std::process::Command::new("ast-grep")
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success())
+    })
 }
 
 // ── alwaysLoad tools (loaded into the model prompt immediately) ─────────
@@ -91,7 +644,9 @@ fn def_search() -> ToolDefinition {
     def_always_load(
         "tokensave_search",
         "Search Symbols",
-        "Search for symbols (functions, structs, traits, etc.) in the code graph by name or keyword.",
+        "Search for symbols (functions, structs, traits, etc.) in the code graph by name or keyword. \
+         Persistent noise (vendored trees, docs) can be suppressed project-wide via gitignore-style \
+         patterns in .tokensave/queryignore.",
         json!({
             "type": "object",
             "properties": {
@@ -102,6 +657,37 @@ fn def_search() -> ToolDefinition {
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of results to return (default: 10)"
+                },
+                "path_include": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Only include results whose file path contains one of these substrings (e.g. \"src\", \"app\"). Empty/absent means no path constraint."
+                },
+                "path_exclude": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Exclude results whose file path contains any of these substrings (e.g. \"node_modules\", \"dist\", \"venv\"). Takes precedence over path_include."
+                },
+                "literal": {
+                    "type": "boolean",
+                    "description": "Exact-substring search over source text (for runtime error strings); returns file/line locations instead of ranked symbols, plus `total` matches and `truncated` when `limit` cut the list. Case-sensitive. Default false."
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["text", "json"],
+                    "description": "Output format. 'text' returns raw source with a short header (no JSON escaping); 'json' returns the structured object. Default 'text'."
+                },
+                "ids": {
+                    "type": "boolean",
+                    "description": "Include node IDs / enclosing IDs in results (both formats). Default false; pass true when you plan a follow-up call."
+                },
+                "exact_total": {
+                    "type": "boolean",
+                    "description": "Literal mode only. Count every match in the project, not just the ones shown, so `total` is exact. Default true. Pass false to stop the scan as soon as `limit` matches are found: the scan then reads only part of the project and `total` becomes a lower bound, reported as `total_exact: false`."
+                },
+                "timeout_ms": {
+                    "type": "number",
+                    "description": "Literal mode only. Give up on the scan after this many milliseconds and answer with the matches found so far, marked `timed_out: true` and `total_exact: false`. Default 30000; 0 disables the limit."
                 }
             },
             "required": ["query"]
@@ -113,7 +699,7 @@ fn def_context() -> ToolDefinition {
     def_always_load(
         "tokensave_context",
         "Task Context",
-        "Build an AI-ready context for a task description. Returns relevant symbols, relationships, and optionally code snippets.",
+        CONTEXT_DESCRIPTION,
         json!({
             "type": "object",
             "properties": {
@@ -133,6 +719,10 @@ fn def_context() -> ToolDefinition {
                     "type": "number",
                     "description": "Maximum number of code snippets when include_code is true (default: 5)"
                 },
+                "max_code_lines": {
+                    "type": "number",
+                    "description": "Maximum lines per code snippet (default: unlimited, max 1000). Use it to see the signature plus the first lines of several symbols instead of one whole large body. A separate size limit of ~1500 bytes per snippet always applies, so a high line cap has little effect — asking for 100 lines does not guarantee 100 lines. Truncated snippets name the tokensave_body call that returns the rest."
+                },
                 "mode": {
                     "type": "string",
                     "enum": ["explore", "plan"],
@@ -142,6 +732,29 @@ fn def_context() -> ToolDefinition {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Extra search keywords for synonym expansion. Use this when the task uses conceptual terms that may not match symbol names — e.g. for 'authentication', pass [\"login\", \"session\", \"credential\", \"token\", \"auth\"]. The graph is searched for each keyword independently."
+                },
+                "exclude_node_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Node IDs to exclude from results (pass seen_node_ids from previous call for session deduplication)"
+                },
+                "merge_adjacent": {
+                    "type": "boolean",
+                    "description": "When true, merge code blocks from the same file whose line ranges are adjacent or overlapping (default: false)"
+                },
+                "max_per_file": {
+                    "type": "number",
+                    "description": "Maximum symbols from a single file in results. Prevents one large file from dominating (default: max_nodes/3, minimum 3)"
+                },
+                "path_include": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Only include results whose file path contains one of these substrings (e.g. \"src\", \"app\"). Empty/absent means no path constraint."
+                },
+                "path_exclude": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Exclude results whose file path contains any of these substrings (e.g. \"node_modules\", \"dist\", \"venv\"). Takes precedence over path_include."
                 }
             },
             "required": ["task"]
@@ -161,70 +774,245 @@ fn def_status() -> ToolDefinition {
     )
 }
 
+fn def_callers_for() -> ToolDefinition {
+    def(
+        "tokensave_callers_for",
+        "Bulk callers",
+        "Returns the caller set of every supplied node ID in one round-trip. \
+         Useful for clustering or similarity queries that need many caller \
+         sets at once. Returns a map of {node_id: [caller_id, …]}. Defaults \
+         to `calls` edges; pass `kind` to filter by `uses`, `type_of`, etc.",
+        json!({
+            "type": "object",
+            "properties": {
+                "node_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Node IDs to look up callers for."
+                },
+                "kind": {
+                    "type": "string",
+                    "description": "Edge kind to filter by (default: \"calls\"). Pass an empty string to match all kinds."
+                },
+                "max_per_item": {
+                    "type": "number",
+                    "description": "Cap callers per item (default: 1000)."
+                }
+            },
+            "required": ["node_ids"]
+        }),
+    )
+}
+
+fn def_by_qualified_name() -> ToolDefinition {
+    def(
+        "tokensave_by_qualified_name",
+        "Lookup by qualified name",
+        "Look up nodes by their qualified name. Multiple rows can share a \
+         qualified name (overloads, generics, separate impl blocks). Useful \
+         for cross-run lookups where the content-hash node ID has changed.",
+        json!({
+            "type": "object",
+            "properties": {
+                "qualified_name": {
+                    "type": "string",
+                    "description": "The exact qualified name to look up."
+                }
+            },
+            "required": ["qualified_name"]
+        }),
+    )
+}
+
+fn def_impls() -> ToolDefinition {
+    def(
+        "tokensave_impls",
+        "Trait Implementations",
+        "List `impl` blocks matching a trait, a type, or both. With no filter \
+         returns every impl in the graph (use sparingly). Both arguments \
+         accept short names (e.g. `Display`) or qualified names. Surfaces \
+         information that is otherwise hard to query: trait-method dispatch \
+         targets, which types satisfy a given trait, and which traits a type \
+         implements.",
+        json!({
+            "type": "object",
+            "properties": {
+                "trait": {
+                    "type": "string",
+                    "description": "Trait name to filter by (short or qualified). Omit to include all traits."
+                },
+                "type": {
+                    "type": "string",
+                    "description": "Implementing type to filter by (short or qualified). Omit to include all types."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of results to return (default: 100)."
+                }
+            }
+        }),
+    )
+}
+
+fn def_signature() -> ToolDefinition {
+    def(
+        "tokensave_signature",
+        "Signature",
+        "Return the signature-level metadata for symbols matching a qualified \
+         name — visibility, signature string (generics, params, return type, \
+         where clauses), docstring, async flag, and kind. No bodies. Use this \
+         instead of reading source files when you only need the public-API \
+         surface of a function, method, or type. Multiple rows can be \
+         returned (overloads, separate impls).",
+        json!({
+            "type": "object",
+            "properties": {
+                "qualified_name": {
+                    "type": "string",
+                    "description": "The exact qualified name to look up."
+                },
+                "node_id": {
+                    "type": "string",
+                    "description": "Optional: look up a single node by its ID instead of qualified_name."
+                }
+            }
+        }),
+    )
+}
+
+// `impact` and `callees` are eagerly loaded (#333): the call-graph tools are
+// where a pre-built index has its clearest advantage over grep-and-read, but
+// measured usage showed them at ~0 calls because they sat behind a ToolSearch
+// round-trip the model had to already suspect existed. Their schemas are small
+// and the prompt prefix is cached, so surfacing them up front is cheap.
+fn def_callees() -> ToolDefinition {
+    def_always_load(
+        "tokensave_callees",
+        "Callees",
+        "Find all callees of a given node (function, method, etc.) up to a \
+         specified depth. When a callee resolves to a trait method, the \
+         concrete impl methods reachable through that trait are also \
+         returned, tagged with `dispatch_via_trait: true` and a `dispatch_from` \
+         pointing at the trait method. Pass `resolve_dispatch: false` to \
+         disable this behaviour and get only direct call edges. Pass `node_id`, \
+         or `symbol` to name the target directly: each match is answered in its \
+         own group (`symbol`, `match_count`, `matches[]` with the callees under \
+         `callees`), up to `max_matches`.",
+        json!({
+            "type": "object",
+            "properties": {
+                "node_id": {
+                    "type": "string",
+                    "description": "The unique node ID to find callees for. Takes precedence over `symbol`; one of the two is required."
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name to find callees for instead of node_id (e.g. 'RefreshAsync'). Resolved as tokensave_body resolves it: 'Coordinator.RefreshAsync', 'Coordinator::RefreshAsync' and 'App.Coordinator.RefreshAsync' all work (trailing segments are matched), and a function or type outranks a same-named field or import. Overloads are answered together."
+                },
+                "max_matches": {
+                    "type": "number",
+                    "description": "When `symbol` matches several symbols, answer up to this many, each in its own group headed by qualified name, kind, file, line, end_line and node_id (default: 3, max: 20). Further matches are listed without results, in tokensave_search rank order, for a follow-up call by node_id."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum callees listed per match (default: 50, max: 500). When more exist, the result reports `count`, `total` and `truncated: true` (with node_id alone, the list is then wrapped as `{count, total, truncated, callees}`)."
+                },
+                "max_depth": {
+                    "type": "number",
+                    "description": "Maximum traversal depth (default: 3)"
+                },
+                "resolve_dispatch": {
+                    "type": "boolean",
+                    "description": "If true (default), append concrete impl methods for any trait-method callee."
+                }
+            }
+        }),
+    )
+}
+
+fn def_impact() -> ToolDefinition {
+    def_always_load(
+        "tokensave_impact",
+        "Impact Radius",
+        "Compute the impact radius of a node: all symbols that directly or indirectly depend on it. \
+         Pass `node_id`, or `symbol` to name the target directly: each match is answered in its \
+         own group (`symbol`, `match_count`, `matches[]`), up to `max_matches`. `node_count` is \
+         the full radius; `nodes` lists at most `limit` of them.",
+        json!({
+            "type": "object",
+            "properties": {
+                "node_id": {
+                    "type": "string",
+                    "description": "The unique node ID to compute impact for. Takes precedence over `symbol`; one of the two is required."
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name to compute impact for instead of node_id (e.g. 'RefreshAsync'). Resolved as tokensave_body resolves it: 'Coordinator.RefreshAsync', 'Coordinator::RefreshAsync' and 'App.Coordinator.RefreshAsync' all work (trailing segments are matched), and a function or type outranks a same-named field or import. Overloads are answered together."
+                },
+                "max_matches": {
+                    "type": "number",
+                    "description": "When `symbol` matches several symbols, answer up to this many, each in its own group headed by qualified name, kind, file, line, end_line and node_id (default: 3, max: 20). Further matches are listed without results, in tokensave_search rank order, for a follow-up call by node_id."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum nodes listed per match (default: 50, max: 500). When more exist, the result reports `count`, `total` and `truncated: true`."
+                },
+                "max_depth": {
+                    "type": "number",
+                    "description": "Maximum traversal depth (default: 3)"
+                }
+            }
+        }),
+    )
+}
+
 // ── Deferred tools (discovered via ToolSearch on demand) ────────────────
 
 fn def_callers() -> ToolDefinition {
     def(
         "tokensave_callers",
         "Callers",
-        "Find all callers of a given node (function, method, etc.) up to a specified depth.",
+        "Find callers of a given node (function, method, etc.). Returns direct \
+         callers by default; pass max_depth > 1 to also follow the chain \
+         transitively. Each result includes `depth` (1 = direct caller, 2+ = \
+         transitive), `line` (the call-site line where the caller invokes the \
+         target), `lines` (every line where the caller invokes the target, \
+         ascending; a caller is listed once even when it calls the target \
+         several times), and `def_line`/`end_line` (the caller's own span). Generic \
+         callers through a trait are included for concrete impl methods and \
+         tagged with `dispatch_via_trait: true`; pass `resolve_dispatch: false` \
+         to disable reverse dispatch resolution. Pass `node_id`, or `symbol` to \
+         name the target directly: each match is answered in its own group \
+         (`symbol`, `match_count`, `matches[]` with the callers under `callers`), \
+         up to `max_matches`.",
         json!({
             "type": "object",
             "properties": {
                 "node_id": {
                     "type": "string",
-                    "description": "The unique node ID to find callers for"
+                    "description": "The unique node ID to find callers for. Takes precedence over `symbol`; one of the two is required."
                 },
-                "max_depth": {
-                    "type": "number",
-                    "description": "Maximum traversal depth (default: 3)"
-                }
-            },
-            "required": ["node_id"]
-        }),
-    )
-}
-
-fn def_callees() -> ToolDefinition {
-    def(
-        "tokensave_callees",
-        "Callees",
-        "Find all callees of a given node (function, method, etc.) up to a specified depth.",
-        json!({
-            "type": "object",
-            "properties": {
-                "node_id": {
+                "symbol": {
                     "type": "string",
-                    "description": "The unique node ID to find callees for"
+                    "description": "Symbol name to find callers for instead of node_id (e.g. 'RefreshAsync'). Resolved as tokensave_body resolves it: 'Coordinator.RefreshAsync', 'Coordinator::RefreshAsync' and 'App.Coordinator.RefreshAsync' all work (trailing segments are matched), and a function or type outranks a same-named field or import. Overloads are answered together."
+                },
+                "max_matches": {
+                    "type": "number",
+                    "description": "When `symbol` matches several symbols, answer up to this many, each in its own group headed by qualified name, kind, file, line, end_line and node_id (default: 3, max: 20). Further matches are listed without results, in tokensave_search rank order, for a follow-up call by node_id."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum callers listed per match (default: 50, max: 500). When more exist, the result reports `count`, `total` and `truncated: true` (with node_id alone, the list is then wrapped as `{count, total, truncated, callers}`)."
                 },
                 "max_depth": {
                     "type": "number",
-                    "description": "Maximum traversal depth (default: 3)"
-                }
-            },
-            "required": ["node_id"]
-        }),
-    )
-}
-
-fn def_impact() -> ToolDefinition {
-    def(
-        "tokensave_impact",
-        "Impact Radius",
-        "Compute the impact radius of a node: all symbols that directly or indirectly depend on it.",
-        json!({
-            "type": "object",
-            "properties": {
-                "node_id": {
-                    "type": "string",
-                    "description": "The unique node ID to compute impact for"
+                    "description": "Maximum traversal depth, 1-10 (default: 1 = direct callers only). Higher values also return transitive callers, each tagged with its `depth`."
                 },
-                "max_depth": {
-                    "type": "number",
-                    "description": "Maximum traversal depth (default: 3)"
+                "resolve_dispatch": {
+                    "type": "boolean",
+                    "description": "If true (default), include generic callers that invoke the corresponding trait method."
                 }
-            },
-            "required": ["node_id"]
+            }
         }),
     )
 }
@@ -251,7 +1039,7 @@ fn def_files() -> ToolDefinition {
     def(
         "tokensave_files",
         "File List",
-        "List indexed project files. Use to explore file structure without reading file contents.",
+        "List indexed project files, including non-code artifacts such as .feature specs, schemas, and fixtures. Use to explore file structure, or to locate files by path pattern, without reading file contents.",
         json!({
             "type": "object",
             "properties": {
@@ -261,7 +1049,12 @@ fn def_files() -> ToolDefinition {
                 },
                 "pattern": {
                     "type": "string",
-                    "description": "Filter files matching this glob pattern (e.g. '**/*.rs')"
+                    "description": "Filter files matching this glob pattern (e.g. '**/*.rs', '**/*.feature')"
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["code", "artifact"],
+                    "description": "Filter by file kind: 'code' for parsed source files, 'artifact' for non-code files tracked by path only (specs, schemas, fixtures, docs). Omit for both."
                 },
                 "format": {
                     "type": "string",
@@ -274,10 +1067,10 @@ fn def_files() -> ToolDefinition {
 }
 
 fn def_affected() -> ToolDefinition {
-    def(
+    local_graph_no_selectors(def(
         "tokensave_affected",
         "Affected Tests",
-        "Find test files affected by changed source files via dependency graph traversal.",
+        "Find test files affected by changed source files via dependency graph traversal. Returns a practical recommended suite plus classified direct, same-crate, cross-crate, transitive, and inline-test candidates.",
         json!({
             "type": "object",
             "properties": {
@@ -297,6 +1090,37 @@ fn def_affected() -> ToolDefinition {
             },
             "required": ["files"]
         }),
+    ))
+}
+
+fn def_ambiguous_calls() -> ToolDefinition {
+    def(
+        "tokensave_ambiguous_calls",
+        "Ambiguous Calls",
+        "List call sites the resolver could not pin to a single target, with the \
+         candidates it could not separate. These produce no `calls` edge, because \
+         an edge asserts a specific target and \"one of these\" is not one — so \
+         they are invisible to `callers`, `callees` and `impact`. \
+         \n\nUse this when a call you expect is missing from the graph, or when \
+         `dead_code` seems to have skipped something: a symbol named here is \
+         referenced, just not attributably. You have the source and can usually \
+         tell which candidate was meant from the receiver's type, which the \
+         resolver cannot see. Typically arises where several classes define the \
+         same method name and the receiver's type is unknowable — an untyped \
+         parameter, or a value from an unindexed package.",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Restrict to call sites in this file or directory."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum call sites to return (default 25, max 200). A hard cap, not a page: a large codebase can hold thousands."
+                }
+            }
+        }),
     )
 }
 
@@ -304,7 +1128,15 @@ fn def_dead_code() -> ToolDefinition {
     def(
         "tokensave_dead_code",
         "Dead Code",
-        "Find symbols with no incoming edges (potentially unreachable code). Excludes main, test functions, and public items.",
+        "Find symbols with no incoming edges (potentially unreachable code). \
+         Always excludes `main` and `test*` functions. By default also excludes \
+         `pub` items (they may be referenced outside the indexed scope) — pass \
+         `include_public: true` to audit pub items with zero indexed callers, \
+         which is what you want for workspace-internal cleanup. Rust trait-impl \
+         methods (e.g. `Display::fmt`, `Deref::deref`, `Drop::drop`) are also \
+         excluded by default: they are dispatched implicitly by the compiler so \
+         they have no caller edge yet are never truly dead — pass \
+         `include_trait_impls: true` to include them.",
         json!({
             "type": "object",
             "properties": {
@@ -312,6 +1144,28 @@ fn def_dead_code() -> ToolDefinition {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Node kinds to check (default: [\"function\", \"method\"])"
+                },
+                "include_public": {
+                    "type": "boolean",
+                    "description": "When true, do NOT exclude pub items. Default false."
+                },
+                "include_trait_impls": {
+                    "type": "boolean",
+                    "description": "When true, do NOT exclude Rust trait-impl methods (implicitly-dispatched methods like fmt/deref/drop). Default false."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
+                "path_include": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Only include results whose file path contains one of these substrings (e.g. \"src\", \"app\"). Empty/absent means no path constraint."
+                },
+                "path_exclude": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Exclude results whose file path contains any of these substrings (e.g. \"node_modules\", \"dist\", \"venv\"). Takes precedence over path_include."
                 }
             }
         }),
@@ -319,7 +1173,7 @@ fn def_dead_code() -> ToolDefinition {
 }
 
 fn def_diff_context() -> ToolDefinition {
-    def(
+    local_graph_no_selectors(def(
         "tokensave_diff_context",
         "Diff Context",
         "Given changed file paths, return semantic context: which symbols were modified, what depends on them, and affected tests.",
@@ -338,7 +1192,7 @@ fn def_diff_context() -> ToolDefinition {
             },
             "required": ["files"]
         }),
-    )
+    ))
 }
 
 fn def_module_api() -> ToolDefinition {
@@ -376,6 +1230,35 @@ fn def_circular() -> ToolDefinition {
     )
 }
 
+fn def_imports() -> ToolDefinition {
+    def(
+        "tokensave_imports",
+        "Import Graph",
+        "Module-level import dependencies, cycles, and cut simulation. Unlike tokensave_circular (which works on files via symbol edges), this groups by module and reports the actual import statements holding each dependency together — so you can see how many edits removing it would take, and whether cutting it would break a cycle at all.",
+        json!({
+            "type": "object",
+            "properties": {
+                "depth": {
+                    "type": "number",
+                    "description": "Path components to group files into a module, 1-10 (default: 1). Depth 1 makes 'anomaly/alerts/slack.py' the module 'anomaly'; depth 2 makes it 'anomaly/alerts'."
+                },
+                "module": {
+                    "type": "string",
+                    "description": "Report the individual import statements for dependencies into or out of this module. Omit to get only the cycle summary."
+                },
+                "simulate_removal_from": {
+                    "type": "string",
+                    "description": "With simulate_removal_to: recompute cycles as if this dependency did not exist, to test whether a proposed cut actually breaks anything."
+                },
+                "simulate_removal_to": {
+                    "type": "string",
+                    "description": "Target module of the simulated cut. Requires simulate_removal_from."
+                }
+            }
+        }),
+    )
+}
+
 fn def_hotspots() -> ToolDefinition {
     def(
         "tokensave_hotspots",
@@ -387,6 +1270,20 @@ fn def_hotspots() -> ToolDefinition {
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of hotspots to return (default: 10)"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
+                "path_include": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Only include results whose file path contains one of these substrings (e.g. \"src\", \"app\"). Empty/absent means no path constraint."
+                },
+                "path_exclude": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Exclude results whose file path contains any of these substrings (e.g. \"node_modules\", \"dist\", \"venv\"). Takes precedence over path_include."
                 }
             }
         }),
@@ -415,20 +1312,83 @@ fn def_similar() -> ToolDefinition {
     )
 }
 
+/// Hidden alias kept for callers of the pre-#568 tool: dispatches to
+/// `tokensave_rename` with `dry_run` forced on. Not sent in `tools/list`
+/// (see [`is_hidden_tool`]), but still a known tool for dispatch,
+/// permission lists and `tokensave tool`.
 fn def_rename_preview() -> ToolDefinition {
-    def(
+    hidden(def(
         "tokensave_rename_preview",
-        "References",
-        "Show all references to a symbol -- all edges where the node appears as source or target.",
+        "Rename Preview",
+        "Deprecated alias of tokensave_rename with dry_run=true: lists the rename sites of a \
+         symbol with their confidence class, without editing.",
         json!({
             "type": "object",
             "properties": {
                 "node_id": {
                     "type": "string",
-                    "description": "The unique node ID to find references for"
+                    "description": "The unique node ID to find rename sites for"
+                },
+                "new_name": {
+                    "type": "string",
+                    "description": "Optional new name, to include a diff preview"
                 }
             },
             "required": ["node_id"]
+        }),
+    ))
+}
+
+/// The `tokensave_rename` description. States what the tool is not, so a
+/// caller does not read a binding-aware guarantee into it (#568).
+pub const RENAME_DESCRIPTION: &str = "Rename a symbol at its definition and every reference \
+     the code graph records. Graph-based, NOT binding-aware: references come from a name-based \
+     resolver, not scope rules, so shadowing, dynamic calls or `**kwargs` can be missed. Each \
+     site has a class: `exact` = bound by a qualified path, typed receiver, import, or a name \
+     no other symbol has, located to one token; `heuristic` = a name fallback (`recv.method` \
+     tail, scoring among same-named candidates, blocklisted names, build variants), an \
+     override paired by name, or a token not distinguishable on its line; `ambiguous` = a call \
+     the resolver could not decide; `text_only` = a whole-word mention the graph does not link \
+     (comment, string, doc, unlinked identifier). Only indexed files are scanned. dry_run \
+     (default true) returns sites by file, counts per class and a unified diff. Applying \
+     refuses while any site is heuristic or ambiguous, or an unlinked identifier exists, unless \
+     allow_heuristic=true; ambiguous and text_only sites are never edited. All-or-nothing: \
+     every changed file must re-parse without new errors; keywords and same-scope collisions \
+     are refused.";
+
+fn def_rename() -> ToolDefinition {
+    def_rw(
+        "tokensave_rename",
+        "Rename Symbol",
+        RENAME_DESCRIPTION,
+        json!({
+            "type": "object",
+            "properties": {
+                "node_id": {
+                    "type": "string",
+                    "description": "Node ID of the symbol to rename. Either this or `symbol`."
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name or qualified name, resolved like tokensave_replace_symbol (callables win a tie; still ambiguous is refused)."
+                },
+                "new_name": {
+                    "type": "string",
+                    "description": "The new identifier. Required to apply; optional for a dry run."
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Return the plan and diff without editing. Default true."
+                },
+                "allow_heuristic": {
+                    "type": "boolean",
+                    "description": "Also edit heuristic sites, instead of refusing while any exist. Default false."
+                },
+                "project_root": {
+                    "type": "string",
+                    "description": "Optional absolute directory to resolve the index-relative file paths against instead of the indexed project root, e.g. a checkout with the same layout. Alias: `cwd`."
+                }
+            }
         }),
     )
 }
@@ -440,7 +1400,22 @@ fn def_unused_imports() -> ToolDefinition {
         "Find import/use nodes that are never referenced by any other node.",
         json!({
             "type": "object",
-            "properties": {}
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
+                "path_include": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Only include results whose file path contains one of these substrings (e.g. \"src\", \"app\"). Empty/absent means no path constraint."
+                },
+                "path_exclude": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Exclude results whose file path contains any of these substrings (e.g. \"node_modules\", \"dist\", \"venv\"). Takes precedence over path_include."
+                }
+            }
         }),
     )
 }
@@ -455,7 +1430,7 @@ fn def_rank() -> ToolDefinition {
             "properties": {
                 "edge_kind": {
                     "type": "string",
-                    "enum": ["implements", "extends", "calls", "uses", "contains", "annotates", "derives_macro"],
+                    "enum": ["implements", "extends", "calls", "uses", "contains", "annotates", "derives_macro", "instantiates", "reopens"],
                     "description": "The relationship type to rank by (e.g. 'implements' to find most-implemented interfaces)"
                 },
                 "direction": {
@@ -466,6 +1441,10 @@ fn def_rank() -> ToolDefinition {
                 "node_kind": {
                     "type": "string",
                     "description": "Optional filter for node kind (e.g. 'interface', 'class', 'trait', 'function', 'method')"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
                 },
                 "limit": {
                     "type": "number",
@@ -489,6 +1468,10 @@ fn def_largest() -> ToolDefinition {
                     "type": "string",
                     "description": "Filter by node kind (e.g. 'class', 'method', 'function', 'interface', 'enum', 'struct')"
                 },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of results to return (default: 10)"
@@ -511,6 +1494,10 @@ fn def_coupling() -> ToolDefinition {
                     "enum": ["fan_in", "fan_out"],
                     "description": "fan_in: files depended on by the most others. fan_out: files that depend on the most others (default: fan_in)"
                 },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of results to return (default: 10)"
@@ -528,6 +1515,10 @@ fn def_inheritance_depth() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of results to return (default: 10)"
@@ -547,7 +1538,7 @@ fn def_distribution() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory or file path prefix to filter (e.g. 'src/main/java/com/example'). Omit for entire codebase."
+                    "description": "File or directory to filter to (e.g. 'src/main/java/com/example'). Omit for entire codebase."
                 },
                 "summary": {
                     "type": "boolean",
@@ -566,6 +1557,10 @@ fn def_recursion() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of cycles to return (default: 10)"
@@ -587,6 +1582,10 @@ fn def_complexity() -> ToolDefinition {
                     "type": "string",
                     "description": "Filter by node kind (default: function and method)"
                 },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of results to return (default: 10)"
@@ -606,7 +1605,7 @@ fn def_doc_coverage() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory or file path prefix to filter (e.g. 'src/main'). Omit for entire codebase."
+                    "description": "File or directory to filter to (e.g. 'src/main'). Omit for entire codebase."
                 },
                 "limit": {
                     "type": "number",
@@ -625,6 +1624,10 @@ fn def_god_class() -> ToolDefinition {
         json!({
             "type": "object",
             "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (e.g. 'src/main/java')"
+                },
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of results to return (default: 10)"
@@ -666,11 +1669,11 @@ fn def_port_status() -> ToolDefinition {
             "properties": {
                 "source_dir": {
                     "type": "string",
-                    "description": "Path prefix for source code (e.g. 'src/python/')"
+                    "description": "Directory holding the source code (e.g. 'src/python/')"
                 },
                 "target_dir": {
                     "type": "string",
-                    "description": "Path prefix for target code (e.g. 'src/rust/')"
+                    "description": "Directory holding the target code (e.g. 'src/rust/')"
                 },
                 "kinds": {
                     "type": "array",
@@ -693,7 +1696,7 @@ fn def_port_order() -> ToolDefinition {
             "properties": {
                 "source_dir": {
                     "type": "string",
-                    "description": "Path prefix for source code (e.g. 'src/python/')"
+                    "description": "Directory holding the source code (e.g. 'src/python/')"
                 },
                 "kinds": {
                     "type": "array",
@@ -749,7 +1752,7 @@ fn def_pr_context() -> ToolDefinition {
 }
 
 fn def_simplify_scan() -> ToolDefinition {
-    def(
+    local_graph_no_selectors(def(
         "tokensave_simplify_scan",
         "Simplify Scan",
         "Quality analysis of changed files: duplications, dead code, coupling, and complexity hotspots.",
@@ -764,7 +1767,7 @@ fn def_simplify_scan() -> ToolDefinition {
             },
             "required": ["files"]
         }),
-    )
+    ))
 }
 
 fn def_test_map() -> ToolDefinition {
@@ -777,7 +1780,7 @@ fn def_test_map() -> ToolDefinition {
             "properties": {
                 "file": {
                     "type": "string",
-                    "description": "Source file path to find test coverage for"
+                    "description": "Source file path to find test coverage for. Alias: `path`."
                 },
                 "node_id": {
                     "type": "string",
@@ -792,20 +1795,33 @@ fn def_type_hierarchy() -> ToolDefinition {
     def(
         "tokensave_type_hierarchy",
         "Type Hierarchy",
-        "Show the full type hierarchy for a trait/interface/class: all implementors and extenders, recursively.",
+        "Show the full type hierarchy for a trait/interface/class: all implementors and extenders, recursively. \
+         Pass `node_id`, or `symbol` to name the type directly: each match is answered under its own \
+         `## <qualified name> (<kind>) <file>:<line>-<end_line> id=<node_id>` heading, up to `max_matches`.",
         json!({
             "type": "object",
             "properties": {
                 "node_id": {
                     "type": "string",
-                    "description": "The type node ID to build the hierarchy for"
+                    "description": "The type node ID to build the hierarchy for. Takes precedence over `symbol`; one of the two is required."
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name to build the hierarchy for instead of node_id (e.g. 'RefreshAsync'). Resolved as tokensave_body resolves it: 'Coordinator.RefreshAsync', 'Coordinator::RefreshAsync' and 'App.Coordinator.RefreshAsync' all work (trailing segments are matched), and a type outranks a same-named function, field or import. Overloads are answered together."
+                },
+                "max_matches": {
+                    "type": "number",
+                    "description": "When `symbol` matches several symbols, answer up to this many, each in its own group headed by qualified name, kind, file, line, end_line and node_id (default: 3, max: 20). Further matches are listed without results, in tokensave_search rank order, for a follow-up call by node_id."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum implementor/extender lines listed per type (default: no limit, max: 500). When more exist, a `count: N of M (truncated; ...)` line follows the tree."
                 },
                 "max_depth": {
                     "type": "number",
                     "description": "Maximum inheritance depth to traverse (default: 5)"
                 }
-            },
-            "required": ["node_id"]
+            }
         }),
     )
 }
@@ -840,10 +1856,13 @@ fn def_branch_diff() -> ToolDefinition {
     def(
         "tokensave_branch_diff",
         "Branch Diff",
-        "Compare the code graphs of two branches. Shows symbols added, removed, and changed (signature differs) between base and head.",
+        "Compare the code graphs of two branches. Shows symbols added, removed, and changed (signature differs) between base and head. Set quality=true for read-only baseline-aware quality regressions at branch tips; requires existing fresh indexes.",
         json!({
             "type": "object",
             "properties": {
+                "quality": { "type": "boolean", "description": "Compare quality metrics instead of symbol signatures (default false)." },
+                "thresholds": { "type": "object", "description": "Quality options: cyclomatic (10), cognitive (15), function_lines (100), fan_out (10, also fan-in), min_increase (3), allow_stale (false). Unknown options rejected." },
+                "limit": { "type": "integer", "minimum": 0, "maximum": 500, "description": "Quality finding detail limit (default 20); summary always counts all findings." },
                 "base": {
                     "type": "string",
                     "description": "Base branch name (e.g. 'main'). Defaults to the project's default branch."
@@ -854,7 +1873,7 @@ fn def_branch_diff() -> ToolDefinition {
                 },
                 "file": {
                     "type": "string",
-                    "description": "Optional file path filter — only show diffs for symbols in this file"
+                    "description": "Optional file path filter — only show diffs for symbols in this file. Alias: `path`."
                 },
                 "kind": {
                     "type": "string",
@@ -875,4 +1894,1812 @@ fn def_branch_list() -> ToolDefinition {
             "properties": {}
         }),
     )
+}
+
+fn def_str_replace() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_str_replace".to_string(),
+        description: "Replace a unique string in a file with new content. Fails if the old string is not found or matches more than once. This is the safest edit primitive — use this instead of sed/awk.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                },
+                "old_str": {
+                    "type": "string",
+                    "description": "Exact string to find and replace. Must match exactly once in the file."
+                },
+                "new_str": {
+                    "type": "string",
+                    "description": "Replacement string"
+                },
+                "project_root": {
+                    "type": "string",
+                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root, e.g. a git worktree. Ignored when `path` is absolute. Alias: `cwd`."
+                },
+                "echo": {
+                    "type": "boolean",
+                    "description": "If true, echo the replaced/inserted text in the result. Default false."
+                }
+            },
+            "required": ["path", "old_str", "new_str"]
+        }),
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "Edit File"
+        })),
+        meta: None,
+    }
+}
+
+fn def_multi_str_replace() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_multi_str_replace".to_string(),
+        description: "Apply multiple string replacements atomically in a single file. All replacements must match exactly once. If any replacement fails (0 or >1 matches), the entire operation is aborted and no changes are made.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                },
+                "replacements": {
+                    "type": "array",
+                    "description": "Array of [old_str, new_str] pairs to replace",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 2,
+                        "maxItems": 2
+                    }
+                },
+                "project_root": {
+                    "type": "string",
+                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root, e.g. a git worktree. Ignored when `path` is absolute. Alias: `cwd`."
+                }
+            },
+            "required": ["path", "replacements"]
+        }),
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "Multi-Edit File"
+        })),
+        meta: None,
+    }
+}
+
+fn def_insert_at() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_insert_at".to_string(),
+        description: "Insert content before or after a unique anchor in a file. The anchor can be a unique string or a 1-indexed line number. Fails if the anchor matches more than one line.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                },
+                "anchor": {
+                    "type": "string",
+                    "description": "Unique string or line number (1-indexed) to insert at"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Content to insert"
+                },
+                "before": {
+                    "type": "boolean",
+                    "description": "If true, insert before the anchor line; if false, insert after (default: false)"
+                },
+                "project_root": {
+                    "type": "string",
+                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root, e.g. a git worktree. Ignored when `path` is absolute. Alias: `cwd`."
+                },
+                "echo": {
+                    "type": "boolean",
+                    "description": "If true, echo the replaced/inserted text in the result. Default false."
+                }
+            },
+            "required": ["path", "anchor", "content"]
+        }),
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "Insert Into File"
+        })),
+        meta: None,
+    }
+}
+
+fn def_delete_symbol() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_delete_symbol".to_string(),
+        description: "Delete a symbol by qualified name, including its leading doc comment and one adjacent blank line. Resolves exactly like tokensave_replace_symbol; ambiguity is refused.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "symbol": { "type": "string", "description": "Qualified symbol name to delete" },
+                "include_doc_comment": { "type": "boolean", "description": "Include the leading doc comment/attribute block. Default true." },
+                "project_root": { "type": "string", "description": "Optional absolute directory to resolve a relative symbol-file path against. Alias: `cwd`." }
+            },
+            "required": ["symbol"]
+        }),
+        annotations: Some(json!({ "readOnlyHint": false, "title": "Delete Symbol" })),
+        meta: None,
+    }
+}
+
+fn def_replace_lines() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_replace_lines".to_string(),
+        description: "Replace a contiguous 1-based inclusive line range in a file. `expected_digest` (from tokensave_read) makes a stale range fail instead of corrupting the file; `new_content: \"\"` deletes the block.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Absolute or project-relative file path." },
+                "start": { "type": "number", "description": "1-based first line to replace." },
+                "end": { "type": "number", "description": "1-based last line to replace (inclusive)." },
+                "new_content": { "type": "string", "description": "Replacement text; empty string deletes the block." },
+                "expected_digest": { "type": "string", "description": "Optional SHA-256 digest of the file before the edit; fails if the file changed." },
+                "project_root": { "type": "string", "description": "Optional absolute directory to resolve a relative `path` against. Alias: `cwd`." }
+            },
+            "required": ["path", "start", "end", "new_content"]
+        }),
+        annotations: Some(json!({ "readOnlyHint": false, "title": "Replace Lines" })),
+        meta: None,
+    }
+}
+
+fn def_gini() -> ToolDefinition {
+    def(
+        "tokensave_gini",
+        "Gini Inequality",
+        "Compute inequality (Gini coefficient) for any metric across files or symbols. Detects god files and uneven complexity distribution.",
+        json!({
+            "type": "object",
+            "properties": {
+                "metric": {
+                    "type": "string",
+                    "enum": ["complexity", "lines", "fan_in", "fan_out", "members"],
+                    "description": "Metric to measure inequality for (default: complexity)"
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["file", "symbol"],
+                    "description": "Aggregate per file or per symbol (default: file)"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path"
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Number of top outliers to return (default: 10)"
+                }
+            }
+        }),
+    )
+}
+
+fn def_dependency_depth() -> ToolDefinition {
+    def(
+        "tokensave_dependency_depth",
+        "Dependency Depth",
+        "Show the longest file-level dependency chains. Files at the end of long chains are fragile to upstream changes.",
+        json!({
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of chains to return (default: 10)"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path"
+                }
+            }
+        }),
+    )
+}
+
+fn def_health() -> ToolDefinition {
+    def(
+        "tokensave_health",
+        "Health Score",
+        "Get quality signal (0-10000) with root cause breakdown (acyclicity, depth, equality, redundancy, modularity). Quality signal = geometric mean of 5 dimensions — maximize this ONE number.",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path"
+                }
+            }
+        }),
+    )
+}
+
+fn def_runtime() -> ToolDefinition {
+    def(
+        "tokensave_runtime",
+        "Runtime Snapshot",
+        "Capture a process + database telemetry snapshot for the running tokensave MCP server: PID, resident memory, virtual size, sustained CPU% (sampled over ~200ms), thread count, system memory, DB / WAL / SHM file sizes, journal mode, and the DB-to-source byte ratio. Use this when triaging unexpected CPU or RAM consumption (issue #80). Single call — output is a JSON object.",
+        json!({
+            "type": "object",
+            "properties": {}
+        }),
+    )
+}
+
+fn def_redundancy() -> ToolDefinition {
+    local_graph_no_selectors(def(
+        "tokensave_redundancy",
+        "Redundancy Hunt",
+        "Find functionally duplicated function/method bodies via AST isomorphism, control-flow match, call-sequence match, and token-shingle Jaccard similarity. Each pair is bucketed as 'definite' (AST-identical), 'likely' (CFG or algorithmic match), or 'naming_only' (low confidence). Use when consolidating helpers or auditing code health. Computed lazily and cached per (node, body source hash) — first call on a fresh index can be slow on large repos.",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path"
+                },
+                "min_lines": {
+                    "type": "number",
+                    "description": "Skip functions shorter than this many source lines (default: 8)"
+                },
+                "max_pairs": {
+                    "type": "number",
+                    "description": "Maximum number of duplicate pairs to return (default: 20, max: 500)"
+                },
+                "similarity_threshold": {
+                    "type": "number",
+                    "description": "Drop pairs scoring below this composite similarity (default: 0.6, range 0.0-1.0)"
+                },
+                "include_naming_only": {
+                    "type": "boolean",
+                    "description": "If true, include 'naming_only' / low-confidence matches in the output (default: false)"
+                }
+            }
+        }),
+    ))
+}
+
+fn def_dsm() -> ToolDefinition {
+    def(
+        "tokensave_dsm",
+        "Design Structure Matrix",
+        "Get the Design Structure Matrix: file dependency summary showing clusters, density, and layering violations.",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path"
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["stats", "clusters", "matrix"],
+                    "description": "Output format (default: stats)"
+                },
+                "max_files": {
+                    "type": "number",
+                    "description": "Maximum files in matrix format (default: 30)"
+                }
+            }
+        }),
+    )
+}
+
+fn def_test_risk() -> ToolDefinition {
+    def(
+        "tokensave_test_risk",
+        "Test Risk",
+        "Find high-risk source symbols with weak or no test coverage. Risk = (complexity + 1) × (fan_in + 1) × untested_multiplier. Answers: where should the next test go?",
+        json!({
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of results to return (default: 20)"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path"
+                },
+                "include_tested": {
+                    "type": "boolean",
+                    "description": "Include already-tested functions in results (default: false)"
+                }
+            }
+        }),
+    )
+}
+
+fn def_derives() -> ToolDefinition {
+    def(
+        "tokensave_derives",
+        "Derives on Type",
+        "List `#[derive(...)]` macros attached to a type and the trait + \
+         method names each one synthesizes. Prevents dead-end searches for \
+         autogenerated symbols (e.g. `.clone()` from `#[derive(Clone)]`). \
+         Well-known derives (`Debug`, `Clone`, `Copy`, `Default`, `PartialEq`, \
+         `Eq`, `PartialOrd`, `Ord`, `Hash`, `Serialize`, `Deserialize`, \
+         `Display`, `Error`) carry full trait + method info; unknown / \
+         proc-macro derives surface with `well_known: false` so callers can \
+         still see the derive name.",
+        json!({
+            "type": "object",
+            "properties": {
+                "qualified_name": {
+                    "type": "string",
+                    "description": "The type's qualified name (or short name — same lookup as tokensave_by_qualified_name)."
+                },
+                "node_id": {
+                    "type": "string",
+                    "description": "Optional: look up the type by node ID instead."
+                }
+            }
+        }),
+    )
+}
+
+fn def_annotations() -> ToolDefinition {
+    def(
+        "tokensave_annotations",
+        "Annotations & Attributes",
+        "Inspect attributes / annotations / decorators across the project — \
+         Rust `#[cfg(test)]`, Python `@pytest.fixture`, Java `@Override`, TS \
+         decorators, etc. Two modes: histogram (no `name`) returns top-K \
+         annotation names with usage counts; site mode (with `name`, `file`, \
+         or `target_kind`) returns the specific `(annotation, target)` pairs. \
+         Backed by the language-neutral `annotation_usage` node + `annotates` \
+         edge already in the graph — works wherever the extractor records \
+         attribute edges.",
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Annotation/attribute/decorator name (e.g. \"test\", \"derive\", \"cfg\", \"pytest.fixture\"). Omit for histogram mode."
+                },
+                "file": {
+                    "type": "string",
+                    "description": "Restrict to target nodes in this file or under this directory. Alias: `path`."
+                },
+                "target_kind": {
+                    "type": "string",
+                    "description": "Filter by what the annotation attaches to: \"function\", \"method\", \"struct\", \"enum\", \"trait\", \"module\", \"impl\", etc."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of rows (default 50, max 500)."
+                }
+            }
+        }),
+    )
+}
+
+fn def_dependencies() -> ToolDefinition {
+    def(
+        "tokensave_dependencies",
+        "Package Dependencies",
+        "Inspect declared dependencies. Auto-detects the manifests at the project root and in \
+         its workspace members for Rust, Node, Python, Go, Java (Maven), Gradle, .NET, PHP, Ruby, \
+         Swift, Elixir, Erlang, R, Haskell, OCaml, Dart/Flutter and Crystal. Polyglot repos \
+         return one block per ecosystem.\n\n\
+         Three modes:\n\
+         • zero input → workspace summary: members + every package any member \
+         depends on, plus `licenses` aggregate, `version_drift` array (packages \
+         pinned at different versions across members), and `members_detail` \
+         with per-member license.\n\
+         • `crate: <name>` (or `package: <name>`) → list every member that \
+         depends on this package, with kind/version/resolved/features/optional/local-path.\n\
+         • `member: <name>` → list every dependency declared by this member.\n\n\
+         Filters: `ecosystem`, `kind`. Set `include_lockfile: true` to stamp resolved \
+         versions from the per-ecosystem lockfile.",
+        json!({
+            "type": "object",
+            "properties": {
+                "crate": {
+                    "type": "string",
+                    "description": "Package/crate name to look up across the workspace (e.g. \"serde\", \"react\", \"requests\"). Aliased as `package`. Mutually exclusive with `member`."
+                },
+                "package": {
+                    "type": "string",
+                    "description": "Alias for `crate` — same semantics, more natural in non-Rust ecosystems."
+                },
+                "member": {
+                    "type": "string",
+                    "description": "Workspace member to list deps for. Match by package name or by path."
+                },
+                "kind": {
+                    "type": "string",
+                    "description": "Filter by kind: \"normal\" / \"dev\" / \"build\" / \"peer\" / \"optional\" / \"all\" (default \"all\")."
+                },
+                "ecosystem": {
+                    "type": "string",
+                    "description": "Restrict to one ecosystem: rust, node, python, go, java, dotnet, php, ruby, swift, elixir, erlang, r, haskell, ocaml, dart, crystal or gradle."
+                },
+                "include_lockfile": {
+                    "type": "boolean",
+                    "description": "When true, read each ecosystem's lockfile and add `resolved` versions alongside declared `version` ranges. Default false."
+                }
+            }
+        }),
+    )
+}
+
+fn def_test_coverage() -> ToolDefinition {
+    def(
+        "tokensave_test_coverage",
+        "Test Coverage",
+        "Per-symbol / per-file / per-test test-coverage rollup using \
+         transitive call edges. Three input modes (provide exactly one):\n\
+         • `file` — list every prod fn in the file with its tests + a \
+         tested/untested summary.\n\
+         • `symbol` — list every test that transitively reaches this symbol.\n\
+         • `test_fn` — list every non-test symbol this test transitively \
+         exercises.\n\
+         Edges are followed up to `max_depth` (default 5). A node counts as a \
+         test when it lives under a test-named path (`tests/`, `*_test.*`, \
+         `__tests__/`, `spec/`, etc.) or carries a `#[test]`-style annotation. \
+         Respects `/// skip-test-coverage` opt-out the same way `test_risk` does.",
+        json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Source file path. Returns per-symbol coverage + file rollup. Alias: `path`."
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Qualified or short name of a prod symbol. Returns the tests that reach it."
+                },
+                "test_fn": {
+                    "type": "string",
+                    "description": "Qualified or short name of a test function. Returns the prod symbols it transitively exercises."
+                },
+                "max_depth": {
+                    "type": "number",
+                    "description": "Maximum transitive call depth (default 5, clamped to [1, 10])."
+                },
+                "include_untested": {
+                    "type": "boolean",
+                    "description": "When `file` mode: include untested fns in the response (default true)."
+                }
+            }
+        }),
+    )
+}
+
+fn def_diagnose() -> ToolDefinition {
+    local_graph_no_selectors(def(
+        "tokensave_diagnose",
+        "Diagnose Cargo Output",
+        "Parse raw `cargo check` / `cargo clippy` stderr text and map each \
+         diagnostic to the smallest containing graph node, with callers \
+         pre-attached so you can see what the failing code is reachable \
+         from. Diagnostics without a `--> file:line:col` span are dropped. \
+         Pass the full stderr capture; you do not need to pre-filter.",
+        json!({
+            "type": "object",
+            "properties": {
+                "cargo_output": {
+                    "type": "string",
+                    "description": "Raw stderr text from `cargo check` / `cargo clippy` / `rustc`."
+                },
+                "severity": {
+                    "type": "string",
+                    "enum": ["error", "warning", "all"],
+                    "description": "Filter by severity (default: all)."
+                },
+                "include_callers": {
+                    "type": "boolean",
+                    "description": "Attach up to 5 callers per diagnostic (default: true)."
+                },
+                "max_diagnostics": {
+                    "type": "number",
+                    "description": "Cap on diagnostics in the response (default: 50)."
+                }
+            },
+            "required": ["cargo_output"]
+        }),
+    ))
+}
+
+fn def_run_affected_tests() -> ToolDefinition {
+    def_rw(
+        "tokensave_run_affected_tests",
+        "Run Affected Tests",
+        "Run `cargo test` for tests that cover the symbols in `changed_paths` \
+         (or, if omitted, the files changed in the working tree). Closes the \
+         loop opened by `tokensave_test_map` / `tokensave_test_risk` — emits \
+         pass/fail per test alongside the source nodes each test covers. \
+         Output is the libtest summary parsed into JSON.",
+        json!({
+            "type": "object",
+            "properties": {
+                "changed_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Explicit file paths to compute affected tests from. Defaults to `git diff --name-only` against the working tree."
+                },
+                "profile": {
+                    "type": "string",
+                    "enum": ["debug", "release"],
+                    "description": "Cargo profile (default: debug)."
+                },
+                "timeout_secs": {
+                    "type": "number",
+                    "description": "Maximum wall time before the cargo subprocess is killed (default: 300)."
+                },
+                "max_tests": {
+                    "type": "number",
+                    "description": "Cap on tests dispatched in a single invocation (default: 100)."
+                }
+            }
+        }),
+    )
+}
+
+fn def_ast_grep_rewrite() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_ast_grep_rewrite".to_string(),
+        description: "Perform structural code rewrite using ast-grep. The pattern and rewrite use ast-grep's SGPattern syntax. Fails if ast-grep is not installed.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "ast-grep search pattern (SGPattern syntax)"
+                },
+                "rewrite": {
+                    "type": "string",
+                    "description": "ast-grep rewrite rule"
+                },
+                "project_root": {
+                    "type": "string",
+                    "description": "Optional absolute directory to resolve a relative `path` against instead of the indexed project root, e.g. a git worktree. Ignored when `path` is absolute. Alias: `cwd`."
+                }
+            },
+            "required": ["path", "pattern", "rewrite"]
+        }),
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "AST Structural Rewrite"
+        })),
+        meta: None,
+    }
+}
+
+fn def_session_start() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_session_start".to_string(),
+        description: "Save current health metrics as baseline for later comparison via session_end. Call this before starting work.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {}
+        }),
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "Session Start"
+        })),
+        meta: None,
+    }
+}
+
+fn def_session_end() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_session_end".to_string(),
+        description: "Re-scan and compare current health against session baseline (saved by session_start). Returns diff showing what improved or degraded.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {}
+        }),
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "Session End"
+        })),
+        meta: None,
+    }
+}
+
+fn def_body() -> ToolDefinition {
+    def(
+        "tokensave_body",
+        "Symbol Body",
+        "Return the full source body of a symbol by name (function, struct, const, etc.). \
+         Collapses search + node lookup + file read into a single call. \
+         Returns a body only when exactly one definition matches; when the name is \
+         ambiguous (e.g. several methods named `RefreshAsync`), returns no body but a \
+         candidate list (qualified name, kind, file, line range, node id) — re-call with \
+         a qualified name such as `Type::Member` / `Type.Member`, or with `node_id`. \
+         A function or type definition outranks a same-named field or import.",
+        json!({
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name to look up (e.g. 'resolve_provider_api_key', 'GraphStats'). Qualify it to disambiguate: 'Coordinator::RefreshAsync', 'Coordinator.RefreshAsync' and 'App.Coordinator.RefreshAsync' all work (trailing segments are matched)."
+                },
+                "node_id": {
+                    "type": "string",
+                    "description": "Node id of the symbol (from a candidate list, tokensave_search, or tokensave_context). Takes precedence over `symbol`."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of candidates listed when the name is ambiguous (default: 20, max: 50)"
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["text", "json"],
+                    "description": "Output format. 'text' returns raw source with a short header (no JSON escaping); 'json' returns the structured object. Default 'text'."
+                }
+            }
+        }),
+    )
+}
+
+fn def_doc() -> ToolDefinition {
+    def(
+        "tokensave_doc",
+        "Companion Documentation",
+        "Return the companion Markdown documentation for a source file, if any. \
+         Docs are discovered as sidecar files (Foo.cs -> Foo.readme.md) or in the \
+         docs directory (default 'tokensave-docs/') via an `applies_to` front-matter \
+         glob list. Prefer this over reading a large file: the summary often answers \
+         the question outright. Returns the doc path, its full content, which files it \
+         covers, and whether the covered code changed after the doc was last touched.",
+        json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Project-relative path of a source file whose documentation you want (e.g. 'src/BigClass.cs'). Alias: `path`."
+                },
+                "include_content": {
+                    "type": "boolean",
+                    "description": "Include the doc's full Markdown body (default: true). Set false for a coverage/staleness check without the text."
+                }
+            },
+            "required": ["file"]
+        }),
+    )
+}
+
+fn def_todos() -> ToolDefinition {
+    def(
+        "tokensave_todos",
+        "TODOs and FIXMEs",
+        "Find TODO, FIXME, XXX, HACK, WIP, NOTE, and unimplemented markers across the project. \
+         Each result includes the marker kind, file, line, the comment text, and the enclosing \
+         symbol name (function/method) for quick orientation.",
+        json!({
+            "type": "object",
+            "properties": {
+                "kinds": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Marker kinds to include (default: TODO, FIXME, XXX, HACK, WIP, NOTE, UNIMPLEMENTED). Matched case-insensitively."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory path (relative to project root)"
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of markers to return (default: 200, max: 2000)"
+                }
+            }
+        }),
+    )
+}
+
+fn def_record_decision() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_record_decision".to_string(),
+        description: "Persist a design or architecture decision so it can be recalled in a future session via tokensave_session_recall. Use for choices the agent or user would otherwise have to re-explain (e.g. \"use JWT for auth — session tokens flagged by legal\"). Stored in the per-project DB.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "The decision itself, in one sentence (e.g. \"use JWT for auth\")."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional reason / context (e.g. \"session tokens flagged by legal\")."
+                },
+                "files": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "File paths that the decision applies to."
+                },
+                "tags": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Free-form tags for grouping (e.g. \"security\", \"performance\")."
+                }
+            },
+            "required": ["text"]
+        }),
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "Record Decision"
+        })),
+        meta: None,
+    }
+}
+
+fn def_record_code_area() -> ToolDefinition {
+    ToolDefinition {
+        name: "tokensave_record_code_area".to_string(),
+        description: "Record that the agent has been working in a code area (a file or directory). The first call sets an optional description; subsequent calls bump the touch counter and update last_touched_at. Recall with tokensave_session_recall.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File or directory path (project-relative)."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional short description of what this area is or what was changed."
+                }
+            },
+            "required": ["path"]
+        }),
+        annotations: Some(json!({
+            "readOnlyHint": false,
+            "title": "Record Code Area"
+        })),
+        meta: None,
+    }
+}
+
+fn def_session_recall() -> ToolDefinition {
+    def(
+        "tokensave_session_recall",
+        "Session Recall",
+        "Recall persisted decisions (and optionally code areas) from past sessions. When `query` is provided, runs FTS5 search across decision text and reason. When omitted, returns the most recent decisions newest-first. Pair with tokensave_record_decision.",
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "FTS5 query string (e.g. \"auth OR session\"). Omit for newest-first listing."
+                },
+                "since": {
+                    "type": "number",
+                    "description": "Unix timestamp; only return decisions made at-or-after this time."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum decisions to return (default: 20, max: 200)."
+                },
+                "include_code_areas": {
+                    "type": "boolean",
+                    "description": "If true, also return the top-touched code areas (default: false)."
+                }
+            }
+        }),
+    )
+}
+
+fn def_field_sites() -> ToolDefinition {
+    def(
+        "tokensave_field_sites",
+        "Field Read/Write Sites",
+        "Find every read and write site of a named field across the codebase. \
+         Returns two arrays: write_sites (assignments to the field) and \
+         read_sites (everything else). Each entry includes file, line, \
+         enclosing symbol, and a source snippet. Useful when renaming, \
+         removing, or adding an invariant to a field — the write-site list \
+         is the exact blast radius. write_count/read_count are totals over \
+         the whole scan; when `truncated` is true the site arrays were capped \
+         at `limit` and write_returned/read_returned say how many are listed. \
+         Pattern matches `.<field>` references, so a bare field name matches \
+         any struct's same-named field. The `Struct::field` form narrows to \
+         that struct: a site is kept only when its receiver resolves to the \
+         type, via an explicit declaration, a self/receiver binding, or a \
+         declared field type. Receivers a source-text scan cannot type — a \
+         value returned by a call, or read out of a container — are counted \
+         in `unattributed_count` and NOT listed, so a narrowed count is a \
+         lower bound; `excluded_count` is how many resolved to another type. \
+         Query the bare name for the unnarrowed answer.",
+        json!({
+            "type": "object",
+            "properties": {
+                "field": {
+                    "type": "string",
+                    "description": "Field name. Bare name ('last_sync_at') matches across structs. The qualified form ('GraphStats::last_sync_at') narrows to that struct's field."
+                },
+                "writes_only": {
+                    "type": "boolean",
+                    "description": "When true, returns only write_sites and omits reads. Default false."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum sites per kind (default: 200, max: 2000)."
+                }
+            },
+            "required": ["field"]
+        }),
+    )
+}
+
+fn def_constructors() -> ToolDefinition {
+    def(
+        "tokensave_constructors",
+        "Struct Literal Sites",
+        "Find every place a given struct is instantiated as a literal \
+         ({ field: value, ... }). Each result includes the file, line, the \
+         field list present in that literal, and the set of fields missing \
+         relative to the struct's current definition (from the graph). The \
+         missing-fields list is the typical refactor signal: after adding a \
+         required field, this tool surfaces every site that needs updating, \
+         before cargo even compiles. Scans for `Name { ... }` literal syntax, \
+         so it answers for Rust and Go only; for a type declared in any other \
+         language the response is `language_supported: false` with no \
+         `match_count`, rather than a zero that would read as 'never \
+         constructed'. Pattern matching ignores `match` arms and `if let` \
+         patterns.",
+        json!({
+            "type": "object",
+            "properties": {
+                "struct": {
+                    "type": "string",
+                    "description": "Struct name to search literal sites of (e.g. 'GraphStats', 'Config')."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of literal sites to return (default: 100, max: 1000)."
+                }
+            },
+            "required": ["struct"]
+        }),
+    )
+}
+
+fn def_signature_search() -> ToolDefinition {
+    def(
+        "tokensave_signature_search",
+        "Signature Search",
+        "Find functions and methods by signature shape: return type, parameter \
+         substring, async, or path. Searches the cached `signature` column on \
+         every Function/Method node. Substring-matched with case-sensitive \
+         compare; combine multiple criteria for narrower hits. Use \
+         tokensave_search for plain name lookups; this tool is for refactor \
+         questions like 'find every function returning Result<_, MyError>' or \
+         'every async fn taking &mut self'.",
+        json!({
+            "type": "object",
+            "properties": {
+                "returns": {
+                    "type": "string",
+                    "description": "Substring that must appear in the return-type portion of the signature (after '->'). E.g. 'Result<', 'impl Future', 'Vec<u32>'."
+                },
+                "params": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Substrings that must all appear in the parameter list portion of the signature. E.g. ['&mut self'], ['i32', 'String']."
+                },
+                "async": {
+                    "type": "boolean",
+                    "description": "When true, only return functions marked async. When false, exclude them. Omit to ignore async-ness."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to symbols defined under this directory."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum matches to return (default: 50, max: 500)."
+                }
+            }
+        }),
+    )
+}
+
+fn def_config() -> ToolDefinition {
+    def(
+        "tokensave_config",
+        "Config File Query",
+        "Query TOML or JSON config files by dotted key path. Use 'path' for a \
+         single file (e.g. Cargo.toml, tsconfig.json, pyproject.toml) or 'glob' \
+         to query the same key across multiple files. The 'key' is dot-separated \
+         (e.g. 'package.version', 'dependencies.tokio'). Returns each match's \
+         file, parsed value, and the line where the key is defined. Format is \
+         detected from extension: .toml → TOML, .json → JSON. \
+         \n\nDoes not query the code graph — pure filesystem + parser. Works \
+         on uninitialized projects.",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Project-relative path to a single config file (e.g. 'Cargo.toml'). Mutually exclusive with 'glob'."
+                },
+                "glob": {
+                    "type": "string",
+                    "description": "Glob pattern to match multiple config files (e.g. '**/Cargo.toml', 'crates/*/Cargo.toml'). Mutually exclusive with 'path'."
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Dot-separated key path (e.g. 'package.version', 'dependencies.tokio.version'). Required."
+                }
+            },
+            "required": ["key"]
+        }),
+    )
+}
+
+fn def_diagnostics() -> ToolDefinition {
+    local_graph_no_selectors(def(
+        "tokensave_diagnostics",
+        "Compile / Type-Check Diagnostics",
+        "Run the project's type-checker (cargo check for Rust, tsc for \
+         TypeScript, pyright for Python) and return structured errors and \
+         warnings. Each diagnostic includes file, line range, level, code, \
+         message, driver, and the enclosing graph node when one can be \
+         resolved. \
+         \n\nNote: the cargo target dir is forced to .tokensave/target/ so \
+         we don't race with the user's interactive cargo runs. The first \
+         call against a fresh tree builds dependencies from scratch, which \
+         can take several minutes on large workspaces; subsequent calls \
+         are sub-second. Build scripts and proc macros from the project \
+         execute as part of cargo check — same trust model as running it \
+         manually.",
+        json!({
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["workspace", "package", "file"],
+                    "description": "Run scope. Default 'workspace'. 'package' requires `name`; 'file' requires `path` and currently runs workspace + post-filter (cargo has no native single-file mode)."
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Package name when scope='package' (e.g. 'tokensave', 'serde-json')."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Project-relative file path when scope='file'."
+                }
+            }
+        }),
+    ))
+}
+
+fn def_unsafe_patterns() -> ToolDefinition {
+    def(
+        "tokensave_unsafe_patterns",
+        "Risky Pattern Finder",
+        "Find unwrap(), expect(), panic!(), todo!(), unimplemented!(), and unsafe \
+         { } sites across the project. Each match includes the file, line, kind, \
+         enclosing symbol, the source line, and an in_test flag derived from the \
+         path. Use this in security/quality reviews to surface panic sites before \
+         a release. Defaults to all kinds; pass `kinds` to narrow.",
+        json!({
+            "type": "object",
+            "properties": {
+                "kinds": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Subset of patterns to search. Default: ['unwrap', 'expect', 'panic', 'todo', 'unimplemented', 'unsafe_block']."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Filter to files under this directory (relative to project root)."
+                },
+                "exclude_tests": {
+                    "type": "boolean",
+                    "description": "When true, skips files whose path looks like a test (default: false)."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of matches to return (default: 200, max: 2000)."
+                }
+            }
+        }),
+    )
+}
+
+fn def_implementations() -> ToolDefinition {
+    def(
+        "tokensave_implementations",
+        "Trait / Method Implementations",
+        "Find every type implementing a given trait, or every implementation of \
+         a given method name. The 'trait' form returns each implementing type \
+         plus the methods on its impl block. The 'method' form returns every \
+         function/method named X across the project. Each result is a location: \
+         file, line..end_line and signature, without code; fetch a body with \
+         tokensave_body, or pass bodies=true to inline every body.",
+        json!({
+            "type": "object",
+            "properties": {
+                "trait": {
+                    "type": "string",
+                    "description": "Trait name to look up implementations of (e.g. 'LanguageExtractor', 'Display'). Mutually exclusive with 'method'."
+                },
+                "method": {
+                    "type": "string",
+                    "description": "Method or function name to find every implementation of (e.g. 'extensions', 'count_complexity'). Mutually exclusive with 'trait'."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum number of implementations to return (default: 20, max: 200)"
+                },
+                "bodies": {
+                    "type": "boolean",
+                    "description": "Include each method's source body in the result. Default false: locations and signatures only."
+                }
+            }
+        }),
+    )
+}
+
+fn def_entities() -> ToolDefinition {
+    def(
+        "tokensave_entities",
+        "Entities In File",
+        "Flat list of every top-level symbol defined in a file (functions, structs, \
+         enums, traits, classes, impls, etc.) — like a table of contents. Sorted by \
+         line number; no code bodies. Optional 'kinds' filter narrows to specific \
+         node kinds. Use this as the cheapest way to orient before zooming into a \
+         large file with tokensave_node, tokensave_body, or tokensave_read.",
+        json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Project-relative path to the file (e.g. 'src/sync.rs'). Alias: `path`."
+                },
+                "kinds": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional filter on node kinds. Common values: 'function', 'struct', 'enum', 'trait', 'impl', 'class', 'method', 'const'. Case-insensitive. Default: all kinds."
+                }
+            },
+            "required": ["file"]
+        }),
+    )
+}
+
+fn def_read() -> ToolDefinition {
+    def(
+        "tokensave_read",
+        "Read File (mode-aware)",
+        "Read a file or its symbol map. Modes: 'full' (entire file), 'lines' \
+         (1-based inclusive line-range slice via the 'lines' arg, e.g. '120-180'), \
+         'map' (flat list of every top-level symbol from the graph — no source \
+         bytes touched), 'signatures' (functions and types with their cached \
+         signature). 'full' and 'lines' number every line like the Read tool: \
+         right-aligned real file line number, a tab, then the line (a 'lines' \
+         slice from 120 starts at 120). The body is always returned, with a \
+         'digest' of it. To skip re-sending content you still hold, pass that \
+         digest as 'if_digest': when it matches the current body for the same \
+         mode and range, a tiny stub with 'unchanged: true' is returned instead.",
+        json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Project-relative or absolute path to the file (e.g. 'src/sync.rs'). Alias: `path`."
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["full", "lines", "map", "signatures"],
+                    "description": "Read mode. Default: 'full'."
+                },
+                "lines": {
+                    "type": "string",
+                    "description": "Required when mode='lines'. Format 'A-B' or single 'A' (1-based, inclusive). E.g. '120-180' or '42'. Or pass `start` and `end` (1-based line numbers; `end` defaults to the end of the file)."
+                },
+                "if_digest": {
+                    "type": "string",
+                    "description": "Digest from an earlier tokensave_read response with the same mode and range that you still hold. If it matches the current content, an 'unchanged: true' stub is returned instead of the body; otherwise the body is returned. Omit to always get the body."
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Deprecated: the body is now always returned unless 'if_digest' matches. When true, 'if_digest' is ignored. Default false."
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["text", "json"],
+                    "description": "Output format. 'text' returns raw source with a short header (no JSON escaping); 'json' returns the structured object. Default 'text'."
+                }
+            }
+        }),
+    )
+}
+
+fn def_call_chain() -> ToolDefinition {
+    def(
+        "tokensave_call_chain",
+        "Call Chain",
+        "Find the shortest directed call chain between two symbols, following \
+         only outgoing `calls` edges. Returns the ordered sequence of nodes \
+         and edges that connect `from_id` to `to_id`, or a not-found result. \
+         Use `tokensave_search` or `tokensave_by_qualified_name` first to \
+         resolve symbol names into node IDs.",
+        json!({
+            "type": "object",
+            "properties": {
+                "from_id": {
+                    "type": "string",
+                    "description": "Source node ID (the caller end of the chain)."
+                },
+                "to_id": {
+                    "type": "string",
+                    "description": "Target node ID (the callee end of the chain)."
+                },
+                "max_depth": {
+                    "type": "number",
+                    "description": "Maximum BFS depth (default: 8, max: 20)."
+                }
+            },
+            "required": ["from_id", "to_id"]
+        }),
+    )
+}
+
+fn def_file_dependents() -> ToolDefinition {
+    def(
+        "tokensave_file_dependents",
+        "File Dependents",
+        "List every indexed file that imports or otherwise depends on the \
+         given file. Path is interpreted relative to the project root. \
+         Useful for impact analysis on file-level changes.",
+        json!({
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "string",
+                    "description": "Path to the file (relative to project root). Alias: `path`."
+                }
+            },
+            "required": ["file"]
+        }),
+    )
+}
+
+fn def_replace_symbol() -> ToolDefinition {
+    def_rw(
+        "tokensave_replace_symbol",
+        "Replace Symbol Source",
+        "Replace the full source of a named symbol (function, method, struct, \
+         enum, etc.) with new source text. Resolves the symbol via exact \
+         qualified-name match; on ambiguity, callable kinds win, and if \
+         still ambiguous the edit is refused. Preserves the surrounding \
+         file untouched and reindexes the file after writing.",
+        json!({
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name. Prefer a fully qualified name for disambiguation."
+                },
+                "new_source": {
+                    "type": "string",
+                    "description": "Full replacement source — must include the symbol's own declaration line."
+                },
+                "project_root": {
+                    "type": "string",
+                    "description": "Optional absolute directory to resolve the symbol's index-relative file path against instead of the indexed project root, e.g. a git worktree with the same layout. Alias: `cwd`."
+                },
+                "echo": {
+                    "type": "boolean",
+                    "description": "If true, echo the replaced/inserted text in the result. Default false."
+                }
+            },
+            "required": ["symbol", "new_source"]
+        }),
+    )
+}
+
+fn def_find_exact_symbol() -> ToolDefinition {
+    def(
+        "tokensave_find_exact_symbol",
+        "Exact Symbol Lookup",
+        "Return every node whose `name` column equals the given bare \
+         identifier — a single O(log n) index probe against `idx_nodes_name`. \
+         No BM25, no fuzzy match, no scoring. Use this when you already know \
+         the symbol name and want the cheapest possible lookup; use \
+         `tokensave_search` for relevance-ranked discovery instead.",
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Exact bare symbol name (no `::`, no glob)."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum matches to return (default: 20, max: 200)."
+                }
+            },
+            "required": ["name"]
+        }),
+    )
+}
+
+fn def_insert_at_symbol() -> ToolDefinition {
+    def_rw(
+        "tokensave_insert_at_symbol",
+        "Insert Near Symbol",
+        "Insert content immediately before or after a named symbol's source \
+         range. Same resolution semantics as `tokensave_replace_symbol`. \
+         Use `position=\"before\"` or `position=\"after\"` (default: after).",
+        json!({
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name. Prefer a fully qualified name for disambiguation."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Source text to insert. Newlines are preserved as-is."
+                },
+                "position": {
+                    "type": "string",
+                    "enum": ["before", "after"],
+                    "description": "Where to insert relative to the symbol's range. Default: after."
+                },
+                "project_root": {
+                    "type": "string",
+                    "description": "Optional absolute directory to resolve the symbol's index-relative file path against instead of the indexed project root, e.g. a git worktree with the same layout. Alias: `cwd`."
+                },
+                "echo": {
+                    "type": "boolean",
+                    "description": "If true, echo the replaced/inserted text in the result. Default false."
+                }
+            },
+            "required": ["symbol", "content"]
+        }),
+    )
+}
+
+fn def_blame() -> ToolDefinition {
+    def(
+        "tokensave_blame",
+        "Symbol Blame",
+        "Per-symbol git blame: returns the most recent commit that structurally changed the \
+         named function/method/type. Tracks the symbol across edits and cross-file renames via \
+         tree-sitter structural fingerprints. Use `file` to disambiguate overloaded names.",
+        json!({
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Qualified name or bare identifier."},
+                "file":   {"type": "string", "description": "Optional project-relative path to disambiguate overloads."},
+                "max_commits": {"type": "integer", "description": "History walk cap. Default 500."}
+            },
+            "required": ["symbol"]
+        }),
+    )
+}
+
+fn def_log() -> ToolDefinition {
+    def(
+        "tokensave_log",
+        "Symbol History",
+        "Per-symbol git log: every commit that structurally changed the named symbol, \
+         oldest-first. Tracks across edits and cross-file renames via structural fingerprints.",
+        json!({
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "file":   {"type": "string"},
+                "limit":  {"type": "integer", "description": "Cap on returned events. Default 20, max 1000."},
+                "max_commits": {"type": "integer", "description": "History walk cap. Default 500."}
+            },
+            "required": ["symbol"]
+        }),
+    )
+}
+
+fn def_diff() -> ToolDefinition {
+    def(
+        "tokensave_diff",
+        "Unified Diff",
+        "Sem-style entity-level diff. With no args, diffs the working tree against HEAD. With \
+         `from` only, diffs HEAD against `from`. With `from` and `to`, diffs `to` against `from` \
+         (sem's `<old> <new>` order). With `path`, restricts to that file. Always returns a \
+         `{from, to, changes}` envelope.",
+        json!({
+            "type": "object",
+            "properties": {
+                "from": {"type": "string", "description": "Old ref (commit/branch/tag). Defaults to HEAD."},
+                "to":   {"type": "string", "description": "New ref. Defaults to working tree."},
+                "path": {"type": "string", "description": "Restrict to a single file path."}
+            }
+        }),
+    )
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreadable_literal)]
+mod tests {
+    use super::*;
+    /// The drift gate's refused set, derived from the registry the same way
+    /// the server derives it at construction.
+    fn derived_selectorless_refused_tools() -> BTreeSet<String> {
+        get_tool_definitions()
+            .iter()
+            .filter(|definition| is_selectorless_local_graph_tool(definition))
+            .map(|definition| definition.name.clone())
+            .collect()
+    }
+    use std::collections::BTreeSet;
+
+    fn canonical_graph_scoped_tools() -> BTreeSet<&'static str> {
+        [
+            "tokensave_search",
+            "tokensave_context",
+            "tokensave_callers",
+            "tokensave_callees",
+            "tokensave_impact",
+            "tokensave_node",
+            "tokensave_status",
+            "tokensave_files",
+            "tokensave_dead_code",
+            "tokensave_ambiguous_calls",
+            "tokensave_module_api",
+            "tokensave_circular",
+            "tokensave_hotspots",
+            "tokensave_similar",
+            "tokensave_rename_preview",
+            "tokensave_unused_imports",
+            "tokensave_rank",
+            "tokensave_largest",
+            "tokensave_coupling",
+            "tokensave_inheritance_depth",
+            "tokensave_distribution",
+            "tokensave_recursion",
+            "tokensave_complexity",
+            "tokensave_doc_coverage",
+            "tokensave_god_class",
+            "tokensave_test_map",
+            "tokensave_type_hierarchy",
+            "tokensave_gini",
+            "tokensave_dependency_depth",
+            "tokensave_health",
+            "tokensave_dsm",
+            "tokensave_test_risk",
+            "tokensave_test_coverage",
+            "tokensave_body",
+            "tokensave_doc",
+            "tokensave_todos",
+            "tokensave_callers_for",
+            "tokensave_by_qualified_name",
+            "tokensave_signature",
+            "tokensave_impls",
+            "tokensave_derives",
+            "tokensave_annotations",
+            "tokensave_read",
+            "tokensave_entities",
+            "tokensave_implementations",
+            "tokensave_unsafe_patterns",
+            "tokensave_signature_search",
+            "tokensave_constructors",
+            "tokensave_field_sites",
+            "tokensave_call_chain",
+            "tokensave_file_dependents",
+            "tokensave_find_exact_symbol",
+            "tokensave_imports",
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    /// Selector-less tools intentionally outside branch-drift refusal.
+    ///
+    /// This list pins the current runtime policy. It includes non-graph tools
+    /// as well as graph-reading operations whose existing behavior is exempt.
+    fn canonical_selectorless_drift_exempt_tools() -> BTreeSet<&'static str> {
+        let mut tools = [
+            "tokensave_blame",
+            "tokensave_branch_diff",
+            "tokensave_branch_list",
+            "tokensave_branch_search",
+            "tokensave_changelog",
+            "tokensave_commit_context",
+            "tokensave_config",
+            "tokensave_delete_symbol",
+            "tokensave_dependencies",
+            "tokensave_diff",
+            "tokensave_rename",
+            "tokensave_insert_at",
+            "tokensave_insert_at_symbol",
+            "tokensave_log",
+            "tokensave_multi_str_replace",
+            "tokensave_replace_lines",
+            "tokensave_port_order",
+            "tokensave_port_status",
+            "tokensave_pr_context",
+            "tokensave_record_code_area",
+            "tokensave_record_decision",
+            "tokensave_replace_symbol",
+            "tokensave_run_affected_tests",
+            "tokensave_runtime",
+            "tokensave_session_end",
+            "tokensave_session_recall",
+            "tokensave_session_start",
+            "tokensave_str_replace",
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        if ast_grep_available() {
+            tools.insert("tokensave_ast_grep_rewrite");
+        }
+        tools
+    }
+
+    /// #576: a client sends every tool description on every turn, so a long
+    /// one is a fixed cost for the whole session. `tokensave_dependencies`
+    /// was 1.9 KB because it listed every manifest and lockfile name. Details
+    /// like that belong in the tool result or in the parameter that needs them.
+    #[test]
+    fn tool_descriptions_stay_within_their_byte_budget() {
+        for definition in get_tool_definitions() {
+            assert!(
+                definition.description.len() <= 1200,
+                "{} description is {} bytes",
+                definition.name,
+                definition.description.len()
+            );
+        }
+    }
+
+    /// #576: a hint naming a hidden tool says which area lists it; a core tool
+    /// needs no such note.
+    #[test]
+    fn a_hint_names_the_area_that_lists_a_hidden_tool() {
+        assert_eq!(
+            reachable_tool_name("tokensave_doc"),
+            "tokensave_doc (via tokensave_more area \"navigate\" if not listed)"
+        );
+        assert_eq!(
+            reachable_tool_name("tokensave_blame"),
+            "tokensave_blame (via tokensave_more area \"git\" if not listed)"
+        );
+        assert_eq!(reachable_tool_name("tokensave_search"), "tokensave_search");
+    }
+
+    /// #576: the core toolset lists exactly `CORE_TOOLS`, every name in it is a
+    /// real tool, and it keeps every tool the instructions point an agent at.
+    #[test]
+    fn the_core_toolset_lists_only_the_core_tools() {
+        use crate::config::Toolset;
+        let all = get_tool_definitions();
+        for name in CORE_TOOLS {
+            assert!(all.iter().any(|d| d.name == *name), "{name} is not a tool");
+        }
+        let none = std::collections::BTreeSet::new();
+        let core = get_listed_tool_definitions(Toolset::Core, &none);
+        assert_eq!(core.len(), CORE_TOOLS.len() + 1);
+        assert!(core
+            .iter()
+            .all(|d| CORE_TOOLS.contains(&d.name.as_str()) || d.name == MORE_TOOL));
+        for definition in get_always_load_tool_definitions() {
+            assert!(
+                CORE_TOOLS.contains(&definition.name.as_str()),
+                "{} is alwaysLoad but not core",
+                definition.name
+            );
+        }
+        // Hidden aliases (`tokensave_rename_preview`) are dispatched but
+        // never listed.
+        let listed = all.iter().filter(|d| !is_hidden_tool(d)).count();
+        assert!(listed < all.len());
+        assert_eq!(
+            get_listed_tool_definitions(Toolset::Full, &none).len(),
+            listed
+        );
+    }
+
+    /// #576: each area names real tools only, no tool is in two areas or in
+    /// the core set as well, and the areas together reach every tool. When
+    /// every area is listed the list equals the full one, without `MORE_TOOL`.
+    #[test]
+    fn the_tool_areas_partition_the_tools_outside_the_core_set() {
+        use crate::config::Toolset;
+        use std::collections::BTreeSet;
+        let all = get_tool_definitions();
+        let mut seen = BTreeSet::new();
+        for (area, _, tools) in TOOL_AREAS {
+            for tool in *tools {
+                // Registered only when the `ast-grep` binary is on PATH.
+                if *tool == "tokensave_ast_grep_rewrite" && !ast_grep_available() {
+                    continue;
+                }
+                assert!(
+                    all.iter().any(|d| d.name == *tool),
+                    "{area}: {tool} is not a tool"
+                );
+                assert!(!CORE_TOOLS.contains(tool), "{tool} is core and in {area}");
+                assert!(seen.insert(*tool), "{tool} is in two areas");
+                assert_eq!(tool_area(tool), *area);
+            }
+        }
+        assert_eq!(tool_area("tokensave_node"), "navigate");
+        assert!(is_tool_area("all") && is_tool_area("git") && !is_tool_area("nope"));
+
+        let mut total = CORE_TOOLS.len();
+        for (area, _, _) in TOOL_AREAS {
+            let one = BTreeSet::from([(*area).to_string()]);
+            let listed = get_listed_tool_definitions(Toolset::Core, &one);
+            assert!(listed.iter().any(|d| d.name == MORE_TOOL));
+            total += listed.len() - CORE_TOOLS.len() - 1;
+        }
+        let listable = all.iter().filter(|d| !is_hidden_tool(d)).count();
+        assert_eq!(total, listable, "the areas must reach every tool once");
+
+        let everything = BTreeSet::from(["all".to_string()]);
+        let listed = get_listed_tool_definitions(Toolset::Core, &everything);
+        assert_eq!(listed.len(), listable);
+        assert!(listed.iter().all(|d| d.name != MORE_TOOL));
+    }
+
+    /// #576: the selector docs are copied into every graph-scoped schema, so
+    /// their size is multiplied by the number of such tools on every turn.
+    /// Hold the short form to a budget, and make sure the rules it dropped
+    /// are still sent once in the server instructions.
+    #[test]
+    fn graph_selector_docs_stay_within_their_byte_budget() {
+        for text in [
+            GRAPH_ROOT_DESCRIPTION,
+            GRAPH_ROOT_FEDERATED_DESCRIPTION,
+            GRAPH_BRANCH_DESCRIPTION,
+        ] {
+            assert!(text.len() <= 130, "{} bytes: {text}", text.len());
+        }
+        assert!(GRAPH_ROOT_FEDERATED_DESCRIPTION.contains("array of roots"));
+        assert!(!GRAPH_ROOT_DESCRIPTION.contains("array"));
+        for rule in [
+            "array of roots",
+            "worktrees",
+            "rejects an array",
+            "graph_branch",
+        ] {
+            assert!(GRAPH_SELECTOR_INSTRUCTIONS.contains(rule), "{rule}");
+        }
+    }
+
+    #[test]
+    fn graph_scoped_defs_match_the_canonical_set() {
+        let canonical = canonical_graph_scoped_tools();
+        let definitions = get_tool_definitions();
+
+        for definition in &definitions {
+            let expected = canonical.contains(definition.name.as_str());
+            let properties = definition.input_schema["properties"].as_object().unwrap();
+            let graph_root = properties.get("graph_root");
+            let graph_branch = properties.get("graph_branch");
+
+            assert_eq!(
+                graph_root.is_some(),
+                expected,
+                "{} graph_root scope mismatch",
+                definition.name
+            );
+            assert_eq!(
+                graph_branch.is_some(),
+                expected,
+                "{} graph_branch scope mismatch",
+                definition.name
+            );
+            assert_eq!(
+                is_graph_scoped_tool(definition),
+                expected,
+                "{} graph-scoped marker mismatch",
+                definition.name
+            );
+
+            if expected {
+                // A union, not `"string"`: a single root is still a string, and
+                // `search`/`files` also accept an array to federate across
+                // roots (#376). Spelled `anyOf` rather than
+                // `"type": ["string", "array"]` because Gemini rejects the
+                // latter (#440), and asserted exactly rather than loosened to
+                // "any type" so a future edit cannot quietly widen what
+                // callers may pass — or regress to the union that broke.
+                assert!(
+                    graph_root.unwrap().get("type").is_none(),
+                    "{} must not carry a union `type` (#440)",
+                    definition.name
+                );
+                assert_eq!(
+                    graph_root.unwrap()["anyOf"],
+                    serde_json::json!([
+                        { "type": "string" },
+                        { "type": "array", "items": { "type": "string" } }
+                    ]),
+                    "{}",
+                    definition.name
+                );
+                assert_eq!(
+                    graph_root.unwrap()["description"],
+                    super::graph_root_description(&definition.name),
+                    "{}",
+                    definition.name
+                );
+                // #576: the array rule reaches only the two tools that honour
+                // it, so the other 51 do not pay for it on every turn.
+                assert_eq!(
+                    graph_root.unwrap()["description"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .contains("array"),
+                    matches!(
+                        definition.name.as_str(),
+                        "tokensave_search" | "tokensave_files"
+                    ),
+                    "{}",
+                    definition.name
+                );
+                assert_eq!(
+                    graph_branch.unwrap()["type"],
+                    "string",
+                    "{}",
+                    definition.name
+                );
+                assert_eq!(
+                    graph_branch.unwrap()["description"],
+                    GRAPH_BRANCH_DESCRIPTION,
+                    "{}",
+                    definition.name
+                );
+                let required = definition.input_schema["required"].as_array();
+                assert!(
+                    required.is_none_or(|names| {
+                        names
+                            .iter()
+                            .all(|name| name != "graph_root" && name != "graph_branch")
+                    }),
+                    "{} graph selectors must be optional",
+                    definition.name
+                );
+            }
+        }
+
+        let actual: BTreeSet<&str> = definitions
+            .iter()
+            .filter(|definition| is_graph_scoped_tool(definition))
+            .map(|definition| definition.name.as_str())
+            .collect();
+        assert_eq!(actual.len(), 53);
+        assert_eq!(actual, canonical);
+    }
+
+    #[test]
+    fn every_registered_tool_has_explicit_drift_classification() {
+        let definitions = get_tool_definitions();
+        let all_registered = definitions
+            .iter()
+            .map(|definition| definition.name.clone())
+            .collect::<BTreeSet<_>>();
+        let selector_capable = definitions
+            .iter()
+            .filter(|definition| is_graph_scoped_tool(definition))
+            .map(|definition| definition.name.clone())
+            .collect::<BTreeSet<_>>();
+        let exempt_selectorless = canonical_selectorless_drift_exempt_tools()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>();
+        let refused_selectorless = derived_selectorless_refused_tools();
+
+        let multiply_classified = selector_capable
+            .intersection(&refused_selectorless)
+            .chain(selector_capable.intersection(&exempt_selectorless))
+            .chain(refused_selectorless.intersection(&exempt_selectorless))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let classified = selector_capable
+            .union(&refused_selectorless)
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .union(&exempt_selectorless)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let added_unclassified = all_registered
+            .difference(&classified)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let removed_stale = classified
+            .difference(&all_registered)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+
+        assert!(
+            added_unclassified.is_empty()
+                && removed_stale.is_empty()
+                && multiply_classified.is_empty(),
+            "drift classification mismatch: added/unclassified={added_unclassified:?}, \
+             removed/stale={removed_stale:?}, multiply classified={multiply_classified:?}"
+        );
+    }
+
+    #[test]
+    fn selectorless_refusal_set_is_derived_and_covers_the_known_six() {
+        // The branch-drift gate refuses this exact set today; deriving it
+        // from the registry marker must reproduce the same membership, and
+        // any future selector-less local graph tool must appear here
+        // automatically instead of silently escaping the gate.
+        let derived = derived_selectorless_refused_tools();
+        let expected: BTreeSet<String> = [
+            "tokensave_affected",
+            "tokensave_diff_context",
+            "tokensave_simplify_scan",
+            "tokensave_redundancy",
+            "tokensave_diagnostics",
+            "tokensave_diagnose",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert!(
+            expected.is_subset(&derived),
+            "derived selector-less refusal set lost members: missing={:?}",
+            expected.difference(&derived).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn graph_scoped_schema_and_classification_cannot_drift() {
+        for definition in get_tool_definitions() {
+            let properties = definition.input_schema["properties"].as_object().unwrap();
+            let has_scope_schema =
+                properties.contains_key("graph_root") && properties.contains_key("graph_branch");
+            assert_eq!(
+                is_graph_scoped_tool(&definition),
+                has_scope_schema,
+                "{}",
+                definition.name
+            );
+        }
+    }
+
+    #[test]
+    fn context_description_carries_no_call_budget() {
+        let context_tool = get_tool_definitions()
+            .into_iter()
+            .find(|d| d.name == "tokensave_context")
+            .unwrap();
+        // A call budget capped exploration mid-question; it is gone for good.
+        assert!(!context_tool.description.contains("CALL BUDGET"));
+        assert!(!context_tool.description.contains("calls maximum"));
+        // Volatile values must never leak into schema text — they poison MCP
+        // client prompt caches (issue #260).
+        assert!(!context_tool.description.contains("nodes"));
+    }
+
+    #[test]
+    fn always_load_defs_are_the_primary_subset() {
+        let primary = get_always_load_tool_definitions();
+        let names: Vec<&str> = primary.iter().map(|d| d.name.as_str()).collect();
+        // Exactly the tools built via `def_always_load`, in `get_tool_definitions`
+        // push order. `callees` and `impact` joined the set in #333.
+        assert_eq!(
+            names,
+            [
+                "tokensave_search",
+                "tokensave_context",
+                "tokensave_callees",
+                "tokensave_impact",
+                "tokensave_status"
+            ]
+        );
+        // Every returned def actually carries the alwaysLoad marker...
+        assert!(primary.iter().all(is_always_load));
+        // ...and it's a strict subset of the full listing (the rest are deferred).
+        assert!(primary.len() < get_tool_definitions().len());
+    }
 }

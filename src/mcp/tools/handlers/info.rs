@@ -1,0 +1,2279 @@
+//! Status, files, `type_hierarchy`, body, todos, `simplify_scan`, `port_status`,
+//! `port_order` tool handlers.
+
+use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
+
+use serde_json::{json, Value};
+
+use crate::errors::{Result, TokenSaveError};
+use crate::tokensave::TokenSave;
+use crate::types::{FileKind, NodeKind, Visibility};
+
+use super::super::ToolResult;
+use super::symbol_target::{
+    self, body_kind_preference, display_qualified_name, member_path_segments, resolve_symbol_nodes,
+    KindRanking, Target,
+};
+use super::{
+    effective_path, file_arg, sibling_projects, truncate_response, unique_file_paths, SIBLING_HINT,
+};
+
+/// Handles `tokensave_status` tool calls.
+pub(super) async fn handle_status(
+    cg: &TokenSave,
+    server_stats: Option<Value>,
+    scope_prefix: Option<&str>,
+    selected_graph: bool,
+) -> Result<ToolResult> {
+    let stats = cg.get_stats().await?;
+    let mut output: Value = serde_json::to_value(&stats).unwrap_or(json!({}));
+    output["project_root"] = json!(cg.project_root().to_string_lossy());
+    output["version"] = json!(env!("CARGO_PKG_VERSION"));
+    if let Some(routes) = cg.db().rails_route_status().await? {
+        output["rails_routes"] = routes;
+    }
+    if let Some(ss) = server_stats {
+        output["server"] = ss;
+    }
+
+    // Branch info
+    if let Some(branch) = cg.active_branch() {
+        output["active_branch"] = json!(branch);
+        let ts_dir = crate::config::get_tokensave_dir(cg.project_root());
+        if let Some(meta) = crate::branch_meta::load_branch_meta(&ts_dir) {
+            if let Some(entry) = meta.branches.get(branch) {
+                if let Some(ref parent) = entry.parent {
+                    output["parent_branch"] = json!(parent);
+                }
+            }
+        }
+    }
+    if cg.is_fallback() {
+        output["branch_fallback"] = json!(true);
+        if let Some(warning) = cg.fallback_warning() {
+            output["branch_warning"] = json!(warning);
+        }
+    }
+
+    // A full reindex (`index_all`) commits its up-front `Database::clear()`
+    // seconds before it repopulates the graph tables. A status call landing in
+    // that window reads empty counts and `last_updated == 0` while the DB file,
+    // `last_sync_at`, and search results are all still current — issue #267. Flag
+    // the in-flight rebuild so the transient empty graph is not presented as the
+    // true index state, and skip the staleness warning below (which would
+    // otherwise count the entire branch history).
+    let rebuild_in_progress = crate::tokensave::sync_in_progress(cg.project_root());
+    if rebuild_in_progress {
+        output["index_rebuild_in_progress"] = json!(true);
+    }
+
+    // Git commit staleness: count commits since last index. `last_updated` is
+    // MAX(files.indexed_at) and reads 0 whenever the files table is empty — an
+    // in-flight or interrupted rebuild — so fall back to the `last_sync_at`
+    // metadata timestamp, which survives `Database::clear()`. Without this, an
+    // empty files table makes `git_commits_since(0)` count every commit in
+    // history (#267).
+    if !rebuild_in_progress && !selected_graph {
+        let staleness_since = if stats.last_updated > 0 {
+            stats.last_updated as i64
+        } else {
+            stats.last_sync_at as i64
+        };
+        let stale_commit_count = cg.git_commits_since(staleness_since);
+        if stale_commit_count > 0 {
+            output["stale_commits"] = json!(stale_commit_count);
+            output["stale_warning"] = json!(format!(
+                "{} commit(s) since last sync. Run `tokensave sync` to update the index.",
+                stale_commit_count
+            ));
+        }
+    }
+
+    // A selected graph is a read-only snapshot, and its records cannot be
+    // compared reliably with the caller's current worktree (which may be on a
+    // different branch). Do not report a stale count that would imply such a
+    // comparison is meaningful.
+    if !selected_graph {
+        // File-level staleness summary (sample up to 100 files for efficiency)
+        let all_files = cg.get_all_files().await.unwrap_or_default();
+        let sample_paths: Vec<String> =
+            all_files.iter().take(100).map(|f| f.path.clone()).collect();
+        let stale_files = cg.check_file_staleness(&sample_paths).await;
+        if !stale_files.is_empty() {
+            output["stale_files"] = json!(stale_files.len());
+        }
+    }
+
+    if let Some(prefix) = scope_prefix {
+        output["scope_prefix"] = json!(prefix);
+    }
+
+    // Sibling repos are reachable through `graph_root` but invisible otherwise,
+    // so a session working across two checkouts concludes the symbol does not
+    // exist rather than querying the other graph (#375). Surfaced here as well
+    // as at initialize, because a sibling may have been indexed mid-session.
+    let siblings = sibling_projects(cg.project_root()).await;
+    if !siblings.is_empty() {
+        output["sibling_projects"] = json!(siblings);
+        output["sibling_projects_hint"] = json!(SIBLING_HINT);
+    }
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![],
+    })
+}
+
+/// Describes what a listed file holds, for the `tokensave_files` rendering.
+///
+/// An artifact is labelled rather than reported as "0 symbols", which would be
+/// indistinguishable from a source file the extractor found nothing in — and
+/// would read as a parse failure rather than a file that was never parsed.
+fn describe_contents(file: &crate::types::FileRecord) -> String {
+    match file.kind {
+        FileKind::Artifact => "artifact".to_string(),
+        FileKind::Code => format!("{} symbols", file.node_count),
+    }
+}
+
+/// Handles `tokensave_files` tool calls.
+pub(super) async fn handle_files(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    debug_assert!(args.is_object(), "handle_files expects an object argument");
+    let mut files = cg.get_all_files().await?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+
+    // Apply directory prefix filter
+    if let Some(dir) = effective_path(&args, scope_prefix) {
+        let prefix = if dir.ends_with('/') {
+            dir.to_string()
+        } else {
+            format!("{dir}/")
+        };
+        files.retain(|f| f.path.starts_with(&prefix) || f.path == dir);
+    }
+
+    // Apply glob pattern filter
+    if let Some(pat) = args.get("pattern").and_then(|v| v.as_str()) {
+        if let Ok(glob) = glob::Pattern::new(pat) {
+            files.retain(|f| glob.matches(&f.path));
+        }
+    }
+
+    // Artifacts are tracked by path and carry no symbols (#323), so a caller
+    // after source files needs a way to say so without pattern-matching
+    // extensions by hand.
+    match args.get("kind").and_then(|v| v.as_str()) {
+        Some("code") => files.retain(|f| f.kind == FileKind::Code),
+        Some("artifact") => files.retain(|f| f.kind == FileKind::Artifact),
+        _ => {}
+    }
+
+    // Listing files is metadata-only — no source code is served, so no tokens saved.
+    let touched_files = vec![];
+
+    let format = args
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("grouped");
+
+    let output = if format == "flat" {
+        if files.is_empty() {
+            // Say so rather than returning an empty body: the grouped format
+            // reports "0 indexed files", and an empty string is indistinguishable
+            // from a failed call to the caller (#499).
+            "0 indexed files".to_string()
+        } else {
+            files
+                .iter()
+                .map(|f| format!("{} ({}, {} bytes)", f.path, describe_contents(f), f.size))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    } else {
+        // Grouped by directory
+        let mut groups: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for f in &files {
+            let dir = f.path.rfind('/').map_or(".", |i| &f.path[..i]).to_string();
+            #[allow(clippy::map_unwrap_or)]
+            let name = f
+                .path
+                .rfind('/')
+                .map(|i| &f.path[i + 1..])
+                .unwrap_or(&f.path);
+            groups
+                .entry(dir)
+                .or_default()
+                .push(format!("{} ({})", name, describe_contents(f)));
+        }
+        let mut lines = Vec::new();
+        lines.push(format!("{} indexed files", files.len()));
+        for (dir, entries) in &groups {
+            lines.push(format!("\n{}/ ({} files)", dir, entries.len()));
+            for entry in entries {
+                lines.push(format!("  {entry}"));
+            }
+        }
+        lines.join("\n")
+    };
+
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&output) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Default node kinds for port comparisons.
+const PORT_DEFAULT_KINDS: &[&str] = &[
+    "function",
+    "method",
+    "singleton_method",
+    "class",
+    "struct",
+    "interface",
+    "trait",
+    "enum",
+    "module",
+];
+
+/// Returns the compatibility group for a node kind string used in port matching.
+///
+/// Kinds in the same group are considered cross-language equivalents:
+/// - group 0: class, struct (cross-language data type)
+/// - group 1: function
+/// - group 2: method
+/// - group 3: interface, trait
+/// - group 4: enum
+/// - group 5: module
+fn kind_compat_group(kind: &str) -> u8 {
+    match kind {
+        "class" | "struct" => 0,
+        "function" => 1,
+        "method" | "singleton_method" => 2,
+        "interface" | "trait" => 3,
+        "enum" => 4,
+        "module" => 5,
+        _ => 255,
+    }
+}
+
+/// Composite match key used by `handle_port_status`.
+///
+/// Combines the lowercased name, an optional parent qualifier (for methods,
+/// fields, and variants), and a kind compatibility group, so siblings whose
+/// names happen to collide (`Biquad::new` vs `Adaa::new`) do not cross-match.
+type PortKey = (String, Option<String>, u8);
+
+/// Returns true for kinds that conceptually have a parent type/owner whose
+/// identity matters for matching (methods, fields, variants, etc.). Top-level
+/// items (struct, function, …) return false — their parent in `qualified_name`
+/// is just the file path and is not useful for cross-port matching.
+fn port_kind_has_parent(kind: &str) -> bool {
+    matches!(
+        kind,
+        "method"
+            | "singleton_method"
+            | "field"
+            | "enum_variant"
+            | "struct_method"
+            | "abstract_method"
+            | "constructor"
+            | "csharp_property"
+            | "property"
+            | "val"
+            | "var"
+    )
+}
+
+/// Extracts the parent qualifier from a node's `qualified_name`, stripping
+/// generic parameters so `Biquad<T>::new` and `Biquad::new` share the same
+/// parent. Returns `None` for kinds where the parent qualifier is not the
+/// containing type (e.g. top-level structs whose parent is the file path).
+fn port_parent_qualifier(node: &crate::types::Node) -> Option<String> {
+    if !port_kind_has_parent(node.kind.as_str()) {
+        return None;
+    }
+    let parts: Vec<&str> = node.qualified_name.split("::").collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let parent = parts[parts.len() - 2];
+    // Strip generic parameters: `Biquad<T>` -> `Biquad`.
+    let parent_no_generics = parent.split('<').next().unwrap_or(parent);
+    Some(parent_no_generics.trim().to_string())
+}
+
+/// Handles `tokensave_port_status` tool calls.
+pub(super) async fn handle_port_status(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    debug_assert!(
+        args.is_object(),
+        "handle_port_status expects an object argument"
+    );
+
+    let source_dir = args
+        .get("source_dir")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: source_dir".to_string(),
+        })?;
+
+    let target_dir = args
+        .get("target_dir")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: target_dir".to_string(),
+        })?;
+
+    let kind_strs: Vec<String> = args.get("kinds").and_then(|v| v.as_array()).map_or_else(
+        || {
+            PORT_DEFAULT_KINDS
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
+        },
+        |arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                .collect()
+        },
+    );
+
+    let kinds: Vec<NodeKind> = kind_strs
+        .iter()
+        .filter_map(|s| NodeKind::from_str(s))
+        .collect();
+
+    if kinds.is_empty() {
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": "No valid node kinds specified." }]
+            }),
+            touched_files: vec![],
+        });
+    }
+
+    let source_nodes = cg.get_nodes_by_dir(source_dir, &kinds).await?;
+    let target_nodes = cg.get_nodes_by_dir(target_dir, &kinds).await?;
+
+    // Match key includes the parent qualifier (e.g. enclosing struct/class) for
+    // kinds that have one, so `Biquad::new` does NOT collide with `Adaa::new`.
+    // Top-level kinds (struct, function, …) keep using name-only matching.
+    let mut target_map: HashMap<PortKey, Vec<&crate::types::Node>> = HashMap::new();
+    for node in &target_nodes {
+        let key: PortKey = (
+            node.name.to_lowercase(),
+            port_parent_qualifier(node).map(|s| s.to_lowercase()),
+            kind_compat_group(node.kind.as_str()),
+        );
+        target_map.entry(key).or_default().push(node);
+    }
+
+    let mut matched_symbols: Vec<Value> = Vec::new();
+    let mut matched_target_ids: HashSet<String> = HashSet::new();
+    let mut unmatched_by_file: HashMap<String, Vec<Value>> = HashMap::new();
+
+    for src_node in &source_nodes {
+        let key: PortKey = (
+            src_node.name.to_lowercase(),
+            port_parent_qualifier(src_node).map(|s| s.to_lowercase()),
+            kind_compat_group(src_node.kind.as_str()),
+        );
+        if let Some(targets) = target_map.get(&key) {
+            // Take the first match
+            let tgt = targets[0];
+            matched_symbols.push(json!({
+                "name": src_node.name,
+                "source_kind": src_node.kind.as_str(),
+                "target_kind": tgt.kind.as_str(),
+                "source_file": src_node.file_path,
+                "target_file": tgt.file_path,
+            }));
+            matched_target_ids.insert(tgt.id.clone());
+        } else {
+            unmatched_by_file
+                .entry(src_node.file_path.clone())
+                .or_default()
+                .push(json!({
+                    "name": src_node.name,
+                    "kind": src_node.kind.as_str(),
+                    "line": super::display_line(src_node.start_line),
+                }));
+        }
+    }
+
+    // Target-only symbols (in target but no source match)
+    let target_only: Vec<Value> = target_nodes
+        .iter()
+        .filter(|n| !matched_target_ids.contains(&n.id))
+        .map(|n| {
+            json!({
+                "name": n.name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "line": super::display_line(n.start_line),
+            })
+        })
+        .collect();
+
+    let source_count = source_nodes.len();
+    let matched_count = matched_symbols.len();
+    let unmatched_count = source_count - matched_count;
+    let coverage = if source_count > 0 {
+        (matched_count as f64 / source_count as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let touched_files = unique_file_paths(
+        source_nodes
+            .iter()
+            .chain(target_nodes.iter())
+            .map(|n| n.file_path.as_str()),
+    );
+
+    let result = json!({
+        "source_dir": source_dir,
+        "target_dir": target_dir,
+        "source_count": source_count,
+        "target_count": target_nodes.len(),
+        "matched": matched_count,
+        "unmatched": unmatched_count,
+        "target_only": target_only.len(),
+        "coverage_percent": (coverage * 10.0).round() / 10.0,
+        "unmatched_by_file": unmatched_by_file,
+        "matched_symbols": matched_symbols,
+        "target_only_symbols": target_only,
+    });
+
+    let formatted = serde_json::to_string_pretty(&result).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_port_order` tool calls.
+pub(super) async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    debug_assert!(
+        args.is_object(),
+        "handle_port_order expects an object argument"
+    );
+
+    let source_dir = args
+        .get("source_dir")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: source_dir".to_string(),
+        })?;
+
+    let kind_strs: Vec<String> = args.get("kinds").and_then(|v| v.as_array()).map_or_else(
+        || {
+            PORT_DEFAULT_KINDS
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
+        },
+        |arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                .collect()
+        },
+    );
+
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(50, |v| v.min(500) as usize);
+
+    let kinds: Vec<NodeKind> = kind_strs
+        .iter()
+        .filter_map(|s| NodeKind::from_str(s))
+        .collect();
+
+    if kinds.is_empty() {
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": "No valid node kinds specified." }]
+            }),
+            touched_files: vec![],
+        });
+    }
+
+    let nodes = cg.get_nodes_by_dir(source_dir, &kinds).await?;
+    let total_symbols = nodes.len();
+
+    if nodes.is_empty() {
+        let result = json!({
+            "source_dir": source_dir,
+            "total_symbols": 0,
+            "returned": 0,
+            "levels": [],
+            "cycles": [],
+        });
+        let formatted = serde_json::to_string_pretty(&result).unwrap_or_default();
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": formatted }]
+            }),
+            touched_files: vec![],
+        });
+    }
+
+    // Build node ID lookup
+    let node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+    let node_map: HashMap<&str, &crate::types::Node> =
+        nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let id_set: HashSet<&str> = node_ids.iter().map(std::string::String::as_str).collect();
+
+    // Get internal edges (dependency edges between these nodes)
+    let edges = cg.get_internal_edges(&node_ids).await?;
+
+    // Build adjacency list and in-degree map for Kahn's algorithm.
+    // Edge direction: source depends on target (source calls/uses target),
+    // so in the dependency graph, source -> target means "source needs target".
+    // For topological sort, we want nodes with in_degree 0 (nothing depends on
+    // them internally, OR they have no dependencies). Actually, for porting
+    // order we want leaves first = nodes that DON'T depend on other internal
+    // nodes. So in-degree in the dependency DAG = number of things this node
+    // depends on = outgoing edges in the call/uses graph.
+    //
+    // Reframe: dependency_graph[A] = {B, C} means A depends on B and C.
+    // in_degree[A] = number of nodes A depends on.
+    // Kahn's starts with in_degree 0 = nodes with no dependencies = safe to port first.
+    let dep_edge_kinds: HashSet<&str> = ["calls", "uses", "extends", "implements"]
+        .iter()
+        .copied()
+        .collect();
+
+    let mut dep_graph: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut in_degree: HashMap<&str, usize> = HashMap::new();
+
+    // Initialize all nodes
+    for id in &node_ids {
+        dep_graph.entry(id.as_str()).or_default();
+        in_degree.entry(id.as_str()).or_insert(0);
+    }
+
+    // reverse_dep_graph[B] = list of nodes that depend on B.
+    // When B is sorted, we decrement in_degree for each of its reverse deps.
+    let mut reverse_dep_graph: HashMap<&str, Vec<&str>> = HashMap::new();
+    for id in &node_ids {
+        reverse_dep_graph.entry(id.as_str()).or_default();
+    }
+
+    for edge in &edges {
+        if !dep_edge_kinds.contains(edge.kind.as_str()) {
+            continue;
+        }
+        if !id_set.contains(edge.source.as_str()) || !id_set.contains(edge.target.as_str()) {
+            continue;
+        }
+        // Self-edges are common resolver artifacts for methods with generic
+        // names (`push`, `new`, `clamp`, `num_rows`) where a call on another
+        // receiver fuzzy-binds back to the current method. They also make a
+        // single symbol unsortable in Kahn's algorithm, producing noisy
+        // singleton cycles instead of useful porting order. Mutual cycles are
+        // still reported below.
+        if edge.source == edge.target {
+            continue;
+        }
+        // source depends on target: add dependency source -> target
+        dep_graph
+            .entry(edge.source.as_str())
+            .or_default()
+            .push(edge.target.as_str());
+        // reverse: target is depended on by source
+        reverse_dep_graph
+            .entry(edge.target.as_str())
+            .or_default()
+            .push(edge.source.as_str());
+        *in_degree.entry(edge.source.as_str()).or_insert(0) += 1;
+    }
+
+    // Kahn's algorithm (BFS topological sort)
+    let mut queue: std::collections::VecDeque<&str> = std::collections::VecDeque::new();
+    for (&id, &deg) in &in_degree {
+        if deg == 0 {
+            queue.push_back(id);
+        }
+    }
+
+    let mut levels: Vec<Vec<&str>> = Vec::new();
+    let mut sorted_set: HashSet<&str> = HashSet::new();
+    let mut emitted = 0usize;
+
+    while !queue.is_empty() && emitted < limit {
+        let mut current_level: Vec<&str> = Vec::new();
+        let level_size = queue.len();
+        for _ in 0..level_size {
+            // Safety: we checked queue is non-empty above and iterate exactly level_size times
+            let Some(id) = queue.pop_front() else { break };
+            if sorted_set.contains(id) {
+                continue;
+            }
+            sorted_set.insert(id);
+            current_level.push(id);
+            emitted += 1;
+            if emitted >= limit {
+                break;
+            }
+        }
+
+        // For each sorted node, decrement in-degree of nodes that depend on it.
+        for &sorted_id in &current_level {
+            if let Some(dependents) = reverse_dep_graph.get(sorted_id) {
+                for &dep_id in dependents {
+                    if sorted_set.contains(dep_id) {
+                        continue;
+                    }
+                    let deg = in_degree.entry(dep_id).or_insert(0);
+                    if *deg > 0 {
+                        *deg -= 1;
+                    }
+                    if *deg == 0 {
+                        queue.push_back(dep_id);
+                    }
+                }
+            }
+        }
+
+        if !current_level.is_empty() {
+            levels.push(current_level);
+        }
+    }
+
+    // Detect cycles: any unsorted nodes form cycles.
+    let cycle_node_ids: HashSet<&str> = node_ids
+        .iter()
+        .map(std::string::String::as_str)
+        .filter(|id| !sorted_set.contains(id))
+        .collect();
+
+    // Group cycles into SCCs so multiple disjoint mutually-recursive
+    // groups don't collapse into one mega-cycle. Each non-trivial SCC
+    // becomes its own entry with the files forming it surfaced — gives
+    // the user a clear "break this cycle" target instead of a 200+
+    // symbol blob.
+    let mut cycle_adj: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for (&node_id, neighbors) in &dep_graph {
+        if !cycle_node_ids.contains(node_id) {
+            continue;
+        }
+        let kept: HashSet<&str> = neighbors
+            .iter()
+            .copied()
+            .filter(|n| cycle_node_ids.contains(n))
+            .collect();
+        cycle_adj.insert(node_id, kept);
+    }
+    let sccs = crate::graph::scc::tarjan_scc(&cycle_adj);
+
+    let mut cycles_json: Vec<Value> = Vec::new();
+    for scc in sccs {
+        if !crate::graph::scc::is_cyclic_scc(&scc, &cycle_adj) {
+            continue;
+        }
+        let scc_set: HashSet<&str> = scc.iter().copied().collect();
+        // Rank symbols within the SCC by in-cycle out-degree (how many
+        // *other* SCC members this symbol depends on). The symbol with the
+        // smallest out-degree is the leaf-most node inside the cycle and is
+        // the natural starting point: porting it requires stubbing the
+        // fewest peers. The symbol with the largest out-degree is the
+        // "hub" — the best candidate to break the cycle by refactoring its
+        // call sites.
+        let mut ranked: Vec<(&str, usize, usize)> = scc
+            .iter()
+            .map(|id| {
+                let out_in_cycle = cycle_adj.get(id).map_or(0, |neighbors| {
+                    neighbors.iter().filter(|n| scc_set.contains(*n)).count()
+                });
+                // In-degree (within the cycle) — how many SCC members
+                // depend on this symbol. High in-degree = "many callers
+                // inside the cycle", which is another useful break-point
+                // signal.
+                let mut in_in_cycle = 0;
+                for (&src, neighbors) in &cycle_adj {
+                    if !scc_set.contains(src) || src == *id {
+                        continue;
+                    }
+                    if neighbors.contains(id) {
+                        in_in_cycle += 1;
+                    }
+                }
+                (*id, out_in_cycle, in_in_cycle)
+            })
+            .collect();
+        // Ascending by out-degree → entry-point first; ties broken by
+        // descending in-degree (hub-iness) so the most-referenced "leaf"
+        // surfaces just after the cleanest leaf.
+        ranked.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| b.2.cmp(&a.2)));
+
+        let symbols_detailed: Vec<Value> = ranked
+            .iter()
+            .filter_map(|(id, out_deg, in_deg)| {
+                let node = node_map.get(id)?;
+                Some(json!({
+                    "name": node.name,
+                    "kind": node.kind.as_str(),
+                    "file": node.file_path,
+                    "line": super::display_line(node.start_line),
+                    "in_cycle_out_degree": out_deg,
+                    "in_cycle_in_degree": in_deg,
+                }))
+            })
+            .collect();
+
+        // Rank files by how many cycle members each contains — the file
+        // with the most members is the best refactor target.
+        let mut file_counts: HashMap<&str, usize> = HashMap::new();
+        for id in &scc {
+            if let Some(n) = node_map.get(id) {
+                *file_counts.entry(n.file_path.as_str()).or_insert(0) += 1;
+            }
+        }
+        let mut files_ranked: Vec<(&str, usize)> = file_counts.into_iter().collect();
+        files_ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        let files_json: Vec<Value> = files_ranked
+            .iter()
+            .map(|(path, count)| json!({"file": path, "members_in_cycle": count}))
+            .collect();
+
+        let entry_point = ranked.first().and_then(|(id, _, _)| node_map.get(id));
+        let hub = ranked
+            .iter()
+            .max_by_key(|(_, _out, in_deg)| *in_deg)
+            .and_then(|(id, _, _)| node_map.get(id));
+
+        cycles_json.push(json!({
+            "size": scc.len(),
+            "files": files_json,
+            "symbols": symbols_detailed,
+            "entry_point": entry_point.map(|n| json!({
+                "name": n.name, "file": n.file_path, "line": super::display_line(n.start_line),
+            })),
+            "break_point_candidate": hub.map(|n| json!({
+                "name": n.name, "file": n.file_path, "line": super::display_line(n.start_line),
+                "rationale": "Highest in-cycle in-degree — refactoring its callers is the most effective way to fragment this SCC.",
+            })),
+            "note": "Mutual dependency — port together, starting at `entry_point` and refactoring `break_point_candidate` to split the cycle.",
+        }));
+    }
+
+    // Build output levels
+    let levels_json: Vec<Value> = levels
+        .iter()
+        .enumerate()
+        .map(|(i, level_ids)| {
+            let description = if i == 0 {
+                "No internal dependencies — port these first".to_string()
+            } else {
+                format!("Depends only on levels 0–{}", i - 1)
+            };
+
+            let symbols: Vec<Value> = level_ids
+                .iter()
+                .filter_map(|id| {
+                    let node = node_map.get(id)?;
+                    // Find what this node depends on (for depends_on field)
+                    let deps: Vec<&str> = dep_graph
+                        .get(id)
+                        .map(|d| {
+                            d.iter()
+                                .filter_map(|dep_id| node_map.get(dep_id).map(|n| n.name.as_str()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    let mut sym = json!({
+                        "name": node.name,
+                        "kind": node.kind.as_str(),
+                        "file": node.file_path,
+                        "line": super::display_line(node.start_line),
+                    });
+                    if !deps.is_empty() {
+                        sym["depends_on"] = json!(deps);
+                    }
+                    Some(sym)
+                })
+                .collect();
+
+            json!({
+                "level": i,
+                "description": description,
+                "symbols": symbols,
+            })
+        })
+        .collect();
+
+    let touched_files = unique_file_paths(nodes.iter().map(|n| n.file_path.as_str()));
+
+    let result = json!({
+        "source_dir": source_dir,
+        "total_symbols": total_symbols,
+        "returned": emitted,
+        "levels": levels_json,
+        "cycles": cycles_json,
+    });
+
+    let formatted = serde_json::to_string_pretty(&result).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Handles `tokensave_simplify_scan` tool calls.
+pub(super) async fn handle_simplify_scan(
+    cg: &TokenSave,
+    args: Value,
+    _scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let files: Vec<String> = args
+        .get("files")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: files (array of strings)".to_string(),
+        })?;
+
+    let mut duplications: Vec<Value> = Vec::new();
+    let mut dead_introductions: Vec<Value> = Vec::new();
+    let mut complexity_warnings: Vec<Value> = Vec::new();
+    let mut coupling_warnings: Vec<Value> = Vec::new();
+
+    for file in &files {
+        let nodes = cg.get_nodes_by_file(file).await.unwrap_or_default();
+
+        for node in &nodes {
+            // 1. Duplication: find similar symbols elsewhere
+            if matches!(
+                node.kind,
+                NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+            ) {
+                let similar = cg.search(&node.name, 5).await.unwrap_or_default();
+                let dupes: Vec<Value> = similar
+                    .iter()
+                    .filter(|s| {
+                        s.node.id != node.id && s.score > 0.8 && s.node.file_path != node.file_path
+                    })
+                    .map(|d| {
+                        json!({
+                            "name": d.node.name,
+                            "file": d.node.file_path,
+                            "line": super::display_line(d.node.start_line),
+                            "score": d.score,
+                        })
+                    })
+                    .collect();
+                if !dupes.is_empty() {
+                    duplications.push(json!({
+                        "symbol": node.name,
+                        "file": node.file_path,
+                        "line": super::display_line(node.start_line),
+                        "similar_to": dupes,
+                    }));
+                }
+            }
+
+            // 2. Dead code: function/method with no incoming edges
+            if matches!(
+                node.kind,
+                NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+            ) && node.visibility != Visibility::Pub
+                && node.name != "main"
+                && !node.name.starts_with("test_")
+            {
+                let incoming = cg.get_incoming_edges(&node.id).await.unwrap_or_default();
+                if incoming.is_empty() {
+                    dead_introductions.push(json!({
+                        "symbol": node.name,
+                        "file": node.file_path,
+                        "line": super::display_line(node.start_line),
+                        "reason": "no incoming edges (unreferenced)",
+                    }));
+                }
+            }
+
+            // 3. Complexity: check if function exceeds threshold
+            if matches!(
+                node.kind,
+                NodeKind::Function | NodeKind::Method | NodeKind::SingletonMethod
+            ) {
+                let lines = node.end_line.saturating_sub(node.start_line) as usize;
+                let fan_out = cg
+                    .get_outgoing_edges(&node.id)
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|e| matches!(e.kind, crate::types::EdgeKind::Calls))
+                    .count();
+                let score = lines + fan_out * 3;
+                if score > 100 {
+                    complexity_warnings.push(json!({
+                        "symbol": node.name,
+                        "file": node.file_path,
+                        "line": super::display_line(node.start_line),
+                        "lines": lines,
+                        "fan_out": fan_out,
+                        "score": score,
+                    }));
+                }
+            }
+        }
+
+        // 4. Coupling: check file fan_in
+        let file_deps = cg.get_file_dependents(file).await.unwrap_or_default();
+        if file_deps.len() > 15 {
+            coupling_warnings.push(json!({
+                "file": file,
+                "fan_in": file_deps.len(),
+                "warning": "high fan-in — changes here affect many dependents",
+            }));
+        }
+    }
+
+    let output = json!({
+        "duplications": duplications,
+        "dead_introductions": dead_introductions,
+        "complexity_warnings": complexity_warnings,
+        "coupling_warnings": coupling_warnings,
+    });
+
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&formatted)}]}),
+        touched_files: files,
+    })
+}
+
+/// Handles `tokensave_type_hierarchy` tool calls.
+///
+/// Takes a `node_id`, or a `symbol` answered for each of up to
+/// `max_matches` matching types under a `## <heading>` per match (#669).
+pub(super) async fn handle_type_hierarchy(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let max_depth = args
+        .get("max_depth")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(5, |v| v.min(10) as usize);
+    // Unlike callers/callees/impact, no limit unless the caller sets one:
+    // a hierarchy prints one short line per type.
+    let limit = symbol_target::result_limit(&args, None);
+
+    let target =
+        symbol_target::resolve_target(cg, &args, scope_prefix, KindRanking::TypeFirst).await?;
+    let (output, all_files) = match target {
+        Target::NodeId(node_id) => {
+            let root = cg
+                .get_node(&node_id)
+                .await?
+                .ok_or_else(|| TokenSaveError::Config {
+                    message: format!("node not found: {node_id}"),
+                })?;
+            type_tree(cg, &root, max_depth, limit).await
+        }
+        Target::Symbol(matches) => {
+            let mut bodies = Vec::with_capacity(matches.answered.len());
+            let mut all_files = Vec::new();
+            for group in &matches.answered {
+                let mut body = String::new();
+                for root in &group.nodes {
+                    let (tree, files) = type_tree(cg, root, max_depth, limit).await;
+                    body.push_str(&tree);
+                    all_files.extend(files);
+                }
+                bodies.push(body);
+            }
+            (matches.to_text(bodies), all_files)
+        }
+    };
+
+    let touched_files = unique_file_paths(all_files.iter().map(std::string::String::as_str));
+    Ok(ToolResult {
+        value: json!({"content": [{"type": "text", "text": truncate_response(&output)}]}),
+        touched_files,
+    })
+}
+
+/// Renders one type's hierarchy: its own line, then implementors and
+/// extenders recursively. With a `limit`, at most that many lines below the
+/// root are printed and a `count: N of M` line reports the rest (#645).
+async fn type_tree(
+    cg: &TokenSave,
+    root: &crate::types::Node,
+    max_depth: usize,
+    limit: Option<usize>,
+) -> (String, Vec<String>) {
+    let mut output = format!(
+        "{} ({}) -- {}:{}-{}\n",
+        root.name,
+        root.kind.as_str(),
+        root.file_path,
+        super::display_line(root.start_line),
+        super::display_line(root.end_line)
+    );
+    let mut all_files: Vec<String> = vec![root.file_path.clone()];
+    let mut budget = TreeBudget {
+        limit: limit.unwrap_or(usize::MAX),
+        shown: 0,
+        total: 0,
+    };
+
+    // Recursively build the hierarchy
+    build_type_tree(
+        cg,
+        &root.id,
+        max_depth,
+        0,
+        &mut output,
+        &mut all_files,
+        &mut budget,
+    )
+    .await;
+    if budget.total > budget.shown {
+        let _ = writeln!(
+            output,
+            "count: {} of {} (truncated; raise `limit` to see more)",
+            budget.shown, budget.total
+        );
+    }
+    (output, all_files)
+}
+
+/// Lines a type tree may still print, and how many it found.
+struct TreeBudget {
+    limit: usize,
+    shown: usize,
+    total: usize,
+}
+
+/// Recursively appends type hierarchy lines to the output string. Past the
+/// budget's limit it keeps walking, counting lines without printing them.
+fn build_type_tree<'a>(
+    cg: &'a TokenSave,
+    node_id: &'a str,
+    max_depth: usize,
+    depth: usize,
+    output: &'a mut String,
+    all_files: &'a mut Vec<String>,
+    budget: &'a mut TreeBudget,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+    Box::pin(async move {
+        if depth >= max_depth {
+            return;
+        }
+
+        let incoming = cg.get_incoming_edges(node_id).await.unwrap_or_default();
+        let pad = "  ".repeat(depth);
+
+        for edge in &incoming {
+            if !matches!(
+                edge.kind,
+                crate::types::EdgeKind::Implements | crate::types::EdgeKind::Extends
+            ) {
+                continue;
+            }
+            if let Ok(Some(child)) = cg.get_node(&edge.source).await {
+                budget.total += 1;
+                if budget.shown < budget.limit {
+                    budget.shown += 1;
+                    let _ = writeln!(
+                        output,
+                        "{}|- {} {} ({}) -- {}:{}-{}",
+                        pad,
+                        edge.kind.as_str(),
+                        child.name,
+                        child.kind.as_str(),
+                        child.file_path,
+                        super::display_line(child.start_line),
+                        super::display_line(child.end_line),
+                    );
+                    all_files.push(child.file_path.clone());
+                }
+                build_type_tree(
+                    cg,
+                    &child.id,
+                    max_depth,
+                    depth + 1,
+                    output,
+                    all_files,
+                    budget,
+                )
+                .await;
+            }
+        }
+    })
+}
+
+/// Extract the source spanning tree-sitter rows `start_line..=end_line`
+/// (0-based, inclusive) from `source`. Node line fields are stored as the
+/// raw tree-sitter row index, so the caller passes them through unchanged.
+/// Returns the empty string if the range is out of bounds.
+pub(super) fn extract_lines(source: &str, start_line: u32, end_line: u32) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let start = start_line as usize;
+    let end = (end_line as usize).saturating_add(1).min(lines.len());
+    if start >= lines.len() || start >= end {
+        return String::new();
+    }
+    lines[start..end].join("\n")
+}
+
+/// Default and maximum number of candidates `tokensave_body` lists for an
+/// ambiguous name.
+const BODY_CANDIDATES_DEFAULT: usize = 20;
+const BODY_CANDIDATES_MAX: usize = 50;
+
+/// Handles `tokensave_body` tool calls.
+///
+/// Exactly one definition → its body. More than one equally good definition
+/// → no bodies, only a candidate list the caller narrows with a qualified
+/// name or a node id (#651).
+pub(super) async fn handle_body(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    // `node_id` is the name every other tool (and the truncated-snippet
+    // handle in `tokensave_context`) uses; `id` matches the candidate field.
+    let id = ["node_id", "id"]
+        .iter()
+        .find_map(|key| args.get(*key).and_then(|v| v.as_str()))
+        .filter(|s| !s.is_empty());
+    let symbol = args.get("symbol").and_then(|v| v.as_str());
+    let format = args
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text");
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(BODY_CANDIDATES_DEFAULT, |v| {
+            usize::try_from(v)
+                .unwrap_or(BODY_CANDIDATES_MAX)
+                .clamp(1, BODY_CANDIDATES_MAX)
+        });
+
+    let (label, candidates) = if let Some(id) = id {
+        let node = cg.get_node(id).await?;
+        (
+            format!("with node_id '{id}'"),
+            node.into_iter().collect::<Vec<_>>(),
+        )
+    } else {
+        let symbol = symbol.ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: symbol (or node_id)".to_string(),
+        })?;
+        (
+            format!("named '{symbol}'"),
+            resolve_symbol_nodes(cg, symbol).await?,
+        )
+    };
+    let mut candidates = super::filter_by_scope(candidates, scope_prefix, |n| &n.file_path);
+
+    // Search fallback for a name nothing matched exactly (typos, partial
+    // names). Never for an id: an unknown id is simply not found.
+    if candidates.is_empty() && id.is_none() {
+        if let Some(symbol) = symbol {
+            let raw = cg.search(symbol, 20).await?;
+            candidates = super::filter_by_scope(raw, scope_prefix, |r| &r.node.file_path)
+                .into_iter()
+                .map(|r| r.node)
+                .collect();
+        }
+    }
+
+    // Keep only the best kind tier, so a function beats a same-named field
+    // (bug #1) while two same-named methods stay ambiguous (#651).
+    let mut seen: HashSet<String> = HashSet::new();
+    candidates.retain(|n| seen.insert(n.id.clone()));
+    if let Some(best) = candidates
+        .iter()
+        .map(|n| body_kind_preference(&n.kind))
+        .min()
+    {
+        candidates.retain(|n| body_kind_preference(&n.kind) == best);
+    }
+
+    Ok(match candidates.as_slice() {
+        [] => ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": format!("No symbol {label} found.") }]
+            }),
+            touched_files: vec![],
+        },
+        [only] => body_result(cg, only, format),
+        many => candidates_result(many, limit, format, symbol.unwrap_or_default()),
+    })
+}
+
+/// Renders the single-match response: the node's full body.
+fn body_result(cg: &TokenSave, n: &crate::types::Node, format: &str) -> ToolResult {
+    let abs_path = cg.project_root().join(&n.file_path);
+    let body = match crate::sync::read_source_file(&abs_path) {
+        Ok(source) => extract_lines(&source, n.start_line, n.end_line),
+        Err(_) => String::from("<file unreadable>"),
+    };
+    let start = n.start_line.saturating_add(1);
+    let end = n.end_line.saturating_add(1);
+    let text = if format == "text" {
+        format!(
+            "match_count: 1\n\nfile: {}:{start}-{end}: {} ({})\n{body}\n\n",
+            n.file_path,
+            n.name,
+            n.kind.as_str()
+        )
+    } else {
+        let output = json!({
+            "match_count": 1,
+            "matches": [{
+                "id": n.id,
+                "name": n.name,
+                "qualified_name": n.qualified_name,
+                "kind": n.kind.as_str(),
+                "file": n.file_path,
+                "start_line": start,
+                "end_line": end,
+                "signature": n.signature,
+                "body": body,
+            }],
+        });
+        serde_json::to_string_pretty(&output).unwrap_or_default()
+    };
+    ToolResult {
+        value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
+        touched_files: vec![n.file_path.clone()],
+    }
+}
+
+/// Renders the ambiguous response: a candidate list and no bodies.
+fn candidates_result(
+    nodes: &[crate::types::Node],
+    limit: usize,
+    format: &str,
+    symbol: &str,
+) -> ToolResult {
+    let total = nodes.len();
+    let shown = &nodes[..total.min(limit)];
+    let example = shown.first().map_or_else(String::new, |n| {
+        let segs = member_path_segments(display_qualified_name(n));
+        segs[segs.len().saturating_sub(2)..].join("::")
+    });
+    let hint = format!(
+        "'{symbol}' is ambiguous: {total} symbols match, so no body was returned. \
+         Re-call tokensave_body with a qualified name (e.g. symbol: \"{example}\"; \
+         `Type.Member` also works) or with node_id set to the candidate's id."
+    );
+    let text = if format == "text" {
+        let mut text = format!("match_count: 0\ncandidate_count: {total}\n{hint}\n\n");
+        for n in shown {
+            let _ = writeln!(
+                text,
+                "{} ({}) {}:{}-{} id={}",
+                display_qualified_name(n),
+                n.kind.as_str(),
+                n.file_path,
+                n.start_line.saturating_add(1),
+                n.end_line.saturating_add(1),
+                n.id
+            );
+        }
+        if total > shown.len() {
+            let _ = writeln!(text, "... {} more (raise `limit`)", total - shown.len());
+        }
+        text
+    } else {
+        let candidates: Vec<Value> = shown
+            .iter()
+            .map(|n| {
+                json!({
+                    "id": n.id,
+                    "name": n.name,
+                    "qualified_name": display_qualified_name(n),
+                    "kind": n.kind.as_str(),
+                    "file": n.file_path,
+                    "start_line": n.start_line.saturating_add(1),
+                    "end_line": n.end_line.saturating_add(1),
+                    "signature": n.signature,
+                })
+            })
+            .collect();
+        let output = json!({
+            "match_count": 0,
+            "ambiguous": true,
+            "candidate_count": total,
+            "candidates": candidates,
+            "hint": hint,
+        });
+        serde_json::to_string_pretty(&output).unwrap_or_default()
+    };
+    ToolResult {
+        value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
+        touched_files: vec![],
+    }
+}
+
+/// Default marker kinds recognised by `tokensave_todos`.
+const DEFAULT_TODO_KINDS: &[&str] = &[
+    "TODO",
+    "FIXME",
+    "XXX",
+    "HACK",
+    "WIP",
+    "NOTE",
+    "UNIMPLEMENTED",
+];
+
+/// True if `text` contains `marker` as a standalone uppercase word
+/// (case-insensitive, surrounded by non-alphanumeric characters or string ends).
+fn contains_marker_word(text: &str, marker: &str) -> Option<usize> {
+    let lower = text.to_ascii_lowercase();
+    let marker_lower = marker.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mlen = marker_lower.len();
+    let mut idx = 0;
+    while idx + mlen <= bytes.len() {
+        if &bytes[idx..idx + mlen] == marker_lower.as_bytes() {
+            let before_ok =
+                idx == 0 || !bytes[idx - 1].is_ascii_alphanumeric() && bytes[idx - 1] != b'_';
+            let after_ok = idx + mlen == bytes.len()
+                || (!bytes[idx + mlen].is_ascii_alphanumeric() && bytes[idx + mlen] != b'_');
+            if before_ok && after_ok {
+                return Some(idx);
+            }
+        }
+        idx += 1;
+    }
+    None
+}
+
+/// Handles `tokensave_todos` tool calls.
+pub(super) async fn handle_todos(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let kinds: Vec<String> = args
+        .get("kinds")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_uppercase))
+                .collect::<Vec<_>>()
+        })
+        .filter(|v: &Vec<String>| !v.is_empty())
+        .unwrap_or_else(|| {
+            DEFAULT_TODO_KINDS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect()
+        });
+
+    let path = effective_path(&args, scope_prefix);
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(200, |v| v.min(2000) as usize);
+
+    let project_root = cg.project_root();
+    let files = cg.get_all_files().await?;
+    let mut markers: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    let mut by_kind: HashMap<String, u64> = HashMap::new();
+
+    'outer: for file in &files {
+        if let Some(prefix) = path {
+            let with_slash = if prefix.ends_with('/') {
+                prefix.to_string()
+            } else {
+                format!("{prefix}/")
+            };
+            if !file.path.starts_with(&with_slash) && file.path != prefix {
+                continue;
+            }
+        }
+        let abs_path = project_root.join(&file.path);
+        let Ok(source) = crate::sync::read_source_file(&abs_path) else {
+            continue;
+        };
+        // Cache nodes per file so enclosing-symbol lookup is one DB call per file.
+        let nodes = cg.get_nodes_by_file(&file.path).await.unwrap_or_default();
+
+        for (idx, line) in source.lines().enumerate() {
+            let line_no = (idx as u32) + 1;
+            for kind in &kinds {
+                if contains_marker_word(line, kind).is_some() {
+                    let enclosing = nodes
+                        .iter()
+                        .filter(|n| {
+                            // marker lines are 1-based, node spans 0-based (#203)
+                            let l0 = line_no.saturating_sub(1);
+                            n.start_line <= l0 && l0 <= n.end_line
+                        })
+                        .min_by_key(|n| n.end_line.saturating_sub(n.start_line))
+                        .map(|n| n.qualified_name.clone());
+                    *by_kind.entry(kind.clone()).or_insert(0) += 1;
+                    markers.push(json!({
+                        "kind": kind,
+                        "file": file.path,
+                        "line": line_no,
+                        "text": line.trim(),
+                        "enclosing": enclosing,
+                    }));
+                    if !touched.contains(&file.path) {
+                        touched.push(file.path.clone());
+                    }
+                    if markers.len() >= limit {
+                        break 'outer;
+                    }
+                    break; // one marker per line is enough
+                }
+            }
+        }
+    }
+
+    let counts = serde_json::to_value(&by_kind).unwrap_or(json!({}));
+    let output = json!({
+        "match_count": markers.len(),
+        "by_kind": counts,
+        "markers": markers,
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+/// Returns `path` relative to `root` in the form the indexer stores in the
+/// `files`/`nodes` tables: forward slashes regardless of the host separator
+/// (see `TokenSave::accept_file` and the walk in `indexing.rs`). Both paths
+/// should be canonical so they share a prefix form (on Windows both carry the
+/// `\\?\` verbatim prefix). Returns `None` when `path` is not under `root`.
+fn indexed_rel_path(root: &std::path::Path, path: &std::path::Path) -> Option<String> {
+    let rel = path.strip_prefix(root).ok()?;
+    Some(crate::tokensave::normalize_rel_path(&rel.to_string_lossy()))
+}
+
+/// Reads the `lines` mode range from the tool arguments: `lines: "A-B"`, or
+/// `start`/`end` as `tokensave_replace_lines` takes them, each a number or a
+/// numeric string. `end` absent means the end of the file. Agents copy the
+/// `start`/`end` shape from the edit tool, so rejecting it cost a round trip.
+fn read_line_range(args: &Value) -> Result<crate::context::read_modes::LineRange> {
+    use crate::context::read_modes::LineRange;
+
+    if let Some(raw) = args.get("lines").and_then(|v| v.as_str()) {
+        return LineRange::parse(raw).ok_or_else(|| TokenSaveError::Config {
+            message: format!("invalid 'lines' value '{raw}'; expected 'A' or 'A-B'"),
+        });
+    }
+    let Some(start_value) = args.get("start") else {
+        return Err(TokenSaveError::Config {
+            message: "mode='lines' requires 'lines' (e.g. '120-180') or 'start'/'end'".to_string(),
+        });
+    };
+    let end_value = args.get("end");
+    let line_number = |v: &Value| -> Option<u32> {
+        match v {
+            Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()),
+            Value::String(s) => s.trim().parse().ok(),
+            _ => None,
+        }
+    };
+    let invalid = || {
+        TokenSaveError::Config {
+        message: format!(
+            "invalid 'start'/'end' values {start_value}/{}; expected 1-based line numbers with end >= start",
+            end_value.map_or_else(|| "<end of file>".to_string(), Value::to_string)
+        ),
+    }
+    };
+    let start = line_number(start_value)
+        .filter(|&s| s > 0)
+        .ok_or_else(invalid)?;
+    let end = match end_value {
+        Some(v) => line_number(v).filter(|&e| e >= start).ok_or_else(invalid)?,
+        None => u32::MAX,
+    };
+    Ok(LineRange { start, end })
+}
+
+/// Handles `tokensave_read` — mode-aware file read. The body is always sent
+/// unless the caller's `if_digest` matches the current body's digest (#650).
+pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    use crate::context::read_cache;
+    use crate::context::read_modes::{
+        self, render_full, render_lines, render_map, render_signatures, ReadMode,
+    };
+
+    let file = file_arg(&args).ok_or_else(|| TokenSaveError::Config {
+        message: "missing required parameter: file (alias: path)".to_string(),
+    })?;
+
+    // A range argument without a mode means `lines`; an explicit mode wins.
+    let has_range = args.get("lines").is_some() || args.get("start").is_some();
+    let mode_str = args
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or(if has_range { "lines" } else { "full" });
+    let mode = ReadMode::parse(mode_str).ok_or_else(|| TokenSaveError::Config {
+        message: format!("unknown mode '{mode_str}'; expected one of full, lines, map, signatures"),
+    })?;
+
+    let format = args
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text");
+
+    let line_range = if mode == ReadMode::Lines {
+        Some(read_line_range(&args)?)
+    } else {
+        None
+    };
+
+    let project_root = cg.project_root().to_path_buf();
+    let rel_path = file.trim_start_matches('/').to_string();
+    let mut abs_path = if std::path::Path::new(file).is_absolute() {
+        std::path::PathBuf::from(file)
+    } else {
+        project_root.join(&rel_path)
+    };
+    // Contain the resolved path to the graph root for EVERY graph, not just
+    // read-only (federated) ones: the primary project is read-write, and without
+    // this an absolute or `..`-escaping `file` arg reads files outside the
+    // project (#636).
+    let canonical_root = project_root
+        .canonicalize()
+        .map_err(|error| TokenSaveError::Config {
+            message: format!(
+                "cannot canonicalize selected graph root '{}': {error}",
+                project_root.display()
+            ),
+        })?;
+    let canonical_path = abs_path
+        .canonicalize()
+        .map_err(|error| TokenSaveError::Config {
+            message: format!("cannot canonicalize selected tokensave_read path '{file}': {error}"),
+        })?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(TokenSaveError::Config {
+            message: format!(
+                "selected tokensave_read path '{file}' resolves outside selected graph root '{}'; choose a file inside that root",
+                canonical_root.display()
+            ),
+        });
+    }
+    // Map/signatures look symbols up by this path, so it must be the exact
+    // key the indexer stored: relative to the root, forward slashes (#644).
+    // Derive it from the two canonical paths; the raw `project_root` may be
+    // non-canonical (symlinked temp dir, or no `\\?\` verbatim prefix on
+    // Windows) and the raw `file` may carry `./`, `..` or backslashes.
+    let display_file = indexed_rel_path(&canonical_root, &canonical_path).ok_or_else(|| {
+        TokenSaveError::Config {
+            message: format!(
+                "selected tokensave_read path '{file}' resolves outside selected graph root '{}'; choose a file inside that root",
+                canonical_root.display()
+            ),
+        }
+    })?;
+    abs_path = canonical_path;
+
+    let mtime_ns = read_cache::file_mtime_ns(&abs_path).map_err(|e| TokenSaveError::Config {
+        message: format!("cannot read file metadata for '{file}': {e}"),
+    })?;
+
+    let body_text = match mode {
+        ReadMode::Full => {
+            let source =
+                crate::sync::read_source_file(&abs_path).map_err(|e| TokenSaveError::Config {
+                    message: format!("cannot read '{file}': {e}"),
+                })?;
+            render_full(&source)
+        }
+        ReadMode::Lines => {
+            let range = line_range.ok_or_else(|| TokenSaveError::Config {
+                message: "internal error: lines mode reached without a parsed range".to_string(),
+            })?;
+            let source =
+                crate::sync::read_source_file(&abs_path).map_err(|e| TokenSaveError::Config {
+                    message: format!("cannot read '{file}': {e}"),
+                })?;
+            render_lines(&source, range)
+        }
+        ReadMode::Map => {
+            let v = render_map(cg.db(), &display_file, None).await?;
+            serde_json::to_string_pretty(&v).unwrap_or_default()
+        }
+        ReadMode::Signatures => {
+            let v = render_signatures(cg.db(), &display_file).await?;
+            serde_json::to_string_pretty(&v).unwrap_or_default()
+        }
+    };
+
+    let token_count = read_modes::estimate_tokens(&body_text);
+    let digest = read_cache::digest_bytes(body_text.as_bytes());
+
+    // The server cannot know what the client still holds (context compaction,
+    // rewinds, new sessions, subagents), so a body is always sent unless the
+    // client proves it holds this exact content by echoing its digest back
+    // (#650). `force` predates `if_digest`; it is deprecated and, when set,
+    // only overrides `if_digest` so old callers keep getting bodies (#556).
+    let force = args
+        .get("force")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let held_digest = args.get("if_digest").and_then(|v| v.as_str());
+    if !force && held_digest.is_some_and(|held| held.trim() == digest) {
+        if format == "text" {
+            let text = format!(
+                "file: {display_file}\nunchanged: true\nmode: {}\ndigest: {digest}\ntoken_count: {token_count}\n",
+                mode.as_str()
+            );
+            return Ok(ToolResult {
+                value: json!({ "content": [{ "type": "text", "text": text }] }),
+                touched_files: vec![display_file],
+            });
+        }
+        let stub = json!({
+            "unchanged": true,
+            "file": display_file,
+            "mode": mode.as_str(),
+            "mtime_ns": mtime_ns,
+            "digest": digest,
+            "token_count": token_count,
+        });
+        return Ok(ToolResult {
+            value: json!({
+                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&stub).unwrap_or_default() }]
+            }),
+            touched_files: vec![display_file],
+        });
+    }
+
+    if format == "text" {
+        let header = format!(
+            "file: {display_file}\nmode: {}\ndigest: {digest}\ntoken_count: {token_count}\n\n",
+            mode.as_str()
+        );
+        let text = format!("{header}{body_text}");
+        return Ok(ToolResult {
+            value: json!({ "content": [{ "type": "text", "text": truncate_response(&text) }] }),
+            touched_files: vec![display_file],
+        });
+    }
+
+    let payload = json!({
+        "file": display_file,
+        "mode": mode.as_str(),
+        "mtime_ns": mtime_ns,
+        "digest": digest,
+        "token_count": token_count,
+        "body": body_text,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![display_file],
+    })
+}
+
+/// Handles `tokensave_entities` — flat symbol map for a file with optional
+/// `kinds` filter.
+pub(super) async fn handle_outline(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    use crate::context::read_modes::render_map;
+
+    let file = file_arg(&args).ok_or_else(|| TokenSaveError::Config {
+        message: "missing required parameter: file (alias: path)".to_string(),
+    })?;
+
+    let kinds: Option<Vec<String>> = args.get("kinds").and_then(|v| v.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect()
+    });
+
+    let project_root = cg.project_root();
+    let rel_path = file.trim_start_matches('/').to_string();
+    let abs_path = if std::path::Path::new(file).is_absolute() {
+        std::path::PathBuf::from(file)
+    } else {
+        project_root.join(&rel_path)
+    };
+    // Same DB key derivation as `tokensave_read` (#644). This handler only
+    // queries the graph, so a path that cannot be canonicalized (e.g. a file
+    // deleted since the last sync) falls back to the separator-normalized arg.
+    let display_file = project_root
+        .canonicalize()
+        .ok()
+        .zip(abs_path.canonicalize().ok())
+        .and_then(|(root, path)| indexed_rel_path(&root, &path))
+        .unwrap_or_else(|| crate::tokensave::normalize_rel_path(&rel_path));
+
+    let kinds_slice: Option<&[String]> = kinds.as_deref();
+    let mut value = render_map(cg.db(), &display_file, kinds_slice).await?;
+    // Companion-doc marker (#154): tell the agent a prose summary exists
+    // *before* it decides to read a 3000-line file. Cheap — one edge lookup
+    // against the file's `File` node.
+    let doc_paths = companion_doc_paths(cg, &display_file).await;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("has_doc".to_string(), json!(!doc_paths.is_empty()));
+        if !doc_paths.is_empty() {
+            obj.insert("doc_path".to_string(), json!(doc_paths));
+            obj.insert(
+                "doc_hint".to_string(),
+                json!(format!(
+                    "call {} for the summary before reading this file",
+                    crate::mcp::tools::reachable_tool_name("tokensave_doc")
+                )),
+            );
+        }
+    }
+    let formatted = serde_json::to_string_pretty(&value).unwrap_or_default();
+
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: vec![display_file],
+    })
+}
+
+/// Handles `tokensave_config` — structured TOML / JSON queries by dotted
+/// key path.
+pub(super) fn handle_config(cg: &TokenSave, args: &Value) -> Result<ToolResult> {
+    let key = args
+        .get("key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: key".to_string(),
+        })?;
+    let path = args.get("path").and_then(|v| v.as_str());
+    let glob_pat = args.get("glob").and_then(|v| v.as_str());
+
+    if path.is_none() && glob_pat.is_none() {
+        return Err(TokenSaveError::Config {
+            message: "tokensave_config requires either 'path' or 'glob'".to_string(),
+        });
+    }
+    if path.is_some() && glob_pat.is_some() {
+        return Err(TokenSaveError::Config {
+            message: "tokensave_config: 'path' and 'glob' are mutually exclusive".to_string(),
+        });
+    }
+
+    let project_root = cg.project_root().to_path_buf();
+    let mut files: Vec<String> = Vec::new();
+    if let Some(p) = path {
+        files.push(p.to_string());
+    } else if let Some(pat) = glob_pat {
+        let combined = project_root.join(pat);
+        let walker =
+            glob::glob(&combined.to_string_lossy()).map_err(|e| TokenSaveError::Config {
+                message: format!("invalid glob '{pat}': {e}"),
+            })?;
+        for entry in walker.flatten() {
+            if let Ok(rel) = entry.strip_prefix(&project_root) {
+                files.push(rel.to_string_lossy().to_string());
+            }
+        }
+        files.sort();
+    }
+
+    let mut matches: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    for rel in &files {
+        let abs = project_root.join(rel);
+        let Ok(contents) = std::fs::read_to_string(&abs) else {
+            continue;
+        };
+        let parsed = match config_format(rel) {
+            Some(ConfigFormat::Toml) => match toml::from_str::<toml::Value>(&contents) {
+                Ok(v) => toml_to_json(&v),
+                Err(e) => {
+                    matches.push(json!({
+                        "file": rel,
+                        "error": format!("toml parse error: {e}"),
+                    }));
+                    continue;
+                }
+            },
+            Some(ConfigFormat::Json) => match serde_json::from_str::<Value>(&contents) {
+                Ok(v) => v,
+                Err(e) => {
+                    matches.push(json!({
+                        "file": rel,
+                        "error": format!("json parse error: {e}"),
+                    }));
+                    continue;
+                }
+            },
+            None => continue,
+        };
+
+        let value = lookup_dotted(&parsed, key);
+        let line = match &value {
+            Some(_) => find_key_line(&contents, key),
+            None => None,
+        };
+
+        if !touched.contains(rel) {
+            touched.push(rel.clone());
+        }
+
+        matches.push(match value {
+            Some(v) => json!({
+                "file": rel,
+                "key": key,
+                "value": v,
+                "line": line,
+            }),
+            None => json!({
+                "file": rel,
+                "key": key,
+                "value": Value::Null,
+                "found": false,
+            }),
+        });
+    }
+
+    let payload = json!({
+        "match_count": matches.iter().filter(|m| m.get("found") != Some(&Value::Bool(false))).count(),
+        "matches": matches,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ConfigFormat {
+    Toml,
+    Json,
+}
+
+fn config_format(path: &str) -> Option<ConfigFormat> {
+    if std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+    {
+        Some(ConfigFormat::Toml)
+    } else if std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+    {
+        Some(ConfigFormat::Json)
+    } else {
+        None
+    }
+}
+
+fn lookup_dotted(value: &Value, key: &str) -> Option<Value> {
+    let mut cursor = value.clone();
+    for segment in key.split('.') {
+        cursor = match cursor {
+            Value::Object(map) => map.get(segment).cloned()?,
+            Value::Array(items) => {
+                let idx: usize = segment.parse().ok()?;
+                items.get(idx).cloned()?
+            }
+            _ => return None,
+        };
+    }
+    Some(cursor)
+}
+
+fn toml_to_json(v: &toml::Value) -> Value {
+    match v {
+        toml::Value::String(s) => Value::String(s.clone()),
+        toml::Value::Integer(i) => Value::Number((*i).into()),
+        toml::Value::Float(f) => {
+            serde_json::Number::from_f64(*f).map_or(Value::Null, Value::Number)
+        }
+        toml::Value::Boolean(b) => Value::Bool(*b),
+        toml::Value::Datetime(d) => Value::String(d.to_string()),
+        toml::Value::Array(items) => Value::Array(items.iter().map(toml_to_json).collect()),
+        toml::Value::Table(t) => {
+            let mut map = serde_json::Map::with_capacity(t.len());
+            for (k, child) in t {
+                map.insert(k.clone(), toml_to_json(child));
+            }
+            Value::Object(map)
+        }
+    }
+}
+
+fn find_key_line(contents: &str, key: &str) -> Option<u32> {
+    let last = key.rsplit('.').next()?;
+    let toml_form_eq = format!("{last} =");
+    let toml_form_quoted = format!("\"{last}\" =");
+    let json_form = format!("\"{last}\":");
+    for (idx, line) in contents.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with(&toml_form_eq)
+            || trimmed.starts_with(&toml_form_quoted)
+            || trimmed.starts_with(&json_form)
+        {
+            return Some((idx as u32) + 1);
+        }
+    }
+    None
+}
+
+/// Handles `tokensave_signature_search` — substring search across the
+/// cached `signature` column on every Function/Method node.
+pub(super) async fn handle_signature_search(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let returns = args.get("returns").and_then(|v| v.as_str());
+    let params: Vec<String> = args
+        .get("params")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let want_async = args.get("async").and_then(serde_json::Value::as_bool);
+    let path_filter = args.get("path").and_then(|v| v.as_str()).or(scope_prefix);
+    let limit = args
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(50, |v| v.clamp(1, 500) as usize);
+
+    if returns.is_none() && params.is_empty() && want_async.is_none() {
+        return Err(TokenSaveError::Config {
+            message: "tokensave_signature_search requires at least one of returns / params / async"
+                .to_string(),
+        });
+    }
+
+    let function_nodes = cg.db().get_nodes_by_kind(NodeKind::Function).await?;
+    let mut method_nodes = cg.db().get_nodes_by_kind(NodeKind::Method).await?;
+    method_nodes.extend(cg.db().get_nodes_by_kind(NodeKind::SingletonMethod).await?);
+
+    let mut entries: Vec<Value> = Vec::new();
+    let mut touched: Vec<String> = Vec::new();
+    for node in function_nodes.iter().chain(method_nodes.iter()) {
+        if let Some(prefix) = path_filter {
+            let with_slash = if prefix.ends_with('/') {
+                prefix.to_string()
+            } else {
+                format!("{prefix}/")
+            };
+            if !node.file_path.starts_with(&with_slash) && node.file_path != prefix {
+                continue;
+            }
+        }
+
+        if let Some(want) = want_async {
+            if node.is_async != want {
+                continue;
+            }
+        }
+
+        let Some(sig) = node.signature.as_deref() else {
+            continue;
+        };
+
+        if let Some(ret_pat) = returns {
+            if !returns_substring(sig).contains(ret_pat) {
+                continue;
+            }
+        }
+
+        if !params.is_empty() {
+            let param_region = params_substring(sig);
+            if !params.iter().all(|p| param_region.contains(p.as_str())) {
+                continue;
+            }
+        }
+
+        if !touched.contains(&node.file_path) {
+            touched.push(node.file_path.clone());
+        }
+        entries.push(json!({
+            "name": node.name,
+            "qualified_name": node.qualified_name,
+            "kind": node.kind.as_str(),
+            "file": node.file_path,
+            "line": super::display_line(node.start_line),
+            "is_async": node.is_async,
+            "signature": sig,
+        }));
+        if entries.len() >= limit {
+            break;
+        }
+    }
+
+    let payload = json!({
+        "match_count": entries.len(),
+        "matches": entries,
+    });
+    let formatted = serde_json::to_string_pretty(&payload).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files: touched,
+    })
+}
+
+fn returns_substring(signature: &str) -> &str {
+    match signature.find("->") {
+        Some(pos) => signature[pos + 2..].trim_start(),
+        None => signature,
+    }
+}
+
+fn params_substring(signature: &str) -> &str {
+    let bytes = signature.as_bytes();
+    let Some(open) = signature.find('(') else {
+        return signature;
+    };
+    let mut depth = 0i32;
+    for (i, b) in bytes.iter().enumerate().skip(open) {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &signature[open + 1..i];
+                }
+            }
+            _ => {}
+        }
+    }
+    signature
+}
+
+/// Returns the UNIX timestamp of the last commit touching `relative`, or
+/// `None` when the path is untracked or the project is not a git repository.
+fn last_commit_timestamp(project_root: &std::path::Path, relative: &str) -> Option<i64> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project_root)
+        .args(["log", "-1", "--format=%ct", "--"])
+        .arg(relative)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.trim().parse::<i64>().ok()
+}
+
+/// Handles `tokensave_doc` tool calls (#154).
+///
+/// Resolves the companion documentation covering a source file by walking
+/// `Documents` edges backwards from the file's `File` node.
+pub(super) async fn handle_doc(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let file = file_arg(&args).ok_or_else(|| TokenSaveError::Config {
+        message: "missing required parameter: file (alias: path)".to_string(),
+    })?;
+    let include_content = args
+        .get("include_content")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+
+    // Normalize the caller's path the same way indexed paths are stored, so a
+    // Windows-style or `./`-prefixed argument still resolves (#242).
+    let file = crate::tokensave::normalize_rel_path(file);
+    let file = file.strip_prefix("./").unwrap_or(&file).to_string();
+    // Honour an active scope: a path outside it is not this server's to answer.
+    if let Some(prefix) = scope_prefix {
+        if !file.starts_with(prefix) {
+            let output = json!({
+                "file": file,
+                "has_doc": false,
+                "docs": [],
+                "count": 0,
+            });
+            let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+            return Ok(ToolResult {
+                value: json!({
+                    "content": [{ "type": "text", "text": formatted }]
+                }),
+                touched_files: Vec::new(),
+            });
+        }
+    }
+
+    let file_node_id = crate::types::generate_node_id(&file, &NodeKind::File, &file, 0);
+    let incoming = cg
+        .get_incoming_edges(&file_node_id)
+        .await
+        .unwrap_or_default();
+
+    let mut docs: Vec<Value> = Vec::new();
+    let project_root = cg.project_root();
+    for edge in incoming
+        .iter()
+        .filter(|e| e.kind == crate::types::EdgeKind::Documents)
+    {
+        let Some(node) = cg.get_node(&edge.source).await? else {
+            continue;
+        };
+        // Which files this doc covers, so the caller can tell a shared
+        // instructions doc from a one-file summary.
+        let covers: Vec<String> = cg
+            .get_outgoing_edges(&node.id)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|e| e.kind == crate::types::EdgeKind::Documents)
+            .map(|e| e.target.clone())
+            .collect();
+        let mut covered_paths: Vec<String> = Vec::new();
+        for target in &covers {
+            if let Ok(Some(n)) = cg.get_node(target).await {
+                covered_paths.push(n.file_path);
+            }
+        }
+        covered_paths.sort_unstable();
+
+        // Drift signal: code committed after the doc means the summary may no
+        // longer describe it. Absent git history this is simply unknown, which
+        // is reported as `null` rather than a false negative.
+        let doc_commit = last_commit_timestamp(project_root, &node.file_path);
+        let doc_stale = doc_commit.map(|doc_ts| {
+            covered_paths
+                .iter()
+                .filter_map(|p| last_commit_timestamp(project_root, p))
+                .any(|code_ts| code_ts > doc_ts)
+        });
+
+        let content = if include_content {
+            std::fs::read_to_string(project_root.join(&node.file_path)).ok()
+        } else {
+            None
+        };
+
+        docs.push(json!({
+            "doc_path": node.file_path,
+            "origin": node.signature,
+            "summary": node.docstring,
+            "covers": covered_paths,
+            "doc_stale": doc_stale,
+            "content": content,
+        }));
+    }
+    docs.sort_by(|a, b| a["doc_path"].as_str().cmp(&b["doc_path"].as_str()));
+
+    let touched_files = unique_file_paths(
+        std::iter::once(file.as_str()).chain(docs.iter().filter_map(|d| d["doc_path"].as_str())),
+    );
+    let output = json!({
+        "file": file,
+        "has_doc": !docs.is_empty(),
+        "docs": docs,
+        "count": docs.len(),
+    });
+    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+        }),
+        touched_files,
+    })
+}
+
+/// Returns the paths of companion docs covering `file`, sorted.
+///
+/// Shared by `tokensave_entities` (the marker) and `tokensave_doc` (the
+/// content), so the two can never disagree about whether a doc exists.
+async fn companion_doc_paths(cg: &TokenSave, file: &str) -> Vec<String> {
+    let file_node_id = crate::types::generate_node_id(file, &NodeKind::File, file, 0);
+    let Ok(incoming) = cg.get_incoming_edges(&file_node_id).await else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    for edge in incoming
+        .iter()
+        .filter(|e| e.kind == crate::types::EdgeKind::Documents)
+    {
+        if let Ok(Some(node)) = cg.get_node(&edge.source).await {
+            paths.push(node.file_path);
+        }
+    }
+    paths.sort_unstable();
+    paths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::indexed_rel_path;
+    use std::path::Path;
+
+    #[test]
+    fn indexed_rel_path_uses_forward_slashes() {
+        let root = Path::new("/proj");
+        assert_eq!(
+            indexed_rel_path(root, Path::new("/proj/src/x/Service.cs")).as_deref(),
+            Some("src/x/Service.cs")
+        );
+        assert_eq!(indexed_rel_path(root, Path::new("/elsewhere/a.rs")), None);
+    }
+
+    /// #644: a Windows-style relative tail must match the indexer's
+    /// forward-slash key on every host.
+    #[test]
+    fn indexed_rel_path_normalizes_backslashes() {
+        let root = Path::new("root");
+        let path = Path::new("root").join("src\\x\\Service.cs");
+        assert_eq!(
+            indexed_rel_path(root, &path).as_deref(),
+            Some("src/x/Service.cs")
+        );
+    }
+
+    /// #644: on Windows `canonicalize` yields `\\?\` verbatim paths with
+    /// backslash separators; the DB key must still be `src/x/Service.cs`.
+    #[cfg(windows)]
+    #[test]
+    fn indexed_rel_path_handles_verbatim_windows_paths() {
+        let root = Path::new(r"\\?\E:\projects\B");
+        let path = Path::new(r"\\?\E:\projects\B\src\x\Service.cs");
+        assert_eq!(
+            indexed_rel_path(root, path).as_deref(),
+            Some("src/x/Service.cs")
+        );
+    }
+}

@@ -1,70 +1,18 @@
 /// Tree-sitter based PowerShell source code extractor.
 ///
 /// Parses PowerShell source files and emits nodes and edges for the code graph.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, POWERSHELL_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, find_descendant_by_kind, ExtractionState};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from PowerShell source files using tree-sitter.
 pub struct PowerShellExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl PowerShellExtractor {
     /// Extract code graph nodes and edges from a PowerShell source file.
@@ -79,7 +27,7 @@ impl PowerShellExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -91,6 +39,7 @@ impl PowerShellExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -105,13 +54,17 @@ impl PowerShellExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -119,7 +72,7 @@ impl PowerShellExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -161,10 +114,10 @@ impl PowerShellExtractor {
     /// Visit a pipeline node, which can contain assignments (consts) or commands (imports).
     fn visit_pipeline(state: &mut ExtractionState, node: TsNode<'_>) {
         // A pipeline wraps either an assignment_expression or a pipeline_chain > command.
-        if let Some(assignment) = Self::find_child_by_kind(node, "assignment_expression") {
+        if let Some(assignment) = find_child_by_kind(node, "assignment_expression") {
             Self::visit_assignment(state, assignment, node);
-        } else if let Some(chain) = Self::find_child_by_kind(node, "pipeline_chain") {
-            if let Some(command) = Self::find_child_by_kind(chain, "command") {
+        } else if let Some(chain) = find_child_by_kind(node, "pipeline_chain") {
+            if let Some(command) = find_child_by_kind(chain, "command") {
                 Self::visit_command(state, command);
             }
         }
@@ -172,9 +125,8 @@ impl PowerShellExtractor {
 
     /// Extract a function definition.
     fn visit_function(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "function_name")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name = find_child_by_kind(node, "function_name")
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let kind = NodeKind::Function;
         let visibility = Visibility::Pub;
@@ -195,6 +147,7 @@ impl PowerShellExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -209,7 +162,13 @@ impl PowerShellExtractor {
             unsafe_blocks: metrics.unsafe_blocks,
             unchecked_calls: metrics.unchecked_calls,
             assertions: metrics.assertions,
+            cognitive_complexity: metrics.cognitive_complexity,
+            distinct_operators: metrics.distinct_operators,
+            distinct_operands: metrics.distinct_operands,
+            total_operators: metrics.total_operators,
+            total_operands: metrics.total_operands,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -220,6 +179,7 @@ impl PowerShellExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
@@ -230,25 +190,22 @@ impl PowerShellExtractor {
     /// Extract a typed variable assignment at the top level as a Const.
     ///
     /// Matches patterns like `[int]$MaxRetries = 3`.
-    /// The AST is: pipeline > assignment_expression > left_assignment_expression > ... > cast_expression > variable.
+    /// The AST is: pipeline > `assignment_expression` > `left_assignment_expression` > ... > `cast_expression` > variable.
     fn visit_assignment(state: &mut ExtractionState, node: TsNode<'_>, pipeline_node: TsNode<'_>) {
         // Only treat top-level typed assignments as constants.
         // We detect a cast_expression inside the left_assignment_expression.
-        let left = match Self::find_child_by_kind(node, "left_assignment_expression") {
-            Some(l) => l,
-            None => return,
+        let Some(left) = find_child_by_kind(node, "left_assignment_expression") else {
+            return;
         };
 
         // Look for a cast_expression recursively inside the left side.
-        let cast = match Self::find_descendant_by_kind(left, "cast_expression") {
-            Some(c) => c,
-            None => return,
+        let Some(cast) = find_descendant_by_kind(left, "cast_expression") else {
+            return;
         };
 
         // The variable is a child of the cast_expression.
-        let var_node = match Self::find_descendant_by_kind(cast, "variable") {
-            Some(v) => v,
-            None => return,
+        let Some(var_node) = find_descendant_by_kind(cast, "variable") else {
+            return;
         };
 
         let var_text = state.node_text(var_node);
@@ -270,6 +227,7 @@ impl PowerShellExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -284,7 +242,13 @@ impl PowerShellExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -295,6 +259,7 @@ impl PowerShellExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -311,12 +276,12 @@ impl PowerShellExtractor {
         if cmd_name == "Import-Module" {
             // Extract the module name from command_elements.
             if let Some(elements) = node.child_by_field_name("command_elements") {
-                if let Some(token) = Self::find_child_by_kind(elements, "generic_token") {
+                if let Some(token) = find_child_by_kind(elements, "generic_token") {
                     let module_name = state.node_text(token);
                     Self::emit_use_node(state, node, &module_name);
                 }
             }
-        } else if Self::find_child_by_kind(node, "command_invokation_operator").is_some() {
+        } else if find_child_by_kind(node, "command_invokation_operator").is_some() {
             // Dot-source command: `. .\Utils.ps1`
             // The path is in command_name_expr > command_name.
             if let Some(name_expr) = node.child_by_field_name("command_name") {
@@ -343,6 +308,7 @@ impl PowerShellExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -357,7 +323,13 @@ impl PowerShellExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -368,6 +340,7 @@ impl PowerShellExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -455,54 +428,6 @@ impl PowerShellExtractor {
             }
         }
     }
-
-    /// Find the first child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
-    /// Find the first descendant of a node with a given kind (recursive DFS).
-    fn find_descendant_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut stack = vec![node];
-        while let Some(current) = stack.pop() {
-            if current.kind() == kind {
-                return Some(current);
-            }
-            let count = current.child_count();
-            // Push children in reverse so first child is processed first.
-            let mut i = count;
-            while i > 0 {
-                i -= 1;
-                if let Some(child) = current.child(i as u32) {
-                    stack.push(child);
-                }
-            }
-        }
-        None
-    }
-
-    /// Build the final ExtractionResult from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
-        }
-    }
 }
 
 impl crate::extraction::LanguageExtractor for PowerShellExtractor {
@@ -510,7 +435,7 @@ impl crate::extraction::LanguageExtractor for PowerShellExtractor {
         &["ps1", "psm1"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "PowerShell"
     }
 

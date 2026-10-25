@@ -14,7 +14,11 @@ fn extract(source: &str) -> ExtractionResult {
 #[test]
 fn test_kt_file_node_is_root() {
     let result = extract("fun main() {}");
-    let file_nodes: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::File).collect();
+    let file_nodes: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::File)
+        .collect();
     assert_eq!(file_nodes.len(), 1);
     assert_eq!(file_nodes[0].name, "test.kt");
 }
@@ -45,7 +49,11 @@ fn test_kt_import() {
     let source = "import kotlin.collections.List\nimport java.io.File";
     let result = extract(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let imports: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    let imports: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Use)
+        .collect();
     assert_eq!(imports.len(), 2);
     assert!(imports.iter().any(|n| n.name.contains("List")));
     assert!(imports.iter().any(|n| n.name.contains("File")));
@@ -78,7 +86,11 @@ fn test_kt_class() {
     let source = "class MyClass(val x: Int) {\n  fun hello(): String = \"hi\"\n}";
     let result = extract(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let classes: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Class).collect();
+    let classes: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Class)
+        .collect();
     assert_eq!(classes.len(), 1);
     assert_eq!(classes[0].name, "MyClass");
 }
@@ -179,7 +191,11 @@ fn test_kt_interface() {
     let source = "interface Greeter {\n  fun greet(name: String): String\n}";
     let result = extract(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let traits: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Trait).collect();
+    let traits: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Trait)
+        .collect();
     assert_eq!(traits.len(), 1);
     assert_eq!(traits[0].name, "Greeter");
 }
@@ -193,7 +209,11 @@ fn test_kt_enum_class() {
     let source = "enum class Color {\n  RED,\n  GREEN,\n  BLUE\n}";
     let result = extract(source);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let enums: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Enum).collect();
+    let enums: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Enum)
+        .collect();
     assert_eq!(enums.len(), 1);
     assert_eq!(enums[0].name, "Color");
 
@@ -414,10 +434,7 @@ fn test_kt_call_site() {
         .iter()
         .filter(|r| r.reference_kind == EdgeKind::Calls)
         .collect();
-    assert!(
-        !calls.is_empty(),
-        "expected at least one call site"
-    );
+    assert!(!calls.is_empty(), "expected at least one call site");
     assert!(
         calls.iter().any(|c| c.reference_name == "println"),
         "expected println call, got: {:?}",
@@ -498,7 +515,10 @@ fn test_kt_suspend_function() {
         .filter(|n| n.kind == NodeKind::Function)
         .collect();
     assert_eq!(fns.len(), 1);
-    assert!(fns[0].is_async, "suspend function should have is_async=true");
+    assert!(
+        fns[0].is_async,
+        "suspend function should have is_async=true"
+    );
 }
 
 // -----------------------------------------------------------------------

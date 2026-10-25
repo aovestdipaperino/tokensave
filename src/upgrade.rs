@@ -1,45 +1,25 @@
 //! Self-update for the tokensave binary.
 //!
 //! Downloads the latest release asset directly from GitHub, extracts the
-//! binary, and replaces the running executable using self_replace.
+//! binary, and replaces the running executable using `self_replace`.
 //! Beta and stable are separate channels — a beta build only sees beta
-//! releases and vice versa. The daemon is stopped before the binary is
-//! replaced and restarted afterwards if it was running.
+//! releases and vice versa.
 
+use std::collections::HashSet;
 use std::path::Path;
 
-use crate::cloud;
-use crate::daemon;
+use crate::cloud::{self, InstallMethod};
 use crate::errors::{Result, TokenSaveError};
+use crate::user_config::UserConfig;
 
 const GITHUB_REPO: &str = "aovestdipaperino/tokensave";
 
-/// Archive naming convention per platform.
-/// Stable: `tokensave-v{version}-{platform}.{ext}`
-/// Beta:   `tokensave-beta-v{version}-{platform}.{ext}`
-fn asset_name(version: &str, is_beta: bool) -> String {
-    let prefix = if is_beta { "tokensave-beta" } else { "tokensave" };
-    let platform = current_platform();
-    let ext = if cfg!(windows) { "zip" } else { "tar.gz" };
-    format!("{prefix}-v{version}-{platform}.{ext}")
-}
-
-/// Returns the platform slug matching the CI release matrix.
-fn current_platform() -> &'static str {
-    if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-        "aarch64-macos"
-    } else if cfg!(target_os = "macos") && cfg!(target_arch = "x86_64") {
-        "x86_64-macos"
-    } else if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
-        "x86_64-linux"
-    } else if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") {
-        "aarch64-linux"
-    } else if cfg!(target_os = "windows") {
-        "x86_64-windows"
-    } else {
-        "unknown"
-    }
-}
+// Asset-naming and platform helpers live in `crate::cloud` so the version-
+// detection path can use the same naming convention to filter out releases
+// whose CI hasn't finished uploading the current platform's binary yet.
+use crate::cloud::asset_name;
+#[cfg(test)]
+use crate::cloud::current_platform;
 
 /// The GitHub release tag for a given version.
 fn release_tag(version: &str) -> String {
@@ -52,23 +32,39 @@ fn io_err(msg: &str) -> impl Fn(std::io::Error) -> TokenSaveError + '_ {
     }
 }
 
-/// Fetches the `browser_download_url` for a specific asset in a GitHub release.
-fn fetch_asset_url(tag: &str, expected_asset: &str) -> Result<String> {
-    #[derive(serde::Deserialize)]
-    struct Asset {
-        name: String,
-        browser_download_url: String,
-    }
+/// The name of the release asset listing each other asset's SHA256.
+///
+/// Published by both release workflows in `sha256sum` format, one line per
+/// asset.
+const SUMS_ASSET: &str = "SHA256SUMS";
+
+/// One asset attached to a GitHub release.
+#[derive(serde::Deserialize)]
+struct Asset {
+    name: String,
+    browser_download_url: String,
+}
+
+/// A located release asset, together with the SHA256 the release publishes
+/// for it.
+struct VerifiedAsset {
+    url: String,
+    sha256: String,
+}
+
+/// Fetches every asset attached to a release.
+///
+/// One request serves both the binary lookup and the `SHA256SUMS` lookup —
+/// they come from the same release, so asking twice would only add a way for
+/// the two to disagree.
+fn fetch_release_assets(tag: &str) -> Result<Vec<Asset>> {
     #[derive(serde::Deserialize)]
     struct Release {
         assets: Vec<Asset>,
     }
 
     let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/tags/{tag}");
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(30)))
-        .build()
-        .into();
+    let agent = cloud::agent_with_timeout(std::time::Duration::from_secs(30));
 
     let release: Release = agent
         .get(&url)
@@ -83,33 +79,164 @@ fn fetch_asset_url(tag: &str, expected_asset: &str) -> Result<String> {
             message: format!("failed to parse release info: {e}"),
         })?;
 
-    release
-        .assets
-        .into_iter()
+    Ok(release.assets)
+}
+
+/// Downloads a small text asset (the sums file) in full.
+fn fetch_text_asset(url: &str) -> Result<String> {
+    let agent = cloud::agent_with_timeout(std::time::Duration::from_secs(30));
+    agent
+        .get(url)
+        .header("User-Agent", "tokensave")
+        .call()
+        .map_err(|e| TokenSaveError::Config {
+            message: format!("failed to download {SUMS_ASSET}: {e}"),
+        })?
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| TokenSaveError::Config {
+            message: format!("failed to read {SUMS_ASSET}: {e}"),
+        })
+}
+
+/// Pulls one asset's hash out of a `sha256sum`-format listing.
+///
+/// Accepts both the text (`hash  name`) and binary (`hash *name`) markers
+/// `sha256sum` emits, and ignores blank lines so a trailing newline is not an
+/// error. Returns `None` when the file is well-formed but does not mention
+/// `asset`, which the caller reports separately from a malformed file.
+fn sha256_for_asset(listing: &str, asset: &str) -> Option<String> {
+    listing.lines().find_map(|line| {
+        let (hash, name) = line.split_once(char::is_whitespace)?;
+        let name = name.trim_start_matches(['*', ' ']).trim();
+        (name == asset && hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()))
+            .then(|| hash.to_ascii_lowercase())
+    })
+}
+
+/// Locates the platform's release asset and the SHA256 published for it.
+///
+/// Fails closed (#525). A release whose `SHA256SUMS` is missing, unreadable,
+/// or silent about this asset aborts the upgrade rather than installing an
+/// unverified binary: `upgrade` only ever moves forward to a channel's latest,
+/// so every release a verifying binary can reach is one published after the
+/// sums file started shipping. Treating "no sums" as "skip verification" would
+/// hand anyone who can suppress the file a silent downgrade to no integrity
+/// check at all, which is the property being bought here.
+fn locate_verified_asset(tag: &str, expected_asset: &str) -> Result<VerifiedAsset> {
+    let assets = fetch_release_assets(tag)?;
+
+    let url = assets
+        .iter()
         .find(|a| a.name == expected_asset)
-        .map(|a| a.browser_download_url)
+        .map(|a| a.browser_download_url.clone())
         .ok_or_else(|| TokenSaveError::Config {
             message: format!(
                 "release {tag} exists but asset '{expected_asset}' is not yet available.\n  \
                  CI build may still be in progress — try again in a few minutes.\n  \
                  https://github.com/{GITHUB_REPO}/releases/tag/{tag}",
             ),
+        })?;
+
+    let sums_url = assets
+        .iter()
+        .find(|a| a.name == SUMS_ASSET)
+        .map(|a| a.browser_download_url.clone())
+        .ok_or_else(|| TokenSaveError::Update {
+            message: format!(
+                "release {tag} publishes no {SUMS_ASSET}, so the download cannot be \
+                 verified — refusing to install.\n  \
+                 If CI is still finishing, try again in a few minutes:\n  \
+                 https://github.com/{GITHUB_REPO}/releases/tag/{tag}",
+            ),
+        })?;
+
+    let listing = fetch_text_asset(&sums_url)?;
+    let sha256 =
+        sha256_for_asset(&listing, expected_asset).ok_or_else(|| TokenSaveError::Update {
+            message: format!(
+                "release {tag} publishes {SUMS_ASSET} but it lists no hash for \
+                 '{expected_asset}' — refusing to install.\n  \
+                 https://github.com/{GITHUB_REPO}/releases/tag/{tag}",
+            ),
+        })?;
+
+    Ok(VerifiedAsset { url, sha256 })
+}
+
+/// Hex-encodes the SHA256 of `data`.
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher
+        .finalize()
+        .iter()
+        .fold(String::with_capacity(64), |mut acc, byte| {
+            use std::fmt::Write;
+            let _ = write!(acc, "{byte:02x}");
+            acc
         })
 }
 
+/// A downloaded binary staged for installation, and the private directory
+/// holding it.
+///
+/// The directory is owned by this value so it is removed when the staged
+/// binary goes out of scope, whether the replacement succeeded or not.
+struct StagedBinary {
+    /// Held for its `Drop`, which removes the directory and anything left in
+    /// it. Never read directly — [`Self::path`] is the accessor.
+    _dir: tempfile::TempDir,
+    path: std::path::PathBuf,
+}
+
+impl StagedBinary {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Creates the private directory the downloaded binary is extracted into.
+///
+/// The destination used to be `std::env::temp_dir().join("tokensave_upgrade_<pid>")`
+/// — a name another local user can predict and pre-create. Both extraction
+/// paths open it with `create`-like semantics that follow symlinks, so on a
+/// host with a shared world-writable `/tmp` a symlink planted at that path
+/// would be followed and the target written with this process's privileges
+/// (#525). `TempDir` picks a random name and creates it exclusively, failing
+/// rather than adopting a path that already exists, which is what defeats the
+/// planted symlink; the extraction code is then unchanged and simply writes
+/// somewhere nobody else can name. The mode is narrowed to `0700` afterwards
+/// because `tempdir()` creates with `0777 & !umask` — commonly `0755`, which
+/// would leave the staged binary readable by every other local user between
+/// extraction and install.
+fn new_staging_dir() -> Result<tempfile::TempDir> {
+    let dir = tempfile::Builder::new()
+        .prefix("tokensave_upgrade_")
+        .tempdir()
+        .map_err(io_err("create temp dir failed"))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .map_err(io_err("secure temp dir failed"))?;
+    }
+
+    Ok(dir)
+}
+
 /// Downloads the archive from `url` into memory, then extracts `bin_name`
-/// to a temp path. Returns the temp path.
-fn download_and_extract(url: &str, bin_name: &str) -> Result<std::path::PathBuf> {
-    let tmp_path = std::env::temp_dir().join(format!(
-        "tokensave_upgrade_{}{}",
-        std::process::id(),
+/// into a freshly created private directory. Returns the staged binary.
+fn download_and_extract(url: &str, bin_name: &str, expected_sha256: &str) -> Result<StagedBinary> {
+    let tmp_dir = new_staging_dir()?;
+    let tmp_path = tmp_dir.path().join(format!(
+        "tokensave{}",
         if cfg!(windows) { ".exe" } else { "" }
     ));
 
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(300)))
-        .build()
-        .into();
+    let agent = cloud::agent_with_timeout(std::time::Duration::from_mins(5));
 
     eprint!("  Downloading...");
 
@@ -133,6 +260,26 @@ fn download_and_extract(url: &str, bin_name: &str) -> Result<std::path::PathBuf>
     };
 
     eprintln!(" ({:.1} MiB)", raw.len() as f64 / 1_048_576.0);
+
+    // Verified before extraction, not after (#525): extraction writes the
+    // archive's contents to disk, so a mismatched archive must never reach it.
+    eprint!("  Verifying...");
+    let actual = sha256_hex(&raw);
+    if actual != expected_sha256 {
+        eprintln!(" \x1b[31mFAILED\x1b[0m");
+        return Err(TokenSaveError::Update {
+            message: format!(
+                "downloaded archive does not match the SHA256 published for it — \
+                 refusing to install.\n  \
+                 expected: {expected_sha256}\n  \
+                 actual:   {actual}\n  \
+                 This means the download was corrupted or tampered with. \
+                 Nothing has been installed."
+            ),
+        });
+    }
+    eprintln!(" OK");
+
     eprint!("  Extracting...");
 
     #[cfg(not(windows))]
@@ -142,7 +289,10 @@ fn download_and_extract(url: &str, bin_name: &str) -> Result<std::path::PathBuf>
     extract_zip(&raw, bin_name, &tmp_path)?;
 
     eprintln!(" Done");
-    Ok(tmp_path)
+    Ok(StagedBinary {
+        _dir: tmp_dir,
+        path: tmp_path,
+    })
 }
 
 /// Extracts `bin_name` from a `.tar.gz` archive (Unix).
@@ -199,13 +349,8 @@ fn extract_zip(data: &[u8], bin_name: &str, dest: &Path) -> Result<()> {
             message: format!("zip entry error: {e}"),
         })?;
 
-        if Path::new(file.name())
-            .file_name()
-            .and_then(|n| n.to_str())
-            == Some(bin_name)
-        {
-            let mut out =
-                std::fs::File::create(dest).map_err(io_err("create temp file failed"))?;
+        if Path::new(file.name()).file_name().and_then(|n| n.to_str()) == Some(bin_name) {
+            let mut out = std::fs::File::create(dest).map_err(io_err("create temp file failed"))?;
             std::io::copy(&mut file, &mut out).map_err(io_err("extract failed"))?;
             return Ok(());
         }
@@ -216,113 +361,685 @@ fn extract_zip(data: &[u8], bin_name: &str, dest: &Path) -> Result<()> {
     })
 }
 
-/// Replaces the running binary with `new_exe`, then removes the temp file.
-fn replace_binary(new_exe: &Path) -> Result<()> {
-    let result = self_replace::self_replace(new_exe).map_err(|e| TokenSaveError::Config {
+/// Replaces the running binary with `new_exe`, dispatching to the
+/// appropriate strategy for the detected install method. Cleans up the
+/// temp file afterwards regardless of outcome.
+fn replace_binary(new_exe: &Path, method: &InstallMethod, new_version: &str) -> Result<()> {
+    let result = match method {
+        InstallMethod::Brew => replace_for_brew(new_exe, new_version),
+        InstallMethod::Scoop => replace_for_scoop(new_exe, new_version),
+        _ => replace_default(new_exe),
+    };
+    let _ = std::fs::remove_file(new_exe);
+    result
+}
+
+/// Default replacement using `self_replace`. Falls back to a direct copy
+/// when the running binary is behind a symlink (avoids ENOENT caused by
+/// `self_replace` resolving relative symlink targets from CWD).
+fn replace_default(new_exe: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let exe = std::env::current_exe().ok();
+        let canonical = exe.as_ref().and_then(|e| e.canonicalize().ok());
+        if let (Some(exe), Some(ref canonical)) = (&exe, canonical) {
+            if exe.as_path() != canonical.as_path() {
+                return install_binary(new_exe, canonical);
+            }
+        }
+    }
+
+    self_replace::self_replace(new_exe).map_err(|e| TokenSaveError::Config {
         message: format!(
             "binary replacement failed: {e}\n  \
              The old version is still in place.\n  \
              To upgrade manually: https://github.com/{GITHUB_REPO}/releases/latest"
         ),
-    });
-    let _ = std::fs::remove_file(new_exe);
-    result
+    })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpgradeStatus<'a> {
+    AlreadyCurrent,
+    UpgradeAvailable(&'a str),
+}
+
+fn classify_upgrade<'a>(current: &str, latest: &'a str) -> UpgradeStatus<'a> {
+    if cloud::is_newer_version(current, latest) {
+        UpgradeStatus::UpgradeAvailable(latest)
+    } else {
+        UpgradeStatus::AlreadyCurrent
+    }
+}
+
+/// Atomically replace a binary at `target` by copying `src` to a temp file
+/// in the same directory, setting permissions, then renaming over `target`.
+/// Avoids `ETXTBSY` on Linux (rename swaps directory entries rather than
+/// writing into the running executable).
+#[cfg(unix)]
+fn install_binary(src: &Path, target: &Path) -> Result<()> {
+    let dir = target.parent().ok_or_else(|| TokenSaveError::Config {
+        message: "cannot determine target directory".into(),
+    })?;
+    let temp = dir.join(format!(".tokensave_upgrade_{}", std::process::id()));
+
+    std::fs::copy(src, &temp).map_err(io_err("cannot copy new binary"))?;
+
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))
+            .map_err(io_err("cannot set permissions"))?;
+    }
+
+    if let Err(e) = std::fs::rename(&temp, target) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(io_err("cannot replace binary")(e));
+    }
+
+    Ok(())
+}
+
+// ── Homebrew ────────────────────────────────────────────────────────────
+
+/// Replace the binary inside the Homebrew Cellar, then rename the version
+/// directory and update the symlink so that `brew` reports the new version.
+#[cfg(unix)]
+fn replace_for_brew(new_exe: &Path, new_version: &str) -> Result<()> {
+    let exe = std::env::current_exe().map_err(io_err("cannot determine current exe"))?;
+    let canonical = exe
+        .canonicalize()
+        .map_err(io_err("cannot resolve binary path"))?;
+
+    // Validate Cellar layout: <prefix>/Cellar/<formula>/<version>/bin/<binary>
+    let bin_dir = match canonical.parent() {
+        Some(p) if p.file_name().and_then(|n| n.to_str()) == Some("bin") => p,
+        _ => return replace_default(new_exe),
+    };
+    let Some(version_dir) = bin_dir.parent() else {
+        return replace_default(new_exe);
+    };
+    let Some(formula_dir) = version_dir.parent() else {
+        return replace_default(new_exe);
+    };
+    let cellar_dir = match formula_dir.parent() {
+        Some(p) if p.file_name().and_then(|n| n.to_str()) == Some("Cellar") => p,
+        _ => return replace_default(new_exe),
+    };
+    let Some(prefix) = cellar_dir.parent() else {
+        return replace_default(new_exe);
+    };
+
+    let Some(bin_name) = canonical.file_name() else {
+        return replace_default(new_exe);
+    };
+    let Some(old_version_os) = version_dir.file_name() else {
+        return replace_default(new_exe);
+    };
+    let old_version = old_version_os.to_string_lossy().to_string();
+
+    // Step 1 (critical): replace the binary atomically.
+    install_binary(new_exe, &canonical)?;
+
+    // Steps 2-4 update Cellar metadata so `brew` sees the correct version.
+    // These are best-effort — if they fail the binary itself is fine.
+    if old_version != new_version {
+        let new_version_dir = formula_dir.join(new_version);
+
+        // Step 2: rename the version directory (e.g. 4.0.3 → 4.0.4).
+        match std::fs::rename(version_dir, &new_version_dir) {
+            Ok(()) => {
+                // Step 3: update the symlink at <prefix>/bin/<binary>.
+                let symlink_path = prefix.join("bin").join(bin_name);
+                if let Ok(meta) = std::fs::symlink_metadata(&symlink_path) {
+                    if meta.file_type().is_symlink() {
+                        if let Ok(old_target) = std::fs::read_link(&symlink_path) {
+                            let new_target = std::path::PathBuf::from(
+                                old_target
+                                    .to_string_lossy()
+                                    .replacen(&old_version, new_version, 1),
+                            );
+                            let _ = std::fs::remove_file(&symlink_path);
+                            let _ = std::os::unix::fs::symlink(&new_target, &symlink_path);
+                        }
+                    }
+                }
+
+                // Step 4: patch INSTALL_RECEIPT.json so `brew info` is accurate.
+                let receipt = new_version_dir.join("INSTALL_RECEIPT.json");
+                if receipt.exists() {
+                    if let Ok(text) = std::fs::read_to_string(&receipt) {
+                        let _ = std::fs::write(&receipt, text.replace(&old_version, new_version));
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "\n  \x1b[33mwarning:\x1b[0m could not rename Cellar directory: {e}\n    \
+                     brew may still report the old version"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn replace_for_brew(new_exe: &Path, _new_version: &str) -> Result<()> {
+    replace_default(new_exe)
+}
+
+// ── Scoop ───────────────────────────────────────────────────────────────
+
+/// Replace the binary via `self_replace` (handles Windows exe locking),
+/// then update Scoop's version directory and junction so that
+/// `scoop status` reports the new version.
+#[cfg(windows)]
+fn replace_for_scoop(new_exe: &Path, new_version: &str) -> Result<()> {
+    self_replace::self_replace(new_exe).map_err(|e| TokenSaveError::Config {
+        message: format!(
+            "binary replacement failed: {e}\n  \
+             The old version is still in place.\n  \
+             To upgrade manually: https://github.com/{GITHUB_REPO}/releases/latest"
+        ),
+    })?;
+
+    // Best-effort: update Scoop metadata for `scoop status` compatibility.
+    update_scoop_metadata(new_version);
+
+    Ok(())
+}
+
+#[cfg(windows)]
+fn update_scoop_metadata(new_version: &str) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let canonical = exe.canonicalize().unwrap_or(exe);
+
+    let Some(version_dir) = find_scoop_version_dir(&canonical) else {
+        return;
+    };
+    let Some(app_dir) = version_dir.parent() else {
+        return;
+    };
+    let old_version = version_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    if old_version == new_version || old_version == "current" {
+        return;
+    }
+
+    let new_version_dir = app_dir.join(new_version);
+    if std::fs::create_dir_all(&new_version_dir).is_err() {
+        return;
+    }
+
+    // Copy files from old version directory to new.
+    if let Ok(entries) = std::fs::read_dir(&version_dir) {
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
+            let name = entry.file_name();
+            if name.to_string_lossy().contains("__self_delete__") {
+                continue;
+            }
+            let _ = std::fs::copy(entry.path(), new_version_dir.join(&name));
+        }
+    }
+
+    // Patch manifest.json version.
+    let manifest = new_version_dir.join("manifest.json");
+    if manifest.exists() {
+        if let Ok(text) = std::fs::read_to_string(&manifest) {
+            let _ = std::fs::write(&manifest, text.replace(&old_version, new_version));
+        }
+    }
+
+    // Update the `current` directory junction.
+    let current = app_dir.join("current");
+    let _ = std::fs::remove_dir(&current);
+    use std::os::windows::process::CommandExt;
+    let _ = std::process::Command::new("cmd")
+        .args([
+            "/c",
+            "mklink",
+            "/J",
+            &current.to_string_lossy(),
+            &new_version_dir.to_string_lossy(),
+        ])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .status();
+}
+
+/// Walk the canonical path to find the Scoop version directory.
+/// Layout: `<scoop>/apps/<app>/<version>/…`
+#[cfg(windows)]
+fn find_scoop_version_dir(path: &Path) -> Option<std::path::PathBuf> {
+    let mut found_apps = false;
+    let mut depth_after_apps = 0u8;
+    let mut result = std::path::PathBuf::new();
+
+    for comp in path.components() {
+        result.push(comp);
+        if found_apps {
+            depth_after_apps += 1;
+            if depth_after_apps == 2 {
+                return Some(result);
+            }
+        } else if let std::path::Component::Normal(name) = comp {
+            if name.to_string_lossy().eq_ignore_ascii_case("apps") {
+                found_apps = true;
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn replace_for_scoop(new_exe: &Path, _new_version: &str) -> Result<()> {
+    replace_default(new_exe)
+}
+
+// ────────────────────────────────────────────────────────────────────────
+
 /// Downloads, extracts, and installs the binary for `version`/`is_beta`.
-fn perform_upgrade(version: &str, is_beta: bool) -> Result<()> {
+/// Verifies the release asset exists on GitHub and returns the download URL.
+/// Call this early so we fail fast when CI hasn't finished building the
+/// release yet.
+fn preflight_asset_check(version: &str, is_beta: bool) -> Result<VerifiedAsset> {
     let tag = release_tag(version);
     let expected = asset_name(version, is_beta);
-    let bin_name = if cfg!(windows) { "tokensave.exe" } else { "tokensave" };
-
     eprintln!("  Asset: {expected}");
+    // Resolving the hash here rather than mid-download keeps the fail-fast
+    // property the asset check already had: a release missing its sums fails
+    // before the archive is fetched, not after ~150 MiB of it.
+    locate_verified_asset(&tag, &expected)
+}
 
-    let url = fetch_asset_url(&tag, &expected)?;
-    let tmp = download_and_extract(&url, bin_name)?;
+/// Record the *currently running* binary's version in user config just before
+/// the binary is replaced. The new binary reads this on startup as
+/// `previous_version` and decides whether reinstall is required for the
+/// transition (e.g. minor/major bumps re-register agents to pick up new MCP
+/// tools or hook changes; patch bumps just update the field).
+fn record_previous_version() {
+    let current = env!("CARGO_PKG_VERSION");
+    let mut cfg = UserConfig::load();
+    if cfg.previous_version == current {
+        return;
+    }
+    cfg.previous_version = current.to_string();
+    if !cfg.save() {
+        eprintln!(
+            "  \x1b[33mwarning:\x1b[0m could not record previous version; \
+             run `tokensave reinstall` manually if new tools aren't registered"
+        );
+    }
+}
 
-    eprint!("  Replacing binary...");
-    replace_binary(&tmp)?;
+fn perform_upgrade(version: &str, asset: &VerifiedAsset, method: &InstallMethod) -> Result<()> {
+    let bin_name = if cfg!(windows) {
+        "tokensave.exe"
+    } else {
+        "tokensave"
+    };
+
+    let staged = download_and_extract(&asset.url, bin_name, &asset.sha256)?;
+
+    let label = match method {
+        InstallMethod::Brew => " (Homebrew Cellar)",
+        InstallMethod::Scoop => " (Scoop)",
+        _ => "",
+    };
+    eprint!("  Replacing binary{label}...");
+    replace_binary(staged.path(), method, version)?;
     eprintln!(" Done");
 
     Ok(())
 }
 
-/// Restart the daemon by spawning a detached `tokensave daemon` process.
-fn restart_daemon() {
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!(
-                "  \x1b[33mwarning:\x1b[0m could not determine executable path to restart daemon: {e}"
-            );
-            return;
-        }
-    };
+fn brew_upgrade_command() -> (&'static str, [&'static str; 2]) {
+    ("brew", ["upgrade", "tokensave"])
+}
 
-    match std::process::Command::new(&exe)
-        .arg("daemon")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(_) => eprintln!("  \x1b[32m✔\x1b[0m Daemon restarted"),
-        Err(e) => eprintln!(
-            "  \x1b[33mwarning:\x1b[0m failed to restart daemon: {e}"
-        ),
+fn run_brew_upgrade(current: &str) -> Result<String> {
+    eprintln!("Updating Homebrew formula cache...");
+    let update_ok = std::process::Command::new("brew")
+        .args(["update", "--quiet"])
+        .status()
+        .is_ok_and(|s| s.success());
+    if !update_ok {
+        eprintln!("  warning: `brew update` failed — continuing with existing cache");
     }
+
+    let (program, args) = brew_upgrade_command();
+    eprintln!(
+        "Delegating upgrade to Homebrew: {program} {}",
+        args.join(" ")
+    );
+
+    let status = std::process::Command::new(program)
+        .args(args)
+        .status()
+        .map_err(io_err("failed to run Homebrew upgrade"))?;
+
+    if status.success() {
+        record_previous_version();
+        Ok(current.to_string())
+    } else {
+        Err(TokenSaveError::Config {
+            message: format!("Homebrew upgrade failed with status: {status}"),
+        })
+    }
+}
+
+/// A running tokensave process other than this one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningProcess {
+    pub pid: u32,
+    /// Command line (or process name when the command line is unavailable).
+    pub description: String,
+}
+
+/// Strip a case-insensitive `.exe` suffix from a Windows process name,
+/// without panicking when the last 4 bytes of `name` don't fall on a UTF-8
+/// character boundary.
+///
+/// Compiled for `test` too (not just `windows`) so the boundary-safety
+/// regression test can exercise this logic on any host platform.
+#[cfg(any(windows, test))]
+fn strip_windows_exe_suffix(name: &str) -> &str {
+    let len = name.len();
+    if len < 4 || !name.is_char_boundary(len - 4) {
+        return name;
+    }
+    let (stem, suffix) = name.split_at(len - 4);
+    if suffix.eq_ignore_ascii_case(".exe") {
+        stem
+    } else {
+        name
+    }
+}
+
+/// Is `stem` (a basename with any `.exe` suffix already stripped) the
+/// tokensave binary, using Windows matching semantics?
+///
+/// Windows treats file and process names as case-insensitive, so basenames
+/// like `TokenSave` or `TOKENSAVE` refer to the same binary as `tokensave`.
+///
+/// Compiled for `test` too (not just `windows`) so the regression test can
+/// exercise Windows matching semantics on any host platform.
+#[cfg(any(windows, test))]
+fn is_tokensave_stem_windows(stem: &str) -> bool {
+    stem.eq_ignore_ascii_case("tokensave")
+}
+
+/// Is `name` the tokensave binary (platform-dependent extension included)?
+fn is_tokensave_process_name(name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        let stem = strip_windows_exe_suffix(name);
+        is_tokensave_stem_windows(stem)
+    }
+    #[cfg(not(windows))]
+    {
+        let stem = name.strip_suffix(".exe").unwrap_or(name);
+        stem == "tokensave"
+    }
+}
+
+/// A reduced, pure row used for kill-candidate selection: just enough of a
+/// process snapshot (pid, parent pid, name, description) to reason about
+/// ancestry without touching sysinfo directly. Keeping this separate from
+/// `RunningProcess` lets the selection logic be unit-tested with a
+/// hand-built table instead of the real process tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProcessEntry {
+    pid: u32,
+    parent: Option<u32>,
+    name: String,
+    description: String,
+}
+
+/// PIDs to exclude from kill candidates: this process plus every reachable
+/// ancestor found by walking `parent` links in `table`.
+///
+/// The walk stops as soon as it can no longer make progress safely: the
+/// current pid has no entry in `table`, its parent is absent or `0`, or the
+/// parent has already been visited (a cycle or self-parent). This guards a
+/// Scoop shim (or any other launcher) named `tokensave`/`tokensave.exe` from
+/// being offered as a killable "unrelated" process, even when it launched us
+/// through an intermediate non-tokensave process (e.g. a shell).
+fn self_and_ancestor_pids(table: &[ProcessEntry], self_pid: u32) -> HashSet<u32> {
+    let mut excluded = HashSet::new();
+    let mut current = Some(self_pid);
+
+    while let Some(pid) = current {
+        if pid == 0 || !excluded.insert(pid) {
+            break;
+        }
+        current = table.iter().find(|e| e.pid == pid).and_then(|e| e.parent);
+    }
+
+    excluded
+}
+
+/// Reduce a process table to the tokensave processes safe to offer as kill
+/// candidates: exclude this process and every reachable ancestor, keep the
+/// rest that look like tokensave, and preserve pid ordering.
+fn kill_candidates(table: &[ProcessEntry], self_pid: u32) -> Vec<RunningProcess> {
+    let excluded = self_and_ancestor_pids(table, self_pid);
+
+    let mut found: Vec<RunningProcess> = table
+        .iter()
+        .filter(|e| !excluded.contains(&e.pid) && is_tokensave_process_name(&e.name))
+        .map(|e| RunningProcess {
+            pid: e.pid,
+            description: e.description.clone(),
+        })
+        .collect();
+    found.sort_by_key(|p| p.pid);
+    found
+}
+
+/// List running tokensave processes, excluding this one and its ancestors.
+///
+/// These are mostly MCP servers spawned by editors/agents. They hold the old
+/// binary's DB handles open, so upgrading under them can leave a server
+/// running code that no longer matches the on-disk index format.
+fn find_running_processes() -> Vec<RunningProcess> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+
+    let self_pid = std::process::id();
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::new().with_cmd(sysinfo::UpdateKind::Always),
+    );
+
+    let table: Vec<ProcessEntry> = sys
+        .processes()
+        .values()
+        .map(|p| {
+            let cmd: Vec<String> = p
+                .cmd()
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            let name = p.name().to_string_lossy().into_owned();
+            let description = if cmd.is_empty() {
+                name.clone()
+            } else {
+                cmd.join(" ")
+            };
+            ProcessEntry {
+                pid: p.pid().as_u32(),
+                parent: p.parent().map(sysinfo::Pid::as_u32),
+                name,
+                description,
+            }
+        })
+        .collect();
+
+    kill_candidates(&table, self_pid)
+}
+
+/// Terminate `procs`; returns the number successfully signalled.
+fn kill_processes(procs: &[RunningProcess]) -> usize {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+
+    let pids: Vec<Pid> = procs.iter().map(|p| Pid::from_u32(p.pid)).collect();
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&pids),
+        true,
+        ProcessRefreshKind::new(),
+    );
+
+    let mut killed = 0;
+    for proc in procs {
+        let pid = Pid::from_u32(proc.pid);
+        match sys.process(pid) {
+            Some(p) if p.kill() => {
+                eprintln!("  \x1b[32m✔\x1b[0m killed pid {}", proc.pid);
+                killed += 1;
+            }
+            Some(_) => eprintln!("  \x1b[33m!\x1b[0m failed to kill pid {}", proc.pid),
+            // Already gone between listing and killing — treat as success.
+            None => killed += 1,
+        }
+    }
+    killed
+}
+
+/// Decide whether the upgrade may proceed after attempting to stop blocking
+/// tokensave processes.
+///
+/// v7.8.0 defines "stopped" as *successfully signalled*: this does not wait
+/// for the OS to finish tearing a process down, and it does not rescan for
+/// respawned processes. If fewer processes were signalled than requested,
+/// the upgrade is aborted rather than proceeding while an old binary may
+/// still be running.
+fn post_kill_outcome(requested: usize, killed: usize) -> Result<()> {
+    if killed >= requested {
+        return Ok(());
+    }
+    Err(TokenSaveError::Config {
+        message: format!(
+            "upgrade stopped: only {killed}/{requested} running tokensave process(es) could be stopped.\n  \
+             Stop the remaining process(es) manually, then retry the upgrade.",
+        ),
+    })
+}
+
+/// Handle tokensave processes that are still running before an upgrade.
+///
+/// With `kill` set, terminate them without asking. Otherwise ask, but only
+/// when there is something to kill and stdin is a TTY; a non-interactive run
+/// just warns and continues. If a kill was requested (via `--kill` or an
+/// interactive `y`) and not every process could be stopped, the upgrade is
+/// aborted rather than proceeding under a still-running old binary.
+fn handle_running_processes(kill: bool) -> Result<()> {
+    use std::io::{IsTerminal, Write};
+
+    let procs = find_running_processes();
+    if procs.is_empty() {
+        return Ok(());
+    }
+
+    eprintln!("{} other tokensave process(es) running:", procs.len());
+    for p in &procs {
+        eprintln!("  • pid {} — {}", p.pid, p.description);
+    }
+
+    if !kill {
+        if !std::io::stdin().is_terminal() {
+            eprintln!(
+                "  \x1b[33m!\x1b[0m Continuing without killing them (non-interactive; use --kill)."
+            );
+            return Ok(());
+        }
+        eprint!("  Kill them before upgrading? [y/N] ");
+        std::io::stderr().flush().ok();
+        let mut answer = String::new();
+        if std::io::stdin().read_line(&mut answer).is_err() {
+            return Ok(());
+        }
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            eprintln!("  Leaving them running.");
+            return Ok(());
+        }
+    }
+
+    let requested = procs.len();
+    let killed = kill_processes(&procs);
+    eprintln!("Killed {killed}/{requested} process(es).");
+    post_kill_outcome(requested, killed)
 }
 
 /// Check for a newer version and perform the upgrade if one is available.
 ///
-/// Stops the daemon before replacing the binary and restarts it after if
-/// it was running. Returns the new version string on success.
-pub fn run_upgrade() -> Result<String> {
+/// With `kill` set, any other running tokensave processes are terminated
+/// without prompting.
+///
+/// Returns the new version string on success.
+pub fn run_upgrade(kill: bool) -> Result<String> {
     let current = env!("CARGO_PKG_VERSION");
     let is_beta = cloud::is_beta();
     let channel = if is_beta { "beta" } else { "stable" };
+    let method = cloud::detect_install_method();
 
-    eprintln!("Current version: v{current} ({channel} channel)");
+    let method_suffix = match &method {
+        InstallMethod::Brew => " · Homebrew",
+        InstallMethod::Scoop => " · Scoop",
+        InstallMethod::Cargo => " · cargo",
+        InstallMethod::Unknown => "",
+    };
+    eprintln!("Current version: v{current} ({channel} channel{method_suffix})");
+
+    if matches!(method, InstallMethod::Brew) {
+        // Homebrew decides for itself whether there is anything to do, so the
+        // running-process check has to happen before delegating.
+        handle_running_processes(kill)?;
+        return run_brew_upgrade(current);
+    }
+
     eprintln!("Checking for updates...");
 
-    let latest = cloud::fetch_latest_version().ok_or_else(|| TokenSaveError::Config {
-        message: "failed to check for updates — could not reach GitHub".to_string(),
+    // Name the condition that actually holds. A release with no asset for this
+    // platform used to be reported as an unreachable network, sending people to
+    // debug a working connection (#513).
+    let latest = cloud::try_fetch_latest_version().map_err(|e| TokenSaveError::Update {
+        message: match e {
+            cloud::VersionCheckError::Unreachable { .. } => {
+                format!("failed to check for updates — {e}")
+            }
+            _ => format!("{e}. Staying on v{current}"),
+        },
     })?;
 
-    if !cloud::is_newer_version(current, &latest) {
-        eprintln!("\x1b[32m✔\x1b[0m Already up to date (v{current}).");
-        return Err(TokenSaveError::Config {
-            message: format!("already at latest version v{current}"),
-        });
-    }
+    let latest = match classify_upgrade(current, &latest) {
+        UpgradeStatus::AlreadyCurrent => {
+            eprintln!("\x1b[32m✔\x1b[0m Already up to date (v{current}).");
+            return Ok(current.to_string());
+        }
+        UpgradeStatus::UpgradeAvailable(latest) => latest,
+    };
 
     eprintln!("Upgrading v{current} → v{latest}...");
 
-    let daemon_was_running = daemon::running_daemon_pid().is_some();
-    if daemon_was_running {
-        eprintln!("  Stopping daemon...");
-        daemon::stop().ok();
-    }
+    handle_running_processes(kill)?;
 
-    let result = perform_upgrade(&latest, is_beta);
+    let asset = preflight_asset_check(latest, is_beta)?;
 
-    match result {
-        Ok(()) => {
-            eprintln!("\x1b[32m✔\x1b[0m Successfully upgraded to v{latest}!");
-            if daemon_was_running {
-                eprintln!("  Restarting daemon...");
-                restart_daemon();
-            }
-            Ok(latest)
-        }
-        Err(e) => {
-            if daemon_was_running {
-                eprintln!("  Restarting daemon (upgrade failed, old version still in place)...");
-                restart_daemon();
-            }
-            Err(e)
-        }
-    }
+    perform_upgrade(latest, &asset, &method)?;
+    record_previous_version();
+    eprintln!("\x1b[32m✔\x1b[0m Successfully upgraded to v{latest}!");
+    Ok(latest.to_string())
 }
 
 /// Print the current channel.
@@ -333,13 +1050,11 @@ pub fn show_channel() {
 }
 
 /// Switch to a different channel by downloading the latest release from it.
-///
-/// Stops the daemon before replacing the binary and restarts it afterwards
-/// if it was running.
 pub fn switch_channel(target_channel: &str) -> Result<String> {
     let current = env!("CARGO_PKG_VERSION");
     let current_is_beta = cloud::is_beta();
     let current_channel = if current_is_beta { "beta" } else { "stable" };
+    let method = cloud::detect_install_method();
 
     let target_is_beta = match target_channel {
         "beta" => true,
@@ -354,58 +1069,197 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
     if target_is_beta == current_is_beta {
         eprintln!("Already on the {current_channel} channel (v{current}).");
         eprintln!("Run `tokensave upgrade` to check for updates within this channel.");
-        return Err(TokenSaveError::Config {
-            message: format!("already on {current_channel} channel"),
-        });
+        return Ok(current.to_string());
     }
 
     eprintln!("Switching from {current_channel} to {target_channel}...");
 
     let latest = if target_is_beta {
-        cloud::fetch_latest_beta_version()
+        cloud::try_fetch_latest_beta_version()
     } else {
-        cloud::fetch_latest_stable_version()
+        cloud::try_fetch_latest_stable_version()
     }
-    .ok_or_else(|| TokenSaveError::Config {
-        message: format!(
-            "failed to find latest {target_channel} release — could not reach GitHub"
-        ),
+    .map_err(|e| TokenSaveError::Update {
+        message: format!("cannot switch to the {target_channel} channel — {e}"),
     })?;
 
     eprintln!("  Target: v{latest}");
 
-    let daemon_was_running = daemon::running_daemon_pid().is_some();
-    if daemon_was_running {
-        eprintln!("  Stopping daemon...");
-        daemon::stop().ok();
-    }
+    let asset = preflight_asset_check(&latest, target_is_beta)?;
 
-    let result = perform_upgrade(&latest, target_is_beta);
-
-    match result {
-        Ok(()) => {
-            eprintln!("\x1b[32m✔\x1b[0m Switched to {target_channel} channel: v{latest}");
-            if daemon_was_running {
-                eprintln!("  Restarting daemon...");
-                restart_daemon();
-            }
-            Ok(latest)
-        }
-        Err(e) => {
-            if daemon_was_running {
-                eprintln!(
-                    "  Restarting daemon (switch failed, old version still in place)..."
-                );
-                restart_daemon();
-            }
-            Err(e)
-        }
-    }
+    perform_upgrade(&latest, &asset, &method)?;
+    record_previous_version();
+    eprintln!("\x1b[32m✔\x1b[0m Switched to {target_channel} channel: v{latest}");
+    Ok(latest)
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::doc_markdown,
+    clippy::redundant_closure_for_method_calls
+)]
 mod tests {
     use super::*;
+
+    /// The staging directory must not be at a name another local user can
+    /// predict. The old path was `temp_dir()/tokensave_upgrade_<pid>`, and a
+    /// pid is both guessable and observable, so a symlink planted there ahead
+    /// of the download would have been followed on extraction (#525).
+    #[test]
+    fn the_staging_directory_is_not_a_predictable_path() {
+        let a = new_staging_dir().expect("staging dir");
+        let b = new_staging_dir().expect("staging dir");
+
+        assert_ne!(
+            a.path(),
+            b.path(),
+            "two staging directories in the same process must not collide"
+        );
+
+        let legacy = std::env::temp_dir().join(format!("tokensave_upgrade_{}", std::process::id()));
+        assert_ne!(a.path(), legacy, "must not reuse the old pid-derived name");
+    }
+
+    /// `TempDir` must create the directory rather than adopt one that is
+    /// already there — adopting is what makes a planted path dangerous.
+    #[test]
+    fn the_staging_directory_is_freshly_created() {
+        let dir = new_staging_dir().expect("staging dir");
+        assert!(dir.path().is_dir(), "the directory must exist");
+        assert!(
+            std::fs::read_dir(dir.path())
+                .expect("read staging dir")
+                .next()
+                .is_none(),
+            "a freshly created staging directory must be empty"
+        );
+    }
+
+    /// On Unix the directory must not be readable or writable by other users,
+    /// so nothing can race the extracted binary between write and install.
+    /// `tempdir()` alone creates with `0777 & !umask` — commonly `0755`, which
+    /// leaves the staged binary readable by every other local user while it
+    /// sits there. The narrowing is therefore explicit, and asserted.
+    #[cfg(unix)]
+    #[test]
+    fn the_staging_directory_is_private_to_this_user() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = new_staging_dir().expect("staging dir");
+        let mode = std::fs::metadata(dir.path())
+            .expect("stat staging dir")
+            .permissions()
+            .mode()
+            & 0o777;
+
+        assert_eq!(
+            mode, 0o700,
+            "staging directory should be user-only, got {mode:o}"
+        );
+    }
+
+    /// The staged binary sits inside that directory, so its full path inherits
+    /// the directory's unpredictability even though the file name is fixed.
+    #[test]
+    fn the_staged_binary_lives_inside_the_private_directory() {
+        let dir = new_staging_dir().expect("staging dir");
+        let staged = dir.path().join(format!(
+            "tokensave{}",
+            if cfg!(windows) { ".exe" } else { "" }
+        ));
+
+        assert!(
+            staged.starts_with(dir.path()),
+            "the staged binary must be contained by the private directory"
+        );
+    }
+
+    // ── SHA256 verification (#525) ───────────────────────────────────────
+
+    #[test]
+    fn sha256_hex_matches_a_known_vector() {
+        // The empty-input digest, so this pins the encoding rather than
+        // restating whatever the implementation happens to produce.
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn a_sums_listing_yields_the_hash_for_the_named_asset() {
+        let listing = "\
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  tokensave-v1.2.3-x86_64-linux.tar.gz
+ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  tokensave-v1.2.3-aarch64-macos.tar.gz
+";
+        assert_eq!(
+            sha256_for_asset(listing, "tokensave-v1.2.3-aarch64-macos.tar.gz").as_deref(),
+            Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        );
+    }
+
+    #[test]
+    fn a_sums_listing_accepts_the_binary_mode_marker() {
+        // `sha256sum -b` and the Windows leg emit `hash *name`.
+        let listing =
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 *tokensave-v1.2.3-x86_64-windows.zip\n";
+        assert_eq!(
+            sha256_for_asset(listing, "tokensave-v1.2.3-x86_64-windows.zip").as_deref(),
+            Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        );
+    }
+
+    #[test]
+    fn an_asset_absent_from_the_listing_has_no_hash() {
+        // The caller turns this into a refusal, not a skipped check — a
+        // release that does not name our asset must not install (#525).
+        let listing =
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  some-other-asset.tar.gz\n";
+        assert!(sha256_for_asset(listing, "tokensave-v1.2.3-x86_64-linux.tar.gz").is_none());
+    }
+
+    #[test]
+    fn a_malformed_or_truncated_hash_is_not_accepted() {
+        // A short, over-long, or non-hex field must not be treated as a hash:
+        // it would compare unequal to every real digest and turn a verifiable
+        // release into an unexplained mismatch.
+        for bad in [
+            "deadbeef  tokensave-v1.2.3-x86_64-linux.tar.gz",
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz  tokensave-v1.2.3-x86_64-linux.tar.gz",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855aa  tokensave-v1.2.3-x86_64-linux.tar.gz",
+        ] {
+            assert!(
+                sha256_for_asset(bad, "tokensave-v1.2.3-x86_64-linux.tar.gz").is_none(),
+                "{bad} should not parse as a hash"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_or_blank_listing_has_no_hash() {
+        for listing in ["", "\n", "   \n\n"] {
+            assert!(sha256_for_asset(listing, "tokensave-v1.2.3-x86_64-linux.tar.gz").is_none());
+        }
+    }
+
+    #[test]
+    fn a_hash_is_compared_case_insensitively() {
+        // Some tools emit uppercase hex; normalising on parse keeps that from
+        // reading as tampering.
+        let listing =
+            "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  tokensave-v1.2.3-x86_64-linux.tar.gz\n";
+        assert_eq!(
+            sha256_for_asset(listing, "tokensave-v1.2.3-x86_64-linux.tar.gz").as_deref(),
+            Some(sha256_hex(b"").as_str())
+        );
+    }
 
     #[test]
     fn test_asset_name_stable() {
@@ -431,6 +1285,282 @@ mod tests {
     }
 
     #[test]
+    fn tokensave_process_names_are_recognized() {
+        assert!(is_tokensave_process_name("tokensave"));
+        assert!(is_tokensave_process_name("tokensave.exe"));
+        assert!(!is_tokensave_process_name("tokensave-helper"));
+        assert!(!is_tokensave_process_name("cargo"));
+        assert!(!is_tokensave_process_name(""));
+    }
+
+    #[test]
+    fn strip_windows_exe_suffix_does_not_panic_on_unicode_boundary() {
+        // Each '€' is a 3-byte UTF-8 sequence, so this 6-byte, 2-char name
+        // has `len - 4 == 2`, a byte offset that falls *inside* the first
+        // '€' rather than on a char boundary. The naive `name[len - 4..]`
+        // slice used to panic here even though the name has nothing to do
+        // with tokensave or `.exe`.
+        let name = "€€";
+        assert_eq!(strip_windows_exe_suffix(name), name);
+    }
+
+    #[test]
+    fn is_tokensave_process_name_ignores_unrelated_unicode_names() {
+        assert!(!is_tokensave_process_name("€€"));
+    }
+
+    #[test]
+    fn is_tokensave_stem_windows_is_ascii_case_insensitive() {
+        // Windows file/process names are case-insensitive: mixed-case
+        // basenames like `TokenSave.EXE` or `TOKENSAVE.exe` (after the
+        // `.exe` suffix has already been stripped) must still be recognized
+        // as the tokensave binary under Windows matching semantics, even
+        // though the Unix comparison stays exact/case-sensitive.
+        assert!(is_tokensave_stem_windows(strip_windows_exe_suffix(
+            "TokenSave.EXE"
+        )));
+        assert!(is_tokensave_stem_windows(strip_windows_exe_suffix(
+            "TOKENSAVE.exe"
+        )));
+        assert!(is_tokensave_stem_windows("tokensave"));
+        assert!(!is_tokensave_stem_windows("tokensave-helper"));
+    }
+
+    #[test]
+    fn find_running_processes_excludes_self() {
+        let self_pid = std::process::id();
+        assert!(find_running_processes().iter().all(|p| p.pid != self_pid));
+    }
+
+    fn entry(pid: u32, parent: Option<u32>, name: &str, description: &str) -> ProcessEntry {
+        ProcessEntry {
+            pid,
+            parent,
+            name: name.to_string(),
+            description: description.to_string(),
+        }
+    }
+
+    #[test]
+    fn kill_candidates_excludes_scoop_shim_parent_launching_self() {
+        // A Scoop shim named tokensave.exe launched us directly.
+        let table = [
+            entry(50, None, "tokensave.exe", r"C:\shims\tokensave.exe upgrade"),
+            entry(100, Some(50), "tokensave.exe", "tokensave.exe upgrade"),
+        ];
+        assert!(kill_candidates(&table, 100).is_empty());
+    }
+
+    #[test]
+    fn kill_candidates_excludes_tokensave_grandparent_behind_shell() {
+        // self -> bash -> tokensave (e.g. a launcher script invoked via a shell).
+        let table = [
+            entry(40, None, "tokensave", "tokensave"),
+            entry(60, Some(40), "bash", "bash"),
+            entry(100, Some(60), "tokensave", "tokensave upgrade"),
+        ];
+        assert!(kill_candidates(&table, 100).is_empty());
+    }
+
+    #[test]
+    fn kill_candidates_keeps_unrelated_server_excludes_launcher_ancestor() {
+        let table = [
+            entry(50, None, "tokensave.exe", r"C:\shims\tokensave.exe upgrade"),
+            entry(100, Some(50), "tokensave", "tokensave upgrade --kill"),
+            entry(200, None, "tokensave", "tokensave serve"),
+        ];
+        let candidates = kill_candidates(&table, 100);
+        assert_eq!(
+            candidates,
+            vec![RunningProcess {
+                pid: 200,
+                description: "tokensave serve".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn self_and_ancestor_pids_terminates_on_self_parent_cycle() {
+        let table = [entry(100, Some(100), "tokensave", "tokensave")];
+        let excluded = self_and_ancestor_pids(&table, 100);
+        assert_eq!(excluded, HashSet::from([100]));
+    }
+
+    #[test]
+    fn self_and_ancestor_pids_terminates_on_two_cycle() {
+        let table = [
+            entry(100, Some(200), "tokensave", "tokensave"),
+            entry(200, Some(100), "tokensave", "tokensave"),
+        ];
+        let excluded = self_and_ancestor_pids(&table, 100);
+        assert_eq!(excluded, HashSet::from([100, 200]));
+    }
+
+    #[test]
+    fn kill_candidates_excludes_lookalikes_and_preserves_pid_order() {
+        let table = [
+            entry(400, None, "tokensave", "tokensave serve two"),
+            entry(300, None, "tokensave-helper", "tokensave-helper"),
+            entry(250, None, "tokensave", "tokensave serve"),
+        ];
+        let candidates = kill_candidates(&table, 100);
+        assert_eq!(
+            candidates,
+            vec![
+                RunningProcess {
+                    pid: 250,
+                    description: "tokensave serve".to_string(),
+                },
+                RunningProcess {
+                    pid: 400,
+                    description: "tokensave serve two".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn self_and_ancestor_pids_stops_on_missing_parent_entry() {
+        // self's parent pid (999) has no entry in the table. The walk records
+        // it (harmless — it can never match a real table row) and then halts
+        // because there is nothing further to look up.
+        let table = [entry(100, Some(999), "bash", "bash")];
+        let excluded = self_and_ancestor_pids(&table, 100);
+        assert_eq!(excluded, HashSet::from([100, 999]));
+    }
+
+    #[test]
+    fn self_and_ancestor_pids_stops_on_zero_parent() {
+        let table = [entry(100, Some(0), "bash", "bash")];
+        let excluded = self_and_ancestor_pids(&table, 100);
+        assert_eq!(excluded, HashSet::from([100]));
+    }
+
+    #[test]
+    fn self_and_ancestor_pids_stops_when_self_has_no_entry() {
+        // self_pid has no corresponding row in the table at all.
+        let table = [entry(1, None, "bash", "bash")];
+        let excluded = self_and_ancestor_pids(&table, 100);
+        assert_eq!(excluded, HashSet::from([100]));
+    }
+
+    #[test]
+    fn self_and_ancestor_pids_walks_a_deep_chain() {
+        let table = [
+            entry(1, None, "init", "init"),
+            entry(10, Some(1), "bash", "bash"),
+            entry(20, Some(10), "bash", "bash"),
+            entry(30, Some(20), "tokensave", "tokensave"),
+            entry(100, Some(30), "tokensave", "tokensave upgrade"),
+        ];
+        let excluded = self_and_ancestor_pids(&table, 100);
+        assert_eq!(excluded, HashSet::from([100, 30, 20, 10, 1]));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn live_snapshot_includes_self_and_real_parent_pid() {
+        extern "C" {
+            fn getppid() -> i32;
+        }
+
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+        let self_pid = std::process::id();
+        let real_ppid = unsafe { getppid() } as u32;
+
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::new().with_cmd(sysinfo::UpdateKind::Always),
+        );
+
+        let self_proc = sys
+            .process(sysinfo::Pid::from_u32(self_pid))
+            .expect("current process must be present in its own snapshot");
+        assert_eq!(
+            self_proc.parent().map(|p| p.as_u32()),
+            Some(real_ppid),
+            "sysinfo's reported parent must match the real OS parent pid"
+        );
+    }
+
+    #[test]
+    fn post_kill_outcome_succeeds_when_all_requested_were_killed() {
+        assert!(post_kill_outcome(3, 3).is_ok());
+    }
+
+    #[test]
+    fn post_kill_outcome_succeeds_when_nothing_was_requested() {
+        assert!(post_kill_outcome(0, 0).is_ok());
+    }
+
+    #[test]
+    fn post_kill_outcome_fails_on_partial_kill() {
+        let err = post_kill_outcome(3, 2).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains('2'),
+            "message should include killed count: {message}"
+        );
+        assert!(
+            message.contains('3'),
+            "message should include requested count: {message}"
+        );
+        assert!(
+            message.to_lowercase().contains("upgrade") && message.to_lowercase().contains("stop"),
+            "message should explain the upgrade stopped: {message}"
+        );
+        assert!(
+            message.to_lowercase().contains("manually") && message.to_lowercase().contains("retry"),
+            "message should tell the user to stop them manually and retry: {message}"
+        );
+    }
+
+    #[test]
+    fn post_kill_outcome_fails_on_total_kill_failure() {
+        let err = post_kill_outcome(3, 0).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains('0'));
+        assert!(message.contains('3'));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kill_processes_tolerates_dead_pids() {
+        // A process that has already exited counts as killed, not as a failure.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        let killed = kill_processes(&[RunningProcess {
+            pid,
+            description: "sleep 30".to_string(),
+        }]);
+        assert_eq!(killed, 1);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kill_processes_kills_a_live_child() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let killed = kill_processes(&[RunningProcess {
+            pid: child.id(),
+            description: "sleep 30".to_string(),
+        }]);
+        assert_eq!(killed, 1);
+        // Reap so the test leaves no zombie behind.
+        child.wait().ok();
+    }
+
+    #[test]
     fn test_release_tag() {
         assert_eq!(release_tag("3.3.3"), "v3.3.3");
         assert_eq!(release_tag("4.0.2-beta.1"), "v4.0.2-beta.1");
@@ -439,6 +1569,14 @@ mod tests {
     #[test]
     fn test_current_platform_not_unknown() {
         assert_ne!(current_platform(), "unknown");
+    }
+
+    #[test]
+    fn brew_upgrade_command_delegates_to_homebrew() {
+        let (program, args) = brew_upgrade_command();
+
+        assert_eq!(program, "brew");
+        assert_eq!(args, ["upgrade", "tokensave"]);
     }
 
     #[test]
@@ -455,8 +1593,37 @@ mod tests {
         if cfg!(windows) {
             assert_eq!(beta, format!("tokensave-beta-v4.0.2-beta.1-{platform}.zip"));
         } else {
-            assert_eq!(beta, format!("tokensave-beta-v4.0.2-beta.1-{platform}.tar.gz"));
+            assert_eq!(
+                beta,
+                format!("tokensave-beta-v4.0.2-beta.1-{platform}.tar.gz")
+            );
         }
+    }
+
+    #[test]
+    fn classify_upgrade_marks_equal_version_as_already_current() {
+        assert_eq!(
+            classify_upgrade("4.0.3", "4.0.3"),
+            UpgradeStatus::AlreadyCurrent
+        );
+    }
+
+    #[test]
+    fn classify_upgrade_marks_newer_version_as_upgrade_available() {
+        assert_eq!(
+            classify_upgrade("4.0.2", "4.0.3"),
+            UpgradeStatus::UpgradeAvailable("4.0.3")
+        );
+    }
+
+    #[test]
+    fn switch_channel_same_channel_is_a_successful_noop() {
+        let current = env!("CARGO_PKG_VERSION").to_string();
+        let current_channel = if cloud::is_beta() { "beta" } else { "stable" };
+
+        let result = switch_channel(current_channel);
+
+        assert_eq!(result.unwrap(), current);
     }
 
     // ── Regression tests for symlink upgrade bug ────────────────────────
@@ -481,7 +1648,12 @@ mod tests {
         fn homebrew_layout() -> (PathBuf, PathBuf, tempfile::TempDir) {
             let tmp = tempfile::tempdir().unwrap();
             // Cellar/tokensave/4.1.1-beta.1/bin/tokensave
-            let cellar_bin_dir = tmp.path().join("Cellar/tokensave/4.1.1-beta.1/bin");
+            let cellar_bin_dir = tmp
+                .path()
+                .join("Cellar")
+                .join("tokensave")
+                .join("4.1.1-beta.1")
+                .join("bin");
             fs::create_dir_all(&cellar_bin_dir).unwrap();
             let real_binary = cellar_bin_dir.join("tokensave");
             fs::write(&real_binary, b"fake-binary").unwrap();
@@ -490,11 +1662,7 @@ mod tests {
             let bin_dir = tmp.path().join("bin");
             fs::create_dir_all(&bin_dir).unwrap();
             let link_path = bin_dir.join("tokensave");
-            symlink(
-                "../Cellar/tokensave/4.1.1-beta.1/bin/tokensave",
-                &link_path,
-            )
-            .unwrap();
+            symlink("../Cellar/tokensave/4.1.1-beta.1/bin/tokensave", &link_path).unwrap();
 
             (real_binary, link_path, tmp)
         }
@@ -620,7 +1788,7 @@ mod tests {
         fn canonicalize_resolves_symlink_with_dotdot_in_real_path() {
             // Real path contains ".." components — canonicalize normalizes them.
             let tmp = tempfile::tempdir().unwrap();
-            let deep = tmp.path().join("a/b/c");
+            let deep = tmp.path().join("a").join("b").join("c");
             fs::create_dir_all(&deep).unwrap();
             let real = deep.join("tokensave");
             fs::write(&real, b"fake-binary").unwrap();
@@ -669,7 +1837,10 @@ mod tests {
             fs::write(&canonical, b"new-version").unwrap();
 
             // Symlink still works
-            assert!(link.exists(), "symlink must still resolve after replacement");
+            assert!(
+                link.exists(),
+                "symlink must still resolve after replacement"
+            );
             assert!(
                 fs::symlink_metadata(&link)
                     .unwrap()
@@ -722,6 +1893,120 @@ mod tests {
             let dangling = tmp3.path().join("tokensave");
             symlink("/nonexistent/path/tokensave", &dangling).unwrap();
             assert!(dangling.canonicalize().is_err());
+        }
+
+        // ── install_binary tests ───────────────────────────────────────
+
+        #[test]
+        fn install_binary_replaces_target_atomically() {
+            let tmp = tempfile::tempdir().unwrap();
+            let target = tmp.path().join("tokensave");
+            fs::write(&target, b"old-binary").unwrap();
+
+            let src = tmp.path().join("new-binary");
+            fs::write(&src, b"new-binary-content").unwrap();
+
+            super::super::install_binary(&src, &target).unwrap();
+
+            assert_eq!(fs::read(&target).unwrap(), b"new-binary-content");
+            // Temp file should be cleaned up
+            assert!(!tmp
+                .path()
+                .join(format!(".tokensave_upgrade_{}", std::process::id()))
+                .exists());
+        }
+
+        #[test]
+        fn install_binary_sets_executable_permission() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let tmp = tempfile::tempdir().unwrap();
+            let target = tmp.path().join("tokensave");
+            fs::write(&target, b"old").unwrap();
+
+            let src = tmp.path().join("new");
+            fs::write(&src, b"new").unwrap();
+
+            super::super::install_binary(&src, &target).unwrap();
+
+            let mode = fs::metadata(&target).unwrap().permissions().mode();
+            assert_eq!(mode & 0o755, 0o755, "binary should be executable");
+        }
+
+        // ── Brew upgrade flow ──────────────────────────────────────────
+
+        #[test]
+        fn brew_upgrade_renames_version_dir_and_updates_symlink() {
+            let (_real, link, _tmp) = homebrew_layout();
+
+            // Write an "upgraded" binary via the Cellar path
+            let canonical = link.canonicalize().unwrap();
+            fs::write(&canonical, b"v5.0.0-binary").unwrap();
+
+            // Simulate the Cellar directory rename (4.1.1-beta.1 → 5.0.0)
+            let bin_dir = canonical.parent().unwrap();
+            let version_dir = bin_dir.parent().unwrap();
+            let formula_dir = version_dir.parent().unwrap();
+            let cellar_dir = formula_dir.parent().unwrap();
+            let _prefix = cellar_dir.parent().unwrap();
+
+            let new_version_dir = formula_dir.join("5.0.0");
+            fs::rename(version_dir, &new_version_dir).unwrap();
+
+            // Update the symlink
+            let old_target = fs::read_link(&link).unwrap();
+            let new_target = PathBuf::from(old_target.to_string_lossy().replacen(
+                "4.1.1-beta.1",
+                "5.0.0",
+                1,
+            ));
+            fs::remove_file(&link).unwrap();
+            symlink(&new_target, &link).unwrap();
+
+            // Verify: symlink resolves and has the new content
+            assert!(link.exists(), "symlink must resolve after dir rename");
+            assert_eq!(fs::read(&link).unwrap(), b"v5.0.0-binary");
+
+            // Verify: new version directory exists, old one doesn't
+            assert!(new_version_dir.exists());
+            assert!(!version_dir.exists());
+
+            // Verify: brew would see "5.0.0" as the installed version
+            // (brew reads directory names under Cellar/<formula>/)
+            let versions: Vec<_> = fs::read_dir(formula_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            assert_eq!(versions, vec!["5.0.0"]);
+        }
+
+        #[test]
+        fn brew_upgrade_updates_install_receipt() {
+            let tmp = tempfile::tempdir().unwrap();
+            let cellar = tmp.path().join("Cellar").join("tokensave").join("4.0.3");
+            fs::create_dir_all(cellar.join("bin")).unwrap();
+            fs::write(cellar.join("bin").join("tokensave"), b"binary").unwrap();
+
+            let receipt_content = r#"{
+  "source": {
+    "versions": { "stable": "4.0.3" }
+  },
+  "tabfile": "/opt/homebrew/Cellar/tokensave/4.0.3/INSTALL_RECEIPT.json"
+}"#;
+            fs::write(cellar.join("INSTALL_RECEIPT.json"), receipt_content).unwrap();
+
+            // Simulate rename + receipt update
+            let new_dir = tmp.path().join("Cellar").join("tokensave").join("4.0.4");
+            fs::rename(&cellar, &new_dir).unwrap();
+
+            let text = fs::read_to_string(new_dir.join("INSTALL_RECEIPT.json")).unwrap();
+            let updated = text.replace("4.0.3", "4.0.4");
+            fs::write(new_dir.join("INSTALL_RECEIPT.json"), &updated).unwrap();
+
+            assert!(updated.contains("\"stable\": \"4.0.4\""));
+            assert!(updated.contains("/4.0.4/INSTALL_RECEIPT.json"));
+            assert!(!updated.contains("4.0.3"));
         }
     }
 }

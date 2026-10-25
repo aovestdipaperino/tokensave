@@ -1,0 +1,12 @@
+<h1><%= page_title %></h1>
+<% rows = load_rows() %>
+<% if visible? %>
+  <% rows.each do |row| %>
+    <p><%= format_row(row) %></p>
+  <% end %>
+<% else %>
+  <%= empty_message() %>
+<% end %>
+<%# ignored_helper() %>
+<%%= escaped_helper() %>
+<p>literal_helper()</p>

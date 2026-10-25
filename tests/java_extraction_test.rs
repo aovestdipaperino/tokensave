@@ -3,6 +3,30 @@ use tokensave::extraction::LanguageExtractor;
 use tokensave::types::*;
 
 #[test]
+fn test_java_empty_javadoc_no_panic() {
+    let source = r#"
+public class PanicReproduction {
+    /**/
+    public enum Problem {
+        VALUE
+    }
+}
+"#;
+    let extractor = JavaExtractor;
+    let result = extractor.extract("PanicReproduction.java", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let enums: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Enum)
+        .collect();
+    assert_eq!(enums.len(), 1);
+    assert_eq!(enums[0].name, "Problem");
+    assert!(enums[0].docstring.is_none() || enums[0].docstring.as_ref().unwrap().is_empty());
+}
+
+#[test]
 fn test_java_extract_package() {
     let source = r#"package com.example.app;
 
@@ -331,7 +355,7 @@ public class Box<T> {
         .iter()
         .filter(|n| n.kind == NodeKind::GenericParam)
         .collect();
-    assert!(generics.len() >= 1, "should extract generic type param T");
+    assert!(!generics.is_empty(), "should extract generic type param T");
 }
 
 #[test]
@@ -432,4 +456,35 @@ public class App {
     assert_eq!(methods.len(), 1);
     assert!(methods[0].qualified_name.contains("App"));
     assert!(methods[0].qualified_name.contains("run"));
+}
+
+/// #141: receiver-typed method calls emit `Type::method` (declared type or
+/// `new T()`), enabling disambiguation between same-named methods.
+#[test]
+fn test_receiver_typed_method_calls_java() {
+    let source = r#"
+class Alpha { int handle() { return 1; } }
+class Beta { int handle() { return 2; } }
+class Main {
+  int run() {
+    Alpha a = new Alpha();
+    Beta b = new Beta();
+    return a.handle() + b.handle();
+  }
+}
+"#;
+    let result = JavaExtractor.extract("M.java", source);
+    let names: Vec<&str> = result
+        .unresolved_refs
+        .iter()
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"Alpha::handle"),
+        "expected Alpha::handle, got {names:?}"
+    );
+    assert!(
+        names.contains(&"Beta::handle"),
+        "expected Beta::handle, got {names:?}"
+    );
 }

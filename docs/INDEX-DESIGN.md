@@ -6,11 +6,11 @@ How tokensave builds and maintains a semantic code graph from source files, and 
 
 tokensave indexes a codebase into a directed graph stored in a single SQLite database at `.tokensave/tokensave.db`. Source files are parsed with tree-sitter to extract **nodes** (code entities) and **edges** (relationships between them). Cross-file references that cannot be resolved during single-file extraction are stored as **unresolved refs** and resolved in a second pass once all files have been processed.
 
-The graph is kept up-to-date through incremental sync: only files whose content hash has changed are re-extracted. A file-level lock prevents concurrent sync operations from the CLI and the background daemon.
+The graph is kept up-to-date through incremental sync: only files whose content hash has changed are re-extracted. A file-level lock prevents concurrent sync operations from the CLI and the MCP server's on-demand sync (and from multiple MCP servers attached to the same project).
 
 ## Database Schema
 
-Schema version is tracked via `PRAGMA user_version` and advanced through sequential migrations. Current version: **5**.
+Schema version is tracked via `PRAGMA user_version` and advanced through sequential migrations. Current version: **17**.
 
 ### Core Tables
 
@@ -80,7 +80,7 @@ CREATE TABLE edges (
 |---|---|---|---|
 | `contains` | parent entity | child entity | Structural nesting: module contains struct, struct contains method |
 | `calls` | function/method | function/method | Call site at a specific line |
-| `uses` | function/method | type/struct/enum | Type reference (parameter, return, field type) |
+| `uses` | function/method | type/struct/enum, or field/property | Type reference (parameter, return, field type); in C#, also a field or property read through a receiver of known type (`h.Label`, #637). Followed by `impact` and file dependents, not by `callers` |
 | `implements` | impl/class | trait/interface | Implementation relationship |
 | `extends` | class/struct | class/struct | Inheritance |
 | `annotates` | annotation/decorator | target entity | Decorator/annotation applied to a declaration |
@@ -140,6 +140,27 @@ CREATE TABLE unresolved_refs (
 
 **Lifecycle.** Unresolved refs are created during extraction and consumed during reference resolution. The CASCADE ensures they are cleaned up when their owning node is deleted during re-indexing.
 
+#### `ambiguous_calls`
+
+Call sites where several candidates tied for the best score, so no edge was
+created. Written during resolution (schema v17) and read by
+`tokensave_ambiguous_calls`; `dead_code` also reads it, to avoid reporting a
+tied candidate as uncalled.
+
+```sql
+CREATE TABLE ambiguous_calls (
+    from_node_id       TEXT NOT NULL,    -- FK ~ nodes(id): the calling node
+    reference_name     TEXT NOT NULL,    -- symbol name as written in source
+    file_path          TEXT NOT NULL,
+    line               INTEGER NOT NULL,
+    candidate_node_ids TEXT NOT NULL,    -- JSON array of tied node ids, ordered by id
+    PRIMARY KEY (from_node_id, reference_name, line)
+);
+```
+
+The candidates are ordered by node id so the stored record, like the graph
+itself, does not depend on the order files were scanned in.
+
 #### `metadata`
 
 Simple key-value store for persistent counters and timestamps.
@@ -186,7 +207,7 @@ The database runs with these pragmas applied on every connection:
 
 | Pragma | Value | Why |
 |---|---|---|
-| `journal_mode` | WAL | Concurrent readers during writes; daemon can serve queries while syncing |
+| `journal_mode` | WAL | Concurrent readers during writes; the MCP server can serve queries while a sync is in progress |
 | `foreign_keys` | ON | Enforce CASCADE deletes |
 | `busy_timeout` | 120000 | 2-minute wait for locks instead of immediate SQLITE_BUSY |
 | `synchronous` | NORMAL | Acceptable durability trade-off for a rebuildable index |
@@ -200,9 +221,11 @@ The database runs with these pragmas applied on every connection:
 
 Each source file is parsed by a language-specific extractor that wraps a tree-sitter grammar. The `LanguageRegistry` dispatches to the correct extractor based on file extension.
 
-**Always-available languages (Lite build):** Rust, Go, Java, Scala, TypeScript/JavaScript, Python, C, C++, Kotlin, C#, Swift.
+**Always-available languages (Lite build):** Rust, Go, Java, Scala, TypeScript/JavaScript, Python, C, C++, Kotlin, C#, Swift, Svelte, Astro.
 
-**Feature-gated languages (Medium/Full build):** Dart, Pascal, PHP, Ruby, Bash, Protobuf, PowerShell, Nix, VB.NET, Lua, Zig, Objective-C, Perl, Batch, Fortran, COBOL, MS-BASIC, GW-BASIC, QBasic.
+**Feature-gated languages (Medium/Full build):** Dart, Pascal, PHP, Ruby, Bash, Protobuf, PowerShell, Nix, VB.NET, ActionScript, Lua, Zig, Objective-C, Perl, Batch, Fortran, COBOL, MS-BASIC, GW-BASIC, QBasic, QuickBASIC, Dockerfile, GLSL, WGSL, HLSL, Metal, CUDA/HIP, Markdown, R, SQL, Julia, Haskell, OCaml, Clojure, Erlang, Elixir, F#, F*, Quint, TOML, Lean, GDScript, XAML, mcfunction. See `docs/MORE-LANGUAGES-SUPPORT.md` for the tier table of record.
+
+Some extractors delegate rather than bundling a grammar of their own: Metal and CUDA/HIP both run through the C++ extractor (both are C++ supersets), and the Godot `.gdshader` dialect runs through GLSL. Where a dialect has syntax the base grammar cannot parse — CUDA's `<<<grid, block>>>` kernel launches, Godot's `: hint_…` uniform clauses — the extractor blanks those spans to same-length spaces before parsing and reads all node text from the original source, so byte offsets stay valid and signatures keep their real text.
 
 ### Phase 2: AST Walk
 
@@ -226,27 +249,82 @@ The output is an `ExtractionResult` containing all nodes, edges, and unresolved 
 
 After all files are extracted, a second pass resolves cross-file references.
 
-The `ReferenceResolver` loads all nodes from the database into two in-memory hash maps:
-- `name_cache`: nodes keyed by short name
-- `qualified_name_cache`: nodes keyed by qualified name
+The `ReferenceResolver` loads every node once and builds several in-memory
+indexes that borrow from that slice for its lifetime — by short name, by
+qualified name, by node id, by `::` suffix, and a set of known names. The
+`docstring` and `signature` columns are not loaded, since resolution reads
+neither and both are unbounded text.
+
+**The name index is global; the reference list is not.** Incremental sync reads
+`unresolved_refs` a page at a time (25,000, keyset on the table's autoincrement
+`id`) rather than materialising it — on this repository that table holds
+189,446 rows and cost +74.6 MiB per sync, a one-line edit included (#482). A
+full index keeps them in memory, since extraction has just produced them.
+
+The asymmetry is the whole point and is worth stating, because it was got wrong
+once: the **nodes** cannot be chunked, because binding a cross-file reference
+means looking up a name that may be defined anywhere, so a chunked index loses
+targets outside the chunk and silently drops edges. The **references** can be,
+because each is resolved independently against the whole index — chunking the
+input cannot lose anything the index still holds. Only one step needs the whole
+set, suppressing the bare-name sibling of a resolved Go selector call, and it
+runs once over the accumulated results.
 
 For each `UnresolvedRef`, resolution is attempted in order:
 
 1. **Qualified name match** (confidence 0.95) — if the reference contains `::`, look it up in the qualified name cache. Also tries suffix matching (e.g. `types::Node` matches `crate::types::Node`).
-2. **Exact name match** (confidence 0.9 for unique, 0.7 for ambiguous) — look up the short name. If multiple candidates exist, a scoring heuristic picks the best:
-   - Same file as reference: +100
-   - Public visibility: +10
-   - Callable kind for `Calls` references: +25
-   - Line proximity within same file: +20 minus distance/10
+2. **Exact name match** (confidence 0.9 for a unique candidate) — look up the short name.
+
+When more than one candidate survives the kind filter, every candidate is
+scored and **all candidates tied for the best score are returned**:
+
+| Signal | Score |
+|---|---|
+| Same file as the reference | +100 |
+| Line proximity within that file | +20, minus distance/10 |
+| Directory proximity (different file) | graded by shared path prefix |
+| Same language / different language | +50 / −80 |
+| Public visibility | +10 |
+| Callable kind for a `Calls` reference | +25 |
+| The reference's file imports the candidate's name | +30 |
+
+A **lone winner resolves** at confidence 0.7. A **tie resolves to nothing**: no
+edge is created, and the call site is recorded in the `ambiguous_calls` table
+with every tied candidate, readable through `tokensave_ambiguous_calls`.
+
+This is why the graph is a function of the source rather than of the
+filesystem. Picking one of several equally-scored candidates would mean
+picking whichever the file scan reached first, so the same tree would resolve
+differently on a different filesystem or after a rename. An edge asserts a
+specific target, and "one of these three" is not one — so the ambiguity is
+recorded as data instead of being collapsed into a guess. `dead_code` excludes
+symbols named as an ambiguity candidate, since refusing the edge and then
+reporting the target as uncalled would trade a fabricated edge for a
+fabricated finding.
 
 Successfully resolved refs become edges with the ref's `from_node_id` as source, the resolved target node's ID as target, and the ref's `reference_kind` as the edge kind.
+
+A reference that fails is reported by its **position in the input slice**, not
+as an owned copy. Most references fail on any given sync — 189,446 in and
+28,849 out here — so copying them was ~160,000 owned records per sync for
+information the caller already held (#483).
+
+#### Build-variant propagation
+
+A call bound to one `#[cfg]`-gated definition would leave its platform sibling
+looking uncalled, so a call into any member of a build-variant group is
+propagated to the others (#141). The group is tiny by construction — on this
+repository 3 groups of two, out of 19,331 nodes — so it is found with two
+bounded queries (the groups, then only the `calls` edges targeting a member)
+rather than by scanning the graph. The common case, no group with two members,
+returns before reading the edges table at all (#481).
 
 ## Full Index (`index_all`)
 
 1. **Clear** — delete all rows from every table.
 2. **Scan** — walk the project directory, collecting files with supported extensions. Respects `.gitignore` (via the `ignore` crate) and user-configured exclude patterns.
 3. **Extract** — for each file: parse with tree-sitter, walk the AST, insert nodes, intra-file edges, and unresolved refs into the database.
-4. **Resolve** — load all unresolved refs, run the resolver, insert the resulting cross-file edges.
+4. **Resolve** — run the resolver over the unresolved refs (held in memory here, since extraction just produced them) and insert the resulting cross-file edges. Incremental sync pages them out of the database instead.
 5. **Record timestamps** — write `last_full_sync_at` and `last_sync_at` to metadata.
 
 ## Incremental Sync (`sync`)

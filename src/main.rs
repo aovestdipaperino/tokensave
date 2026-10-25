@@ -1,30 +1,54 @@
 // Rust guideline compliant 2025-10-17
 // Updated 2026-03-23: compact bordered table for status output
-use clap::{Parser, Subcommand};
-use std::io::{self, BufRead, Write};
-use std::path::Path;
+use clap::Parser;
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::process;
 
 use tokensave::tokensave::TokenSave;
-use tokensave::context::{format_context_as_json, format_context_as_markdown};
-use tokensave::types::*;
+
+mod cli;
+mod commands;
+mod global;
+mod serve;
+mod tool_command;
+
+use cli::*;
 
 /// Alias for the shared timestamp utility.
-fn current_unix_timestamp() -> i64 {
+pub(crate) fn current_unix_timestamp() -> i64 {
     tokensave::tokensave::current_timestamp()
 }
 
 /// A self-animating spinner that ticks on a background thread.
 /// Call `set_message` to update what is displayed; the background thread
 /// redraws at ~80 ms intervals. Call `done` to stop and print a final line.
-struct Spinner {
+pub(crate) struct Spinner {
     message: std::sync::Arc<std::sync::Mutex<String>>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
+/// Keeps the tail of a spinner message short enough not to wrap a typical
+/// 80-column terminal.
+///
+/// The cut is by bytes, so it can land inside a multi-byte character: a
+/// Hangul or CJK path used to panic this inside the spinner thread, which
+/// froze the progress line for the rest of the run while indexing carried on
+/// and exited 0 — indistinguishable from a hang on a large project (#527).
+/// Walking forward to the next boundary trims at most two more bytes.
+fn spinner_tail(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.len() <= 50 {
+        return text.into();
+    }
+    let mut start = text.len() - 49;
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &text[start..]).into()
+}
+
 impl Spinner {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let message = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let msg = message.clone();
@@ -41,11 +65,7 @@ impl Spinner {
                     let frame = frames[idx % frames.len()];
                     idx += 1;
                     // Truncate to avoid line wrapping on typical terminals.
-                    let display: std::borrow::Cow<str> = if text.len() > 50 {
-                        format!("…{}", &text[text.len() - 49..]).into()
-                    } else {
-                        text.as_str().into()
-                    };
+                    let display = spinner_tail(&text);
                     let mut stderr = std::io::stderr();
                     let _ = write!(stderr, "\r\x1b[2K{} {}", frame, display);
                     let _ = stderr.flush();
@@ -60,14 +80,13 @@ impl Spinner {
         }
     }
 
-    fn set_message(&self, msg: &str) {
+    pub(crate) fn set_message(&self, msg: &str) {
         *self.message.lock().unwrap() = msg.to_string();
     }
 
-    fn done(self, message: &str) {
-        self.stop
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(h) = self.handle {
+    pub(crate) fn done(mut self, message: &str) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
         let mut stderr = std::io::stderr();
@@ -78,245 +97,69 @@ impl Spinner {
     }
 }
 
-/// Code intelligence for Rust codebases.
-#[derive(Parser)]
-#[command(name = "tokensave", about = "Code intelligence for 15 languages — semantic graph queries instead of file reads", version)]
-struct Cli {
-    #[command(subcommand)]
-    command: Option<Commands>,
+impl Drop for Spinner {
+    fn drop(&mut self) {
+        // If the spinner wasn't explicitly finished (e.g. `?` propagated an
+        // error), still stop the thread, clear the line, and restore the
+        // cursor so the terminal is left in a sane state.
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+        let mut stderr = std::io::stderr();
+        let _ = write!(stderr, "\r\x1b[2K\x1b[?25h");
+        let _ = stderr.flush();
+    }
 }
 
-#[derive(Subcommand)]
-enum Commands {
-    /// Sync the index (creates it if missing, incremental by default)
-    Sync {
-        /// Project path (default: current directory)
-        path: Option<String>,
-        /// Force a full re-index
-        #[arg(short, long)]
-        force: bool,
-        /// Folders to skip during indexing (can be repeated)
-        #[arg(long = "skip-folder", num_args = 1..)]
-        skip_folders: Vec<String>,
-        /// List added, modified, and removed files after sync
-        #[arg(long)]
-        doctor: bool,
-    },
-    /// Show project statistics
-    Status {
-        /// Project path (default: current directory)
-        path: Option<String>,
-        /// Output as JSON
-        #[arg(short, long)]
-        json: bool,
-        /// Show only the header (version, tokens, sync times)
-        #[arg(short, long)]
-        short: bool,
-    },
-    /// Search for symbols
-    Query {
-        /// Search query
-        search: String,
-        /// Project path
-        #[arg(short, long)]
-        path: Option<String>,
-        /// Maximum results
-        #[arg(short, long, default_value = "10")]
-        limit: usize,
-    },
-    /// Build context for a task
-    Context {
-        /// Task description
-        task: String,
-        /// Project path
-        #[arg(short, long)]
-        path: Option<String>,
-        /// Maximum symbols
-        #[arg(short = 'n', long, default_value = "20")]
-        max_nodes: usize,
-        /// Output format (markdown or json)
-        #[arg(short, long, default_value = "markdown")]
-        format: String,
-    },
-    /// List indexed files
-    Files {
-        /// Project path
-        #[arg(short, long)]
-        path: Option<String>,
-        /// Filter to files under this directory
-        #[arg(long)]
-        filter: Option<String>,
-        /// Filter files matching this glob pattern
-        #[arg(long)]
-        pattern: Option<String>,
-        /// Output as JSON
-        #[arg(short, long)]
-        json: bool,
-    },
-    /// Find test files affected by changed source files
-    Affected {
-        /// Changed file paths
-        files: Vec<String>,
-        /// Project path
-        #[arg(short, long)]
-        path: Option<String>,
-        /// Read file list from stdin (one per line)
-        #[arg(long)]
-        stdin: bool,
-        /// Max dependency traversal depth
-        #[arg(short, long, default_value = "5")]
-        depth: usize,
-        /// Custom glob filter for test files
-        #[arg(short, long)]
-        filter: Option<String>,
-        /// Output as JSON
-        #[arg(short, long)]
-        json: bool,
-        /// Only output file paths, no decoration
-        #[arg(short, long)]
-        quiet: bool,
-    },
-    /// Configure agent integration (MCP server, permissions, hooks, prompt rules)
-    #[command(name = "install", visible_alias = "claude-install")]
-    Install {
-        /// Agent to configure (auto-detects if omitted)
-        #[arg(long)]
-        agent: Option<String>,
-    },
-    /// Remove agent integration (MCP server, permissions, hooks, prompt rules)
-    #[command(name = "uninstall", visible_alias = "claude-uninstall")]
-    Uninstall {
-        /// Agent to remove (removes all if omitted)
-        #[arg(long)]
-        agent: Option<String>,
-    },
-    /// PreToolUse hook handler (called by Claude Code, not by users directly)
-    #[command(name = "hook-pre-tool-use", hide = true)]
-    HookPreToolUse,
-    /// UserPromptSubmit hook handler (resets session counter)
-    #[command(name = "hook-prompt-submit", hide = true)]
-    HookPromptSubmit,
-    /// Stop hook handler (prints session token savings)
-    #[command(name = "hook-stop", hide = true)]
-    HookStop,
-    /// Start MCP server over stdio
-    Serve {
-        /// Project path
-        #[arg(short, long)]
-        path: Option<String>,
-    },
-    /// Download and install the latest version from GitHub
-    Upgrade,
-    /// Show or switch the update channel (stable or beta)
-    Channel {
-        /// Target channel: "stable" or "beta" (omit to show current)
-        channel: Option<String>,
-    },
-    /// Show the resettable project-local token counter
-    #[command(name = "current-counter")]
-    CurrentCounter {
-        /// Project path (default: current directory)
-        #[arg(short, long)]
-        path: Option<String>,
-    },
-    /// Reset the project-local token counter to zero
-    #[command(name = "reset-counter")]
-    ResetCounter {
-        /// Project path (default: current directory)
-        #[arg(short, long)]
-        path: Option<String>,
-    },
-    /// Disable uploading token counts to the worldwide counter
-    #[command(name = "disable-upload-counter")]
-    DisableUploadCounter,
-    /// Enable uploading token counts to the worldwide counter
-    #[command(name = "enable-upload-counter")]
-    EnableUploadCounter,
-    /// Show or change whether .gitignore rules are respected during indexing
-    #[command(name = "gitignore")]
-    Gitignore {
-        /// Project path (default: current directory)
-        #[arg(short, long)]
-        path: Option<String>,
-        /// "on" to enable, "off" to disable, omit to show current setting
-        action: Option<String>,
-    },
-    /// Check tokensave installation, configuration, and agent integration
-    Doctor {
-        /// Check only this agent (default: all agents)
-        #[arg(long)]
-        agent: Option<String>,
-    },
-    /// Background file watcher daemon
-    Daemon {
-        /// Run in foreground (don't fork)
-        #[arg(long)]
-        foreground: bool,
-        /// Stop the running daemon
-        #[arg(long)]
-        stop: bool,
-        /// Show daemon status
-        #[arg(long)]
-        status: bool,
-        /// Install autostart service (launchd/systemd)
-        #[arg(long)]
-        enable_autostart: bool,
-        /// Remove autostart service
-        #[arg(long)]
-        disable_autostart: bool,
-    },
-    /// Launch interactive graph visualizer in the browser
-    Visualize {
-        /// Project path (default: current directory)
-        #[arg(short, long)]
-        path: Option<String>,
-        /// Port to listen on (default: auto-assign)
-        #[arg(long, default_value = "0")]
-        port: u16,
-    },
-    /// Live token savings monitor
-    Monitor {
-        /// Project path (default: current directory)
-        #[arg(short, long)]
-        path: Option<String>,
-    },
-    /// Manage multi-branch indexing
-    Branch {
-        #[command(subcommand)]
-        action: BranchAction,
-    },
+/// Build the JSON object for one `by_agent` row.
+///
+/// `cost_usd` is `null` for Droid (a credits-only agent with no USD pricing);
+/// it is a numeric value for all other agents.
+/// All token fields and `credits` are always present.
+fn agent_row_json(a: &tokensave::global_db::AgentCostSummary) -> serde_json::Value {
+    let cost_usd: serde_json::Value = if a.agent == "droid" {
+        serde_json::Value::Null
+    } else {
+        serde_json::json!(a.cost_usd)
+    };
+    serde_json::json!({
+        "agent": a.agent,
+        "cost_usd": cost_usd,
+        "credits": a.credits,
+        "input_tokens": a.input_tokens,
+        "output_tokens": a.output_tokens,
+        "cache_write_tokens": a.cache_write_tokens,
+        "cache_read_tokens": a.cache_read_tokens,
+        "turns": a.turns,
+    })
 }
 
-#[derive(Subcommand)]
-enum BranchAction {
-    /// List tracked branches and their DB sizes
-    List {
-        /// Project path (default: current directory)
-        #[arg(short, long)]
-        path: Option<String>,
-    },
-    /// Track a new branch (copies nearest ancestor DB + incremental sync)
-    Add {
-        /// Branch name to track (default: current branch)
-        name: Option<String>,
-        /// Project path (default: current directory)
-        #[arg(short, long)]
-        path: Option<String>,
-    },
-    /// Remove a tracked branch and delete its DB
-    Remove {
-        /// Branch name to remove
-        name: String,
-        /// Project path (default: current directory)
-        #[arg(short, long)]
-        path: Option<String>,
-    },
-    /// Remove DBs for branches that no longer exist in git
-    Gc {
-        /// Project path (default: current directory)
-        #[arg(short, long)]
-        path: Option<String>,
-    },
+/// Format one row of the `--by-agent` table.
+///
+/// Columns: agent (left), USD (right), credits (right), raw tokens (right), rows (right).
+/// Droid USD is always "n/a"; other agents are formatted as `$X.XX`.
+/// Credits are formatted via `format_token_count` when present, or "n/a".
+fn format_agent_row(a: &tokensave::global_db::AgentCostSummary) -> String {
+    let raw = a
+        .input_tokens
+        .saturating_add(a.output_tokens)
+        .saturating_add(a.cache_write_tokens)
+        .saturating_add(a.cache_read_tokens);
+    let raw_str = tokensave::display::format_token_count(raw);
+    let credits_str = match a.credits {
+        Some(c) => tokensave::display::format_token_count(c),
+        None => "n/a".to_string(),
+    };
+    let usd_str = if a.agent == "droid" {
+        "n/a".to_string()
+    } else {
+        format!("${:.2}", a.cost_usd)
+    };
+    format!(
+        "  {:<16} {:>9} {:>9} {:>12} {:>6}",
+        a.agent, usd_str, credits_str, raw_str, a.turns
+    )
 }
 
 #[tokio::main]
@@ -331,35 +174,360 @@ async fn main() {
 async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     let command = match cli.command {
         Some(cmd) => cmd,
-        None => return handle_no_command().await,
+        None => return commands::handle_no_command().await,
     };
+
+    // Verification must bypass config saves, telemetry and agent maintenance.
+    if let Commands::Verify {
+        path,
+        deep,
+        repair,
+        json,
+    } = &command
+    {
+        let root = match path {
+            Some(path) => std::path::PathBuf::from(path),
+            None => tokensave::config::resolve_path_with_discovery(None),
+        };
+        let report = tokensave::verify::verify(&root, *deep, *repair).await;
+        if *json {
+            println!("{}", serde_json::to_string(&report)?);
+        } else {
+            println!(
+                "Checked {} files; {} findings ({} omitted); completed: {}",
+                report.checked_files, report.findings, report.omitted, report.completed
+            );
+            for diagnostic in &report.diagnostics {
+                println!(
+                    "{} [{}] {}: {}",
+                    diagnostic.code, diagnostic.severity, diagnostic.entity, diagnostic.action
+                );
+            }
+        }
+        process::exit(report.exit_code());
+    }
+
+    // Worker mode bypasses every normal startup path (no config load, no
+    // worldwide-counter ping, no agent checks). The token handshake inside
+    // run_worker is the only authentication; this dispatch must happen
+    // before anything else can side-effect on disk or network.
+    if matches!(command, Commands::ExtractWorker) {
+        tokensave::extraction_worker::run_worker();
+    }
+
+    // Quality comparison bypasses startup maintenance and all persistent writes.
+    if let Commands::QualityDiff {
+        base,
+        target,
+        json,
+        fail_on,
+        cyclomatic,
+        cognitive,
+        function_lines,
+        fan_out,
+        min_increase,
+        allow_stale,
+    } = &command
+    {
+        let root = tokensave::config::resolve_path_with_discovery(None);
+        let options = tokensave::quality_diff::QualityOptions {
+            cyclomatic: *cyclomatic,
+            cognitive: *cognitive,
+            function_lines: *function_lines,
+            fan_out: *fan_out,
+            min_increase: *min_increase,
+            allow_stale: *allow_stale,
+        };
+        match tokensave::quality_diff::compare(&root, base, target, &options).await {
+            Ok(report) => {
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).map_err(|e| {
+                            tokensave::errors::TokenSaveError::Config {
+                                message: e.to_string(),
+                            }
+                        })?
+                    );
+                } else {
+                    print!("{}", report.human());
+                }
+                process::exit(report.exit_code(fail_on.is_some()));
+            }
+            Err(e) => {
+                if *json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"error": e.to_string(), "complete": false})
+                    );
+                } else {
+                    eprintln!("{e}");
+                }
+                process::exit(2);
+            }
+        }
+    }
+
+    let skip_agent_install_maintenance = agent_maintenance_disabled_from_env(
+        std::env::var("TOKENSAVE_SKIP_AGENT_MAINTENANCE")
+            .ok()
+            .as_deref(),
+    ) || should_skip_agent_install_maintenance(&command);
 
     // First-run notice (check BEFORE any config save creates the file)
     let is_first_run = tokensave::user_config::UserConfig::is_fresh();
 
-    // Best-effort flush of pending worldwide counter tokens.
-    // `matches!` borrows `command` temporarily; the borrow is dropped
-    // before the `match command` move below, so this compiles.
-    let is_force_flush = matches!(command, Commands::Sync { .. } | Commands::Status { .. });
+    // Best-effort flush of pending worldwide counter tokens. Which command is
+    // running no longer affects this: `try_flush` gates on one daily interval
+    // shared by every upload path, so `init`/`sync`/`status` no longer force an
+    // attempt the other commands would have skipped.
     let mut user_config = tokensave::user_config::UserConfig::load();
-    try_flush(&mut user_config, is_force_flush);
+    // Skip the worldwide-counter flush on hot startup paths. `try_flush`
+    // makes a synchronous HTTP call (#84) which can add seconds to
+    // `tokensave serve` startup on slow networks — long enough to blow the
+    // MCP client's 30 s `initialize` timeout.
+    if !skip_agent_install_maintenance {
+        global::try_flush(&mut user_config);
+    }
     user_config.save();
 
-    if is_first_run {
+    if is_first_run && !skip_agent_install_maintenance {
         eprintln!(
             "note: tokensave uploads anonymous token-saved counts to a worldwide counter.\n\
              \x20     Run `tokensave disable-upload-counter` to opt out."
         );
     }
 
-    // Best-effort check: warn if install needs re-running
-    if !matches!(command, Commands::Install { .. }) {
+    // The "beta merged into stable" nudge that lived here through 4.3.x was
+    // retired in 4.3.12. The beta channel is open again as of v5.0.0-beta.1
+    // and beta users now stay on beta until they explicitly switch off.
+
+    // Best-effort check: warn if install needs re-running.
+    if !skip_agent_install_maintenance {
         tokensave::agents::claude::check_install_stale();
     }
 
+    // Silent reinstall: re-run install for every tracked agent so permissions,
+    // hooks, and MCP config stay in sync with the new binary.
+    //
+    // Two signals can trigger this:
+    //   (a) `previous_version` (set by `tokensave upgrade` / `channel switch`
+    //       just before replacing the binary) differs from the running version
+    //       AND the transition is a minor/major bump. Patch bumps are no-ops:
+    //       we just advance `previous_version` and skip reinstall.
+    //   (b) Fallback for external upgrades (`brew upgrade`, `cargo install`):
+    //       the running version is newer than `last_installed_version`.
+    if !skip_agent_install_maintenance {
+        let running = env!("CARGO_PKG_VERSION");
+        let paths = (
+            tokensave::agents::home_dir(),
+            tokensave::agents::which_tokensave(),
+        );
+        // Without a home dir or a resolvable binary path there is nothing to
+        // write, so leave the markers alone and retry on the next run.
+        if let (Some(home), Some(bin)) = paths {
+            let wildcard = user_config.wildcard_permissions;
+            // This resync is background maintenance, not a user-requested
+            // install: keep the per-agent setup banners off stderr so they
+            // don't appear on every `init`/`sync` (#255).
+            tokensave::agents::set_quiet_install(true);
+            // Captured before the resync, which advances both markers.
+            let resynced_from = if user_config.last_installed_version.is_empty() {
+                user_config.previous_version.clone()
+            } else {
+                user_config.last_installed_version.clone()
+            };
+            let agent_count = user_config.installed_agents.len();
+            let outcome =
+                tokensave::agents::resync_installed_agents(&mut user_config, running, |id| {
+                    let Ok(ag) = tokensave::agents::get_integration(id) else {
+                        return true;
+                    };
+                    let ctx = tokensave::agents::InstallContext {
+                        home: home.clone(),
+                        tokensave_bin: bin.clone(),
+                        tool_permissions: tokensave::agents::install_tool_perms(wildcard),
+                        scope: tokensave::agents::InstallScope::Global,
+                        // Silent reinstall on upgrade is never an explicit
+                        // style request — preserve an existing covering
+                        // grant rather than clobbering it.
+                        force_permission_style: false,
+                    };
+                    ag.install(&ctx).is_ok()
+                });
+            if outcome.changed {
+                // #624: an upgrade also brings tokensave's section of hooks
+                // that are already installed up to this binary's shape, global
+                // and this repository's own, so a user who never runs
+                // `reinstall` is not left on the old one. Nothing is
+                // installed; only sections tokensave already wrote change.
+                // Every write names itself (#419), since the user did not ask
+                // for it.
+                let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+                report_hook_refresh(&tokensave::agents::refresh_installed_git_hooks(
+                    &cwd,
+                    &current_bin_path(),
+                ));
+
+                // Refresh a tokensave-owned Claude rules file that exists on
+                // disk even when `claude` is not in `installed_agents` (#553).
+                // A user may register tokensave per project (`.mcp.json`) or
+                // remove the user-scope entry, so the agent is absent from the
+                // list while `~/.claude/rules/tokensave.md` is still
+                // tokensave's own file. Rewriting just that file is inside the
+                // contract; the full install would re-add an MCP entry the
+                // user deliberately removed. Idempotent: no-op when unchanged.
+                let claude_rules =
+                    tokensave::agents::integrations::claude::claude_managed_rules_path(&home);
+                if claude_rules.exists() {
+                    if let Ok(body) = tokensave::agents::rules_for_agent("claude") {
+                        let _ = tokensave::agents::write_managed_rules_file(&claude_rules, &body);
+                    }
+                }
+            }
+            tokensave::agents::set_quiet_install(false);
+            if outcome.ran {
+                // Say what this was and why (#419). The user did not ask for an
+                // install — they may well have run a read-only query — so a
+                // write to their agent config has to name itself. Before this,
+                // the only output was a bare `✔ Wrote <path>` escaping from the
+                // file layer, which read as though the query had done it.
+                eprintln!(
+                    "\x1b[32m✔\x1b[0m {}",
+                    resync_summary(running, &resynced_from, agent_count)
+                );
+                if let Some(warning) = tokensave::agents::cargo_build_binary_warning(&bin) {
+                    eprintln!("{warning}");
+                }
+            }
+            if !outcome.failed.is_empty() {
+                eprintln!(
+                    "\x1b[33mwarning:\x1b[0m could not refresh tokensave config for: {}.\n  \
+                     Run \x1b[1mtokensave install\x1b[0m to see the error.",
+                    outcome.failed.join(", ")
+                );
+            }
+            if outcome.changed {
+                user_config.save();
+            }
+        }
+    }
+
     match command {
-        Commands::Sync { path, force, skip_folders, doctor } => {
-            let project_path = tokensave::config::resolve_path(path);
+        Commands::Init {
+            path,
+            skip_folders,
+            git_hook,
+            no_git_hook,
+            cpu_usage,
+        } => {
+            // `None`: cwd is inside an existing project, which was reported.
+            let Some(project_path) = commands::resolve_init_root(path)? else {
+                return Ok(());
+            };
+            if TokenSave::is_initialized(&project_path) {
+                eprintln!(
+                    "\x1b[31merror:\x1b[0m TokenSave is already initialized at '{}'.\n\
+                     Use \x1b[1mtokensave sync\x1b[0m to update the index, or \
+                     \x1b[1mtokensave sync --force\x1b[0m to rebuild it.",
+                    project_path.display()
+                );
+                std::process::exit(1);
+            }
+            // Guard against indexing a large non-project tree (e.g. a home dir).
+            // Outside a git working tree the Git-supplied exclude sources are
+            // unavailable, and with no `.gitignore` to constrain the walk,
+            // toolchain trees (site-packages, conda envs, caches) get indexed
+            // wholesale and the DB grows unbounded (#174). Confirm before
+            // proceeding; skip the prompt when stdin isn't a TTY (CI/scripts).
+            if !tokensave::config::is_inside_git_repo(&project_path) {
+                eprintln!("{}", tokensave::config::non_git_scan_warning(&project_path));
+                if std::io::stdin().is_terminal() {
+                    eprint!("Continue initializing here anyway? [y/N] ");
+                    io::stderr().flush().ok();
+                    let mut answer = String::new();
+                    io::stdin().lock().read_line(&mut answer).map_err(|e| {
+                        tokensave::errors::TokenSaveError::Config {
+                            message: format!("failed to read stdin: {}", e),
+                        }
+                    })?;
+                    if !answer.trim().eq_ignore_ascii_case("y") {
+                        eprintln!("Aborted.");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            // Check for updates in parallel with indexing
+            let version_handle = std::thread::spawn(tokensave::cloud::fetch_latest_version_passive);
+
+            // Memory instrumentation for #253: the initial full index is
+            // the largest single graph build; record its phases (emitted
+            // from inside indexing.rs) against this process.
+            tokensave::memstats::init("index", &project_path);
+            tokensave::memstats::record("start");
+
+            commands::init_and_index(&project_path, &skip_folders, false, cpu_usage).await?;
+
+            // Offer this repository's own git hooks (#455). Local rather than
+            // global, because the global path claims `core.hooksPath` — one
+            // machine-wide setting that forces the same hook directory on
+            // every repository — and `init` is per-project by definition.
+            offer_local_git_hooks(&project_path, git_hook, no_git_hook);
+
+            // Print update notice from parallel check (suppressed for 15 min)
+            if let Ok(Some(latest)) = version_handle.join() {
+                let current_version = env!("CARGO_PKG_VERSION");
+                let now = current_unix_timestamp();
+                let mut config = tokensave::user_config::UserConfig::load();
+                config.cached_latest_version = latest.clone();
+                config.last_version_check_at = now;
+                config.save();
+                if tokensave::cloud::is_newer_version(current_version, &latest)
+                    && now - config.last_version_warning_at >= 900
+                {
+                    eprintln!(
+                        "\n\x1b[33mUpdate available: v{} → v{}\x1b[0m\n  Run: \x1b[1mtokensave upgrade\x1b[0m",
+                        current_version, latest
+                    );
+                    config.last_version_warning_at = now;
+                    config.save();
+                }
+            }
+        }
+        Commands::Tune {
+            path,
+            dry_run,
+            json,
+        } => commands::run_tune(path, dry_run, json)?,
+        Commands::Config {
+            action:
+                cli::ConfigAction::Benchmark {
+                    force,
+                    show,
+                    reset,
+                    json,
+                },
+        } => commands::run_config_benchmark(force, show, reset, json),
+        Commands::Sync {
+            path,
+            force,
+            skip_folders,
+            doctor,
+            verbose,
+        } => {
+            // An explicit sync is unbounded by design and can run for minutes
+            // on a large tree; Ctrl-C must stop it at the next phase boundary
+            // rather than at the end (#450).
+            tokensave::cancel::install_signal_handlers();
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
+            if !TokenSave::is_initialized(&project_path) {
+                eprintln!(
+                    "\x1b[31merror:\x1b[0m no TokenSave index found at '{}'.\n\
+                     Run \x1b[1mtokensave init\x1b[0m to create one first.",
+                    project_path.display()
+                );
+                std::process::exit(1);
+            }
             // Warn if legacy .codegraph directory exists
             if project_path.join(".codegraph").is_dir() {
                 eprintln!(
@@ -369,40 +537,52 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 );
             }
             // Check for updates in parallel with indexing
-            let version_handle = std::thread::spawn(tokensave::cloud::fetch_latest_version);
+            let version_handle = std::thread::spawn(tokensave::cloud::fetch_latest_version_passive);
 
-            if force || !TokenSave::is_initialized(&project_path) {
-                if !force {
-                    eprintln!("No existing index found — performing full index");
-                }
-                init_and_index(&project_path, &skip_folders).await?;
+            // Memory instrumentation for #253: the sync/indexing path is
+            // the suspected transient RSS peak; phases are recorded from
+            // inside the indexing code itself.
+            tokensave::memstats::init("sync", &project_path);
+            tokensave::memstats::record("start");
+
+            if force {
+                commands::init_and_index(&project_path, &skip_folders, verbose, None).await?;
             } else {
                 let mut cg = TokenSave::open(&project_path).await?;
                 cg.add_skip_folders(&skip_folders);
                 let spinner = Spinner::new();
                 let sync_start = std::time::Instant::now();
                 let result = cg
-                    .sync_with_progress(|current, total, detail| {
-                        if current == 0 {
-                            // Phase message (scanning, hashing, detecting, resolving)
-                            spinner.set_message(detail);
-                        } else {
-                            // Per-file progress with ETA
-                            let elapsed = sync_start.elapsed().as_secs_f64();
-                            let eta = if current > 1 {
-                                let per_file = elapsed / (current - 1) as f64;
-                                let remaining = per_file * (total - current) as f64;
-                                if remaining >= 1.0 {
-                                    format!(" (ETA: {remaining:.0}s)")
+                    .sync_with_progress_verbose(
+                        |current, total, detail| {
+                            if current == 0 {
+                                // Phase message (scanning, hashing, detecting, resolving)
+                                spinner.set_message(detail);
+                            } else {
+                                // Per-file progress with ETA
+                                let elapsed = sync_start.elapsed().as_secs_f64();
+                                let eta = if current > 1 {
+                                    let per_file = elapsed / (current - 1) as f64;
+                                    let remaining = per_file * (total - current) as f64;
+                                    if remaining >= 1.0 {
+                                        format!(" (ETA: {remaining:.0}s)")
+                                    } else {
+                                        String::new()
+                                    }
                                 } else {
                                     String::new()
-                                }
-                            } else {
-                                String::new()
-                            };
-                            spinner.set_message(&format!("[{current}/{total}] syncing {detail}{eta}"));
-                        }
-                    })
+                                };
+                                spinner.set_message(&format!(
+                                    "[{current}/{total}] syncing {detail}{eta}"
+                                ));
+                            }
+                        },
+                        |msg| {
+                            if verbose {
+                                eprintln!("  \x1b[2m[verbose]\x1b[0m {msg}");
+                            }
+                        },
+                    )
                     .await?;
                 let skipped_msg = if result.skipped_paths.is_empty() {
                     String::new()
@@ -416,6 +596,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     result.files_removed,
                     result.duration_ms
                 ));
+                if let Some(warning) = cg.warn_skipped_hidden_dirs() {
+                    eprintln!("{warning}");
+                }
                 if !result.skipped_paths.is_empty() {
                     eprintln!();
                     eprintln!(
@@ -427,9 +610,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     }
                 }
                 if doctor {
-                    print_sync_doctor(&result);
+                    commands::print_sync_doctor(&result);
+                } else if !verbose {
+                    // Verbose already emitted the full per-extension list mid-run.
+                    commands::print_skipped_extension_summary(&result.skipped_extensions);
                 }
-                update_global_db(&cg).await;
+                global::update_global_db(&cg).await;
             }
 
             // Print update notice from parallel check (suppressed for 15 min)
@@ -452,8 +638,15 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
-        Commands::Status { path, json, short } => {
-            let project_path = tokensave::config::resolve_path(path);
+        Commands::Verify { .. } => unreachable!("verify is dispatched before startup"),
+        Commands::Status {
+            path,
+            json,
+            short,
+            details,
+            runtime,
+        } => {
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let cg = if TokenSave::is_initialized(&project_path) {
                 TokenSave::open(&project_path).await?
             } else {
@@ -463,19 +656,27 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 );
                 io::stderr().flush().ok();
                 let mut answer = String::new();
-                io::stdin()
-                    .lock()
-                    .read_line(&mut answer)
-                    .map_err(|e| tokensave::errors::TokenSaveError::Config {
+                io::stdin().lock().read_line(&mut answer).map_err(|e| {
+                    tokensave::errors::TokenSaveError::Config {
                         message: format!("failed to read stdin: {e}"),
-                    })?;
+                    }
+                })?;
                 let answer = answer.trim();
                 if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
-                    init_and_index(&project_path, &[]).await?
+                    commands::init_and_index(&project_path, &[], false, None).await?
                 } else {
                     return Ok(());
                 }
             };
+            if runtime {
+                let snap = tokensave::runtime_telemetry::collect(&cg).await?;
+                if json {
+                    println!("{}", tokensave::runtime_telemetry::to_pretty_json(&snap));
+                } else {
+                    print!("{}", tokensave::runtime_telemetry::to_text_report(&snap));
+                }
+                return Ok(());
+            }
             let stats = cg.get_stats().await?;
             if json {
                 println!(
@@ -486,10 +687,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 let tokens_saved = cg.get_tokens_saved().await.unwrap_or(0);
                 // Register project and read global total in one open.
                 // Subtract this project's count so "Global" means "all other projects".
-                let global_tokens_saved = match tokensave::global_db::GlobalDb::open().await {
-                    Some(gdb) => {
-                        gdb.upsert(&project_path, tokens_saved).await;
-                        gdb.global_tokens_saved().await
+                let gdb = tokensave::global_db::GlobalDb::open().await;
+                let global_tokens_saved = match &gdb {
+                    Some(db) => {
+                        db.upsert(&project_path, tokens_saved).await;
+                        db.global_tokens_saved()
+                            .await
                             .map(|total| total.saturating_sub(tokens_saved))
                             .filter(|&other| other > 0)
                     }
@@ -543,345 +746,679 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     } else {
                         "[single-db]".to_string()
                     };
-                    let parent = meta.and_then(|m| m.branches.get(cg.serving_branch()?)?.parent.clone());
+                    let parent =
+                        meta.and_then(|m| m.branches.get(cg.serving_branch()?)?.parent.clone());
                     tokensave::display::BranchInfo {
                         branch: display_branch,
                         parent,
                         is_fallback: cg.is_fallback(),
                     }
                 });
-                if short {
-                    tokensave::display::print_status_header(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags, branch_info.as_ref());
+                // Ingest new session data so cost info is up-to-date.
+                let droid_present = if let Some(ref db) = gdb {
+                    let stats = tokensave::accounting::parser::ingest(db).await;
+                    stats.coverage.iter().any(|coverage| {
+                        coverage.agent == "droid"
+                            && coverage.state != tokensave::accounting::CoverageState::Absent
+                    })
                 } else {
-                    tokensave::display::print_status_table(&stats, tokens_saved, global_tokens_saved, worldwide, &country_flags, branch_info.as_ref());
+                    false
+                };
+                // Best-effort cost summary for the status header.
+                let cost_info = match &gdb {
+                    Some(db) => {
+                        tokensave::accounting::metrics::quick_cost_summary_with_droid_presence(
+                            db,
+                            tokens_saved,
+                            global_tokens_saved.unwrap_or(0),
+                            droid_present,
+                        )
+                        .await
+                    }
+                    None => None,
+                };
+                if short {
+                    tokensave::display::print_status_header(
+                        &stats,
+                        tokens_saved,
+                        global_tokens_saved,
+                        worldwide,
+                        &country_flags,
+                        branch_info.as_ref(),
+                        cost_info.as_ref(),
+                        Some(cg.project_root()),
+                    );
+                } else {
+                    tokensave::display::print_status_table(
+                        &stats,
+                        tokens_saved,
+                        global_tokens_saved,
+                        worldwide,
+                        &country_flags,
+                        branch_info.as_ref(),
+                        cost_info.as_ref(),
+                        Some(cg.project_root()),
+                        details,
+                    );
                 }
 
                 // Warn if .tokensave is not in .gitignore
                 if !tokensave::config::is_in_gitignore(&project_path) {
                     eprintln!(
-                        "\n\x1b[33mWarning: .tokensave is not in .gitignore — \
-                         run `echo .tokensave >> .gitignore` to exclude it from git.\x1b[0m"
+                        "\n\x1b[33mWarning: .tokensave is not excluded from git — \
+                         run `echo '.tokensave/' >> .git/info/exclude` to exclude it locally.\x1b[0m"
                     );
                 }
 
                 // Version check (5 min cache, always show for status)
-                check_for_update(&mut config, false, true);
+                global::check_for_update(&mut config, false, true);
             }
         }
-        Commands::Query {
-            search,
-            path,
-            limit,
+        Commands::Tool { name, args } => {
+            tool_command::run(name, args).await?;
+        }
+        Commands::Install {
+            agent,
+            git_hook,
+            local,
+            wildcard_permissions,
+            explicit_permissions,
         } => {
-            let project_path = tokensave::config::resolve_path(path);
-            let cg = ensure_initialized(&project_path).await?;
-            let results = cg.search(&search, limit).await?;
-            if results.is_empty() {
-                println!("No results found for '{}'", search);
-            } else {
-                for r in &results {
-                    println!(
-                        "{} ({}) - {}:{}",
-                        r.node.name,
-                        r.node.kind.as_str(),
-                        r.node.file_path,
-                        r.node.start_line
-                    );
-                    if let Some(sig) = &r.node.signature {
-                        println!("  {}", sig);
-                    }
+            let home = tokensave::agents::home_dir().ok_or_else(|| {
+                tokensave::errors::TokenSaveError::Config {
+                    message: "could not determine home directory".to_string(),
                 }
-            }
-        }
-        Commands::Context {
-            task,
-            path,
-            max_nodes,
-            format,
-        } => {
-            let project_path = tokensave::config::resolve_path(path);
-            let cg = ensure_initialized(&project_path).await?;
-            let output_format = if format == "json" {
-                OutputFormat::Json
-            } else {
-                OutputFormat::Markdown
-            };
-            let options = BuildContextOptions {
-                max_nodes,
-                format: output_format.clone(),
-                ..Default::default()
-            };
-            let context = cg.build_context(&task, &options).await?;
-            match output_format {
-                OutputFormat::Json => {
-                    println!("{}", format_context_as_json(&context));
-                }
-                OutputFormat::Markdown => {
-                    println!("{}", format_context_as_markdown(&context));
-                }
-            }
-        }
-        Commands::Files {
-            path,
-            filter,
-            pattern,
-            json,
-        } => {
-            let project_path = tokensave::config::resolve_path(path);
-            let cg = ensure_initialized(&project_path).await?;
-            let mut files = cg.get_all_files().await?;
-            files.sort_by(|a, b| a.path.cmp(&b.path));
-
-            // Apply directory prefix filter
-            if let Some(ref dir) = filter {
-                let prefix = if dir.ends_with('/') {
-                    dir.clone()
-                } else {
-                    format!("{}/", dir)
-                };
-                files.retain(|f| f.path.starts_with(&prefix) || f.path == dir.as_str());
-            }
-
-            // Apply glob pattern filter
-            if let Some(ref pat) = pattern {
-                if let Ok(glob) = glob::Pattern::new(pat) {
-                    files.retain(|f| glob.matches(&f.path));
-                } else {
-                    eprintln!("warning: invalid glob pattern '{}', ignoring", pat);
-                }
-            }
-
-            if json {
-                let items: Vec<serde_json::Value> = files
-                    .iter()
-                    .map(|f| {
-                        serde_json::json!({
-                            "path": f.path,
-                            "size": f.size,
-                            "node_count": f.node_count,
-                        })
-                    })
-                    .collect();
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&items).unwrap_or_default()
-                );
-            } else {
-                println!("{} indexed files", files.len());
-                for f in &files {
-                    println!(
-                        "  {} ({} bytes, {} symbols)",
-                        f.path, f.size, f.node_count
-                    );
-                }
-            }
-        }
-        Commands::Affected {
-            files,
-            path,
-            stdin,
-            depth,
-            filter,
-            json,
-            quiet,
-        } => {
-            let project_path = tokensave::config::resolve_path(path);
-            let cg = ensure_initialized(&project_path).await?;
-
-            // Collect changed files from args and/or stdin
-            let mut changed: Vec<String> = files;
-            if stdin {
-                let stdin_handle = io::stdin();
-                for line in stdin_handle.lock().lines() {
-                    if let Ok(line) = line {
-                        let trimmed = line.trim().to_string();
-                        if !trimmed.is_empty() {
-                            changed.push(trimmed);
-                        }
-                    }
-                }
-            }
-
-            if changed.is_empty() {
-                eprintln!("No files specified. Pass file paths as arguments or use --stdin.");
-                return Ok(());
-            }
-
-            let affected = find_affected_tests(&cg, &changed, depth, filter.as_deref()).await?;
-
-            if json {
-                let output = serde_json::json!({
-                    "changed_files": changed,
-                    "affected_tests": affected,
-                    "count": affected.len(),
-                });
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&output).unwrap_or_default()
-                );
-            } else if quiet {
-                for f in &affected {
-                    println!("{}", f);
-                }
-            } else {
-                if affected.is_empty() {
-                    println!("No affected test files found.");
-                } else {
-                    println!("{} affected test file(s):", affected.len());
-                    for f in &affected {
-                        println!("  {}", f);
-                    }
-                }
-            }
-        }
-        Commands::Install { agent } => {
-            let home = tokensave::agents::home_dir().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
-                message: "could not determine home directory".to_string(),
             })?;
-            let tokensave_bin = tokensave::agents::which_tokensave().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
-                message: "tokensave not found on PATH. Install it first:\n  \
+            let tokensave_bin = tokensave::agents::which_tokensave().ok_or_else(|| {
+                tokensave::errors::TokenSaveError::Config {
+                    message: "tokensave not found on PATH. Install it first:\n  \
                           cargo install tokensave\n  \
-                          brew install aovestdipaperino/tap/tokensave".to_string(),
+                          brew install aovestdipaperino/tap/tokensave"
+                        .to_string(),
+                }
             })?;
+            let scope = resolve_install_scope(local)?;
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
 
-            if let Some(id) = agent {
-                let ag = tokensave::agents::get_integration(&id)?;
-                let ctx = tokensave::agents::InstallContext {
-                    home: home.clone(),
-                    tokensave_bin: tokensave_bin.clone(),
-                    tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
-                };
-                ag.install(&ctx)?;
-                if !user_cfg.installed_agents.contains(&id) {
-                    user_cfg.installed_agents.push(id);
+            // --wildcard-permissions / --explicit-permissions (mutually
+            // exclusive, enforced by clap) override the persisted default for
+            // this run; a flag on a global install also updates the default
+            // for future silent reinstalls. A --local install is
+            // project-scoped and must not touch the persisted global choice.
+            if wildcard_permissions {
+                user_cfg.wildcard_permissions = true;
+                if !local {
+                    user_cfg.save();
                 }
-                user_cfg.save();
+            } else if explicit_permissions {
+                user_cfg.wildcard_permissions = false;
+                if !local {
+                    user_cfg.save();
+                }
+            }
+            let want_wildcard = user_cfg.wildcard_permissions;
+            // Only an explicit flag on this invocation counts as a style
+            // request; a flagless install must preserve an existing covering
+            // grant instead of clobbering it (see `install_permissions` in
+            // `agents/claude.rs`).
+            let force_permission_style = wildcard_permissions || explicit_permissions;
+
+            let mut installed_names: Vec<String> = Vec::new();
+            let mut removed_names: Vec<String> = Vec::new();
+
+            if !agent.is_empty() {
+                // Repeat `--agent` in a single run installs every named agent
+                // in turn (#640), in the order the user typed them. A repeated
+                // id (`--agent foo --agent foo`) is installed once.
+                let mut named_agents: Vec<String> = Vec::with_capacity(agent.len());
+                for id in agent {
+                    if !named_agents.contains(&id) {
+                        named_agents.push(id);
+                    }
+                }
+                // Resolve and validate every agent before installing any, so a
+                // `--local` run naming an agent without project-scoped config
+                // fails up front instead of after earlier agents were installed.
+                let mut integrations = Vec::with_capacity(named_agents.len());
+                for id in &named_agents {
+                    let ag = tokensave::agents::get_integration(id)?;
+                    if local && !ag.supports_local() {
+                        return Err(tokensave::errors::TokenSaveError::Config {
+                            message: format!(
+                                "--local is not supported for \"{}\" — it has no project-scoped config. \
+                                 Run a global install instead (omit --local).",
+                                ag.id()
+                            ),
+                        });
+                    }
+                    integrations.push(ag);
+                }
+                let mut touched_global_cfg = false;
+                for (id, ag) in named_agents.iter().zip(integrations) {
+                    let name = ag.name().to_string();
+                    let ctx = tokensave::agents::InstallContext {
+                        home: home.clone(),
+                        tokensave_bin: tokensave_bin.clone(),
+                        tool_permissions: tokensave::agents::install_tool_perms(want_wildcard),
+                        scope: scope.clone(),
+                        force_permission_style,
+                    };
+                    ag.install(&ctx)?;
+                    // A --local install is project-scoped; it must not touch the
+                    // global installed-agents registry (which `reinstall`
+                    // replays as global installs) or persist global user
+                    // config.
+                    if local {
+                        installed_names.push(name);
+                    } else {
+                        if !user_cfg.installed_agents.contains(id) {
+                            user_cfg.installed_agents.push(id.clone());
+                            installed_names.push(name);
+                        }
+                        touched_global_cfg = true;
+                    }
+                }
+                if touched_global_cfg {
+                    user_cfg.save();
+                }
             } else {
-                let (to_install, to_uninstall) =
-                    tokensave::agents::pick_integrations_interactive(&home, &user_cfg.installed_agents)?;
+                let (to_install, to_uninstall) = tokensave::agents::pick_integrations_interactive(
+                    &home,
+                    &user_cfg.installed_agents,
+                )?;
 
                 for id in &to_uninstall {
                     let ag = tokensave::agents::get_integration(id)?;
+                    if local && !ag.supports_local() {
+                        eprintln!(
+                            "  skipping {} (no project-scoped config; --local unsupported)",
+                            ag.name()
+                        );
+                        continue;
+                    }
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
-                        tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                        tool_permissions: tokensave::agents::expected_tool_perms(),
+                        scope: scope.clone(),
+                        force_permission_style: false,
                     };
                     ag.uninstall(&ctx)?;
-                    user_cfg.installed_agents.retain(|a| a != id);
+                    removed_names.push(ag.name().to_string());
+                    if !local {
+                        user_cfg.installed_agents.retain(|a| a != id);
+                    }
                 }
                 for id in &to_install {
+                    let ag = tokensave::agents::get_integration(id)?;
+                    if local && !ag.supports_local() {
+                        eprintln!(
+                            "  skipping {} (no project-scoped config; --local unsupported)",
+                            ag.name()
+                        );
+                        continue;
+                    }
+                    let ctx = tokensave::agents::InstallContext {
+                        home: home.clone(),
+                        tokensave_bin: tokensave_bin.clone(),
+                        tool_permissions: tokensave::agents::install_tool_perms(want_wildcard),
+                        scope: scope.clone(),
+                        force_permission_style,
+                    };
+                    ag.install(&ctx)?;
+                    installed_names.push(ag.name().to_string());
+                    if !local && !user_cfg.installed_agents.contains(id) {
+                        user_cfg.installed_agents.push(id.clone());
+                    }
+                }
+                if !local {
+                    user_cfg.save();
+                }
+            }
+
+            eprintln!();
+            if installed_names.is_empty() && removed_names.is_empty() {
+                eprintln!("No changes.");
+            } else {
+                for name in &installed_names {
+                    eprintln!("\x1b[32m+\x1b[0m {name}");
+                }
+                for name in &removed_names {
+                    eprintln!("\x1b[31m-\x1b[0m {name}");
+                }
+            }
+
+            // Skip global user-config writes for a project-scoped install.
+            if !local {
+                user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
+                user_cfg.save();
+                if let Some(warning) = tokensave::agents::cargo_build_binary_warning(&tokensave_bin)
+                {
+                    eprintln!("{warning}");
+                }
+            }
+
+            // Best-effort during `install`: a hook that could not be written
+            // must not fail the whole install. The reason was already printed.
+            //
+            // Since #506 the hooks go into the current repository rather than
+            // claiming a global `core.hooksPath` — a single machine-wide slot
+            // whose capture breaks every other tool's hook installer. `init`
+            // has always been per-repository for the same reason. `--git-hook
+            // global` still takes the slot for anyone who wants it.
+            match git_hook {
+                tokensave::agents::GitHookMode::Global => {
+                    let _ = tokensave::agents::offer_git_post_commit_hook(&tokensave_bin, git_hook);
+                }
+                tokensave::agents::GitHookMode::No => {}
+                mode => {
+                    if let Some(warning) = tokensave::agents::global_hookspath_conflict_warning() {
+                        eprintln!("{warning}");
+                    }
+                    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+                    let forced = matches!(mode, tokensave::agents::GitHookMode::Yes);
+                    if forced && tokensave::agents::repo_hooks_dir(&cwd).is_none() {
+                        // `install` is machine-wide and is often run outside a
+                        // repository, so the default path stays quiet. Asking
+                        // for the hooks explicitly and getting nothing is worth
+                        // a word, since the request could not be honored.
+                        eprintln!(
+                            "  \x1b[33m⚠\x1b[0m --git-hook yes installs this repository's hooks, \
+                             but {} is not a git repository.\n     Run it inside one, or use \
+                             `tokensave init` / `tokensave githooks on --local --path <repo>`.\n     \
+                             For one hook directory shared by every repo: `--git-hook global`.",
+                            cwd.display()
+                        );
+                    } else {
+                        offer_local_git_hooks(&cwd, forced, false);
+                    }
+                }
+            }
+        }
+        Commands::Reinstall {
+            wildcard_permissions,
+            explicit_permissions,
+        } => {
+            let home = tokensave::agents::home_dir().ok_or_else(|| {
+                tokensave::errors::TokenSaveError::Config {
+                    message: "could not determine home directory".to_string(),
+                }
+            })?;
+            let tokensave_bin = tokensave::agents::which_tokensave().ok_or_else(|| {
+                tokensave::errors::TokenSaveError::Config {
+                    message: "tokensave not found on PATH".to_string(),
+                }
+            })?;
+            let mut user_cfg = tokensave::user_config::UserConfig::load();
+            tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
+
+            // See the matching comment on Commands::Install: a flag overrides
+            // and persists the default for future silent reinstalls.
+            if wildcard_permissions {
+                user_cfg.wildcard_permissions = true;
+                user_cfg.save();
+            } else if explicit_permissions {
+                user_cfg.wildcard_permissions = false;
+                user_cfg.save();
+            }
+            let want_wildcard = user_cfg.wildcard_permissions;
+            // As in Commands::Install: only an explicit flag on this
+            // invocation forces the style; a flagless `reinstall` (including
+            // the automatic silent one on upgrade) must preserve an existing
+            // covering grant.
+            let force_permission_style = wildcard_permissions || explicit_permissions;
+
+            if user_cfg.installed_agents.is_empty() {
+                eprintln!("No installed agents found. Run `tokensave install` first.");
+            } else {
+                let agents = user_cfg.installed_agents.clone();
+                eprintln!(
+                    "Reinstalling {} agent(s): {}",
+                    agents.len(),
+                    agents.join(", ")
+                );
+                let failed = tokensave::agents::reinstall_agents(&agents, |id| {
                     let ag = tokensave::agents::get_integration(id)?;
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
-                        tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                        tool_permissions: tokensave::agents::install_tool_perms(want_wildcard),
+                        scope: tokensave::agents::InstallScope::Global,
+                        force_permission_style,
                     };
-                    ag.install(&ctx)?;
-                    if !user_cfg.installed_agents.contains(id) {
-                        user_cfg.installed_agents.push(id.clone());
-                    }
+                    ag.install(&ctx)
+                });
+                if failed.is_empty() {
+                    eprintln!("\x1b[32m✔\x1b[0m All agents reinstalled");
+                } else {
+                    eprintln!(
+                        "\x1b[33mwarning:\x1b[0m could not refresh tokensave config for: {}.\n  \
+                         Run \x1b[1mtokensave install\x1b[0m to see the error.",
+                        failed.join(", ")
+                    );
                 }
+                user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
                 user_cfg.save();
+                if let Some(warning) = tokensave::agents::cargo_build_binary_warning(&tokensave_bin)
+                {
+                    eprintln!("{warning}");
+                }
             }
 
-            tokensave::agents::offer_git_post_commit_hook(&tokensave_bin);
-            tokensave::daemon::offer_daemon_autostart();
+            // #624: hooks are not an agent, so the loop above never touched
+            // them, and the hook migrations an upgrade ships only reached a
+            // user who also ran `githooks on`. Refresh tokensave's section of
+            // hooks that are already installed — global ones, and this
+            // repository's own — without installing any that are not.
+            let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+            report_hook_refresh(&tokensave::agents::refresh_installed_git_hooks(
+                &cwd,
+                &current_bin_path(),
+            ));
         }
-        Commands::Uninstall { agent } => {
-            let home = tokensave::agents::home_dir().ok_or_else(|| tokensave::errors::TokenSaveError::Config {
-                message: "could not determine home directory".to_string(),
+        Commands::Uninstall {
+            agent,
+            local,
+            keep_git_hooks,
+        } => {
+            let home = tokensave::agents::home_dir().ok_or_else(|| {
+                tokensave::errors::TokenSaveError::Config {
+                    message: "could not determine home directory".to_string(),
+                }
             })?;
+            let scope = resolve_install_scope(local)?;
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
 
             if let Some(id) = agent {
                 let ag = tokensave::agents::get_integration(&id)?;
+                if local && !ag.supports_local() {
+                    return Err(tokensave::errors::TokenSaveError::Config {
+                        message: format!(
+                            "--local is not supported for \"{}\" — it has no project-scoped config. \
+                             Run a global uninstall instead (omit --local).",
+                            ag.id()
+                        ),
+                    });
+                }
                 let ctx = tokensave::agents::InstallContext {
                     home,
                     tokensave_bin: String::new(),
-                    tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                    tool_permissions: tokensave::agents::expected_tool_perms(),
+                    scope: scope.clone(),
+                    force_permission_style: false,
                 };
                 ag.uninstall(&ctx)?;
-                user_cfg.installed_agents.retain(|a| a != &id);
-                user_cfg.save();
+                // A --local uninstall only removes project config; leave the
+                // global installed-agents registry untouched.
+                if !local {
+                    user_cfg.installed_agents.retain(|a| a != &id);
+                    user_cfg.save();
+                }
             } else {
                 for id in user_cfg.installed_agents.clone() {
                     if let Ok(ag) = tokensave::agents::get_integration(&id) {
+                        if local && !ag.supports_local() {
+                            eprintln!(
+                                "  skipping {} (no project-scoped config; --local unsupported)",
+                                ag.name()
+                            );
+                            continue;
+                        }
                         let ctx = tokensave::agents::InstallContext {
                             home: home.clone(),
                             tokensave_bin: String::new(),
-                            tool_permissions: tokensave::agents::EXPECTED_TOOL_PERMS,
+                            tool_permissions: tokensave::agents::expected_tool_perms(),
+                            scope: scope.clone(),
+                            force_permission_style: false,
                         };
                         ag.uninstall(&ctx).ok();
                     }
                 }
-                user_cfg.installed_agents.clear();
-                user_cfg.save();
-                eprintln!("All agent integrations removed.");
+                if local {
+                    eprintln!("Project-local agent integrations removed.");
+                } else {
+                    user_cfg.installed_agents.clear();
+                    user_cfg.save();
+                    eprintln!("All agent integrations removed.");
+                    // #420: the global post-commit hook outlives every agent
+                    // integration, so without this a commit in any repo
+                    // recreates the index the user just deleted. --local never
+                    // touches it: the hooks are global, not project-scoped.
+                    if keep_git_hooks {
+                        eprintln!(
+                            "  Global git hooks left in place (--keep-git-hooks). \
+                             Remove them later with `tokensave githooks off`."
+                        );
+                    } else {
+                        report_hook_removal(&tokensave::agents::remove_git_hooks());
+                    }
+                }
             }
+        }
+        Commands::ExtractWorker => {
+            // Handled by the early dispatch at the top of run(); this arm
+            // exists only for clap match exhaustiveness.
+            unreachable!("extract-worker handled by early dispatch")
         }
         Commands::HookPreToolUse => {
             tokensave::hooks::hook_pre_tool_use();
         }
+        Commands::HookPreToolUseCodex => {
+            tokensave::hooks::hook_pre_tool_use_codex();
+        }
         Commands::HookPromptSubmit => {
             tokensave::hooks::hook_prompt_submit().await;
         }
+        Commands::Hook { action } => match action {
+            cli::HookAction::PostCheckout {
+                prev_head,
+                new_head: _,
+                branch_flag,
+            } => {
+                commands::hook_post_checkout(prev_head.as_deref(), branch_flag.as_deref()).await;
+            }
+        },
         Commands::HookStop => {
             tokensave::hooks::hook_stop().await;
         }
-        Commands::Serve { path } => {
-            let project_path = tokensave::config::resolve_path(path);
-            let cg = ensure_initialized(&project_path).await?;
-
-            // If the daemon isn't running, watch this project for local changes.
-            let watcher_cancel = if tokensave::daemon::running_daemon_pid().is_none() {
-                let config = tokensave::user_config::UserConfig::load();
-                let debounce = tokensave::daemon::parse_duration(&config.daemon_debounce)
-                    .unwrap_or(std::time::Duration::from_secs(15));
-                if let Some(pw) = tokensave::project_watcher::ProjectWatcher::new(
-                    project_path.clone(),
-                    debounce,
-                ) {
-                    let token = tokio_util::sync::CancellationToken::new();
-                    tokio::spawn(pw.run(token.clone()));
-                    Some(token)
-                } else {
-                    None
+        Commands::HookKiroPreToolUse => {
+            let code = tokensave::hooks::hook_kiro_pre_tool_use();
+            if code != 0 {
+                process::exit(code);
+            }
+        }
+        Commands::HookKiroPromptSubmit => {
+            let code = tokensave::hooks::hook_kiro_prompt_submit().await;
+            if code != 0 {
+                process::exit(code);
+            }
+        }
+        Commands::HookKiroPostToolUse => {
+            let code = tokensave::hooks::hook_kiro_post_tool_use().await;
+            if code != 0 {
+                process::exit(code);
+            }
+        }
+        Commands::HookDroidPreToolUse => {
+            let code = tokensave::hooks::hook_droid_pre_tool_use();
+            if code != 0 {
+                process::exit(code);
+            }
+        }
+        Commands::Serve {
+            path,
+            timings,
+            idle_timeout_secs,
+        } => {
+            let canonical_disable = std::env::var("TOKENSAVE_DISABLE_SERVER").ok();
+            let legacy_disable = std::env::var("DISABLE_TOKENSAVE").ok();
+            if server_disabled_from_env(canonical_disable.as_deref(), legacy_disable.as_deref()) {
+                // Allow users to opt out per-project by setting
+                // TOKENSAVE_DISABLE_SERVER=true in their MCP server config.
+                // DISABLE_TOKENSAVE=true remains compatible with issue #19.
+                // The process exits cleanly so the host does not retry.
+                return Ok(());
+            }
+            let original_cwd = std::env::current_dir().ok();
+            // An explicit --path is a deliberate choice of project root
+            // (possibly a different repo than the CWD, #201); only
+            // CWD-discovered roots get the borrowed-worktree check.
+            let explicit_path = path.is_some();
+            // What the host actually launched, kept separate from what we
+            // resolved: a process lister shows only the former, and the
+            // registry has to be readable against both (#421).
+            let path_for_registry = path.clone();
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
+            // Track the first stdin line if we need to peek at `initialize` roots.
+            let mut peeked_line: Option<String> = None;
+            // The registered projects, loaded at most once and only when
+            // discovery fails: every fallback below and a server with no
+            // default project read the same list (#606).
+            let mut registered: Option<Vec<serve::RegisteredProject>> = None;
+            let cg = match serve::ensure_initialized(&project_path).await {
+                Ok(cg) => Some(cg),
+                // An explicit `--path` names the project to serve. A folder
+                // without an index gets no default project rather than
+                // whichever registered project a fallback would pick, which
+                // would answer about a project the host never asked for
+                // (#606).
+                Err(_) if explicit_path => None,
+                Err(_) => {
+                    // A linked worktree outside its main checkout: the upward
+                    // walk cannot reach the main index, so borrow it the way a
+                    // nested worktree would. Otherwise CWD-based discovery
+                    // failed (e.g. VS Code launched us from ~): fall back to
+                    // the global DB's registered projects, and last of all to
+                    // the MCP `initialize` roots (e.g. a VS Code multi-folder
+                    // workspace), read from the first stdin line.
+                    let fallback = match serve::resolve_serve_from_main_worktree() {
+                        Some(p) => Some(p),
+                        None => {
+                            let projects =
+                                registered.insert(serve::load_registered_projects().await);
+                            match serve::resolve_serve_from_global_db(projects) {
+                                Some(p) => Some(p),
+                                None => {
+                                    serve::resolve_serve_from_mcp_roots(&mut peeked_line, projects)
+                                        .await
+                                }
+                            }
+                        }
+                    };
+                    match fallback {
+                        Some(p) => Some(serve::ensure_initialized(&p).await?),
+                        None => None,
+                    }
                 }
-            } else {
-                None
+            };
+            let Some(cg) = cg else {
+                // No project resolved (#606). Exiting here left the host with
+                // a failed server and the session with no tools at all,
+                // although `graph_root` still reaches every registered
+                // project. Serve with no default project.
+                eprintln!(
+                    "[tokensave] no TokenSave index found at '{}'; serving with no default \
+                     project — tool calls must pass graph_root",
+                    project_path.display()
+                );
+                let registered = match registered {
+                    Some(registered) => registered,
+                    None => serve::load_registered_projects().await,
+                };
+                let registered = registered
+                    .iter()
+                    .map(|project| project.path().to_string_lossy().into_owned())
+                    .collect();
+                // No index is open, so none of the per-project startup below
+                // applies: no scope warning, memory baseline, or server
+                // registry entry, which records which server holds which index.
+                tokensave::cancel::install_signal_handlers();
+                watch_for_orphaning();
+                let server = tokensave::mcp::McpServer::new_without_project(registered).await;
+                run_mcp_server(&server, timings, peeked_line, idle_timeout_secs).await?;
+                exit_after_serve();
             };
 
-            let server = tokensave::mcp::McpServer::new(cg).await;
-            let mut transport = tokensave::mcp::StdioTransport::new();
-            server.run(&mut transport).await?;
+            // Set the shutdown flag the instant a signal arrives, rather than
+            // only when the run loop next looks. The loop's own SIGTERM stream
+            // is polled only while it waits for a request, so a signal
+            // delivered during a long sync would otherwise not be observed
+            // until that sync finished (#450).
+            tokensave::cancel::install_signal_handlers();
+            watch_for_orphaning();
+            // An index whose *scope* is wrong is still a valid index, so this
+            // warns and continues rather than refusing: retroactively applying
+            // #396's cap would decide which of the user's existing setups stop
+            // working. `suppress_scope_warning` opts out (#450).
+            tokensave::index_scope::warn_on_serve(cg.project_root());
 
-            // Stop the watcher when the server exits.
-            if let Some(token) = watcher_cancel {
-                token.cancel();
+            // Memory instrumentation for #253: mark this process as a
+            // long-lived MCP server and take a baseline RSS sample.
+            tokensave::memstats::init("serve", cg.project_root());
+            tokensave::memstats::record("start");
+
+            // Record this process in the server registry, now that the index
+            // is open and the lock is genuinely held (#421). Nothing else on
+            // the machine records which server holds which index: most
+            // instances carry no project in argv, because the host supplies it
+            // through the global DB or MCP `initialize` roots rather than
+            // `--path`.
+            tokensave::servers::register(
+                cg.project_root(),
+                &cg.db_path(),
+                path_for_registry.as_deref(),
+            );
+
+            // Compute scope prefix: relative path from project root to original cwd
+            let scope_prefix = original_cwd.and_then(|cwd| {
+                cwd.strip_prefix(cg.project_root())
+                    .ok()
+                    .filter(|rel| !rel.as_os_str().is_empty())
+                    .map(|rel| rel.to_string_lossy().into_owned())
+            });
+
+            let server = if explicit_path {
+                tokensave::mcp::McpServer::new_explicit_root(cg, scope_prefix).await
+            } else {
+                tokensave::mcp::McpServer::new(cg, scope_prefix).await
+            };
+            run_mcp_server(&server, timings, peeked_line, idle_timeout_secs).await?;
+            // A hard kill skips this; that is what reaping on startup and on
+            // read is for.
+            tokensave::servers::unregister();
+            exit_after_serve();
+        }
+        Commands::Servers { json } => {
+            let entries = tokensave::servers::list();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string())
+                );
+            } else {
+                print!("{}", tokensave::servers::render(&entries));
             }
         }
-        Commands::Upgrade => {
-            tokensave::upgrade::run_upgrade()?;
+        Commands::Upgrade { kill } => {
+            tokensave::upgrade::run_upgrade(kill)?;
         }
-        Commands::Channel { channel } => {
-            match channel {
-                Some(target) => { tokensave::upgrade::switch_channel(&target)?; }
-                None => tokensave::upgrade::show_channel(),
+        Commands::Channel { channel } => match channel {
+            Some(target) => {
+                tokensave::upgrade::switch_channel(&target)?;
             }
-        }
+            None => tokensave::upgrade::show_channel(),
+        },
         Commands::CurrentCounter { path } => {
-            let project_path = tokensave::config::resolve_path(path);
-            let cg = ensure_initialized(&project_path).await?;
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
+            let cg = serve::ensure_initialized(&project_path).await?;
             let value = cg.get_local_counter().await?;
             println!("{value}");
         }
         Commands::ResetCounter { path } => {
-            let project_path = tokensave::config::resolve_path(path);
-            let cg = ensure_initialized(&project_path).await?;
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
+            let cg = serve::ensure_initialized(&project_path).await?;
             let prev = cg.get_local_counter().await?;
             cg.reset_local_counter().await?;
             eprintln!("Local counter reset (was {prev})");
@@ -898,20 +1435,95 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             config.save();
             eprintln!("Worldwide counter upload enabled.");
         }
+        Commands::Githooks {
+            action,
+            local,
+            path,
+        } => {
+            let repo = tokensave::config::resolve_path(path);
+            match (action.as_deref(), local) {
+                (Some("off"), true) => {
+                    report_hook_removal(&tokensave::agents::remove_local_git_hooks(&repo));
+                }
+                (Some("off"), false) => {
+                    report_hook_removal(&tokensave::agents::remove_git_hooks());
+                }
+                (Some("on"), true) => {
+                    let bin = current_bin_path();
+                    match tokensave::agents::install_local_git_hooks(&repo, &bin) {
+                        Ok(outcome) => {
+                            report_local_hook_install(&outcome);
+                            // The specific reason was already printed by
+                            // write_global_hook; this only stops an explicit
+                            // `githooks on --local` from reporting a partial
+                            // install as success.
+                            if !outcome.failed.is_empty() {
+                                return Err(tokensave::errors::TokenSaveError::Config {
+                                    message: format!(
+                                        "could not install git hooks: {}",
+                                        outcome.failed.join(", ")
+                                    ),
+                                });
+                            }
+                        }
+                        Err(message) => {
+                            return Err(tokensave::errors::TokenSaveError::Config { message })
+                        }
+                    }
+                }
+                (Some("on"), false) => {
+                    // The specific reason was already printed; this only stops
+                    // `githooks on` from reporting a failed install as success.
+                    // `githooks on` without `--local` is the explicit request
+                    // for the machine-wide hooks; `--local` above is how the
+                    // caller asks for this repository's own.
+                    if let Err(message) = tokensave::agents::offer_git_post_commit_hook(
+                        &current_bin_path(),
+                        tokensave::agents::GitHookMode::Global,
+                    ) {
+                        return Err(tokensave::errors::TokenSaveError::Config { message });
+                    }
+                }
+                (Some(other), _) => {
+                    return Err(tokensave::errors::TokenSaveError::Config {
+                        message: format!("unknown action '{other}': expected 'on' or 'off'"),
+                    });
+                }
+                (None, true) => {
+                    for line in tokensave::agents::describe_local_git_hooks(&repo) {
+                        eprintln!("{line}");
+                    }
+                }
+                (None, false) => {
+                    if tokensave::agents::repo_hooks_dir(&repo).is_some() {
+                        for line in tokensave::agents::describe_local_git_hooks(&repo) {
+                            eprintln!("{line}");
+                        }
+                    }
+                    for line in tokensave::agents::describe_git_hooks() {
+                        eprintln!("{line}");
+                    }
+                }
+            }
+        }
         Commands::Gitignore { path, action } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let mut config = tokensave::config::load_config(&project_path)?;
             match action.as_deref() {
                 Some("on") => {
                     config.git_ignore = true;
                     tokensave::config::save_config(&project_path, &config)?;
-                    eprintln!("gitignore enabled — .gitignore rules will be respected during indexing.");
+                    eprintln!(
+                        "gitignore enabled — .gitignore rules will be respected during indexing."
+                    );
                     eprintln!("Run `tokensave sync` to re-index with the new setting.");
                 }
                 Some("off") => {
                     config.git_ignore = false;
                     tokensave::config::save_config(&project_path, &config)?;
-                    eprintln!("gitignore disabled — .gitignore rules will be ignored during indexing.");
+                    eprintln!(
+                        "gitignore disabled — .gitignore rules will be ignored during indexing."
+                    );
                     eprintln!("Run `tokensave sync` to re-index with the new setting.");
                 }
                 Some(other) => {
@@ -925,531 +1537,1066 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
+        Commands::AuditEdges { top, json } => {
+            let project_path = tokensave::config::resolve_path_with_discovery(None);
+            if !TokenSave::is_initialized(&project_path) {
+                return Err(tokensave::errors::TokenSaveError::Config {
+                    message: format!(
+                        "no TokenSave index at '{}' — run `tokensave init` first",
+                        project_path.display()
+                    ),
+                });
+            }
+            let cg = TokenSave::open(&project_path).await?;
+            let report = tokensave::edge_audit::audit(cg.db(), top).await?;
+
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "total_edges": report.total_edges,
+                        "gated_edges": report.gated_edges,
+                        "cross_file": report.cross_file,
+                        "sole_candidate_cross_file": report.sole_candidate_cross_file,
+                        "unreachable": report.unreachable,
+                        "hot_targets": report.hot_targets.iter().map(|t| serde_json::json!({
+                            "name": t.name,
+                            "file": t.file_path,
+                            "line": t.start_line,
+                            "kind": t.kind,
+                            "source_files": t.source_files,
+                            "edges": t.edges,
+                        })).collect::<Vec<_>>(),
+                    })
+                );
+            } else {
+                println!("Edge audit — {}", project_path.display());
+                println!(
+                    "  total edges                       {:>8}",
+                    report.total_edges
+                );
+                println!(
+                    "  in gated languages (py/js/ts)     {:>8}",
+                    report.gated_edges
+                );
+                println!(
+                    "    cross-file                      {:>8}",
+                    report.cross_file
+                );
+                println!(
+                    "    sole-candidate                  {:>8}",
+                    report.sole_candidate_cross_file
+                );
+                println!(
+                    "      without reachability evidence {:>8}   <- diff this between commits",
+                    report.unreachable
+                );
+
+                if report.hot_targets.is_empty() {
+                    println!("\nNo unreachable sole-candidate cross-file targets.");
+                } else {
+                    println!("\nMost-collided targets:");
+                    for t in &report.hot_targets {
+                        println!(
+                            "  {:>6} edges from {:>4} files  {}:{}  {} ({})",
+                            t.edges, t.source_files, t.file_path, t.start_line, t.name, t.kind
+                        );
+                    }
+                }
+                println!(
+                    "\nAn edge counted here is one the index asserts but the source file \
+                     carries no\nevidence it can reach — same directory, the name imported, \
+                     or the owning class\nimported. Unlike a production-to-tests/ count it \
+                     also sees phantoms landing inside\nproduction, and needs no \
+                     test/production classification."
+                );
+            }
+        }
         Commands::Doctor { agent } => {
             tokensave::doctor::run_doctor(agent.as_deref()).await;
         }
-        Commands::Daemon { foreground, stop, status, enable_autostart, disable_autostart } => {
-            if stop {
-                tokensave::daemon::stop()?;
-            } else if status {
-                let code = tokensave::daemon::status();
-                std::process::exit(code);
-            } else if enable_autostart {
-                tokensave::daemon::enable_autostart()?;
-            } else if disable_autostart {
-                tokensave::daemon::disable_autostart()?;
+        Commands::Cost {
+            range,
+            by_agent,
+            by_model,
+            by_task,
+            export,
+        } => {
+            // Refresh LiteLLM pricing if cache is older than 24h
+            tokensave::accounting::pricing::refresh_if_stale();
+
+            let gdb = match tokensave::global_db::GlobalDb::open().await {
+                Some(db) => db,
+                None => {
+                    eprintln!("Could not open global database.");
+                    process::exit(1);
+                }
+            };
+
+            // Ingest new session data before querying
+            let ingest_stats = tokensave::accounting::parser::ingest(&gdb).await;
+            let changed = ingest_stats.turns_inserted + ingest_stats.turns_updated;
+            if changed > 0 {
+                eprintln!("Ingested or refreshed {} local accounting rows.", changed);
+            }
+
+            let since = tokensave::accounting::metrics::parse_range(&range);
+            let droid_present = ingest_stats.coverage.iter().any(|coverage| {
+                coverage.agent == "droid"
+                    && coverage.state != tokensave::accounting::CoverageState::Absent
+            });
+            let summary = tokensave::accounting::metrics::cost_summary_with_droid_presence(
+                &gdb,
+                since,
+                droid_present,
+            )
+            .await;
+
+            let Some(s) = summary else {
+                println!("No supported local session data found.");
+                return Ok(());
+            };
+            let coverage =
+                tokensave::accounting::format_coverage(&ingest_stats.coverage, &s.by_agent);
+
+            if let Some(ref fmt) = export {
+                match fmt.as_str() {
+                    "json" => {
+                        let mut obj = serde_json::json!({
+                            "range": range,
+                            "total_cost_usd": s.total_cost,
+                            "total_input_tokens": s.total_input_tokens,
+                            "total_output_tokens": s.total_output_tokens,
+                            // Cache reads and writes are priced, and they dominate
+                            // agent traffic. Without them the exported tokens
+                            // cannot account for the exported cost (#472).
+                            "total_cache_read_tokens": s.total_cache_read_tokens,
+                            "total_cache_creation_tokens": s.total_cache_write_tokens,
+                            "total_tokens": s.total_input_tokens
+                                + s.total_output_tokens
+                                + s.total_cache_read_tokens
+                                + s.total_cache_write_tokens,
+                            "tokens_saved": s.tokens_saved,
+                            "efficiency_ratio": s.efficiency_ratio,
+                            "by_model": s.by_model.iter().map(|(m, c, t)| serde_json::json!({"model": m, "cost": c, "tokens": t})).collect::<Vec<_>>(),
+                            "by_category": s.by_category.iter().map(|(cat, c, n)| serde_json::json!({"category": cat, "cost": c, "turns": n})).collect::<Vec<_>>(),
+                        });
+                        if droid_present {
+                            obj["by_agent"] = serde_json::json!(s
+                                .by_agent
+                                .iter()
+                                .map(agent_row_json)
+                                .collect::<Vec<_>>());
+                            obj["coverage"] = serde_json::json!(&ingest_stats.coverage);
+                        }
+                        println!("{}", serde_json::to_string_pretty(&obj).unwrap_or_default());
+                    }
+                    "csv" => {
+                        if by_agent {
+                            println!("agent,cost_usd,credits,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,turns");
+                            for a in &s.by_agent {
+                                let cost_cell = if a.agent == "droid" {
+                                    String::new()
+                                } else {
+                                    format!("{:.4}", a.cost_usd)
+                                };
+                                let credits_cell = match a.credits {
+                                    Some(c) => c.to_string(),
+                                    None => String::new(),
+                                };
+                                println!(
+                                    "{},{},{},{},{},{},{},{}",
+                                    a.agent,
+                                    cost_cell,
+                                    credits_cell,
+                                    a.input_tokens,
+                                    a.output_tokens,
+                                    a.cache_write_tokens,
+                                    a.cache_read_tokens,
+                                    a.turns,
+                                );
+                            }
+                        } else if by_model {
+                            println!("model,cost_usd,tokens");
+                            for (model, cost, tokens) in &s.by_model {
+                                println!("{model},{cost:.4},{tokens}");
+                            }
+                        } else if by_task {
+                            println!("category,cost_usd,turns");
+                            for (cat, cost, turns) in &s.by_category {
+                                println!("{cat},{cost:.4},{turns}");
+                            }
+                        } else {
+                            println!(
+                                "total_cost_usd,input_tokens,output_tokens,tokens_saved,efficiency"
+                            );
+                            println!(
+                                "{:.4},{},{},{},{:.4}",
+                                s.total_cost,
+                                s.total_input_tokens,
+                                s.total_output_tokens,
+                                s.tokens_saved,
+                                s.efficiency_ratio
+                            );
+                        }
+                    }
+                    _ => eprintln!("Unknown export format '{fmt}'. Use 'json' or 'csv'."),
+                }
+            } else if by_agent {
+                println!(
+                    "  {:<16} {:>9} {:>9} {:>12} {:>6}",
+                    "Agent", "USD", "Credits", "Raw tokens", "Rows"
+                );
+                for a in &s.by_agent {
+                    println!("{}", format_agent_row(a));
+                }
+                if !coverage.is_empty() {
+                    println!("{coverage}");
+                }
+            } else if by_model {
+                let total = s.total_cost.max(0.001);
+                println!(
+                    "  {:<24} {:>10} {:>10} {:>6}",
+                    "Model", "Cost", "Tokens", "Share"
+                );
+                for (model, cost, tokens) in &s.by_model {
+                    let share = cost / total * 100.0;
+                    let tok_str = tokensave::display::format_token_count(*tokens);
+                    println!(
+                        "  {:<24} {:>9} {:>10} {:>5.0}%",
+                        model,
+                        format!("${cost:.2}"),
+                        tok_str,
+                        share
+                    );
+                }
+            } else if by_task {
+                println!("  {:<16} {:>10} {:>6}", "Category", "Cost", "Turns");
+                for (cat, cost, turns) in &s.by_category {
+                    println!("  {:<16} {:>9} {:>6}", cat, format!("${cost:.2}"), turns);
+                }
             } else {
-                let upgraded = tokensave::daemon::run(foreground).await?;
-                if upgraded {
-                    // Exit with non-zero code so the service manager (launchd
-                    // KeepAlive / systemd Restart=on-failure / Windows SCM
-                    // failure actions) restarts with the new binary.
-                    std::process::exit(1);
+                // Default summary
+                let today_since = tokensave::accounting::metrics::parse_range("today");
+                let today_cost = gdb.total_cost_since(today_since).await.unwrap_or(0.0);
+                let today_breakdown = gdb
+                    .token_breakdown_since(today_since)
+                    .await
+                    .unwrap_or((0, 0, 0, 0));
+
+                let fmt_row = |label: &str, cost: f64, input: u64, output: u64, cache_read: u64| {
+                    let input_s = tokensave::display::format_token_count(input);
+                    let output_s = tokensave::display::format_token_count(output);
+                    let cache_pct = if input + cache_read > 0 {
+                        (cache_read as f64 / (input + cache_read) as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+                    println!(
+                        "  {:<10} {:>9} {:>10} {:>10} {:>9.0}%",
+                        label,
+                        format!("${cost:.2}"),
+                        input_s,
+                        output_s,
+                        cache_pct
+                    );
+                };
+
+                println!(
+                    "  {:<10} {:>10} {:>10} {:>10} {:>10}",
+                    "Period", "Cost", "Input", "Output", "Cache-hit"
+                );
+                fmt_row(
+                    "Today",
+                    today_cost,
+                    today_breakdown.0,
+                    today_breakdown.1,
+                    today_breakdown.2,
+                );
+                fmt_row(
+                    &range,
+                    s.total_cost,
+                    s.total_input_tokens,
+                    s.total_output_tokens,
+                    s.total_cache_read_tokens,
+                );
+
+                if s.tokens_saved > 0 {
+                    let saved_str = tokensave::display::format_token_count(s.tokens_saved);
+                    println!();
+                    println!(
+                        "  Savings  {} tokens ({:.0}% efficiency)",
+                        saved_str,
+                        s.efficiency_ratio * 100.0
+                    );
+                }
+                if !coverage.is_empty() {
+                    println!();
+                    println!("{coverage}");
                 }
             }
         }
-        Commands::Visualize { path, port } => {
-            let project_path = tokensave::config::resolve_path(path);
-            let cg = TokenSave::open(&project_path).await?;
-            tokensave::visualizer::run(&cg, port).await?;
+        Commands::Discover { since, json } => {
+            commands::handle_discover(&since, json).await?;
         }
-        Commands::Monitor { path } => {
+        Commands::Bench {
+            queries,
+            json,
+            path,
+            max_nodes,
+        } => {
             let project_path = tokensave::config::resolve_path(path);
-            if let Err(e) = tokensave::monitor::run(&project_path) {
+            let cg = serve::ensure_initialized(&project_path).await?;
+
+            let opts = tokensave::bench::BenchOptions {
+                format: if json {
+                    tokensave::bench::OutputFormat::Json
+                } else {
+                    tokensave::bench::OutputFormat::Markdown
+                },
+                max_nodes,
+            };
+
+            let report = match queries {
+                Some(p) => tokensave::bench::run_bench(&cg, std::path::Path::new(&p), opts).await?,
+                None => {
+                    tokensave::bench::run_bench_with_toml(
+                        &cg,
+                        tokensave::bench::DEFAULT_QUERIES_TOML,
+                        opts,
+                    )
+                    .await?
+                }
+            };
+
+            if json {
+                println!("{}", tokensave::bench::format_report_json(&report));
+            } else {
+                print!("{}", tokensave::bench::format_report_console(&report));
+            }
+        }
+        Commands::Gain {
+            all,
+            history,
+            range,
+            json,
+        } => {
+            commands::handle_gain(all, history, &range, json).await?;
+        }
+        Commands::Monitor => {
+            if let Err(e) = tokensave::monitor::run() {
                 eprintln!("Monitor error: {e}");
                 process::exit(1);
             }
         }
+        Commands::Memory { clean } => {
+            // Diagnostic tool: always exits 0, even when the report or
+            // the --clean purge fails — it must never break scripts
+            // that poll it while investigating an incident (#253).
+            if let Err(e) = tokensave::memstats::run(clean) {
+                eprintln!("Memory report error: {e}");
+            }
+        }
+        Commands::QualityDiff { .. } => unreachable!("handled before startup"),
         Commands::Branch { action } => {
-            handle_branch_action(action).await?;
+            commands::handle_branch_action(action).await?;
+        }
+        Commands::Wipe { all } => {
+            commands::handle_wipe(all).await?;
+        }
+        Commands::List { all } => {
+            commands::handle_list(all).await?;
         }
     }
     Ok(())
 }
 
-async fn handle_branch_action(action: BranchAction) -> tokensave::errors::Result<()> {
-    use tokensave::branch;
-    use tokensave::branch_meta;
-    use tokensave::config::get_tokensave_dir;
-
-    match action {
-        BranchAction::List { path } => {
-            let project_path = tokensave::config::resolve_path(path);
-            let tokensave_dir = get_tokensave_dir(&project_path);
-            let Some(meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
-                eprintln!("No branch tracking configured. Run `tokensave branch add` to start.");
-                return Ok(());
-            };
-            let current = branch::current_branch(&project_path);
-            eprintln!("Default branch: {}", meta.default_branch);
-            eprintln!();
-            for (name, entry) in &meta.branches {
-                let db_path = tokensave_dir.join(&entry.db_file);
-                let size = if db_path.exists() {
-                    let bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
-                    format_size(bytes)
-                } else {
-                    "missing".to_string()
-                };
-                let marker = if current.as_deref() == Some(name.as_str()) {
-                    " *"
-                } else {
-                    ""
-                };
-                let parent = entry
-                    .parent
-                    .as_deref()
-                    .map(|p| format!(" (from {p})"))
-                    .unwrap_or_default();
-                let synced = branch_meta::format_timestamp(&entry.last_synced_at);
-                eprintln!("  {name}{marker} — {size}{parent}, synced {synced}");
-            }
-        }
-        BranchAction::Add { name, path } => {
-            let project_path = tokensave::config::resolve_path(path);
-            let tokensave_dir = get_tokensave_dir(&project_path);
-
-            let branch_name = match name {
-                Some(n) => n,
-                None => branch::current_branch(&project_path).ok_or_else(|| {
-                    tokensave::errors::TokenSaveError::Config {
-                        message: "cannot detect current branch (detached HEAD?). Specify a branch name.".to_string(),
-                    }
-                })?,
-            };
-
-            // Load or bootstrap metadata
-            let mut meta = branch_meta::load_branch_meta(&tokensave_dir).unwrap_or_else(|| {
-                let default = branch::detect_default_branch(&project_path)
-                    .unwrap_or_else(|| "main".to_string());
-                branch_meta::BranchMeta::new(&default)
-            });
-
-            if meta.is_tracked(&branch_name) {
-                eprintln!("Branch '{branch_name}' is already tracked.");
-                return Ok(());
-            }
-
-            // Find parent DB to copy from
-            let parent = branch::find_nearest_tracked_ancestor(&project_path, &branch_name, &meta)
-                .unwrap_or_else(|| meta.default_branch.clone());
-            let parent_db = branch::resolve_branch_db_path(&tokensave_dir, &parent, &meta)
-                .ok_or_else(|| tokensave::errors::TokenSaveError::Config {
-                    message: format!("parent branch '{parent}' has no DB"),
-                })?;
-            if !parent_db.exists() {
-                return Err(tokensave::errors::TokenSaveError::Config {
-                    message: format!("parent DB not found at '{}'", parent_db.display()),
-                });
-            }
-
-            // Copy DB
-            let sanitized = branch::sanitize_branch_name(&branch_name);
-            let branches_dir = branch_meta::ensure_branches_dir(&tokensave_dir)?;
-            let new_db_path = branches_dir.join(format!("{sanitized}.db"));
-            let spinner = Spinner::new();
-            spinner.set_message(&format!("copying DB from '{parent}'"));
-            std::fs::copy(&parent_db, &new_db_path)?;
-
-            // Save metadata BEFORE open() so it resolves the new branch to its DB
-            let db_file = format!("branches/{sanitized}.db");
-            meta.add_branch(&branch_name, &db_file, &parent);
-            branch_meta::save_branch_meta(&tokensave_dir, &meta)?;
-
-            // Run incremental sync (hash-based delta) against the new branch DB
-            spinner.set_message("syncing changes");
-            let cg = TokenSave::open(&project_path).await?;
-            let result = cg.sync().await?;
-
-            // Update sync timestamp after successful sync
-            if let Some(mut meta) = branch_meta::load_branch_meta(&tokensave_dir) {
-                meta.touch_synced(&branch_name);
-                let _ = branch_meta::save_branch_meta(&tokensave_dir, &meta);
-            }
-
-            let skipped_msg = if result.skipped_paths.is_empty() {
-                String::new()
-            } else {
-                format!(", {} skipped", result.skipped_paths.len())
-            };
-            spinner.done(&format!(
-                "branch '{branch_name}' tracked — {} added, {} modified, {} removed{skipped_msg}",
-                result.files_added, result.files_modified, result.files_removed
-            ));
-            if !result.skipped_paths.is_empty() {
-                eprintln!();
-                eprintln!(
-                    "\x1b[33mSkipped ({}) — files found but not readable:\x1b[0m",
-                    result.skipped_paths.len()
-                );
-                for (path, reason) in &result.skipped_paths {
-                    eprintln!("  ! {path}: {reason}");
-                }
-            }
-        }
-        BranchAction::Remove { name, path } => {
-            let project_path = tokensave::config::resolve_path(path);
-            let tokensave_dir = get_tokensave_dir(&project_path);
-            let Some(mut meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
-                eprintln!("No branch tracking configured.");
-                return Ok(());
-            };
-            if name == meta.default_branch {
-                return Err(tokensave::errors::TokenSaveError::Config {
-                    message: format!("cannot remove default branch '{name}'"),
-                });
-            }
-            if let Some(entry) = meta.remove_branch(&name) {
-                let db_path = tokensave_dir.join(&entry.db_file);
-                if db_path.exists() {
-                    std::fs::remove_file(&db_path)?;
-                    // Also remove WAL/SHM sidecar files
-                    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-                    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-                }
-                branch_meta::save_branch_meta(&tokensave_dir, &meta)?;
-                eprintln!("\x1b[32m✔\x1b[0m Branch '{name}' removed.");
-            } else {
-                eprintln!("Branch '{name}' is not tracked.");
-            }
-        }
-        BranchAction::Gc { path } => {
-            let project_path = tokensave::config::resolve_path(path);
-            let tokensave_dir = get_tokensave_dir(&project_path);
-            let Some(mut meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
-                eprintln!("No branch tracking configured.");
-                return Ok(());
-            };
-
-            // Find branches in metadata that no longer exist in git
-            let stale: Vec<String> = meta
-                .branches
-                .keys()
-                .filter(|name| *name != &meta.default_branch)
-                .filter(|name| {
-                    let ref_path = project_path.join(format!(".git/refs/heads/{name}"));
-                    let packed = project_path.join(".git/packed-refs");
-                    let suffix = format!("refs/heads/{name}");
-                    let in_packed = packed.exists()
-                        && std::fs::read_to_string(&packed)
-                            .map(|c| c.lines().any(|line| line.ends_with(&suffix)))
-                            .unwrap_or(false);
-                    !ref_path.exists() && !in_packed
-                })
-                .cloned()
-                .collect();
-
-            if stale.is_empty() {
-                eprintln!("No stale branches to clean up.");
-            } else {
-                for name in &stale {
-                    if let Some(entry) = meta.remove_branch(name) {
-                        let db_path = tokensave_dir.join(&entry.db_file);
-                        if db_path.exists() {
-                            std::fs::remove_file(&db_path)?;
-                            let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-                            let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-                        }
-                        eprintln!("  removed '{name}'");
-                    }
-                }
-                branch_meta::save_branch_meta(&tokensave_dir, &meta)?;
-                eprintln!("\x1b[32m✔\x1b[0m Cleaned up {} stale branch(es).", stale.len());
-            }
-        }
-    }
-    Ok(())
-}
-
-fn format_size(bytes: u64) -> String {
-    if bytes >= 1_073_741_824 {
-        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
-    } else if bytes >= 1_048_576 {
-        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
-    } else if bytes >= 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
+fn resolve_install_scope(
+    local: bool,
+) -> tokensave::errors::Result<tokensave::agents::InstallScope> {
+    if local {
+        let project_path =
+            std::env::current_dir().map_err(|e| tokensave::errors::TokenSaveError::Config {
+                message: format!("could not determine current directory: {e}"),
+            })?;
+        Ok(tokensave::agents::InstallScope::Local { project_path })
     } else {
-        format!("{bytes} B")
+        Ok(tokensave::agents::InstallScope::Global)
     }
 }
 
-/// When invoked with no subcommand, offer to create the index if none exists.
-async fn handle_no_command() -> tokensave::errors::Result<()> {
-    let project_path = tokensave::config::resolve_path(None);
-    if TokenSave::is_initialized(&project_path) {
-        // Already initialized — show help via clap
-        let _ = <Cli as clap::CommandFactory>::command().print_help();
-        eprintln!();
-        return Ok(());
-    }
-    eprint!(
-        "No TokenSave index found at '{}'. Create one now? [Y/n] ",
-        project_path.display()
-    );
-    io::stderr().flush().ok();
-    let mut answer = String::new();
-    io::stdin()
-        .lock()
-        .read_line(&mut answer)
-        .map_err(|e| tokensave::errors::TokenSaveError::Config {
-            message: format!("failed to read stdin: {}", e),
-        })?;
-    let answer = answer.trim();
-    if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
-        init_and_index(&project_path, &[]).await?;
-    }
-    Ok(())
-}
-
-
-/// Initializes a new project (if needed) and runs a full index.
-async fn init_and_index(project_path: &Path, skip_folders: &[String]) -> tokensave::errors::Result<TokenSave> {
-    debug_assert!(project_path.is_dir(), "init_and_index: project_path is not a directory");
-    debug_assert!(project_path.is_absolute(), "init_and_index: project_path must be absolute");
-    let mut cg = if TokenSave::is_initialized(project_path) {
-        TokenSave::open(project_path).await?
-    } else {
-        let cg = TokenSave::init(project_path).await?;
-        eprintln!("Initialized TokenSave at {}", project_path.display());
-        // Offer to add .tokensave to .gitignore if not already there
-        if !tokensave::config::is_in_gitignore(project_path) {
-            eprint!("Add .tokensave to .gitignore? [Y/n] ");
-            io::stderr().flush().ok();
-            let mut answer = String::new();
-            if io::stdin().lock().read_line(&mut answer).is_ok() {
-                let answer = answer.trim();
-                if answer.is_empty() || answer.eq_ignore_ascii_case("y") {
-                    tokensave::config::add_to_gitignore(project_path);
-                    eprintln!("Added .tokensave to .gitignore");
-                }
-            }
-        }
-        cg
+/// Whether `TOKENSAVE_SKIP_AGENT_MAINTENANCE` turns off every startup
+/// maintenance task: the silent reinstall, the install-stale check, the
+/// worldwide-counter flush, and the managed-rules refresh that rides along
+/// with the resync.
+///
+/// The test suite needs this (#575). A test that spawns the freshly built
+/// binary carries a `CARGO_PKG_VERSION` ahead of whatever the machine last
+/// installed, which is signal (b) below, so the resync fires against the
+/// developer's real home and rewrites `~/.claude/rules/tokensave.md`.
+/// Redirecting `HOME` does not contain it: the rules write resolves its home
+/// through [`tokensave::agents::home_dir`] (`HOME`, then `USERPROFILE`) while
+/// the version marker that gates it goes through `dirs::home_dir`, which on
+/// Windows asks `SHGetKnownFolderPath` and ignores both. The two homes
+/// disagree, so a sandboxed run advances the marker in the real home and the
+/// write escapes anyway. `.cargo/config.toml` sets this for every `cargo
+/// test` process, alongside the `core.hooksPath` isolation that exists for
+/// the same reason.
+///
+/// Any value but the empty string and the usual falsey spellings enables it,
+/// matching `TOKENSAVE_AUTO_TRACK`.
+fn agent_maintenance_disabled_from_env(raw: Option<&str>) -> bool {
+    let Some(value) = raw else {
+        return false;
     };
-    cg.add_skip_folders(skip_folders);
-    let spinner = Spinner::new();
-    let index_start = std::time::Instant::now();
-    let result = cg.index_all_with_progress(|current, total, file| {
-        let elapsed = index_start.elapsed().as_secs_f64();
-        let eta = if current > 1 {
-            let per_file = elapsed / (current - 1) as f64;
-            let remaining = per_file * (total - current) as f64;
-            if remaining >= 1.0 {
-                format!(" (ETA: {remaining:.0}s)")
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
-        spinner.set_message(&format!("[{current}/{total}] indexing {file}{eta}"));
-    }).await?;
-    spinner.done(&format!(
-        "indexing done — {} files, {} nodes, {} edges in {}ms",
-        result.file_count, result.node_count, result.edge_count, result.duration_ms
-    ));
-    update_global_db(&cg).await;
-    Ok(cg)
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "no" | "off"
+    )
 }
 
-/// Print the `--doctor` report after an incremental sync.
-fn print_sync_doctor(result: &tokensave::tokensave::SyncResult) {
-    let has_changes = !result.added_paths.is_empty()
-        || !result.modified_paths.is_empty()
-        || !result.removed_paths.is_empty();
-    if !has_changes {
-        eprintln!("\n\x1b[2mNo files changed.\x1b[0m");
+fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::Install { .. }
+            | Commands::Reinstall { .. }
+            | Commands::Uninstall { .. }
+            | Commands::Doctor { .. }
+            | Commands::AuditEdges { .. }
+            // `Serve` is the hot path used by MCP clients (Claude Code,
+            // Codex, etc.). Clients impose a 30 s `initialize` timeout, so
+            // every pre-serve startup task — `try_flush` network round-trip,
+            // `check_install_stale`, the silent-reinstall loop over every
+            // tracked agent — risks pushing us past it on slow networks or
+            // big home-dir trees (#84). Skip them; the same maintenance
+            // runs on the user's next interactive `tokensave …` invocation.
+            | Commands::Serve { .. }
+            // `Servers` exists for wrappers to poll while rendering a list UI
+            // (#421), so it is a hot path for the same reason `Serve` is: a
+            // network flush and a scan over every tracked agent do not belong
+            // behind a directory listing that a UI refreshes on a timer.
+            | Commands::Servers { .. }
+            // Hook handlers are on the per-tool-call hot path (Cursor fires
+            // `preToolUse` before every Grep/Shell; Factory Droid fires
+            // `hook-droid-pre-tool-use` before every Execute/Grep). They must
+            // not run the HTTP flush, install-stale scans, or the
+            // silent-reinstall loop, and stdout must stay JSON-only for the
+            // permission gate (see hooks.rs `hook_pre_tool_use`).
+            | Commands::HookPreToolUse
+            | Commands::HookPreToolUseCodex
+            | Commands::HookPromptSubmit
+            | Commands::HookStop
+            | Commands::Hook { .. }
+            | Commands::HookKiroPreToolUse
+            | Commands::HookKiroPromptSubmit
+            | Commands::HookKiroPostToolUse
+            | Commands::HookDroidPreToolUse
+    )
+}
+
+/// Print what `refresh_installed_git_hooks` changed (#624). Silent when
+/// nothing needed rewriting, so an up-to-date machine sees no output.
+fn report_hook_refresh(refresh: &tokensave::agents::HookRefresh) {
+    for path in &refresh.updated {
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Updated tokensave's section of the git hook at {} \
+             (your own content in that file was left untouched)",
+            path.display()
+        );
+    }
+    if !refresh.failed.is_empty() {
+        let names: Vec<String> = refresh
+            .failed
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        eprintln!(
+            "\x1b[33mwarning:\x1b[0m could not refresh git hooks: {}.\n  \
+             Run \x1b[1mtokensave githooks on\x1b[0m (or \x1b[1mgithooks on --local\x1b[0m \
+             inside the repository) to retry.",
+            names.join(", ")
+        );
+    }
+}
+
+/// Print what `remove_git_hooks` did. Says so explicitly when it found
+/// nothing, so `githooks off` never exits silently on a machine that has no
+/// tokensave hooks installed.
+fn current_bin_path() -> String {
+    std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "tokensave".to_string())
+}
+
+fn report_local_hook_install(outcome: &tokensave::agents::LocalHookInstall) {
+    for name in &outcome.installed {
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Installed git {name} hook at {}",
+            outcome.hooks_dir.join(name).display()
+        );
+    }
+    for name in &outcome.migrated {
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Updated tokensave's section of the git {name} hook at {} \
+             (your own content in that file was left untouched)",
+            outcome.hooks_dir.join(name).display()
+        );
+    }
+    for name in &outcome.already_present {
+        eprintln!("  git {name} hook already contains tokensave, skipping");
+    }
+    // A hook that will never run is worse than no hook, because nothing else
+    // says so. `core.hooksPath` makes git resolve every hook from one
+    // directory with no fallback to the repository's own.
+    if let Some(path) = &outcome.shadowed_by {
+        eprintln!(
+            "  \x1b[33m⚠\x1b[0m core.hooksPath is set to {} — git reads hooks from there, so \
+             the hooks just written will not run. Unset it (`git config --unset core.hooksPath`), \
+             or use the global hooks instead (`tokensave githooks on`).",
+            path.display()
+        );
+    }
+}
+
+/// Offer this repository's own git hooks after `init` (#455).
+///
+/// Local rather than global on purpose: the global path claims
+/// `core.hooksPath`, a single machine-wide setting that forces one hook
+/// directory on every repository, which is exactly what someone juggling
+/// projects with different tooling does not want.
+///
+/// Prompt defaults to *yes* — the hooks are per-repository, live in `.git/`
+/// so they are never committed, and are removable with one command — but a
+/// non-TTY skips silently, so scripted and CI installs are unchanged.
+fn offer_local_git_hooks(project_path: &std::path::Path, forced: bool, refused: bool) {
+    if refused {
         return;
     }
-    eprintln!();
-    if !result.added_paths.is_empty() {
-        eprintln!("\x1b[32mAdded ({}):\x1b[0m", result.added_paths.len());
-        for p in &result.added_paths {
-            eprintln!("  + {p}");
-        }
-    }
-    if !result.modified_paths.is_empty() {
-        eprintln!("\x1b[33mModified ({}):\x1b[0m", result.modified_paths.len());
-        for p in &result.modified_paths {
-            eprintln!("  ~ {p}");
-        }
-    }
-    if !result.removed_paths.is_empty() {
-        eprintln!("\x1b[31mRemoved ({}):\x1b[0m", result.removed_paths.len());
-        for p in &result.removed_paths {
-            eprintln!("  - {p}");
-        }
-    }
-}
-
-/// Opens an existing project, or tells the user to run `tokensave sync` first.
-async fn ensure_initialized(project_path: &Path) -> tokensave::errors::Result<TokenSave> {
-    if TokenSave::is_initialized(project_path) {
-        return TokenSave::open(project_path).await;
-    }
-    Err(tokensave::errors::TokenSaveError::Config {
-        message: format!(
-            "no TokenSave index found at '{}' — run 'tokensave sync' first",
-            project_path.display()
-        ),
-    })
-}
-
-/// Best-effort: register this project in the user-level global DB and
-/// accumulate the token-saved delta into the pending upload counter.
-async fn update_global_db(cg: &TokenSave) {
-    let tokens = cg.get_tokens_saved().await.unwrap_or(0);
-    if let Some(gdb) = tokensave::global_db::GlobalDb::open().await {
-        let previous = gdb.get_project_tokens(cg.project_root()).await;
-        gdb.upsert(cg.project_root(), tokens).await;
-
-        // Accumulate delta into pending upload
-        if tokens > previous {
-            let mut config = tokensave::user_config::UserConfig::load();
-            config.pending_upload += tokens - previous;
-            config.save();
-        }
-    }
-}
-
-/// Best-effort: try to flush pending tokens to the worldwide counter.
-/// `force` = true on status/sync commands (always attempt), false on others
-/// (only flush if stale > 30s).
-fn try_flush(config: &mut tokensave::user_config::UserConfig, force: bool) {
-    if config.pending_upload == 0 || !config.upload_enabled {
+    if tokensave::agents::repo_hooks_dir(project_path).is_none() {
         return;
     }
-    let now = current_unix_timestamp();
-
-    // Cooldown: skip if last flush attempt failed less than 60s ago
-    if config.last_flush_attempt_at > config.last_upload_at
-        && now - config.last_flush_attempt_at < 60
-    {
+    // Global hooks already cover this repository; installing local ones too
+    // would run a sync twice per commit.
+    if !forced && tokensave::agents::global_git_hooks_installed() {
         return;
     }
-
-    // Staleness check for non-force commands
-    if !force && now - config.last_upload_at < 30 {
+    if !forced && tokensave::agents::local_git_hooks_present(project_path) {
+        // Present, so nothing is installed — but tokensave's own fenced block
+        // may be an older shape than this binary writes. Rewriting it needs no
+        // prompt (#342 Q1): the fence marks the region tokensave owns and
+        // everything outside it is preserved byte-for-byte. Without this, the
+        // early return is exactly the bug the issue describes — a block that
+        // can never be updated after first install.
+        for name in tokensave::agents::migrate_local_hook_blocks(project_path, &current_bin_path())
+        {
+            eprintln!(
+                "\x1b[32m✔\x1b[0m Updated tokensave's section of the git {name} hook \
+                 (your own content in that file was left untouched)"
+            );
+        }
         return;
     }
-
-    config.last_flush_attempt_at = now;
-    if let Some(worldwide_total) = tokensave::cloud::flush_pending(config.pending_upload) {
-        config.pending_upload = 0;
-        config.last_upload_at = now;
-        config.last_worldwide_total = worldwide_total;
-        config.last_worldwide_fetch_at = now;
-    }
-}
-
-/// Best-effort version check with 5-minute network cache. If `skip_cache` is
-/// true, always fetches from GitHub (used during sync where the call runs in
-/// parallel). If `skip_suppression` is false, the warning is suppressed for 15
-/// minutes after it was last shown; if true it is always shown (used for status).
-fn check_for_update(config: &mut tokensave::user_config::UserConfig, skip_cache: bool, skip_suppression: bool) {
-    let current_version = env!("CARGO_PKG_VERSION");
-    let now = current_unix_timestamp();
-
-    let latest = if !skip_cache && now - config.last_version_check_at < 300 {
-        // Use cached value
-        if config.cached_latest_version.is_empty() {
+    if !forced {
+        if !std::io::stdin().is_terminal() {
             return;
         }
-        config.cached_latest_version.clone()
-    } else if let Some(v) = tokensave::cloud::fetch_latest_version() {
-        config.cached_latest_version = v.clone();
-        config.last_version_check_at = now;
-        config.save();
-        v
-    } else {
-        return;
-    };
-
-    // The status page (skip_suppression=true) warns on any newer version;
-    // the CLI only warns on minor+ bumps to avoid nagging on patch releases.
-    let dominated = if skip_suppression {
-        tokensave::cloud::is_newer_version(current_version, &latest)
-    } else {
-        tokensave::cloud::is_newer_minor_version(current_version, &latest)
-    };
-
-    if dominated && (skip_suppression || now - config.last_version_warning_at >= 900)
-    {
-        eprintln!(
-            "\n\x1b[33mUpdate available: v{} → v{}\x1b[0m\n  Run: \x1b[1mtokensave upgrade\x1b[0m",
-            current_version, latest
+        eprintln!();
+        eprint!(
+            "Install this repository's git \x1b[1mpost-commit\x1b[0m + \x1b[1mpost-checkout\x1b[0m + \x1b[1mpost-merge\x1b[0m hooks to keep the index fresh? [Y/n] "
         );
-        if !skip_suppression {
-            config.last_version_warning_at = now;
-            config.save();
+        io::stderr().flush().ok();
+        let mut answer = String::new();
+        if io::stdin().lock().read_line(&mut answer).is_err() {
+            return;
         }
+        let answer = answer.trim();
+        if !(answer.is_empty()
+            || answer.eq_ignore_ascii_case("y")
+            || answer.eq_ignore_ascii_case("yes"))
+        {
+            eprintln!("  Skipped git hooks — install later with `tokensave githooks on --local`");
+            return;
+        }
+    }
+    match tokensave::agents::install_local_git_hooks(project_path, &current_bin_path()) {
+        Ok(outcome) => report_local_hook_install(&outcome),
+        Err(message) => eprintln!("  \x1b[31m✘\x1b[0m {message}"),
     }
 }
 
-// display, doctor, and is_test_file functions moved to:
-// - src/display.rs (status table rendering)
-// - src/doctor.rs (health checks)
-// - src/tokensave.rs (is_test_file)
+fn report_hook_removal(r: &tokensave::agents::HookRemoval) {
+    if r.found_nothing() {
+        eprintln!(
+            "  No tokensave git hooks found in {}",
+            r.hooks_dir.display()
+        );
+        return;
+    }
+    for p in &r.deleted {
+        eprintln!("\x1b[32m✔\x1b[0m Removed git hook {}", p.display());
+    }
+    for p in &r.cleaned {
+        eprintln!(
+            "\x1b[32m✔\x1b[0m Removed tokensave section from {} (your own hook content kept)",
+            p.display()
+        );
+    }
+    if r.hooks_path_unset {
+        eprintln!("\x1b[32m✔\x1b[0m Unset git core.hooksPath");
+    } else if r.dir_kept_for_foreign_files {
+        eprintln!(
+            "  Left {} and core.hooksPath in place — the directory still holds hooks tokensave did not write",
+            r.hooks_dir.display()
+        );
+    }
+}
 
+/// The one line the silent upgrade resync prints when it has written agent
+/// config (#419).
+///
+/// The user did not ask for an install — they may have run a read-only query
+/// like `tokensave gitignore` — so a write to their agent config has to name
+/// itself and say why. Before this, the only output was a bare `✔ Wrote
+/// <path>` escaping from the file layer, which read as though the query had
+/// done it.
+fn resync_summary(running: &str, previous: &str, agent_count: usize) -> String {
+    let from = if previous.is_empty() {
+        "version not recorded"
+    } else {
+        previous
+    };
+    let agents = if agent_count == 1 {
+        "1 agent".to_string()
+    } else {
+        format!("{agent_count} agents")
+    };
+    format!("Refreshed agent config for tokensave {running} (was {from}) — {agents}")
+}
 
+fn server_disabled_from_env(canonical: Option<&str>, legacy: Option<&str>) -> bool {
+    match canonical {
+        Some("true") => true,
+        Some("false") => false,
+        Some(_) | None => legacy == Some("true"),
+    }
+}
 
-
-/// BFS through file dependents to find test files affected by changes.
-async fn find_affected_tests(
-    cg: &TokenSave,
-    changed_files: &[String],
-    max_depth: usize,
-    custom_filter: Option<&str>,
-) -> tokensave::errors::Result<Vec<String>> {
-    debug_assert!(!changed_files.is_empty(), "find_affected_tests called with no changed files");
-    debug_assert!(max_depth > 0, "find_affected_tests max_depth must be positive");
-    use std::collections::{HashSet, VecDeque};
-
-    let custom_glob = custom_filter.and_then(|p| glob::Pattern::new(p).ok());
-
-    let matches_test = |path: &str| -> bool {
-        if let Some(ref g) = custom_glob {
-            g.matches(path)
-        } else {
-            tokensave::tokensave::is_test_file(path)
-        }
+#[cfg(test)]
+mod startup_tests {
+    use super::{
+        agent_maintenance_disabled_from_env, server_disabled_from_env,
+        should_skip_agent_install_maintenance, Commands,
     };
 
-    let mut affected: HashSet<String> = HashSet::new();
-    let mut visited: HashSet<String> = HashSet::new();
+    /// #575: `cargo test --workspace` must not rewrite the developer's real
+    /// `~/.claude/rules/tokensave.md`. `.cargo/config.toml` sets this for
+    /// every test process; unset, the maintenance path stays on so ordinary
+    /// runs are unaffected.
+    #[test]
+    fn the_env_var_turns_agent_maintenance_off() {
+        assert!(agent_maintenance_disabled_from_env(Some("1")));
+        assert!(agent_maintenance_disabled_from_env(Some("true")));
+        assert!(agent_maintenance_disabled_from_env(Some(" yes ")));
 
-    // Seed: changed files that are themselves tests go directly into the result
-    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-    for file in changed_files {
-        if matches_test(file) {
-            affected.insert(file.clone());
-        }
-        if visited.insert(file.clone()) {
-            queue.push_back((file.clone(), 0));
+        assert!(!agent_maintenance_disabled_from_env(None));
+        for falsey in ["", "0", "false", "no", "off", "OFF"] {
+            assert!(
+                !agent_maintenance_disabled_from_env(Some(falsey)),
+                "{falsey:?} should leave maintenance on"
+            );
         }
     }
 
-    // BFS through file dependents
-    while let Some((file, depth)) = queue.pop_front() {
-        if depth >= max_depth {
-            continue;
-        }
-        let dependents = cg.get_file_dependents(&file).await?;
-        for dep in dependents {
-            if !visited.insert(dep.clone()) {
-                continue;
-            }
-            if matches_test(&dep) {
-                affected.insert(dep.clone());
-            } else {
-                queue.push_back((dep, depth + 1));
-            }
-        }
+    /// #419: the resync used to announce itself only as `✔ Wrote <path>` from
+    /// the file layer, under a command the user had run as a query.
+    #[test]
+    fn resync_summary_names_the_versions_and_the_scale() {
+        let s = super::resync_summary("7.10.0", "7.9.0", 3);
+        assert_eq!(
+            s,
+            "Refreshed agent config for tokensave 7.10.0 (was 7.9.0) — 3 agents"
+        );
+        // A path, which is what the old message consisted of, must not be the
+        // whole story any more.
+        assert!(!s.contains(".claude"));
     }
 
-    let mut result: Vec<String> = affected.into_iter().collect();
-    result.sort();
-    Ok(result)
+    #[test]
+    fn resync_summary_handles_one_agent_and_an_unrecorded_previous_version() {
+        assert_eq!(
+            super::resync_summary("7.10.0", "7.9.0", 1),
+            "Refreshed agent config for tokensave 7.10.0 (was 7.9.0) — 1 agent"
+        );
+        // `last_installed_version` and `previous_version` are both empty on an
+        // install that predates the markers, and the line still has to read.
+        assert_eq!(
+            super::resync_summary("7.10.0", "", 2),
+            "Refreshed agent config for tokensave 7.10.0 (was version not recorded) — 2 agents"
+        );
+    }
+
+    #[test]
+    fn canonical_server_disable_env_controls_serve() {
+        assert!(server_disabled_from_env(Some("true"), None));
+        assert!(!server_disabled_from_env(Some("false"), None));
+        assert!(!server_disabled_from_env(None, None));
+    }
+
+    #[test]
+    fn legacy_server_disable_env_remains_compatible() {
+        assert!(server_disabled_from_env(None, Some("true")));
+        assert!(!server_disabled_from_env(None, Some("false")));
+        assert!(!server_disabled_from_env(None, Some("1")));
+    }
+
+    #[test]
+    fn canonical_server_disable_env_has_precedence() {
+        assert!(server_disabled_from_env(Some("true"), Some("false")));
+        assert!(!server_disabled_from_env(Some("false"), Some("true")));
+        assert!(server_disabled_from_env(Some("TRUE"), Some("true")));
+        assert!(server_disabled_from_env(Some("1"), Some("true")));
+        assert!(server_disabled_from_env(Some(""), Some("true")));
+    }
+
+    #[test]
+    fn doctor_skips_agent_install_maintenance() {
+        let command = Commands::Doctor {
+            agent: Some("kiro".to_string()),
+        };
+        assert!(should_skip_agent_install_maintenance(&command));
+    }
+
+    #[test]
+    fn explicit_agent_config_commands_skip_agent_install_maintenance() {
+        assert!(should_skip_agent_install_maintenance(&Commands::Install {
+            agent: vec!["kiro".to_string()],
+            git_hook: tokensave::agents::GitHookMode::Default,
+            local: false,
+            wildcard_permissions: false,
+            explicit_permissions: false,
+        }));
+        assert!(should_skip_agent_install_maintenance(
+            &Commands::Reinstall {
+                wildcard_permissions: false,
+                explicit_permissions: false,
+            }
+        ));
+        assert!(should_skip_agent_install_maintenance(
+            &Commands::Uninstall {
+                agent: Some("kiro".to_string()),
+                local: false,
+                keep_git_hooks: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn normal_commands_keep_agent_install_maintenance() {
+        assert!(!should_skip_agent_install_maintenance(&Commands::Status {
+            path: None,
+            json: false,
+            short: false,
+            details: false,
+            runtime: false,
+        }));
+    }
+
+    #[test]
+    fn serve_skips_agent_install_maintenance() {
+        // `tokensave serve` is the MCP hot path with a 30 s client-side
+        // `initialize` timeout (#84). Pre-serve maintenance work
+        // (worldwide-counter flush, install-stale check, silent reinstall)
+        // must NOT run on this path.
+        assert!(should_skip_agent_install_maintenance(&Commands::Serve {
+            path: None,
+            timings: false,
+            idle_timeout_secs: None,
+        }));
+    }
+
+    #[test]
+    fn per_tool_call_hooks_skip_agent_install_maintenance() {
+        // Every per-tool-call hook must take the fast, side-effect-free path.
+        // The Droid hook was previously missing from the skip list, so unlike
+        // the Claude and Kiro hooks it ran the pre-dispatch maintenance
+        // (network flush, install-stale check, and the silent-reinstall loop
+        // that rewrites every tracked agent's config) on each invocation.
+        for command in [
+            Commands::HookPreToolUse,
+            Commands::HookPreToolUseCodex,
+            Commands::HookPromptSubmit,
+            Commands::HookStop,
+            Commands::HookKiroPreToolUse,
+            Commands::HookKiroPromptSubmit,
+            Commands::HookKiroPostToolUse,
+            Commands::HookDroidPreToolUse,
+        ] {
+            assert!(
+                should_skip_agent_install_maintenance(&command),
+                "per-tool-call hook must skip agent install maintenance"
+            );
+        }
+    }
 }
+
+// handle_branch_action, handle_wipe, handle_list, handle_no_command,
+// init_and_index, and print_sync_doctor have been moved to src/commands.rs.
+//
+// update_global_db, try_flush, check_for_update, gather_target_projects,
+// gather_local_projects, gather_local_projects_from, find_descendant_tokensave,
+// print_flash_warning, and tokensave_dir_size have been moved to src/global.rs.
 // direct test 1774739850
-// daemon-test-1774740132
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod cost_tests {
+    use super::format_agent_row;
+    use tokensave::global_db::AgentCostSummary;
+
+    fn droid_summary(credits: Option<u64>) -> AgentCostSummary {
+        AgentCostSummary {
+            agent: "droid".to_string(),
+            cost_usd: 0.0,
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_write_tokens: 200,
+            cache_read_tokens: 300,
+            credits,
+            turns: 5,
+        }
+    }
+
+    #[test]
+    fn droid_row_has_na_usd_and_not_zero_dollar() {
+        // credits = 2900 → "2.9k"; raw = 1000+500+200+300 = 2000 → "2.0k"
+        let a = AgentCostSummary {
+            agent: "droid".to_string(),
+            cost_usd: 0.0,
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_write_tokens: 200,
+            cache_read_tokens: 300,
+            credits: Some(2900),
+            turns: 5,
+        };
+        let row = format_agent_row(&a);
+        assert!(row.contains("2.9k"), "credits 2.9k expected in: {row}");
+        assert!(row.contains("n/a"), "n/a for USD expected in: {row}");
+        assert!(!row.contains("$0.00"), "$0.00 must not appear in: {row}");
+    }
+
+    #[test]
+    fn droid_row_none_credits_shows_na() {
+        let a = droid_summary(None);
+        let row = format_agent_row(&a);
+        // Both USD and credits should be "n/a"
+        assert_eq!(row.matches("n/a").count(), 2, "two n/a expected in: {row}");
+        assert!(!row.contains("$0.00"), "$0.00 must not appear in: {row}");
+    }
+
+    #[test]
+    fn claude_row_formats_usd() {
+        let a = AgentCostSummary {
+            agent: "claude".to_string(),
+            cost_usd: 1.23,
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            credits: None,
+            turns: 3,
+        };
+        let row = format_agent_row(&a);
+        assert!(row.contains("$1.23"), "$1.23 expected in: {row}");
+        assert!(row.contains("n/a"), "n/a for credits expected in: {row}");
+    }
+
+    #[test]
+    fn droid_json_row_cost_usd_is_null() {
+        let a = droid_summary(Some(1000));
+        let json = super::agent_row_json(&a);
+        assert!(
+            json["cost_usd"].is_null(),
+            "cost_usd must be null for droid: {json}"
+        );
+        assert_eq!(json["credits"].as_u64(), Some(1000));
+        assert_eq!(json["input_tokens"].as_u64(), Some(1000));
+    }
+
+    #[test]
+    fn claude_json_row_cost_usd_is_numeric() {
+        let a = AgentCostSummary {
+            agent: "claude".to_string(),
+            cost_usd: 2.50,
+            input_tokens: 500,
+            output_tokens: 100,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            credits: None,
+            turns: 7,
+        };
+        let json = super::agent_row_json(&a);
+        assert!(
+            json["cost_usd"].is_number(),
+            "cost_usd must be numeric for claude: {json}"
+        );
+        assert!(
+            (json["cost_usd"].as_f64().unwrap() - 2.50).abs() < 1e-9,
+            "cost_usd value mismatch: {json}"
+        );
+        assert!(
+            json["credits"].is_null(),
+            "claude credits must be null: {json}"
+        );
+    }
+}
+
+/// Exit when the process that launched us is gone (#450, defect 3 of the #396
+/// triage).
+///
+/// A `serve` whose host died keeps its index mapped and keeps answering
+/// nothing, because stdin never reaches EOF once the parent's end of the pipe
+/// is inherited elsewhere — the reported servers survived their supervisor and
+/// had to be found by hand. A reparented process is unambiguous on Unix: its
+/// parent becomes PID 1 (or whatever subreaper adopts it), never the PID it
+/// started with.
+///
+/// This is deliberately *not* a fix for #436, where every surplus server has a
+/// live parent and there is no dead-parent signal to key on.
+#[cfg(unix)]
+fn watch_for_orphaning() {
+    /// Slow on purpose. An orphan wastes memory until it is noticed, which is
+    /// a minute-scale problem, not a second-scale one, and this polls for the
+    /// entire life of every server.
+    const POLL: std::time::Duration = std::time::Duration::from_secs(30);
+
+    let original = std::os::unix::process::parent_id();
+    // A server already started by PID 1 (a launchd/systemd unit) has no parent
+    // to lose, and would otherwise exit on its first tick.
+    if original <= 1 {
+        return;
+    }
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(POLL).await;
+            if std::os::unix::process::parent_id() != original {
+                eprintln!("[tokensave] parent process {original} is gone; shutting down");
+                tokensave::cancel::request();
+                return;
+            }
+        }
+    });
+}
+
+/// No reparenting signal to watch for off Unix.
+#[cfg(not(unix))]
+fn watch_for_orphaning() {}
+
+/// Runs a `serve` MCP server on stdio until the client leaves, the idle
+/// timeout passes, or a signal arrives, then shuts it down.
+///
+/// `peeked_line` is the first stdin line, when `serve` already read it to look
+/// for `initialize` roots; it is replayed so the server still answers it.
+async fn run_mcp_server(
+    server: &std::sync::Arc<tokensave::mcp::McpServer>,
+    timings: bool,
+    peeked_line: Option<String>,
+    idle_timeout_secs: Option<u64>,
+) -> tokensave::errors::Result<()> {
+    server.set_timings_enabled(timings);
+    let transport = tokensave::mcp::StdioTransport::new();
+    // The server reads the next request while it is still answering the
+    // previous one, so the transport is split into its two halves (#685).
+    let (reader, mut writer) = tokensave::mcp::McpTransport::split(transport);
+    if let Some(line) = peeked_line {
+        server.handle_and_write(&line, &mut writer).await;
+    }
+    server
+        .run_with_halves(
+            reader,
+            writer,
+            idle_timeout_secs.map(std::time::Duration::from_secs),
+        )
+        .await?;
+    server.shutdown().await;
+    Ok(())
+}
+
+/// Ends a `serve` process once its server has shut down.
+///
+/// Exits explicitly rather than unwinding out of `main` (#450/#436).
+/// `tokio::io::stdin()` performs its reads on a blocking thread, and a blocking
+/// task cannot be cancelled — so the outstanding read is still parked when the
+/// run loop leaves. Dropping the runtime waits for it, and under a supervisor
+/// that holds our stdin open it never completes: the server ran its whole
+/// graceful shutdown, printed its summary, and then sat there alive and
+/// unkillable by anything short of `SIGKILL`. That is the reported "kill did
+/// nothing" and the servers that "never exit" under a live parent.
+///
+/// Shutdown has already persisted counters and checkpointed the WAL, and is
+/// idempotent, so there is nothing left to unwind for. Stdout is flushed
+/// first: a response written just before a signal must still reach the client.
+fn exit_after_serve() -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::spinner_tail;
+
+    /// A short message is passed through untouched, with no ellipsis.
+    #[test]
+    fn a_short_message_is_not_truncated() {
+        assert_eq!(
+            spinner_tail("[1/10] syncing src/lib.rs"),
+            "[1/10] syncing src/lib.rs"
+        );
+    }
+
+    /// The tail of a long ASCII message is kept, prefixed with an ellipsis.
+    #[test]
+    fn a_long_ascii_message_keeps_its_tail() {
+        let text = format!(
+            "[8/3000] syncing {}/deep/nested/file.rs (ETA: 184s)",
+            "a".repeat(80)
+        );
+        let out = spinner_tail(&text);
+        assert!(out.starts_with('…'), "expected an ellipsis prefix: {out}");
+        assert!(
+            out.ends_with("(ETA: 184s)"),
+            "expected the tail to survive: {out}"
+        );
+    }
+
+    /// The regression: a byte cut landing inside a Hangul character must not
+    /// panic. The `.md`/`a.md`/`ab.md` suffixes walk the cut through every
+    /// offset inside a 3-byte character, so one of them lands mid-character
+    /// whatever the exact message length.
+    #[test]
+    fn a_cut_inside_a_multibyte_character_does_not_panic() {
+        for suffix in ["", "a", "ab"] {
+            let text = format!(
+                "[8/3000] syncing 문서/1310_플랫폼아키텍처개요문서설치안내가이드입니다{suffix}.md (ETA: 184s)"
+            );
+            let out = spinner_tail(&text);
+            assert!(out.starts_with('…'), "expected an ellipsis prefix: {out}");
+            assert!(
+                out.ends_with(".md (ETA: 184s)"),
+                "expected the tail to survive: {out}"
+            );
+        }
+    }
+
+    /// The same cut over 4-byte characters, where a naive `+1` fixup would
+    /// still land inside the character.
+    #[test]
+    fn a_cut_inside_a_four_byte_character_does_not_panic() {
+        for pad in 0..4 {
+            let text = format!("{}{} done", "🚀".repeat(20), "x".repeat(pad));
+            let out = spinner_tail(&text);
+            assert!(out.ends_with("done"), "expected the tail to survive: {out}");
+        }
+    }
+}

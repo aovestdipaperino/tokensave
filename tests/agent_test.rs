@@ -3,6 +3,8 @@ use std::path::Path;
 use tempfile::TempDir;
 use tokensave::agents::*;
 
+use crate::common::{make_install_ctx, make_install_ctx_with_real_bin};
+
 // ---------------------------------------------------------------------------
 // 1. Registry tests
 // ---------------------------------------------------------------------------
@@ -10,7 +12,7 @@ use tokensave::agents::*;
 #[test]
 fn test_get_all_integrations() {
     let all = all_integrations();
-    assert_eq!(all.len(), 9);
+    assert_eq!(all.len(), 21);
 }
 
 #[test]
@@ -20,18 +22,51 @@ fn test_available_integrations() {
     assert!(ids.contains(&"copilot"));
     assert!(ids.contains(&"codex"));
     assert!(ids.contains(&"gemini"));
+    assert!(ids.contains(&"qwen"));
     assert!(ids.contains(&"opencode"));
     assert!(ids.contains(&"cursor"));
+    assert!(ids.contains(&"droid"));
     assert!(ids.contains(&"zed"));
     assert!(ids.contains(&"cline"));
     assert!(ids.contains(&"roo-code"));
-    assert_eq!(ids.len(), 9);
+    assert!(ids.contains(&"antigravity"));
+    assert!(ids.contains(&"kilo"));
+    assert!(ids.contains(&"kiro"));
+    assert!(ids.contains(&"kimi"));
+    assert!(ids.contains(&"vibe"));
+    assert!(ids.contains(&"grok"));
+    assert!(ids.contains(&"omp"));
+    assert!(ids.contains(&"pi"));
+    assert!(ids.contains(&"plank"));
+    assert!(ids.contains(&"qwen"));
+    assert!(ids.contains(&"auggie"));
+    assert_eq!(ids.len(), 21);
 }
 
 #[test]
 fn test_get_integration_valid() {
     for id in &[
-        "claude", "opencode", "codex", "gemini", "copilot", "cursor", "zed", "cline", "roo-code",
+        "claude",
+        "opencode",
+        "codex",
+        "gemini",
+        "qwen",
+        "copilot",
+        "cursor",
+        "droid",
+        "zed",
+        "cline",
+        "roo-code",
+        "antigravity",
+        "kilo",
+        "kiro",
+        "kimi",
+        "vibe",
+        "grok",
+        "omp",
+        "pi",
+        "plank",
+        "auggie",
     ] {
         let agent = get_integration(id).unwrap();
         assert_eq!(agent.id(), *id);
@@ -65,11 +100,22 @@ fn test_agent_names_are_human_readable() {
         ("copilot", "GitHub Copilot"),
         ("codex", "Codex CLI"),
         ("gemini", "Gemini CLI"),
+        ("qwen", "Qwen Code"),
         ("opencode", "OpenCode"),
         ("cursor", "Cursor"),
+        ("droid", "Factory Droid"),
         ("zed", "Zed"),
         ("cline", "Cline"),
         ("roo-code", "Roo Code"),
+        ("antigravity", "Antigravity"),
+        ("kilo", "Kilo CLI"),
+        ("kiro", "Kiro"),
+        ("kimi", "Kimi CLI"),
+        ("vibe", "Mistral Vibe"),
+        ("grok", "Grok Build"),
+        ("pi", "Pi"),
+        ("plank", "Plank"),
+        ("auggie", "AugmentCode"),
     ];
     for (id, expected_name) in expected_names {
         let agent = get_integration(id).unwrap();
@@ -81,14 +127,6 @@ fn test_agent_names_are_human_readable() {
 // 3. Install / config creation tests (with tempdir)
 // ---------------------------------------------------------------------------
 
-fn make_install_ctx(home: &Path) -> InstallContext {
-    InstallContext {
-        home: home.to_path_buf(),
-        tokensave_bin: "/usr/local/bin/tokensave".to_string(),
-        tool_permissions: EXPECTED_TOOL_PERMS,
-    }
-}
-
 #[test]
 fn test_claude_install_creates_config() {
     let dir = TempDir::new().unwrap();
@@ -98,7 +136,10 @@ fn test_claude_install_creates_config() {
 
     // Check ~/.claude.json exists and has mcpServers.tokensave
     let claude_json = home.join(".claude.json");
-    assert!(claude_json.exists(), "~/.claude.json should exist after install");
+    assert!(
+        claude_json.exists(),
+        "~/.claude.json should exist after install"
+    );
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&claude_json).unwrap()).unwrap();
     assert!(
@@ -110,12 +151,17 @@ fn test_claude_install_creates_config() {
         "mcpServers.tokensave should be an object"
     );
     // Verify args contain "serve"
-    let args = content["mcpServers"]["tokensave"]["args"].as_array().unwrap();
+    let args = content["mcpServers"]["tokensave"]["args"]
+        .as_array()
+        .unwrap();
     assert!(args.iter().any(|v| v.as_str() == Some("serve")));
 
     // Check ~/.claude/settings.json exists with hook and permissions
-    let settings_path = home.join(".claude/settings.json");
-    assert!(settings_path.exists(), "settings.json should exist after install");
+    let settings_path = home.join(".claude").join("settings.json");
+    assert!(
+        settings_path.exists(),
+        "settings.json should exist after install"
+    );
     let settings: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
     // Check hook
@@ -129,11 +175,22 @@ fn test_claude_install_creates_config() {
         "permissions.allow should be an array"
     );
 
-    // Check CLAUDE.md exists with tokensave rules
-    let claude_md = home.join(".claude/CLAUDE.md");
-    assert!(claude_md.exists(), "CLAUDE.md should exist after install");
-    let md_content = std::fs::read_to_string(&claude_md).unwrap();
-    assert!(md_content.contains("tokensave"), "CLAUDE.md should mention tokensave");
+    // Issue #256: rules live in a tokensave-owned managed file, not
+    // appended to the user's CLAUDE.md.
+    assert!(
+        !home.join(".claude").join("CLAUDE.md").exists(),
+        "install should not create/touch CLAUDE.md"
+    );
+    let rules_path = home.join(".claude").join("rules").join("tokensave.md");
+    assert!(
+        rules_path.exists(),
+        "managed rules file should exist after install"
+    );
+    let rules_content = std::fs::read_to_string(&rules_path).unwrap();
+    assert!(
+        rules_content.contains("tokensave"),
+        "managed rules file should mention tokensave"
+    );
 }
 
 #[test]
@@ -144,8 +201,11 @@ fn test_gemini_install_creates_config() {
     GeminiIntegration.install(&ctx).unwrap();
 
     // Check ~/.gemini/settings.json
-    let settings_path = home.join(".gemini/settings.json");
-    assert!(settings_path.exists(), "settings.json should exist after install");
+    let settings_path = home.join(".gemini").join("settings.json");
+    assert!(
+        settings_path.exists(),
+        "settings.json should exist after install"
+    );
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
     assert!(
@@ -160,10 +220,49 @@ fn test_gemini_install_creates_config() {
     );
 
     // Check GEMINI.md
-    let gemini_md = home.join(".gemini/GEMINI.md");
+    let gemini_md = home.join(".gemini").join("GEMINI.md");
     assert!(gemini_md.exists(), "GEMINI.md should exist after install");
     let md_content = std::fs::read_to_string(&gemini_md).unwrap();
-    assert!(md_content.contains("tokensave"));
+    assert!(
+        md_content.contains("<!-- tokensave rules begin"),
+        "rules should use the managed marker block"
+    );
+}
+
+#[test]
+fn test_qwen_install_creates_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+    QwenIntegration.install(&ctx).unwrap();
+
+    // Check ~/.qwen/settings.json
+    let settings_path = home.join(".qwen").join("settings.json");
+    assert!(
+        settings_path.exists(),
+        "settings.json should exist after install"
+    );
+    let content: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    assert!(
+        content["mcpServers"]["tokensave"].is_object(),
+        "mcpServers.tokensave should exist"
+    );
+    // Verify trust flag
+    assert_eq!(
+        content["mcpServers"]["tokensave"]["trust"],
+        serde_json::json!(true),
+        "qwen should have trust: true"
+    );
+
+    // Check QWEN.md
+    let qwen_md = home.join(".qwen").join("QWEN.md");
+    assert!(qwen_md.exists(), "QWEN.md should exist after install");
+    let md_content = std::fs::read_to_string(&qwen_md).unwrap();
+    assert!(
+        md_content.contains("<!-- tokensave rules begin"),
+        "rules should use the managed marker block"
+    );
 }
 
 #[test]
@@ -174,8 +273,11 @@ fn test_codex_install_creates_config() {
     CodexIntegration.install(&ctx).unwrap();
 
     // Check ~/.codex/config.toml
-    let config_path = home.join(".codex/config.toml");
-    assert!(config_path.exists(), "config.toml should exist after install");
+    let config_path = home.join(".codex").join("config.toml");
+    assert!(
+        config_path.exists(),
+        "config.toml should exist after install"
+    );
     // Verify the file contains the expected content as text (the TOML output from
     // toml::to_string_pretty uses dotted headers which may not round-trip through
     // toml::Value::parse in all crate versions)
@@ -190,10 +292,81 @@ fn test_codex_install_creates_config() {
     );
 
     // Check AGENTS.md
-    let agents_md = home.join(".codex/AGENTS.md");
+    let agents_md = home.join(".codex").join("AGENTS.md");
     assert!(agents_md.exists(), "AGENTS.md should exist after install");
     let md_content = std::fs::read_to_string(&agents_md).unwrap();
     assert!(md_content.contains("tokensave"));
+}
+
+#[test]
+fn test_kimi_install_creates_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+    KimiIntegration.install(&ctx).unwrap();
+
+    let mcp_path = home.join(".kimi").join("mcp.json");
+    assert!(mcp_path.exists(), "mcp.json should exist after install");
+    let content: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+    assert!(
+        content["mcpServers"]["tokensave"].is_object(),
+        "mcpServers.tokensave should be an object"
+    );
+    let args = content["mcpServers"]["tokensave"]["args"]
+        .as_array()
+        .unwrap();
+    assert!(args.iter().any(|v| v.as_str() == Some("serve")));
+
+    let agents_md = home.join(".kimi").join("AGENTS.md");
+    assert!(agents_md.exists(), "AGENTS.md should exist after install");
+    let md_content = std::fs::read_to_string(&agents_md).unwrap();
+    assert!(
+        md_content.contains("<!-- tokensave rules begin"),
+        "rules should use the managed marker block"
+    );
+}
+
+#[test]
+fn test_kimi_install_then_uninstall() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+
+    KimiIntegration.install(&ctx).unwrap();
+    let mcp_path = home.join(".kimi").join("mcp.json");
+    assert!(mcp_path.exists());
+
+    KimiIntegration.uninstall(&ctx).unwrap();
+
+    assert!(
+        !mcp_path.exists(),
+        "mcp.json with only tokensave should be removed on uninstall"
+    );
+
+    let agents_md = home.join(".kimi").join("AGENTS.md");
+    if agents_md.exists() {
+        let content = std::fs::read_to_string(&agents_md).unwrap();
+        assert!(
+            !content.contains("## Prefer tokensave MCP tools"),
+            "AGENTS.md should not have tokensave rules after uninstall"
+        );
+    }
+}
+
+#[test]
+fn test_kimi_is_detected_and_has_tokensave() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    assert!(!KimiIntegration.is_detected(home));
+    assert!(!KimiIntegration.has_tokensave(home));
+
+    let ctx = make_install_ctx(home);
+    KimiIntegration.install(&ctx).unwrap();
+
+    assert!(KimiIntegration.is_detected(home));
+    assert!(KimiIntegration.has_tokensave(home));
 }
 
 #[test]
@@ -203,27 +376,87 @@ fn test_cursor_install_creates_config() {
     let ctx = make_install_ctx(home);
     CursorIntegration.install(&ctx).unwrap();
 
-    let mcp_path = home.join(".cursor/mcp.json");
+    let mcp_path = home.join(".cursor").join("mcp.json");
     assert!(mcp_path.exists(), "mcp.json should exist after install");
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
     assert!(content["mcpServers"]["tokensave"].is_object());
+
+    let hooks_path = home.join(".cursor").join("hooks.json");
+    assert!(hooks_path.exists(), "hooks.json should exist after install");
+    let hooks: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
+    let pre = hooks["hooks"]["preToolUse"].as_array().unwrap();
+    assert!(pre.iter().any(|e| {
+        e["matcher"].as_str() == Some("Grep|Shell")
+            && e["command"]
+                .as_str()
+                .is_some_and(|c| c.contains("hook-pre-tool-use"))
+    }));
 }
 
 #[test]
-fn test_opencode_install_creates_config() {
+fn test_cursor_install_preserves_foreign_hooks() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
-    // OpenCode uses ~/.config/opencode/opencode.json
-    // Create the parent dir so install can discover it
-    let ctx = make_install_ctx(home);
-    OpenCodeIntegration.install(&ctx).unwrap();
+    let hooks_path = home.join(".cursor").join("hooks.json");
+    std::fs::create_dir_all(hooks_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &hooks_path,
+        r#"{
+            "version": 1,
+            "hooks": {
+                "preToolUse": [
+                    {"command": "rtk hook cursor", "matcher": "Shell"},
+                    {"command": "/opt/custom/limit.py", "matcher": "Task"}
+                ]
+            }
+        }"#,
+    )
+    .unwrap();
 
-    let config_path = home.join(".config/opencode/opencode.json");
-    assert!(config_path.exists(), "opencode.json should exist after install");
-    let content: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-    assert!(content["mcp"]["tokensave"].is_object());
+    let ctx = make_install_ctx(home);
+    CursorIntegration.install(&ctx).unwrap();
+
+    let hooks: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
+    let pre = hooks["hooks"]["preToolUse"].as_array().unwrap();
+    assert_eq!(pre.len(), 3, "should append tokensave, keep rtk + custom");
+    assert!(pre
+        .iter()
+        .any(|e| e["command"].as_str() == Some("rtk hook cursor")));
+    assert!(pre.iter().any(|e| {
+        e["command"]
+            .as_str()
+            .is_some_and(|c| c.contains("hook-pre-tool-use"))
+    }));
+}
+
+#[test]
+fn test_cursor_uninstall_removes_only_tokensave_hooks() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+    CursorIntegration.install(&ctx).unwrap();
+    CursorIntegration.uninstall(&ctx).unwrap();
+
+    let hooks_path = home.join(".cursor").join("hooks.json");
+    assert!(
+        !hooks_path.exists() || {
+            let hooks: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&hooks_path).unwrap()).unwrap();
+            hooks["hooks"]["preToolUse"]
+                .as_array()
+                .map(|a| {
+                    !a.iter().any(|e| {
+                        e["command"]
+                            .as_str()
+                            .is_some_and(|c| c.contains("tokensave"))
+                    })
+                })
+                .unwrap_or(true)
+        }
+    );
 }
 
 #[test]
@@ -236,11 +469,18 @@ fn test_zed_install_creates_config() {
     // On macOS: ~/Library/Application Support/Zed/settings.json
     // On linux: ~/.config/zed/settings.json
     #[cfg(target_os = "macos")]
-    let settings_path = home.join("Library/Application Support/Zed/settings.json");
+    let settings_path = home
+        .join("Library")
+        .join("Application Support")
+        .join("Zed")
+        .join("settings.json");
     #[cfg(not(target_os = "macos"))]
-    let settings_path = home.join(".config/zed/settings.json");
+    let settings_path = home.join(".config").join("zed").join("settings.json");
 
-    assert!(settings_path.exists(), "Zed settings.json should exist after install");
+    assert!(
+        settings_path.exists(),
+        "Zed settings.json should exist after install"
+    );
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
     assert!(content["context_servers"]["tokensave"].is_object());
@@ -255,15 +495,38 @@ fn test_cline_install_creates_config() {
 
     // Cline uses VS Code extension global storage
     #[cfg(target_os = "macos")]
-    let settings_path = home.join("Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
+    let settings_path = home
+        .join("Library")
+        .join("Application Support")
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("saoudrizwan.claude-dev")
+        .join("settings")
+        .join("cline_mcp_settings.json");
     #[cfg(target_os = "linux")]
-    let settings_path = home.join(".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
+    let settings_path = home.join(
+        ".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+    );
     #[cfg(target_os = "windows")]
-    let settings_path = home.join("AppData/Roaming/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
+    let settings_path = home
+        .join("AppData")
+        .join("Roaming")
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("saoudrizwan.claude-dev")
+        .join("settings")
+        .join("cline_mcp_settings.json");
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    let settings_path = home.join(".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
+    let settings_path = home.join(
+        ".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+    );
 
-    assert!(settings_path.exists(), "Cline settings should exist after install");
+    assert!(
+        settings_path.exists(),
+        "Cline settings should exist after install"
+    );
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
     assert!(content["mcpServers"]["tokensave"].is_object());
@@ -277,15 +540,48 @@ fn test_roo_code_install_creates_config() {
     RooCodeIntegration.install(&ctx).unwrap();
 
     #[cfg(target_os = "macos")]
-    let settings_path = home.join("Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
+    let settings_path = home
+        .join("Library")
+        .join("Application Support")
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("rooveterinaryinc.roo-cline")
+        .join("settings")
+        .join("cline_mcp_settings.json");
     #[cfg(target_os = "linux")]
-    let settings_path = home.join(".config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
+    let settings_path = home
+        .join(".config")
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("rooveterinaryinc.roo-cline")
+        .join("settings")
+        .join("cline_mcp_settings.json");
     #[cfg(target_os = "windows")]
-    let settings_path = home.join("AppData/Roaming/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
+    let settings_path = home
+        .join("AppData")
+        .join("Roaming")
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("rooveterinaryinc.roo-cline")
+        .join("settings")
+        .join("cline_mcp_settings.json");
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    let settings_path = home.join(".config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
+    let settings_path = home
+        .join(".config")
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("rooveterinaryinc.roo-cline")
+        .join("settings")
+        .join("cline_mcp_settings.json");
 
-    assert!(settings_path.exists(), "Roo Code settings should exist after install");
+    assert!(
+        settings_path.exists(),
+        "Roo Code settings should exist after install"
+    );
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
     assert!(content["mcpServers"]["tokensave"].is_object());
@@ -298,27 +594,84 @@ fn test_copilot_install_creates_config() {
     let ctx = make_install_ctx(home);
     CopilotIntegration.install(&ctx).unwrap();
 
-    // Check VS Code settings.json
+    // Check VS Code's dedicated mcp.json (1.102+, GA MCP — issue #266)
     #[cfg(target_os = "macos")]
-    let vscode_settings = home.join("Library/Application Support/Code/User/settings.json");
+    let vscode_mcp_json = home
+        .join("Library")
+        .join("Application Support")
+        .join("Code")
+        .join("User")
+        .join("mcp.json");
     #[cfg(target_os = "linux")]
-    let vscode_settings = home.join(".config/Code/User/settings.json");
+    let vscode_mcp_json = home
+        .join(".config")
+        .join("Code")
+        .join("User")
+        .join("mcp.json");
     #[cfg(target_os = "windows")]
-    let vscode_settings = home.join("AppData/Roaming/Code/User/settings.json");
+    let vscode_mcp_json = home
+        .join("AppData")
+        .join("Roaming")
+        .join("Code")
+        .join("User")
+        .join("mcp.json");
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    let vscode_settings = home.join(".config/Code/User/settings.json");
+    let vscode_mcp_json = home
+        .join(".config")
+        .join("Code")
+        .join("User")
+        .join("mcp.json");
 
-    assert!(vscode_settings.exists(), "VS Code settings.json should exist");
+    assert!(vscode_mcp_json.exists(), "VS Code mcp.json should exist");
     let content: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&vscode_settings).unwrap()).unwrap();
-    assert!(content["mcp"]["servers"]["tokensave"].is_object());
+        serde_json::from_str(&std::fs::read_to_string(&vscode_mcp_json).unwrap()).unwrap();
+    assert!(content["servers"]["tokensave"].is_object());
 
     // Check CLI config
-    let cli_config = home.join(".copilot/mcp-config.json");
+    let cli_config = home.join(".copilot").join("mcp-config.json");
     assert!(cli_config.exists(), "Copilot CLI config should exist");
     let cli_content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cli_config).unwrap()).unwrap();
     assert!(cli_content["mcpServers"]["tokensave"].is_object());
+}
+
+#[test]
+fn test_vibe_install_creates_config() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+    VibeIntegration.install(&ctx).unwrap();
+
+    let config_path = home.join(".vibe").join("config.toml");
+    assert!(
+        config_path.exists(),
+        "config.toml should exist after install"
+    );
+    let content = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        content.contains("name = \"tokensave\""),
+        "config should contain tokensave MCP server"
+    );
+    assert!(
+        content.contains("transport = \"stdio\""),
+        "config should use stdio transport"
+    );
+    assert!(
+        content.contains("args = [\"serve\"]"),
+        "config should have serve arg"
+    );
+
+    // Check prompt rules
+    let prompt_path = home.join(".vibe").join("prompts").join("cli.md");
+    assert!(
+        prompt_path.exists(),
+        "Vibe prompt should exist after install"
+    );
+    let prompt = std::fs::read_to_string(&prompt_path).unwrap();
+    assert!(
+        prompt.contains("<!-- tokensave rules begin"),
+        "rules should use the managed marker block"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -341,16 +694,18 @@ fn test_claude_install_then_uninstall() {
     // ~/.claude.json should be removed (was only tokensave)
     // It may be removed entirely or have mcpServers removed
     if home.join(".claude.json").exists() {
-        let content: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join(".claude.json")).unwrap(),
-        )
-        .unwrap();
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap())
+                .unwrap();
         // Should not have tokensave anymore
         let has_tokensave = content
             .get("mcpServers")
             .and_then(|v| v.get("tokensave"))
             .is_some();
-        assert!(!has_tokensave, "tokensave should be removed from .claude.json after uninstall");
+        assert!(
+            !has_tokensave,
+            "tokensave should be removed from .claude.json after uninstall"
+        );
     }
 }
 
@@ -361,7 +716,7 @@ fn test_gemini_install_then_uninstall() {
     let ctx = make_install_ctx(home);
 
     GeminiIntegration.install(&ctx).unwrap();
-    let settings_path = home.join(".gemini/settings.json");
+    let settings_path = home.join(".gemini").join("settings.json");
     assert!(settings_path.exists());
 
     GeminiIntegration.uninstall(&ctx).unwrap();
@@ -374,16 +729,56 @@ fn test_gemini_install_then_uninstall() {
             .get("mcpServers")
             .and_then(|v| v.get("tokensave"))
             .is_some();
-        assert!(!has_tokensave, "tokensave should be removed from settings.json");
+        assert!(
+            !has_tokensave,
+            "tokensave should be removed from settings.json"
+        );
     }
 
     // GEMINI.md should be removed (was only tokensave rules)
-    let gemini_md = home.join(".gemini/GEMINI.md");
+    let gemini_md = home.join(".gemini").join("GEMINI.md");
     if gemini_md.exists() {
         let content = std::fs::read_to_string(&gemini_md).unwrap();
         assert!(
             !content.contains("## Prefer tokensave MCP tools"),
             "GEMINI.md should not contain tokensave rules after uninstall"
+        );
+    }
+}
+
+#[test]
+fn test_qwen_install_then_uninstall() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+
+    QwenIntegration.install(&ctx).unwrap();
+    let settings_path = home.join(".qwen").join("settings.json");
+    assert!(settings_path.exists());
+
+    QwenIntegration.uninstall(&ctx).unwrap();
+
+    // After uninstall, settings.json should be removed or not contain tokensave
+    if settings_path.exists() {
+        let content: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        let has_tokensave = content
+            .get("mcpServers")
+            .and_then(|v| v.get("tokensave"))
+            .is_some();
+        assert!(
+            !has_tokensave,
+            "tokensave should be removed from settings.json"
+        );
+    }
+
+    // QWEN.md should be removed (was only tokensave rules)
+    let qwen_md = home.join(".qwen").join("QWEN.md");
+    if qwen_md.exists() {
+        let content = std::fs::read_to_string(&qwen_md).unwrap();
+        assert!(
+            !content.contains("## Prefer tokensave MCP tools"),
+            "QWEN.md should not contain tokensave rules after uninstall"
         );
     }
 }
@@ -395,22 +790,450 @@ fn test_codex_install_then_uninstall() {
     let ctx = make_install_ctx(home);
 
     CodexIntegration.install(&ctx).unwrap();
-    assert!(home.join(".codex/config.toml").exists());
+    let config_path = home.join(".codex").join("config.toml");
+    assert!(config_path.exists());
 
     CodexIntegration.uninstall(&ctx).unwrap();
 
-    // Note: The uninstall uses load_toml_file which returns empty due to
-    // toml::Value parse limitation. As a result, uninstall cannot find and
-    // remove the mcp_servers entry. The config file is left empty after
-    // uninstall because the empty table is written back. This documents
-    // current behavior.
-    // AGENTS.md should be removed though (uses text-based removal)
-    let agents_md = home.join(".codex/AGENTS.md");
+    // After uninstall, the config (which only contained tokensave) becomes
+    // empty and is removed; or, if other content existed, the tokensave
+    // server is dropped but the rest is preserved.
+    assert!(
+        !config_path.exists(),
+        "config.toml with only tokensave should be removed on uninstall"
+    );
+
+    let agents_md = home.join(".codex").join("AGENTS.md");
     if agents_md.exists() {
         let content = std::fs::read_to_string(&agents_md).unwrap();
         assert!(
             !content.contains("## Prefer tokensave MCP tools"),
             "AGENTS.md should not have tokensave rules after uninstall"
+        );
+    }
+}
+
+#[test]
+fn test_codex_install_preserves_existing_config() {
+    // Regression test for issue #63: installing tokensave used to wipe out the
+    // entire ~/.codex/config.toml because load_toml_file silently returned an
+    // empty table.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    let config_path = home.join(".codex").join("config.toml");
+    let original = "\
+model = \"o4-mini\"
+approval_policy = \"on-failure\"
+
+[mcp_servers.other]
+command = \"other-bin\"
+args = [\"--flag\"]
+";
+    std::fs::write(&config_path, original).unwrap();
+
+    let ctx = make_install_ctx(home);
+    CodexIntegration.install(&ctx).unwrap();
+
+    // A backup of the original must exist.
+    let backup = home.join(".codex").join("config.toml.bak");
+    assert!(backup.exists(), "install must back up the existing config");
+    assert_eq!(std::fs::read_to_string(&backup).unwrap(), original);
+
+    // The new config must keep the user's settings.
+    let new_contents = std::fs::read_to_string(&config_path).unwrap();
+    let parsed: toml::Table = toml::from_str(&new_contents).unwrap();
+    assert_eq!(
+        parsed.get("model").and_then(|v| v.as_str()),
+        Some("o4-mini"),
+        "top-level user keys must be preserved"
+    );
+    assert_eq!(
+        parsed.get("approval_policy").and_then(|v| v.as_str()),
+        Some("on-failure"),
+    );
+    let servers = parsed
+        .get("mcp_servers")
+        .and_then(|v| v.as_table())
+        .expect("mcp_servers should still be a table");
+    assert!(
+        servers.contains_key("other"),
+        "pre-existing mcp_servers entries must be preserved"
+    );
+    assert!(
+        servers.contains_key("tokensave"),
+        "tokensave should be registered alongside existing servers"
+    );
+}
+
+#[test]
+fn test_codex_install_refuses_unparseable_config() {
+    // Issue #63 guard: if the existing config can't be parsed, refuse to
+    // overwrite rather than silently replacing the user's content.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    std::fs::create_dir_all(home.join(".codex")).unwrap();
+    let config_path = home.join(".codex").join("config.toml");
+    let original = "this is not valid TOML {{{{";
+    std::fs::write(&config_path, original).unwrap();
+
+    let ctx = make_install_ctx(home);
+    let result = CodexIntegration.install(&ctx);
+    assert!(
+        result.is_err(),
+        "install must fail when existing config.toml is unparseable"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&config_path).unwrap(),
+        original,
+        "the broken config must be left untouched so the user can fix it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #63 regression: every agent must back up an existing config before
+// overwriting it, and the user's pre-existing content must survive install.
+// ---------------------------------------------------------------------------
+
+/// Seed the agent's primary config with `original`, run install, then assert
+/// that a `.bak` was created with the original bytes and that the new content
+/// still contains the user's `marker` substring.
+///
+/// The path is taken from `agent.primary_config_path(home)` so a future change
+/// to platform-conditional path logic (e.g. zed v4.3.15 Windows incident)
+/// can't drift between tests and production.
+fn assert_install_backs_up_and_preserves(
+    agent: &dyn AgentIntegration,
+    home: &Path,
+    original: &str,
+    marker: &str,
+) {
+    let config_path = agent
+        .primary_config_path(home)
+        .unwrap_or_else(|| panic!("{} must implement primary_config_path", agent.name()));
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    std::fs::write(&config_path, original).unwrap();
+
+    let ctx = make_install_ctx(home);
+    agent.install(&ctx).expect("install should succeed");
+
+    let mut backup = config_path.as_os_str().to_owned();
+    backup.push(".bak");
+    let backup = std::path::PathBuf::from(backup);
+    assert!(
+        backup.exists(),
+        "{}: install must back up the existing config to {}",
+        agent.name(),
+        backup.display()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&backup).unwrap(),
+        original,
+        "{}: backup must contain the exact original bytes",
+        agent.name()
+    );
+
+    let new = std::fs::read_to_string(&config_path).unwrap();
+    assert!(
+        new.contains(marker),
+        "{}: user's pre-existing content (marker {marker:?}) must be preserved, got:\n{new}",
+        agent.name(),
+    );
+}
+
+#[test]
+fn test_claude_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let original = r#"{
+  "theme": "solarized",
+  "mcpServers": {
+    "other": { "command": "other-bin", "args": ["--flag"] }
+  }
+}
+"#;
+    assert_install_backs_up_and_preserves(&ClaudeIntegration, dir.path(), original, "solarized");
+}
+
+#[test]
+fn test_gemini_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let original = r#"{
+  "theme": "dark",
+  "mcpServers": { "other": { "command": "other-bin" } }
+}
+"#;
+    assert_install_backs_up_and_preserves(&GeminiIntegration, dir.path(), original, "\"theme\"");
+}
+
+#[test]
+fn test_cursor_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let original = r#"{
+  "mcpServers": { "other": { "command": "other-bin" } }
+}
+"#;
+    assert_install_backs_up_and_preserves(&CursorIntegration, dir.path(), original, "other-bin");
+}
+
+#[test]
+fn test_opencode_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let original = r#"{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": { "other": { "type": "local", "command": ["other-bin"] } }
+}
+"#;
+    assert_install_backs_up_and_preserves(&OpenCodeIntegration, dir.path(), original, "other-bin");
+}
+
+#[test]
+fn test_zed_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let original = r#"{
+  "theme": "One Dark",
+  "context_servers": { "other": { "command": { "path": "other-bin", "args": [] } } }
+}
+"#;
+    assert_install_backs_up_and_preserves(&ZedIntegration, dir.path(), original, "One Dark");
+}
+
+#[test]
+fn test_cline_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let original = r#"{
+  "mcpServers": { "other": { "command": "other-bin" } }
+}
+"#;
+    assert_install_backs_up_and_preserves(&ClineIntegration, dir.path(), original, "other-bin");
+}
+
+#[test]
+fn test_roo_code_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let original = r#"{
+  "mcpServers": { "other": { "command": "other-bin" } }
+}
+"#;
+    assert_install_backs_up_and_preserves(&RooCodeIntegration, dir.path(), original, "other-bin");
+}
+
+#[test]
+fn test_cursor_uninstall_backs_up_config_with_other_content() {
+    // Regression for issue #63: uninstall paths must also back up the file
+    // before rewriting, so a botched rewrite is recoverable.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+
+    let path = home.join(".cursor").join("mcp.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let original = r#"{
+  "mcpServers": {
+    "tokensave": { "command": "/usr/local/bin/tokensave", "args": ["serve"] },
+    "other": { "command": "other-bin" }
+  }
+}
+"#;
+    std::fs::write(&path, original).unwrap();
+
+    CursorIntegration.uninstall(&ctx).unwrap();
+
+    let backup = home.join(".cursor").join("mcp.json.bak");
+    assert!(
+        backup.exists(),
+        "uninstall must back up the existing config before rewriting it"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&backup).unwrap(),
+        original,
+        "backup must contain the exact pre-uninstall bytes"
+    );
+    let new = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        new.contains("other-bin") && !new.contains("tokensave"),
+        "uninstall must drop tokensave but keep other servers; got:\n{new}"
+    );
+}
+
+#[test]
+fn test_kilo_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let original = r#"{
+  // user comment about their workflow
+  "mcp": { "other": { "type": "local", "command": ["other-bin"], "enabled": true } }
+}
+"#;
+    assert_install_backs_up_and_preserves(&KiloIntegration, dir.path(), original, "other-bin");
+}
+
+#[test]
+fn test_antigravity_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let original = r#"{
+  "mcpServers": { "other": { "command": "other-bin" } }
+}
+"#;
+    assert_install_backs_up_and_preserves(
+        &AntigravityIntegration,
+        dir.path(),
+        original,
+        "other-bin",
+    );
+}
+
+/// Regression for #85: `tokensave install --agent antigravity` must populate
+/// both the IDE config and the CLI plugin file so the `agy` CLI can see the
+/// server. Before the fix only the IDE path was written, which left the CLI
+/// invisible in `/mcp`.
+#[test]
+fn test_antigravity_install_writes_cli_plugin() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let bin = "/usr/local/bin/tokensave";
+    let ctx = InstallContext {
+        home: home.to_path_buf(),
+        tokensave_bin: bin.to_string(),
+        tool_permissions: expected_tool_perms(),
+        scope: tokensave::agents::InstallScope::Global,
+        force_permission_style: false,
+    };
+
+    AntigravityIntegration.install(&ctx).expect("install ok");
+
+    let ide_path = home
+        .join(".gemini")
+        .join("antigravity")
+        .join("mcp_config.json");
+    let cli_path = home
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("plugins")
+        .join("tokensave.json");
+    assert!(
+        ide_path.exists(),
+        "IDE config must be written: {ide_path:?}"
+    );
+    assert!(
+        cli_path.exists(),
+        "CLI plugin must be written: {cli_path:?}"
+    );
+
+    for path in [&ide_path, &cli_path] {
+        let body: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let server = body
+            .get("mcpServers")
+            .and_then(|v| v.get("tokensave"))
+            .expect("tokensave entry");
+        assert_eq!(
+            server.get("command").and_then(|v| v.as_str()),
+            Some(bin),
+            "{path:?} must point at the install bin"
+        );
+        assert!(
+            server
+                .get("args")
+                .and_then(|v| v.as_array())
+                .is_some_and(|a| a.iter().any(|v| v.as_str() == Some("serve"))),
+            "{path:?} must invoke `serve`"
+        );
+    }
+}
+
+/// Uninstall must remove the CLI plugin file outright (it belongs only to
+/// tokensave) and remove the `tokensave` entry from the shared IDE config
+/// without touching the user's other entries.
+#[test]
+fn test_antigravity_uninstall_removes_both_locations() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let bin = "/usr/local/bin/tokensave";
+    let ctx = InstallContext {
+        home: home.to_path_buf(),
+        tokensave_bin: bin.to_string(),
+        tool_permissions: expected_tool_perms(),
+        scope: tokensave::agents::InstallScope::Global,
+        force_permission_style: false,
+    };
+
+    AntigravityIntegration.install(&ctx).unwrap();
+    AntigravityIntegration.uninstall(&ctx).unwrap();
+
+    let cli_path = home
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("plugins")
+        .join("tokensave.json");
+    assert!(
+        !cli_path.exists(),
+        "CLI plugin file must be deleted, still exists at {cli_path:?}"
+    );
+
+    let ide_path = home
+        .join(".gemini")
+        .join("antigravity")
+        .join("mcp_config.json");
+    // IDE config either deleted (empty) or rewritten without our entry —
+    // both are acceptable; what's not acceptable is the entry persisting.
+    if ide_path.exists() {
+        let body: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&ide_path).unwrap()).unwrap();
+        assert!(
+            body.get("mcpServers")
+                .and_then(|v| v.get("tokensave"))
+                .is_none(),
+            "tokensave entry must be removed from {ide_path:?}"
+        );
+    }
+}
+
+#[test]
+fn test_copilot_install_preserves_existing_config() {
+    let dir = TempDir::new().unwrap();
+    let original = r#"{
+  "editor.fontSize": 14,
+  "workbench.colorTheme": "Default Dark+"
+}
+"#;
+    assert_install_backs_up_and_preserves(
+        &CopilotIntegration,
+        dir.path(),
+        original,
+        "Default Dark+",
+    );
+}
+
+/// Meta-test: every agent that goes through `assert_install_backs_up_and_preserves`
+/// above must also actually return a path from `primary_config_path`. Catches
+/// the case where a new integration is added without wiring up the method,
+/// which would otherwise only surface as a confusing panic in CI.
+#[test]
+fn test_every_tested_agent_advertises_primary_config_path() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let agents: Vec<(&dyn AgentIntegration, &str)> = vec![
+        (&ClaudeIntegration, "claude"),
+        (&GeminiIntegration, "gemini"),
+        (&CursorIntegration, "cursor"),
+        (&OpenCodeIntegration, "opencode"),
+        (&ZedIntegration, "zed"),
+        (&ClineIntegration, "cline"),
+        (&RooCodeIntegration, "roo-code"),
+        (&CopilotIntegration, "copilot"),
+        (&KiloIntegration, "kilo"),
+        (&AntigravityIntegration, "antigravity"),
+        (&CodexIntegration, "codex"),
+        (&KiroIntegration, "kiro"),
+        (&KimiIntegration, "kimi"),
+    ];
+    for (agent, id) in agents {
+        let path = agent
+            .primary_config_path(home)
+            .unwrap_or_else(|| panic!("{id} must implement primary_config_path"));
+        assert!(
+            path.starts_with(home),
+            "{id}: primary_config_path must be under the home arg, got {}",
+            path.display()
         );
     }
 }
@@ -422,7 +1245,7 @@ fn test_cursor_install_then_uninstall() {
     let ctx = make_install_ctx(home);
 
     CursorIntegration.install(&ctx).unwrap();
-    let mcp_path = home.join(".cursor/mcp.json");
+    let mcp_path = home.join(".cursor").join("mcp.json");
     assert!(mcp_path.exists());
 
     CursorIntegration.uninstall(&ctx).unwrap();
@@ -449,7 +1272,7 @@ fn test_copilot_install_then_uninstall() {
     CopilotIntegration.uninstall(&ctx).unwrap();
 
     // CLI config should be cleaned up
-    let cli_config = home.join(".copilot/mcp-config.json");
+    let cli_config = home.join(".copilot").join("mcp-config.json");
     if cli_config.exists() {
         let content: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&cli_config).unwrap()).unwrap();
@@ -461,28 +1284,37 @@ fn test_copilot_install_then_uninstall() {
     }
 }
 
+#[test]
+fn test_vibe_install_then_uninstall() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+
+    VibeIntegration.install(&ctx).unwrap();
+    VibeIntegration.uninstall(&ctx).unwrap();
+
+    let config_path = home.join(".vibe").join("config.toml");
+    if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            !content.contains("name = \"tokensave\""),
+            "tokensave should be removed from config.toml"
+        );
+    }
+
+    let prompt_path = home.join(".vibe").join("prompts").join("cli.md");
+    if prompt_path.exists() {
+        let content = std::fs::read_to_string(&prompt_path).unwrap();
+        assert!(
+            !content.contains("tokensave"),
+            "tokensave rules should be removed from prompt"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 5. Healthcheck with tempdir
 // ---------------------------------------------------------------------------
-
-/// Creates a fake tokensave binary in a temp dir and returns the path string.
-/// This allows healthchecks to verify binary existence.
-fn make_install_ctx_with_real_bin(home: &Path) -> InstallContext {
-    let bin_dir = home.join("bin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let bin_path = bin_dir.join("tokensave");
-    std::fs::write(&bin_path, "#!/bin/sh\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    InstallContext {
-        home: home.to_path_buf(),
-        tokensave_bin: bin_path.to_string_lossy().to_string(),
-        tool_permissions: EXPECTED_TOOL_PERMS,
-    }
-}
 
 #[test]
 fn test_healthcheck_claude_clean_install() {
@@ -518,10 +1350,6 @@ fn test_healthcheck_gemini_clean_install() {
 
 #[test]
 fn test_healthcheck_codex_after_install() {
-    // Note: Codex healthcheck uses load_toml_file internally, which always
-    // returns an empty table due to the toml::Value parse limitation.
-    // Therefore healthcheck always reports the MCP server as not registered.
-    // This test documents the current behavior.
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_install_ctx(home);
@@ -533,10 +1361,9 @@ fn test_healthcheck_codex_after_install() {
         project_path: home.to_path_buf(),
     };
     CodexIntegration.healthcheck(&mut dc, &hctx);
-    // Healthcheck reports 1 issue (MCP server not found) due to parse limitation
     assert_eq!(
-        dc.issues, 1,
-        "Codex healthcheck reports MCP not found due to toml::Value parse limitation"
+        dc.issues, 0,
+        "Codex healthcheck should pass after a clean install"
     );
 }
 
@@ -728,7 +1555,12 @@ fn test_safe_write_json_file() {
 #[test]
 fn test_safe_write_json_file_creates_parent_dirs() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("deep/nested/dir/output.json");
+    let path = dir
+        .path()
+        .join("deep")
+        .join("nested")
+        .join("dir")
+        .join("output.json");
     let value = serde_json::json!({"nested": true});
     safe_write_json_file(&path, &value, None).unwrap();
     assert!(path.exists());
@@ -760,38 +1592,42 @@ fn test_write_json_file() {
 
 #[test]
 fn test_load_toml_file_missing() {
-    let val = load_toml_file(Path::new("/nonexistent/file.toml"));
+    let val = load_toml_file(Path::new("/nonexistent/file.toml")).unwrap();
     assert!(val.is_table());
     assert!(val.as_table().unwrap().is_empty());
 }
 
 #[test]
 fn test_load_toml_file_valid() {
-    // Note: in toml v1.x, `str.parse::<toml::Value>()` treats the input as a
-    // single TOML *value* (string, number, etc.), NOT as a full TOML document.
-    // Therefore `load_toml_file` always falls back to an empty table for normal
-    // TOML files. This is a known limitation. Verify the fallback behavior.
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test.toml");
     std::fs::write(&path, "key = \"value\"\nnumber = 42\n").unwrap();
-    let val = load_toml_file(&path);
-    assert!(val.is_table(), "load_toml_file should return a table");
-    // The current implementation falls back to empty table because
-    // `str.parse::<toml::Value>()` does not parse full TOML documents.
-    // This test documents the current behavior.
+    let val = load_toml_file(&path).expect("valid TOML should parse as document");
+    let table = val.as_table().expect("top-level should be a table");
+    assert_eq!(table.get("key").and_then(|v| v.as_str()), Some("value"));
+    assert_eq!(table.get("number").and_then(|v| v.as_integer()), Some(42));
+}
+
+#[test]
+fn test_load_toml_file_invalid_returns_err() {
+    // Bug #63: invalid TOML used to silently return an empty table, which let
+    // install_mcp_server wipe out the user's config. Now it must surface an
+    // error so the caller refuses to overwrite.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("bad.toml");
+    std::fs::write(&path, "{{{{not valid toml").unwrap();
     assert!(
-        val.as_table().unwrap().is_empty(),
-        "load_toml_file returns empty table due to toml::Value parse limitation"
+        load_toml_file(&path).is_err(),
+        "unparseable TOML must surface as error, not silently empty"
     );
 }
 
 #[test]
-fn test_load_toml_file_invalid_returns_empty() {
+fn test_load_toml_file_empty_file_returns_empty_table() {
     let dir = TempDir::new().unwrap();
-    let path = dir.path().join("bad.toml");
-    std::fs::write(&path, "{{{{not valid toml").unwrap();
-    let val = load_toml_file(&path);
-    assert!(val.is_table());
+    let path = dir.path().join("empty.toml");
+    std::fs::write(&path, "").unwrap();
+    let val = load_toml_file(&path).expect("empty file should be treated as empty table");
     assert!(val.as_table().unwrap().is_empty());
 }
 
@@ -807,6 +1643,49 @@ fn test_write_toml_file() {
     let content = std::fs::read_to_string(&path).unwrap();
     assert!(content.contains("key"));
     assert!(content.contains("value"));
+}
+
+#[test]
+fn test_write_toml_file_backs_up_existing() {
+    // Issue #63: overwriting an existing config must always leave a .bak copy
+    // so the user can recover if anything goes wrong.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.toml");
+    let original = "preserved = \"keep me\"\n";
+    std::fs::write(&path, original).unwrap();
+
+    let mut table = toml::map::Map::new();
+    table.insert(
+        "new".to_string(),
+        toml::Value::String("content".to_string()),
+    );
+    write_toml_file(&path, &toml::Value::Table(table)).unwrap();
+
+    let backup = dir.path().join("config.toml.bak");
+    assert!(
+        backup.exists(),
+        "write must create a .bak of the prior file"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&backup).unwrap(),
+        original,
+        "the backup must contain the exact previous bytes"
+    );
+}
+
+#[test]
+fn test_write_toml_file_no_backup_when_no_prior_file() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("fresh.toml");
+    let mut table = toml::map::Map::new();
+    table.insert("k".to_string(), toml::Value::String("v".to_string()));
+    write_toml_file(&path, &toml::Value::Table(table)).unwrap();
+
+    let backup = dir.path().join("fresh.toml.bak");
+    assert!(
+        !backup.exists(),
+        "no backup should be created on first write"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -918,7 +1797,7 @@ fn test_is_detected_opencode() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     assert!(!OpenCodeIntegration.is_detected(home));
-    std::fs::create_dir_all(home.join(".config/opencode")).unwrap();
+    std::fs::create_dir_all(home.join(".config").join("opencode")).unwrap();
     assert!(OpenCodeIntegration.is_detected(home));
 }
 
@@ -928,9 +1807,9 @@ fn test_is_detected_zed() {
     let home = dir.path();
     assert!(!ZedIntegration.is_detected(home));
     #[cfg(target_os = "macos")]
-    std::fs::create_dir_all(home.join("Library/Application Support/Zed")).unwrap();
+    std::fs::create_dir_all(home.join("Library").join("Application Support").join("Zed")).unwrap();
     #[cfg(not(target_os = "macos"))]
-    std::fs::create_dir_all(home.join(".config/zed")).unwrap();
+    std::fs::create_dir_all(home.join(".config").join("zed")).unwrap();
     assert!(ZedIntegration.is_detected(home));
 }
 
@@ -978,17 +1857,12 @@ fn test_has_tokensave_codex() {
     let home = dir.path();
     assert!(!CodexIntegration.has_tokensave(home));
 
-    // Note: CodexIntegration.has_tokensave uses load_toml_file internally, which
-    // always returns an empty table due to the toml::Value parse limitation.
-    // Therefore has_tokensave always returns false for codex, even after install.
-    // This test documents the current behavior.
     let ctx = make_install_ctx(home);
     CodexIntegration.install(&ctx).unwrap();
-    // The config file exists but has_tokensave returns false due to parse limitation
-    assert!(home.join(".codex/config.toml").exists());
+    assert!(home.join(".codex").join("config.toml").exists());
     assert!(
-        !CodexIntegration.has_tokensave(home),
-        "has_tokensave returns false due to toml::Value parse limitation"
+        CodexIntegration.has_tokensave(home),
+        "has_tokensave should detect tokensave after a clean install"
     );
 }
 
@@ -1040,10 +1914,8 @@ fn test_claude_install_idempotent() {
     ClaudeIntegration.install(&ctx).unwrap();
 
     // Config should still be valid
-    let claude_json: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(home.join(".claude.json")).unwrap(),
-    )
-    .unwrap();
+    let claude_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap()).unwrap();
     assert!(claude_json["mcpServers"]["tokensave"].is_object());
 }
 
@@ -1057,7 +1929,7 @@ fn test_gemini_install_idempotent() {
     GeminiIntegration.install(&ctx).unwrap();
 
     let settings: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(home.join(".gemini/settings.json")).unwrap(),
+        &std::fs::read_to_string(home.join(".gemini").join("settings.json")).unwrap(),
     )
     .unwrap();
     assert!(settings["mcpServers"]["tokensave"].is_object());
@@ -1079,6 +1951,8 @@ fn test_uninstall_without_install_does_not_crash() {
     ZedIntegration.uninstall(&ctx).unwrap();
     ClineIntegration.uninstall(&ctx).unwrap();
     RooCodeIntegration.uninstall(&ctx).unwrap();
+    KiroIntegration.uninstall(&ctx).unwrap();
+    VibeIntegration.uninstall(&ctx).unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -1116,7 +1990,7 @@ fn test_gemini_install_preserves_existing_settings() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
 
-    let settings_path = home.join(".gemini/settings.json");
+    let settings_path = home.join(".gemini").join("settings.json");
     std::fs::create_dir_all(home.join(".gemini")).unwrap();
     std::fs::write(
         &settings_path,
@@ -1140,16 +2014,68 @@ fn test_gemini_install_preserves_existing_settings() {
 
 #[test]
 fn test_tool_names_not_empty() {
-    assert!(!TOOL_NAMES.is_empty());
-    for name in TOOL_NAMES {
-        assert!(name.starts_with("tokensave_"), "tool name should start with tokensave_: {name}");
+    let names = tool_names();
+    assert!(!names.is_empty());
+    for name in &names {
+        assert!(
+            name.starts_with("tokensave_"),
+            "tool name should start with tokensave_: {name}"
+        );
     }
 }
 
 #[test]
+fn test_read_only_tool_names_excludes_mutating_tools() {
+    let read_only = read_only_tool_names();
+    let read_only_set: std::collections::HashSet<&str> =
+        read_only.iter().map(String::as_str).collect();
+    let known_tools: std::collections::HashSet<String> = tool_names().into_iter().collect();
+    assert!(!read_only.is_empty());
+
+    for name in &read_only {
+        assert!(
+            known_tools.contains(name),
+            "read-only tool should be a known MCP tool: {name}"
+        );
+    }
+
+    for mutating in [
+        "tokensave_str_replace",
+        "tokensave_multi_str_replace",
+        "tokensave_insert_at",
+        "tokensave_ast_grep_rewrite",
+        "tokensave_session_start",
+        "tokensave_session_end",
+        "tokensave_record_decision",
+        "tokensave_record_code_area",
+    ] {
+        assert!(
+            !read_only_set.contains(mutating),
+            "mutating tool should not be read-only: {mutating}"
+        );
+    }
+}
+
+/// The core toolset is the default (#576), so the first call that lists more
+/// tools is `tokensave_more`. It must be granted at install time like every
+/// other tool, or that first call prompts.
+#[test]
+fn test_install_time_tool_lists_include_tokensave_more() {
+    let more = tokensave::mcp::tools::MORE_TOOL;
+    assert!(tool_names().contains(&more.to_string()));
+    assert!(read_only_tool_names().contains(&more.to_string()));
+    assert!(expected_tool_perms().contains(&format!("mcp__tokensave__{more}")));
+    assert_eq!(
+        tool_names().len(),
+        tokensave::mcp::tools::get_tool_definitions().len() + 1
+    );
+}
+
+#[test]
 fn test_expected_tool_perms_not_empty() {
-    assert!(!EXPECTED_TOOL_PERMS.is_empty());
-    for perm in EXPECTED_TOOL_PERMS {
+    let perms = expected_tool_perms();
+    assert!(!perms.is_empty());
+    for perm in &perms {
         assert!(
             perm.starts_with("mcp__tokensave__"),
             "tool perm should start with mcp__tokensave__: {perm}"
@@ -1159,16 +2085,17 @@ fn test_expected_tool_perms_not_empty() {
 
 #[test]
 fn test_tool_perms_match_tool_names() {
-    // Each tool name should have a corresponding permission
+    let names = tool_names();
+    let perms = expected_tool_perms();
     assert_eq!(
-        TOOL_NAMES.len(),
-        EXPECTED_TOOL_PERMS.len(),
-        "TOOL_NAMES and EXPECTED_TOOL_PERMS should have same length"
+        names.len(),
+        perms.len(),
+        "tool_names and expected_tool_perms should have same length"
     );
-    for name in TOOL_NAMES {
+    for name in &names {
         let expected_perm = format!("mcp__tokensave__{name}");
         assert!(
-            EXPECTED_TOOL_PERMS.contains(&expected_perm.as_str()),
+            perms.contains(&expected_perm),
             "missing permission for tool {name}: expected {expected_perm}"
         );
     }
@@ -1196,8 +2123,7 @@ fn test_restore_config_backup_restores_content() {
 
     let restored = std::fs::read_to_string(&original_path).unwrap();
     assert_eq!(
-        restored,
-        r#"{"version": 1}"#,
+        restored, r#"{"version": 1}"#,
         "restored content should match the backup"
     );
 }
@@ -1213,7 +2139,10 @@ fn test_restore_config_backup_to_missing_original() {
 
     restore_config_backup(&original_path, &backup_path);
 
-    assert!(original_path.exists(), "original should be created from backup");
+    assert!(
+        original_path.exists(),
+        "original should be created from backup"
+    );
     let content = std::fs::read_to_string(&original_path).unwrap();
     assert_eq!(content, r#"{"saved": true}"#);
 }
@@ -1356,7 +2285,10 @@ fn test_pick_integrations_interactive_single_uninstalled_agent() {
 
     // Single detected agent that is NOT installed => fast path returns it directly
     let result = pick_integrations_interactive(home, &[]);
-    assert!(result.is_ok(), "should succeed with single uninstalled agent");
+    assert!(
+        result.is_ok(),
+        "should succeed with single uninstalled agent"
+    );
     let (to_install, to_uninstall) = result.unwrap();
     assert_eq!(to_install, vec!["copilot".to_string()]);
     assert!(to_uninstall.is_empty());

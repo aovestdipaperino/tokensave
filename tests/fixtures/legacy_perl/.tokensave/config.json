@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "root_dir": ".",
+  "exclude": [
+    "**/.tokensave/**"
+  ],
+  "max_file_size": 1048576,
+  "extract_docstrings": true,
+  "track_call_sites": true,
+  "language_aliases": {
+    ".t": "perl",
+    ".ep": "perl"
+  }
+}

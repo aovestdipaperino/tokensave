@@ -1,6 +1,6 @@
 # MCP Tool Test Queries
 
-Manual test queries for verifying all 37 tokensave MCP tools. Run these in a Claude Code session after `tokensave sync` and `tokensave install`.
+Manual test queries for verifying the tokensave MCP tools. Run these in a Claude Code session after `tokensave init` and `tokensave install`.
 
 ### Staleness warnings
 
@@ -159,11 +159,19 @@ Expected: Returns symbols like `extract_python`, `extract_ruby`, `RustExtractor`
 
 ---
 
-## tokensave_rename_preview
+## tokensave_rename
 
-> If I rename the `search` method, what would be affected? Search for it first, then preview the rename.
+> I want to rename the `search` method to `find_symbols`. Search for it first, then show me the rename plan without editing anything.
 
-Expected: Returns all edges (callers, containers, etc.) referencing that symbol.
+Expected: A dry run (`dry_run` defaults to true). Returns the definition and every incoming reference grouped by file, each with a 1-based line and column and a confidence class (`exact`, `heuristic`, `ambiguous`, `text_only`), counts per class, and a unified diff of the edits it would apply. Comments, strings and docs that mention the name are listed under `text_only` and are not in the diff.
+
+> Now apply it.
+
+Expected: With `dry_run: false`, the rename is refused if any site is `heuristic` or `ambiguous` (or an unlinked identifier mentions the name), listing those sites. With `allow_heuristic: true` the heuristic sites are edited too; ambiguous and text-only sites never are. Refuses a keyword, a non-identifier, or a name already used in the same scope. On success, reports the files changed.
+
+> Preview the rename with the old tool name, `tokensave_rename_preview`.
+
+Expected: Same plan as a dry run of `tokensave_rename`; the alias never edits, even with `dry_run: false`. It does not appear in `tools/list`.
 
 ---
 
@@ -444,6 +452,66 @@ Expected: Same structure but for a single symbol. If it's not a function/method,
 
 ---
 
+## tokensave_test_coverage
+
+> What's the test coverage rollup for `src/sync.rs`?
+
+Test by file:
+```
+tokensave_test_coverage(file="src/sync.rs")
+```
+Expected: `mode: "file"` with a `summary` (total_prod_fns, tested, untested, test_only_fns) plus `tested`/`untested` symbol lists.
+
+Test by symbol:
+```
+tokensave_test_coverage(symbol="content_hash")
+```
+Expected: the test functions that transitively reach the symbol (depth capped by `max_depth`, default 5).
+
+Test by test function:
+```
+tokensave_test_coverage(test_fn="test_find_stale_files")
+```
+Expected: the non-test symbols the test transitively exercises.
+
+---
+
+## tokensave_annotations
+
+> Which annotations are most used in this project?
+
+Histogram mode (no name):
+```
+tokensave_annotations(limit=10)
+```
+Expected: top annotation names by usage count (e.g. `test`, `tokio::test`, `cfg`, `derive`).
+
+Site mode:
+```
+tokensave_annotations(name="tokio::test", target_kind="function")
+```
+Expected: `(annotation, target)` rows with file/line for each site.
+
+---
+
+## tokensave_dependencies
+
+> What does this project depend on?
+
+Workspace summary (no args):
+```
+tokensave_dependencies()
+```
+Expected: detected ecosystem(s), member list, dependency counts, `licenses` aggregate, `version_drift` array.
+
+Package lookup:
+```
+tokensave_dependencies(crate="serde", include_lockfile=true)
+```
+Expected: declared version per member plus the `resolved` version from the lockfile.
+
+---
+
 ## tokensave_type_hierarchy
 
 > Show the full type hierarchy for a trait. Search for the trait first, then use its node ID.
@@ -528,3 +596,611 @@ Test same branch error:
 tokensave_branch_diff(base="main", head="main")
 ```
 Expected: Returns an error: `base and head are the same branch: 'main'`.
+
+---
+
+## tokensave_health
+
+> How healthy is this codebase? Show the quality signal with details.
+
+Test with defaults:
+```
+tokensave_health()
+```
+Expected: Returns `{quality_signal: N, files_analyzed: N}` where `quality_signal` is a composite score from 0 to 10000.
+
+Test with details:
+```
+tokensave_health(details=true)
+```
+Expected: Same response plus a `dimensions` breakdown with five named dimensions — `acyclicity`, `depth`, `equality`, `redundancy`, `modularity` — each with a score (0.0–1.0) and supporting metrics explaining the rating.
+
+Test with path filter:
+```
+tokensave_health(path="src/mcp", details=true)
+```
+Expected: Same structure but scoped to files under `src/mcp/` only.
+
+Test that `details=true` surfaces raw counts + interpretation per dimension:
+```
+tokensave_health(details=true)
+```
+Expected: Each dimension is a `{ score, source, ... }` object. `equality` carries `gini` and an `interpretation` string. `acyclicity` carries `edges_in_cycles`. `depth` carries `max_chain` / `ideal_chain`. `modularity` carries `interpretation` and `components_after_hub_removal`. `redundancy` carries `dead_count` / `total_fns`. `coverage_discipline` carries `skip_test_coverage_count` / `total_fns`.
+
+---
+
+## tokensave_redundancy
+
+> Find functions and methods that look like duplicates of each other.
+
+Test with defaults:
+```
+tokensave_redundancy()
+```
+Expected: Returns `{candidates, scanned, skipped_for_size, pair_count, pairs: [...], ranked_by, scope, thresholds}`. Each pair has `similarity` (0.0-1.0), `severity` (`definite` / `likely` / `naming_only`), `overlap_kind` (`ast_isomorphic` / `control_flow` / `algorithmic` / `token_overlap` / `naming`), `a` / `b` symbol info (`file`, `line`, `name`, `id`), and a `signals` block with `ast_match`, `cfg_match`, `call_seq_match`, `shingle_jaccard`, and `body_tokens`. Pairs are sorted by similarity descending. Default thresholds: `min_lines=8`, `max_pairs=20`, `similarity_threshold=0.6`, `include_naming_only=false`.
+
+Test path scope:
+```
+tokensave_redundancy(path="src/mcp/")
+```
+Expected: Same structure but only candidates under `src/mcp/`. Useful for module-scoped consolidation work.
+
+Test tightened threshold (only "definite" duplicates):
+```
+tokensave_redundancy(similarity_threshold=0.85)
+```
+Expected: Only AST-isomorphic pairs survive — the AST signal alone contributes 0.40 to the composite score, so anything ≥ 0.85 with `severity: "definite"` is a strong consolidation candidate.
+
+Test surface naming-only candidates:
+```
+tokensave_redundancy(include_naming_only=true, similarity_threshold=0.1)
+```
+Expected: Long-tail matches where only names look similar but bodies diverge. Most are false positives — useful for naming-convention audits, not for refactoring.
+
+Test minimum function size:
+```
+tokensave_redundancy(min_lines=20)
+```
+Expected: Skips functions shorter than 20 source lines. Helps suppress noise from tiny boilerplate (getters, simple wrappers) that often look structurally identical without warranting consolidation.
+
+Cost model:
+- First call on a fresh index parses each candidate file once and writes fingerprints to the `node_fingerprints` table (schema v10).
+- Subsequent calls reuse cached fingerprints when the body source hash is unchanged.
+- Pairwise comparison is bucketed by `body_tokens` (±25 % window), so cost is sub-quadratic on large repos.
+
+Cross-language note: signals derive from raw tree-sitter kind names. Two duplicates only match within the same language — cross-language matching (e.g. a Python helper and its TypeScript twin) is intentionally out of scope.
+
+---
+
+## tokensave_runtime
+
+> Capture process + database telemetry for triaging unexpected CPU or RAM consumption (issue #80).
+
+Test:
+```
+tokensave_runtime()
+```
+Expected: Returns a snapshot with the shape:
+```
+{
+  "captured_at": <unix-seconds>,
+  "tokensave_version": "6.0.0",
+  "host_os": "macos" | "linux" | "windows" | ...,
+  "process": {
+    "pid": ...,
+    "rss_bytes": ...,
+    "virtual_bytes": ...,
+    "cpu_percent": ...,       // sampled over a 200 ms window
+    "uptime_secs": ...,
+    "system_cpu_count": ...,
+    "system_total_memory_bytes": ...
+  },
+  "database": {
+    "project_root": "...",
+    "db_path": "...",
+    "db_size_bytes": ...,
+    "wal_size_bytes": ...,
+    "shm_size_bytes": ...,
+    "journal_mode": "wal" | "delete" | ...,
+    "source_total_bytes": ...,
+    "node_count": ...,
+    "edge_count": ...
+  }
+}
+```
+
+`cpu_percent` is the delta between two `sysinfo` refreshes 200 ms apart — values above 100 are legitimate on multi-threaded workloads; divide by `system_cpu_count` to get "fraction of total host CPU."
+
+Latency note: the tool blocks for ~200 ms because the CPU% sample needs two readings around a sleep. This is intentional — a one-shot read would always report 0.
+
+CLI equivalent (for offline reporters who can't call MCP tools):
+```
+tokensave status --runtime           # human-readable text
+tokensave status --runtime --json    # machine-parseable JSON, same shape
+```
+
+Diagnostic ratios worth eyeballing:
+- `database.db_size_bytes / database.source_total_bytes` — values much greater than ~10 suggest WAL/checkpoint bloat or retained history.
+- `database.wal_size_bytes` / `database.shm_size_bytes` vs `database.db_size_bytes` — a WAL larger than the DB itself usually means a checkpoint hasn't run recently.
+- `process.rss_bytes / process.system_total_memory_bytes` — high values explain "everything got slow" symptoms.
+
+---
+
+## tokensave_gini
+
+> How evenly is complexity distributed across files? Are there any god files?
+
+Test default:
+```
+tokensave_gini()
+```
+Expected: Returns `{gini: 0.XX, interpretation: "...", total_items: N, metric: "complexity", scope: "file", outliers: [...]}`. A Gini coefficient close to 1.0 indicates high inequality (a few files dominate).
+
+Test alternative metrics:
+```
+tokensave_gini(metric="lines")
+tokensave_gini(metric="fan_in")
+```
+Expected: Same structure ranked by lines or fan-in instead of complexity.
+
+Test per-symbol scope:
+```
+tokensave_gini(metric="complexity", scope="symbol")
+```
+Expected: Same structure but computes inequality across individual symbols rather than files.
+
+Test members:
+```
+tokensave_gini(metric="members")
+```
+Expected: Scope is forced to `symbol`; counts methods and fields per class/struct to surface god-class candidates.
+
+---
+
+## tokensave_dependency_depth
+
+> What are the longest dependency chains in the codebase?
+
+Test with limit:
+```
+tokensave_dependency_depth(limit=5)
+```
+Expected: Returns `{max_depth: N, ideal_depth: N, depth_score: 0.XX, chains: [{file, depth, chain: [...]}]}` showing the five deepest transitive import chains.
+
+Test with path filter:
+```
+tokensave_dependency_depth(path="src/mcp")
+```
+Expected: Same structure but only considers files under `src/mcp/` as roots.
+
+---
+
+## tokensave_dsm
+
+> Show me the design structure matrix — how do files depend on each other?
+
+Test stats (default):
+```
+tokensave_dsm()
+tokensave_dsm(format="stats")
+```
+Expected: Returns `{files: N, edges: N, density: 0.XXX, clusters: N, largest_cluster: {name, files}}` — a high-level summary of file coupling.
+
+Test clusters:
+```
+tokensave_dsm(format="clusters")
+```
+Expected: Returns `{clusters: [{name, files: [...], internal_edges, outgoing_edges, incoming_edges}]}` — each strongly-connected cluster listed with its coupling metrics.
+
+Test matrix:
+```
+tokensave_dsm(format="matrix", max_files=15)
+```
+Expected: Returns `{files: [...short names...], matrix: [[NxN]], note: "..."}` — a compact NxN adjacency matrix where entry `[i][j]` is non-zero when file `i` depends on file `j`.
+
+---
+
+## tokensave_test_risk
+
+> Where should I write the next test? What's the riskiest untested code?
+
+Test with limit:
+```
+tokensave_test_risk(limit=10)
+```
+Expected: Returns `{risks: [{symbol, file, line, complexity, fan_in, has_test, risk_score, churn}], summary: {total_functions, tested, coverage_pct, top_risk_untested}}`. Results are sorted by `risk_score` descending; untested symbols appear first by default.
+
+Test with path filter:
+```
+tokensave_test_risk(path="src/mcp", limit=5)
+```
+Expected: Same structure but scoped to functions under `src/mcp/`.
+
+Test include tested:
+```
+tokensave_test_risk(include_tested=true, limit=5)
+```
+Expected: Also returns already-tested symbols ranked by risk score — useful for identifying weak-test candidates (high-risk code that has a test but may need more coverage).
+
+---
+
+## tokensave_session_start
+
+> Save a health baseline before I start working.
+
+Test:
+```
+tokensave_session_start()
+```
+Expected: Returns `{status: "baseline_saved", quality_signal: N, files_analyzed: N}`. Also writes `.tokensave/session_baseline.json` in the project root with the full health snapshot for later comparison.
+
+---
+
+## tokensave_session_end
+
+> Compare current health against the baseline — did my changes degrade the codebase?
+
+Test after a prior `tokensave_session_start`:
+```
+tokensave_session_end()
+```
+Expected: Returns `{pass: true/false, signal_before: N, signal_after: N, delta: N, files_analyzed: N, degraded_dimensions: [...], dimensions: {per_dim with before/after/delta/direction}}`. The baseline file is removed after `session_end` completes.
+
+Test without a baseline:
+```
+tokensave_session_end()
+```
+Expected: Returns `{status: "no_baseline", message: "No session baseline found. Call tokensave_session_start first."}`.
+
+---
+
+## tokensave_read
+
+> Read a file with mode-aware compression. Modes: `full`, `lines`, `map`, `signatures`. `full` and `lines` are line-numbered. Pass a held `digest` back as `if_digest` to get an `unchanged` stub.
+
+Test full content:
+```
+tokensave_read(file="src/sync.rs", mode="full")
+```
+Expected: Returns the entire file body, each line prefixed with its right-aligned line number and a tab, plus `mtime_ns`, `digest`, and `token_count`.
+
+Test line slice:
+```
+tokensave_read(file="src/sync.rs", mode="lines", lines="120-180")
+```
+Expected: Returns only the requested 1-based inclusive range, numbered from 120.
+
+Test map (graph-only, no source bytes touched):
+```
+tokensave_read(file="src/sync.rs", mode="map")
+```
+Expected: Flat list of every top-level symbol with `kind`, `name`, `line`, `end_line`, `visibility`.
+
+Test signatures:
+```
+tokensave_read(file="src/sync.rs", mode="signatures")
+```
+Expected: Functions and types with their cached signature strings.
+
+Test digest revalidation:
+```
+tokensave_read(file="src/sync.rs", mode="full")                        # note the digest
+tokensave_read(file="src/sync.rs", mode="full")                        # body again
+tokensave_read(file="src/sync.rs", mode="full", if_digest="<digest>")  # stub
+```
+Expected: The second call returns the full body again. The third returns `unchanged: true` with the same `digest` and `token_count` — a small stub instead of the full body. After the file is edited, the same `if_digest` returns the new body.
+
+---
+
+## tokensave_entities
+
+> Flat list of every top-level symbol in a file, with optional kind filter.
+
+Test default (all kinds):
+```
+tokensave_entities(file="src/mcp/tools/handlers/info.rs")
+```
+Expected: Returns `{file, symbol_count, symbols: [{kind, name, line, end_line, visibility}]}` sorted by line.
+
+Test kinds filter:
+```
+tokensave_entities(file="src/mcp/tools/handlers/info.rs", kinds=["function"])
+```
+Expected: Only function-kind entries. Filter is case-insensitive (`["FUNCTION"]` works the same).
+
+Unknown kind returns empty:
+```
+tokensave_entities(file="src/mcp/tools/handlers/info.rs", kinds=["banana"])
+```
+Expected: `symbol_count: 0`.
+
+---
+
+## tokensave_implementations
+
+> Find every type implementing a given trait, or every body of a given method name.
+
+Test trait form:
+```
+tokensave_implementations(trait="LanguageExtractor")
+```
+Expected: For each implementing type, returns the type name, file, line, the trait name, and an array of method bodies (signature + body for each method on the impl).
+
+Test method form:
+```
+tokensave_implementations(method="extensions")
+```
+Expected: Every Function/Method node named `extensions` with full body. Useful for cross-impl comparisons.
+
+Errors:
+```
+tokensave_implementations()                          # no args → error
+tokensave_implementations(trait="X", method="y")     # both args → error (mutually exclusive)
+```
+
+---
+
+## tokensave_unsafe_patterns
+
+> Surface unwrap, expect, panic!, todo!, unimplemented!, and unsafe { } sites.
+
+Test all kinds (default):
+```
+tokensave_unsafe_patterns()
+```
+Expected: Returns `{match_count, by_kind: {...}, matches: [{kind, file, line, snippet, enclosing, in_test}]}`. AST-style word-boundary matching — `.unwrap_or` does NOT match the `unwrap` kind.
+
+Test exclude tests:
+```
+tokensave_unsafe_patterns(exclude_tests=true)
+```
+Expected: Filters out files whose path looks like a test (`tests/`, `_test.rs`, `__tests__/`, etc.).
+
+Test specific kinds:
+```
+tokensave_unsafe_patterns(kinds=["panic", "unsafe_block"])
+```
+Expected: Only panic and unsafe-block matches.
+
+Path scope:
+```
+tokensave_unsafe_patterns(kinds=["unwrap"], path="src/mcp/")
+```
+Expected: Only matches under `src/mcp/`.
+
+---
+
+## tokensave_diagnostics
+
+> Run the project's compile/type checker and return structured errors mapped to graph nodes.
+
+Test workspace (default scope):
+```
+tokensave_diagnostics()
+```
+Expected: For Rust projects, runs `cargo check --message-format=json --target-dir .tokensave/target`. Returns `{scope, diagnostic_count, error_count, warning_count, diagnostics: [{file, line_start, line_end, level, code, message, driver, enclosing}]}`.
+
+For TypeScript projects (tsconfig.json present), runs `tsc --noEmit --pretty false`. For Python projects (pyproject.toml or pyrightconfig.json present), runs `pyright --outputjson`.
+
+Mixed-language projects run every detected driver and merge results.
+
+Test package scope (Rust only):
+```
+tokensave_diagnostics(scope="package", name="tokensave")
+```
+Expected: `cargo check -p tokensave` rather than the full workspace.
+
+Test file scope:
+```
+tokensave_diagnostics(scope="file", path="src/lib.rs")
+```
+Expected: Workspace check + post-filter to the requested file.
+
+Errors:
+```
+tokensave_diagnostics(scope="package")               # missing name → error
+tokensave_diagnostics(scope="file")                  # missing path → error
+tokensave_diagnostics(scope="lunch")                 # unknown scope → error
+```
+
+If a tool isn't installed (tsc, pyright), the driver returns no diagnostics rather than failing.
+
+---
+
+## tokensave_config
+
+> Query TOML or JSON config files by dotted key path.
+
+Test single file:
+```
+tokensave_config(path="Cargo.toml", key="package.version")
+```
+Expected: Returns `{match_count: 1, matches: [{file, key, value, line}]}`. The line number is heuristic — finds the row where the final key segment is defined.
+
+Test JSON:
+```
+tokensave_config(path="tsconfig.json", key="compilerOptions.target")
+```
+Expected: Same shape; the `value` field carries the parsed JSON value.
+
+Test glob across the workspace:
+```
+tokensave_config(glob="**/Cargo.toml", key="package.name")
+```
+Expected: One match per matching file.
+
+Test missing key:
+```
+tokensave_config(path="Cargo.toml", key="package.no_such_field")
+```
+Expected: `match_count: 0`, the entry has `found: false`.
+
+Errors:
+```
+tokensave_config(key="x")                            # missing path/glob → error
+tokensave_config(path="a", glob="b", key="x")        # both → error
+tokensave_config(path="a")                           # missing key → error
+```
+
+This tool is DB-free; it works on uninitialized projects.
+
+---
+
+## tokensave_signature_search
+
+> Search functions and methods by signature shape: return type, params, async.
+
+Test by return type:
+```
+tokensave_signature_search(returns="Result<")
+```
+Expected: Every function whose signature contains `Result<` after `->`. Returns `{match_count, matches: [{name, qualified_name, kind, file, line, is_async, signature}]}`.
+
+Test by params:
+```
+tokensave_signature_search(params=["&mut self"])
+```
+Expected: Every method whose parameter list contains `&mut self`. Multiple params are AND-composed.
+
+Test async only:
+```
+tokensave_signature_search(async=true)
+```
+Expected: Every async function/method. Set `async=false` to exclude them.
+
+Combined filters:
+```
+tokensave_signature_search(params=["&mut self"], async=true, returns="i32")
+```
+Expected: Only methods that match all three.
+
+Path scope:
+```
+tokensave_signature_search(returns="Result<", path="src/mcp/")
+```
+Expected: Only symbols defined under `src/mcp/`.
+
+Errors:
+```
+tokensave_signature_search()                         # no filters → error
+```
+
+---
+
+## tokensave_constructors
+
+> Find every literal-instantiation site of a struct, plus missing fields per site.
+
+Test:
+```
+tokensave_constructors(struct="GraphStats")
+```
+Expected: Returns `{struct, expected_fields, match_count, sites: [{file, line, fields, missing_fields}]}`. Each site lists the fields actually present in that literal; `missing_fields` lists fields the struct has but this literal doesn't.
+
+After adding a required field, this surfaces every site that needs updating before cargo even compiles.
+
+Test unknown struct:
+```
+tokensave_constructors(struct="DoesNotExist")
+```
+Expected: Returns "No struct, class, or case-class named ...".
+
+Pattern-matching sites (`match Foo { ... }`, `if let Foo { ... }`) are filtered out, as are definition sites (`struct Foo { ... }`, `impl Foo { ... }`, `-> Foo {`). String- and char-literal occurrences (`"Foo { x: 1 }"`) are also skipped.
+
+Errors:
+```
+tokensave_constructors()                             # missing struct → error
+```
+
+---
+
+## tokensave_field_sites
+
+> Partition every reference to a field into reads and writes.
+
+Test default:
+```
+tokensave_field_sites(field="last_sync_at")
+```
+Expected: Returns `{field, qualifier, qualifier_applied, write_count, read_count, write_sites: [...], read_sites: [...]}`. Writes include simple assignments (`x.field = ...`), compound assignments (`x.field += ...`), and `&mut x.field` borrows. Everything else is a read; `==` and `=>` do NOT count as writes.
+
+Test writes only:
+```
+tokensave_field_sites(field="last_sync_at", writes_only=true)
+```
+Expected: Returns only `write_sites`; `read_sites` is omitted entirely.
+
+Test qualified form:
+```
+tokensave_field_sites(field="GraphStats::last_sync_at")
+```
+Expected: The `qualifier` field carries `"GraphStats"` but `qualifier_applied` is `false` — the scan uses the bare field name because the tool has no type information to disambiguate `.foo` to a specific struct.
+
+Errors:
+```
+tokensave_field_sites()                              # missing field → error
+```
+
+---
+
+## tokensave_blame
+
+> Who last changed this function/method/struct? Returns the most recent commit that structurally changed the named symbol (ignores comment-only edits).
+
+Test by qualified name:
+```
+tokensave_blame(symbol="crate::blame_engine::log")
+```
+Expected: `{ symbol, file, lines, last_change: { commit, short_sha, author, email, date, summary }, boundary_reason, commits_walked }`.
+
+Test with file disambiguation:
+```
+tokensave_blame(symbol="handle_diff", file="src/mcp/tools/handlers/git.rs")
+```
+Expected: Same shape; `file` filters out same-named overloads in other paths.
+
+---
+
+## tokensave_log
+
+> Full git history of a single symbol. Returns every commit that structurally changed the named entity, oldest-first, tracking across cross-file renames.
+
+Test default:
+```
+tokensave_log(symbol="crate::blame_engine::log")
+```
+Expected: `{ symbol, file, lines, events: [ { commit, short_sha, author, email, date, summary, file_at_commit }, ... ], boundary_reason }`.
+
+Test with limit and walk cap:
+```
+tokensave_log(symbol="crate::blame_engine::log", limit=5, max_commits=100)
+```
+Expected: At most 5 events; walk visits at most 100 commits (`boundary_reason: "max_commits_reached"` if the cap was hit).
+
+---
+
+## tokensave_diff
+
+> Sem-style entity-level diff. Adapts to its arguments: no args = working tree vs HEAD; `from` only = HEAD vs `from`; `from` + `to` = `to` vs `from` (sem's `<old> <new>` order); `path` = restrict to that file.
+
+Test working tree:
+```
+tokensave_diff()
+```
+Expected: `{ from: "HEAD", to: "WORKING_TREE", delegated_to: "commit_context", changes: {...} }`.
+
+Test two refs:
+```
+tokensave_diff(from="main", to="HEAD")
+```
+Expected: `{ from: "main", to: "HEAD", delegated_to: "changelog", changes: {...} }`.
+
+Test path restriction:
+```
+tokensave_diff(path="src/blame_engine.rs")
+```
+Expected: `{ from: "HEAD", to: "WORKING_TREE", delegated_to: "diff_context", changes: {...} }`.
+
+---
+
+> **Note:** Most tools are read-only and safe to call in parallel. The exceptions mutate state and should not be parallelised: the edit tools (`tokensave_str_replace`, `tokensave_multi_str_replace`, `tokensave_insert_at`, `tokensave_insert_at_symbol`, `tokensave_replace_symbol`, `tokensave_ast_grep_rewrite`) modify source files; the session and memory tools (`tokensave_session_start`, `tokensave_session_end`, `tokensave_record_decision`, `tokensave_record_code_area`) write to `.tokensave/`; and `tokensave_run_affected_tests` runs a `cargo` test subprocess.

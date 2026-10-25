@@ -1,0 +1,43 @@
+[alias]
+# Local test loop over the 11 lite-tier languages only: every test binary links
+# far fewer grammars. Language tests for other tiers are `#![cfg]`-gated out.
+test-lite = "test --workspace --no-default-features --features lite"
+
+[env]
+# Disable C/C++ assertions in vendored tree-sitter grammars so that grammar
+# bugs (e.g. the tree-sitter-markdown autolink assertion) produce a failed
+# parse rather than aborting the process.  NDEBUG is the standard production
+# setting; it has no effect on Rust code.
+CFLAGS = { value = "-DNDEBUG", force = false }
+CXXFLAGS = { value = "-DNDEBUG", force = false }
+
+# The test suite spawns the freshly built binary, whose CARGO_PKG_VERSION is
+# ahead of whatever the machine last installed. That is the external-upgrade
+# signal for the silent agent resync, so a plain `cargo test --workspace`
+# rewrote the developer's real ~/.claude/rules/tokensave.md (#575). Setting
+# HOME does not contain it: the rules write and the version marker that gates
+# it resolve the home directory two different ways, so a sandboxed run
+# advances the marker in the real home and the write escapes. `force = false`
+# so a test that wants the maintenance path can still ask for it.
+TOKENSAVE_SKIP_AGENT_MAINTENANCE = { value = "1", force = false }
+
+# Test fixtures create real Git repositories and must not inherit developer
+# hooks such as the global hooks installed by `tokensave install` (#381).
+# This command-scope Git setting is inherited by every Git child process while
+# preserving an explicitly supplied GIT_CONFIG_* environment (`force = false`).
+# A caller-provided indexed Git config can occupy slot 0 and disable this
+# isolation; the regression test then exposes the inherited hook.
+GIT_CONFIG_COUNT = { value = "1", force = false }
+GIT_CONFIG_KEY_0 = { value = "core.hooksPath", force = false }
+GIT_CONFIG_VALUE_0 = { value = "", force = false }
+
+# Raise the main-thread stack reserve to 8 MB on Windows MSVC.  RUST_MIN_STACK
+# (set in CI) only resizes threads Rust spawns; the main thread's stack is fixed
+# at link time and defaults to ~1 MB on MSVC, versus ~8 MB on Linux/macOS.  A
+# deep recursive AST walk (extract_call_sites_recursive) or resolver work run on
+# the calling thread via rayon's work-stealing therefore overflows on Windows
+# only, surfacing as an intermittent STATUS_ACCESS_VIOLATION (0xc0000005) with
+# no panic (#308).  8 MB matches RUST_MIN_STACK and the other platforms' main
+# thread.  Reserve is address space, committed lazily, so this is free at runtime.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "link-arg=/STACK:8388608"]

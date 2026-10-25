@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Kinds of nodes in the code graph.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NodeKind {
     File,
+    /// A companion Markdown document describing one or more source files (#154).
+    Doc,
     Module,
     Struct,
     Enum,
@@ -13,6 +15,10 @@ pub enum NodeKind {
     Trait,
     Function,
     Method,
+    /// A Ruby method defined on the enclosing class/module singleton.
+    SingletonMethod,
+    /// A statically declared Rails HTTP route.
+    Route,
     Impl,
     Const,
     Static,
@@ -82,6 +88,9 @@ pub enum NodeKind {
     ProtoService,
     #[cfg(feature = "lang-protobuf")]
     ProtoRpc,
+    // GDScript-specific
+    #[cfg(feature = "lang-gdscript")]
+    Signal,
 }
 
 #[allow(clippy::should_implement_trait)]
@@ -90,6 +99,7 @@ impl NodeKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             NodeKind::File => "file",
+            NodeKind::Doc => "doc",
             NodeKind::Module => "module",
             NodeKind::Struct => "struct",
             NodeKind::Enum => "enum",
@@ -97,6 +107,8 @@ impl NodeKind {
             NodeKind::Trait => "trait",
             NodeKind::Function => "function",
             NodeKind::Method => "method",
+            NodeKind::SingletonMethod => "singleton_method",
+            NodeKind::Route => "route",
             NodeKind::Impl => "impl",
             NodeKind::Const => "const",
             NodeKind::Static => "static",
@@ -155,6 +167,8 @@ impl NodeKind {
             NodeKind::ProtoService => "proto_service",
             #[cfg(feature = "lang-protobuf")]
             NodeKind::ProtoRpc => "proto_rpc",
+            #[cfg(feature = "lang-gdscript")]
+            NodeKind::Signal => "signal",
         }
     }
 
@@ -162,6 +176,7 @@ impl NodeKind {
     pub fn from_str(s: &str) -> Option<NodeKind> {
         match s {
             "file" => Some(NodeKind::File),
+            "doc" => Some(NodeKind::Doc),
             "module" => Some(NodeKind::Module),
             "struct" => Some(NodeKind::Struct),
             "enum" => Some(NodeKind::Enum),
@@ -169,6 +184,8 @@ impl NodeKind {
             "trait" => Some(NodeKind::Trait),
             "function" => Some(NodeKind::Function),
             "method" => Some(NodeKind::Method),
+            "singleton_method" => Some(NodeKind::SingletonMethod),
+            "route" => Some(NodeKind::Route),
             "impl" => Some(NodeKind::Impl),
             "const" => Some(NodeKind::Const),
             "static" => Some(NodeKind::Static),
@@ -227,13 +244,15 @@ impl NodeKind {
             "proto_service" => Some(NodeKind::ProtoService),
             #[cfg(feature = "lang-protobuf")]
             "proto_rpc" => Some(NodeKind::ProtoRpc),
+            #[cfg(feature = "lang-gdscript")]
+            "signal" => Some(NodeKind::Signal),
             _ => None,
         }
     }
 }
 
 /// Kinds of edges in the code graph.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EdgeKind {
     Contains,
     Calls,
@@ -245,6 +264,16 @@ pub enum EdgeKind {
     Extends,
     Annotates,
     Receives,
+    /// A documentation file describes a source file (#154).
+    Documents,
+    /// An HDL module or interface instantiates another (#344).
+    ///
+    /// Kept distinct from `Calls`: a module instantiation is structural
+    /// hierarchy, not invocation, and folding it into `Calls` would pollute
+    /// callers/callees, impact, and dead-code for every other language.
+    Instantiates,
+    /// Another declaration of the same Ruby class or module.
+    Reopens,
 }
 
 #[allow(clippy::should_implement_trait)]
@@ -262,6 +291,9 @@ impl EdgeKind {
             EdgeKind::Extends => "extends",
             EdgeKind::Annotates => "annotates",
             EdgeKind::Receives => "receives",
+            EdgeKind::Documents => "documents",
+            EdgeKind::Instantiates => "instantiates",
+            EdgeKind::Reopens => "reopens",
         }
     }
 
@@ -278,6 +310,9 @@ impl EdgeKind {
             "extends" => Some(EdgeKind::Extends),
             "annotates" => Some(EdgeKind::Annotates),
             "receives" => Some(EdgeKind::Receives),
+            "documents" => Some(EdgeKind::Documents),
+            "instantiates" => Some(EdgeKind::Instantiates),
+            "reopens" => Some(EdgeKind::Reopens),
             _ => None,
         }
     }
@@ -324,6 +359,10 @@ pub struct Node {
     pub qualified_name: String,
     pub file_path: String,
     pub start_line: u32,
+    /// First line of the leading doc-comment / attribute block, or `start_line`
+    /// when no such block exists. Lets refactoring tools select the full span
+    /// of an item (delete, move, rewrite) without losing its documentation.
+    pub attrs_start_line: u32,
     pub end_line: u32,
     pub start_column: u32,
     pub end_column: u32,
@@ -346,7 +385,23 @@ pub struct Node {
     pub unchecked_calls: u32,
     /// Number of assertion calls (e.g. `assert!`, `assertEquals`, `expect`).
     pub assertions: u32,
+    /// `SonarSource`-style cognitive complexity (nesting-weighted). 0 for
+    /// non-function nodes. See `extraction::complexity` for the algorithm.
+    pub cognitive_complexity: u32,
+    /// Distinct Halstead operators (n1) within the function body.
+    pub distinct_operators: u32,
+    /// Distinct Halstead operands (n2) within the function body.
+    pub distinct_operands: u32,
+    /// Total Halstead operator occurrences (N1) within the function body.
+    pub total_operators: u32,
+    /// Total Halstead operand occurrences (N2) within the function body.
+    pub total_operands: u32,
     pub updated_at: u64,
+    /// `id` of the enclosing scope (module, impl, class, …). `None` for
+    /// top-level nodes whose parent is the file itself. Populated from
+    /// `Contains` edges at insert time; once written, callers should prefer
+    /// `parent_id` over walking edges.
+    pub parent_id: Option<String>,
 }
 
 /// An edge in the code graph representing a relationship between nodes.
@@ -356,6 +411,224 @@ pub struct Edge {
     pub target: String,
     pub kind: EdgeKind,
     pub line: Option<u32>,
+    /// Which resolver path produced this edge (#544). `None` for an edge an
+    /// extractor emitted directly from the syntax tree, and for rows written
+    /// before the column existed.
+    #[serde(default)]
+    pub resolved_by: Option<ResolvedBy>,
+}
+
+impl Edge {
+    /// Orders duplicate edges by how well their provenance is established:
+    /// 0 for an exact resolution, 1 for a heuristic one, 2 for none recorded.
+    ///
+    /// Several references on one line can resolve to the same target by
+    /// different paths (`c.bump()` and `Counter::bump` from one call), and
+    /// the unique edge index keeps only one row. Sorting by this rank before
+    /// deduplicating keeps the strongest provenance instead of an arbitrary
+    /// one (#544).
+    #[must_use]
+    pub fn provenance_rank(&self) -> u8 {
+        match self.resolved_by {
+            Some(r) if r.is_exact() => 0,
+            Some(_) => 1,
+            None => 2,
+        }
+    }
+
+    /// [`Self::provenance_rank`], then the code itself, so that two
+    /// duplicates of the same rank always collapse to the same label rather
+    /// than to whichever an unstable sort left first.
+    #[must_use]
+    pub fn provenance_key(&self) -> (u8, u8) {
+        (
+            self.provenance_rank(),
+            self.resolved_by.map_or(u8::MAX, |r| r as u8),
+        )
+    }
+}
+
+/// Appended to every edge `INSERT`: a duplicate of an existing edge is still
+/// skipped, but one carrying a provenance fills in a row that has none.
+///
+/// The extractor's own copy of an edge (no provenance) can reach the table
+/// before the resolver's in an incremental sync; without this the first row
+/// won and a sync labelled the edge differently from a full index (#544).
+pub const EDGE_UPSERT_CLAUSE: &str = " ON CONFLICT DO UPDATE SET resolved_by = \
+     excluded.resolved_by WHERE edges.resolved_by IS NULL AND excluded.resolved_by IS NOT NULL";
+
+/// How the resolver bound a reference to its target (#544).
+///
+/// Persisted as a small integer in `edges.resolved_by` rather than as the
+/// string the resolver reports, because the edges table is the largest in
+/// the database: an integer of 1–127 costs one byte per row. The codes are a
+/// storage format. Never renumber one; add new variants at the end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[repr(u8)]
+pub enum ResolvedBy {
+    /// The only node in the project with the referenced name.
+    ExactMatch = 1,
+    /// The best of several same-named candidates, picked by scoring.
+    ExactMatchScored = 2,
+    /// A `::`-qualified path matched a qualified name.
+    QualifiedMatch = 3,
+    /// The trailing segment of `recv.method` or `Type::method`, as the only
+    /// candidate with that name.
+    SimpleNameMatch = 4,
+    /// The trailing segment, best of several candidates by scoring.
+    SimpleNameMatchScored = 5,
+    /// A Go `pkg.Name` selector, through the file's imports.
+    GoSelectorImport = 6,
+    /// A blocklisted common name, bound to the one same-file candidate.
+    SameFileBlocklist = 7,
+    /// A Ruby `self.method` call on the enclosing class or module.
+    RubySelfReceiver = 8,
+    /// A Ruby `Constant.method` call on that constant's singleton method.
+    RubyConstantReceiver = 9,
+    /// A `GDScript` call through a statically typed receiver.
+    GdscriptTypedReceiver = 10,
+    /// Copied from a call to a build-variant twin (`#[cfg]` sibling).
+    BuildVariant = 11,
+    /// The trailing segment of a `::` path that matched no qualified name,
+    /// as the only candidate with that name.
+    PathTailMatch = 12,
+    /// The trailing segment of a `::` path, best of several by scoring.
+    PathTailMatchScored = 13,
+    /// A relative JavaScript / TypeScript import specifier bound to the file
+    /// it names, with TypeScript's `.js` to `.ts` mapping applied (#647).
+    RelativeImport = 14,
+    /// A route declaration bound to one directly owned public controller action.
+    RailsRoute = 15,
+}
+
+impl ResolvedBy {
+    /// Every variant, in code order.
+    pub const ALL: [ResolvedBy; 15] = [
+        ResolvedBy::ExactMatch,
+        ResolvedBy::ExactMatchScored,
+        ResolvedBy::QualifiedMatch,
+        ResolvedBy::SimpleNameMatch,
+        ResolvedBy::SimpleNameMatchScored,
+        ResolvedBy::GoSelectorImport,
+        ResolvedBy::SameFileBlocklist,
+        ResolvedBy::RubySelfReceiver,
+        ResolvedBy::RubyConstantReceiver,
+        ResolvedBy::GdscriptTypedReceiver,
+        ResolvedBy::BuildVariant,
+        ResolvedBy::PathTailMatch,
+        ResolvedBy::PathTailMatchScored,
+        ResolvedBy::RelativeImport,
+        ResolvedBy::RailsRoute,
+    ];
+
+    /// The resolver's name for this path, as `ResolvedRef::resolved_by` holds it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ResolvedBy::ExactMatch => "exact-match",
+            ResolvedBy::ExactMatchScored => "exact-match-scored",
+            ResolvedBy::QualifiedMatch => "qualified-match",
+            ResolvedBy::SimpleNameMatch => "simple-name-match",
+            ResolvedBy::SimpleNameMatchScored => "simple-name-match-scored",
+            ResolvedBy::GoSelectorImport => "go-selector-import",
+            ResolvedBy::SameFileBlocklist => "same-file-blocklist",
+            ResolvedBy::RubySelfReceiver => "ruby-self-receiver",
+            ResolvedBy::RubyConstantReceiver => "ruby-constant-receiver",
+            ResolvedBy::GdscriptTypedReceiver => "gdscript-typed-receiver",
+            ResolvedBy::BuildVariant => "build-variant",
+            ResolvedBy::PathTailMatch => "path-tail-match",
+            ResolvedBy::PathTailMatchScored => "path-tail-match-scored",
+            ResolvedBy::RelativeImport => "relative-import",
+            ResolvedBy::RailsRoute => "rails-route",
+        }
+    }
+
+    /// Parses the resolver's string name. `None` for an unknown name.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.as_str() == name)
+    }
+
+    /// The integer stored in `edges.resolved_by`.
+    #[must_use]
+    pub fn code(self) -> i64 {
+        i64::from(self as u8)
+    }
+
+    /// Decodes a stored code. `None` for a code this build does not know.
+    #[must_use]
+    pub fn from_code(code: i64) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.code() == code)
+    }
+
+    /// True when the resolver had a single candidate it could justify: a
+    /// qualified path, a typed or constant receiver, a Go import, or a name
+    /// (bare, or the tail of a `::` path) that no other node in the project
+    /// carries.
+    ///
+    /// False for the fallbacks where a same-named symbol elsewhere could be
+    /// the real target: the tail of a dotted receiver call (`recv.method`,
+    /// receiver type unknown), a winner picked by scoring among several
+    /// candidates, a blocklisted common name, and a build-variant copy.
+    #[must_use]
+    pub fn is_exact(self) -> bool {
+        matches!(
+            self,
+            ResolvedBy::ExactMatch
+                | ResolvedBy::QualifiedMatch
+                | ResolvedBy::PathTailMatch
+                | ResolvedBy::GoSelectorImport
+                | ResolvedBy::RubySelfReceiver
+                | ResolvedBy::RubyConstantReceiver
+                | ResolvedBy::RailsRoute
+                | ResolvedBy::GdscriptTypedReceiver
+                | ResolvedBy::RelativeImport
+        )
+    }
+}
+
+/// What kind of file a [`FileRecord`] describes.
+///
+/// Artifacts are tracked so that path-shaped questions ("where are the
+/// `.feature` files?") can be answered from the graph instead of a blocked
+/// shell command (#323). They are deliberately distinguishable from source:
+/// a source file with no extractable symbols is a fact about the code, while
+/// an artifact never had symbols to begin with, and analyses that mean "code"
+/// must not count them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileKind {
+    /// A source file processed by a language extractor.
+    #[default]
+    Code,
+    /// A non-source file tracked by path only; never parsed.
+    Artifact,
+}
+
+impl FileKind {
+    /// Returns the stored string form.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Code => "code",
+            Self::Artifact => "artifact",
+        }
+    }
+
+    /// Parses the stored string form, defaulting to [`FileKind::Code`].
+    ///
+    /// Rows written before the `kind` column existed are source files, and so
+    /// is anything unrecognized: mislabelling an artifact as code hides it from
+    /// one filter, while the reverse would drop real source out of analyses.
+    #[must_use]
+    pub fn from_str_or_code(value: &str) -> Self {
+        if value == "artifact" {
+            Self::Artifact
+        } else {
+            Self::Code
+        }
+    }
 }
 
 /// Record tracking an indexed file.
@@ -367,6 +640,8 @@ pub struct FileRecord {
     pub modified_at: i64,
     pub indexed_at: i64,
     pub node_count: u32,
+    #[serde(default)]
+    pub kind: FileKind,
 }
 
 /// An unresolved reference found during parsing, to be resolved later.
@@ -409,12 +684,15 @@ impl ExtractionResult {
         }
 
         self.nodes.retain(|n| !n.name.is_empty());
-        self.edges.retain(|e| !bad_ids.contains(&e.source) && !bad_ids.contains(&e.target));
-        self.unresolved_refs.retain(|r| !bad_ids.contains(&r.from_node_id));
+        self.edges
+            .retain(|e| !bad_ids.contains(&e.source) && !bad_ids.contains(&e.target));
+        self.unresolved_refs
+            .retain(|r| !bad_ids.contains(&r.from_node_id));
 
         let removed = before - self.nodes.len();
         if removed > 0 {
-            self.errors.push(format!("stripped {removed} node(s) with empty names"));
+            self.errors
+                .push(format!("stripped {removed} node(s) with empty names"));
         }
     }
 }
@@ -432,6 +710,16 @@ pub struct Subgraph {
 pub struct SearchResult {
     pub node: Node,
     pub score: f64,
+}
+
+/// Search document persisted for an executable node's source body.
+/// `node_id` and `file_path` are unindexed metadata columns in the FTS table;
+/// only `body` participates in full-text matching.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecutableBodyDocument {
+    pub node_id: String,
+    pub file_path: String,
+    pub body: String,
 }
 
 /// Direction for graph traversal.
@@ -484,6 +772,13 @@ pub struct GraphStats {
     pub last_sync_at: u64,
     /// Timestamp of the most recent full (re)index (0 if never indexed).
     pub last_full_sync_at: u64,
+    /// tokensave version that performed the most recent full (re)index.
+    /// Empty when the project has never been fully indexed by a recorded
+    /// version, so consumers can tell "graph built by X" as a fact rather
+    /// than inferring it from `last_indexed_version` (#554).
+    pub last_full_index_version: String,
+    /// Duration in milliseconds of the most recent sync (0 if unknown).
+    pub last_sync_duration_ms: u64,
 }
 
 /// Options for building an LLM context from the graph.
@@ -498,8 +793,42 @@ pub struct BuildContextOptions {
     pub traversal_depth: usize,
     pub min_score: f64,
     /// Additional keywords to search for beyond those extracted from the query.
-    /// Enables agent-driven synonym expansion (e.g. "authentication" → ["login", "session"]).
+    /// Enables agent-driven synonym expansion (e.g. `"authentication"` → `["login", "session"]`).
     pub extra_keywords: Vec<String>,
+    /// Node IDs to exclude from results (for session deduplication across calls).
+    pub exclude_node_ids: HashSet<String>,
+    /// When true, merge code blocks from the same file whose line ranges are
+    /// adjacent or overlapping into a single block.
+    pub merge_adjacent: bool,
+    /// Maximum symbols from a single file in context results. Prevents one
+    /// large file from dominating the output. `None` means no cap (defaults
+    /// to `max_nodes`).
+    pub max_per_file: Option<usize>,
+    /// When set, only nodes whose `file_path` starts with this prefix are
+    /// considered as entry points. Graph expansion may still traverse outside
+    /// the prefix (traversals are unscoped).
+    pub path_prefix: Option<String>,
+    /// When non-empty, only entry-point nodes whose `file_path` contains at
+    /// least one of these substrings are kept (backslashes normalized to `/`).
+    pub path_include: Vec<String>,
+    /// Entry-point nodes whose `file_path` contains any of these substrings are
+    /// dropped (backslashes normalized to `/`). Takes precedence over
+    /// `path_include`.
+    pub path_exclude: Vec<String>,
+    /// Project-level query-time ignore patterns (from `.tokensave/queryignore`).
+    /// Entry-point candidates whose `file_path` matches any pattern are
+    /// dropped before ranking. Not serialized — it is recomputed per query
+    /// from the project root, never round-tripped through config snapshots.
+    #[serde(skip)]
+    pub query_ignore: crate::config::QueryIgnore,
+    /// Caps each code block at this many lines. `None` leaves the block bounded
+    /// only by `max_code_block_size`.
+    ///
+    /// Complements the existing byte limit with a predictable structural cap:
+    /// callers can request a deliberately short prefix such as the signature and
+    /// first 20 lines, while `max_code_block_size` remains the absolute size bound
+    /// (#324).
+    pub max_code_lines: Option<usize>,
 }
 
 impl Default for BuildContextOptions {
@@ -514,6 +843,14 @@ impl Default for BuildContextOptions {
             traversal_depth: 1,
             min_score: 0.0,
             extra_keywords: Vec::new(),
+            exclude_node_ids: HashSet::new(),
+            merge_adjacent: false,
+            max_per_file: None,
+            path_prefix: None,
+            path_include: Vec::new(),
+            path_exclude: Vec::new(),
+            query_ignore: crate::config::QueryIgnore::default(),
+            max_code_lines: None,
         }
     }
 }
@@ -534,6 +871,26 @@ pub struct TaskContext {
     pub entry_points: Vec<Node>,
     pub code_blocks: Vec<CodeBlock>,
     pub related_files: Vec<String>,
+    /// IDs of all nodes returned as entry points (pass to next call's `exclude_node_ids` for dedup).
+    pub seen_node_ids: Vec<String>,
+    /// Retrieval quality signals for this query (which terms hit, best match tier).
+    #[serde(default)]
+    pub diagnostics: RetrievalDiagnostics,
+}
+
+/// Per-query retrieval diagnostics: which search terms found candidates and
+/// how strong the best entry-point match was. Lets the caller distinguish a
+/// strong answer from a vocabulary miss and re-query instead of trusting
+/// weak results.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RetrievalDiagnostics {
+    /// `(term, candidate_count)` for each FTS search term, in search order.
+    pub term_hits: Vec<(String, usize)>,
+    /// Highest candidate score after all ranking boosts (`None` if no candidates).
+    pub best_score: Option<f64>,
+    /// Tier of the best match: "exact" (name or source literal), "strong"
+    /// (body/co-occurrence supplement), or "fts-only" (lexical BM25 only).
+    pub match_quality: Option<String>,
 }
 
 /// A block of source code extracted from a file.
@@ -551,7 +908,10 @@ pub struct CodeBlock {
 /// The ID format is `"kind:32hexchars"` where the hex portion is the first 32
 /// characters of the SHA-256 hash of the input components.
 pub fn generate_node_id(file_path: &str, kind: &NodeKind, name: &str, line: u32) -> String {
-    debug_assert!(!name.is_empty(), "generate_node_id called with empty name for {file_path}:{line}");
+    debug_assert!(
+        !name.is_empty(),
+        "generate_node_id called with empty name for {file_path}:{line}"
+    );
     let input = format!("{}:{}:{}:{}", file_path, kind.as_str(), name, line);
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
@@ -564,9 +924,53 @@ pub fn generate_node_id(file_path: &str, kind: &NodeKind, name: &str, line: u32)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolutionResult {
     pub resolved: Vec<ResolvedRef>,
-    pub unresolved: Vec<UnresolvedRef>,
+    /// Positions in the slice passed to `resolve_all` of the references that
+    /// did **not** resolve, in input order.
+    ///
+    /// Indices rather than the references themselves (#483). This used to be a
+    /// `Vec<UnresolvedRef>`, which meant cloning one owned record — several
+    /// `String`s each — for every reference that failed. On tokensave's own
+    /// tree that is ~160,000 clones per sync, since 189,446 references go in
+    /// and 28,849 resolve, and `resolve_all` was the single largest allocation
+    /// in a sync at +97.7 MiB.
+    ///
+    /// The clones bought nothing: the caller already owns the slice it passed
+    /// in, so an index is the same information. Nothing in the product read
+    /// the field at all — its only consumers are assertions in
+    /// `tests/resolution_test.rs`, which is why it went unnoticed.
+    pub unresolved: Vec<u32>,
     pub total: usize,
     pub resolved_count: usize,
+    /// Calls that had several equally-plausible targets (#412). Not resolved,
+    /// but not silently dropped either.
+    #[serde(default)]
+    pub ambiguous: Vec<AmbiguousCall>,
+}
+
+/// A call the resolver could not disambiguate, kept instead of discarded.
+///
+/// When several candidates tie on every scoring dimension, no edge is created
+/// — an edge is an assertion, and "one of these" is not one. The alternatives
+/// are still worth having: a model reading the source can pick the intended
+/// target, which a scoring heuristic that cannot see the receiver's type
+/// cannot (#412).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AmbiguousCall {
+    /// The node containing the call site.
+    pub from_node_id: String,
+    /// The reference as written, e.g. `thing.dispose`.
+    pub reference_name: String,
+    /// File containing the call site.
+    pub file_path: String,
+    /// Line of the call site.
+    pub line: u32,
+    /// Column of the call site. Held in memory only, to tell apart two calls
+    /// on one line while a resolution pass runs (#597); it is not stored, so
+    /// a record read back from the database carries 0.
+    #[serde(skip)]
+    pub column: u32,
+    /// The candidates that could not be separated.
+    pub candidate_node_ids: Vec<String>,
 }
 
 /// A reference that has been resolved to a target node.
@@ -576,4 +980,103 @@ pub struct ResolvedRef {
     pub target_node_id: String,
     pub confidence: f64,
     pub resolved_by: String,
+}
+
+/// Result of a single string replacement edit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditResult {
+    pub success: bool,
+    pub file_path: String,
+    /// Fully-resolved absolute filesystem path that was actually read/written.
+    /// Callers (e.g. a worktree caller passing `project_root`) should verify
+    /// this to confirm the edit landed where they intended, since `file_path`
+    /// may be project-relative and ambiguous across trees.
+    pub resolved_path: String,
+    pub matched_str: String,
+    pub new_str: String,
+    pub message: String,
+    /// 1-based inclusive line range changed by the edit.
+    pub changed_lines: (u32, u32),
+    /// SHA-256 hex digest of the file after the edit.
+    pub digest: String,
+    /// Nearest candidate line when the edit failed to find its target.
+    pub nearest: Option<String>,
+}
+
+/// Result of a multi-string replacement edit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiEditResult {
+    pub success: bool,
+    pub file_path: String,
+    /// Fully-resolved absolute filesystem path that was actually read/written.
+    pub resolved_path: String,
+    pub applied_count: usize,
+    pub message: String,
+}
+
+/// Result of an insert-at operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InsertResult {
+    pub success: bool,
+    pub file_path: String,
+    /// Fully-resolved absolute filesystem path that was actually read/written.
+    pub resolved_path: String,
+    pub anchor_line: u32,
+    pub content: String,
+    pub before: bool,
+    pub message: String,
+    /// 1-based inclusive line range changed by the edit.
+    pub changed_lines: (u32, u32),
+    /// SHA-256 hex digest of the file after the edit.
+    pub digest: String,
+    /// Nearest candidate line when the edit failed to find its anchor.
+    pub nearest: Option<String>,
+}
+
+/// Result of a line-range replacement edit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LineReplaceResult {
+    pub success: bool,
+    pub file_path: String,
+    /// Fully-resolved absolute filesystem path that was actually read/written.
+    pub resolved_path: String,
+    /// 1-based inclusive line range replaced.
+    pub changed_lines: (u32, u32),
+    /// SHA-256 hex digest of the file after the edit.
+    pub digest: String,
+    pub message: String,
+}
+
+/// Result of an ast-grep rewrite operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AstGrepResult {
+    pub success: bool,
+    pub file_path: String,
+    /// Fully-resolved absolute filesystem path that was actually read/written.
+    pub resolved_path: String,
+    pub pattern: String,
+    pub rewrite: String,
+    pub message: String,
+}
+
+/// A single parsed turn from a Claude Code session transcript,
+/// ready for DB insertion into the `turns` table.
+#[derive(Debug, Clone)]
+pub struct CostTurn {
+    pub message_id: String,
+    pub project_hash: String,
+    pub session_id: String,
+    pub model: String,
+    pub timestamp: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cost_usd: f64,
+    pub category: String,
+    pub tool_names: String,
+    /// Source agent identity. Values include "claude" or "droid".
+    pub agent: String,
+    /// Agent-native credit units (Droid only). None for Claude turns.
+    pub credits: Option<u64>,
 }

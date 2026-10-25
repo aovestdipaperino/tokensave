@@ -32,10 +32,10 @@ This single command configures everything — MCP server, tool permissions, PreT
 
 ```bash
 cd /path/to/your/project
-tokensave sync
+tokensave init
 ```
 
-This creates a `.tokensave/` directory and indexes all supported files (15 languages). Running `tokensave sync` again picks up only changed files. To force a full re-index, use `tokensave sync --force`.
+This creates a `.tokensave/` directory and indexes all supported files (50+ languages). After the initial index, `tokensave sync` picks up only changed files. To force a full re-index, use `tokensave sync --force`.
 
 Check what was indexed:
 
@@ -66,7 +66,7 @@ Once configured, Claude has access to these tools:
 | `tokensave_god_class` | Find classes with the most members |
 | `tokensave_coupling` | Rank files by fan-in/fan-out coupling |
 
-Plus 21 more — see [README.md](README.md) for the full list of 37 tools.
+Plus dozens more — see [README.md](README.md) for the full list of 70+ tools.
 
 Claude will use these tools automatically when you ask questions about your codebase. Examples:
 

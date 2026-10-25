@@ -1,70 +1,18 @@
 /// Tree-sitter based Nix source code extractor.
 ///
 /// Parses Nix source files and emits nodes and edges for the code graph.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
-use crate::extraction::complexity::{count_complexity, NIX_COMPLEXITY};
+use crate::extraction::complexity::{count_complexity, ComplexityMetrics, NIX_COMPLEXITY};
+use crate::extraction::ts_state::ExtractionState;
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from Nix source files using tree-sitter.
 pub struct NixExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl NixExtractor {
     /// Extract code graph nodes and edges from a Nix source file.
@@ -79,7 +27,7 @@ impl NixExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -91,6 +39,7 @@ impl NixExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -105,13 +54,17 @@ impl NixExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -119,7 +72,7 @@ impl NixExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -155,16 +108,10 @@ impl NixExtractor {
             "binding" => Self::visit_binding(state, node),
             "inherit" | "inherit_from" => Self::visit_inherit(state, node),
             // Recurse through structural nodes that wrap definitions.
-            "function_expression" | "binding_set" => {
-                Self::visit_children(state, node);
-            }
-            // Recurse through apply_expression to find nested definitions
-            // (e.g., flake outputs wrapped in eachDefaultSystem calls).
-            "apply_expression" => {
-                Self::visit_children(state, node);
-            }
-            // Recurse through parenthesized expressions.
-            "parenthesized_expression" => {
+            "function_expression"
+            | "binding_set"
+            | "apply_expression"
+            | "parenthesized_expression" => {
                 Self::visit_children(state, node);
             }
             // Recurse into top-level attrset expressions (e.g., flake.nix root).
@@ -175,7 +122,7 @@ impl NixExtractor {
         }
     }
 
-    /// Visit a let expression. Process bindings inside binding_set and the body.
+    /// Visit a let expression. Process bindings inside `binding_set` and the body.
     fn visit_let_expression(state: &mut ExtractionState, node: TsNode<'_>) {
         // Process binding_set for definitions
         let mut cursor = node.walk();
@@ -204,9 +151,8 @@ impl NixExtractor {
     fn visit_binding(state: &mut ExtractionState, node: TsNode<'_>) {
         // Extract name from attrpath child
         let name = Self::extract_binding_name(state, node);
-        let name = match name {
-            Some(n) => n,
-            None => return,
+        let Some(name) = name else {
+            return;
         };
 
         // Get the expression (value) child
@@ -249,10 +195,10 @@ impl NixExtractor {
                     if expr_node.child_count() > 0 {
                         count_complexity(expr_node, &NIX_COMPLEXITY, &state.source)
                     } else {
-                        Default::default()
+                        ComplexityMetrics::default()
                     }
                 } else {
-                    Default::default()
+                    ComplexityMetrics::default()
                 };
 
                 let graph_node = Node {
@@ -262,6 +208,7 @@ impl NixExtractor {
                     qualified_name,
                     file_path: state.file_path.clone(),
                     start_line,
+                    attrs_start_line: start_line,
                     end_line,
                     start_column,
                     end_column,
@@ -276,7 +223,13 @@ impl NixExtractor {
                     unsafe_blocks: metrics.unsafe_blocks,
                     unchecked_calls: metrics.unchecked_calls,
                     assertions: metrics.assertions,
+                    cognitive_complexity: metrics.cognitive_complexity,
+                    distinct_operators: metrics.distinct_operators,
+                    distinct_operands: metrics.distinct_operands,
+                    total_operators: metrics.total_operators,
+                    total_operands: metrics.total_operands,
                     updated_at: state.timestamp,
+                    parent_id: None,
                 };
                 state.nodes.push(graph_node);
 
@@ -287,6 +240,7 @@ impl NixExtractor {
                         target: id.clone(),
                         kind: EdgeKind::Contains,
                         line: Some(start_line),
+                        resolved_by: None,
                     });
                 }
 
@@ -323,6 +277,7 @@ impl NixExtractor {
                     qualified_name,
                     file_path: state.file_path.clone(),
                     start_line,
+                    attrs_start_line: start_line,
                     end_line,
                     start_column,
                     end_column,
@@ -337,7 +292,13 @@ impl NixExtractor {
                     unsafe_blocks: 0,
                     unchecked_calls: 0,
                     assertions: 0,
+                    cognitive_complexity: 0,
+                    distinct_operators: 0,
+                    distinct_operands: 0,
+                    total_operators: 0,
+                    total_operands: 0,
                     updated_at: state.timestamp,
+                    parent_id: None,
                 };
                 state.nodes.push(graph_node);
 
@@ -348,6 +309,7 @@ impl NixExtractor {
                         target: id.clone(),
                         kind: EdgeKind::Contains,
                         line: Some(start_line),
+                        resolved_by: None,
                     });
                 }
 
@@ -357,7 +319,9 @@ impl NixExtractor {
                     state.node_stack.push((name.clone(), id.clone()));
                     if expr_node.kind() == "attrset_expression" {
                         Self::visit_attrset_bindings(state, expr_node);
-                    } else if let Some((_callee, attrset_node)) = Self::is_builder_call(state, expr_node) {
+                    } else if let Some((_callee, attrset_node)) =
+                        Self::is_builder_call(state, expr_node)
+                    {
                         // Forced-Module binding with a builder call: extract derivation fields.
                         Self::extract_derivation_fields(state, attrset_node, &id);
                     }
@@ -381,6 +345,7 @@ impl NixExtractor {
                     qualified_name,
                     file_path: state.file_path.clone(),
                     start_line,
+                    attrs_start_line: start_line,
                     end_line,
                     start_column,
                     end_column,
@@ -395,7 +360,13 @@ impl NixExtractor {
                     unsafe_blocks: 0,
                     unchecked_calls: 0,
                     assertions: 0,
+                    cognitive_complexity: 0,
+                    distinct_operators: 0,
+                    distinct_operands: 0,
+                    total_operators: 0,
+                    total_operands: 0,
                     updated_at: state.timestamp,
+                    parent_id: None,
                 };
                 state.nodes.push(graph_node);
 
@@ -406,15 +377,22 @@ impl NixExtractor {
                         target: id.clone(),
                         kind: EdgeKind::Contains,
                         line: Some(start_line),
+                        resolved_by: None,
                     });
                 }
 
                 // Enhancement 1: If this is a builder call, extract derivation fields.
                 if is_builder {
                     if let Some(expr_node) = expr {
-                        if let Some((_callee, attrset_node)) = Self::is_builder_call(state, expr_node) {
+                        if let Some((_callee, attrset_node)) =
+                            Self::is_builder_call(state, expr_node)
+                        {
                             let parent_id_for_fields = id;
-                            Self::extract_derivation_fields(state, attrset_node, &parent_id_for_fields);
+                            Self::extract_derivation_fields(
+                                state,
+                                attrset_node,
+                                &parent_id_for_fields,
+                            );
                         }
                     }
                 } else {
@@ -427,34 +405,29 @@ impl NixExtractor {
         }
     }
 
-    /// Visit bindings inside an attrset_expression (used for module bodies).
+    /// Visit bindings inside an `attrset_expression` (used for module bodies).
     fn visit_attrset_bindings(state: &mut ExtractionState, node: TsNode<'_>) {
         // attrset_expression contains binding_set
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
                 let child = cursor.node();
-                match child.kind() {
-                    "binding_set" => {
-                        // Visit bindings and inherits inside the binding_set
-                        let mut inner = child.walk();
-                        if inner.goto_first_child() {
-                            loop {
-                                let item = inner.node();
-                                match item.kind() {
-                                    "binding" => Self::visit_binding(state, item),
-                                    "inherit" | "inherit_from" => {
-                                        Self::visit_inherit(state, item)
-                                    }
-                                    _ => {}
-                                }
-                                if !inner.goto_next_sibling() {
-                                    break;
-                                }
+                if child.kind() == "binding_set" {
+                    // Visit bindings and inherits inside the binding_set
+                    let mut inner = child.walk();
+                    if inner.goto_first_child() {
+                        loop {
+                            let item = inner.node();
+                            match item.kind() {
+                                "binding" => Self::visit_binding(state, item),
+                                "inherit" | "inherit_from" => Self::visit_inherit(state, item),
+                                _ => {}
+                            }
+                            if !inner.goto_next_sibling() {
+                                break;
                             }
                         }
                     }
-                    _ => {}
                 }
                 if !cursor.goto_next_sibling() {
                     break;
@@ -463,7 +436,7 @@ impl NixExtractor {
         }
     }
 
-    /// Visit an inherit or inherit_from node. Creates Use nodes for imported attributes.
+    /// Visit an inherit or `inherit_from` node. Creates Use nodes for imported attributes.
     fn visit_inherit(state: &mut ExtractionState, node: TsNode<'_>) {
         // inherit has `inherited_attrs` with attr children
         // inherit_from has `expression` and `inherited_attrs`
@@ -501,6 +474,7 @@ impl NixExtractor {
                                     qualified_name,
                                     file_path: state.file_path.clone(),
                                     start_line: attr_line,
+                                    attrs_start_line: attr_line,
                                     end_line: attr.end_position().row as u32,
                                     start_column: attr.start_position().column as u32,
                                     end_column: attr.end_position().column as u32,
@@ -515,7 +489,13 @@ impl NixExtractor {
                                     unsafe_blocks: 0,
                                     unchecked_calls: 0,
                                     assertions: 0,
+                                    cognitive_complexity: 0,
+                                    distinct_operators: 0,
+                                    distinct_operands: 0,
+                                    total_operators: 0,
+                                    total_operands: 0,
                                     updated_at: state.timestamp,
+                                    parent_id: None,
                                 };
                                 state.nodes.push(graph_node);
 
@@ -525,6 +505,7 @@ impl NixExtractor {
                                         target: id.clone(),
                                         kind: EdgeKind::Contains,
                                         line: Some(attr_line),
+                                        resolved_by: None,
                                     });
                                 }
 
@@ -572,7 +553,7 @@ impl NixExtractor {
         }
     }
 
-    /// Check if an attrset_expression has named bindings (making it a module-like structure).
+    /// Check if an `attrset_expression` has named bindings (making it a module-like structure).
     fn attrset_has_named_bindings(node: TsNode<'_>) -> bool {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -601,8 +582,8 @@ impl NixExtractor {
     }
 
     /// Recurse into a function body to find nested definitions.
-    /// This walks through function_expression, apply_expression, let_expression, etc.
-    /// to find attrset_expression and let_expression nodes that contain bindings.
+    /// This walks through `function_expression`, `apply_expression`, `let_expression`, etc.
+    /// to find `attrset_expression` and `let_expression` nodes that contain bindings.
     fn visit_function_body_for_defs(state: &mut ExtractionState, node: TsNode<'_>) {
         match node.kind() {
             "function_expression" => {
@@ -653,7 +634,10 @@ impl NixExtractor {
 
     /// Check if an expression node is a builder call (e.g., `pkgs.stdenv.mkDerivation { ... }`).
     /// Returns the last segment of the callee name if it matches a builder function.
-    fn is_builder_call<'a>(state: &ExtractionState, node: TsNode<'a>) -> Option<(String, TsNode<'a>)> {
+    fn is_builder_call<'a>(
+        state: &ExtractionState,
+        node: TsNode<'a>,
+    ) -> Option<(String, TsNode<'a>)> {
         if node.kind() != "apply_expression" {
             return None;
         }
@@ -718,6 +702,7 @@ impl NixExtractor {
                                         qualified_name,
                                         file_path: state.file_path.clone(),
                                         start_line,
+                                        attrs_start_line: start_line,
                                         end_line,
                                         start_column,
                                         end_column,
@@ -732,7 +717,13 @@ impl NixExtractor {
                                         unsafe_blocks: 0,
                                         unchecked_calls: 0,
                                         assertions: 0,
+                                        cognitive_complexity: 0,
+                                        distinct_operators: 0,
+                                        distinct_operands: 0,
+                                        total_operators: 0,
+                                        total_operands: 0,
                                         updated_at: state.timestamp,
+                                        parent_id: None,
                                     };
                                     state.nodes.push(graph_node);
 
@@ -741,6 +732,7 @@ impl NixExtractor {
                                         target: id,
                                         kind: EdgeKind::Contains,
                                         line: Some(start_line),
+                                        resolved_by: None,
                                     });
                                 }
                             }
@@ -831,7 +823,7 @@ impl NixExtractor {
         Some(comments.join("\n"))
     }
 
-    /// Recursively find call nodes (apply_expression) and create unresolved Calls references.
+    /// Recursively find call nodes (`apply_expression`) and create unresolved Calls references.
     /// Also handles Enhancement 2: import path resolution.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
@@ -842,10 +834,9 @@ impl NixExtractor {
                     "apply_expression" => {
                         // In Nix, apply_expression has `function` and `argument` fields.
                         // The function field can be a variable_expression or a select_expression.
-                        let callee_name =
-                            child.child_by_field_name("function").and_then(|func_node| {
-                                Self::extract_callee_name(state, func_node)
-                            });
+                        let callee_name = child
+                            .child_by_field_name("function")
+                            .and_then(|func_node| Self::extract_callee_name(state, func_node));
 
                         if let Some(ref name) = callee_name {
                             state.unresolved_refs.push(UnresolvedRef {
@@ -930,6 +921,7 @@ impl NixExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -944,7 +936,13 @@ impl NixExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -954,6 +952,7 @@ impl NixExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
@@ -967,13 +966,12 @@ impl NixExtractor {
         });
     }
 
-    /// Extract the callee name from a function position in an apply_expression.
+    /// Extract the callee name from a function position in an `apply_expression`.
     fn extract_callee_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         match node.kind() {
             "variable_expression" => {
                 // variable_expression has a `name` field (identifier)
-                node.child_by_field_name("name")
-                    .map(|n| state.node_text(n))
+                node.child_by_field_name("name").map(|n| state.node_text(n))
             }
             "select_expression" => {
                 // select_expression: expression.attrpath
@@ -986,17 +984,6 @@ impl NixExtractor {
                     .and_then(|f| Self::extract_callee_name(state, f))
             }
             _ => Some(state.node_text(node)),
-        }
-    }
-
-    /// Build the final ExtractionResult from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
         }
     }
 }
@@ -1036,7 +1023,7 @@ impl crate::extraction::LanguageExtractor for NixExtractor {
         &["nix"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Nix"
     }
 

@@ -1,70 +1,18 @@
 /// Tree-sitter based Lua source code extractor.
 ///
 /// Parses Lua source files and emits nodes and edges for the code graph.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, LUA_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, ExtractionState};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
 
 /// Extracts code graph nodes and edges from Lua source files using tree-sitter.
 pub struct LuaExtractor;
-
-/// Internal state used during AST traversal.
-struct ExtractionState {
-    nodes: Vec<Node>,
-    edges: Vec<Edge>,
-    unresolved_refs: Vec<UnresolvedRef>,
-    errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
-    node_stack: Vec<(String, String)>,
-    file_path: String,
-    source: Vec<u8>,
-    timestamp: u64,
-}
-
-impl ExtractionState {
-    fn new(file_path: &str, source: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            unresolved_refs: Vec::new(),
-            errors: Vec::new(),
-            node_stack: Vec::new(),
-            file_path: file_path.to_string(),
-            source: source.as_bytes().to_vec(),
-            timestamp,
-        }
-    }
-
-    /// Returns the current qualified name prefix from the node stack.
-    fn qualified_prefix(&self) -> String {
-        let mut parts = vec![self.file_path.clone()];
-        for (name, _) in &self.node_stack {
-            parts.push(name.clone());
-        }
-        parts.join("::")
-    }
-
-    /// Returns the current parent node ID, or None if at file root level.
-    fn parent_node_id(&self) -> Option<&str> {
-        self.node_stack.last().map(|(_, id)| id.as_str())
-    }
-
-    /// Gets the text of a tree-sitter node from the source.
-    fn node_text(&self, node: TsNode<'_>) -> String {
-        node.utf8_text(&self.source)
-            .unwrap_or("<invalid utf8>")
-            .to_string()
-    }
-}
 
 impl LuaExtractor {
     /// Extract code graph nodes and edges from a Lua source file.
@@ -79,7 +27,7 @@ impl LuaExtractor {
             Ok(tree) => tree,
             Err(msg) => {
                 state.errors.push(msg);
-                return Self::build_result(state, start);
+                return state.build_result(start);
             }
         };
 
@@ -91,6 +39,7 @@ impl LuaExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -105,13 +54,17 @@ impl LuaExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state
-            .node_stack
-            .push((file_path.to_string(), file_node_id));
+        state.node_stack.push((file_path.to_string(), file_node_id));
 
         // Walk the AST.
         let root = tree.root_node();
@@ -119,7 +72,7 @@ impl LuaExtractor {
 
         state.node_stack.pop();
 
-        Self::build_result(state, start)
+        state.build_result(start)
     }
 
     /// Parse source code into a tree-sitter AST.
@@ -164,21 +117,25 @@ impl LuaExtractor {
     /// - `function Foo.bar(...)` → name is `dot_index_expression`, public function with class context
     /// - `function Foo:bar(...)` → name is `method_index_expression`, method
     fn visit_function_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name_node = node.child_by_field_name("name");
-        let name_node = match name_node {
-            Some(n) => n,
-            None => return,
+        let Some(name_node) = node.child_by_field_name("name") else {
+            return;
         };
 
-        let is_local = node
-            .child(0)
-            .map(|c| c.kind() == "local")
-            .unwrap_or(false);
+        let is_local = node.child(0).is_some_and(|c| c.kind() == "local");
 
         let (name, kind, visibility, class_context) = match name_node.kind() {
             "identifier" => {
                 let name = state.node_text(name_node);
-                (name, NodeKind::Function, if is_local { Visibility::Private } else { Visibility::Pub }, None)
+                (
+                    name,
+                    NodeKind::Function,
+                    if is_local {
+                        Visibility::Private
+                    } else {
+                        Visibility::Pub
+                    },
+                    None,
+                )
             }
             "dot_index_expression" => {
                 // e.g. Connection.new
@@ -187,8 +144,7 @@ impl LuaExtractor {
                     .map(|n| state.node_text(n));
                 let field_name = name_node
                     .child_by_field_name("field")
-                    .map(|n| state.node_text(n))
-                    .unwrap_or_else(|| "<anonymous>".to_string());
+                    .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
                 (field_name, NodeKind::Function, Visibility::Pub, table_name)
             }
             "method_index_expression" => {
@@ -198,15 +154,14 @@ impl LuaExtractor {
                     .map(|n| state.node_text(n));
                 let method_name = name_node
                     .child_by_field_name("method")
-                    .map(|n| state.node_text(n))
-                    .unwrap_or_else(|| "<anonymous>".to_string());
+                    .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
                 (method_name, NodeKind::Method, Visibility::Pub, table_name)
             }
             _ => return,
         };
 
         let docstring = Self::extract_docstring(state, node);
-        let signature = Self::extract_function_signature(state, node, &class_context);
+        let signature = Self::extract_function_signature(state, node, class_context.as_deref());
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -226,6 +181,7 @@ impl LuaExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -240,7 +196,13 @@ impl LuaExtractor {
             unsafe_blocks: metrics.unsafe_blocks,
             unchecked_calls: metrics.unchecked_calls,
             assertions: metrics.assertions,
+            cognitive_complexity: metrics.cognitive_complexity,
+            distinct_operators: metrics.distinct_operators,
+            distinct_operands: metrics.distinct_operands,
+            total_operators: metrics.total_operators,
+            total_operands: metrics.total_operands,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -251,6 +213,7 @@ impl LuaExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
@@ -267,41 +230,42 @@ impl LuaExtractor {
     /// - `local CONST = <literal>` → Const node (uppercase names)
     fn visit_variable_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         // variable_declaration contains an assignment_statement child.
-        let assignment = match Self::find_child_by_kind(node, "assignment_statement") {
-            Some(a) => a,
-            None => return,
+        let Some(assignment) = find_child_by_kind(node, "assignment_statement") else {
+            return;
         };
 
         // Get the variable name from the variable_list.
-        let var_list = assignment.child_by_field_name("variable_list")
-            .or_else(|| Self::find_child_by_kind(assignment, "variable_list"));
+        let var_list = assignment
+            .child_by_field_name("variable_list")
+            .or_else(|| find_child_by_kind(assignment, "variable_list"));
         let name_node = var_list.and_then(|vl| {
             // The first named child of variable_list should be the identifier.
-            Self::find_child_by_kind(vl, "identifier")
+            find_child_by_kind(vl, "identifier")
         });
-        let name = match name_node {
-            Some(n) => state.node_text(n),
-            None => return,
+        let Some(n) = name_node else {
+            return;
         };
+        let name = state.node_text(n);
 
         // Get the value from the expression_list.
-        let expr_list = assignment.child_by_field_name("expression_list")
-            .or_else(|| Self::find_child_by_kind(assignment, "expression_list"));
+        let expr_list = assignment
+            .child_by_field_name("expression_list")
+            .or_else(|| find_child_by_kind(assignment, "expression_list"));
         let value_node = expr_list.and_then(|el| el.named_child(0));
 
-        let value_node = match value_node {
-            Some(v) => v,
-            None => return,
+        let Some(value_node) = value_node else {
+            return;
         };
 
         // Check if this is a require call → Use node.
         if value_node.kind() == "function_call" {
-            let call_name = value_node.child_by_field_name("name")
+            let call_name = value_node
+                .child_by_field_name("name")
                 .map(|n| state.node_text(n));
             if call_name.as_deref() == Some("require") {
                 // Extract the module name from the arguments.
-                let mod_name = Self::extract_require_module(state, value_node)
-                    .unwrap_or(name.clone());
+                let mod_name =
+                    Self::extract_require_module(state, value_node).unwrap_or(name.clone());
                 Self::emit_use_node(state, node, &mod_name);
                 return;
             }
@@ -338,6 +302,7 @@ impl LuaExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -352,7 +317,13 @@ impl LuaExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -363,6 +334,7 @@ impl LuaExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -388,6 +360,7 @@ impl LuaExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -402,7 +375,13 @@ impl LuaExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -413,6 +392,7 @@ impl LuaExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -421,8 +401,9 @@ impl LuaExtractor {
     ///
     /// Looks for the first string argument inside the arguments node.
     fn extract_require_module(state: &ExtractionState, call_node: TsNode<'_>) -> Option<String> {
-        let args = call_node.child_by_field_name("arguments")
-            .or_else(|| Self::find_child_by_kind(call_node, "arguments"))?;
+        let args = call_node
+            .child_by_field_name("arguments")
+            .or_else(|| find_child_by_kind(call_node, "arguments"))?;
         // Look for a string node inside arguments.
         let mut cursor = args.walk();
         if cursor.goto_first_child() {
@@ -430,7 +411,7 @@ impl LuaExtractor {
                 let child = cursor.node();
                 if child.kind() == "string" {
                     // The string node contains a string_content child.
-                    if let Some(content) = Self::find_child_by_kind(child, "string_content") {
+                    if let Some(content) = find_child_by_kind(child, "string_content") {
                         return Some(state.node_text(content));
                     }
                     // Fall back to stripping quotes from the full text.
@@ -449,7 +430,7 @@ impl LuaExtractor {
     fn extract_function_signature(
         state: &ExtractionState,
         node: TsNode<'_>,
-        _class_context: &Option<String>,
+        _class_context: Option<&str>,
     ) -> Option<String> {
         let text = state.node_text(node);
         let first_line = text.lines().next()?.trim().to_string();
@@ -462,7 +443,7 @@ impl LuaExtractor {
 
     /// Extract docstrings from `--` or `---` comment lines preceding definitions.
     ///
-    /// Lua uses comment lines (-- or --- for LDoc) as documentation. We look for
+    /// Lua uses comment lines (-- or --- for `LDoc`) as documentation. We look for
     /// `comment` sibling nodes that immediately precede the given definition node.
     fn extract_docstring(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         let mut comments: Vec<String> = Vec::new();
@@ -471,10 +452,7 @@ impl LuaExtractor {
             if prev_node.kind() == "comment" {
                 let text = state.node_text(prev_node);
                 // Strip leading dashes and whitespace: "--- foo" → "foo", "-- bar" → "bar"
-                let stripped = text
-                    .trim_start_matches('-')
-                    .trim()
-                    .to_string();
+                let stripped = text.trim_start_matches('-').trim().to_string();
                 comments.push(stripped);
                 prev = prev_node.prev_named_sibling();
             } else {
@@ -489,7 +467,7 @@ impl LuaExtractor {
         Some(comments.join("\n"))
     }
 
-    /// Recursively find function_call nodes inside a given node and create unresolved Calls references.
+    /// Recursively find `function_call` nodes inside a given node and create unresolved Calls references.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -534,34 +512,6 @@ impl LuaExtractor {
             }
         }
     }
-
-    /// Find the first child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
-    /// Build the final ExtractionResult from the accumulated state.
-    fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
-        ExtractionResult {
-            nodes: state.nodes,
-            edges: state.edges,
-            unresolved_refs: state.unresolved_refs,
-            errors: state.errors,
-            duration_ms: start.elapsed().as_millis() as u64,
-        }
-    }
 }
 
 impl crate::extraction::LanguageExtractor for LuaExtractor {
@@ -569,7 +519,7 @@ impl crate::extraction::LanguageExtractor for LuaExtractor {
         &["lua"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "Lua"
     }
 

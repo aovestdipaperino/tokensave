@@ -252,7 +252,7 @@ const char *name = "hello";
         .filter(|n| n.kind == NodeKind::Static)
         .collect();
     assert!(
-        statics.len() >= 1,
+        !statics.is_empty(),
         "should have global variables as Static nodes, got: {:?}",
         result.nodes
     );
@@ -316,11 +316,7 @@ int add(int a, int b) {
         .collect();
     assert_eq!(fns.len(), 1);
     let doc = fns[0].docstring.as_ref().expect("should have docstring");
-    assert!(
-        doc.contains("Adds two integers"),
-        "docstring: {:?}",
-        doc
-    );
+    assert!(doc.contains("Adds two integers"), "docstring: {:?}", doc);
 }
 
 #[test]
@@ -525,11 +521,7 @@ int global_counter = 0;
         .docstring
         .as_ref()
         .expect("global variable should have docstring");
-    assert!(
-        doc.contains("global counter"),
-        "docstring: {:?}",
-        doc
-    );
+    assert!(doc.contains("global counter"), "docstring: {:?}", doc);
 }
 
 #[test]
@@ -562,4 +554,122 @@ fn test_c_extensions() {
 fn test_c_language_name() {
     let extractor = CExtractor;
     assert_eq!(extractor.language_name(), "C");
+}
+
+#[test]
+fn test_c_symbols_inside_preproc_conditional() {
+    let source = r#"
+#ifdef FEATURE_X
+int feature_fn(int a) {
+    return a + 1;
+}
+#endif
+"#;
+    let extractor = CExtractor;
+    let result = extractor.extract("feature.c", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
+    assert!(names.contains(&"feature_fn"), "nodes: {:?}", names);
+}
+
+#[test]
+fn test_c_symbols_inside_include_guard() {
+    let source = r#"
+#ifndef LIST_H
+#define LIST_H
+struct List { int len; };
+int list_len(struct List* l);
+#endif
+"#;
+    let extractor = CExtractor;
+    let result = extractor.extract("list.h", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
+    assert!(names.contains(&"List"), "nodes: {:?}", names);
+}
+
+#[test]
+fn test_c_array_declarator_globals() {
+    let source = r#"
+static const char* const CNameTable[] = {"a", "b"};
+const int CNumberTable[] = {1, 2, 3};
+char CBuffer[64];
+static const int CScalar = 3;
+"#;
+    let result = CExtractor.extract("tables.c", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let statics: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Static)
+        .map(|n| n.name.as_str())
+        .collect();
+    assert!(statics.contains(&"CNameTable"), "statics: {statics:?}");
+    assert!(statics.contains(&"CNumberTable"), "statics: {statics:?}");
+    assert!(statics.contains(&"CBuffer"), "statics: {statics:?}");
+    assert!(statics.contains(&"CScalar"), "statics: {statics:?}");
+}
+
+#[test]
+fn test_c_export_macro_struct_and_function() {
+    let source = r#"
+struct LIBFOO_API foo_state
+{
+    int count;
+};
+
+LIBFOO_API int foo_reset(struct foo_state* s);
+"#;
+    let result = CExtractor.extract("foo.h", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let nodes: Vec<_> = result
+        .nodes
+        .iter()
+        .map(|n| (n.kind.clone(), n.name.as_str()))
+        .collect();
+    assert!(
+        nodes.contains(&(NodeKind::Struct, "foo_state")),
+        "nodes: {nodes:?}"
+    );
+    assert!(
+        nodes.contains(&(NodeKind::Function, "foo_reset")),
+        "nodes: {nodes:?}"
+    );
+}
+
+#[test]
+fn test_c_struct_fields_inside_a_preprocessor_guard() {
+    let source = r#"
+struct Row {
+    int a;
+#if !SHIPPING
+    int debug_id;
+#endif
+    int b;
+};
+"#;
+    let result = CExtractor.extract("row.h", source);
+    let fields: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Field)
+        .map(|n| n.name.as_str())
+        .collect();
+    for expected in ["a", "debug_id", "b"] {
+        assert!(fields.contains(&expected), "fields: {fields:?}");
+    }
+}
+
+#[test]
+fn test_c_caps_named_type_keeps_its_declaration() {
+    let source = r#"
+HANDLE const g_handle = 0;
+HANDLE g_plain = 0;
+MYLIB_API const int k_limit = 4;
+"#;
+    let result = CExtractor.extract("globals.c", source);
+    let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
+    for expected in ["g_handle", "g_plain", "k_limit"] {
+        assert!(names.contains(&expected), "names: {names:?}");
+    }
 }

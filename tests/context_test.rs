@@ -1,6 +1,98 @@
 use tokensave::context::*;
 use tokensave::types::*;
 
+#[tokio::test]
+async fn test_reranking_demotes_fixture_nodes() {
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
+        .await
+        .unwrap();
+
+    // Fixture node: enum variant in tests/fixtures/
+    let fixture_node = Node {
+        id: "enum_variant:fixture_debug".to_string(),
+        kind: NodeKind::EnumVariant,
+        name: "debug".to_string(),
+        qualified_name: "tests/fixtures/sample.dart::LogLevel::debug".to_string(),
+        file_path: "tests/fixtures/sample.dart".to_string(),
+        start_line: 14,
+        attrs_start_line: 14,
+        end_line: 14,
+        start_column: 0,
+        end_column: 10,
+        signature: Some("debug".to_string()),
+        docstring: None,
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
+        updated_at: 0,
+        parent_id: None,
+    };
+    db.insert_node(&fixture_node).await.unwrap();
+
+    // Source node: function in src/
+    let source_node = Node {
+        id: "function:debug_handler".to_string(),
+        kind: NodeKind::Function,
+        name: "debug_handler".to_string(),
+        qualified_name: "src/debug.rs::debug_handler".to_string(),
+        file_path: "src/debug.rs".to_string(),
+        start_line: 1,
+        attrs_start_line: 1,
+        end_line: 10,
+        start_column: 0,
+        end_column: 1,
+        signature: Some("pub fn debug_handler()".to_string()),
+        docstring: None,
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
+        updated_at: 0,
+        parent_id: None,
+    };
+    db.insert_node(&source_node).await.unwrap();
+
+    let builder = ContextBuilder::new(&db, project);
+    let result = builder
+        .build_context("debug", &BuildContextOptions::default())
+        .await
+        .unwrap();
+
+    assert!(!result.entry_points.is_empty());
+    assert_eq!(
+        result.entry_points[0].id, "function:debug_handler",
+        "source function should outrank fixture enum variant after re-ranking"
+    );
+}
+
 #[test]
 fn test_extract_symbols_from_query() {
     let symbols = extract_symbols_from_query("fix the process_request function");
@@ -40,6 +132,8 @@ fn test_format_context_markdown() {
         entry_points: vec![],
         code_blocks: vec![],
         related_files: vec![],
+        seen_node_ids: vec![],
+        diagnostics: RetrievalDiagnostics::default(),
     };
     let md = format_context_as_markdown(&context);
     assert!(md.contains("## Code Context"));
@@ -55,6 +149,8 @@ fn test_format_context_json() {
         entry_points: vec![],
         code_blocks: vec![],
         related_files: vec![],
+        seen_node_ids: vec![],
+        diagnostics: RetrievalDiagnostics::default(),
     };
     let json = format_context_as_json(&context);
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -63,20 +159,24 @@ fn test_format_context_json() {
 
 #[tokio::test]
 async fn test_build_context_with_db() {
-    use tokensave::context::ContextBuilder;
-    use tokensave::db::Database;
     use std::fs;
     use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
     // Create a source file
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn process_data() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("lib.rs"),
+        "pub fn process_data() {}\n",
+    )
+    .unwrap();
 
     // Init DB and insert a node
-    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
     let node = Node {
@@ -86,6 +186,7 @@ async fn test_build_context_with_db() {
         qualified_name: "src/lib.rs::process_data".to_string(),
         file_path: "src/lib.rs".to_string(),
         start_line: 1,
+        attrs_start_line: 1,
         end_line: 1,
         start_column: 0,
         end_column: 24,
@@ -100,7 +201,13 @@ async fn test_build_context_with_db() {
         unsafe_blocks: 0,
         unchecked_calls: 0,
         assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
         updated_at: 0,
+        parent_id: None,
     };
     db.insert_node(&node).await.unwrap();
 
@@ -115,22 +222,22 @@ async fn test_build_context_with_db() {
 
 #[tokio::test]
 async fn test_get_code_reads_source_file() {
-    use tokensave::context::ContextBuilder;
-    use tokensave::db::Database;
     use std::fs;
     use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         "fn main() {\n    println!(\"hello\");\n}\n",
     )
     .unwrap();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
 
@@ -140,8 +247,9 @@ async fn test_get_code_reads_source_file() {
         name: "main".to_string(),
         qualified_name: "src/main.rs::main".to_string(),
         file_path: "src/main.rs".to_string(),
-        start_line: 1,
-        end_line: 3,
+        start_line: 0,
+        attrs_start_line: 0,
+        end_line: 2,
         start_column: 0,
         end_column: 1,
         signature: Some("fn main()".to_string()),
@@ -155,11 +263,17 @@ async fn test_get_code_reads_source_file() {
         unsafe_blocks: 0,
         unchecked_calls: 0,
         assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
         updated_at: 0,
+        parent_id: None,
     };
 
     let builder = ContextBuilder::new(&db, project);
-    let code = builder.get_code(&node).await.unwrap();
+    let code = builder.get_code(&node).unwrap();
     assert!(code.is_some());
     let content = code.unwrap();
     assert!(content.contains("fn main()"));
@@ -168,14 +282,14 @@ async fn test_get_code_reads_source_file() {
 
 #[tokio::test]
 async fn test_get_code_returns_none_for_missing_file() {
+    use tempfile::TempDir;
     use tokensave::context::ContextBuilder;
     use tokensave::db::Database;
-    use tempfile::TempDir;
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
 
@@ -186,6 +300,7 @@ async fn test_get_code_returns_none_for_missing_file() {
         qualified_name: "nonexistent.rs::missing".to_string(),
         file_path: "nonexistent.rs".to_string(),
         start_line: 1,
+        attrs_start_line: 1,
         end_line: 1,
         start_column: 0,
         end_column: 10,
@@ -200,24 +315,30 @@ async fn test_get_code_returns_none_for_missing_file() {
         unsafe_blocks: 0,
         unchecked_calls: 0,
         assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
         updated_at: 0,
+        parent_id: None,
     };
 
     let builder = ContextBuilder::new(&db, project);
-    let code = builder.get_code(&node).await.unwrap();
+    let code = builder.get_code(&node).unwrap();
     assert!(code.is_none());
 }
 
 #[tokio::test]
 async fn test_find_relevant_context() {
+    use tempfile::TempDir;
     use tokensave::context::ContextBuilder;
     use tokensave::db::Database;
-    use tempfile::TempDir;
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave/tokensave.db"))
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
         .await
         .unwrap();
     let node = Node {
@@ -227,6 +348,7 @@ async fn test_find_relevant_context() {
         qualified_name: "src/lib.rs::compute".to_string(),
         file_path: "src/lib.rs".to_string(),
         start_line: 1,
+        attrs_start_line: 1,
         end_line: 5,
         start_column: 0,
         end_column: 1,
@@ -241,7 +363,13 @@ async fn test_find_relevant_context() {
         unsafe_blocks: 0,
         unchecked_calls: 0,
         assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
         updated_at: 0,
+        parent_id: None,
     };
     db.insert_node(&node).await.unwrap();
 
@@ -251,4 +379,1016 @@ async fn test_find_relevant_context() {
         .await
         .unwrap();
     assert!(!subgraph.nodes.is_empty());
+}
+
+#[tokio::test]
+async fn test_exclude_node_ids_deduplication() {
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
+        .await
+        .unwrap();
+
+    for (id, name) in [("fn:first", "compute"), ("fn:second", "compute_batch")] {
+        db.insert_node(&Node {
+            id: id.to_string(),
+            kind: NodeKind::Function,
+            name: name.to_string(),
+            qualified_name: format!("src/lib.rs::{name}"),
+            file_path: "src/lib.rs".to_string(),
+            start_line: 1,
+            attrs_start_line: 1,
+            end_line: 5,
+            start_column: 0,
+            end_column: 1,
+            signature: Some(format!("pub fn {name}()")),
+            docstring: None,
+            visibility: Visibility::Pub,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: 0,
+            parent_id: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    let builder = ContextBuilder::new(&db, project);
+
+    // First call — fn:first should appear
+    let opts = BuildContextOptions::default();
+    let ctx1 = builder.build_context("compute", &opts).await.unwrap();
+    assert!(ctx1.entry_points.iter().any(|n| n.id == "fn:first"));
+
+    // Second call — exclude fn:first
+    let opts2 = BuildContextOptions {
+        exclude_node_ids: vec!["fn:first".to_string()].into_iter().collect(),
+        ..Default::default()
+    };
+    let ctx2 = builder.build_context("compute", &opts2).await.unwrap();
+    assert!(
+        !ctx2.entry_points.iter().any(|n| n.id == "fn:first"),
+        "excluded node should not appear in second call"
+    );
+}
+
+#[tokio::test]
+async fn test_exact_name_match_wins_max_merge() {
+    // Regression for #117: a node that matches BOTH an FTS term (with a tiny
+    // BM25 score) and the exact-name lookup must carry the exact-match base
+    // score, not the low FTS score it happened to be seen with first.
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
+        .await
+        .unwrap();
+
+    // Exact-match target: a low-boost node (enum variant, private). Without the
+    // exact-match score it would rank dead last after structural re-ranking.
+    // Name is camelCase so the query token is extracted as a symbol (a plain
+    // lowercase word is not), which is what feeds the exact-name lookup.
+    db.insert_node(&Node {
+        id: "variant:validate".to_string(),
+        kind: NodeKind::EnumVariant,
+        name: "validateInput".to_string(),
+        qualified_name: "src/lib.rs::Action::validateInput".to_string(),
+        file_path: "src/lib.rs".to_string(),
+        start_line: 1,
+        attrs_start_line: 1,
+        end_line: 1,
+        start_column: 0,
+        end_column: 10,
+        signature: Some("validateInput".to_string()),
+        docstring: None,
+        visibility: Visibility::Private,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
+        updated_at: 0,
+        parent_id: None,
+    })
+    .await
+    .unwrap();
+
+    // Competitor: a high-boost node (public function) that only matches the FTS
+    // "validate" prefix term, never the exact symbol names. Its structural boost
+    // dwarfs the enum variant's, so under the old first-seen bug it ranks first.
+    db.insert_node(&Node {
+        id: "fn:validate_helper".to_string(),
+        kind: NodeKind::Function,
+        name: "validateRequest".to_string(),
+        qualified_name: "src/lib.rs::validateRequest".to_string(),
+        file_path: "src/lib.rs".to_string(),
+        start_line: 2,
+        attrs_start_line: 2,
+        end_line: 6,
+        start_column: 0,
+        end_column: 1,
+        signature: Some("pub fn validateRequest()".to_string()),
+        docstring: None,
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
+        updated_at: 0,
+        parent_id: None,
+    })
+    .await
+    .unwrap();
+
+    let builder = ContextBuilder::new(&db, project);
+
+    // Both nodes match the "validate" FTS term; only validateInput is an exact
+    // name match for the query's extracted symbols.
+    let ctx = builder
+        .build_context("validateInput", &BuildContextOptions::default())
+        .await
+        .unwrap();
+
+    // The exact-match node must carry the high base score and rank first,
+    // despite its much weaker structural boost.
+    assert_eq!(
+        ctx.entry_points.first().map(|n| n.id.as_str()),
+        Some("variant:validate"),
+        "exact-name match should rank first via MAX-merge, not be buried by BM25"
+    );
+
+    // Excluding the exact-match node must still keep it out entirely.
+    let opts_excl = BuildContextOptions {
+        exclude_node_ids: vec!["variant:validate".to_string()].into_iter().collect(),
+        ..Default::default()
+    };
+    let ctx_excl = builder
+        .build_context("validateInput", &opts_excl)
+        .await
+        .unwrap();
+    assert!(
+        !ctx_excl
+            .entry_points
+            .iter()
+            .any(|n| n.id == "variant:validate"),
+        "excluded node must not reappear via the exact-name supplement"
+    );
+}
+
+#[tokio::test]
+async fn test_query_ignore_filters_context_entry_points() {
+    use tempfile::TempDir;
+    use tokensave::config::{load_query_ignore, QueryIgnore};
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
+        .await
+        .unwrap();
+
+    // Two nodes with the same searchable name in different directories.
+    for (id, file) in [
+        ("fn:src", "src/widget.rs"),
+        ("fn:gen", "generated/widget.rs"),
+    ] {
+        db.insert_node(&Node {
+            id: id.to_string(),
+            kind: NodeKind::Function,
+            name: "widget".to_string(),
+            qualified_name: format!("{file}::widget"),
+            file_path: file.to_string(),
+            start_line: 1,
+            attrs_start_line: 1,
+            end_line: 5,
+            start_column: 0,
+            end_column: 1,
+            signature: Some("pub fn widget()".to_string()),
+            docstring: None,
+            visibility: Visibility::Pub,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: 0,
+            parent_id: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    let builder = ContextBuilder::new(&db, project);
+
+    // Without an ignore file, both nodes are reachable.
+    let opts = BuildContextOptions::default();
+    let ctx = builder.build_context("widget", &opts).await.unwrap();
+    assert!(ctx.entry_points.iter().any(|n| n.id == "fn:gen"));
+
+    // With a matching queryignore pattern, the generated node is filtered out.
+    let ts_dir = project.join(".tokensave");
+    std::fs::write(ts_dir.join("queryignore"), "generated\n").unwrap();
+    let query_ignore = load_query_ignore(project);
+    assert!(!query_ignore.is_empty());
+
+    let opts_ignored = BuildContextOptions {
+        query_ignore,
+        ..Default::default()
+    };
+    let ctx_ignored = builder
+        .build_context("widget", &opts_ignored)
+        .await
+        .unwrap();
+    assert!(
+        !ctx_ignored.entry_points.iter().any(|n| n.id == "fn:gen"),
+        "queryignore-matched node should not appear as an entry point"
+    );
+    assert!(
+        ctx_ignored.entry_points.iter().any(|n| n.id == "fn:src"),
+        "non-matching node should still appear"
+    );
+
+    // Sanity: an empty QueryIgnore matches nothing.
+    assert!(!QueryIgnore::default().is_ignored("generated/widget.rs"));
+}
+
+#[tokio::test]
+async fn test_merge_adjacent_code_blocks() {
+    use std::fs;
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src").join("lib.rs"),
+        "fn alpha() {}\n\nfn beta() {}\n\nfn gamma() {}\n",
+    )
+    .unwrap();
+
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
+        .await
+        .unwrap();
+
+    // Two adjacent functions in same file
+    db.insert_node(&Node {
+        id: "fn:alpha".to_string(),
+        kind: NodeKind::Function,
+        name: "alpha".to_string(),
+        qualified_name: "src/lib.rs::alpha".to_string(),
+        file_path: "src/lib.rs".to_string(),
+        start_line: 0,
+        attrs_start_line: 0,
+        end_line: 0,
+        start_column: 0,
+        end_column: 13,
+        signature: Some("fn alpha()".to_string()),
+        docstring: None,
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
+        updated_at: 0,
+        parent_id: None,
+    })
+    .await
+    .unwrap();
+
+    db.insert_node(&Node {
+        id: "fn:beta".to_string(),
+        kind: NodeKind::Function,
+        name: "beta".to_string(),
+        qualified_name: "src/lib.rs::beta".to_string(),
+        file_path: "src/lib.rs".to_string(),
+        start_line: 2,
+        attrs_start_line: 2,
+        end_line: 2,
+        start_column: 0,
+        end_column: 12,
+        signature: Some("fn beta()".to_string()),
+        docstring: None,
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
+        updated_at: 0,
+        parent_id: None,
+    })
+    .await
+    .unwrap();
+
+    let builder = ContextBuilder::new(&db, project);
+    let ctx = builder
+        .build_context(
+            "alpha beta",
+            &BuildContextOptions {
+                include_code: true,
+                merge_adjacent: true,
+                max_code_blocks: 10,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    // With merge_adjacent, the two adjacent blocks should merge into one
+    assert_eq!(
+        ctx.code_blocks.len(),
+        1,
+        "adjacent blocks should merge into one, got {}",
+        ctx.code_blocks.len()
+    );
+    assert!(ctx.code_blocks[0].content.contains("alpha"));
+    assert!(ctx.code_blocks[0].content.contains("beta"));
+}
+
+#[tokio::test]
+async fn test_entry_points_capped_to_search_limit() {
+    // Regression test for #120: when many candidates match, the number of
+    // entry points (BFS roots) must be bounded by `search_limit` so each
+    // root's traversal budget stays meaningful.
+    use std::fs;
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
+        .await
+        .unwrap();
+
+    // Insert many distinct nodes, each matching a distinct keyword. Each
+    // per-keyword FTS search surfaces its node, so the candidate pool greatly
+    // exceeds `search_limit`.
+    const NUM_NODES: usize = 12;
+    let keywords: Vec<String> = (0..NUM_NODES).map(|i| format!("widgetkind{i}")).collect();
+    let mut nodes = Vec::new();
+    for (i, kw) in keywords.iter().enumerate() {
+        nodes.push(Node {
+            id: format!("function:{kw}"),
+            kind: NodeKind::Function,
+            name: kw.clone(),
+            qualified_name: format!("src/file{i}.rs::{kw}"),
+            file_path: format!("src/file{i}.rs"),
+            start_line: 1,
+            attrs_start_line: 1,
+            end_line: 5,
+            start_column: 0,
+            end_column: 1,
+            signature: Some(format!("pub fn {kw}()")),
+            docstring: None,
+            visibility: Visibility::Pub,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: 0,
+            parent_id: None,
+        });
+    }
+    db.insert_nodes(&nodes).await.unwrap();
+
+    const SEARCH_LIMIT: usize = 5;
+    let opts = BuildContextOptions {
+        search_limit: SEARCH_LIMIT,
+        max_nodes: 100, // large, so search_limit is the binding cap on roots
+        max_per_file: Some(100),
+        extra_keywords: keywords.clone(),
+        ..Default::default()
+    };
+
+    let builder = ContextBuilder::new(&db, project);
+    // Query the first keyword; the rest surface via extra_keywords, producing
+    // far more candidates than `search_limit`.
+    let ctx = builder.build_context(&keywords[0], &opts).await.unwrap();
+
+    assert!(
+        ctx.entry_points.len() > 1,
+        "expected multiple matching candidates, got {}",
+        ctx.entry_points.len()
+    );
+    assert!(
+        ctx.entry_points.len() <= SEARCH_LIMIT,
+        "entry points (BFS roots) must be capped to search_limit ({}), got {}",
+        SEARCH_LIMIT,
+        ctx.entry_points.len()
+    );
+}
+
+#[tokio::test]
+async fn exact_qualified_expression_seeds_every_enclosing_symbol() {
+    use std::collections::HashSet;
+    use std::fs;
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::tokensave::TokenSave;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("crates").join("sonium-bem").join("src")).unwrap();
+    fs::create_dir_all(project.join("crates").join("sonium-qa").join("tests")).unwrap();
+    fs::create_dir_all(project.join("crates").join("unrelated").join("src")).unwrap();
+    fs::write(
+        project
+            .join("crates")
+            .join("sonium-bem")
+            .join("src")
+            .join("linear.rs"),
+        r#"
+pub enum BasisOrder { Linear, Quadratic }
+
+pub fn standard_assembly(order: BasisOrder) {
+    if matches!(order, BasisOrder::Linear) {}
+}
+
+pub fn stabilized_assembly(order: BasisOrder) {
+    if matches!(order, BasisOrder::Linear) {}
+}
+
+pub fn incident_rhs(order: BasisOrder) {
+    if matches!(order, BasisOrder::Linear) {}
+}
+
+pub fn validate_backend(order: BasisOrder) {
+    if matches!(order, BasisOrder::Linear) {}
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project
+            .join("crates")
+            .join("sonium-qa")
+            .join("tests")
+            .join("linear_regression.rs"),
+        r#"
+pub fn physical_pressure() {
+    let order = BasisOrder::Linear;
+    export(order);
+}
+
+#[test]
+fn linear_regression() {
+    let order = BasisOrder::Linear;
+    assert_supported(order);
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project
+            .join("crates")
+            .join("unrelated")
+            .join("src")
+            .join("ignored.rs"),
+        "pub fn excluded_path() { let _ = BasisOrder::Linear; }\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let builder = ContextBuilder::new(cg.db(), project);
+    let context = builder
+        .build_context(
+            "Find every code path specific to BasisOrder::Linear, including assembly, validation, output, and regression tests.",
+            &BuildContextOptions {
+                max_nodes: 10,
+                search_limit: 2,
+                max_per_file: Some(2),
+                extra_keywords: vec!["BasisOrder::Linear".to_string()],
+                path_include: vec![
+                    "crates/sonium-bem".to_string(),
+                    "crates/sonium-qa".to_string(),
+                ],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let names: HashSet<&str> = context
+        .entry_points
+        .iter()
+        .map(|node| node.name.as_str())
+        .collect();
+    let expected = HashSet::from([
+        "standard_assembly",
+        "stabilized_assembly",
+        "incident_rhs",
+        "validate_backend",
+        "physical_pressure",
+        "linear_regression",
+    ]);
+    assert!(
+        expected.is_subset(&names),
+        "entry points: {:?}",
+        context.entry_points
+    );
+    assert!(context.entry_points.len() <= expected.len() + 2);
+    assert_eq!(context.seen_node_ids.len(), context.entry_points.len());
+    assert!(!names.contains("excluded_path"));
+}
+
+#[tokio::test]
+async fn conceptual_context_discovers_executable_body_owner() {
+    use std::fs;
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::tokensave::TokenSave;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src").join("solver.rs"),
+        r#"
+pub fn run_policy(frequencies: &[f64]) {
+    let mut preconditioner_cache = None;
+    for frequency in frequencies {
+        let retry = preconditioner_cache.is_none();
+        if retry {
+            preconditioner_cache = Some(*frequency);
+        }
+        let residual = frequency.abs();
+        record_diagnostics(residual);
+    }
+}
+
+fn record_diagnostics(_residual: f64) {}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let builder = ContextBuilder::new(cg.db(), project);
+    let context = builder
+        .build_context(
+            "frequency retry preconditioner cache diagnostics residual",
+            &BuildContextOptions {
+                search_limit: 5,
+                max_nodes: 20,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        context
+            .entry_points
+            .iter()
+            .any(|node| node.name == "run_policy"),
+        "behavioral owner should be discoverable from body concepts; got {:?}",
+        context
+            .entry_points
+            .iter()
+            .map(|node| &node.name)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn conceptual_context_associates_local_control_flow_with_owner() {
+    use std::fs;
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::tokensave::TokenSave;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src").join("runner.rs"),
+        r#"
+pub fn execute(frequencies: &[f64]) {
+    let mut cached_precond = None;
+    let rebuild_every = 8;
+    for (freq_idx, frequency) in frequencies.iter().enumerate() {
+        let must_rebuild = cached_precond.is_none() || freq_idx % rebuild_every == 0;
+        if must_rebuild {
+            cached_precond = Some(*frequency);
+        }
+    }
+}
+
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let builder = ContextBuilder::new(cg.db(), project);
+    let context = builder
+        .build_context(
+            "preconditioner cache rebuild",
+            &BuildContextOptions {
+                search_limit: 5,
+                max_nodes: 20,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        context
+            .entry_points
+            .iter()
+            .any(|node| node.name == "execute"),
+        "local branch identifiers should retrieve their executable owner"
+    );
+}
+
+#[tokio::test]
+async fn requested_type_expands_to_its_behavioral_api() {
+    use std::fs;
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::tokensave::TokenSave;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src").join("source.rs"),
+        r#"
+pub struct Source {
+    gain: f64,
+}
+
+impl Source {
+    pub fn amplitude_towards(&self, angle: f64) -> f64 {
+        self.gain * angle.cos()
+    }
+
+    pub fn polar_weight(&self, angle: f64) -> f64 {
+        self.gain * angle.sin()
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let builder = ContextBuilder::new(cg.db(), project);
+    let context = builder
+        .build_context(
+            "Source behavior",
+            &BuildContextOptions {
+                search_limit: 10,
+                max_nodes: 20,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let names: Vec<_> = context
+        .entry_points
+        .iter()
+        .map(|node| node.name.as_str())
+        .collect();
+
+    assert!(
+        names.contains(&"amplitude_towards"),
+        "entry points: {names:?}"
+    );
+    assert!(names.contains(&"polar_weight"), "entry points: {names:?}");
+}
+
+#[tokio::test]
+async fn executable_body_index_is_replaced_by_incremental_sync() {
+    use std::fs;
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::tokensave::TokenSave;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    let source_path = project.join("src").join("policy.rs");
+    fs::write(
+        &source_path,
+        "pub fn policy() { let cached_precond = true; let must_rebuild = cached_precond; }\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    let options = BuildContextOptions {
+        search_limit: 5,
+        max_nodes: 20,
+        ..Default::default()
+    };
+    let builder = ContextBuilder::new(cg.db(), project);
+    let before = builder
+        .build_context("preconditioner rebuild", &options)
+        .await
+        .unwrap();
+    assert!(before.entry_points.iter().any(|node| node.name == "policy"));
+
+    fs::write(
+        &source_path,
+        "pub fn policy() { let session_rotation = true; let renew_credentials = session_rotation; }\n",
+    )
+    .unwrap();
+    cg.sync().await.unwrap();
+
+    let old_terms = builder
+        .build_context("preconditioner rebuild", &options)
+        .await
+        .unwrap();
+    assert!(!old_terms
+        .entry_points
+        .iter()
+        .any(|node| node.name == "policy"));
+    let new_terms = builder
+        .build_context("session rotation credentials renewal", &options)
+        .await
+        .unwrap();
+    assert!(new_terms
+        .entry_points
+        .iter()
+        .any(|node| node.name == "policy"));
+}
+
+/// Builds a `Pub` function node for the issue #264 regression fixture.
+fn issue_264_function(id: &str, name: &str, file_path: &str, docstring: Option<&str>) -> Node {
+    Node {
+        id: id.to_string(),
+        kind: NodeKind::Function,
+        name: name.to_string(),
+        qualified_name: format!("{file_path}::{name}"),
+        file_path: file_path.to_string(),
+        start_line: 1,
+        attrs_start_line: 1,
+        end_line: 6,
+        start_column: 0,
+        end_column: 1,
+        signature: Some(format!("function {name}()")),
+        docstring: docstring.map(str::to_string),
+        visibility: Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
+        updated_at: 0,
+        parent_id: None,
+    }
+}
+
+/// #264: a natural-language task naming a top-level asset generator must
+/// surface the indexed generator module, not only unrelated UI screens that
+/// happen to share generic words ("icon", "screen", "logo"). The generic UI
+/// decoys are inserted first so an unranked bounded FTS scan (ascending
+/// rowid) returns only decoys for every shared term; per-term BM25 ranking
+/// must pull the generator's strong name/qualified-name matches into the
+/// candidate pool regardless of insertion order.
+#[tokio::test]
+async fn test_context_surfaces_asset_generator_over_generic_ui_decoys() {
+    use tempfile::TempDir;
+    use tokensave::context::ContextBuilder;
+    use tokensave::db::Database;
+
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
+        .await
+        .unwrap();
+
+    // Unrelated UI screens sharing the query's generic vocabulary. Every
+    // conceptual term the generator can match is also matched by at least
+    // three decoys with smaller rowids, so unfixed (unranked) LIMIT-based
+    // retrieval never reaches the generator.
+    let decoys = [
+        (
+            "settingsScreen",
+            "Generates the settings screen markup with a consistent header logo.",
+        ),
+        (
+            "profileScreen",
+            "Generates the profile screen and browser preview icon.",
+        ),
+        (
+            "homeScreen",
+            "Generates the home screen launcher shortcuts and favicon badge.",
+        ),
+        (
+            "loginScreen",
+            "Renders the OAuth consent screen with the partner logo.",
+        ),
+        (
+            "signupScreen",
+            "Renders the OAuth consent flow and browser splash overlay.",
+        ),
+        (
+            "onboardingScreen",
+            "Shows the splash screen with consistent geometry hints.",
+        ),
+        (
+            "dashboardScreen",
+            "Lays out dashboard cards with consistent geometry and icon grid.",
+        ),
+        (
+            "galleryScreen",
+            "Displays the icon gallery with launcher badges.",
+        ),
+        (
+            "aboutScreen",
+            "Shows the about screen with the company logo and favicon links.",
+        ),
+        (
+            "helpScreen",
+            "Opens help topics from the launcher with geometry aware layout.",
+        ),
+        (
+            "browserScreen",
+            "Embedded browser screen with favicon display.",
+        ),
+        (
+            "splashOverlay",
+            "Splash overlay shown while the OAuth consent logo loads.",
+        ),
+    ];
+    for (i, (name, doc)) in decoys.iter().enumerate() {
+        let file = format!("src/ui/{}.ts", name.to_lowercase());
+        db.insert_node(&issue_264_function(
+            &format!("function:decoy{i}"),
+            name,
+            &file,
+            Some(doc),
+        ))
+        .await
+        .unwrap();
+    }
+
+    // The asset generator module the task actually asks for, indexed after
+    // the decoys (larger rowids).
+    let generator_file = "src/tools/icon_generator.ts";
+    let generators = [
+        (
+            "generateLauncherIcon",
+            "Generates the launcher icon set for every density.",
+        ),
+        (
+            "generateSplashScreen",
+            "Generates the splash screen artwork and keeps consistent geometry.",
+        ),
+        ("generateOAuthLogo", "Generates the OAuth consent logo."),
+        ("generateFavicon", "Generates the browser favicon."),
+    ];
+    for (i, (name, doc)) in generators.iter().enumerate() {
+        db.insert_node(&issue_264_function(
+            &format!("function:generator{i}"),
+            name,
+            generator_file,
+            Some(doc),
+        ))
+        .await
+        .unwrap();
+    }
+
+    // Adjacent test file exercising the generator.
+    let generator_test_file = "src/tools/icon_generator.test.ts";
+    db.insert_node(&issue_264_function(
+        "function:generator_tests",
+        "iconGeneratorTests",
+        generator_test_file,
+        None,
+    ))
+    .await
+    .unwrap();
+    for i in 0..generators.len() {
+        db.insert_edge(&Edge {
+            source: "function:generator_tests".to_string(),
+            target: format!("function:generator{i}"),
+            kind: EdgeKind::Calls,
+            line: Some(2),
+            resolved_by: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    let options = BuildContextOptions {
+        max_nodes: 16,
+        include_code: false,
+        ..Default::default()
+    };
+    let builder = ContextBuilder::new(&db, project);
+    let ctx = builder
+        .build_context(
+            "Find the code that generates application icon assets and controls consistent \
+             geometry across the launcher, splash screen, OAuth consent logo, and browser \
+             favicon. Include its tests and build configuration.",
+            &options,
+        )
+        .await
+        .unwrap();
+
+    let returned_files: Vec<&str> = ctx
+        .entry_points
+        .iter()
+        .chain(ctx.subgraph.nodes.iter())
+        .map(|node| node.file_path.as_str())
+        .collect();
+    assert!(
+        returned_files.contains(&generator_file),
+        "generator module missing from context: {returned_files:?}"
+    );
+    assert!(
+        returned_files.contains(&generator_test_file),
+        "generator test file missing from context: {returned_files:?}"
+    );
 }

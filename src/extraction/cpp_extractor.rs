@@ -1,12 +1,13 @@
 /// Tree-sitter based C++ source code extractor.
 ///
 /// Parses C++ source files and emits nodes and edges for the code graph.
-/// Handles `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.hh` files.
+/// Handles `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.hh`, `.inl`, `.ipp`, `.tcc` files.
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::extraction::complexity::{count_complexity, CPP_COMPLEXITY};
+use crate::extraction::ts_state::{find_child_by_kind, has_child_kind};
 use crate::types::{
     generate_node_id, Edge, EdgeKind, ExtractionResult, Node, NodeKind, UnresolvedRef, Visibility,
 };
@@ -20,7 +21,7 @@ struct ExtractionState {
     edges: Vec<Edge>,
     unresolved_refs: Vec<UnresolvedRef>,
     errors: Vec<String>,
-    /// Stack of (name, node_id) for building qualified names and parent edges.
+    /// Stack of (name, `node_id`) for building qualified names and parent edges.
     node_stack: Vec<(String, String)>,
     file_path: String,
     source: Vec<u8>,
@@ -81,6 +82,9 @@ impl CppExtractor {
     /// Extract code graph nodes and edges from a C++ source file.
     pub fn extract_source(file_path: &str, source: &str) -> ExtractionResult {
         let start = Instant::now();
+        // Space-for-byte, so every offset below still addresses the real file.
+        let blanked = crate::extraction::c_api_macro::blank_declaration_macros(source);
+        let source = blanked.as_deref().unwrap_or(source);
         let mut state = ExtractionState::new(file_path, source);
 
         let tree = match Self::parse_source(source) {
@@ -99,6 +103,7 @@ impl CppExtractor {
             qualified_name: file_path.to_string(),
             file_path: file_path.to_string(),
             start_line: 0,
+            attrs_start_line: 0,
             end_line: source.lines().count().saturating_sub(1) as u32,
             start_column: 0,
             end_column: 0,
@@ -113,7 +118,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
@@ -167,9 +178,34 @@ impl CppExtractor {
             "namespace_definition" => Self::visit_namespace(state, node),
             "template_declaration" => Self::visit_template(state, node),
             "using_declaration" => Self::visit_using_declaration(state, node),
+            "alias_declaration" => Self::visit_alias_declaration(state, node),
             "preproc_def" => Self::visit_preproc_def(state, node),
             "preproc_include" => Self::visit_preproc_include(state, node),
             "access_specifier" => Self::visit_access_specifier(state, node),
+            // Both `extern "C" void foo() {}` and `extern "C" { ... }` parse
+            // as `linkage_specification`, which carries no symbol itself --
+            // unwrap it so the wrapped declaration(s) get visited.
+            // `declaration_list` (the block form's body) only reaches here
+            // via `extern "C"`; namespaces already unwrap their own
+            // `declaration_list` before dispatch, so this can't double-visit
+            // them.
+            //
+            // A preprocessor conditional likewise carries no symbol itself
+            // while its body does. Without it every declaration inside an
+            // `#if` / `#ifdef` is invisible -- which silently drops whole
+            // files: the `#ifndef FOO_H` include-guard idiom wraps an entire
+            // header, and build-config guards (`#if !NDEBUG` and friends)
+            // wrap entire .cpp files. Both arms of an `#if/#else` are
+            // extracted: deciding which one compiles needs a preprocessor,
+            // and dropping both is strictly worse than reporting a symbol
+            // that some configuration excludes.
+            "linkage_specification"
+            | "declaration_list"
+            | "preproc_if"
+            | "preproc_ifdef"
+            | "preproc_else"
+            | "preproc_elif"
+            | "preproc_elifdef" => Self::visit_children(state, node),
             _ => {
                 // For other node types, skip. Comments are picked up as docstrings.
             }
@@ -207,9 +243,9 @@ impl CppExtractor {
             Visibility::Pub
         };
 
-        let name = Self::extract_function_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
-        let signature = Self::extract_function_signature(state, node);
+        let name =
+            Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
+        let signature = Some(Self::extract_function_signature(state, node));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -237,6 +273,7 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -251,7 +288,13 @@ impl CppExtractor {
             unsafe_blocks: metrics.unsafe_blocks,
             unchecked_calls: metrics.unchecked_calls,
             assertions: metrics.assertions,
+            cognitive_complexity: metrics.cognitive_complexity,
+            distinct_operators: metrics.distinct_operators,
+            distinct_operands: metrics.distinct_operands,
+            total_operators: metrics.total_operators,
+            total_operands: metrics.total_operands,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -262,18 +305,19 @@ impl CppExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
         Self::extract_annotations(state, node, &id);
 
         // Extract call sites from the function body.
-        if let Some(body) = Self::find_child_by_kind(node, "compound_statement") {
+        if let Some(body) = find_child_by_kind(node, "compound_statement") {
             Self::extract_call_sites(state, body, &id);
         }
     }
 
-    /// Check if a function_definition is a constructor.
+    /// Check if a `function_definition` is a constructor.
     fn is_constructor(state: &ExtractionState, node: TsNode<'_>) -> bool {
         let name = Self::extract_function_name(state, node);
         if let Some(name) = &name {
@@ -286,7 +330,7 @@ impl CppExtractor {
         false
     }
 
-    /// Check if a function_definition is a destructor.
+    /// Check if a `function_definition` is a destructor.
     fn is_destructor(state: &ExtractionState, node: TsNode<'_>) -> bool {
         let name = Self::extract_function_name(state, node);
         if let Some(name) = &name {
@@ -299,9 +343,9 @@ impl CppExtractor {
 
     /// Visit a constructor definition.
     fn visit_constructor(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::extract_function_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
-        let signature = Self::extract_function_signature(state, node);
+        let name =
+            Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
+        let signature = Some(Self::extract_function_signature(state, node));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -318,6 +362,7 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -332,7 +377,13 @@ impl CppExtractor {
             unsafe_blocks: metrics.unsafe_blocks,
             unchecked_calls: metrics.unchecked_calls,
             assertions: metrics.assertions,
+            cognitive_complexity: metrics.cognitive_complexity,
+            distinct_operators: metrics.distinct_operators,
+            distinct_operands: metrics.distinct_operands,
+            total_operators: metrics.total_operators,
+            total_operands: metrics.total_operands,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -342,10 +393,11 @@ impl CppExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
-        if let Some(body) = Self::find_child_by_kind(node, "compound_statement") {
+        if let Some(body) = find_child_by_kind(node, "compound_statement") {
             Self::extract_call_sites(state, body, &id);
         }
     }
@@ -354,7 +406,7 @@ impl CppExtractor {
     fn visit_destructor(state: &mut ExtractionState, node: TsNode<'_>) {
         let name = Self::extract_function_name(state, node)
             .unwrap_or_else(|| Self::extract_destructor_name(state, node));
-        let signature = Self::extract_function_signature(state, node);
+        let signature = Some(Self::extract_function_signature(state, node));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -371,6 +423,7 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -385,7 +438,13 @@ impl CppExtractor {
             unsafe_blocks: metrics.unsafe_blocks,
             unchecked_calls: metrics.unchecked_calls,
             assertions: metrics.assertions,
+            cognitive_complexity: metrics.cognitive_complexity,
+            distinct_operators: metrics.distinct_operators,
+            distinct_operands: metrics.distinct_operands,
+            total_operators: metrics.total_operators,
+            total_operands: metrics.total_operands,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -395,10 +454,11 @@ impl CppExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
-        if let Some(body) = Self::find_child_by_kind(node, "compound_statement") {
+        if let Some(body) = find_child_by_kind(node, "compound_statement") {
             Self::extract_call_sites(state, body, &id);
         }
     }
@@ -409,40 +469,40 @@ impl CppExtractor {
             return state.node_text(dtor);
         }
         if let Some((class_name, _)) = state.node_stack.last() {
-            return format!("~{}", class_name);
+            return format!("~{class_name}");
         }
         "~<unknown>".to_string()
     }
 
-    /// Extract the function name from a function_definition or declaration node.
+    /// Extract the function name from a `function_definition` or declaration node.
     fn extract_function_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         if let Some(declarator) = Self::find_descendant_by_kind(node, "function_declarator") {
             // Check for destructor_name first
-            if let Some(dtor) = Self::find_child_by_kind(declarator, "destructor_name") {
+            if let Some(dtor) = find_child_by_kind(declarator, "destructor_name") {
                 return Some(state.node_text(dtor));
             }
             // The function name is the identifier child of the function_declarator
-            if let Some(ident) = Self::find_child_by_kind(declarator, "identifier") {
+            if let Some(ident) = find_child_by_kind(declarator, "identifier") {
                 return Some(state.node_text(ident));
             }
             // Could be a field_identifier (for methods)
-            if let Some(ident) = Self::find_child_by_kind(declarator, "field_identifier") {
+            if let Some(ident) = find_child_by_kind(declarator, "field_identifier") {
                 return Some(state.node_text(ident));
             }
             // Could be a qualified_identifier
-            if let Some(qi) = Self::find_child_by_kind(declarator, "qualified_identifier") {
-                if let Some(ident) = Self::find_child_by_kind(qi, "identifier") {
+            if let Some(qi) = find_child_by_kind(declarator, "qualified_identifier") {
+                if let Some(ident) = find_child_by_kind(qi, "identifier") {
                     return Some(state.node_text(ident));
                 }
             }
             // Could be inside a pointer_declarator -> function_declarator
-            if let Some(ident) = Self::find_child_by_kind(declarator, "parenthesized_declarator") {
+            if let Some(ident) = find_child_by_kind(declarator, "parenthesized_declarator") {
                 if let Some(inner_ident) = Self::find_descendant_by_kind(ident, "identifier") {
                     return Some(state.node_text(inner_ident));
                 }
             }
             // type_identifier (for constructors, the name matches the class)
-            if let Some(ident) = Self::find_child_by_kind(declarator, "type_identifier") {
+            if let Some(ident) = find_child_by_kind(declarator, "type_identifier") {
                 return Some(state.node_text(ident));
             }
         }
@@ -450,13 +510,12 @@ impl CppExtractor {
     }
 
     /// Extract the function signature (everything except the body).
-    fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+    fn extract_function_signature(state: &ExtractionState, node: TsNode<'_>) -> String {
         let text = state.node_text(node);
         if let Some(brace_pos) = text.find('{') {
-            Some(text[..brace_pos].trim().to_string())
+            crate::extraction::collapse_ws(text[..brace_pos].trim())
         } else {
-            let trimmed = text.trim().trim_end_matches(';').trim().to_string();
-            Some(trimmed)
+            crate::extraction::collapse_ws(text.trim().trim_end_matches(';').trim())
         }
     }
 
@@ -469,10 +528,10 @@ impl CppExtractor {
         let in_class = state.class_depth > 0;
 
         // Check for class/struct/union/enum specifiers inside the declaration
-        if Self::has_child_kind(node, "class_specifier")
-            || Self::has_child_kind(node, "struct_specifier")
-            || Self::has_child_kind(node, "union_specifier")
-            || Self::has_child_kind(node, "enum_specifier")
+        if has_child_kind(node, "class_specifier")
+            || has_child_kind(node, "struct_specifier")
+            || has_child_kind(node, "union_specifier")
+            || has_child_kind(node, "enum_specifier")
         {
             Self::visit_children(state, node);
             return;
@@ -502,26 +561,24 @@ impl CppExtractor {
     fn visit_class_method_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         let is_pure_virtual = Self::is_pure_virtual(state, node);
 
-        let name = Self::extract_function_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
 
         // Check if constructor
         if let Some((class_name, _)) = state.node_stack.last() {
             if name == *class_name {
                 let text = state.node_text(node);
-                let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
+                let signature = Some(crate::extraction::collapse_ws(
+                    text.trim().trim_end_matches(';').trim(),
+                ));
                 let docstring = Self::extract_docstring(state, node);
                 let start_line = node.start_position().row as u32;
                 let end_line = node.end_position().row as u32;
                 let start_column = node.start_position().column as u32;
                 let end_column = node.end_position().column as u32;
                 let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-                let id = generate_node_id(
-                    &state.file_path,
-                    &NodeKind::Constructor,
-                    &name,
-                    start_line,
-                );
+                let id =
+                    generate_node_id(&state.file_path, &NodeKind::Constructor, &name, start_line);
 
                 let metrics = count_complexity(node, &CPP_COMPLEXITY, &state.source);
                 let graph_node = Node {
@@ -531,6 +588,7 @@ impl CppExtractor {
                     qualified_name,
                     file_path: state.file_path.clone(),
                     start_line,
+                    attrs_start_line: start_line,
                     end_line,
                     start_column,
                     end_column,
@@ -545,7 +603,13 @@ impl CppExtractor {
                     unsafe_blocks: metrics.unsafe_blocks,
                     unchecked_calls: metrics.unchecked_calls,
                     assertions: metrics.assertions,
+                    cognitive_complexity: metrics.cognitive_complexity,
+                    distinct_operators: metrics.distinct_operators,
+                    distinct_operands: metrics.distinct_operands,
+                    total_operators: metrics.total_operators,
+                    total_operands: metrics.total_operands,
                     updated_at: state.timestamp,
+                    parent_id: None,
                 };
                 state.nodes.push(graph_node);
 
@@ -555,6 +619,7 @@ impl CppExtractor {
                         target: id,
                         kind: EdgeKind::Contains,
                         line: Some(start_line),
+                        resolved_by: None,
                     });
                 }
                 return;
@@ -562,7 +627,9 @@ impl CppExtractor {
         }
 
         let text = state.node_text(node);
-        let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
+        let signature = Some(crate::extraction::collapse_ws(
+            text.trim().trim_end_matches(';').trim(),
+        ));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -586,6 +653,7 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -600,7 +668,13 @@ impl CppExtractor {
             unsafe_blocks: metrics.unsafe_blocks,
             unchecked_calls: metrics.unchecked_calls,
             assertions: metrics.assertions,
+            cognitive_complexity: metrics.cognitive_complexity,
+            distinct_operators: metrics.distinct_operators,
+            distinct_operands: metrics.distinct_operands,
+            total_operators: metrics.total_operators,
+            total_operands: metrics.total_operands,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -610,6 +684,7 @@ impl CppExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
@@ -636,10 +711,13 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: None,
             visibility: state.access_specifier.clone(),
             is_async: false,
@@ -650,7 +728,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -660,6 +744,7 @@ impl CppExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -673,10 +758,12 @@ impl CppExtractor {
             Visibility::Pub
         };
 
-        let name = Self::extract_function_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::extract_function_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
         let text = state.node_text(node);
-        let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
+        let signature = Some(crate::extraction::collapse_ws(
+            text.trim().trim_end_matches(';').trim(),
+        ));
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
@@ -692,6 +779,7 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -706,7 +794,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -716,6 +810,7 @@ impl CppExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
@@ -736,7 +831,9 @@ impl CppExtractor {
         };
 
         let text = state.node_text(node);
-        let signature = Some(text.trim().trim_end_matches(';').trim().to_string());
+        let signature = Some(crate::extraction::collapse_ws(
+            text.trim().trim_end_matches(';').trim(),
+        ));
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -751,6 +848,7 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -765,7 +863,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -775,28 +879,43 @@ impl CppExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
 
     /// Extract a variable name from a declaration node.
     fn extract_variable_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
-        if let Some(init_decl) = Self::find_child_by_kind(node, "init_declarator") {
-            if let Some(ident) = Self::find_child_by_kind(init_decl, "identifier") {
-                return Some(state.node_text(ident));
+        if let Some(init_decl) = find_child_by_kind(node, "init_declarator") {
+            if let Some(name) = Self::declarator_identifier(state, init_decl) {
+                return Some(name);
             }
-            if let Some(ptr_decl) = Self::find_child_by_kind(init_decl, "pointer_declarator") {
-                if let Some(ident) = Self::find_child_by_kind(ptr_decl, "identifier") {
-                    return Some(state.node_text(ident));
+        }
+        Self::declarator_identifier(state, node)
+    }
+
+    /// Declarators nest, so `const char* const T[]` wraps the identifier twice. `function_declarator`
+    /// is deliberately absent - `visit_declaration` routes a prototype before the name is asked.
+    fn declarator_identifier(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let child = cursor.node();
+                match child.kind() {
+                    "identifier" => return Some(state.node_text(child)),
+                    "pointer_declarator"
+                    | "array_declarator"
+                    | "reference_declarator"
+                    | "parenthesized_declarator" => {
+                        if let Some(name) = Self::declarator_identifier(state, child) {
+                            return Some(name);
+                        }
+                    }
+                    _ => {}
                 }
-            }
-        }
-        if let Some(ident) = Self::find_child_by_kind(node, "identifier") {
-            return Some(state.node_text(ident));
-        }
-        if let Some(ptr_decl) = Self::find_child_by_kind(node, "pointer_declarator") {
-            if let Some(ident) = Self::find_child_by_kind(ptr_decl, "identifier") {
-                return Some(state.node_text(ident));
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
             }
         }
         None
@@ -808,12 +927,11 @@ impl CppExtractor {
 
     /// Visit a class specifier (default visibility: Private).
     fn visit_class_specifier(state: &mut ExtractionState, node: TsNode<'_>) {
-        if Self::find_child_by_kind(node, "field_declaration_list").is_none() {
+        if find_child_by_kind(node, "field_declaration_list").is_none() {
             return;
         }
-        let name = Self::find_child_by_kind(node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name = find_child_by_kind(node, "type_identifier")
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         if name == "<anonymous>" {
             return;
@@ -825,12 +943,11 @@ impl CppExtractor {
 
     /// Visit a struct specifier (default visibility: Pub).
     fn visit_struct_specifier(state: &mut ExtractionState, node: TsNode<'_>) {
-        if Self::find_child_by_kind(node, "field_declaration_list").is_none() {
+        if find_child_by_kind(node, "field_declaration_list").is_none() {
             return;
         }
-        let name = Self::find_child_by_kind(node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name = find_child_by_kind(node, "type_identifier")
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         if name == "<anonymous>" {
             return;
@@ -855,7 +972,9 @@ impl CppExtractor {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Class, name, start_line);
         let text = state.node_text(node);
-        let signature = text.find('{').map(|pos| text[..pos].trim().to_string());
+        let signature = text
+            .find('{')
+            .map(|pos| crate::extraction::collapse_ws(text[..pos].trim()));
 
         let graph_node = Node {
             id: id.clone(),
@@ -864,6 +983,7 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -878,7 +998,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -888,6 +1014,7 @@ impl CppExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
@@ -910,7 +1037,7 @@ impl CppExtractor {
 
         // Walk the class body
         state.node_stack.push((name.to_string(), id.clone()));
-        if let Some(body) = Self::find_child_by_kind(node, "field_declaration_list") {
+        if let Some(body) = find_child_by_kind(node, "field_declaration_list") {
             Self::visit_class_body(state, body);
         }
         state.node_stack.pop();
@@ -935,7 +1062,9 @@ impl CppExtractor {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Struct, name, start_line);
         let text = state.node_text(node);
-        let signature = text.find('{').map(|pos| text[..pos].trim().to_string());
+        let signature = text
+            .find('{')
+            .map(|pos| crate::extraction::collapse_ws(text[..pos].trim()));
 
         let graph_node = Node {
             id: id.clone(),
@@ -944,6 +1073,7 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -958,7 +1088,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -968,6 +1104,7 @@ impl CppExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
@@ -986,7 +1123,7 @@ impl CppExtractor {
 
         // Walk the struct body
         state.node_stack.push((name.to_string(), id.clone()));
-        if let Some(body) = Self::find_child_by_kind(node, "field_declaration_list") {
+        if let Some(body) = find_child_by_kind(node, "field_declaration_list") {
             Self::visit_class_body(state, body);
         }
         state.node_stack.pop();
@@ -1010,7 +1147,19 @@ impl CppExtractor {
                     "declaration" => Self::visit_declaration(state, child),
                     "class_specifier" => Self::visit_class_specifier(state, child),
                     "struct_specifier" => Self::visit_struct_specifier(state, child),
+                    "union_specifier" => Self::visit_standalone_union(state, child),
+                    "enum_specifier" => Self::visit_standalone_enum(state, child),
+                    "type_definition" => Self::visit_type_definition(state, child),
+                    "alias_declaration" => Self::visit_alias_declaration(state, child),
+                    "using_declaration" => Self::visit_using_declaration(state, child),
                     "template_declaration" => Self::visit_template(state, child),
+                    // Members of every branch are extracted, as at file scope: deciding which one
+                    // compiles needs a preprocessor, and dropping all of them is strictly worse.
+                    // A `friend` definition is a member the class body is the only place to find.
+                    "preproc_if" | "preproc_ifdef" | "preproc_else" | "preproc_elif"
+                    | "preproc_elifdef" | "friend_declaration" => {
+                        Self::visit_class_body(state, child);
+                    }
                     _ => {}
                 }
                 if !cursor.goto_next_sibling() {
@@ -1020,18 +1169,36 @@ impl CppExtractor {
         }
     }
 
-    /// Visit a field_declaration inside a class/struct body.
+    /// Visit a `field_declaration` inside a class/struct body.
     fn visit_field_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
-        // Check if this is actually a method declaration (has a function_declarator)
-        if Self::find_descendant_by_kind(node, "function_declarator").is_some() {
-            Self::visit_class_method_declaration(state, node);
-            return;
+        // A nested type arrives wrapped in the field_declaration that declares it, with or without
+        // a member of it, so extract the type first, then fall through for the member.
+        if let Some(specifier) = find_child_by_kind(node, "enum_specifier") {
+            Self::visit_standalone_enum(state, specifier);
+        }
+        if let Some(specifier) = find_child_by_kind(node, "class_specifier") {
+            Self::visit_class_specifier(state, specifier);
+        }
+        if let Some(specifier) = find_child_by_kind(node, "struct_specifier") {
+            Self::visit_struct_specifier(state, specifier);
+        }
+        if let Some(specifier) = find_child_by_kind(node, "union_specifier") {
+            Self::visit_standalone_union(state, specifier);
+        }
+
+        // Check if this is actually a method declaration (has a function_declarator).
+        // `int (*Resolve)(const char*)` wraps its name in a parenthesized_declarator instead: a
+        // function POINTER member, whose name a method visit never finds.
+        if let Some(declarator) = Self::find_descendant_by_kind(node, "function_declarator") {
+            if find_child_by_kind(declarator, "parenthesized_declarator").is_none() {
+                Self::visit_class_method_declaration(state, node);
+                return;
+            }
         }
 
         // It's a field
         let name = Self::find_descendant_by_kind(node, "field_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         if name == "<anonymous>" {
             return;
@@ -1052,10 +1219,13 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: None,
             visibility: state.access_specifier.clone(),
             is_async: false,
@@ -1066,7 +1236,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1076,6 +1252,7 @@ impl CppExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -1087,7 +1264,7 @@ impl CppExtractor {
     // access_specifier
     // -------------------------------------------------------
 
-    /// Update the current access specifier based on an access_specifier node.
+    /// Update the current access specifier based on an `access_specifier` node.
     fn visit_access_specifier(state: &mut ExtractionState, node: TsNode<'_>) {
         let text = state
             .node_text(node)
@@ -1109,10 +1286,9 @@ impl CppExtractor {
 
     /// Visit a namespace definition.
     fn visit_namespace(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
-            .or_else(|| Self::find_child_by_kind(node, "namespace_identifier"))
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name = find_child_by_kind(node, "identifier")
+            .or_else(|| find_child_by_kind(node, "namespace_identifier"))
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
@@ -1122,7 +1298,9 @@ impl CppExtractor {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Namespace, &name, start_line);
         let text = state.node_text(node);
-        let signature = text.find('{').map(|pos| text[..pos].trim().to_string());
+        let signature = text
+            .find('{')
+            .map(|pos| crate::extraction::collapse_ws(text[..pos].trim()));
 
         let graph_node = Node {
             id: id.clone(),
@@ -1131,6 +1309,7 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -1145,7 +1324,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1155,12 +1340,13 @@ impl CppExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
         // Walk namespace body
         state.node_stack.push((name, id));
-        if let Some(body) = Self::find_child_by_kind(node, "declaration_list") {
+        if let Some(body) = find_child_by_kind(node, "declaration_list") {
             Self::visit_children(state, body);
         }
         state.node_stack.pop();
@@ -1185,8 +1371,12 @@ impl CppExtractor {
         let text = state.node_text(node);
         let signature = text
             .find('{')
-            .map(|pos| text[..pos].trim().to_string())
-            .or_else(|| Some(text.trim().trim_end_matches(';').trim().to_string()));
+            .map(|pos| crate::extraction::collapse_ws(text[..pos].trim()))
+            .or_else(|| {
+                Some(crate::extraction::collapse_ws(
+                    text.trim().trim_end_matches(';').trim(),
+                ))
+            });
 
         let graph_node = Node {
             id: id.clone(),
@@ -1195,6 +1385,7 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -1209,7 +1400,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1219,12 +1416,13 @@ impl CppExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
         // If the template wraps a function, extract call sites
-        if let Some(func_def) = Self::find_child_by_kind(node, "function_definition") {
-            if let Some(body) = Self::find_child_by_kind(func_def, "compound_statement") {
+        if let Some(func_def) = find_child_by_kind(node, "function_definition") {
+            if let Some(body) = find_child_by_kind(func_def, "compound_statement") {
                 Self::extract_call_sites(state, body, &id);
             }
         }
@@ -1232,18 +1430,16 @@ impl CppExtractor {
 
     /// Extract the name of the inner declaration in a template.
     fn extract_template_inner_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
-        if let Some(func_def) = Self::find_child_by_kind(node, "function_definition") {
+        if let Some(func_def) = find_child_by_kind(node, "function_definition") {
             return Self::extract_function_name(state, func_def);
         }
-        if let Some(class_spec) = Self::find_child_by_kind(node, "class_specifier") {
-            return Self::find_child_by_kind(class_spec, "type_identifier")
-                .map(|n| state.node_text(n));
+        if let Some(class_spec) = find_child_by_kind(node, "class_specifier") {
+            return find_child_by_kind(class_spec, "type_identifier").map(|n| state.node_text(n));
         }
-        if let Some(struct_spec) = Self::find_child_by_kind(node, "struct_specifier") {
-            return Self::find_child_by_kind(struct_spec, "type_identifier")
-                .map(|n| state.node_text(n));
+        if let Some(struct_spec) = find_child_by_kind(node, "struct_specifier") {
+            return find_child_by_kind(struct_spec, "type_identifier").map(|n| state.node_text(n));
         }
-        if let Some(decl) = Self::find_child_by_kind(node, "declaration") {
+        if let Some(decl) = find_child_by_kind(node, "declaration") {
             return Self::extract_function_name(state, decl);
         }
         None
@@ -1253,17 +1449,17 @@ impl CppExtractor {
     // type_definition (typedef)
     // -------------------------------------------------------
 
-    /// Visit a type_definition node (typedef).
+    /// Visit a `type_definition` node (typedef).
     fn visit_type_definition(state: &mut ExtractionState, node: TsNode<'_>) {
-        if let Some(struct_spec) = Self::find_child_by_kind(node, "struct_specifier") {
+        if let Some(struct_spec) = find_child_by_kind(node, "struct_specifier") {
             Self::visit_typedef_struct(state, node, struct_spec);
             return;
         }
-        if let Some(union_spec) = Self::find_child_by_kind(node, "union_specifier") {
+        if let Some(union_spec) = find_child_by_kind(node, "union_specifier") {
             Self::visit_typedef_union(state, node, union_spec);
             return;
         }
-        if let Some(enum_spec) = Self::find_child_by_kind(node, "enum_specifier") {
+        if let Some(enum_spec) = find_child_by_kind(node, "enum_specifier") {
             Self::visit_typedef_enum(state, node, enum_spec);
             return;
         }
@@ -1304,10 +1500,13 @@ impl CppExtractor {
             qualified_name: typedef_qualified,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: docstring.clone(),
             visibility: Visibility::Pub,
             is_async: false,
@@ -1318,7 +1517,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(typedef_graph_node);
 
@@ -1328,13 +1533,13 @@ impl CppExtractor {
                 target: typedef_id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
-        if Self::find_child_by_kind(struct_spec, "field_declaration_list").is_some() {
-            let struct_name = Self::find_child_by_kind(struct_spec, "type_identifier")
-                .map(|n| state.node_text(n))
-                .unwrap_or_else(|| typedef_name.clone());
+        if find_child_by_kind(struct_spec, "field_declaration_list").is_some() {
+            let struct_name = find_child_by_kind(struct_spec, "type_identifier")
+                .map_or_else(|| typedef_name.clone(), |n| state.node_text(n));
             Self::create_struct_node(state, &struct_name, struct_spec, docstring);
         }
     }
@@ -1369,10 +1574,13 @@ impl CppExtractor {
             qualified_name: typedef_qualified,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: docstring.clone(),
             visibility: Visibility::Pub,
             is_async: false,
@@ -1383,7 +1591,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(typedef_graph_node);
 
@@ -1393,13 +1607,13 @@ impl CppExtractor {
                 target: typedef_id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
-        if Self::find_child_by_kind(union_spec, "field_declaration_list").is_some() {
-            let union_name = Self::find_child_by_kind(union_spec, "type_identifier")
-                .map(|n| state.node_text(n))
-                .unwrap_or_else(|| typedef_name.clone());
+        if find_child_by_kind(union_spec, "field_declaration_list").is_some() {
+            let union_name = find_child_by_kind(union_spec, "type_identifier")
+                .map_or_else(|| typedef_name.clone(), |n| state.node_text(n));
             Self::create_union_node(state, &union_name, union_spec, docstring);
         }
     }
@@ -1434,10 +1648,13 @@ impl CppExtractor {
             qualified_name: typedef_qualified,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: docstring.clone(),
             visibility: Visibility::Pub,
             is_async: false,
@@ -1448,7 +1665,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(typedef_graph_node);
 
@@ -1458,13 +1681,13 @@ impl CppExtractor {
                 target: typedef_id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
-        if Self::find_child_by_kind(enum_spec, "enumerator_list").is_some() {
-            let enum_name = Self::find_child_by_kind(enum_spec, "type_identifier")
-                .map(|n| state.node_text(n))
-                .unwrap_or_else(|| typedef_name.clone());
+        if find_child_by_kind(enum_spec, "enumerator_list").is_some() {
+            let enum_name = find_child_by_kind(enum_spec, "type_identifier")
+                .map_or_else(|| typedef_name.clone(), |n| state.node_text(n));
             Self::create_enum_node(state, &enum_name, enum_spec, docstring);
         }
     }
@@ -1491,10 +1714,13 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
@@ -1505,7 +1731,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1515,6 +1747,7 @@ impl CppExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -1525,15 +1758,11 @@ impl CppExtractor {
         node: TsNode<'_>,
     ) -> Option<String> {
         if let Some(func_decl) = Self::find_descendant_by_kind(node, "function_declarator") {
-            if let Some(paren_decl) =
-                Self::find_child_by_kind(func_decl, "parenthesized_declarator")
-            {
+            if let Some(paren_decl) = find_child_by_kind(func_decl, "parenthesized_declarator") {
                 if let Some(ident) = Self::find_descendant_by_kind(paren_decl, "identifier") {
                     return Some(state.node_text(ident));
                 }
-                if let Some(ident) =
-                    Self::find_descendant_by_kind(paren_decl, "type_identifier")
-                {
+                if let Some(ident) = Self::find_descendant_by_kind(paren_decl, "type_identifier") {
                     return Some(state.node_text(ident));
                 }
             }
@@ -1543,8 +1772,8 @@ impl CppExtractor {
 
     /// Simple typedef.
     fn visit_simple_typedef(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_typedef_name(state, node)
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name =
+            Self::find_typedef_name(state, node).unwrap_or_else(|| "<anonymous>".to_string());
 
         let text = state.node_text(node);
         let docstring = Self::extract_docstring(state, node);
@@ -1562,10 +1791,13 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring,
             visibility: Visibility::Pub,
             is_async: false,
@@ -1576,7 +1808,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1586,11 +1824,12 @@ impl CppExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
 
-    /// Find the typedef name (last type_identifier direct child).
+    /// Find the typedef name (last `type_identifier` direct child).
     fn find_typedef_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
         let mut last_type_id = None;
         let mut cursor = node.walk();
@@ -1614,12 +1853,11 @@ impl CppExtractor {
 
     /// Visit a standalone union specifier.
     fn visit_standalone_union(state: &mut ExtractionState, node: TsNode<'_>) {
-        if Self::find_child_by_kind(node, "field_declaration_list").is_none() {
+        if find_child_by_kind(node, "field_declaration_list").is_none() {
             return;
         }
-        let name = Self::find_child_by_kind(node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name = find_child_by_kind(node, "type_identifier")
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         if name == "<anonymous>" {
             return;
@@ -1631,12 +1869,11 @@ impl CppExtractor {
 
     /// Visit a standalone enum specifier.
     fn visit_standalone_enum(state: &mut ExtractionState, node: TsNode<'_>) {
-        if Self::find_child_by_kind(node, "enumerator_list").is_none() {
+        if find_child_by_kind(node, "enumerator_list").is_none() {
             return;
         }
-        let name = Self::find_child_by_kind(node, "type_identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name = find_child_by_kind(node, "type_identifier")
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         if name == "<anonymous>" {
             return;
@@ -1651,6 +1888,66 @@ impl CppExtractor {
     // -------------------------------------------------------
 
     /// Visit a using declaration.
+    /// `using Name = T;` names a type; `using_declaration` is the `using ns::Name;` form and does
+    /// not.
+    fn visit_alias_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
+        let Some(name_node) = find_child_by_kind(node, "type_identifier") else {
+            return;
+        };
+        let name = state.node_text(name_node);
+        let text = state.node_text(node);
+        let start_line = node.start_position().row as u32;
+        let end_line = node.end_position().row as u32;
+        let start_column = node.start_position().column as u32;
+        let end_column = node.end_position().column as u32;
+        let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
+        let id = generate_node_id(&state.file_path, &NodeKind::TypeAlias, &name, start_line);
+
+        let graph_node = Node {
+            id: id.clone(),
+            kind: NodeKind::TypeAlias,
+            name,
+            qualified_name,
+            file_path: state.file_path.clone(),
+            start_line,
+            attrs_start_line: start_line,
+            end_line,
+            start_column,
+            end_column,
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
+            docstring: None,
+            visibility: state.access_specifier.clone(),
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: state.timestamp,
+            parent_id: None,
+        };
+        state.nodes.push(graph_node);
+
+        if let Some(parent_id) = state.parent_node_id() {
+            state.edges.push(Edge {
+                source: parent_id.to_string(),
+                target: id,
+                kind: EdgeKind::Contains,
+                line: Some(start_line),
+                resolved_by: None,
+            });
+        }
+    }
+
     fn visit_using_declaration(state: &mut ExtractionState, node: TsNode<'_>) {
         let text = state.node_text(node);
         let name = text
@@ -1677,10 +1974,13 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().trim_end_matches(';').trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(
+                text.trim().trim_end_matches(';').trim(),
+            )),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -1691,7 +1991,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1701,6 +2007,7 @@ impl CppExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -1723,7 +2030,9 @@ impl CppExtractor {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Union, name, start_line);
         let text = state.node_text(spec_node);
-        let signature = text.find('{').map(|pos| text[..pos].trim().to_string());
+        let signature = text
+            .find('{')
+            .map(|pos| crate::extraction::collapse_ws(text[..pos].trim()));
 
         let graph_node = Node {
             id: id.clone(),
@@ -1732,6 +2041,7 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -1746,7 +2056,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1756,11 +2072,12 @@ impl CppExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
 
-    /// Create an Enum node with EnumVariant children.
+    /// Create an Enum node with `EnumVariant` children.
     fn create_enum_node(
         state: &mut ExtractionState,
         name: &str,
@@ -1774,7 +2091,9 @@ impl CppExtractor {
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
         let id = generate_node_id(&state.file_path, &NodeKind::Enum, name, start_line);
         let text = state.node_text(spec_node);
-        let signature = text.find('{').map(|pos| text[..pos].trim().to_string());
+        let signature = text
+            .find('{')
+            .map(|pos| crate::extraction::collapse_ws(text[..pos].trim()));
 
         let graph_node = Node {
             id: id.clone(),
@@ -1783,6 +2102,7 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
@@ -1797,7 +2117,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1807,6 +2133,7 @@ impl CppExtractor {
                 target: id.clone(),
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
 
@@ -1821,9 +2148,8 @@ impl CppExtractor {
 
     /// Extract a preprocessor #define.
     fn visit_preproc_def(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name = find_child_by_kind(node, "identifier")
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -1845,10 +2171,11 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(text.trim())),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -1859,7 +2186,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1869,20 +2202,23 @@ impl CppExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
 
     /// Extract a preprocessor #include.
     fn visit_preproc_include(state: &mut ExtractionState, node: TsNode<'_>) {
-        let path = Self::find_child_by_kind(node, "string_literal")
-            .or_else(|| Self::find_child_by_kind(node, "system_lib_string"))
-            .map(|n| {
-                let text = state.node_text(n);
-                text.trim_matches(|c| c == '"' || c == '<' || c == '>')
-                    .to_string()
-            })
-            .unwrap_or_else(|| "<unknown>".to_string());
+        let path = find_child_by_kind(node, "string_literal")
+            .or_else(|| find_child_by_kind(node, "system_lib_string"))
+            .map_or_else(
+                || "<unknown>".to_string(),
+                |n| {
+                    let text = state.node_text(n);
+                    text.trim_matches(|c| c == '"' || c == '<' || c == '>')
+                        .to_string()
+                },
+            );
 
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -1899,10 +2235,11 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(text.trim())),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -1913,7 +2250,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1923,6 +2266,7 @@ impl CppExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -1931,9 +2275,9 @@ impl CppExtractor {
     // Enum variant extraction
     // -------------------------------------------------------
 
-    /// Extract enum variants from an enum_specifier node.
+    /// Extract enum variants from an `enum_specifier` node.
     fn extract_enum_variants(state: &mut ExtractionState, enum_spec: TsNode<'_>) {
-        if let Some(enumerator_list) = Self::find_child_by_kind(enum_spec, "enumerator_list") {
+        if let Some(enumerator_list) = find_child_by_kind(enum_spec, "enumerator_list") {
             let mut cursor = enumerator_list.walk();
             if cursor.goto_first_child() {
                 loop {
@@ -1949,11 +2293,10 @@ impl CppExtractor {
         }
     }
 
-    /// Extract a single enumerator as an EnumVariant node.
+    /// Extract a single enumerator as an `EnumVariant` node.
     fn extract_single_enumerator(state: &mut ExtractionState, node: TsNode<'_>) {
-        let name = Self::find_child_by_kind(node, "identifier")
-            .map(|n| state.node_text(n))
-            .unwrap_or_else(|| "<anonymous>".to_string());
+        let name = find_child_by_kind(node, "identifier")
+            .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
         let text = state.node_text(node);
         let start_line = node.start_position().row as u32;
@@ -1961,12 +2304,7 @@ impl CppExtractor {
         let start_column = node.start_position().column as u32;
         let end_column = node.end_position().column as u32;
         let qualified_name = format!("{}::{}", state.qualified_prefix(), name);
-        let id = generate_node_id(
-            &state.file_path,
-            &NodeKind::EnumVariant,
-            &name,
-            start_line,
-        );
+        let id = generate_node_id(&state.file_path, &NodeKind::EnumVariant, &name, start_line);
 
         let graph_node = Node {
             id: id.clone(),
@@ -1975,10 +2313,11 @@ impl CppExtractor {
             qualified_name,
             file_path: state.file_path.clone(),
             start_line,
+            attrs_start_line: start_line,
             end_line,
             start_column,
             end_column,
-            signature: Some(text.trim().to_string()),
+            signature: Some(crate::extraction::collapse_ws(text.trim())),
             docstring: None,
             visibility: Visibility::Pub,
             is_async: false,
@@ -1989,7 +2328,13 @@ impl CppExtractor {
             unsafe_blocks: 0,
             unchecked_calls: 0,
             assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
             updated_at: state.timestamp,
+            parent_id: None,
         };
         state.nodes.push(graph_node);
 
@@ -1999,6 +2344,7 @@ impl CppExtractor {
                 target: id,
                 kind: EdgeKind::Contains,
                 line: Some(start_line),
+                resolved_by: None,
             });
         }
     }
@@ -2009,7 +2355,7 @@ impl CppExtractor {
 
     /// Extract base classes from a class/struct specifier.
     fn extract_base_classes(state: &mut ExtractionState, node: TsNode<'_>, class_id: &str) {
-        if let Some(base_clause) = Self::find_child_by_kind(node, "base_class_clause") {
+        if let Some(base_clause) = find_child_by_kind(node, "base_class_clause") {
             let mut cursor = base_clause.walk();
             if cursor.goto_first_child() {
                 loop {
@@ -2048,7 +2394,7 @@ impl CppExtractor {
     // Call site extraction
     // -------------------------------------------------------
 
-    /// Recursively find call_expression nodes and create unresolved Calls references.
+    /// Recursively find `call_expression` nodes and create unresolved Calls references.
     fn extract_call_sites(state: &mut ExtractionState, node: TsNode<'_>, fn_node_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -2057,6 +2403,7 @@ impl CppExtractor {
                 if child.kind() == "call_expression" {
                     if let Some(callee) = child.named_child(0) {
                         let callee_name = state.node_text(callee);
+                        Self::extract_godot_binding(state, child, &callee_name, fn_node_id);
                         state.unresolved_refs.push(UnresolvedRef {
                             from_node_id: fn_node_id.to_string(),
                             reference_name: callee_name,
@@ -2073,6 +2420,84 @@ impl CppExtractor {
                 if !cursor.goto_next_sibling() {
                     break;
                 }
+            }
+        }
+    }
+
+    /// Link godot-cpp `ClassDB::bind_method` / `bind_static_method` registrations
+    /// to the C++ method they expose to the engine (issue #269).
+    ///
+    /// A `GDExtension` registers methods for `GDScript` inside `_bind_methods`:
+    ///
+    /// ```cpp
+    /// ClassDB::bind_method(D_METHOD("register_item", "cfg"), &MyRegistry::register_item);
+    /// ClassDB::bind_static_method("MyRegistry", D_METHOD("register_global"), &MyRegistry::register_global);
+    /// ```
+    ///
+    /// The exposed method is passed as a pointer-to-member argument
+    /// (`&Class::method`). The generic call-site walker only records the
+    /// *callee* (`ClassDB::bind_method`, `D_METHOD`) — none of which resolve —
+    /// so the bound method receives no incoming edge and is misreported as
+    /// dead code, while `callers`/`impact` on it come back empty. Here we emit
+    /// an extra `Calls` reference from the enclosing function (`_bind_methods`)
+    /// to the qualified method name (`MyRegistry::register_item`), which the
+    /// resolver links via its qualified-name match. `GDScript` call sites already
+    /// resolve to the same method by its short name, because the `D_METHOD`
+    /// exposed name matches the C++ method name by godot-cpp convention.
+    ///
+    /// Detection is name-based only (no type resolution): the callee's final
+    /// path segment must be `bind_method` or `bind_static_method`, and only
+    /// pointer-to-member arguments (`&Class::method`) are followed, which
+    /// avoids picking up `DEFVAL(...)` default-argument expressions.
+    fn extract_godot_binding(
+        state: &mut ExtractionState,
+        call_node: TsNode<'_>,
+        callee_name: &str,
+        fn_node_id: &str,
+    ) {
+        let last_segment = callee_name.rsplit("::").next().unwrap_or(callee_name);
+        if last_segment != "bind_method" && last_segment != "bind_static_method" {
+            return;
+        }
+        let Some(args) = call_node.child_by_field_name("arguments") else {
+            return;
+        };
+        Self::collect_bound_method_pointers(state, args, fn_node_id);
+    }
+
+    /// Recursively scan `node` for pointer-to-member expressions (`&Class::method`)
+    /// and emit a `Calls` reference from `fn_node_id` to each qualified method
+    /// name found. Used by [`Self::extract_godot_binding`].
+    fn collect_bound_method_pointers(
+        state: &mut ExtractionState,
+        node: TsNode<'_>,
+        fn_node_id: &str,
+    ) {
+        let mut cursor = node.walk();
+        if !cursor.goto_first_child() {
+            return;
+        }
+        loop {
+            let child = cursor.node();
+            if child.kind() == "pointer_expression" {
+                if let Some(qid) = Self::find_descendant_by_kind(child, "qualified_identifier") {
+                    let name = state.node_text(qid);
+                    if name.contains("::") {
+                        state.unresolved_refs.push(UnresolvedRef {
+                            from_node_id: fn_node_id.to_string(),
+                            reference_name: name,
+                            reference_kind: EdgeKind::Calls,
+                            line: qid.start_position().row as u32,
+                            column: qid.start_position().column as u32,
+                            file_path: state.file_path.clone(),
+                        });
+                    }
+                }
+            } else {
+                Self::collect_bound_method_pointers(state, child, fn_node_id);
+            }
+            if !cursor.goto_next_sibling() {
+                break;
             }
         }
     }
@@ -2163,28 +2588,6 @@ impl CppExtractor {
         text.contains("= 0")
     }
 
-    /// Check if a node has a direct child of the given kind.
-    fn has_child_kind(node: TsNode<'_>, kind: &str) -> bool {
-        Self::find_child_by_kind(node, kind).is_some()
-    }
-
-    /// Find the first direct child of a node with a given kind.
-    fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
-        let mut cursor = node.walk();
-        if cursor.goto_first_child() {
-            loop {
-                let child = cursor.node();
-                if child.kind() == kind {
-                    return Some(child);
-                }
-                if !cursor.goto_next_sibling() {
-                    break;
-                }
-            }
-        }
-        None
-    }
-
     /// Find the first descendant of a node with a given kind (recursive search).
     fn find_descendant_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
         let mut cursor = node.walk();
@@ -2210,10 +2613,10 @@ impl CppExtractor {
     // -----------------------------------------------------------------------
 
     /// Extract C++ attributes from a declaration node and create
-    /// AnnotationUsage nodes and Annotates edges.
+    /// `AnnotationUsage` nodes and Annotates edges.
     ///
     /// C++ attributes appear as `attribute_declaration` children of the
-    /// declaration node. Structure: attribute_declaration > attribute > identifier.
+    /// declaration node. Structure: `attribute_declaration` > attribute > identifier.
     fn extract_annotations(state: &mut ExtractionState, node: TsNode<'_>, target_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -2229,8 +2632,8 @@ impl CppExtractor {
         }
     }
 
-    /// Walk an attribute_declaration node, iterating over attribute children
-    /// to create AnnotationUsage nodes.
+    /// Walk an `attribute_declaration` node, iterating over attribute children
+    /// to create `AnnotationUsage` nodes.
     fn extract_attributes_from_decl(
         state: &mut ExtractionState,
         attr_decl: TsNode<'_>,
@@ -2246,8 +2649,7 @@ impl CppExtractor {
                     let end_line = child.end_position().row as u32;
                     let start_column = child.start_position().column as u32;
                     let end_column = child.end_position().column as u32;
-                    let qualified_name =
-                        format!("{}::@{}", state.qualified_prefix(), attr_name);
+                    let qualified_name = format!("{}::@{}", state.qualified_prefix(), attr_name);
                     let id = generate_node_id(
                         &state.file_path,
                         &NodeKind::AnnotationUsage,
@@ -2262,12 +2664,11 @@ impl CppExtractor {
                         qualified_name,
                         file_path: state.file_path.clone(),
                         start_line,
+                        attrs_start_line: start_line,
                         end_line,
                         start_column,
                         end_column,
-                        signature: Some(
-                            format!("[[{}]]", state.node_text(child).trim()),
-                        ),
+                        signature: Some(format!("[[{}]]", state.node_text(child).trim())),
                         docstring: None,
                         visibility: Visibility::Private,
                         is_async: false,
@@ -2278,7 +2679,13 @@ impl CppExtractor {
                         unsafe_blocks: 0,
                         unchecked_calls: 0,
                         assertions: 0,
+                        cognitive_complexity: 0,
+                        distinct_operators: 0,
+                        distinct_operands: 0,
+                        total_operators: 0,
+                        total_operands: 0,
                         updated_at: state.timestamp,
+                        parent_id: None,
                     };
                     state.nodes.push(graph_node);
 
@@ -2298,6 +2705,7 @@ impl CppExtractor {
                         target: target_id.to_string(),
                         kind: EdgeKind::Annotates,
                         line: Some(start_line),
+                        resolved_by: None,
                     });
                 }
                 if !cursor.goto_next_sibling() {
@@ -2309,7 +2717,7 @@ impl CppExtractor {
 
     /// Extract the name from a C++ attribute node.
     fn extract_cpp_attribute_name(state: &ExtractionState, node: TsNode<'_>) -> String {
-        if let Some(ident) = Self::find_child_by_kind(node, "identifier") {
+        if let Some(ident) = find_child_by_kind(node, "identifier") {
             return state.node_text(ident);
         }
         // Fallback: text before '('
@@ -2317,7 +2725,7 @@ impl CppExtractor {
         text.split('(').next().unwrap_or(&text).trim().to_string()
     }
 
-    /// Build the final ExtractionResult from the accumulated state.
+    /// Build the final `ExtractionResult` from the accumulated state.
     fn build_result(state: ExtractionState, start: Instant) -> ExtractionResult {
         ExtractionResult {
             nodes: state.nodes,
@@ -2331,10 +2739,12 @@ impl CppExtractor {
 
 impl crate::extraction::LanguageExtractor for CppExtractor {
     fn extensions(&self) -> &[&str] {
-        &["cpp", "cc", "cxx", "hpp", "hxx", "hh"]
+        // `.inl`, `.ipp` and `.tcc` carry a template layer's definitions and are C++
+        // by construction, so no dialect sniff is needed the way a `.h` needs one.
+        &["cpp", "cc", "cxx", "hpp", "hxx", "hh", "inl", "ipp", "tcc"]
     }
 
-    fn language_name(&self) -> &str {
+    fn language_name(&self) -> &'static str {
         "C++"
     }
 

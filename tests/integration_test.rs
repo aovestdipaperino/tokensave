@@ -1,7 +1,74 @@
-use tokensave::tokensave::TokenSave;
-use tokensave::types::EdgeKind;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use tempfile::TempDir;
+use tokensave::config::{load_config, save_config};
+use tokensave::tokensave::TokenSave;
+use tokensave::types::{Edge, EdgeKind, Node, NodeKind};
+
+async fn canonical_graph(cg: &TokenSave) -> (Vec<Node>, Vec<Edge>) {
+    let mut nodes = cg.db().get_all_nodes().await.unwrap();
+    for node in &mut nodes {
+        node.updated_at = 0;
+    }
+    nodes.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let mut edges = cg.db().get_all_edges().await.unwrap();
+    edges.sort_by(|a, b| {
+        (&a.source, &a.target, a.kind.as_str(), a.line).cmp(&(
+            &b.source,
+            &b.target,
+            b.kind.as_str(),
+            b.line,
+        ))
+    });
+
+    (nodes, edges)
+}
+
+/// Directly test that the ignore crate with add_custom_ignore_filename reads
+/// nested .gitignore files, regardless of git repo presence.
+#[test]
+fn test_ignore_crate_nested_gitignore_direct() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src").join("vendor")).unwrap();
+    fs::write(project.join("src").join("lib.rs"), "kept").unwrap();
+    fs::write(
+        project.join("src").join("vendor").join("gen.rs"),
+        "generated",
+    )
+    .unwrap();
+    fs::write(project.join("src").join("vendor").join(".gitignore"), "*\n").unwrap();
+
+    let files: Vec<String> = ignore::WalkBuilder::new(project)
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(false)
+        .git_exclude(false)
+        .follow_links(true)
+        .add_custom_ignore_filename(".gitignore")
+        .build()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()))
+        .filter_map(|e| {
+            e.path()
+                .strip_prefix(project)
+                .ok()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+        })
+        .collect();
+
+    assert!(
+        files.contains(&"src/lib.rs".to_string()),
+        "lib.rs must be found"
+    );
+    assert!(
+        !files.iter().any(|f| f.contains("vendor")),
+        "nested .gitignore (*) must exclude vendor/gen.rs; got: {files:?}"
+    );
+}
 
 #[tokio::test]
 async fn test_full_pipeline() {
@@ -11,7 +78,7 @@ async fn test_full_pipeline() {
     // Create a small Rust project
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/main.rs"),
+        project.join("src").join("main.rs"),
         r#"
 use crate::utils::helper;
 
@@ -26,7 +93,7 @@ fn main() {
     .unwrap();
 
     fs::write(
-        project.join("src/utils.rs"),
+        project.join("src").join("utils.rs"),
         r#"
 /// Returns a greeting string.
 pub fn helper() -> String {
@@ -63,13 +130,38 @@ fn format_greeting(name: &str) -> String {
     assert!(stats.edge_count > 0, "should have edges");
 }
 
+/// A full index records the version that built the graph, so consumers can
+/// tell "graph built by X" as a fact rather than inferring it from
+/// `last_indexed_version` (#554).
+#[tokio::test]
+async fn test_full_index_records_build_version() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src").join("lib.rs"),
+        "pub fn helper() -> i32 { 42 }\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let stats = cg.get_stats().await.unwrap();
+    assert_eq!(
+        stats.last_full_index_version,
+        env!("CARGO_PKG_VERSION"),
+        "a full index must record the running version as the graph builder"
+    );
+}
+
 #[tokio::test]
 async fn test_incremental_sync() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn original() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn original() {}\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -80,7 +172,7 @@ async fn test_incremental_sync() {
 
     // Modify file
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         "pub fn modified() {}\npub fn added() {}\n",
     )
     .unwrap();
@@ -97,6 +189,29 @@ async fn test_incremental_sync() {
     // Should find the new function
     let results = cg.search("modified", 10).await.unwrap();
     assert!(!results.is_empty(), "should find 'modified' after sync");
+}
+
+#[tokio::test]
+async fn test_indexes_source_with_invalid_utf8_in_comment() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::write(
+        project.join("latin1_repro.c"),
+        b"/* by W\xfcrkner */\nint latin1_symbol(void) { return 42; }\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let results = cg.search("latin1_symbol", 10).await.unwrap();
+    assert!(
+        results
+            .iter()
+            .any(|result| result.node.name == "latin1_symbol"),
+        "function in source containing invalid UTF-8 should be indexed"
+    );
 }
 
 #[tokio::test]
@@ -142,7 +257,7 @@ async fn test_context_building() {
 
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 /// Processes incoming data.
 pub fn process_data(input: &str) -> String {
@@ -156,7 +271,10 @@ pub fn process_data(input: &str) -> String {
     cg.index_all().await.unwrap();
 
     let options = tokensave::types::BuildContextOptions::default();
-    let context = cg.build_context("process_data function", &options).await.unwrap();
+    let context = cg
+        .build_context("process_data function", &options)
+        .await
+        .unwrap();
     assert!(
         !context.entry_points.is_empty(),
         "should find entry points for 'process_data'"
@@ -170,7 +288,7 @@ async fn test_struct_and_impl_extraction() {
 
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub struct Point {
     pub x: f64,
@@ -214,8 +332,12 @@ async fn test_file_removal_sync() {
     let project = dir.path();
 
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn keep() {}\n").unwrap();
-    fs::write(project.join("src/remove_me.rs"), "pub fn gone() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn keep() {}\n").unwrap();
+    fs::write(
+        project.join("src").join("remove_me.rs"),
+        "pub fn gone() {}\n",
+    )
+    .unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -228,7 +350,7 @@ async fn test_file_removal_sync() {
     );
 
     // Remove file
-    fs::remove_file(project.join("src/remove_me.rs")).unwrap();
+    fs::remove_file(project.join("src").join("remove_me.rs")).unwrap();
 
     // Sync
     let sync_result = cg.sync().await.unwrap();
@@ -246,7 +368,7 @@ async fn test_index_all_is_idempotent() {
 
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         "pub fn alpha() {}\npub fn beta() {}\n",
     )
     .unwrap();
@@ -275,7 +397,7 @@ async fn test_sync_no_changes() {
     let project = dir.path();
 
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn stable() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn stable() {}\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -294,7 +416,7 @@ async fn test_search_by_docstring() {
 
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 /// Calculates the fibonacci sequence.
 pub fn fibonacci(n: u64) -> u64 {
@@ -322,7 +444,7 @@ async fn test_multiple_files_cross_reference() {
 
     fs::create_dir_all(project.join("src")).unwrap();
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub mod models;
 pub mod services;
@@ -331,7 +453,7 @@ pub mod services;
     .unwrap();
 
     fs::write(
-        project.join("src/models.rs"),
+        project.join("src").join("models.rs"),
         r#"
 pub struct User {
     pub name: String,
@@ -342,7 +464,7 @@ pub struct User {
     .unwrap();
 
     fs::write(
-        project.join("src/services.rs"),
+        project.join("src").join("services.rs"),
         r#"
 use crate::models::User;
 
@@ -366,6 +488,304 @@ pub fn create_user(name: &str, email: &str) -> String {
     assert!(!results.is_empty(), "should find 'create_user' function");
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn test_index_follows_symlinked_directories() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    let external = TempDir::new().unwrap();
+
+    fs::create_dir_all(external.path()).unwrap();
+    fs::write(
+        external.path().join("lib.rs"),
+        "pub fn through_symlink() {}\n",
+    )
+    .unwrap();
+    symlink(external.path(), project.join("src")).unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    let result = cg.index_all().await.unwrap();
+
+    assert_eq!(
+        result.file_count, 1,
+        "should index the file behind the symlink"
+    );
+
+    let files = cg.get_all_files().await.unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert!(paths.contains(&"src/lib.rs"));
+
+    let results = cg.search("through_symlink", 10).await.unwrap();
+    assert!(
+        !results.is_empty(),
+        "should extract symbols from symlinked source"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Nested .gitignore tests
+// ---------------------------------------------------------------------------
+
+/// Helper: init a project with git_ignore enabled and return the TokenSave.
+async fn setup_gitignore_project(project: &std::path::Path) -> TokenSave {
+    TokenSave::init(project).await.unwrap();
+    let mut config = load_config(project).unwrap();
+    config.git_ignore = true;
+    save_config(project, &config).unwrap();
+    TokenSave::open(project).await.unwrap()
+}
+
+/// A nested `.gitignore` in a subdirectory must exclude files inside that
+/// subdirectory even when the root `.gitignore` has no matching rule.
+#[tokio::test]
+async fn test_nested_gitignore_excludes_files_in_subdir() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src").join("vendor")).unwrap();
+    // This file should be indexed.
+    fs::write(project.join("src").join("lib.rs"), "pub fn kept() {}\n").unwrap();
+    // This file is excluded by the nested .gitignore only.
+    fs::write(
+        project.join("src").join("vendor").join("gen.rs"),
+        "pub fn generated() {}\n",
+    )
+    .unwrap();
+    // Nested .gitignore ignores everything in vendor/.
+    fs::write(project.join("src").join("vendor").join(".gitignore"), "*\n").unwrap();
+
+    let cg = setup_gitignore_project(project).await;
+    let result = cg.index_all().await.unwrap();
+
+    assert_eq!(
+        result.file_count, 1,
+        "vendor/ should be excluded by nested .gitignore"
+    );
+
+    let files = cg.get_all_files().await.unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert!(paths.contains(&"src/lib.rs"), "src/lib.rs must be indexed");
+    assert!(
+        !paths.iter().any(|p| p.contains("vendor")),
+        "vendor files must be excluded by nested .gitignore"
+    );
+}
+
+/// A nested `.gitignore` must not affect files outside its own directory.
+/// Only `src/internal/` should be excluded; `src/lib.rs` must still be indexed.
+#[tokio::test]
+async fn test_nested_gitignore_scope_is_limited_to_its_directory() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src").join("internal")).unwrap();
+    fs::write(
+        project.join("src").join("lib.rs"),
+        "pub fn public_api() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src").join("internal").join("secret.rs"),
+        "pub fn secret() {}\n",
+    )
+    .unwrap();
+    // The nested .gitignore only covers files within src/internal/.
+    fs::write(
+        project.join("src").join("internal").join(".gitignore"),
+        "*.rs\n",
+    )
+    .unwrap();
+
+    let cg = setup_gitignore_project(project).await;
+    cg.index_all().await.unwrap();
+
+    let files = cg.get_all_files().await.unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert!(
+        paths.contains(&"src/lib.rs"),
+        "src/lib.rs must not be affected by nested .gitignore in src/internal/"
+    );
+    assert!(
+        !paths.iter().any(|p| p.contains("secret")),
+        "src/internal/secret.rs must be excluded by its own directory's .gitignore"
+    );
+}
+
+/// A nested `.gitignore` negation (`!`) must un-ignore a file that a higher-level
+/// rule would otherwise exclude. The `ignore` crate replicates git's precedence:
+/// a more specific (deeper) rule wins over a less specific (shallower) one.
+#[tokio::test]
+async fn test_nested_gitignore_negation_overrides_parent_rule() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src").join("exceptions")).unwrap();
+    // Root .gitignore ignores all .rs files.
+    fs::write(project.join(".gitignore"), "*.rs\n").unwrap();
+    // The nested .gitignore un-ignores the one file we actually want indexed.
+    fs::write(
+        project.join("src").join("exceptions").join(".gitignore"),
+        "!important.rs\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src").join("exceptions").join("important.rs"),
+        "pub fn must_be_indexed() {}\n",
+    )
+    .unwrap();
+    // This sibling file stays excluded by the root rule.
+    fs::write(
+        project.join("src").join("exceptions").join("ignored.rs"),
+        "pub fn ignored() {}\n",
+    )
+    .unwrap();
+
+    let cg = setup_gitignore_project(project).await;
+    cg.index_all().await.unwrap();
+
+    let results = cg.search("must_be_indexed", 10).await.unwrap();
+    assert!(
+        !results.is_empty(),
+        "nested .gitignore negation must un-ignore important.rs even though root rule excludes *.rs"
+    );
+
+    let files = cg.get_all_files().await.unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert!(
+        !paths.iter().any(|p| p.ends_with("ignored.rs")),
+        "ignored.rs must remain excluded by root .gitignore"
+    );
+}
+
+/// Files in deeply nested subdirectories must be excluded by a `.gitignore`
+/// anywhere in their ancestor chain, not just the root.
+#[tokio::test]
+async fn test_nested_gitignore_applies_to_deeper_descendants() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src").join("mid").join("deep")).unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn top() {}\n").unwrap();
+    // The mid-level .gitignore excludes the deep/ subtree.
+    fs::write(
+        project.join("src").join("mid").join(".gitignore"),
+        "deep/\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src").join("mid").join("mid.rs"),
+        "pub fn mid() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src").join("mid").join("deep").join("leaf.rs"),
+        "pub fn leaf() {}\n",
+    )
+    .unwrap();
+
+    let cg = setup_gitignore_project(project).await;
+    cg.index_all().await.unwrap();
+
+    let files = cg.get_all_files().await.unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert!(paths.contains(&"src/lib.rs"), "src/lib.rs must be indexed");
+    assert!(
+        paths.contains(&"src/mid/mid.rs"),
+        "src/mid/mid.rs must be indexed"
+    );
+    assert!(
+        !paths.iter().any(|p| p.contains("deep")),
+        "src/mid/deep/leaf.rs must be excluded by mid-level .gitignore"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_gitignore_scan_follows_symlinked_directories() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    let external = TempDir::new().unwrap();
+
+    fs::create_dir_all(external.path()).unwrap();
+    fs::write(
+        external.path().join("lib.rs"),
+        "pub fn through_gitignore_symlink() {}\n",
+    )
+    .unwrap();
+    symlink(external.path(), project.join("src")).unwrap();
+
+    TokenSave::init(project).await.unwrap();
+
+    let mut config = load_config(project).unwrap();
+    config.git_ignore = true;
+    save_config(project, &config).unwrap();
+
+    let cg = TokenSave::open(project).await.unwrap();
+    let result = cg.index_all().await.unwrap();
+
+    assert_eq!(
+        result.file_count, 1,
+        "gitignore-aware scan should follow symlinks"
+    );
+
+    let results = cg.search("through_gitignore_symlink", 10).await.unwrap();
+    assert!(
+        !results.is_empty(),
+        "should extract symbols through symlink with gitignore-aware walker"
+    );
+}
+
+/// #170: a symlink living inside a `config.exclude`d directory must not be
+/// followed by the gitignore-aware walker. Before the fix the walker pruned
+/// only `.gitignore` entries, so an excluded dir was still descended into and
+/// its symlinks (e.g. a Wine prefix's `dosdevices/z: -> /`) escaped the project
+/// root and walked the whole filesystem.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_gitignore_scan_prunes_excluded_dir_with_symlink() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    // A real source file that should be indexed.
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src").join("main.rs"),
+        "pub fn real_symbol() {}\n",
+    )
+    .unwrap();
+
+    // An external tree the excluded symlink points at — must never be reached.
+    let external = TempDir::new().unwrap();
+    fs::write(
+        external.path().join("escaped.rs"),
+        "pub fn escaped_symbol() {}\n",
+    )
+    .unwrap();
+
+    // build-output/nested/link -> external, with build-output excluded.
+    let excluded = project.join("build-output").join("nested");
+    fs::create_dir_all(&excluded).unwrap();
+    symlink(external.path(), excluded.join("link")).unwrap();
+
+    TokenSave::init(project).await.unwrap();
+    let mut config = load_config(project).unwrap();
+    config.git_ignore = true;
+    config.exclude.push("build-output/**".to_string());
+    save_config(project, &config).unwrap();
+
+    let cg = TokenSave::open(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let real = cg.search("real_symbol", 10).await.unwrap();
+    assert!(!real.is_empty(), "the real source file should be indexed");
+
+    let escaped = cg.search("escaped_symbol", 10).await.unwrap();
+    assert!(
+        escaped.is_empty(),
+        "symbols behind a symlink inside an excluded dir must not be indexed"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Call edge regression tests
 // ---------------------------------------------------------------------------
@@ -379,7 +799,7 @@ async fn setup_call_edge_project() -> (TempDir, TokenSave) {
     fs::create_dir_all(project.join("src")).unwrap();
 
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub mod caller_mod;
 pub mod callee_mod;
@@ -388,7 +808,7 @@ pub mod callee_mod;
     .unwrap();
 
     fs::write(
-        project.join("src/callee_mod.rs"),
+        project.join("src").join("callee_mod.rs"),
         r#"
 /// The target function that should be found via call edges.
 pub fn target_fn() -> u32 {
@@ -399,7 +819,7 @@ pub fn target_fn() -> u32 {
     .unwrap();
 
     fs::write(
-        project.join("src/caller_mod.rs"),
+        project.join("src").join("caller_mod.rs"),
         r#"
 use crate::callee_mod::target_fn;
 
@@ -442,6 +862,152 @@ async fn test_index_all_produces_call_edges() {
     );
 }
 
+#[cfg(feature = "lang-ruby")]
+#[tokio::test]
+async fn test_index_all_resolves_static_ruby_receiver_calls() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::write(
+        project.join("receiver_calls.rb"),
+        r#"
+class Publisher
+  def publish
+  end
+
+  class << self
+    def publish
+    end
+
+    def run(worker)
+      Publisher.publish
+      ::Publisher.publish
+      self.publish
+      worker.publish
+      InstanceOnly.publish
+    end
+  end
+
+  self.publish
+  target.instance_eval { self.publish }
+  Other.class_eval { self.publish }
+end
+
+class InstanceOnly
+  def publish
+  end
+end
+"#,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let nodes = cg.db().get_all_nodes().await.unwrap();
+    let edges = cg.db().get_all_edges().await.unwrap();
+    let caller = nodes
+        .iter()
+        .find(|node| {
+            node.kind == NodeKind::SingletonMethod
+                && node.signature.as_deref() == Some("def run(worker)")
+        })
+        .unwrap();
+    let singleton_publish = nodes
+        .iter()
+        .find(|node| {
+            node.kind == NodeKind::SingletonMethod
+                && node.signature.as_deref() == Some("def publish")
+        })
+        .unwrap();
+    let publisher = nodes
+        .iter()
+        .find(|node| node.kind == NodeKind::Class && node.name == "Publisher")
+        .unwrap();
+    let instance_targets: Vec<_> = nodes
+        .iter()
+        .filter(|node| {
+            node.kind == NodeKind::Method && node.signature.as_deref() == Some("def publish")
+        })
+        .map(|node| node.id.as_str())
+        .collect();
+
+    let calls: Vec<_> = edges
+        .iter()
+        .filter(|edge| edge.source == caller.id && edge.kind == EdgeKind::Calls)
+        .collect();
+    assert_eq!(calls.len(), 3, "nodes: {nodes:#?}\nedges: {edges:#?}");
+    assert!(calls.iter().all(|edge| edge.target == singleton_publish.id));
+    assert!(calls
+        .iter()
+        .all(|edge| !instance_targets.contains(&edge.target.as_str())));
+    assert_eq!(
+        edges
+            .iter()
+            .filter(|edge| {
+                edge.source == publisher.id
+                    && edge.target == singleton_publish.id
+                    && edge.kind == EdgeKind::Calls
+            })
+            .count(),
+        1,
+        "self calls in blocks that retarget self must not be attributed to Publisher"
+    );
+}
+
+#[cfg(feature = "lang-ruby")]
+#[tokio::test]
+async fn test_incremental_sync_resolves_calls_to_legacy_ruby_singleton_methods() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::write(
+        project.join("publisher.rb"),
+        "class Publisher\n  class << self\n    def publish; end\n  end\nend\n",
+    )
+    .unwrap();
+    fs::write(project.join("caller.rb"), "def run; end\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+    cg.db()
+        .conn()
+        .execute(
+            "UPDATE nodes SET kind = 'method' WHERE name = 'publish'",
+            (),
+        )
+        .await
+        .unwrap();
+    cg.db()
+        .conn()
+        .execute(
+            "DELETE FROM metadata WHERE key = 'ruby_singleton_method_kind_v1'",
+            (),
+        )
+        .await
+        .unwrap();
+
+    fs::write(
+        project.join("caller.rb"),
+        "def run\n  Publisher.publish\nend\n",
+    )
+    .unwrap();
+    let sync = cg.sync().await.unwrap();
+    assert!(sync.modified_paths.contains(&"publisher.rb".to_string()));
+
+    let nodes = cg.db().get_all_nodes().await.unwrap();
+    let publish = nodes.iter().find(|node| node.name == "publish").unwrap();
+    assert_eq!(publish.kind, NodeKind::SingletonMethod);
+    assert!(cg
+        .db()
+        .get_all_edges()
+        .await
+        .unwrap()
+        .iter()
+        .any(|edge| { edge.kind == EdgeKind::Calls && edge.target == publish.id }));
+
+    let settled = cg.sync().await.unwrap();
+    assert!(settled.modified_paths.is_empty());
+}
+
 #[tokio::test]
 async fn test_sync_produces_call_edges() {
     let (_dir, cg) = setup_call_edge_project().await;
@@ -469,7 +1035,7 @@ async fn test_sync_produces_call_edges_after_file_modification() {
     fs::create_dir_all(project.join("src")).unwrap();
 
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub fn base_fn() -> u32 { 1 }
 pub fn consumer() -> u32 { base_fn() }
@@ -482,7 +1048,7 @@ pub fn consumer() -> u32 { base_fn() }
 
     // Modify the file to add a new call chain.
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub fn base_fn() -> u32 { 1 }
 pub fn middle_fn() -> u32 { base_fn() }
@@ -509,9 +1075,7 @@ pub fn top_fn() -> u32 { middle_fn() }
     // top_fn -> middle_fn
     let middle_callers = cg.get_callers(&middle_id, 1).await.unwrap();
     assert!(
-        middle_callers
-            .iter()
-            .any(|(node, _)| node.name == "top_fn"),
+        middle_callers.iter().any(|(node, _)| node.name == "top_fn"),
         "sync should resolve top_fn -> middle_fn call edge after modification"
     );
 
@@ -534,7 +1098,7 @@ async fn test_sync_resolves_cross_file_call_edges_for_new_files() {
 
     // Start with a single file.
     fs::write(
-        project.join("src/lib.rs"),
+        project.join("src").join("lib.rs"),
         r#"
 pub mod engine;
 pub fn entry_point() -> u32 { 0 }
@@ -547,7 +1111,7 @@ pub fn entry_point() -> u32 { 0 }
 
     // Add a new file that calls the existing function.
     fs::write(
-        project.join("src/engine.rs"),
+        project.join("src").join("engine.rs"),
         r#"
 use crate::entry_point;
 
@@ -564,9 +1128,7 @@ pub fn run_engine() -> u32 {
 
     let callers = cg.get_callers(&entry_id, 3).await.unwrap();
     assert!(
-        callers
-            .iter()
-            .any(|(node, _)| node.name == "run_engine"),
+        callers.iter().any(|(node, _)| node.name == "run_engine"),
         "sync should resolve cross-file call edges when a new file is added"
     );
 }
@@ -581,19 +1143,19 @@ async fn test_sync_does_not_duplicate_edges() {
     // Three files: a callee, a caller that will be modified, and
     // an unchanged caller whose edges must not be duplicated.
     fs::write(
-        project.join("src/callee.rs"),
+        project.join("src").join("callee.rs"),
         "pub fn target_fn() -> u32 { 42 }\n",
     )
     .unwrap();
 
     fs::write(
-        project.join("src/caller_a.rs"),
+        project.join("src").join("caller_a.rs"),
         "pub fn caller_a() -> u32 { target_fn() }\n",
     )
     .unwrap();
 
     fs::write(
-        project.join("src/caller_b.rs"),
+        project.join("src").join("caller_b.rs"),
         "pub fn caller_b() -> u32 { target_fn() }\n",
     )
     .unwrap();
@@ -606,7 +1168,7 @@ async fn test_sync_does_not_duplicate_edges() {
 
     // Modify caller_a only — caller_b is unchanged.
     fs::write(
-        project.join("src/caller_a.rs"),
+        project.join("src").join("caller_a.rs"),
         "pub fn caller_a() -> u32 { target_fn() + 1 }\n",
     )
     .unwrap();
@@ -639,12 +1201,12 @@ async fn test_concurrent_sync_is_rejected() {
     let project = dir.path();
 
     fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src/lib.rs"), "pub fn f() {}\n").unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn f() {}\n").unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
 
     // Simulate an in-progress sync by placing a lockfile with our own PID.
-    let lock_path = project.join(".tokensave/sync.lock");
+    let lock_path = project.join(".tokensave").join("sync.lock");
     fs::write(&lock_path, format!("{}", std::process::id())).unwrap();
 
     let err = cg.sync().await.unwrap_err();
@@ -657,4 +1219,452 @@ async fn test_concurrent_sync_is_rejected() {
     // After removing the lockfile, sync should succeed.
     fs::remove_file(&lock_path).unwrap();
     cg.sync().await.unwrap();
+}
+
+/// Regression test for the incremental-sync edge-resolution gap: when a
+/// *callee* file changes, `delete_nodes_by_file` cascades away every edge
+/// that touches its (about-to-be-replaced) node ids — including inbound
+/// `Calls` edges from *other, untouched* caller files. Those edges only
+/// get re-created if the callers' original cross-file references were
+/// durably persisted somewhere `sync`'s resolution step can replay them
+/// from. A full `index_all()` resolves everything in one in-memory pass
+/// and (before this fix) never wrote that bookkeeping to the
+/// `unresolved_refs` table, so a later `sync()` had no record of
+/// "caller_a/caller_b call `target_fn`" and silently dropped both edges
+/// forever once `callee.rs` was ever touched again.
+#[tokio::test]
+async fn test_sync_reresolves_inbound_edges_after_callee_change() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+
+    // A callee whose own file will change, plus two callers in different
+    // files that are never touched again after the initial full index.
+    fs::write(
+        project.join("src").join("callee.rs"),
+        "pub fn target_fn() -> u32 { 42 }\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src").join("caller_a.rs"),
+        "pub fn caller_a() -> u32 { target_fn() }\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src").join("caller_b.rs"),
+        "pub fn caller_b() -> u32 { target_fn() }\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    async fn calls_into_target_fn(cg: &TokenSave) -> usize {
+        let nodes = cg.db().get_all_nodes().await.unwrap();
+        let edges = cg.db().get_all_edges().await.unwrap();
+        let Some(target_id) = nodes
+            .iter()
+            .find(|n| n.name == "target_fn")
+            .map(|n| n.id.clone())
+        else {
+            return 0;
+        };
+        edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Calls && e.target == target_id)
+            .count()
+    }
+
+    assert_eq!(
+        calls_into_target_fn(&cg).await,
+        2,
+        "full index should resolve both cross-file calls into target_fn"
+    );
+
+    // Change ONLY the callee — neither caller file is touched again.
+    fs::write(
+        project.join("src").join("callee.rs"),
+        "pub fn target_fn() -> u32 { 43 }\npub fn unrelated() -> u32 { 0 }\n",
+    )
+    .unwrap();
+
+    let sync_result = cg.sync().await.unwrap();
+    assert_eq!(
+        sync_result.files_modified, 1,
+        "only callee.rs should be detected as stale"
+    );
+
+    assert_eq!(
+        calls_into_target_fn(&cg).await,
+        2,
+        "sync must re-resolve inbound call edges from untouched callers \
+         after the callee they reference is reindexed — a full reindex \
+         would keep both edges, so incremental sync must too"
+    );
+}
+
+/// Broader parity check: an incrementally-synced graph (several `sync()`
+/// calls, each touching a different single file — ordinary dev churn)
+/// must end up with the same canonical graph as a fresh full `index_all()`
+/// of the identical final source tree. A count-only comparison can conceal
+/// one missing record and one fabricated record.
+#[tokio::test]
+async fn test_incremental_sync_graph_matches_full_reindex() {
+    let synced_dir = TempDir::new().unwrap();
+    let synced_project = synced_dir.path();
+    let full_dir = TempDir::new().unwrap();
+    let full_project = full_dir.path();
+
+    fs::create_dir_all(synced_project.join("src")).unwrap();
+    fs::create_dir_all(full_project.join("src")).unwrap();
+
+    let callee_v1 = "pub fn target_fn() -> u32 { 42 }\n";
+    let caller_a_v1 = "pub fn caller_a() -> u32 { target_fn() }\n";
+    let caller_b_v1 = "pub fn caller_b() -> u32 { target_fn() }\n";
+    let caller_c_v1 = "pub fn caller_c() -> u32 { target_fn() }\n";
+
+    fs::write(synced_project.join("src").join("callee.rs"), callee_v1).unwrap();
+    fs::write(synced_project.join("src").join("caller_a.rs"), caller_a_v1).unwrap();
+    fs::write(synced_project.join("src").join("caller_b.rs"), caller_b_v1).unwrap();
+    fs::write(synced_project.join("src").join("caller_c.rs"), caller_c_v1).unwrap();
+
+    let cg = TokenSave::init(synced_project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    // Ordinary dev churn: touch callee, then caller_a, then caller_b —
+    // each in its own separate sync. caller_c.rs is never touched again
+    // after the initial full index.
+    let callee_v2 = "pub fn target_fn() -> u32 { 43 }\npub fn extra_1() {}\n";
+    fs::write(synced_project.join("src").join("callee.rs"), callee_v2).unwrap();
+    cg.sync().await.unwrap();
+
+    let caller_a_v2 = "pub fn caller_a() -> u32 { target_fn() + 1 }\n";
+    fs::write(synced_project.join("src").join("caller_a.rs"), caller_a_v2).unwrap();
+    cg.sync().await.unwrap();
+
+    let caller_b_v2 = "pub fn caller_b() -> u32 { target_fn() + 2 }\n";
+    fs::write(synced_project.join("src").join("caller_b.rs"), caller_b_v2).unwrap();
+    cg.sync().await.unwrap();
+
+    // Build the identical final state fresh and index it once.
+    fs::write(full_project.join("src").join("callee.rs"), callee_v2).unwrap();
+    fs::write(full_project.join("src").join("caller_a.rs"), caller_a_v2).unwrap();
+    fs::write(full_project.join("src").join("caller_b.rs"), caller_b_v2).unwrap();
+    fs::write(full_project.join("src").join("caller_c.rs"), caller_c_v1).unwrap();
+
+    let cg_full = TokenSave::init(full_project).await.unwrap();
+    cg_full.index_all().await.unwrap();
+
+    let (synced_nodes, synced_edges) = canonical_graph(&cg).await;
+    let (full_nodes, full_edges) = canonical_graph(&cg_full).await;
+
+    assert_eq!(synced_nodes, full_nodes);
+    assert_eq!(synced_edges, full_edges);
+
+    // All three callers — including caller_c, never touched after the
+    // initial full index — must still resolve into target_fn.
+    let target_id = synced_nodes
+        .iter()
+        .find(|n| n.name == "target_fn")
+        .map(|n| n.id.clone())
+        .expect("target_fn node must exist");
+    let calls_into_target = synced_edges
+        .iter()
+        .filter(|e| e.kind == EdgeKind::Calls && e.target == target_id)
+        .count();
+    assert_eq!(
+        calls_into_target, 3,
+        "all three callers (including untouched caller_c) must resolve \
+         into target_fn after incremental sync"
+    );
+}
+
+#[cfg(feature = "lang-ruby")]
+#[tokio::test]
+async fn test_ruby_incremental_sync_graph_matches_full_reindex() {
+    let synced_dir = TempDir::new().unwrap();
+    let synced_project = synced_dir.path();
+    let full_dir = TempDir::new().unwrap();
+    let full_project = full_dir.path();
+
+    for project in [synced_project, full_project] {
+        fs::create_dir_all(project.join("app").join("models").join("concerns")).unwrap();
+        fs::create_dir_all(project.join("app").join("services")).unwrap();
+    }
+
+    let application_record = r#"class ApplicationRecord
+  def persist
+  end
+end
+"#;
+    let auditable_v1 = r#"module Auditable
+  def audit
+    normalize_audit()
+  end
+
+  def normalize_audit
+  end
+end
+"#;
+    let auditable_v2 = r#"module Auditable
+  def audit
+    sanitize_audit()
+  end
+
+  def sanitize_audit
+  end
+end
+"#;
+    let report_v1 = r#"class Report < ApplicationRecord
+  include Auditable
+
+  def publish
+    audit()
+    persist()
+  end
+end
+"#;
+    let report_v2 = r#"class Report < ApplicationRecord
+  include Auditable
+
+  def publish
+    audit()
+    persist()
+  end
+
+  def archive
+    audit()
+  end
+end
+"#;
+    let publisher_v1 = r#"class ReportPublisher
+  def call
+    publish()
+  end
+end
+"#;
+    let publisher_v2 = r#"class ReportPublisher
+  def call
+    archive()
+  end
+end
+"#;
+
+    fs::write(
+        synced_project
+            .join("app")
+            .join("models")
+            .join("application_record.rb"),
+        application_record,
+    )
+    .unwrap();
+    fs::write(
+        synced_project
+            .join("app")
+            .join("models")
+            .join("concerns")
+            .join("auditable.rb"),
+        auditable_v1,
+    )
+    .unwrap();
+    fs::write(
+        synced_project.join("app").join("models").join("report.rb"),
+        report_v1,
+    )
+    .unwrap();
+    fs::write(
+        synced_project
+            .join("app")
+            .join("services")
+            .join("report_publisher.rb"),
+        publisher_v1,
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(synced_project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    fs::write(
+        synced_project
+            .join("app")
+            .join("models")
+            .join("concerns")
+            .join("auditable.rb"),
+        auditable_v2,
+    )
+    .unwrap();
+    assert_eq!(cg.sync().await.unwrap().files_modified, 1);
+
+    fs::write(
+        synced_project.join("app").join("models").join("report.rb"),
+        report_v2,
+    )
+    .unwrap();
+    assert_eq!(cg.sync().await.unwrap().files_modified, 1);
+
+    fs::write(
+        synced_project
+            .join("app")
+            .join("services")
+            .join("report_publisher.rb"),
+        publisher_v2,
+    )
+    .unwrap();
+    assert_eq!(cg.sync().await.unwrap().files_modified, 1);
+
+    fs::write(
+        full_project
+            .join("app")
+            .join("models")
+            .join("application_record.rb"),
+        application_record,
+    )
+    .unwrap();
+    fs::write(
+        full_project
+            .join("app")
+            .join("models")
+            .join("concerns")
+            .join("auditable.rb"),
+        auditable_v2,
+    )
+    .unwrap();
+    fs::write(
+        full_project.join("app").join("models").join("report.rb"),
+        report_v2,
+    )
+    .unwrap();
+    fs::write(
+        full_project
+            .join("app")
+            .join("services")
+            .join("report_publisher.rb"),
+        publisher_v2,
+    )
+    .unwrap();
+
+    let cg_full = TokenSave::init(full_project).await.unwrap();
+    cg_full.index_all().await.unwrap();
+
+    let (synced_nodes, synced_edges) = canonical_graph(&cg).await;
+    let (full_nodes, full_edges) = canonical_graph(&cg_full).await;
+
+    let node_id = |name: &str| {
+        let matches: Vec<_> = synced_nodes
+            .iter()
+            .filter(|node| node.name == name)
+            .collect();
+        assert_eq!(matches.len(), 1, "expected one node named {name}");
+        matches[0].id.as_str()
+    };
+    let has_edge = |source: &str, target: &str, kind: EdgeKind| {
+        synced_edges
+            .iter()
+            .any(|edge| edge.source == source && edge.target == target && edge.kind == kind)
+    };
+
+    let application_record_id = node_id("ApplicationRecord");
+    let auditable_id = node_id("Auditable");
+    let report_id = node_id("Report");
+    let audit_id = node_id("audit");
+    let sanitize_audit_id = node_id("sanitize_audit");
+    let archive_id = node_id("archive");
+    let call_id = node_id("call");
+
+    let archive = synced_nodes
+        .iter()
+        .find(|node| node.id == archive_id)
+        .expect("archive node must exist");
+    assert_eq!(archive.parent_id.as_deref(), Some(report_id));
+    assert!(has_edge(
+        report_id,
+        application_record_id,
+        EdgeKind::Extends
+    ));
+    assert!(has_edge(report_id, auditable_id, EdgeKind::Implements));
+    assert!(has_edge(audit_id, sanitize_audit_id, EdgeKind::Calls));
+    assert!(has_edge(call_id, archive_id, EdgeKind::Calls));
+
+    assert_eq!(synced_nodes, full_nodes);
+    assert_eq!(synced_edges, full_edges);
+}
+
+/// #262 / #270: verbose sync must explain files skipped because no
+/// registered extractor handles their extension — aggregated per extension
+/// and filtered so binary/asset noise (.png, .lock, …) is not reported.
+#[tokio::test]
+async fn test_verbose_sync_reports_skipped_extensions() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src").join("lib.rs"), "pub fn f() {}\n").unwrap();
+    // Two files of an unsupported source-like language, plus binary noise.
+    fs::write(project.join("a.coolscript"), "print 1\n").unwrap();
+    fs::write(project.join("b.coolscript"), "print 2\n").unwrap();
+    fs::write(project.join("logo.png"), [0x89u8, 0x50, 0x4e, 0x47]).unwrap();
+    fs::write(project.join("deps.lock"), "lockfile\n").unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let lines = std::sync::Mutex::new(Vec::<String>::new());
+    let result = cg
+        .sync_with_progress_verbose(
+            |_, _, _| {},
+            |msg| lines.lock().unwrap().push(msg.to_string()),
+        )
+        .await
+        .unwrap();
+    let lines = lines.into_inner().unwrap();
+
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(".coolscript: 2 file(s) skipped (no registered extractor)")),
+        "verbose output must summarize the skipped extension; got: {lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains(".png") || l.contains(".lock")),
+        "binary/asset extensions must not be reported; got: {lines:?}"
+    );
+
+    // The same summary is carried on SyncResult for `sync --doctor`.
+    assert_eq!(
+        result.skipped_extensions,
+        vec![("coolscript".to_string(), 2)],
+        "skipped_extensions: {:?}",
+        result.skipped_extensions
+    );
+}
+
+/// #345: a full index must carry the same skipped-extension summary as sync,
+/// so `init` can tell the user that tracked source files were omitted instead
+/// of reporting an apparently complete index.
+#[tokio::test]
+async fn test_index_all_reports_skipped_extensions() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+
+    // Originally used `.v` and then `.vhd`; both have since gained an
+    // extractor. Ada keeps the case honest: a real language with no extractor.
+    fs::write(project.join("README.md"), "# readme\n").unwrap();
+    fs::write(
+        project.join("example.adb"),
+        "procedure Example is\nbegin\n   null;\nend Example;\n",
+    )
+    .unwrap();
+
+    let cg = TokenSave::init(project).await.unwrap();
+    let result = cg.index_all().await.unwrap();
+
+    assert_eq!(
+        result.skipped_extensions,
+        vec![("adb".to_string(), 1)],
+        "skipped_extensions: {:?}",
+        result.skipped_extensions
+    );
 }

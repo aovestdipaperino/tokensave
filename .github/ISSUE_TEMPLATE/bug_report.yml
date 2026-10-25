@@ -77,7 +77,6 @@ body:
         - Indexing / sync
         - MCP server
         - CLI
-        - Daemon / file watcher
         - Agent integration (Claude, Cursor, etc.)
         - Other
 

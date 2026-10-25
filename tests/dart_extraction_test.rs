@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-dart")]
+
 use tokensave::extraction::DartExtractor;
 use tokensave::extraction::LanguageExtractor;
 use tokensave::types::*;
@@ -76,9 +78,8 @@ fn test_dart_function_extraction() {
 
 #[test]
 fn test_dart_class_extraction() {
-    let result = extract(
-        "class MyClass {\n  String name;\n  void hello() {\n    print('hi');\n  }\n}",
-    );
+    let result =
+        extract("class MyClass {\n  String name;\n  void hello() {\n    print('hi');\n  }\n}");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let classes: Vec<_> = result
         .nodes
@@ -118,9 +119,8 @@ fn test_dart_mixin_extraction() {
 
 #[test]
 fn test_dart_extension_extraction() {
-    let result = extract(
-        "extension StringHelper on String {\n  bool get isBlank => trim().isEmpty;\n}",
-    );
+    let result =
+        extract("extension StringHelper on String {\n  bool get isBlank => trim().isEmpty;\n}");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let exts: Vec<_> = result
         .nodes
@@ -189,7 +189,11 @@ fn test_dart_field_extraction() {
         .iter()
         .filter(|n| n.kind == NodeKind::Field)
         .collect();
-    assert!(fields.len() >= 2, "Expected at least 2 fields, got {:?}", fields);
+    assert!(
+        fields.len() >= 2,
+        "Expected at least 2 fields, got {:?}",
+        fields
+    );
     assert!(fields.iter().any(|n| n.name == "name"));
     assert!(fields.iter().any(|n| n.name == "_count"));
 }
@@ -258,7 +262,9 @@ fn test_dart_visibility_public() {
 
 #[test]
 fn test_dart_async_function_detection() {
-    let result = extract("Future<void> fetchData() async {\n  await Future.delayed(Duration(seconds: 1));\n}");
+    let result = extract(
+        "Future<void> fetchData() async {\n  await Future.delayed(Duration(seconds: 1));\n}",
+    );
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let fns: Vec<_> = result
         .nodes
@@ -272,9 +278,7 @@ fn test_dart_async_function_detection() {
 
 #[test]
 fn test_dart_call_site_tracking() {
-    let result = extract(
-        "void main() {\n  print('hello');\n  greet('world');\n}",
-    );
+    let result = extract("void main() {\n  print('hello');\n  greet('world');\n}");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let calls: Vec<_> = result
         .unresolved_refs
@@ -295,6 +299,29 @@ fn test_dart_call_site_tracking() {
     assert!(
         calls.iter().any(|c| c.reference_name == "greet"),
         "Expected a call to 'greet', calls: {:?}",
+        calls
+    );
+}
+
+#[test]
+fn test_dart_receiver_method_call_tracking() {
+    // tree-sitter-dart 0.2 splits `recv.method(args)` into two sibling
+    // selectors (member name, then argument_part). Member calls such as
+    // `this._parseItem(s)` and `obj.method(s)` must still emit Calls refs
+    // so private helpers aren't reported as dead introductions (#155).
+    let result = extract(
+        "class Parser {\n  int parse(String s) {\n    return this._parseItem(s);\n  }\n  int _parseItem(String s) => s.length;\n}",
+    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let calls: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Calls)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    assert!(
+        calls.contains(&"_parseItem"),
+        "expected a Calls ref to '_parseItem' via this., got {:?}",
         calls
     );
 }
@@ -330,9 +357,7 @@ fn test_dart_language_extractor_trait() {
 
 #[test]
 fn test_dart_mixin_with_methods() {
-    let result = extract(
-        "mixin Logging {\n  void log(String msg) {\n    print(msg);\n  }\n}",
-    );
+    let result = extract("mixin Logging {\n  void log(String msg) {\n    print(msg);\n  }\n}");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let mixins: Vec<_> = result
         .nodes
@@ -359,7 +384,7 @@ fn test_dart_private_field_visibility() {
         .iter()
         .filter(|n| n.kind == NodeKind::Field)
         .collect();
-    assert!(fields.len() >= 1);
+    assert!(!fields.is_empty());
     let private_field = fields.iter().find(|n| n.name == "_count").unwrap();
     assert_eq!(private_field.visibility, Visibility::Private);
 }
@@ -509,4 +534,162 @@ class OldWidget {
         annots.len(),
         "each AnnotationUsage should have an Annotates unresolved ref"
     );
+}
+
+#[test]
+fn test_dart_type_annotation_uses_refs() {
+    // A class referenced only through type annotations (params, returns,
+    // generic args, fields) must emit Uses refs so impact analysis reports
+    // its dependents (#172).
+    let result = extract(
+        "class RecordDefinition {\n  final String id;\n  const RecordDefinition(this.id);\n}\n\
+         class RuntimeRecord {\n  final String id;\n  const RuntimeRecord(this.id);\n}\n\
+         List<RecordDefinition> parseRecords(List<String> ids) {\n  return ids.map(RecordDefinition.new).toList();\n}\n\
+         RuntimeRecord mapRecord(RecordDefinition definition) {\n  return RuntimeRecord(definition.id);\n}\n\
+         void validateRecords(List<RecordDefinition> records) {\n  for (final record in records) {\n    if (record.id.isEmpty) throw FormatException('empty id');\n  }\n}",
+    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    let uses: Vec<_> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Uses && r.reference_name == "RecordDefinition")
+        .collect();
+    // parseRecords (return generic arg), mapRecord (param), validateRecords
+    // (param generic arg) — three distinct declarations reference the class.
+    let from_ids: std::collections::HashSet<_> = uses.iter().map(|r| &r.from_node_id).collect();
+    assert!(
+        from_ids.len() >= 3,
+        "Expected Uses refs to RecordDefinition from >=3 declarations, got {}: {:?}",
+        from_ids.len(),
+        uses
+    );
+
+    // Constructor invocation `RuntimeRecord(definition.id)` must emit a Uses
+    // ref (Calls cannot resolve to a class node).
+    assert!(
+        result
+            .unresolved_refs
+            .iter()
+            .any(|r| r.reference_kind == EdgeKind::Uses && r.reference_name == "RuntimeRecord"),
+        "Expected a Uses ref to RuntimeRecord from its constructor call, refs: {:?}",
+        result.unresolved_refs
+    );
+
+    // Core types must not be emitted as Uses refs.
+    assert!(
+        !result
+            .unresolved_refs
+            .iter()
+            .any(|r| r.reference_kind == EdgeKind::Uses
+                && (r.reference_name == "String" || r.reference_name == "List")),
+        "Core types should be filtered from type refs"
+    );
+}
+
+#[test]
+fn test_dart_field_type_uses_ref() {
+    let result = extract(
+        "class Config {\n  final String name;\n}\nclass Holder {\n  final Config config;\n}",
+    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    assert!(
+        result
+            .unresolved_refs
+            .iter()
+            .any(|r| r.reference_kind == EdgeKind::Uses && r.reference_name == "Config"),
+        "Expected a Uses ref to Config from the field declaration, refs: {:?}",
+        result.unresolved_refs
+    );
+}
+
+// --- Regression tests: calls inside closures and local functions (P0-1) ---
+//
+// `function_expression` (anonymous closures: `() { … }`, `(x) => …`) and
+// `lambda_expression` (named local functions) have no graph node of their
+// own, so their calls must be attributed to the enclosing named symbol
+// rather than discarded. Same fix as TypeScript #209 for nested arrows.
+
+fn calls_from(result: &ExtractionResult, from_name_contains: &str) -> Vec<String> {
+    let ids: Vec<&str> = result
+        .nodes
+        .iter()
+        .filter(|n| n.name.contains(from_name_contains))
+        .map(|n| n.id.as_str())
+        .collect();
+    result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Calls && ids.contains(&r.from_node_id.as_str()))
+        .map(|r| r.reference_name.clone())
+        .collect()
+}
+
+#[test]
+fn test_dart_closure_call_sites() {
+    let result = extract(
+        "class Widget {\n  void build() {\n    button(onPressed: () { _handleTap(); });\n  }\n  void _handleTap() {}\n}",
+    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let build_calls = calls_from(&result, "build");
+    assert!(
+        build_calls.iter().any(|c| c == "_handleTap"),
+        "expected build() to call _handleTap, got {build_calls:?}"
+    );
+}
+
+#[test]
+fn test_dart_arrow_closure_call_sites() {
+    let result =
+        extract("class Widget {\n  void build() {\n    xs.map((u) => _encode(u));\n  }\n}");
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let build_calls = calls_from(&result, "build");
+    assert!(
+        build_calls.iter().any(|c| c == "_encode"),
+        "expected build() to call _encode, got {build_calls:?}"
+    );
+}
+
+#[test]
+fn test_dart_local_function_call_sites() {
+    let result = extract(
+        "class Widget {\n  void build() {\n    void helper() {\n      _work();\n    }\n  }\n}",
+    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let build_calls = calls_from(&result, "build");
+    assert!(
+        build_calls.iter().any(|c| c == "_work"),
+        "expected build() to call _work, got {build_calls:?}"
+    );
+    // The local function's own name (`helper`, from `function_signature`'s
+    // `name` field) must not be misread as a call to itself.
+    assert!(
+        !build_calls.iter().any(|c| c == "helper"),
+        "helper's own signature name must not produce a bogus Calls ref, got {build_calls:?}"
+    );
+}
+
+#[test]
+fn test_dart_closure_positions_reachable() {
+    let result = extract(
+        "class Widget {\n  \
+           void fromLocalVar() {\n    final cb = () { _fromLocalVar(); };\n  }\n\n  \
+           Function fromReturn() {\n    return () => _fromReturn();\n  }\n\n  \
+           List<Widget> fromCollectionIf(bool flag) {\n    return [ if (flag) Btn(onPressed: () => _fromCollectionIf()) ];\n  }\n\n  \
+           void fromNestedClosure() {\n    List.builder(itemBuilder: (c, i) => Btn(onPressed: () => _fromNestedClosure(i)));\n  }\n\
+         }",
+    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    for (enclosing, callee) in [
+        ("fromLocalVar", "_fromLocalVar"),
+        ("fromReturn", "_fromReturn"),
+        ("fromCollectionIf", "_fromCollectionIf"),
+        ("fromNestedClosure", "_fromNestedClosure"),
+    ] {
+        let calls = calls_from(&result, enclosing);
+        assert!(
+            calls.iter().any(|c| c == callee),
+            "expected {enclosing}() to call {callee} (closure position not reached), got {calls:?}"
+        );
+    }
 }

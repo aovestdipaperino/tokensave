@@ -1,8 +1,17 @@
 name: Release (Beta)
 
+# Beta channel is DISABLED as of 6.0.0.
+#
+# The workflow code is intentionally preserved so the beta channel can be
+# revived later by:
+#   1. Reverting this `on:` block to the previous `release: [published]`
+#      trigger.
+#   2. Removing the `BETA_CHANNEL_ENABLED` guard from every job (`if:`).
+#
+# While the guard is `false`, the workflow can still be exercised
+# manually via `workflow_dispatch` for debugging — the jobs simply skip.
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
 
 # Only runs for prerelease tags — stable releases handled by release.yml
 
@@ -11,11 +20,14 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Single toggle that gates every job in this workflow. Flip to `true`
+  # (or remove the guard from each `if:` line below) to re-enable.
+  BETA_CHANNEL_ENABLED: 'false'
 
 jobs:
   build:
     name: Build ${{ matrix.name }}
-    if: github.event.release.prerelease
+    if: env.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -27,21 +39,25 @@ jobs:
             bottle_tag: arm64_sonoma
             archive: tar.gz
           - name: x86_64-linux
-            runner: ubuntu-latest
+            runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             bottle_tag: x86_64_linux
             archive: tar.gz
           - name: aarch64-linux
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
           - name: x86_64-windows
             runner: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
+          - name: aarch64-windows
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            archive: zip
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -78,6 +94,27 @@ jobs:
         shell: bash
         run: gh release upload ${{ github.ref_name }} tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive }} --clobber
 
+      # Hash the exact bytes that were just uploaded, on the leg that produced
+      # them (#525). Collected into a single SHA256SUMS by the checksums job
+      # below, which `tokensave upgrade` verifies against before extracting.
+      - name: Record archive SHA256
+        shell: bash
+        run: |
+          ASSET="tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.${{ matrix.archive }}"
+          # macOS runners have no `sha256sum` (GNU coreutils); `shasum -a 256`
+          # is the BSD equivalent and prints the same `hash  name` format.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ASSET" > "${ASSET}.sha256"
+          else
+            shasum -a 256 "$ASSET" > "${ASSET}.sha256"
+          fi
+
+      - name: Upload checksum artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: checksum-beta-${{ matrix.name }}
+          path: "*.sha256"
+
       # --- Homebrew bottle (only for platforms with bottle_tag) ---
 
       - name: Package Homebrew bottle
@@ -92,18 +129,54 @@ jobs:
 
       - name: Upload bottle artifact
         if: matrix.bottle_tag
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: bottle-beta-${{ matrix.bottle_tag }}
           path: "tokensave-beta-*.bottle.tar.gz"
 
-  update-homebrew:
-    name: Update Homebrew tap (beta)
-    if: github.event.release.prerelease && !cancelled()
+  # Publishes the SHA256SUMS asset `tokensave upgrade` verifies against (#525).
+  # Runs after every build leg so the file covers all platforms: upgrade fails
+  # closed on a missing hash, so a sums file that omits a platform would block
+  # upgrades for it rather than silently skipping verification.
+  checksums:
+    name: Publish SHA256SUMS
+    if: env.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Download checksum artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: checksum-beta-*
+          path: checksums
+          merge-multiple: true
+
+      - name: Assemble SHA256SUMS
+        run: |
+          # Sorted so the file is byte-stable regardless of leg completion
+          # order, which keeps a re-run from producing a different asset.
+          cat checksums/*.sha256 | sort -k2 > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+          test -s SHA256SUMS
+
+      - name: Upload SHA256SUMS to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" SHA256SUMS --clobber
+
+  update-homebrew:
+    name: Update Homebrew tap (beta)
+    # See the stable workflow: a build leg that dies before packaging its
+    # bottle leaves that sha unset and publishes a formula with an empty hash,
+    # which Homebrew then fails to verify.
+    if: >-
+      env.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease
+      && !cancelled() && needs.build.result == 'success'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
 
       - name: Get version
         id: version
@@ -112,7 +185,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Download bottle artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: bottles
           merge-multiple: true
@@ -191,7 +264,7 @@ jobs:
 
   update-scoop:
     name: Update Scoop bucket (beta)
-    if: github.event.release.prerelease && !cancelled()
+    if: env.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease && !cancelled()
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -207,9 +280,20 @@ jobs:
           gh release download "${GITHUB_REF_NAME}" \
             --repo "${{ github.repository }}" \
             --pattern "tokensave-beta-${GITHUB_REF_NAME}-x86_64-windows.zip" \
+            --pattern "tokensave-beta-${GITHUB_REF_NAME}-aarch64-windows.zip" \
             --dir .
+          # Fail loudly on a missing asset rather than masking it inside a
+          # `VAR=$(sha256sum missing)` assignment and publishing an empty hash.
+          for arch in x86_64-windows aarch64-windows; do
+            if [ ! -f "tokensave-beta-${GITHUB_REF_NAME}-${arch}.zip" ]; then
+              echo "::error::required release asset tokensave-beta-${GITHUB_REF_NAME}-${arch}.zip is missing — aborting Scoop update"
+              exit 1
+            fi
+          done
           SHA256=$(sha256sum "tokensave-beta-${GITHUB_REF_NAME}-x86_64-windows.zip" | cut -d' ' -f1)
           echo "sha256_win64=${SHA256}" >> "$GITHUB_OUTPUT"
+          SHA256_ARM=$(sha256sum "tokensave-beta-${GITHUB_REF_NAME}-aarch64-windows.zip" | cut -d' ' -f1)
+          echo "sha256_winarm64=${SHA256_ARM}" >> "$GITHUB_OUTPUT"
 
       - name: Update Scoop manifest
         env:
@@ -218,6 +302,7 @@ jobs:
           VERSION="${{ steps.release.outputs.version }}"
           TAG="${{ steps.release.outputs.tag }}"
           SHA256="${{ steps.release.outputs.sha256_win64 }}"
+          SHA256_ARM="${{ steps.release.outputs.sha256_winarm64 }}"
 
           cat > tokensave-beta.json << EOF
           {
@@ -229,6 +314,10 @@ jobs:
               "64bit": {
                 "url": "https://github.com/aovestdipaperino/tokensave/releases/download/${TAG}/tokensave-beta-${TAG}-x86_64-windows.zip",
                 "hash": "${SHA256}"
+              },
+              "arm64": {
+                "url": "https://github.com/aovestdipaperino/tokensave/releases/download/${TAG}/tokensave-beta-${TAG}-aarch64-windows.zip",
+                "hash": "${SHA256_ARM}"
               }
             },
             "bin": "tokensave.exe",
@@ -240,13 +329,16 @@ jobs:
               "architecture": {
                 "64bit": {
                   "url": "https://github.com/aovestdipaperino/tokensave/releases/download/v\$version/tokensave-beta-v\$version-x86_64-windows.zip"
+                },
+                "arm64": {
+                  "url": "https://github.com/aovestdipaperino/tokensave/releases/download/v\$version/tokensave-beta-v\$version-aarch64-windows.zip"
                 }
               }
             }
           }
           EOF
 
-          git clone "https://x-access-token:${SCOOP_GITHUB_TOKEN}@github.com/aovestdipaperino/scoop-tokensave.git" scoop-repo
+          git clone "https://x-access-token:${SCOOP_GITHUB_TOKEN}@github.com/aovestdipaperino/scoop-bucket.git" scoop-repo
           cd scoop-repo
           mkdir -p bucket
           cp ../tokensave-beta.json bucket/tokensave-beta.json

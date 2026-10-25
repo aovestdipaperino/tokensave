@@ -1,17 +1,90 @@
 // Rust guideline compliant 2025-10-17
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::RwLock;
 
 use libsql::{Builder, Connection, Database as LibsqlDatabase};
 
-use crate::errors::{TokenSaveError, Result};
+use crate::errors::{Result, TokenSaveError};
+use crate::types::{Edge, Node};
 
 use super::migrations;
 
-/// SQLite database backing the code graph, powered by libsql.
+pub(super) type CachedTraitDispatchCaller = (Node, Edge, String, bool);
+
+/// Computes adaptive `(cache_size_kb, mmap_size)` based on the DB file size.
+///
+/// - **`cache_size`**: 25% of DB size, clamped to \[2 MB, 64 MB\] (in KiB).
+/// - **`mmap_size`**: 2× DB size, clamped to \[0, 256 MB\].
+///
+/// This avoids the fixed 320 MB memory baseline for small/medium projects.
+pub(crate) fn adaptive_cache_sizes(db_file_size: u64) -> (u64, u64) {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * 1024;
+
+    // cache_size: 25% of DB, clamped [2 MB .. 64 MB], expressed in KiB
+    let cache_bytes = (db_file_size / 4).clamp(2 * MB, 64 * MB);
+    let cache_kb = cache_bytes / KB;
+
+    // mmap_size: 2× DB, clamped [0 .. 256 MB]
+    let mmap = db_file_size.saturating_mul(2).min(256 * MB);
+
+    (cache_kb, mmap)
+}
+
+/// Max attempts to establish a fresh libsql connection before giving up.
+///
+/// libsql's local driver intermittently fails while opening a connection under
+/// heavy concurrency (observed as `SQLITE_MISUSE` / "bad parameter or other API
+/// misuse" on the macOS CI runner, which opens a separate temp database per test
+/// in parallel; Linux does not reproduce it). The setup steps are idempotent (a
+/// fresh build/connect, `PRAGMA`s, and `CREATE ... IF NOT EXISTS`), so retrying
+/// the whole sequence on a transient error is safe.
+const DB_CONNECT_MAX_ATTEMPTS: u32 = 5;
+
+/// True when a database error looks like a transient connection-setup failure
+/// worth retrying, as opposed to a genuine schema or corruption error (which
+/// would recur on every attempt and must surface to the caller).
+fn is_transient_connect_error(err: &TokenSaveError) -> bool {
+    match err {
+        TokenSaveError::Database { message, .. } => {
+            let m = message.to_ascii_lowercase();
+            m.contains("misuse")
+                || m.contains("database is locked")
+                || m.contains("database is busy")
+        }
+        _ => false,
+    }
+}
+
+/// How long a writable connection waits on another connection's lock, in
+/// milliseconds: two minutes, or `TOKENSAVE_BUSY_TIMEOUT_MS` when set.
+///
+/// The override exists so a test can hold a lock and see an open give up in
+/// about a second, rather than after five attempts of two minutes each.
+fn busy_timeout_ms() -> u64 {
+    std::env::var("TOKENSAVE_BUSY_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(120_000)
+}
+
+/// Short exponential backoff (20, 40, 80, 160 ms) between connect attempts,
+/// small enough to stay invisible on a normal run that never retries.
+fn connect_retry_backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(20u64.saturating_mul(1u64 << (attempt - 1)))
+}
+
+/// `SQLite` database backing the code graph, powered by libsql.
 pub struct Database {
     conn: Connection,
     /// Kept alive so the underlying database is not dropped.
     _db: LibsqlDatabase,
+    read_only: bool,
+    pub(super) trait_dispatch_callers: RwLock<HashMap<String, Vec<CachedTraitDispatchCaller>>>,
+    /// Serializes write transactions so concurrent edit reindex and background
+    /// sync cannot open overlapping transactions on the shared connection (#563).
+    pub(super) write_lock: tokio::sync::Mutex<()>,
 }
 
 impl Database {
@@ -29,23 +102,46 @@ impl Database {
             })?;
         }
 
-        let db = Builder::new_local(db_path)
-            .build()
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to open database: {e}"),
-                operation: "initialize".to_string(),
-            })?;
+        let mut attempt = 1;
+        loop {
+            match Self::try_initialize(db_path).await {
+                Ok(result) => return Ok(result),
+                Err(e) if attempt < DB_CONNECT_MAX_ATTEMPTS && is_transient_connect_error(&e) => {
+                    tokio::time::sleep(connect_retry_backoff(attempt)).await;
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    async fn try_initialize(db_path: &Path) -> Result<(Self, bool)> {
+        let db =
+            Builder::new_local(db_path)
+                .build()
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to open database: {e}"),
+                    operation: "initialize".to_string(),
+                })?;
 
         let conn = db.connect().map_err(|e| TokenSaveError::Database {
             message: format!("failed to connect to database: {e}"),
             operation: "initialize".to_string(),
         })?;
 
-        Self::apply_pragmas(&conn).await?;
+        Self::apply_pragmas(&conn, 0).await?;
         migrations::create_schema(&conn).await?;
 
-        Ok((Self { conn, _db: db }, false))
+        let database = Self {
+            conn,
+            _db: db,
+            read_only: false,
+            trait_dispatch_callers: RwLock::new(HashMap::new()),
+            write_lock: tokio::sync::Mutex::new(()),
+        };
+        database.refresh_trait_dispatch_callers().await?;
+        Ok((database, false))
     }
 
     /// Opens an existing database at `db_path`, applies performance pragmas,
@@ -53,28 +149,142 @@ impl Database {
     /// Returns `(Self, migrated)` where `migrated` is `true` if schema
     /// migrations were applied during open.
     pub async fn open(db_path: &Path) -> Result<(Self, bool)> {
-        let db = Builder::new_local(db_path)
-            .build()
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to open database: {e}"),
-                operation: "open".to_string(),
-            })?;
+        let mut attempt = 1;
+        loop {
+            match Self::try_open(db_path).await {
+                Ok(result) => return Ok(result),
+                Err(e) if attempt < DB_CONNECT_MAX_ATTEMPTS && is_transient_connect_error(&e) => {
+                    tokio::time::sleep(connect_retry_backoff(attempt)).await;
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    async fn try_open(db_path: &Path) -> Result<(Self, bool)> {
+        let db =
+            Builder::new_local(db_path)
+                .build()
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to open database: {e}"),
+                    operation: "open".to_string(),
+                })?;
 
         let conn = db.connect().map_err(|e| TokenSaveError::Database {
             message: format!("failed to connect to database: {e}"),
             operation: "open".to_string(),
         })?;
 
-        Self::apply_pragmas(&conn).await?;
+        let file_size = std::fs::metadata(db_path).map_or(0, |m| m.len());
+        Self::apply_pragmas(&conn, file_size).await?;
         let migrated = migrations::migrate(&conn).await?;
 
-        Ok((Self { conn, _db: db }, migrated))
+        let database = Self {
+            conn,
+            _db: db,
+            read_only: false,
+            trait_dispatch_callers: RwLock::new(HashMap::new()),
+            write_lock: tokio::sync::Mutex::new(()),
+        };
+        database.refresh_trait_dispatch_callers().await?;
+        Ok((database, migrated))
+    }
+
+    /// Opens a current, checkpointed database without changing it.
+    pub async fn open_read_only(db_path: &Path) -> Result<Self> {
+        let mut attempt = 1;
+        loop {
+            match Self::try_open_read_only(db_path).await {
+                Ok(database) => return Ok(database),
+                Err(error)
+                    if attempt < DB_CONNECT_MAX_ATTEMPTS && is_transient_connect_error(&error) =>
+                {
+                    tokio::time::sleep(connect_retry_backoff(attempt)).await;
+                    attempt += 1;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    async fn try_open_read_only(db_path: &Path) -> Result<Self> {
+        let db = libsql::Builder::new_local(db_path)
+            .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .build()
+            .await
+            .map_err(|error| TokenSaveError::Database {
+                message: format!("failed to open database read-only: {error}"),
+                operation: "open_read_only".to_string(),
+            })?;
+        let conn = db.connect().map_err(|error| TokenSaveError::Database {
+            message: format!("failed to connect to database read-only: {error}"),
+            operation: "open_read_only".to_string(),
+        })?;
+
+        conn.execute_batch("PRAGMA query_only = 1; PRAGMA busy_timeout = 120000;")
+            .await
+            .map_err(|error| TokenSaveError::Database {
+                message: format!("failed to apply read-only pragmas: {error}"),
+                operation: "open_read_only".to_string(),
+            })?;
+
+        let mut rows = conn
+            .query("PRAGMA user_version", ())
+            .await
+            .map_err(|error| TokenSaveError::Database {
+                message: format!("failed to read database schema version: {error}"),
+                operation: "open_read_only".to_string(),
+            })?;
+        let row = rows
+            .next()
+            .await
+            .map_err(|error| TokenSaveError::Database {
+                message: format!("failed to read database schema version: {error}"),
+                operation: "open_read_only".to_string(),
+            })?
+            .ok_or_else(|| TokenSaveError::Database {
+                message: "database did not report a schema version".to_string(),
+                operation: "open_read_only".to_string(),
+            })?;
+        let version: i64 = row.get(0).map_err(|error| TokenSaveError::Database {
+            message: format!("failed to decode database schema version: {error}"),
+            operation: "open_read_only".to_string(),
+        })?;
+        let latest = migrations::latest_version();
+        if version != i64::from(latest) {
+            let remedy = if version < i64::from(latest) {
+                "run `tokensave sync` in the selected project to migrate it"
+            } else {
+                "upgrade Tokensave to a version compatible with the selected project"
+            };
+            return Err(TokenSaveError::Config {
+                message: format!(
+                    "database schema version {version} does not match required version {latest}; {remedy}"
+                ),
+            });
+        }
+
+        let database = Self {
+            conn,
+            _db: db,
+            read_only: true,
+            trait_dispatch_callers: RwLock::new(HashMap::new()),
+            write_lock: tokio::sync::Mutex::new(()),
+        };
+        database.refresh_trait_dispatch_callers().await?;
+        Ok(database)
     }
 
     /// Returns a reference to the underlying libsql connection.
     pub fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Returns whether this handle was explicitly opened in read-only mode.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     /// Consumes the `Database`, closing the underlying connection.
@@ -168,6 +378,42 @@ impl Database {
         }
     }
 
+    /// Returns `true` when a bulk load dropped its indexes but never finalized.
+    ///
+    /// The signature is an `edges` table that exists yet has no
+    /// `idx_edges_unique` index: `begin_bulk_load` drops that index up front,
+    /// and only `end_bulk_load` recreates it, so its absence means the load
+    /// was interrupted in between. `PRAGMA quick_check` cannot see this — the
+    /// rows are structurally valid, just un-indexed and possibly duplicated —
+    /// so recovery-on-open relies on this check instead (#318). Returns
+    /// `false` when the `edges` table is absent (nothing to finalize).
+    pub async fn needs_bulk_load_finalization(&self) -> Result<bool> {
+        let mut names = self
+            .conn
+            .query(
+                "SELECT name FROM sqlite_master WHERE type IN ('table', 'index')",
+                (),
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to inspect schema for bulk-load state: {e}"),
+                operation: "needs_bulk_load_finalization".to_string(),
+            })?;
+        let mut has_edges = false;
+        let mut has_unique_index = false;
+        while let Some(row) = names.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read schema row: {e}"),
+            operation: "needs_bulk_load_finalization".to_string(),
+        })? {
+            match row.get::<String>(0).unwrap_or_default().as_str() {
+                "edges" => has_edges = true,
+                "idx_edges_unique" => has_unique_index = true,
+                _ => {}
+            }
+        }
+        Ok(has_edges && !has_unique_index)
+    }
+
     /// Rebuilds the FTS5 index from the content table.
     ///
     /// This fixes FTS-only corruption (e.g. from an interrupted bulk load)
@@ -183,18 +429,23 @@ impl Database {
         Ok(())
     }
 
-    /// Applies performance-oriented SQLite pragmas.
-    async fn apply_pragmas(conn: &Connection) -> Result<()> {
-        conn.execute_batch(
+    /// Applies performance-oriented `SQLite` pragmas.
+    ///
+    /// `cache_size` and `mmap_size` are scaled to the on-disk DB size so
+    /// small projects don't pay the 320 MB baseline of a large project.
+    async fn apply_pragmas(conn: &Connection, db_file_size: u64) -> Result<()> {
+        let (cache_kb, mmap) = adaptive_cache_sizes(db_file_size);
+        let busy_ms = busy_timeout_ms();
+        conn.execute_batch(&format!(
             "PRAGMA page_size = 8192;
              PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
-             PRAGMA busy_timeout = 120000;
+             PRAGMA busy_timeout = {busy_ms};
              PRAGMA synchronous = NORMAL;
-             PRAGMA cache_size = -65536;
+             PRAGMA cache_size = -{cache_kb};
              PRAGMA temp_store = MEMORY;
-             PRAGMA mmap_size = 268435456;",
-        )
+             PRAGMA mmap_size = {mmap};",
+        ))
         .await
         .map_err(|e| TokenSaveError::Database {
             message: format!("failed to apply pragmas: {e}"),
@@ -208,8 +459,9 @@ impl Database {
     /// B-tree gets sequential appends. Call `end_bulk_load` afterwards to
     /// rebuild indexes in one optimized pass.
     pub async fn begin_bulk_load(&self) -> Result<()> {
-        self.conn.execute_batch(
-            "PRAGMA foreign_keys = OFF;
+        self.conn
+            .execute_batch(
+                "PRAGMA foreign_keys = OFF;
              DROP INDEX IF EXISTS idx_nodes_kind;
              DROP INDEX IF EXISTS idx_nodes_name;
              DROP INDEX IF EXISTS idx_nodes_qualified_name;
@@ -227,19 +479,37 @@ impl Database {
              DROP TRIGGER IF EXISTS nodes_fts_insert;
              DROP TRIGGER IF EXISTS nodes_fts_delete;
              DROP TRIGGER IF EXISTS nodes_fts_update;
+             DROP TRIGGER IF EXISTS trait_dispatch_call_insert;
+             DROP TRIGGER IF EXISTS trait_dispatch_implements_insert;
+             DROP TRIGGER IF EXISTS trait_dispatch_call_delete;
+             DROP TRIGGER IF EXISTS trait_dispatch_implements_delete;
              DELETE FROM nodes_fts;",
-        ).await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to begin bulk load: {e}"),
-            operation: "begin_bulk_load".to_string(),
-        })?;
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to begin bulk load: {e}"),
+                operation: "begin_bulk_load".to_string(),
+            })?;
         Ok(())
     }
 
     /// Recreates secondary indexes (benefiting from sorted row order),
     /// restores FTS triggers and content, and re-enables normal durability.
+    ///
+    /// `begin_bulk_load` drops `idx_edges_unique`, so the `INSERT OR IGNORE`
+    /// edge writers cannot dedupe while a load is in flight. This method first
+    /// collapses any duplicate edge tuples — keeping the lowest `rowid` per
+    /// `(source, target, kind, COALESCE(line, -1))` — so the subsequent
+    /// `CREATE UNIQUE INDEX idx_edges_unique` cannot fail on residual
+    /// duplicates and leave the graph permanently un-indexed (#318).
     pub async fn end_bulk_load(&self) -> Result<()> {
         self.conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
+            "DELETE FROM edges
+             WHERE rowid NOT IN (
+                 SELECT MIN(rowid) FROM edges
+                 GROUP BY source, target, kind, COALESCE(line, -1)
+             );
+             CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
              CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
              CREATE INDEX IF NOT EXISTS idx_nodes_qualified_name ON nodes(qualified_name);
              CREATE INDEX IF NOT EXISTS idx_nodes_file_path ON nodes(file_path);
@@ -252,26 +522,120 @@ impl Database {
              CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_name ON unresolved_refs(reference_name);
              CREATE INDEX IF NOT EXISTS idx_unresolved_refs_file_path ON unresolved_refs(file_path);
              CREATE TRIGGER IF NOT EXISTS nodes_fts_insert AFTER INSERT ON nodes BEGIN
-                 INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
-                 VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
+                 INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature, search_terms)
+                 VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.search_terms);
              END;
              CREATE TRIGGER IF NOT EXISTS nodes_fts_delete AFTER DELETE ON nodes BEGIN
-                 INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature)
-                 VALUES ('delete', OLD.rowid, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature);
+                 INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature, search_terms)
+                 VALUES ('delete', OLD.rowid, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.search_terms);
              END;
              CREATE TRIGGER IF NOT EXISTS nodes_fts_update AFTER UPDATE ON nodes BEGIN
-                 INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature)
-                 VALUES ('delete', OLD.rowid, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature);
-                 INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
-                 VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature);
+                 INSERT INTO nodes_fts(nodes_fts, rowid, name, qualified_name, docstring, signature, search_terms)
+                 VALUES ('delete', OLD.rowid, OLD.name, OLD.qualified_name, OLD.docstring, OLD.signature, OLD.search_terms);
+                 INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature, search_terms)
+                 VALUES (NEW.rowid, NEW.name, NEW.qualified_name, NEW.docstring, NEW.signature, NEW.search_terms);
              END;
-             INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature)
-                 SELECT rowid, name, qualified_name, docstring, signature FROM nodes;
+             INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature, search_terms)
+                 SELECT rowid, name, qualified_name, docstring, signature, search_terms FROM nodes;
              PRAGMA foreign_keys = ON;",
         ).await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to end bulk load: {e}"),
             operation: "end_bulk_load".to_string(),
         })?;
+        self.conn
+            .execute_batch(crate::db::migrations::TRAIT_DISPATCH_TRIGGERS_SQL)
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to restore trait dispatch triggers: {e}"),
+                operation: "end_bulk_load".to_string(),
+            })?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * 1024;
+
+    #[test]
+    fn adaptive_new_db_gets_minimum() {
+        let (cache_kb, mmap) = adaptive_cache_sizes(0);
+        assert_eq!(cache_kb, 2 * MB / KB); // 2 MB in KiB = 2048
+        assert_eq!(mmap, 0);
+    }
+
+    #[test]
+    fn adaptive_small_db() {
+        // 5 MB DB → cache = 2 MB (floor), mmap = 10 MB
+        let (cache_kb, mmap) = adaptive_cache_sizes(5 * MB);
+        assert_eq!(cache_kb, 2 * MB / KB);
+        assert_eq!(mmap, 10 * MB);
+    }
+
+    #[test]
+    fn adaptive_medium_db() {
+        // 100 MB DB → cache = 25 MB, mmap = 200 MB
+        let (cache_kb, mmap) = adaptive_cache_sizes(100 * MB);
+        assert_eq!(cache_kb, 25 * MB / KB);
+        assert_eq!(mmap, 200 * MB);
+    }
+
+    #[test]
+    fn adaptive_large_db() {
+        // 500 MB DB → cache = 64 MB (cap), mmap = 256 MB (cap)
+        let (cache_kb, mmap) = adaptive_cache_sizes(500 * MB);
+        assert_eq!(cache_kb, 64 * MB / KB);
+        assert_eq!(mmap, 256 * MB);
+    }
+
+    #[test]
+    fn adaptive_very_large_db() {
+        // 2 GB DB → both capped at max
+        let (cache_kb, mmap) = adaptive_cache_sizes(2 * 1024 * MB);
+        assert_eq!(cache_kb, 64 * MB / KB);
+        assert_eq!(mmap, 256 * MB);
+    }
+
+    #[test]
+    fn transient_connect_error_matches_misuse_and_locks() {
+        let misuse = TokenSaveError::Database {
+            message: "failed to create schema: SQLite failure: `bad parameter or other API misuse`"
+                .to_string(),
+            operation: "create_schema".to_string(),
+        };
+        assert!(is_transient_connect_error(&misuse));
+
+        let locked = TokenSaveError::Database {
+            message: "failed to open database: database is locked".to_string(),
+            operation: "initialize".to_string(),
+        };
+        assert!(is_transient_connect_error(&locked));
+    }
+
+    #[test]
+    fn transient_connect_error_ignores_real_and_non_db_errors() {
+        let corrupt = TokenSaveError::Database {
+            message: "failed to open database: file is not a database".to_string(),
+            operation: "open".to_string(),
+        };
+        assert!(!is_transient_connect_error(&corrupt));
+
+        let config = TokenSaveError::Config {
+            message: "bad config".to_string(),
+        };
+        assert!(!is_transient_connect_error(&config));
+    }
+
+    #[test]
+    fn backoff_grows_exponentially_and_stays_small() {
+        use std::time::Duration;
+        assert_eq!(connect_retry_backoff(1), Duration::from_millis(20));
+        assert_eq!(connect_retry_backoff(2), Duration::from_millis(40));
+        assert_eq!(connect_retry_backoff(3), Duration::from_millis(80));
+        assert_eq!(connect_retry_backoff(4), Duration::from_millis(160));
     }
 }

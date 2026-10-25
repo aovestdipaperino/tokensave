@@ -15,28 +15,52 @@
 #![allow(clippy::similar_names)]
 #![allow(clippy::wildcard_imports)]
 
+pub mod accounting;
 pub mod agents;
+pub mod bench;
+pub mod blame_engine;
 pub mod branch;
 pub mod branch_meta;
+pub mod cancel;
 pub mod cloud;
-pub mod daemon;
 pub mod config;
 pub mod context;
+pub mod cpu;
 pub mod db;
+pub mod derive_table;
+pub mod diagnose;
+pub mod diagnostics;
 pub mod display;
+pub mod docs;
 pub mod doctor;
+pub mod edge_audit;
 pub mod errors;
 pub mod extraction;
+pub mod extraction_worker;
+pub mod global_benchmark;
 pub mod global_db;
+pub mod go_import;
 pub mod graph;
+pub mod hardware;
 pub mod hooks;
+pub mod index_scope;
+pub mod language_detection;
 pub mod mcp;
+pub mod memory;
+pub mod memstats;
 pub mod monitor;
-pub mod project_watcher;
+pub mod project_manifest;
+pub mod quality_diff;
+pub mod redundancy;
 pub mod resolution;
+pub mod runtime_telemetry;
+pub mod servers;
 pub mod sync;
+pub mod text;
 pub mod tokensave;
 pub mod types;
 pub mod upgrade;
 pub mod user_config;
-pub mod visualizer;
+pub mod worktree;
+
+pub mod verify;

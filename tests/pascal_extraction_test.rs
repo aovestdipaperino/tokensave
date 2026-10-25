@@ -1,3 +1,5 @@
+#![cfg(feature = "lang-pascal")]
+
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::PascalExtractor;
 use tokensave::types::*;
@@ -14,7 +16,11 @@ fn extract(source: &str) -> ExtractionResult {
 #[test]
 fn test_pascal_file_node_is_root() {
     let result = extract("program Hello;\nbegin\nend.");
-    let file_nodes: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::File).collect();
+    let file_nodes: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::File)
+        .collect();
     assert_eq!(file_nodes.len(), 1);
     assert_eq!(file_nodes[0].name, "test.pas");
 }
@@ -34,7 +40,11 @@ fn test_pascal_program_declaration() {
         .collect();
     assert_eq!(progs.len(), 1);
     assert_eq!(progs[0].name, "HelloWorld");
-    assert!(progs[0].signature.as_ref().unwrap().contains("program HelloWorld"));
+    assert!(progs[0]
+        .signature
+        .as_ref()
+        .unwrap()
+        .contains("program HelloWorld"));
 }
 
 #[test]
@@ -86,15 +96,26 @@ fn test_pascal_unit_declaration() {
 
 #[test]
 fn test_pascal_uses_clause() {
-    let result = extract(
-        "unit Test;\n\ninterface\n\nuses SysUtils, Classes;\n\nimplementation\n\nend.",
-    );
+    let result =
+        extract("unit Test;\n\ninterface\n\nuses SysUtils, Classes;\n\nimplementation\n\nend.");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let uses: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    let uses: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Use)
+        .collect();
     assert_eq!(uses.len(), 2);
     let names: Vec<_> = uses.iter().map(|n| n.name.as_str()).collect();
-    assert!(names.contains(&"SysUtils"), "Should have SysUtils, got {:?}", names);
-    assert!(names.contains(&"Classes"), "Should have Classes, got {:?}", names);
+    assert!(
+        names.contains(&"SysUtils"),
+        "Should have SysUtils, got {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"Classes"),
+        "Should have Classes, got {:?}",
+        names
+    );
 }
 
 #[test]
@@ -103,7 +124,11 @@ fn test_pascal_uses_in_implementation() {
         "unit Test;\n\ninterface\n\nuses SysUtils;\n\nimplementation\n\nuses Math;\n\nend.",
     );
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let uses: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
+    let uses: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Use)
+        .collect();
     assert_eq!(uses.len(), 2);
     let names: Vec<_> = uses.iter().map(|n| n.name.as_str()).collect();
     assert!(names.contains(&"SysUtils"));
@@ -112,9 +137,7 @@ fn test_pascal_uses_in_implementation() {
 
 #[test]
 fn test_pascal_uses_unresolved_refs() {
-    let result = extract(
-        "unit Test;\n\ninterface\n\nuses SysUtils;\n\nimplementation\n\nend.",
-    );
+    let result = extract("unit Test;\n\ninterface\n\nuses SysUtils;\n\nimplementation\n\nend.");
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     let uses_refs: Vec<_> = result
         .unresolved_refs
@@ -202,7 +225,11 @@ implementation
 end."#,
     );
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let classes: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Class).collect();
+    let classes: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Class)
+        .collect();
     assert_eq!(classes.len(), 1);
     assert_eq!(classes[0].name, "TMyClass");
     assert!(
@@ -287,7 +314,11 @@ implementation
 end."#,
     );
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let fields: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Field).collect();
+    let fields: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Field)
+        .collect();
     assert_eq!(fields.len(), 2);
     let names: Vec<_> = fields.iter().map(|n| n.name.as_str()).collect();
     assert!(names.contains(&"X"));
@@ -433,7 +464,7 @@ end."#,
         .filter(|n| n.kind == NodeKind::Constructor)
         .collect();
     assert!(
-        ctors.len() >= 1,
+        !ctors.is_empty(),
         "Should have at least one constructor, got {}",
         ctors.len()
     );
@@ -469,7 +500,7 @@ end."#,
         .filter(|n| n.kind == NodeKind::Method && n.name == "Destroy")
         .collect();
     assert!(
-        methods.len() >= 1,
+        !methods.is_empty(),
         "Should have at least one destructor-as-method, got {}",
         methods.len()
     );
@@ -523,7 +554,11 @@ implementation
 end."#,
     );
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let consts: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Const).collect();
+    let consts: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Const)
+        .collect();
     assert_eq!(consts.len(), 2);
     let names: Vec<_> = consts.iter().map(|n| n.name.as_str()).collect();
     assert!(names.contains(&"MAX_VALUE"));
@@ -549,7 +584,11 @@ implementation
 end."#,
     );
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
-    let vars: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Static).collect();
+    let vars: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Static)
+        .collect();
     assert_eq!(vars.len(), 1);
     assert_eq!(vars[0].name, "GlobalVar");
 }
@@ -725,7 +764,11 @@ end."#,
         func.docstring.is_some(),
         "Add should have a docstring from old-style comment"
     );
-    assert!(func.docstring.as_ref().unwrap().contains("old-style comment"));
+    assert!(func
+        .docstring
+        .as_ref()
+        .unwrap()
+        .contains("old-style comment"));
 }
 
 #[test]
@@ -779,7 +822,10 @@ end."#,
         .iter()
         .filter(|r| r.reference_kind == EdgeKind::Calls)
         .collect();
-    let call_names: Vec<_> = call_refs.iter().map(|r| r.reference_name.as_str()).collect();
+    let call_names: Vec<_> = call_refs
+        .iter()
+        .map(|r| r.reference_name.as_str())
+        .collect();
     assert!(
         call_names.contains(&"WriteLn"),
         "Should track WriteLn call, got {:?}",
@@ -826,9 +872,10 @@ end."#,
         .iter()
         .find(|n| n.name == "DoSomething")
         .expect("Should find DoSomething");
-    let contains = result.edges.iter().any(|e| {
-        e.source == class_id && e.target == method.id && e.kind == EdgeKind::Contains
-    });
+    let contains = result
+        .edges
+        .iter()
+        .any(|e| e.source == class_id && e.target == method.id && e.kind == EdgeKind::Contains);
     assert!(
         contains,
         "Class should contain DoSomething via Contains edge"
@@ -906,7 +953,7 @@ end."#,
         .filter(|n| n.kind == NodeKind::Method && n.name == "DoSomething")
         .collect();
     assert!(
-        methods.len() >= 1,
+        !methods.is_empty(),
         "Should have at least one Method node for DoSomething"
     );
 }
@@ -1015,14 +1062,27 @@ end."#;
     assert!(result.nodes.iter().any(|n| n.kind == NodeKind::File));
 
     // Should have a unit node.
-    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::PascalUnit && n.name == "MyUnit"));
+    assert!(result
+        .nodes
+        .iter()
+        .any(|n| n.kind == NodeKind::PascalUnit && n.name == "MyUnit"));
 
     // Should have uses.
-    let uses: Vec<_> = result.nodes.iter().filter(|n| n.kind == NodeKind::Use).collect();
-    assert!(uses.len() >= 3, "Should have at least 3 uses (SysUtils, Classes, Math)");
+    let uses: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Use)
+        .collect();
+    assert!(
+        uses.len() >= 3,
+        "Should have at least 3 uses (SysUtils, Classes, Math)"
+    );
 
     // Should have the class.
-    assert!(result.nodes.iter().any(|n| n.kind == NodeKind::Class && n.name == "TMyClass"));
+    assert!(result
+        .nodes
+        .iter()
+        .any(|n| n.kind == NodeKind::Class && n.name == "TMyClass"));
 
     // Should have the record.
     assert!(result
@@ -1061,10 +1121,7 @@ end."#;
         .any(|n| n.kind == NodeKind::Field && n.name == "FName"));
 
     // Should have Contains edges.
-    assert!(
-        !result.edges.is_empty(),
-        "Should have Contains edges"
-    );
+    assert!(!result.edges.is_empty(), "Should have Contains edges");
     assert!(
         result.edges.iter().any(|e| e.kind == EdgeKind::Contains),
         "Should have at least one Contains edge"
@@ -1083,6 +1140,8 @@ fn test_pascal_extractor_extensions() {
     assert!(exts.contains(&"pp"));
     assert!(exts.contains(&"dpr"));
     assert!(exts.contains(&"lpr"));
+    assert!(exts.contains(&"dpk"));
+    assert!(exts.contains(&"inc"));
 }
 
 #[test]

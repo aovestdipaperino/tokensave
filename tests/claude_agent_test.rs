@@ -1,46 +1,9 @@
-use std::path::Path;
-
 use tempfile::TempDir;
 use tokensave::agents::{
-    AgentIntegration, ClaudeIntegration, DoctorCounters, HealthcheckContext, InstallContext,
-    EXPECTED_TOOL_PERMS,
+    expected_tool_perms, AgentIntegration, ClaudeIntegration, DoctorCounters, HealthcheckContext,
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn make_install_ctx(home: &Path) -> InstallContext {
-    InstallContext {
-        home: home.to_path_buf(),
-        tokensave_bin: "/usr/local/bin/tokensave".to_string(),
-        tool_permissions: EXPECTED_TOOL_PERMS,
-    }
-}
-
-/// Creates a fake tokensave binary in a temp dir so healthcheck binary-exists
-/// checks pass.
-fn make_install_ctx_with_real_bin(home: &Path) -> InstallContext {
-    let bin_dir = home.join("bin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let bin_path = bin_dir.join("tokensave");
-    std::fs::write(&bin_path, "#!/bin/sh\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    InstallContext {
-        home: home.to_path_buf(),
-        tokensave_bin: bin_path.to_string_lossy().to_string(),
-        tool_permissions: EXPECTED_TOOL_PERMS,
-    }
-}
-
-fn read_json(path: &Path) -> serde_json::Value {
-    let contents = std::fs::read_to_string(path).unwrap();
-    serde_json::from_str(&contents).unwrap()
-}
+use crate::common::{make_install_ctx, make_install_ctx_with_real_bin, read_json};
 
 // ===========================================================================
 // Install content verification
@@ -71,19 +34,77 @@ fn test_install_creates_claude_json_with_mcp_server() {
 }
 
 #[test]
+fn test_reinstall_preserves_existing_resolvable_command() {
+    // Issue #161: a user-chosen MCP command that still resolves to a
+    // tokensave binary must survive reinstall instead of being overwritten
+    // with this install's absolute path.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    // A fake tokensave binary at a user-chosen location.
+    let user_bin = home.join("mybin").join("tokensave");
+    std::fs::create_dir_all(user_bin.parent().unwrap()).unwrap();
+    std::fs::write(&user_bin, "").unwrap();
+    let user_bin = user_bin.to_string_lossy().to_string();
+
+    // Pre-seed .claude.json with the user's command. Built with serde so
+    // Windows backslash paths are escaped correctly.
+    let seeded = serde_json::json!({
+        "mcpServers": {"tokensave": {"command": user_bin, "args": ["serve"]}}
+    });
+    std::fs::write(home.join(".claude.json"), seeded.to_string()).unwrap();
+
+    let ctx = make_install_ctx(home); // installs with /usr/local/bin/tokensave
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let claude_json = read_json(&home.join(".claude.json"));
+    assert_eq!(
+        claude_json["mcpServers"]["tokensave"]["command"]
+            .as_str()
+            .unwrap(),
+        user_bin,
+        "existing resolvable command should be preserved on reinstall"
+    );
+}
+
+#[test]
+fn test_reinstall_replaces_stale_command() {
+    // A previous command that no longer exists must be replaced.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    std::fs::write(
+        home.join(".claude.json"),
+        r#"{"mcpServers": {"tokensave": {"command": "/gone/tokensave", "args": ["serve"]}}}"#,
+    )
+    .unwrap();
+
+    let ctx = make_install_ctx(home);
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let claude_json = read_json(&home.join(".claude.json"));
+    assert_eq!(
+        claude_json["mcpServers"]["tokensave"]["command"]
+            .as_str()
+            .unwrap(),
+        "/usr/local/bin/tokensave",
+        "stale command should be replaced with the new bin path"
+    );
+}
+
+#[test]
 fn test_install_creates_settings_with_hook() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let settings = read_json(&home.join(".claude/settings.json"));
+    let settings = read_json(&home.join(".claude").join("settings.json"));
     let hooks = settings["hooks"]["PreToolUse"]
         .as_array()
         .expect("PreToolUse should be an array");
 
     let tokensave_hook = hooks.iter().find(|h| {
-        h.get("matcher").and_then(|m| m.as_str()) == Some("Agent")
+        h.get("matcher").and_then(|m| m.as_str()) == Some("Agent|Grep|Bash|Glob")
             && h.get("hooks")
                 .and_then(|a| a.as_array())
                 .map(|arr| {
@@ -98,15 +119,27 @@ fn test_install_creates_settings_with_hook() {
     });
     assert!(
         tokensave_hook.is_some(),
-        "PreToolUse should contain a hook with matcher=Agent and command containing tokensave"
+        "PreToolUse should contain a hook with matcher=Agent|Grep|Bash|Glob and command containing tokensave"
     );
 
-    // Verify the hook command format
+    // Verify the hook command format (issue #81: modern args[] shape).
     let hook = tokensave_hook.unwrap();
-    let cmd = hook["hooks"][0]["command"].as_str().unwrap();
+    let inner = &hook["hooks"][0];
+    let cmd = inner["command"].as_str().unwrap();
     assert!(
-        cmd.contains("tokensave hook-pre-tool-use"),
-        "hook command should contain 'tokensave hook-pre-tool-use', got: {cmd}"
+        cmd.contains("tokensave"),
+        "hook command should be the tokensave exe path, got: {cmd}"
+    );
+    let args: Vec<&str> = inner["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        args,
+        vec!["hook-pre-tool-use"],
+        "subcommand must live in args[], not concatenated into command"
     );
 }
 
@@ -117,44 +150,234 @@ fn test_install_creates_settings_with_permissions() {
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let settings = read_json(&home.join(".claude/settings.json"));
+    let settings = read_json(&home.join(".claude").join("settings.json"));
     let allow = settings["permissions"]["allow"]
         .as_array()
         .expect("permissions.allow should be an array");
     let allow_strs: Vec<&str> = allow.iter().filter_map(|v| v.as_str()).collect();
 
-    for perm in EXPECTED_TOOL_PERMS {
+    for perm in expected_tool_perms() {
         assert!(
-            allow_strs.contains(perm),
+            allow_strs.contains(&perm.as_str()),
             "permissions.allow should contain {perm}"
         );
     }
 }
 
 #[test]
-fn test_install_creates_claude_md_with_rules() {
+fn test_install_writes_single_wildcard_entry_when_requested() {
+    // Opt-in compact install (`--wildcard-permissions` / the
+    // `wildcard_permissions` config field): a single "mcp__tokensave__*"
+    // entry should be written instead of every tool individually.
     let dir = TempDir::new().unwrap();
     let home = dir.path();
-    let ctx = make_install_ctx(home);
+    let mut ctx = make_install_ctx(home);
+    ctx.tool_permissions = tokensave::agents::install_tool_perms(true);
+    ctx.force_permission_style = true; // represents `--wildcard-permissions`
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let claude_md = std::fs::read_to_string(home.join(".claude/CLAUDE.md")).unwrap();
-    assert!(
-        claude_md.contains("## MANDATORY: No Explore Agents When Tokensave Is Available"),
-        "CLAUDE.md should contain the mandatory rules marker"
-    );
-    assert!(
-        claude_md.contains("tokensave_context"),
-        "CLAUDE.md should mention tokensave tools"
-    );
-    assert!(
-        claude_md.contains("NEVER use Agent(subagent_type=Explore)"),
-        "CLAUDE.md should contain the no-explore-agent rule"
+    let settings = read_json(&home.join(".claude").join("settings.json"));
+    let allow: Vec<&str> = settings["permissions"]["allow"]
+        .as_array()
+        .expect("permissions.allow should be an array")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        allow,
+        vec!["mcp__tokensave__*"],
+        "wildcard install should write exactly one compact entry"
     );
 }
 
 #[test]
-fn test_install_idempotent_claude_md() {
+fn test_reinstall_switching_from_explicit_to_wildcard_prunes_old_entries() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home); // explicit per-tool list
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let mut wildcard_ctx = make_install_ctx(home);
+    wildcard_ctx.tool_permissions = tokensave::agents::install_tool_perms(true);
+    wildcard_ctx.force_permission_style = true; // represents `--wildcard-permissions`
+    ClaudeIntegration.install(&wildcard_ctx).unwrap();
+
+    let settings = read_json(&home.join(".claude").join("settings.json"));
+    let allow: Vec<&str> = settings["permissions"]["allow"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        allow,
+        vec!["mcp__tokensave__*"],
+        "reinstalling with wildcard enabled should leave no explicit leftovers"
+    );
+}
+
+#[test]
+fn test_silent_reinstall_preserves_user_wildcard_grant() {
+    // Regression test: a silent reinstall on upgrade (or any flagless
+    // install/reinstall) must NOT clobber a user's hand-authored compact
+    // grant back into the 80+ explicit entries, even though
+    // `install_tool_perms`/`ctx.tool_permissions` carries the explicit list
+    // by default for configs written before the wildcard feature existed.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    // Seed settings.json as if the user hand-wrote a compact grant.
+    let claude_dir = home.join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        serde_json::json!({ "permissions": { "allow": ["mcp__tokensave__*"] } }).to_string(),
+    )
+    .unwrap();
+
+    // Shape of the silent-reinstall-on-upgrade context: the explicit list,
+    // force_permission_style = false (no flag was passed this run).
+    let mut ctx = make_install_ctx(home);
+    ctx.tool_permissions = expected_tool_perms();
+    assert!(!ctx.force_permission_style);
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let settings = read_json(&home.join(".claude").join("settings.json"));
+    let allow: Vec<&str> = settings["permissions"]["allow"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(
+        allow,
+        vec!["mcp__tokensave__*"],
+        "a flagless reinstall must preserve an existing covering grant, not inflate it \
+         back to the explicit per-tool list"
+    );
+}
+
+#[test]
+fn test_install_creates_managed_rules_file() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    // Issue #256: rules live in a tokensave-owned managed file, not appended
+    // to the user's CLAUDE.md.
+    assert!(
+        !home.join(".claude").join("CLAUDE.md").exists(),
+        "install should not create/touch CLAUDE.md"
+    );
+
+    let rules =
+        std::fs::read_to_string(home.join(".claude").join("rules").join("tokensave.md")).unwrap();
+    assert!(
+        rules.contains("## MANDATORY: No Explore Agents When Tokensave Is Available"),
+        "managed rules file should contain the mandatory rules marker"
+    );
+    assert!(
+        rules.contains("tokensave_context"),
+        "managed rules file should mention tokensave tools"
+    );
+    assert!(
+        rules.contains("do not spawn an Explore agent (or any agent) for code")
+            && rules.contains("unless the user asks for one"),
+        "managed rules file should contain the single no-explore-agent rule (#604)"
+    );
+    assert!(
+        rules.contains("### When the hook denies a search"),
+        "managed rules file should tell the agent what a hook denial means (#604)"
+    );
+    assert!(
+        !rules.contains("No exceptions"),
+        "the absolute wording contradicted the explore-agent paragraph (#604)"
+    );
+    assert!(
+        rules.contains("When you spawn an Explore agent"),
+        "managed rules file should contain the explore agent guidance paragraph"
+    );
+    assert!(
+        rules.contains("exclude_node_ids"),
+        "managed rules file should mention exclude_node_ids for dedup"
+    );
+}
+
+#[test]
+fn test_install_does_not_touch_existing_claude_md() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    // Pre-populate CLAUDE.md with existing content
+    let claude_dir = home.join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(claude_dir.join("CLAUDE.md"), "# Existing content\n").unwrap();
+
+    let ctx = make_install_ctx(home);
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let content = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
+    assert_eq!(
+        content, "# Existing content\n",
+        "CLAUDE.md should be left untouched by install"
+    );
+
+    let rules = std::fs::read_to_string(claude_dir.join("rules").join("tokensave.md")).unwrap();
+    assert!(
+        rules.contains("When you spawn an Explore agent"),
+        "managed rules file should contain explore agent paragraph"
+    );
+    assert!(
+        rules.contains("tokensave_context"),
+        "managed rules file should reference tokensave_context as the tool"
+    );
+    assert!(
+        rules.contains("exclude_node_ids"),
+        "managed rules file should mention exclude_node_ids for dedup"
+    );
+}
+
+#[test]
+fn test_install_migrates_legacy_claude_md_block() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+
+    // Pre-populate CLAUDE.md with the pre-#256 inline block.
+    let claude_dir = home.join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("CLAUDE.md"),
+        "# My Rules\n\nKeep it clean.\n\n\
+        ## MANDATORY: No Explore Agents When Tokensave Is Available\n\n\
+        **NEVER use Agent(subagent_type=Explore)** ...\n\n\
+        ## When you spawn an Explore agent in a tokensave-enabled project\n\n\
+        Some legacy guidance.\n",
+    )
+    .unwrap();
+
+    let ctx = make_install_ctx(home);
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let content = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
+    assert!(
+        !content.contains("MANDATORY: No Explore Agents When Tokensave Is Available"),
+        "install should strip the legacy inline block from CLAUDE.md"
+    );
+    assert!(
+        content.contains("My Rules"),
+        "install should preserve unrelated CLAUDE.md content"
+    );
+
+    let rules = std::fs::read_to_string(claude_dir.join("rules").join("tokensave.md")).unwrap();
+    assert!(
+        rules.contains("MANDATORY: No Explore Agents When Tokensave Is Available"),
+        "managed rules file should contain the rules (no duplication, no loss)"
+    );
+}
+
+#[test]
+fn test_install_idempotent_managed_rules_file() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_install_ctx(home);
@@ -162,9 +385,10 @@ fn test_install_idempotent_claude_md() {
     ClaudeIntegration.install(&ctx).unwrap();
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let claude_md = std::fs::read_to_string(home.join(".claude/CLAUDE.md")).unwrap();
+    let rules =
+        std::fs::read_to_string(home.join(".claude").join("rules").join("tokensave.md")).unwrap();
     let marker = "## MANDATORY: No Explore Agents When Tokensave Is Available";
-    let count = claude_md.matches(marker).count();
+    let count = rules.matches(marker).count();
     assert_eq!(
         count, 1,
         "marker should appear exactly once after double install, found {count}"
@@ -177,11 +401,7 @@ fn test_install_preserves_existing_claude_json() {
     let home = dir.path();
 
     // Pre-populate .claude.json with an extra key
-    std::fs::write(
-        home.join(".claude.json"),
-        r#"{"foo": "bar"}"#,
-    )
-    .unwrap();
+    std::fs::write(home.join(".claude.json"), r#"{"foo": "bar"}"#).unwrap();
 
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
@@ -227,15 +447,18 @@ fn test_install_preserves_existing_settings() {
     let settings = read_json(&claude_dir.join("settings.json"));
     let hooks = settings["hooks"]["PreToolUse"].as_array().unwrap();
 
-    // Should have both the existing Bash hook and the new Agent hook
+    // Should have both the existing Bash hook and the new tokensave hook
     let has_bash = hooks
         .iter()
         .any(|h| h.get("matcher").and_then(|m| m.as_str()) == Some("Bash"));
-    let has_agent = hooks
+    let has_tokensave = hooks
         .iter()
-        .any(|h| h.get("matcher").and_then(|m| m.as_str()) == Some("Agent"));
+        .any(|h| h.get("matcher").and_then(|m| m.as_str()) == Some("Agent|Grep|Bash|Glob"));
     assert!(has_bash, "existing Bash hook should be preserved");
-    assert!(has_agent, "new Agent hook should be added");
+    assert!(
+        has_tokensave,
+        "new tokensave PreToolUse hook should be added with matcher=Agent|Grep|Bash|Glob"
+    );
 }
 
 #[test]
@@ -342,7 +565,7 @@ fn test_uninstall_removes_hook_from_settings() {
     ClaudeIntegration.install(&ctx).unwrap();
     ClaudeIntegration.uninstall(&ctx).unwrap();
 
-    let settings_path = home.join(".claude/settings.json");
+    let settings_path = home.join(".claude").join("settings.json");
     if settings_path.exists() {
         let settings = read_json(&settings_path);
         let has_hook = settings["hooks"]["PreToolUse"]
@@ -378,7 +601,7 @@ fn test_uninstall_removes_permissions_from_settings() {
     ClaudeIntegration.install(&ctx).unwrap();
     ClaudeIntegration.uninstall(&ctx).unwrap();
 
-    let settings_path = home.join(".claude/settings.json");
+    let settings_path = home.join(".claude").join("settings.json");
     if settings_path.exists() {
         let settings = read_json(&settings_path);
         let has_ts_perm = settings["permissions"]["allow"]
@@ -407,11 +630,9 @@ fn test_uninstall_preserves_other_permissions() {
     ClaudeIntegration.install(&ctx).unwrap();
 
     // Now add a non-tokensave permission to settings.json
-    let settings_path = home.join(".claude/settings.json");
+    let settings_path = home.join(".claude").join("settings.json");
     let mut settings = read_json(&settings_path);
-    let allow = settings["permissions"]["allow"]
-        .as_array_mut()
-        .unwrap();
+    let allow = settings["permissions"]["allow"].as_array_mut().unwrap();
     allow.push(serde_json::json!("Bash(*)"));
     let pretty = serde_json::to_string_pretty(&settings).unwrap();
     std::fs::write(&settings_path, format!("{pretty}\n")).unwrap();
@@ -434,25 +655,21 @@ fn test_uninstall_preserves_other_permissions() {
 }
 
 #[test]
-fn test_uninstall_removes_claude_md_rules() {
+fn test_uninstall_removes_managed_rules_file() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    let claude_md_path = home.join(".claude/CLAUDE.md");
-    assert!(claude_md_path.exists());
+    let rules_path = home.join(".claude").join("rules").join("tokensave.md");
+    assert!(rules_path.exists());
 
     ClaudeIntegration.uninstall(&ctx).unwrap();
 
-    // CLAUDE.md had only tokensave rules, should be removed
-    if claude_md_path.exists() {
-        let content = std::fs::read_to_string(&claude_md_path).unwrap();
-        assert!(
-            !content.contains("MANDATORY: No Explore Agents When Tokensave Is Available"),
-            "CLAUDE.md should not contain tokensave marker after uninstall"
-        );
-    }
+    assert!(
+        !rules_path.exists(),
+        "managed rules file should be removed after uninstall"
+    );
 }
 
 #[test]
@@ -472,14 +689,18 @@ fn test_uninstall_preserves_other_claude_md_content() {
     let ctx = make_install_ctx(home);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    // Verify install appended rules
+    // Install should leave CLAUDE.md untouched and put rules in the managed file.
     let md_content = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
     assert!(md_content.contains("My Custom Rules"));
-    assert!(md_content.contains("MANDATORY: No Explore Agents"));
+    assert!(!md_content.contains("MANDATORY: No Explore Agents"));
+
+    let rules_content =
+        std::fs::read_to_string(claude_dir.join("rules").join("tokensave.md")).unwrap();
+    assert!(rules_content.contains("MANDATORY: No Explore Agents"));
 
     ClaudeIntegration.uninstall(&ctx).unwrap();
 
-    // After uninstall, custom content should remain
+    // After uninstall, custom content should remain untouched
     let md_content = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
     assert!(
         md_content.contains("My Custom Rules"),
@@ -490,8 +711,8 @@ fn test_uninstall_preserves_other_claude_md_content() {
         "custom content body should be preserved"
     );
     assert!(
-        !md_content.contains("MANDATORY: No Explore Agents"),
-        "tokensave marker should be removed after uninstall"
+        !claude_dir.join("rules").join("tokensave.md").exists(),
+        "managed rules file should be removed after uninstall"
     );
 }
 
@@ -592,7 +813,7 @@ fn test_healthcheck_detects_stale_permissions() {
     ClaudeIntegration.install(&ctx).unwrap();
 
     // Add a stale permission that is not in EXPECTED_TOOL_PERMS
-    let settings_path = home.join(".claude/settings.json");
+    let settings_path = home.join(".claude").join("settings.json");
     let mut settings = read_json(&settings_path);
     let allow = settings["permissions"]["allow"].as_array_mut().unwrap();
     allow.push(serde_json::json!("mcp__tokensave__fake_tool"));
@@ -618,8 +839,8 @@ fn test_healthcheck_detects_missing_claude_md() {
     let ctx = make_install_ctx_with_real_bin(home);
     ClaudeIntegration.install(&ctx).unwrap();
 
-    // Delete CLAUDE.md
-    std::fs::remove_file(home.join(".claude/CLAUDE.md")).unwrap();
+    // Delete the managed rules file
+    std::fs::remove_file(home.join(".claude").join("rules").join("tokensave.md")).unwrap();
 
     let mut dc = DoctorCounters::new();
     let hctx = HealthcheckContext {
@@ -628,19 +849,19 @@ fn test_healthcheck_detects_missing_claude_md() {
     };
     ClaudeIntegration.healthcheck(&mut dc, &hctx);
     assert!(
-        dc.warnings > 0,
-        "healthcheck should warn about missing CLAUDE.md"
+        dc.issues > 0,
+        "healthcheck should flag a missing managed rules file"
     );
 }
 
 #[test]
-fn test_healthcheck_clean_local_config() {
+fn test_healthcheck_preserves_local_mcp_config() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let project = dir.path().join("myproject");
     std::fs::create_dir_all(&project).unwrap();
 
-    // Create a local .mcp.json with tokensave
+    // Create a local .mcp.json with tokensave (a valid `--local` install)
     std::fs::write(
         project.join(".mcp.json"),
         r#"{"mcpServers":{"tokensave":{"command":"/usr/local/bin/tokensave","args":["serve"]}}}"#,
@@ -658,16 +879,16 @@ fn test_healthcheck_clean_local_config() {
     };
     ClaudeIntegration.healthcheck(&mut dc, &hctx);
 
-    // The local .mcp.json should be cleaned up (removed entirely since tokensave
-    // was the only entry)
+    // A project-local install is now a supported mode — doctor must report it
+    // as valid and must NOT delete it.
     assert!(
-        !project.join(".mcp.json").exists(),
-        "local .mcp.json should be removed after healthcheck cleanup"
+        project.join(".mcp.json").exists(),
+        "doctor must preserve a valid project-local .mcp.json (--local is supported)"
     );
 }
 
 #[test]
-fn test_healthcheck_local_settings_cleanup() {
+fn test_healthcheck_preserves_local_settings() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
     let project = dir.path().join("myproject");
@@ -701,11 +922,10 @@ fn test_healthcheck_local_settings_cleanup() {
     };
     ClaudeIntegration.healthcheck(&mut dc, &hctx);
 
-    // The local settings.local.json should be cleaned up
-    // (removed entirely since tokensave was the only content that mattered)
+    // Doctor reports project-local config but must not delete it.
     assert!(
-        !local_claude.join("settings.local.json").exists(),
-        "settings.local.json should be removed after healthcheck cleanup"
+        local_claude.join("settings.local.json").exists(),
+        "doctor must preserve a valid project-local settings.local.json (--local is supported)"
     );
 }
 
@@ -734,5 +954,90 @@ fn test_has_tokensave_without_install() {
     assert!(
         !ClaudeIntegration.has_tokensave(home),
         "has_tokensave should return false without install"
+    );
+}
+
+// ===========================================================================
+// #693: claude_hooks = false opt-out
+// ===========================================================================
+
+fn home_with_hooks_disabled(home: &std::path::Path) {
+    std::fs::create_dir_all(home.join(".tokensave")).unwrap();
+    std::fs::write(
+        home.join(".tokensave").join("config.toml"),
+        "claude_hooks = false\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn test_693_hooks_disabled_skips_hook_install_keeps_mcp_and_permissions() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    home_with_hooks_disabled(home);
+    let ctx = make_install_ctx(home);
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let settings = read_json(&home.join(".claude").join("settings.json"));
+    let settings_text = serde_json::to_string(&settings).unwrap();
+    assert!(
+        !settings_text.contains("hook-pre-tool-use")
+            && !settings_text.contains("hook-prompt-submit")
+            && !settings_text.contains("hook-stop"),
+        "claude_hooks = false must not write hooks, got: {settings_text}"
+    );
+    assert!(
+        settings_text.contains("mcp__tokensave"),
+        "permissions must still be written, got: {settings_text}"
+    );
+    assert!(
+        read_json(&home.join(".claude.json"))["mcpServers"]["tokensave"].is_object(),
+        "MCP server must still be registered"
+    );
+}
+
+#[test]
+fn test_693_doctor_reports_disabled_and_does_not_repair() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    home_with_hooks_disabled(home);
+    // Real (fake but existing) bin path so doctor's binary-existence check
+    // passes and `issues` reflects only the hook opt-out behavior.
+    let ctx = make_install_ctx_with_real_bin(home);
+    ClaudeIntegration.install(&ctx).unwrap();
+
+    let settings_path = home.join(".claude").join("settings.json");
+    let before = std::fs::read_to_string(&settings_path).unwrap();
+
+    let mut dc = DoctorCounters::new();
+    let hctx = HealthcheckContext {
+        home: home.to_path_buf(),
+        project_path: home.to_path_buf(),
+    };
+    ClaudeIntegration.healthcheck(&mut dc, &hctx);
+    assert_eq!(
+        dc.issues, 0,
+        "hooks disabled by config must not fail doctor"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).unwrap(),
+        before,
+        "doctor must not rewrite settings.json when hooks are disabled"
+    );
+}
+
+#[test]
+fn test_693_hooks_enabled_by_default_writes_hooks() {
+    // No config.toml at all: the default stays hooks-on, so existing installs
+    // and the hermetic temp-home tests are unaffected.
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_install_ctx(home);
+    ClaudeIntegration.install(&ctx).unwrap();
+    let settings_text =
+        std::fs::read_to_string(home.join(".claude").join("settings.json")).unwrap();
+    assert!(
+        settings_text.contains("hook-pre-tool-use"),
+        "default install must still write hooks"
     );
 }

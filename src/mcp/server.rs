@@ -5,18 +5,39 @@
 //! The server exposes code graph tools via the Model Context Protocol,
 //! allowing AI assistants to query the code graph interactively.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
+#[cfg(feature = "test-transport")]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use crate::errors::{Result, TokenSaveError};
 use crate::global_db::GlobalDb;
 use crate::tokensave::TokenSave;
-use crate::errors::Result;
 
-use super::tools::{get_tool_definitions, handle_tool_call};
+use super::graph_scope::{
+    collapse_worktree_roots, decode_selected_inputs, merge_federated_results, qualify_result,
+    select_graph, validate_local_inputs, GraphSelector, FEDERATABLE_TOOLS,
+};
+use super::tools::{
+    baseline_policy, cap_baseline, get_listed_tool_definitions, get_tool_definitions,
+    handle_tool_call_with_session, is_always_load, is_graph_scoped_tool, is_hidden_tool,
+    is_read_only_tool, is_selectorless_local_graph_tool, is_tool_area, request_overhead_tokens,
+    schema_overhead_tokens, settle_session_debt, tool_area, SessionState, CORE_TOOLS, MORE_TOOL,
+    TOOL_AREAS,
+};
 use super::transport::{ErrorCode, JsonRpcRequest, JsonRpcResponse};
+
+// Selector-less local graph tools are refused after tracked-branch drift.
+// The refused set is derived at server construction from the tool registry
+// (the `tokensave/localGraphNoSelectors` marker set by
+// `super::tools::is_selectorless_local_graph_tool`) instead of a
+// hard-coded name list, so a future selector-less local graph tool cannot
+// silently fall outside the gate.
 
 /// Runtime statistics for the MCP server.
 pub struct ServerStats {
@@ -38,7 +59,260 @@ impl ServerStats {
 }
 
 /// Cache duration for version checks (15 minutes).
-const VERSION_CHECK_INTERVAL: Duration = Duration::from_secs(900);
+const VERSION_CHECK_INTERVAL: Duration = Duration::from_mins(15);
+
+/// How often a running server bothers to *consider* a worldwide-counter upload.
+///
+/// This is a re-entry guard, not the upload cadence: it only keeps a busy
+/// server from reading the user config on every tool call. Whether a request is
+/// actually made is `cloud::upload_is_due`, which is daily.
+const FLUSH_CHECK_INTERVAL_SECS: i64 = 30;
+
+/// Hand-maintained schema documentation for the `tokensave://schema` resource.
+/// Mirrors `src/db/migrations.rs::create_schema`. Update both together.
+const SCHEMA_MARKDOWN: &str = r"# tokensave SQLite schema
+
+The on-disk database lives at `.tokensave/tokensave.db` (per-branch variants
+under multi-branch mode). All tables are plain SQLite; safe to query with any
+client. WAL mode is used, so readers do not block writers.
+
+## Tables
+
+### `nodes` — every indexed symbol
+- `id` TEXT PRIMARY KEY — content-hashed identifier (changes when symbol moves or renames)
+- `kind` TEXT — e.g. `function`, `struct`, `trait`, `impl`, `method`, `module`, `file`
+- `name` TEXT — local identifier
+- `qualified_name` TEXT — language-style path (e.g. `crate::module::Type::method`)
+- `file_path` TEXT — relative to the project root
+- `start_line`, `end_line` INTEGER — 0-based inclusive line range of the symbol (raw tree-sitter rows; MCP tool responses convert to 1-based editor lines)
+- `start_column`, `end_column` INTEGER — 0-based column range
+- `attrs_start_line` INTEGER — first line of leading doc-comments / attributes (or `start_line` if none)
+- `signature` TEXT NULL — extracted source-level signature
+- `docstring` TEXT NULL — leading doc-comment
+- `visibility` TEXT — one of `public`, `pub_crate`, `pub_super`, `private`
+- `is_async` INTEGER (0/1)
+- `branches`, `loops`, `returns`, `max_nesting`, `unsafe_blocks`, `unchecked_calls`, `assertions` INTEGER — complexity metrics
+- `updated_at` INTEGER — UNIX epoch seconds
+
+Indexes: `kind`, `name`, `qualified_name`, `file_path`, `(file_path,start_line)`, `lower(name)`.
+
+### `edges` — directed relationships between nodes
+- `id` INTEGER PRIMARY KEY AUTOINCREMENT
+- `source` TEXT — FK → `nodes.id` (CASCADE DELETE)
+- `target` TEXT — FK → `nodes.id` (CASCADE DELETE)
+- `kind` TEXT — one of `contains`, `calls`, `returns`, `type_of`, `uses`, `implements`, `extends`, `annotates`, `derives_macro`, `receives`
+- `line` INTEGER NULL — source line of the relationship
+
+Unique constraint: `(source, target, kind, COALESCE(line, -1))`. Indexes on `source`, `target`, `kind`, `(source,kind)`, `(target,kind)`.
+
+### `files` — index bookkeeping
+- `path` TEXT PRIMARY KEY
+- `content_hash` TEXT — sha256 of file contents at index time
+- `size` INTEGER — file size in bytes
+- `modified_at`, `indexed_at` INTEGER — UNIX epoch seconds
+- `node_count` INTEGER — number of nodes extracted from this file
+
+### `unresolved_refs` — references the resolver could not bind
+- `from_node_id` FK → `nodes.id`
+- `reference_name` TEXT
+- `reference_kind` TEXT
+- `line`, `col` INTEGER
+- `file_path` TEXT
+
+### `vectors` — optional embeddings (semantic search backend)
+- `node_id` PRIMARY KEY FK → `nodes.id`
+- `embedding` BLOB
+- `model` TEXT, `created_at` INTEGER
+
+### `metadata` — key/value store
+Common keys: `tokens_saved`, schema-version markers.
+
+### `memory_decisions`, `memory_code_areas`
+Hand-recorded notes from `tokensave_record_decision` / `tokensave_record_code_area`. FTS5 mirror tables exist for `nodes` (`nodes_fts`) and `memory_decisions` (`memory_decisions_fts`).
+
+## Recipes
+
+### Find every impl block of a trait
+```sql
+SELECT n.id, n.qualified_name, n.file_path, n.start_line
+FROM nodes n
+JOIN edges e ON e.source = n.id
+WHERE e.kind = 'implements'
+  AND e.target IN (SELECT id FROM nodes WHERE qualified_name = ?1);
+```
+
+### Top callers of a node
+```sql
+SELECT n.qualified_name, COUNT(*) AS call_count
+FROM edges e
+JOIN nodes n ON n.id = e.source
+WHERE e.target = ?1 AND e.kind = 'calls'
+GROUP BY n.qualified_name
+ORDER BY call_count DESC
+LIMIT 20;
+```
+
+### Files modified since last index
+Compare `files.modified_at` against the live filesystem mtime — `tokensave_affected` does this with extra git plumbing.
+
+### Largest functions by line span
+```sql
+SELECT qualified_name, file_path, end_line - start_line + 1 AS lines
+FROM nodes
+WHERE kind IN ('function', 'method', 'singleton_method')
+ORDER BY lines DESC
+LIMIT 20;
+```
+
+## Gotchas
+- `nodes.id` is a content hash, so it changes when the symbol moves. For cross-run lookups use `qualified_name` (or `tokensave_by_qualified_name`).
+- `edges.kind = 'calls'` may reference a *trait method* node rather than the resolved concrete impl — trait dispatch is not currently rewritten.
+- `derives_macro` edges record `#[derive(...)]` usage but generated impls are not in the graph.
+";
+
+/// Build the per-file staleness banner inserted at the top of any tool
+/// response that referenced files the in-line sync couldn't refresh.
+///
+/// The shape mimics codegraph's #428 banner: name each pending file with
+/// its edit age (how long since the on-disk mtime), and direct the agent
+/// to `Read` those specific files. The rest of the response is treated
+/// as authoritative — distinct from the previous binary "STALE INDEX"
+/// warning that asked the agent to distrust the whole answer.
+fn format_per_file_staleness_banner(
+    project_root: &std::path::Path,
+    stale_files: &[String],
+) -> String {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let mut lines = Vec::with_capacity(stale_files.len() + 2);
+    lines.push(format!(
+        "WARNING: {} file(s) referenced below were edited after the last sync. \
+         Read these directly; the rest of this response reflects the current index:",
+        stale_files.len()
+    ));
+    for path in stale_files {
+        let age = file_mtime_secs(project_root, path).map_or(0, |m| now_secs.saturating_sub(m));
+        lines.push(format!("  - {path} (edited {})", humanize_age(age)));
+    }
+    lines.push("Run `tokensave sync` to refresh the index.".to_string());
+    lines.join("\n")
+}
+
+/// Read the on-disk mtime (UNIX seconds) for `relative_path` joined onto
+/// `project_root`. Returns `None` when the file is missing or stat fails.
+fn file_mtime_secs(project_root: &std::path::Path, relative_path: &str) -> Option<i64> {
+    let abs = project_root.join(relative_path);
+    let meta = std::fs::metadata(&abs).ok()?;
+    let modified = meta.modified().ok()?;
+    let secs = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    Some(secs)
+}
+
+/// Render a duration in seconds as a compact phrase: `"5s ago"`,
+/// `"3m ago"`, `"2h ago"`, `"4d ago"`. Used in the staleness banner so
+/// the agent can judge how stale "still stale" actually is.
+fn humanize_age(secs: i64) -> String {
+    if secs < 60 {
+        format!("{}s ago", secs.max(0))
+    } else if secs < 3_600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3_600)
+    } else {
+        format!("{}d ago", secs / 86_400)
+    }
+}
+
+fn quote_inert_value(value: &str) -> String {
+    serde_json::to_string(value)
+        .unwrap_or_else(|_| "\"<unavailable>\"".to_string())
+        .replace('`', "\\u0060")
+}
+
+fn format_selected_fallback_guidance(root: &str, branch: Option<&str>) -> String {
+    let root = quote_inert_value(root);
+    let guidance = branch.map_or_else(
+        || format!("Refresh the selected graph while working from selected project root {root}."),
+        |branch| {
+            let branch = quote_inert_value(branch);
+            format!(
+                "Add or refresh selected branch {branch} while working from \
+                 selected project root {root}."
+            )
+        },
+    );
+    format!("WARNING: Selected graph at {root} is using a fallback index. {guidance}")
+}
+
+fn format_selected_fallback_warning(selected: &super::graph_scope::SelectedGraph) -> String {
+    format_selected_fallback_guidance(&selected.provenance_root, selected.cg.active_branch())
+}
+
+fn format_selected_index_age_warning(
+    selected: &super::graph_scope::SelectedGraph,
+    age_secs: i64,
+) -> String {
+    let hours = age_secs / 3600;
+    let mins = (age_secs % 3600) / 60;
+    let age = if hours >= 24 {
+        format!("{}d {}h", hours / 24, hours % 24)
+    } else {
+        format!("{hours}h {mins}m")
+    };
+    let root = quote_inert_value(&selected.provenance_root);
+    format!(
+        "WARNING: Selected graph at {root} was last synced {age} ago. \
+         Run Tokensave synchronization from selected project root {root}."
+    )
+}
+
+fn format_local_index_age_warning(age_secs: i64) -> String {
+    let hours = age_secs / 3600;
+    let mins = (age_secs % 3600) / 60;
+    if hours >= 24 {
+        format!(
+            "WARNING: Index last synced {}d {}h ago. Run `tokensave sync` to update.",
+            hours / 24,
+            hours % 24
+        )
+    } else {
+        format!("WARNING: Index last synced {hours}h {mins}m ago. Run `tokensave sync` to update.")
+    }
+}
+
+/// Checks whether an answer is a zero-hit, not-found, or diagnostic response where
+/// prepending a staleness warning banner causes agent confusion or spurious retries.
+fn is_zero_hit_or_diagnostic(tool_name: &str, result: &super::tools::ToolResult) -> bool {
+    if tool_name == "tokensave_status" {
+        return true;
+    }
+    let Some(content) = result.value.get("content").and_then(|c| c.as_array()) else {
+        return false;
+    };
+    for item in content {
+        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+            let trimmed = text.trim();
+            if trimmed.starts_with("No symbol named ")
+                || trimmed.starts_with("No trait or interface named ")
+                || trimmed.starts_with("No function or method named ")
+                || trimmed.starts_with("No struct, class, or case-class named ")
+                || trimmed.starts_with("Node not found: ")
+                || trimmed.starts_with("[]")
+                || trimmed.starts_with("{\n  \"results\": [],")
+                || trimmed.starts_with("{\"results\":[]")
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
 
 /// Cached result of a latest-version check against GitHub releases.
 struct VersionCheckState {
@@ -46,14 +320,94 @@ struct VersionCheckState {
     checked_at: Option<Instant>,
 }
 
+#[cfg(feature = "test-transport")]
+struct AccountingTaskGuard(Arc<AtomicUsize>);
+
+#[cfg(feature = "test-transport")]
+impl Drop for AccountingTaskGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// What the `initialize` instructions can say about the projects reachable
+/// through `graph_root`.
+#[derive(Clone, Copy)]
+enum ServedProjects<'a> {
+    /// A default project is served; these initialized projects sit beside it.
+    Default { siblings: &'a [String] },
+    /// No default project (#606); these projects are registered.
+    None { registered: &'a [String] },
+}
+
+/// Explains that this server has no default project (#606) and how a call
+/// can still be answered.
+fn no_default_project_message(registered: &[String]) -> String {
+    let choices = if registered.is_empty() {
+        "No projects are registered yet; run `tokensave init` in a project first.".to_string()
+    } else {
+        format!(
+            "Pass graph_root with one of the registered projects: {}.",
+            registered.join(", ")
+        )
+    };
+    format!(
+        "This tokensave server has no default project: it was started outside every indexed \
+         project, so a call without graph_root has no graph to answer from. {choices} To give \
+         the server a default project, start it inside one or with `--path <project>`."
+    )
+}
+
 /// The MCP server wrapping a `TokenSave` instance.
 // Lock ordering: file_token_map -> tool_call_counts (never nested)
 pub struct McpServer {
-    cg: TokenSave,
+    /// The default project, answered by every call that names no
+    /// `graph_root`. `None` when `serve` resolved no project (#606): the
+    /// server still starts so `graph_root` reaches the registered projects,
+    /// and a call without one is refused with the list of them.
+    cg: Option<TokenSave>,
+    branch_runtime: crate::tokensave::BranchRuntime,
+    /// The registered projects, snapshotted at startup when there is no
+    /// default project and named in the `initialize` instructions and in
+    /// the refusal of a call without `graph_root` (#606). Empty otherwise.
+    registered_projects: Vec<String>,
+    graph_scoped_tools: HashSet<String>,
+    /// Selector-less local graph tools refused after tracked-branch drift.
+    selectorless_local_graph_tools: HashSet<String>,
+    /// The tools that only read the graph, and may therefore be answered
+    /// while another request is in flight (#685).
+    read_only_tools: HashSet<String>,
     stats: ServerStats,
     tool_call_counts: std::sync::Mutex<HashMap<String, u64>>,
-    /// Approximate token count per indexed file (file_path -> tokens).
+    /// Approximate token count per indexed file (`file_path` -> tokens).
     file_token_map: std::sync::Mutex<HashMap<String, u64>>,
+    /// One-time approximate token cost of the full tool schema listing
+    /// (`tools/list`), charged into `after` on the first *successful*
+    /// `tools/call` after [`schema_served`](Self::schema_served) goes true —
+    /// see [`handle_tools_call`](Self::handle_tools_call).
+    schema_overhead_tokens: u64,
+    /// Whether [`handle_tools_list`](Self::handle_tools_list) has served the
+    /// schema this session. `schema_overhead_tokens` approximates the
+    /// context cost of that payload, so it would be wrong to charge it
+    /// against a client that invoked a known tool directly and never
+    /// fetched the schema at all. Gates `schema_overhead_charged` below —
+    /// a call before `tools/list` has been served leaves the overhead
+    /// un-debited so it can still be charged on the next accounted call
+    /// once `tools/list` does run.
+    schema_served: AtomicBool,
+    /// Whether [`schema_overhead_tokens`](Self::schema_overhead_tokens) has
+    /// already been charged this session. Tracked independently of
+    /// `stats.tool_calls` (which counts every dispatch attempt, including
+    /// ones that error before any accounting runs) so a failing first call
+    /// can't permanently skip the charge.
+    schema_overhead_charged: AtomicBool,
+    /// Session-scoped carry-forward debt for [`add_tokens_saved`](Self::add_tokens_saved):
+    /// the unpaid shortfall from calls whose `after` exceeded `before` — most
+    /// notably the one call that absorbs the one-time schema charge — which
+    /// later calls' surplus pays down before anything more is credited to
+    /// the persisted counter. See
+    /// [`settle_against_session_debt`](Self::settle_against_session_debt).
+    session_debt: AtomicI64,
     /// Running total of tokens saved by serving from the graph.
     tokens_saved: AtomicU64,
     /// Tokens already flushed to the worldwide counter this session.
@@ -62,83 +416,1165 @@ pub struct McpServer {
     last_flush_at: AtomicI64,
     /// User-level database tracking all projects (best-effort).
     global_db: Option<GlobalDb>,
+    /// Initialized projects sitting directly beside the served root, snapshotted
+    /// at startup and named in the `initialize` instructions so a session knows
+    /// which other graphs `graph_root` can reach (#375).
+    sibling_projects: Vec<String>,
+    /// Session-scoped state shared across tool calls (e.g. which roots already
+    /// showed the full `unscanned` detail block from a literal search).
+    session_state: SessionState,
     /// Cached latest-version check result.
     version_cache: std::sync::Mutex<VersionCheckState>,
     /// Pending JSON-RPC notifications to send before the next response.
     pending_notifications: std::sync::Mutex<Vec<Value>>,
+    /// The tool areas that `tokensave_more` listed in this session (#576).
+    /// Only read when the core toolset is active.
+    revealed_areas: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// When the MCP server was started from a subdirectory of the project root,
+    /// this holds the relative path prefix (e.g. `"src/mcp"`). Listing tools
+    /// use it as the default path filter. `None` when cwd == project root.
+    scope_prefix: Option<String>,
+    /// Set to `true` after `shutdown` runs once; makes shutdown idempotent so
+    /// callers can invoke it explicitly after `run` returns without re-running
+    /// persistence logic.
+    shutdown_done: AtomicBool,
+    /// Set when [`Self::run`] starts. This guards against accidentally running
+    /// the same server loop twice without confusing a replayed `initialize`
+    /// request with a previous run: `serve` legitimately calls
+    /// [`Self::handle_and_write`] once before entering the loop.
+    run_started: AtomicBool,
+    /// When true, every `tools/call` response gains a `_meta.duration_us`
+    /// field measuring the handler's pure execution time. Toggled by
+    /// `tokensave serve --timings`. Off by default to keep responses clean.
+    timings_enabled: AtomicBool,
+    /// UNIX timestamp (secs) of the most recent staleness check started by
+    /// the server. Read-modify-update via `compare_exchange` in
+    /// [`maybe_sync_if_stale`](Self::maybe_sync_if_stale) so concurrent
+    /// tool calls don't pile on the same walk.
+    last_staleness_check_at: AtomicI64,
+    /// True while a lazy resync task spawned by
+    /// [`maybe_sync_if_stale`](Self::maybe_sync_if_stale) is still running.
+    /// The 30 s cooldown alone does not prevent overlap: once a resync
+    /// outlives its own cooldown window, the next call's `compare_exchange`
+    /// succeeds and would start a second walk over the same tree. Cleared by
+    /// the task itself on every exit path.
+    lazy_sync_in_flight: Arc<AtomicBool>,
+    /// Cached worktree-vs-index mismatch detection for this session. `None`
+    /// when no mismatch exists (the common case) or detection was skipped
+    /// (not a git repo / git missing). Computed once at startup so we
+    /// spawn at most one pair of `git rev-parse` per session no matter how
+    /// many tool calls fire. See [`crate::worktree`] and #312.
+    worktree_mismatch: Option<crate::worktree::WorktreeIndexMismatch>,
+    /// Flipped to `true` once [`Self::run_startup_catch_up_sync`] finishes
+    /// (#414). Production code never reads this; tests poll it via
+    /// [`Self::wait_for_startup_catch_up`] so they can race-free assert on
+    /// the index state after the detached catch-up task completes.
+    startup_catch_up_done: AtomicBool,
+    /// Once-gate for the version-aware forced reindex. Flipped to `true` the
+    /// first time a `tools/call` evaluates the upgrade check, so the (possibly
+    /// expensive) reindex is spawned at most once per session.
+    version_reindex_started: AtomicBool,
+    /// Flipped to `true` once the version-aware reindex evaluation settles —
+    /// either the background reindex finished, the marker was advanced, or no
+    /// action was needed. Production code never reads this; tests poll it via
+    /// [`Self::wait_for_version_reindex`].
+    version_reindex_done: AtomicBool,
+    /// UNIX timestamp of the last index-age warning emitted for the local graph (0 = never).
+    last_local_age_warning_at: AtomicI64,
+    /// Last index-age warning timestamp emitted per selected provenance root.
+    selected_age_warnings_at: std::sync::Mutex<HashMap<String, i64>>,
+    /// Number of global-ledger persistence tasks spawned by this server.
+    #[cfg(feature = "test-transport")]
+    accounting_tasks_started: AtomicUsize,
+    /// Number of spawned global-ledger persistence tasks still running.
+    #[cfg(feature = "test-transport")]
+    accounting_tasks_pending: Arc<AtomicUsize>,
+}
+
+/// Explains why an automatic sync declined to run, for the server's stderr.
+///
+/// Automatic syncs are the ones the user did not ask for, so a refusal has to
+/// say what was skipped and how to do it deliberately — silently serving a
+/// stale (or empty) index is the failure mode that made #396 and #393 hard to
+/// diagnose from the outside.
+/// MCP revisions this server can serve, newest first.
+///
+/// The later revisions are additive over `2024-11-05` for the surface we
+/// actually implement — `tools/list`, `tools/call`, `resources/*` — so serving
+/// a client that pins one of them is a matter of agreeing on the stamp. What
+/// we do *not* yet emit (structured output, progress, resource links) is
+/// optional in every one of them. Advertising our own newest by default is a
+/// separate decision (#535 plan, phase 2) and deliberately not taken here.
+const SUPPORTED_PROTOCOL_VERSIONS: [&str; 4] =
+    ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// The revision assumed when a client sends no `protocolVersion`, or sends one
+/// that is not a string. Staying on the oldest keeps today's lenient clients
+/// byte-identical to pre-negotiation behaviour.
+const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
+
+/// Picks the `protocolVersion` to answer `initialize` with.
+///
+/// Previously this was hardcoded to `2024-11-05` and the client's request was
+/// never read — the dispatch site did not even pass `params` in. A host that
+/// pins a newer revision and validates the handshake strictly is entitled to
+/// treat that as a downgrade it did not agree to and drop the connection
+/// before `tools/list`, which surfaces to the user as a bare "MCP server failed
+/// to connect".
+///
+/// The rule is the spec's: echo the client's revision when we support it,
+/// otherwise answer with our newest and let the client decide whether it can
+/// proceed.
+fn negotiate_protocol_version(params: Option<&Value>) -> &'static str {
+    let requested = params
+        .and_then(|p| p.get("protocolVersion"))
+        .and_then(|v| v.as_str());
+
+    match requested {
+        Some(version) => SUPPORTED_PROTOCOL_VERSIONS
+            .iter()
+            .find(|supported| **supported == version)
+            .copied()
+            .unwrap_or(SUPPORTED_PROTOCOL_VERSIONS[0]),
+        None => DEFAULT_PROTOCOL_VERSION,
+    }
+}
+
+/// How long a `tools/call` may block on the lazy resync before being answered
+/// from the graph as it stands (#535).
+///
+/// `TOKENSAVE_AUTOSYNC_BUDGET_MS` overrides the default; `0` restores the
+/// pre-#535 behaviour of waiting for the resync however long it takes. The
+/// default is deliberately well under the 30 s request deadline common in MCP
+/// clients, since the budget protects an *interactive* call: a resync that has
+/// not finished in a few seconds will not finish within a latency the caller
+/// would have tolerated either.
+fn auto_sync_budget() -> Option<std::time::Duration> {
+    const DEFAULT_BUDGET_MS: u64 = 5_000;
+    let ms = std::env::var("TOKENSAVE_AUTOSYNC_BUDGET_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_BUDGET_MS);
+    (ms > 0).then(|| std::time::Duration::from_millis(ms))
+}
+
+fn auto_sync_refusal(scope: &crate::tokensave::AutoSyncScope) -> String {
+    match scope {
+        crate::tokensave::AutoSyncScope::Uninitialized => {
+            "skipping automatic sync: this project has no indexed files yet. \
+             Run `tokensave init` to build the index — a background sync will \
+             not index a project from scratch (#396)."
+                .to_string()
+        }
+        crate::tokensave::AutoSyncScope::BranchDrifted(drift) => format!(
+            "skipping automatic sync: this server is serving branch '{}' but the \
+             working tree is now on '{}'. Syncing would write '{}' files into \
+             '{}'s index. Restart the MCP server to pick up the branch (#400).",
+            drift.serving, drift.working_tree, drift.working_tree, drift.serving
+        ),
+        crate::tokensave::AutoSyncScope::TooManyStale { count, limit } => format!(
+            "skipping automatic sync: {count} files are stale, over the \
+             {limit}-file limit for a background sync. Run `tokensave sync` to \
+             index them, or raise `max_auto_sync_files` in .tokensave/config.json."
+        ),
+        // Not a refusal; kept total so a new variant cannot silently become
+        // an empty message.
+        crate::tokensave::AutoSyncScope::Sync(_) => "automatic sync proceeding".to_string(),
+    }
+}
+
+/// Pure decision function for index-age warning emissions within a session.
+fn should_emit_index_age_warning(
+    prev_warned_at: i64,
+    now: i64,
+    is_stale: bool,
+    is_suppressed: bool,
+) -> bool {
+    if !is_stale || is_suppressed {
+        return false;
+    }
+    prev_warned_at == 0 || now.saturating_sub(prev_warned_at) >= 3600
+}
+
+/// The deferral rule for [`McpServer::startup_work_in_flight`], as a pure
+/// function of the three flags so the truth table can be tested directly.
+///
+/// The asymmetry between the two jobs is deliberate. Startup catch-up is
+/// spawned unconditionally, so its `done` flag always settles and "not done"
+/// really does mean "still running". A version reindex may never be triggered
+/// at all, so it defers only while *started and not finished* — keying on
+/// `!done` alone would make every ordinary session defer forever and the
+/// option would silently do nothing.
+fn defer_idle_exit(catch_up_done: bool, reindex_started: bool, reindex_done: bool) -> bool {
+    !catch_up_done || (reindex_started && !reindex_done)
+}
+
+/// Sleep until `d` elapses, or never when there is no deadline.
+///
+/// Created fresh at each park, so the window always starts whole and never
+/// spans request handling.
+async fn idle_deadline(d: Option<std::time::Duration>) {
+    match d {
+        Some(d) => tokio::time::sleep(d).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+/// How many read-only tool calls the server answers at the same time.
+///
+/// A burst of searches used to queue behind each other, so six parallel
+/// searches took six times as long as one (#685). Read-only calls now run
+/// concurrently, but the fan-out is bounded: each call may hold a scan of the
+/// whole project, and an unbounded burst would read the project many times
+/// over at once.
+const MAX_CONCURRENT_READS: usize = 4;
+
+/// Say why the server is leaving. An idle exit is indistinguishable from a
+/// crash in a host's log otherwise, and the whole point of the option is that
+/// an operator turned it on and wants to see it working.
+fn report_idle_exit(d: Option<std::time::Duration>) {
+    if let Some(d) = d {
+        eprintln!(
+            "[tokensave] idle for {}s with no request — exiting (--idle-timeout-secs)",
+            d.as_secs()
+        );
+    }
 }
 
 impl McpServer {
     /// Creates a new MCP server backed by the given code graph.
-    pub async fn new(cg: TokenSave) -> Self {
-        let file_token_map = cg.get_file_token_map().await.unwrap_or_default();
-        let persisted = cg.get_tokens_saved().await.unwrap_or(0);
+    ///
+    /// Index freshness is maintained by a lazy staleness check
+    /// ([`maybe_sync_if_stale`](Self::maybe_sync_if_stale)) invoked at the
+    /// start of every `tools/call` and gated by a 30 s cooldown — there
+    /// is no background watcher task. This replaces the
+    /// `notify-debouncer-full` watcher removed in v6.x (#80), which was
+    /// the source of severe CPU and memory pressure on large monorepos
+    /// where nested ignored directories (`apps/*/node_modules`,
+    /// `packages/*/target`) drove unbounded event traffic and `FileId`
+    /// cache growth.
+    pub async fn new(cg: TokenSave, scope_prefix: Option<String>) -> Arc<Self> {
+        Self::new_inner(Some(cg), scope_prefix, true, Vec::new()).await
+    }
+
+    /// A server with no default project (#606), for a `serve` that resolved
+    /// none: launched outside every indexed project with several registered,
+    /// or with `--path` naming a folder that has no index.
+    ///
+    /// Exiting instead used to cost the session every tool, including the
+    /// `graph_root` access to the registered projects that would still have
+    /// worked. This server answers `initialize` and `tools/list` as usual,
+    /// serves `graph_root` calls, and refuses a call without one with the
+    /// list of registered projects to choose from.
+    ///
+    /// `registered_projects` are the registered projects whose index exists,
+    /// as `serve` already probed them; the server does not probe them again.
+    pub async fn new_without_project(registered_projects: Vec<String>) -> Arc<Self> {
+        Self::new_inner(None, None, false, registered_projects).await
+    }
+
+    /// [`Self::new`] for a server whose project root was named explicitly
+    /// (`serve --path <dir>`) rather than discovered from the working
+    /// directory. Serving a different repo than the CWD is the *point* of
+    /// that mode, so the borrowed-worktree heads-up (#312) — which exists to
+    /// catch CWD discovery silently resolving another worktree's index — is
+    /// suppressed; its "run `tokensave init` here" remedy is wrong for a
+    /// deliberate cross-repo serve (#201).
+    pub async fn new_explicit_root(cg: TokenSave, scope_prefix: Option<String>) -> Arc<Self> {
+        Self::new_inner(Some(cg), scope_prefix, false, Vec::new()).await
+    }
+
+    async fn new_inner(
+        cg: Option<TokenSave>,
+        scope_prefix: Option<String>,
+        check_worktree_mismatch: bool,
+        registered_projects: Vec<String>,
+    ) -> Arc<Self> {
+        // The DB stores `/`-separated paths on every platform, but the scope
+        // prefix is derived from an OS path, so on Windows it arrives with
+        // `\` separators and would never match any indexed path (#242).
+        let scope_prefix = scope_prefix.map(|p| p.replace('\\', "/"));
+        let file_token_map = match &cg {
+            Some(cg) => cg.get_file_token_map().await.unwrap_or_default(),
+            None => HashMap::new(),
+        };
+        // Build schemas once and retain only the names and scalar estimate.
+        // All schemas drop before global DB initialization; nothing is cached
+        // or deferred to the first request.
+        let (graph_scoped_tools, selectorless_local_graph_tools, read_only_tools, schema_overhead) = {
+            let mut definitions = get_tool_definitions();
+            let graph_scoped_tools = definitions
+                .iter()
+                .filter(|definition| is_graph_scoped_tool(definition))
+                .map(|definition| definition.name.clone())
+                .collect();
+            // Derive this gate from the registry so future selector-less local
+            // graph tools cannot silently escape drift refusal.
+            let selectorless_local_graph_tools = definitions
+                .iter()
+                .filter(|definition| is_selectorless_local_graph_tool(definition))
+                .map(|definition| definition.name.clone())
+                .collect();
+            // The calls that only read the graph, and may therefore run side
+            // by side (#685). Derived from the same registry pass, so the set
+            // costs nothing beyond the names.
+            let read_only_tools = definitions
+                .iter()
+                .filter(|definition| is_read_only_tool(definition))
+                .map(|definition| definition.name.clone())
+                .collect();
+            // Preserve registry order and charge only always-loaded schemas.
+            definitions.retain(is_always_load);
+            let schema_overhead = schema_overhead_tokens(&definitions);
+            (
+                graph_scoped_tools,
+                selectorless_local_graph_tools,
+                read_only_tools,
+                schema_overhead,
+            )
+        };
+        let persisted = match &cg {
+            Some(cg) => cg.get_tokens_saved().await.unwrap_or(0),
+            None => 0,
+        };
         let global_db = GlobalDb::open().await;
         // Register this project in the global DB with its current tokens
-        if let Some(ref gdb) = global_db {
+        let mut sibling_projects = Vec::new();
+        if let (Some(gdb), Some(cg)) = (global_db.as_ref(), cg.as_ref()) {
             gdb.upsert(cg.project_root(), persisted).await;
+            // Snapshot the neighbouring graphs once, for the initialize
+            // instructions (#375). `tokensave_status` re-reads them live, so a
+            // project indexed later in the session is still discoverable.
+            sibling_projects = gdb.sibling_projects(cg.project_root()).await;
         }
-        Self {
+
+        // Detect borrowed-worktree index once at startup so every read
+        // tool can cheaply prefix a heads-up. Two git rev-parse spawns
+        // worst case (#312). spawn_blocking because the underlying
+        // `Command::output()` can sit on slow disks.
+        let worktree_mismatch = if let (true, Some(cg)) = (check_worktree_mismatch, &cg) {
+            let project_root = cg.project_root().to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                let cwd = std::env::current_dir().ok()?;
+                crate::worktree::detect_worktree_index_mismatch(&cwd, &project_root)
+            })
+            .await
+            .ok()
+            .flatten()
+        } else {
+            None
+        };
+
+        let has_project = cg.is_some();
+        let server = Arc::new(Self {
             cg,
+            branch_runtime: crate::tokensave::BranchRuntime::default(),
+            registered_projects,
+            graph_scoped_tools,
+            selectorless_local_graph_tools,
+            read_only_tools,
             stats: ServerStats::new(),
             tool_call_counts: std::sync::Mutex::new(HashMap::new()),
             file_token_map: std::sync::Mutex::new(file_token_map),
+            schema_overhead_tokens: schema_overhead,
+            schema_served: AtomicBool::new(false),
+            schema_overhead_charged: AtomicBool::new(false),
+            session_debt: AtomicI64::new(0),
             tokens_saved: AtomicU64::new(persisted),
             last_flushed_tokens: AtomicU64::new(persisted),
             last_flush_at: AtomicI64::new(0),
             global_db,
+            sibling_projects,
+            session_state: SessionState::new(),
             version_cache: std::sync::Mutex::new(VersionCheckState {
                 latest: None,
                 checked_at: None,
             }),
             pending_notifications: std::sync::Mutex::new(Vec::new()),
+            revealed_areas: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            scope_prefix,
+            shutdown_done: AtomicBool::new(false),
+            run_started: AtomicBool::new(false),
+            timings_enabled: AtomicBool::new(false),
+            last_staleness_check_at: AtomicI64::new(0),
+            lazy_sync_in_flight: Arc::new(AtomicBool::new(false)),
+            worktree_mismatch,
+            // Nothing to catch up without a project, so it is already done.
+            startup_catch_up_done: AtomicBool::new(!has_project),
+            version_reindex_started: AtomicBool::new(false),
+            version_reindex_done: AtomicBool::new(false),
+            last_local_age_warning_at: AtomicI64::new(0),
+            selected_age_warnings_at: std::sync::Mutex::new(HashMap::new()),
+            #[cfg(feature = "test-transport")]
+            accounting_tasks_started: AtomicUsize::new(0),
+            #[cfg(feature = "test-transport")]
+            accounting_tasks_pending: Arc::new(AtomicUsize::new(0)),
+        });
+
+        // Catch-up sync (#414): pick up changes made while the server
+        // was down — terminal `git pull`, IDE edits before the agent
+        // launched, files touched by another tool. Detached and holding
+        // only a `Weak`, so a server dropped before the task starts is
+        // not resurrected by it; non-blocking so MCP `initialize` doesn't
+        // wait on the walk. Note the upgrade below does hold a strong
+        // reference for the duration of the sync — the server cannot drop
+        // mid-sync — and nothing cancels an in-flight sync when the read
+        // loop exits (#396). The scope bound in `find_stale_files_bounded`
+        // caps how long that window can be; cooperative cancellation is
+        // tracked separately.
+        if has_project {
+            let weak = Arc::downgrade(&server);
+            tokio::spawn(async move {
+                if let Some(s) = weak.upgrade() {
+                    s.run_startup_catch_up_sync().await;
+                }
+            });
+        }
+
+        server
+    }
+
+    /// Tools that stay callable when strict mode refuses everything else.
+    ///
+    /// Refusing *every* tool would leave an agent unable to discover why it was
+    /// refused from inside the session that hit it. The exemption is deliberately
+    /// one tool: `tokensave_status` reports the server's own state — the root and
+    /// branch being served, whether a fallback is active — which is precisely
+    /// what a refused caller needs, and it reads no graph content, so it cannot
+    /// carry a wrong-tree answer.
+    ///
+    /// Three tools whose names suggest they belong here do not:
+    ///
+    /// - `tokensave_config` queries arbitrary TOML/JSON files by key path. It
+    ///   has nothing to do with tokensave's own configuration, and knowing a
+    ///   `Cargo.toml` value does not help diagnose a refusal.
+    /// - `tokensave_diagnose` maps `cargo check`/`clippy` output onto the
+    ///   smallest containing **graph node**, with callers attached.
+    /// - `tokensave_diagnostics` runs the type-checker and resolves each
+    ///   diagnostic's **enclosing graph node**.
+    ///
+    /// The last two are graph reads wearing diagnostic names: under a wrong-tree
+    /// index they would attribute a real compiler error to a node from another
+    /// tree, which is the exact failure strict mode exists to prevent.
+    const STRICT_MODE_DIAGNOSTIC_TOOLS: &'static [&'static str] = &["tokensave_status"];
+
+    /// Why this call must be refused under strict mode, or `None` to proceed.
+    ///
+    /// Strict mode (`strict_tree`, default off — #372 §2) turns the two
+    /// existing wrong-tree detections from advisory into refusals: a borrowed
+    /// worktree index (#312) and a branch that drifted under a running server
+    /// (#400). Nothing new is detected here; this only decides what a detection
+    /// does.
+    ///
+    /// The reporter's case for it: every tool built on tokensave inherits a
+    /// wrong-tree answer with no signal, and an empty result reads as "no such
+    /// symbol" rather than "wrong tree". The case for it staying opt-in: a
+    /// shared index across a family of worktrees is a legitimate setup, and
+    /// hard-erroring that would be a bad surprise in a point release.
+    ///
+    /// The message names both trees or branches and the setting responsible, so
+    /// the refusal is actionable without reading the docs.
+    fn strict_tree_refusal(&self, cg: &TokenSave, tool_name: &str) -> Option<String> {
+        if !cg.get_config().strict_tree {
+            return None;
+        }
+        if Self::STRICT_MODE_DIAGNOSTIC_TOOLS.contains(&tool_name) {
+            return None;
+        }
+
+        if let Some(m) = &self.worktree_mismatch {
+            return Some(format!(
+                "refusing: strict_tree is enabled and this index belongs to a different git \
+                 working tree. Running in '{}', index from '{}'. Run `tokensave init` here for \
+                 a worktree-local index, or set strict_tree to false to answer with a warning \
+                 instead.",
+                m.worktree_root.display(),
+                m.index_root.display()
+            ));
+        }
+
+        // Re-checked per call, unlike the worktree mismatch above: drift is
+        // caused by a `git checkout` during the session, so a value computed
+        // at startup would always report none.
+        if let Some(drift) = cg.branch_drift() {
+            return Some(format!(
+                "refusing: strict_tree is enabled and this server is serving branch '{}' while \
+                 the working tree is on '{}'. Restart the MCP server to serve this branch, or \
+                 set strict_tree to false to answer with a warning instead.",
+                drift.serving, drift.working_tree
+            ));
+        }
+
+        None
+    }
+
+    /// Refuse local graph calls when a live multi-branch server has drifted.
+    ///
+    /// Checked per call (a `git checkout` under a running server is what
+    /// drifts), before freshness work and dispatch, and only for local graph
+    /// tools: `tokensave_status` stays callable for diagnosis, tools without
+    /// graph reads are unaffected, and explicit external `graph_root`
+    /// selections never reach this gate.
+    fn branch_drift_refusal(&self, cg: &TokenSave, tool_name: &str) -> Option<String> {
+        if tool_name == "tokensave_status"
+            || (!self.graph_scoped_tools.contains(tool_name)
+                && !self.selectorless_local_graph_tools.contains(tool_name))
+        {
+            return None;
+        }
+
+        let drift = cg.branch_drift()?;
+        Some(format!(
+            "refusing: MCP server serves branch '{}' while the working tree is on '{}'. \
+             Restart the MCP server to serve this branch, or reopen it for the working branch.",
+            drift.serving, drift.working_tree
+        ))
+    }
+
+    /// Answers one query across several `graph_root`s (#376).
+    ///
+    /// Runs the ordinary selected-graph pipeline once per root — open, decode
+    /// inputs, dispatch, qualify — then interleaves the per-root payloads
+    /// round-robin by rank. Scores are BM25-derived per database and are not
+    /// calibrated between them, so sorting them together would compare numbers
+    /// that do not share a scale; rank is the only ordering both roots agree on.
+    ///
+    /// Roots that are worktrees of a repository already named are collapsed
+    /// first, and the response says which and why. Without that, a caller with
+    /// a repo and its worktrees among their roots gets a result set full of the
+    /// same symbol at slightly different line numbers, and a per-root cap does
+    /// not help because each worktree is its own root.
+    ///
+    /// A root that fails to open is reported inline rather than failing the
+    /// whole call: with several roots named, one unreadable index should not
+    /// cost the caller the answers from the others.
+    async fn handle_federated_call(
+        self: &Arc<Self>,
+        id: Value,
+        tool_name: &str,
+        arguments: &Value,
+        selection: &super::graph_scope::GraphSelection,
+    ) -> JsonRpcResponse {
+        let (kept, collapsed) = collapse_worktree_roots(selection.roots.clone());
+        let branch = selection.branch.clone();
+
+        let mut parts: Vec<(String, crate::mcp::tools::ToolResult)> = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
+
+        for root in kept {
+            let selector = GraphSelector {
+                root: root.clone(),
+                branch: branch.clone(),
+            };
+            let selected = match select_graph(selector, self.served_root()).await {
+                Ok(selected) => selected,
+                Err(error) => {
+                    failures.push(format!("{}: {error}", root.display()));
+                    continue;
+                }
+            };
+            let mut root_args = arguments.clone();
+            if let Err(error) = decode_selected_inputs(&selected, &mut root_args) {
+                failures.push(format!("{}: {error}", root.display()));
+                continue;
+            }
+            let outcome = handle_tool_call_with_session(
+                &selected.cg,
+                tool_name,
+                root_args,
+                None,
+                None,
+                true,
+                Some(&self.session_state),
+            )
+            .await;
+            let mut result = match outcome {
+                Ok(result) => result,
+                Err(error) => {
+                    failures.push(format!("{}: {error}", root.display()));
+                    continue;
+                }
+            };
+            if let Err(error) = qualify_result(&selected, &mut result).await {
+                failures.push(format!("{}: {error}", root.display()));
+                continue;
+            }
+            parts.push((selected.provenance_root.clone(), result));
+        }
+
+        if parts.is_empty() {
+            return JsonRpcResponse::error(
+                id,
+                ErrorCode::InvalidParams,
+                format!("no graph_root could be queried: {}", failures.join("; ")),
+            );
+        }
+
+        let mut merged = merge_federated_results(parts, &collapsed);
+        if !failures.is_empty() {
+            if let Some(content) = merged
+                .value
+                .get_mut("content")
+                .and_then(|c| c.as_array_mut())
+            {
+                content.push(json!({
+                    "type": "text",
+                    "text": format!(
+                        "WARNING: {} root(s) could not be queried and are absent from these \
+                         results: {}",
+                        failures.len(),
+                        failures.join("; ")
+                    )
+                }));
+            }
+        }
+        JsonRpcResponse::success(id, merged.value)
+    }
+
+    /// Returns the active scope prefix, if the server was launched from a subdirectory.
+    pub fn scope_prefix(&self) -> Option<&str> {
+        self.scope_prefix.as_deref()
+    }
+
+    /// Enables or disables per-call timing reporting. When enabled, every
+    /// `tools/call` response gains a `_meta.duration_us` field with the
+    /// handler's pure execution time in microseconds. Useful for profiling
+    /// where time is spent inside the index vs. on the JSON-RPC/stdio
+    /// transport. Safe to flip at any time — the next call observes the
+    /// new setting.
+    pub fn set_timings_enabled(&self, enabled: bool) {
+        self.timings_enabled
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns whether timing reporting is currently enabled.
+    pub fn timings_enabled(&self) -> bool {
+        self.timings_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Test-only accessor for the backing `TokenSave`. Exposed so
+    /// integration tests can drive the staleness pipeline directly,
+    /// bypassing the 30 s cooldown in
+    /// [`maybe_sync_if_stale`](Self::maybe_sync_if_stale).
+    /// `None` for a server with no default project (#606).
+    #[doc(hidden)]
+    pub fn cg(&self) -> Option<&TokenSave> {
+        self.cg.as_ref()
+    }
+
+    /// The root of the default project, or `None` when there is none (#606).
+    fn served_root(&self) -> Option<&std::path::Path> {
+        self.cg.as_ref().map(TokenSave::project_root)
+    }
+
+    /// What the `initialize` instructions say about other projects: the
+    /// default project's siblings, or the registered projects when there is
+    /// no default project (#606).
+    fn served_projects(&self) -> ServedProjects<'_> {
+        if self.cg.is_some() {
+            ServedProjects::Default {
+                siblings: &self.sibling_projects,
+            }
+        } else {
+            ServedProjects::None {
+                registered: &self.registered_projects,
+            }
         }
     }
 
-    /// Adds the approximate token count for the given file paths to the
-    /// running saved-tokens counter and persists it to the database.
-    /// Returns the delta (tokens saved by this call).
-    async fn accumulate_tokens_saved(&self, file_paths: &[String]) -> u64 {
+    /// Whether savings are surfaced to the agent: the project's setting, or
+    /// the built-in default when there is no project (#606).
+    fn report_savings(&self) -> bool {
+        self.cg.as_ref().map_or_else(
+            || {
+                crate::config::resolve_report_savings(
+                    crate::config::TokenSaveConfig::default().report_savings,
+                )
+            },
+            TokenSave::report_savings,
+        )
+    }
+
+    /// The toolset to list: the project's, or the built-in default when there
+    /// is no project (#606). `TOKENSAVE_TOOLS` overrides either.
+    fn toolset(&self) -> crate::config::Toolset {
+        self.cg.as_ref().map_or_else(
+            || crate::config::Toolset::resolve(crate::config::Toolset::default()),
+            TokenSave::toolset,
+        )
+    }
+
+    /// The `tokensave_status` answer of a server with no default project
+    /// (#606): that there is none, the registered projects `graph_root` can
+    /// select, how to proceed, and the server's own counters.
+    async fn no_default_project_status(&self) -> Value {
+        let status = json!({
+            "default_project": Value::Null,
+            "registered_projects": self.registered_projects,
+            "hint": no_default_project_message(&self.registered_projects),
+            "version": env!("CARGO_PKG_VERSION"),
+            "server": self.server_stats_json().await,
+        });
+        let text = serde_json::to_string_pretty(&status).unwrap_or_default();
+        json!({ "content": [{ "type": "text", "text": text }] })
+    }
+
+    /// The refusal of a call that needs the default project when there is
+    /// none (#606). Names the registered projects, since `graph_root` with
+    /// one of them is how the call can still be answered.
+    fn no_default_project_error(&self, id: Value) -> JsonRpcResponse {
+        JsonRpcResponse::error(
+            id,
+            ErrorCode::InvalidRequest,
+            no_default_project_message(&self.registered_projects),
+        )
+    }
+
+    /// Sums the raw (full-file) approximate token weight of the given files
+    /// from the cached `file_token_map`. This is the *unadjusted* baseline —
+    /// callers must run it through [`cap_baseline`] per the tool's
+    /// [`baseline_policy`] before treating it as a "before" figure, since
+    /// most tools return references rather than full file content.
+    fn touched_file_tokens(&self, file_paths: &[String]) -> u64 {
         if file_paths.is_empty() {
             return 0;
         }
-        debug_assert!(file_paths.iter().all(|p| !p.is_empty()), "accumulate_tokens_saved received empty file path");
-        let delta = {
-            let map = match self.file_token_map.lock() {
-                Ok(m) => m,
-                Err(_) => return 0,
-            };
-            let mut total: u64 = 0;
-            for path in file_paths {
-                if let Some(&tokens) = map.get(path.as_str()) {
-                    total += tokens;
-                }
-            }
-            total
+        debug_assert!(
+            file_paths.iter().all(|p| !p.is_empty()),
+            "touched_file_tokens received empty file path"
+        );
+        let Ok(map) = self.file_token_map.lock() else {
+            return 0;
         };
-        if delta > 0 {
-            let new_total = self.tokens_saved.fetch_add(delta, Ordering::Relaxed) + delta;
-            // Persist to DB (best-effort, don't block on failure)
-            let _ = self.cg.set_tokens_saved(new_total).await;
-            // Also increment the resettable local counter
-            let _ = self.cg.add_local_counter(delta).await;
-            // Best-effort update to global DB
-            if let Some(ref gdb) = self.global_db {
-                gdb.upsert(self.cg.project_root(), new_total).await;
-            }
-        }
-        delta
+        file_paths
+            .iter()
+            .filter_map(|path| map.get(path.as_str()))
+            .sum()
     }
 
-    /// Flushes pending tokens to the worldwide counter if at least 30 seconds
-    /// have elapsed since the last flush. Best-effort, never blocks for long.
+    /// Settles a call's raw signed savings (`before as i64 - after as i64`)
+    /// against `session_debt` via [`settle_session_debt`], returning the
+    /// non-negative amount that should actually be credited to the
+    /// persisted counter this call. Only this aggregate is saturated this
+    /// way — the per-call displayed `saved=` figure and the ledger's
+    /// persisted rows are unaffected.
+    fn settle_against_session_debt(&self, raw_delta: i64) -> u64 {
+        let mut credited = 0u64;
+        let _ = self
+            .session_debt
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |debt| {
+                let (new_debt, c) = settle_session_debt(debt, raw_delta);
+                credited = c;
+                Some(new_debt)
+            });
+        credited
+    }
+
+    /// Adds `net` (already `before - after`, baseline-capped and
+    /// overhead-inclusive) to the running saved-tokens counter and persists
+    /// it to the database. No-op when `net` is 0 (nothing was saved, or the
+    /// call cost more than its baseline).
+    async fn add_tokens_saved(&self, cg: &TokenSave, net: u64) {
+        if net == 0 {
+            return;
+        }
+        let new_total = self.tokens_saved.fetch_add(net, Ordering::Relaxed) + net;
+        // Persist to DB (best-effort, don't block on failure)
+        let _ = cg.set_tokens_saved(new_total).await;
+        // Also increment the resettable local counter
+        let _ = cg.add_local_counter(net).await;
+        // Best-effort update to global DB
+        if let Some(ref gdb) = self.global_db {
+            gdb.upsert(cg.project_root(), new_total).await;
+        }
+    }
+
+    /// Re-read the file-to-token-count map from the DB and swap it into the
+    /// cached `file_token_map`. Called after each lazy sync triggered by
+    /// [`maybe_sync_if_stale`](Self::maybe_sync_if_stale) so the accounting
+    /// tracks newly indexed / removed files.
+    pub async fn refresh_file_token_map(&self) {
+        // best-effort; leave stale map in place if the DB read fails
+        let Some(cg) = self.cg.as_ref() else {
+            return;
+        };
+        let Ok(fresh) = cg.get_file_token_map().await else {
+            return;
+        };
+        if let Ok(mut guard) = self.file_token_map.lock() {
+            *guard = fresh;
+        }
+    }
+
+    /// Catch-up sync run once at startup (#414). Bypasses the 30 s
+    /// cooldown in [`Self::maybe_sync_if_stale`] so changes made while
+    /// the server was down — a terminal `git pull`, IDE edits before
+    /// the agent launched, files touched by another tool — are
+    /// reconciled by the time the first MCP tool call arrives. The
+    /// staleness-check stamp is updated on the way out so the first
+    /// tool call doesn't re-walk the tree.
+    ///
+    /// The completion flag is flipped on every exit path (including
+    /// errors) so [`Self::wait_for_startup_catch_up`] never hangs.
+    pub async fn run_startup_catch_up_sync(&self) {
+        let Some(cg) = self.cg.as_ref() else {
+            self.startup_catch_up_done.store(true, Ordering::Release);
+            return;
+        };
+        let stale = match cg.find_stale_files_bounded().await {
+            crate::tokensave::AutoSyncScope::Sync(stale) => stale,
+            scope => {
+                eprintln!("[tokensave] {}", auto_sync_refusal(&scope));
+                self.startup_catch_up_done.store(true, Ordering::Release);
+                return;
+            }
+        };
+        if !stale.is_empty() {
+            if let Err(e) = cg.sync_if_stale_silent(&stale).await {
+                eprintln!("[tokensave] startup catch-up sync failed: {e}");
+                self.startup_catch_up_done.store(true, Ordering::Release);
+                return;
+            }
+        }
+        self.refresh_file_token_map().await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        self.last_staleness_check_at.store(now, Ordering::Release);
+        self.startup_catch_up_done.store(true, Ordering::Release);
+    }
+
+    /// Returns `true` once the detached
+    /// [`Self::run_startup_catch_up_sync`] task has finished (success
+    /// or error). Production code never needs this — the MCP loop runs
+    /// regardless of catch-up state — but tests poll it to avoid
+    /// racing the catch-up task against later DB assertions.
+    pub fn startup_catch_up_done(&self) -> bool {
+        self.startup_catch_up_done.load(Ordering::Acquire)
+    }
+
+    /// Polls [`Self::startup_catch_up_done`] with a 25 ms interval up
+    /// to `timeout`, returning `true` if catch-up completed within the
+    /// budget. Tests use this to make the otherwise-detached #414
+    /// task observable.
+    pub async fn wait_for_startup_catch_up(&self, timeout: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while !self.startup_catch_up_done() {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        true
+    }
+
+    /// Test-only: clear the 30 s staleness cooldown so the next
+    /// [`Self::maybe_sync_if_stale`] actually runs. The startup catch-up sync
+    /// stamps this during `McpServer::new`, so without a reset an integration
+    /// test cannot reach the resync path at all inside its own lifetime.
+    #[doc(hidden)]
+    pub fn reset_staleness_cooldown(&self) {
+        self.last_staleness_check_at.store(0, Ordering::Release);
+    }
+
+    /// True while a lazy resync spawned by [`Self::maybe_sync_if_stale`] is
+    /// still running — i.e. the call that triggered it returned on its budget
+    /// rather than waiting the work out (#535).
+    pub fn lazy_sync_in_flight(&self) -> bool {
+        self.lazy_sync_in_flight.load(Ordering::Acquire)
+    }
+
+    /// Blocks until no lazy resync is in flight, or `timeout` elapses.
+    /// Returns whether the resync finished in time.
+    pub async fn wait_for_lazy_sync(&self, timeout: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while self.lazy_sync_in_flight() {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        true
+    }
+
+    /// Walk the project tree, sync any stale files, and refresh the
+    /// file-to-token-count map — but only if at least 30 s have passed
+    /// since the last successful sync. The cooldown is the gate: while
+    /// it holds, this returns immediately, so dropping it into every
+    /// `tools/call` handler is cheap.
+    ///
+    /// Concurrent callers are serialized via
+    /// [`Self::last_staleness_check_at`]: the first caller stamps `now`
+    /// into the field with `compare_exchange`; later callers within the
+    /// same window see the stamp and bail. If the actual sync work
+    /// fails, the stamp still advances — failure to walk the tree
+    /// should not cause every subsequent tool call to retry.
+    pub async fn maybe_sync_if_stale(self: &Arc<Self>) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let Some(cg) = self.cg.as_ref() else {
+            return;
+        };
+        let last_sync = cg.last_sync_timestamp().await;
+        if now.saturating_sub(last_sync) < 30 {
+            return;
+        }
+
+        let previous = self.last_staleness_check_at.load(Ordering::Acquire);
+        if now.saturating_sub(previous) < 30 {
+            return;
+        }
+        if self
+            .last_staleness_check_at
+            .compare_exchange(previous, now, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        // Overlap guard (#535). The cooldown above is keyed on when a check
+        // *started*; a resync that runs longer than its own window would let
+        // the next call start a second walk over the same tree.
+        if self
+            .lazy_sync_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        // Bound the *wait*, not the work (#535). The walk and resync run in a
+        // detached task holding a strong reference, so an in-flight sync is
+        // never dropped part-way through its DB writes — the same reasoning as
+        // the startup catch-up sync. What is bounded is how long the calling
+        // tool blocks on it: past the budget we answer from the graph as it
+        // stands and let the resync land for a later call. Previously this
+        // work was unbounded and inline, so a large tree could stall an
+        // interactive call past the client's request deadline, and a client
+        // that disables a server on timeout lost tokensave for the session.
+        let server = Arc::clone(self);
+        let in_flight = Arc::clone(&self.lazy_sync_in_flight);
+        let task = tokio::spawn(async move {
+            server.run_lazy_resync().await;
+            in_flight.store(false, Ordering::Release);
+        });
+
+        let Some(budget) = auto_sync_budget() else {
+            // Opt-out: wait indefinitely, the pre-#535 behaviour.
+            let _ = task.await;
+            return;
+        };
+
+        if tokio::time::timeout(budget, task).await.is_err() {
+            eprintln!(
+                "[tokensave] lazy sync exceeded {}ms; answering from the current graph and \
+                 finishing the resync in the background",
+                budget.as_millis()
+            );
+        }
+    }
+
+    /// The body of the lazy resync: walk for stale files, sync them, refresh
+    /// the token map. Split out of [`Self::maybe_sync_if_stale`] so it can run
+    /// in a detached task that outlives the call that triggered it.
+    async fn run_lazy_resync(&self) {
+        let Some(cg) = self.cg.as_ref() else {
+            return;
+        };
+        crate::branch::collect_if_enabled(cg.project_root(), &[cg.db_path()]).await;
+        let stale = match cg.find_stale_files_bounded().await {
+            crate::tokensave::AutoSyncScope::Sync(stale) => stale,
+            scope => {
+                eprintln!("[tokensave] {}", auto_sync_refusal(&scope));
+                return;
+            }
+        };
+        if !stale.is_empty() {
+            if let Err(e) = cg.sync_if_stale_silent(&stale).await {
+                eprintln!("[tokensave] lazy sync failed: {e}");
+                return;
+            }
+        }
+        // Always refresh: a sibling MCP peer may have synced the DB
+        // between our cooldown windows, in which case `stale` is empty
+        // here but our in-memory `file_token_map` is still pre-sync.
+        self.refresh_file_token_map().await;
+    }
+
+    /// On the first `tools/call` of the session, force a per-project reindex if
+    /// a major version bump or a stale DB schema requires it.
+    ///
+    /// "Needed" is true when the recorded `last_indexed_version` → running
+    /// transition classifies as [`crate::cloud::BumpKind::Major`] **or** the
+    /// project DB schema is older than this build's latest. An empty
+    /// `last_indexed_version` (pre-7.0 projects) is treated as needing a reindex
+    /// so the latest schema columns are backfilled.
+    ///
+    /// When needed, a forced full reindex runs in a detached background task so
+    /// the triggering tool response is never blocked. On success the marker is
+    /// advanced to the running version and the project config is saved. When not
+    /// needed but the marker is merely behind, the marker is advanced without a
+    /// reindex. The whole evaluation runs at most once per session, gated by
+    /// [`Self::version_reindex_started`].
+    fn maybe_reindex_on_version_bump(self: &Arc<Self>) {
+        // Once-gate: only the first caller proceeds.
+        if self
+            .version_reindex_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let Some(server) = weak.upgrade() else {
+                return;
+            };
+            server.run_version_reindex().await;
+            server.version_reindex_done.store(true, Ordering::Release);
+        });
+    }
+
+    /// Evaluates and, if required, performs the version-aware forced reindex.
+    ///
+    /// Best-effort: any failure is logged, never panics, and still advances the
+    /// session gate so the work is not retried in a tight loop.
+    async fn run_version_reindex(&self) {
+        let running = env!("CARGO_PKG_VERSION");
+        let Some(cg) = self.cg.as_ref() else {
+            return;
+        };
+        let project_root = cg.project_root().to_path_buf();
+
+        let mut config = match crate::config::load_config(&project_root) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[tokensave] version reindex: failed to load config: {e}");
+                return;
+            }
+        };
+
+        let bump = crate::cloud::bump_kind(&config.last_indexed_version, running);
+        let needs_reindex =
+            bump == crate::cloud::BumpKind::Major || cg.needs_schema_upgrade().await;
+
+        if needs_reindex {
+            eprintln!(
+                "[tokensave] major upgrade or schema change detected \
+                 (indexed by {:?}, running {running}) — forcing project reindex…",
+                config.last_indexed_version
+            );
+            if let Err(e) = cg.index_all().await {
+                eprintln!("[tokensave] version reindex failed: {e}");
+                return;
+            }
+            self.refresh_file_token_map().await;
+            config.last_indexed_version = running.to_string();
+            if let Err(e) = crate::config::save_config(&project_root, &config) {
+                eprintln!("[tokensave] version reindex: failed to save config: {e}");
+            }
+        } else if config.last_indexed_version != running {
+            // No reindex needed (patch/minor/none) but advance the marker so we
+            // don't keep re-evaluating across sessions.
+            config.last_indexed_version = running.to_string();
+            if let Err(e) = crate::config::save_config(&project_root, &config) {
+                eprintln!("[tokensave] version marker advance: failed to save config: {e}");
+            }
+        }
+    }
+
+    /// Returns `true` once the version-aware reindex evaluation has settled.
+    ///
+    /// Production code never needs this; tests poll it to make the otherwise
+    /// detached background task observable.
+    pub fn version_reindex_done(&self) -> bool {
+        self.version_reindex_done.load(Ordering::Acquire)
+    }
+
+    /// Returns whether the version-aware reindex gate has been evaluated.
+    #[cfg(feature = "test-transport")]
+    #[doc(hidden)]
+    pub fn version_reindex_started(&self) -> bool {
+        self.version_reindex_started.load(Ordering::Acquire)
+    }
+
+    /// Polls [`Self::version_reindex_done`] every 25 ms up to `timeout`.
+    ///
+    /// Returns `true` if the evaluation settled within the budget.
+    pub async fn wait_for_version_reindex(&self, timeout: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while !self.version_reindex_done() {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        true
+    }
+
+    /// Returns the number of global-ledger persistence tasks spawned.
+    #[cfg(feature = "test-transport")]
+    #[doc(hidden)]
+    pub fn accounting_tasks_started(&self) -> usize {
+        self.accounting_tasks_started.load(Ordering::Acquire)
+    }
+
+    /// Returns the number of global-ledger persistence tasks still running.
+    #[cfg(feature = "test-transport")]
+    #[doc(hidden)]
+    pub fn accounting_tasks_pending(&self) -> usize {
+        self.accounting_tasks_pending.load(Ordering::Acquire)
+    }
+
+    /// Waits until all spawned global-ledger persistence tasks have settled.
+    #[cfg(feature = "test-transport")]
+    #[doc(hidden)]
+    pub async fn wait_for_accounting_idle(&self, timeout: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while self.accounting_tasks_pending() != 0 {
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::task::yield_now().await;
+        }
+        true
+    }
+
+    /// Internal: snapshot of the current `file_token_map`. Exposed for
+    /// integration tests only; not part of the stable public API.
+    #[doc(hidden)]
+    pub fn file_token_map_snapshot(&self) -> HashMap<String, u64> {
+        self.file_token_map
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    /// Uploads the accumulated saved-token delta to the worldwide counter, at
+    /// most once a day. Best-effort, never blocks for long.
+    ///
+    /// Two gates, doing different jobs. The in-process one keeps a busy server
+    /// from loading the user config on every single tool call; the daily one in
+    /// `cloud::upload_is_due` decides whether a request is actually made, and is
+    /// shared with the CLI so both cadences are the same decision.
+    ///
+    /// Nothing is lost by declining to upload: `last_flushed_tokens` advances
+    /// only on success, so the delta is re-derived from the running total next
+    /// time. That is also why the accumulated total is not *persisted* when the
+    /// upload is skipped — writing it while `last_flushed_tokens` stays put
+    /// would count the same tokens twice.
     async fn maybe_flush_worldwide(&self) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
         let last = self.last_flush_at.load(Ordering::Relaxed);
-        if now - last < 30 {
+        if now - last < FLUSH_CHECK_INTERVAL_SECS {
             return;
         }
         // Mark as attempted immediately to prevent re-entry.
@@ -154,16 +1590,16 @@ impl McpServer {
         let success = tokio::task::spawn_blocking(move || {
             let mut config = crate::user_config::UserConfig::load();
             config.pending_upload += delta;
-            if config.upload_enabled {
-                if crate::cloud::flush_pending(config.pending_upload).is_some() {
-                    config.pending_upload = 0;
-                    config.last_upload_at = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64;
-                    config.save();
-                    return true;
-                }
+            if !crate::cloud::upload_is_due(&config, now) {
+                // Deliberately not saved: see the note above on double counting.
+                return false;
+            }
+            config.last_flush_attempt_at = now;
+            if crate::cloud::flush_pending(config.pending_upload).is_some() {
+                config.pending_upload = 0;
+                config.last_upload_at = now;
+                config.save();
+                return true;
             }
             config.save();
             false
@@ -179,6 +1615,9 @@ impl McpServer {
     /// Returns a version-update warning if a newer release is available.
     /// Results are cached for `VERSION_CHECK_INTERVAL` (15 minutes).
     async fn check_version_update(&self) -> Option<String> {
+        if !crate::cloud::update_check_enabled() {
+            return None;
+        }
         let current = env!("CARGO_PKG_VERSION");
 
         // Fast path: serve from cache if still fresh.
@@ -207,7 +1646,7 @@ impl McpServer {
 
         // Update cache regardless of fetch outcome so we don't retry immediately.
         if let Ok(mut cache) = self.version_cache.lock() {
-            cache.latest = latest.clone();
+            cache.latest.clone_from(&latest);
             cache.checked_at = Some(Instant::now());
         }
 
@@ -222,42 +1661,271 @@ impl McpServer {
         }
     }
 
+    /// Process a single raw JSON-RPC line and write the response.
+    /// Used to replay a peeked `initialize` message that was consumed before
+    /// the server's main loop started.
+    pub async fn handle_and_write(
+        self: &Arc<Self>,
+        line: &str,
+        transport: &mut impl super::transport::McpWriter,
+    ) {
+        let parsed: std::result::Result<super::transport::JsonRpcRequest, _> =
+            serde_json::from_str(line);
+        let response = match parsed {
+            Ok(request) => self.handle_request(&request).await,
+            Err(e) => Some(super::transport::JsonRpcResponse::error(
+                Value::Null,
+                super::transport::ErrorCode::ParseError,
+                format!("failed to parse JSON-RPC request: {e}"),
+            )),
+        };
+        if let Some(resp) = response {
+            let json_str = serde_json::to_string(&resp).unwrap_or_default();
+            // `write_line` expects the caller to terminate the line. Without
+            // the `\n` a line-framed MCP client never sees the handshake
+            // response complete and hangs waiting for the rest of the line.
+            let _ = transport.write_line(&format!("{json_str}\n")).await;
+            let _ = transport.flush().await;
+        }
+    }
+
     /// Runs the server, reading JSON-RPC requests from stdin and writing
     /// responses to stdout. Runs until stdin is closed or a shutdown signal
     /// (SIGINT/SIGTERM) is received, then performs graceful cleanup.
-    pub async fn run(&self, transport: &mut impl super::transport::McpTransport) -> Result<()> {
-        debug_assert!(self.stats.total_requests.load(Ordering::Relaxed) == 0,
-            "server run() called on an already-used server");
+    pub async fn run(
+        self: &Arc<Self>,
+        transport: impl super::transport::McpTransport,
+    ) -> Result<()> {
+        self.run_with_idle_timeout(transport, None).await
+    }
 
-        loop {
-            let line: String = {
+    /// Is a detached startup job still running?
+    ///
+    /// The idle deadline must not cut one of these off. Both are spawned
+    /// rather than awaited, so a server can look idle — no request in flight,
+    /// nothing on stdin — while it is still doing the work a client is about
+    /// to depend on. Startup catch-up is always spawned, so its `done` flag
+    /// settles either way; the version reindex is checked as
+    /// started-and-not-finished, because a session that never triggers one
+    /// must not be treated as forever busy.
+    fn startup_work_in_flight(&self) -> bool {
+        defer_idle_exit(
+            self.startup_catch_up_done.load(Ordering::Acquire),
+            self.version_reindex_started.load(Ordering::Acquire),
+            self.version_reindex_done.load(Ordering::Acquire),
+        )
+    }
+
+    /// Run the MCP loop, optionally exiting after `idle_timeout` passes with
+    /// no request (#436).
+    ///
+    /// A host that keeps a finished subagent's server alive never closes its
+    /// stdin, so the EOF that would normally stop the server never arrives and
+    /// one server accumulates per subagent, each holding its index open. That
+    /// is the host's bug to fix — the servers are all children of the same
+    /// still-live supervisor, so there is no dead-parent signal to key on
+    /// either — but a deadline bounds the damage without waiting for it.
+    ///
+    /// Off unless asked for. Whether this is safe depends on the host starting
+    /// a fresh server when a tool is called after an idle exit, which varies by
+    /// host and is not something tokensave can detect, so the default stays
+    /// today's indefinite lifetime.
+    ///
+    /// The deadline is evaluated **only** while parked waiting for the next
+    /// line, never during request handling: the timer is created fresh each
+    /// time the loop parks, so a request that takes longer than the timeout
+    /// cannot be interrupted by it, and the window after it starts whole.
+    ///
+    /// Requests are answered one at a time, except for read-only tool calls,
+    /// which run concurrently (#685). The deadline therefore watches the
+    /// transport rather than the requests: a server with a request in flight
+    /// is not idle.
+    pub async fn run_with_idle_timeout(
+        self: &Arc<Self>,
+        transport: impl super::transport::McpTransport,
+        idle_timeout: Option<std::time::Duration>,
+    ) -> Result<()> {
+        let (reader, writer) = transport.split();
+        self.run_with_halves(reader, writer, idle_timeout).await
+    }
+
+    /// Runs the server over an already-split transport.
+    pub async fn run_with_halves(
+        self: &Arc<Self>,
+        mut reader: impl super::transport::McpReader + 'static,
+        mut writer: impl super::transport::McpWriter + 'static,
+        idle_timeout: Option<std::time::Duration>,
+    ) -> Result<()> {
+        let already_started = self.run_started.swap(true, Ordering::Relaxed);
+        debug_assert!(
+            !already_started,
+            "server run() called on an already-used server"
+        );
+
+        // Registered once, for the life of the loop, rather than per
+        // iteration (#450/#436).
+        //
+        // Creating the stream inside the loop meant it existed only while
+        // `select!` awaited the next line, and was dropped before
+        // `handle_request` ran. Tokio's registration is process-global and is
+        // *not* undone on drop, so the default disposition — terminate — was
+        // permanently replaced after the first iteration, while for most of a
+        // busy server's life nothing was listening. A SIGTERM delivered during
+        // request handling therefore neither killed the process nor reached
+        // the loop: the next iteration built a fresh stream, which cannot see
+        // an event delivered before it existed. That is the reported
+        // behaviour, a server that ignores `kill` and needs `SIGKILL`.
+        //
+        // Held across the whole loop, the stream coalesces and retains a
+        // signal delivered while it is not being polled, so a SIGTERM arriving
+        // mid-request is observed at the top of the next iteration and the
+        // server leaves through the normal graceful shutdown. Note this waits
+        // for the in-flight request to finish; interrupting a long sync
+        // mid-flight is a separate decision, tracked on #450.
+        #[cfg(unix)]
+        #[allow(clippy::expect_used)]
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
+
+        // The reader runs in its own task so the loop can answer a request
+        // while the next one is still arriving. `read_line` is not
+        // cancellation-safe — a half-read line would be lost if the future
+        // were dropped — so it must never be polled from a `select!`.
+        let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel();
+        let reader_task = tokio::spawn(async move {
+            while let Ok(Some(line)) = reader.read_line().await {
+                if line_tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Responses come back through a channel so a request handled
+        // concurrently can be written while the loop waits for the next line.
+        let (response_tx, mut response_rx) = tokio::sync::mpsc::unbounded_channel();
+        // Dropped when the client closes the connection, so the channel ends
+        // with the requests still in flight.
+        let mut response_tx = Some(response_tx);
+        // Set when the client closes the connection. The loop then stops
+        // waiting for requests but still answers the ones in flight.
+        let input_closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Bounds how many read-only calls run at once. Each holds its own
+        // scan, so an unbounded fan-out would let a burst of searches read
+        // the whole project several times over.
+        let concurrency = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS));
+        let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // The handles of the requests still running, so the shutdown can wait
+        // for them instead of leaving them against a closing database.
+        let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+        'serve: loop {
+            // The inner loop exists only so a deferred idle expiry can re-arm:
+            // a deadline that lands while a detached startup job is still
+            // running is not evidence the server is finished with, so it waits
+            // out another whole window rather than exiting or being ignored.
+            let line: String = 'wait: loop {
                 #[cfg(unix)]
                 {
-                    let mut sigterm = tokio::signal::unix::signal(
-                        tokio::signal::unix::SignalKind::terminate(),
-                    )
-                    .expect("failed to register SIGTERM handler");
                     tokio::select! {
-                        result = transport.read_line() => {
-                            match result {
-                                Ok(Some(line)) => line,
-                                _ => break,
+                        line = async {
+                            if input_closed.load(Ordering::Acquire) {
+                                // The client is gone: no more requests will
+                                // arrive, so this waits for nothing.
+                                std::future::pending::<Option<String>>().await
+                            } else {
+                                line_rx.recv().await
+                            }
+                        } => {
+                            match line {
+                                Some(line) => break 'wait line,
+                                // The client closed the connection. The
+                                // requests already in flight are still
+                                // answered, and the server leaves once they
+                                // are.
+                                None => {
+                                    input_closed.store(true, Ordering::Release);
+                                    // Dropping the loop's sender lets the
+                                    // response channel close once the
+                                    // requests in flight have answered, which
+                                    // is what ends the loop.
+                                    response_tx = None;
+                                    continue 'wait;
+                                }
                             }
                         }
-                        _ = tokio::signal::ctrl_c() => break,
-                        _ = sigterm.recv() => break,
+                        response = response_rx.recv() => {
+                            match response {
+                                Some(response) => {
+                                    if !self.write_response(&mut writer, response).await {
+                                        break 'serve;
+                                    }
+                                }
+                                None => break 'serve,
+                            }
+                        }
+                        _ = tokio::signal::ctrl_c() => break 'serve,
+                        _ = sigterm.recv() => break 'serve,
+                        // Set by the process-wide handler in `cancel`, which
+                        // observes a signal the moment it lands rather than
+                        // only while this loop is parked here — and by the
+                        // orphan watchdog, which has no signal to deliver at
+                        // all (#450).
+                        () = crate::cancel::cancelled() => break 'serve,
+                        () = idle_deadline(idle_timeout) => {
+                            if self.startup_work_in_flight()
+                                || in_flight.load(Ordering::Acquire) > 0
+                            {
+                                continue 'wait;
+                            }
+                            report_idle_exit(idle_timeout);
+                            break 'serve;
+                        }
                     }
                 }
                 #[cfg(not(unix))]
                 {
                     tokio::select! {
-                        result = transport.read_line() => {
-                            match result {
-                                Ok(Some(line)) => line,
-                                _ => break,
+                        line = async {
+                            if input_closed.load(Ordering::Acquire) {
+                                std::future::pending::<Option<String>>().await
+                            } else {
+                                line_rx.recv().await
+                            }
+                        } => {
+                            match line {
+                                Some(line) => break 'wait line,
+                                None => {
+                                    input_closed.store(true, Ordering::Release);
+                                    // Dropping the loop's sender lets the
+                                    // response channel close once the
+                                    // requests in flight have answered, which
+                                    // is what ends the loop.
+                                    response_tx = None;
+                                    continue 'wait;
+                                }
                             }
                         }
-                        _ = tokio::signal::ctrl_c() => break,
+                        response = response_rx.recv() => {
+                            match response {
+                                Some(response) => {
+                                    if !self.write_response(&mut writer, response).await {
+                                        break 'serve;
+                                    }
+                                }
+                                None => break 'serve,
+                            }
+                        }
+                        _ = tokio::signal::ctrl_c() => break 'serve,
+                        () = crate::cancel::cancelled() => break 'serve,
+                        () = idle_deadline(idle_timeout) => {
+                            if self.startup_work_in_flight()
+                                || in_flight.load(Ordering::Acquire) > 0
+                            {
+                                continue 'wait;
+                            }
+                            report_idle_exit(idle_timeout);
+                            break 'serve;
+                        }
                     }
                 }
             };
@@ -270,87 +1938,203 @@ impl McpServer {
             // Parse the incoming JSON
             let parsed: std::result::Result<JsonRpcRequest, _> = serde_json::from_str(&line);
 
-            let response = match parsed {
-                Ok(request) => self.handle_request(&request).await,
-                Err(e) => Some(JsonRpcResponse::error(
-                    Value::Null,
-                    ErrorCode::ParseError,
-                    format!("failed to parse JSON-RPC request: {}", e),
-                )),
+            let request = match parsed {
+                Ok(request) => request,
+                Err(e) => {
+                    let response = JsonRpcResponse::error(
+                        Value::Null,
+                        ErrorCode::ParseError,
+                        format!("failed to parse JSON-RPC request: {e}"),
+                    );
+                    if !self.write_response(&mut writer, response).await {
+                        break 'serve;
+                    }
+                    continue;
+                }
             };
 
-            // Drain and write any pending notifications (e.g., version warnings).
-            {
-                let notifications: Vec<Value> = self
-                    .pending_notifications
-                    .lock()
-                    .map(|mut p| p.drain(..).collect())
-                    .unwrap_or_default();
-                for notification in notifications {
-                    if let Ok(s) = serde_json::to_string(&notification) {
-                        let _ = transport.write_line(&format!("{}\n", s)).await;
-                        let _ = transport.flush().await;
+            // A read-only tool call does not change the index, so it can run
+            // while another request is being answered (#685). Everything else
+            // — an edit, a rename, a sync — still runs alone, in order.
+            if self.can_run_concurrently(&request) {
+                let server = Arc::clone(self);
+                let Some(response_tx) = response_tx.as_ref().cloned() else {
+                    break 'serve;
+                };
+                let concurrency = Arc::clone(&concurrency);
+                let in_flight = Arc::clone(&in_flight);
+                let permit = match concurrency.acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => break 'serve,
+                };
+                in_flight.fetch_add(1, Ordering::AcqRel);
+                tasks.push(tokio::spawn(async move {
+                    let _permit = permit;
+                    let response = server.handle_request(&request).await;
+                    in_flight.fetch_sub(1, Ordering::AcqRel);
+                    if let Some(response) = response {
+                        let _ = response_tx.send(response);
                     }
-                }
+                }));
+                // Reap the finished ones so the list does not grow with every
+                // request of a long session.
+                tasks.retain(|task| !task.is_finished());
+                continue;
             }
+
+            let response = self.handle_request(&request).await;
 
             // Write response (if any) as a single line to stdout
             if let Some(resp) = response {
-                let json_line = match serde_json::to_string(&resp) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("failed to serialize response: {}", e);
-                        continue;
-                    }
-                };
-                let output = format!("{}\n", json_line);
-                if let Err(e) = transport.write_line(&output).await {
-                    eprintln!("failed to write response: {}", e);
-                    break;
-                }
-                if let Err(e) = transport.flush().await {
-                    eprintln!("failed to flush stdout: {}", e);
-                    break;
+                if !self.write_response(&mut writer, resp).await {
+                    break 'serve;
                 }
             }
         }
 
+        // The reader is parked on the transport and will never return; the
+        // loop is over, so it must not outlive it.
+        reader_task.abort();
+        // Requests still running are given a moment to finish: they hold the
+        // database, and the shutdown checkpoints it. A request that does not
+        // finish in time is dropped rather than holding the exit open.
+        if !tasks.is_empty() {
+            let drain = async {
+                for task in tasks.drain(..) {
+                    let _ = task.await;
+                }
+            };
+            if tokio::time::timeout(std::time::Duration::from_secs(5), drain)
+                .await
+                .is_err()
+            {
+                eprintln!("[tokensave] shutdown: dropped a request still in flight");
+            }
+        }
         self.shutdown().await;
         Ok(())
     }
 
-    /// Performs graceful shutdown: persists the tokens-saved counter,
-    /// flushes pending tokens to the worldwide counter, checkpoints the WAL,
-    /// and logs a session summary.
-    async fn shutdown(&self) {
+    /// Whether the named tool only reads the graph, and may therefore be
+    /// answered while another request is in flight (#685).
+    pub fn is_read_only_tool(&self, name: &str) -> bool {
+        self.read_only_tools.contains(name)
+    }
+
+    /// Whether a request may be answered while another one is in flight.
+    ///
+    /// Only a read-only tool call qualifies: it does not change the index, so
+    /// two of them can run at the same time. Everything else — an edit, a
+    /// rename, a sync, the handshake — runs alone, in the order it arrived
+    /// (#685).
+    fn can_run_concurrently(&self, request: &JsonRpcRequest) -> bool {
+        if request.method != "tools/call" {
+            return false;
+        }
+        let Some(params) = request.params.as_ref() else {
+            return false;
+        };
+        let Some(name) = params.get("name").and_then(Value::as_str) else {
+            return false;
+        };
+        self.read_only_tools.contains(name)
+    }
+
+    /// Writes any pending notifications (e.g., version warnings).
+    async fn write_pending_notifications(&self, writer: &mut impl super::transport::McpWriter) {
+        let notifications: Vec<Value> = self
+            .pending_notifications
+            .lock()
+            .map(|mut p| p.drain(..).collect())
+            .unwrap_or_default();
+        for notification in notifications {
+            if let Ok(s) = serde_json::to_string(&notification) {
+                let _ = writer.write_line(&format!("{s}\n")).await;
+                let _ = writer.flush().await;
+            }
+        }
+    }
+
+    /// Writes one response line. Returns `false` when the transport is gone,
+    /// which ends the serve loop.
+    ///
+    /// Any pending notifications (e.g., version warnings) go out first, so a
+    /// caller that reads one line at a time sees them before the response
+    /// they belong to.
+    async fn write_response(
+        &self,
+        writer: &mut impl super::transport::McpWriter,
+        response: JsonRpcResponse,
+    ) -> bool {
+        self.write_pending_notifications(writer).await;
+        let json_line = match serde_json::to_string(&response) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("failed to serialize response: {e}");
+                return true;
+            }
+        };
+        let output = format!("{json_line}\n");
+        if let Err(e) = writer.write_line(&output).await {
+            eprintln!("failed to write response: {e}");
+            return false;
+        }
+        if let Err(e) = writer.flush().await {
+            eprintln!("failed to flush stdout: {e}");
+            return false;
+        }
+        true
+    }
+
+    /// Persists the tokens-saved counter, flushes pending tokens to the
+    /// worldwide counter, checkpoints the WAL, and logs a session summary.
+    ///
+    /// Idempotent — safe to call multiple times. `run` invokes it once when
+    /// its main loop exits; callers (e.g. `main.rs`, tests) may invoke it
+    /// explicitly afterwards without re-running the persistence logic.
+    pub async fn shutdown(&self) {
+        // Idempotency guard: only run the persistence path once.
+        if self.shutdown_done.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
         let uptime = self.stats.started_at.elapsed();
         let tool_calls = self.stats.tool_calls.load(Ordering::Relaxed);
         let tokens_saved = self.tokens_saved.load(Ordering::Relaxed);
 
         // Persist final tokens-saved value
-        if let Err(e) = self.cg.set_tokens_saved(tokens_saved).await {
-            eprintln!("[tokensave] warning: failed to persist tokens_saved on shutdown: {e}");
+        if let Some(cg) = self.cg.as_ref() {
+            if let Err(e) = cg.set_tokens_saved(tokens_saved).await {
+                eprintln!("[tokensave] warning: failed to persist tokens_saved on shutdown: {e}");
+            }
         }
 
         // Update global DB with final count and checkpoint it
         if let Some(ref gdb) = self.global_db {
-            gdb.upsert(self.cg.project_root(), tokens_saved).await;
+            if let Some(cg) = self.cg.as_ref() {
+                gdb.upsert(cg.project_root(), tokens_saved).await;
+            }
             gdb.checkpoint().await;
         }
 
-        // Flush remaining delta to worldwide counter (what periodic flushes missed)
+        // Record the remaining delta the periodic flushes did not upload, and
+        // upload it only if a day has passed. Unlike the periodic path this
+        // always *persists* the accumulated total: the process is ending, so
+        // `last_flushed_tokens` is about to be lost and the config file is the
+        // only thing that will still remember these tokens.
         let last_flushed = self.last_flushed_tokens.load(Ordering::Relaxed);
         if tokens_saved > last_flushed {
             let delta = tokens_saved - last_flushed;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
             let mut config = crate::user_config::UserConfig::load();
             config.pending_upload += delta;
-            if config.upload_enabled {
-                if let Some(_total) = crate::cloud::flush_pending(config.pending_upload) {
+            if crate::cloud::upload_is_due(&config, now) {
+                config.last_flush_attempt_at = now;
+                if crate::cloud::flush_pending(config.pending_upload).is_some() {
                     config.pending_upload = 0;
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64;
                     config.last_upload_at = now;
                 }
             }
@@ -358,44 +2142,67 @@ impl McpServer {
         }
 
         // Checkpoint WAL to merge it into the main database file
-        if let Err(e) = self.cg.checkpoint().await {
-            eprintln!("[tokensave] warning: failed to checkpoint WAL on shutdown: {e}");
+        if let Some(cg) = self.cg.as_ref() {
+            if let Err(e) = cg.checkpoint().await {
+                eprintln!("[tokensave] warning: failed to checkpoint WAL on shutdown: {e}");
+            }
         }
 
         eprintln!(
             "[tokensave] shutdown: {} tool calls, ~{} tokens saved, uptime {}s",
-            tool_calls, tokens_saved, uptime.as_secs()
+            tool_calls,
+            tokens_saved,
+            uptime.as_secs()
         );
     }
 
     /// Dispatches a parsed JSON-RPC request to the appropriate handler.
     ///
     /// Returns `None` for notifications (requests without an `id`).
-    pub(crate) async fn handle_request(&self, request: &JsonRpcRequest) -> Option<JsonRpcResponse> {
-        debug_assert!(!request.method.is_empty(), "handle_request called with empty method");
+    pub(crate) async fn handle_request(
+        self: &Arc<Self>,
+        request: &JsonRpcRequest,
+    ) -> Option<JsonRpcResponse> {
+        debug_assert!(
+            !request.method.is_empty(),
+            "handle_request called with empty method"
+        );
         self.stats.total_requests.fetch_add(1, Ordering::Relaxed);
         let id = request.id.clone();
 
         let result = match request.method.as_str() {
-            "initialize" => Some(self.handle_initialize(id)),
-            "initialized" => {
-                // Notification - no response required
-                None
-            }
-            "notifications/initialized" => {
-                // Alternative notification path - no response required
+            "initialize" => Some(Self::handle_initialize(
+                id,
+                request.params.as_ref(),
+                self.report_savings(),
+                self.served_projects(),
+                self.toolset(),
+            )),
+            "initialized" | "notifications/initialized" | "notifications/roots/list_changed" => {
+                // Known notifications - no response required
                 None
             }
             "tools/list" => Some(self.handle_tools_list(id)),
-            "tools/call" => Some(self.handle_tools_call(id, &request.params).await),
-            "resources/list" => Some(self.handle_resources_list(id)),
-            "resources/read" => Some(self.handle_resources_read(id, &request.params).await),
-            "ping" => Some(JsonRpcResponse::success(id, json!({}))),
-            _ => Some(JsonRpcResponse::error(
-                id,
-                ErrorCode::MethodNotFound,
-                format!("method not found: {}", request.method),
-            )),
+            "tools/call" => Some(self.handle_tools_call(id, request.params.as_ref()).await),
+            "resources/list" => Some(Self::handle_resources_list(id)),
+            "resources/read" => Some(
+                self.handle_resources_read(id, request.params.as_ref())
+                    .await,
+            ),
+            "ping" | "logging/setLevel" => Some(JsonRpcResponse::success(id, json!({}))),
+            _ => {
+                if request.is_notification() {
+                    // JSON-RPC 2.0 §4.1: The server MUST NOT reply to a notification,
+                    // including those with unhandled methods.
+                    None
+                } else {
+                    Some(JsonRpcResponse::error(
+                        id,
+                        ErrorCode::MethodNotFound,
+                        format!("method not found: {}", request.method),
+                    ))
+                }
+            }
         };
 
         // Track errors
@@ -409,13 +2216,79 @@ impl McpServer {
     }
 
     /// Handles the `initialize` method, returning server capabilities.
-    fn handle_initialize(&self, id: Value) -> JsonRpcResponse {
+    ///
+    /// `report_savings` gates the closing sentence only. Asking the agent to
+    /// report savings makes it spend output tokens narrating them on nearly
+    /// every turn, which for some users offsets the input-token win the server
+    /// exists to deliver (#356); when the setting is off the sentence is
+    /// omitted, and `handle_tools_call` correspondingly stops appending the
+    /// `tokensave_metrics:` line it refers to.
+    fn handle_initialize(
+        id: Value,
+        params: Option<&Value>,
+        report_savings: bool,
+        projects: ServedProjects<'_>,
+        toolset: crate::config::Toolset,
+    ) -> JsonRpcResponse {
+        const BASE_INSTRUCTIONS: &str = "tokensave is a code-graph MCP server. \
+            Start with tokensave_context for any code exploration task \
+            — it returns relevant symbols, relationships, and code \
+            snippets for a natural-language query. Use tokensave_search \
+            to find specific symbols by name, or with literal: true to \
+            find exact text, searching every form a call or implementation \
+            takes in the file's language; grep only for a regex or for the \
+            files a literal search reports as unscanned. Discovery and analysis \
+            tools are read-only and safe to call in parallel. Edit \
+            and session-memory tools can mutate local project state \
+            and declare readOnlyHint=false.";
+        const REPORT_SAVINGS_INSTRUCTION: &str =
+            " When a tool result contains a `tokensave_metrics:` line, \
+             report the savings to the user (e.g. 'TokenSave'd ~N tokens').";
+
+        let mut instructions = BASE_INSTRUCTIONS.to_string();
+        // #576: the cross-project rules are sent here once per session. The
+        // `graph_root` description, which a client sends once per tool on
+        // every turn, keeps only one sentence.
+        instructions.push_str(crate::mcp::tools::GRAPH_SELECTOR_INSTRUCTIONS);
+        if report_savings {
+            instructions.push_str(REPORT_SAVINGS_INSTRUCTION);
+        }
+        // Sibling checkouts are queryable through `graph_root` but nothing else
+        // reveals that they exist, so a cross-repo session reads an empty result
+        // as "no such symbol" instead of retrying next door (#375).
+        match projects {
+            ServedProjects::Default { siblings } if !siblings.is_empty() => {
+                let _ = write!(
+                    instructions,
+                    " These other initialized projects sit beside this one and can be \
+                     queried by passing graph_root: {}.",
+                    siblings.join(", ")
+                );
+            }
+            ServedProjects::Default { .. } => {}
+            // #606: without a default project every graph call needs
+            // `graph_root`, so the session must learn that, and the choices,
+            // before its first call is refused.
+            ServedProjects::None { registered } => {
+                instructions.push(' ');
+                instructions.push_str(&no_default_project_message(registered));
+            }
+        }
+
+        // #576: with the core toolset the list grows when `tokensave_more` is
+        // called, so the client must be told that it can change. The full
+        // toolset never changes, and its handshake stays as it was.
+        let core = toolset == crate::config::Toolset::Core;
+        if core {
+            instructions.push_str(&crate::mcp::tools::core_toolset_instructions());
+        }
+
         JsonRpcResponse::success(
             id,
             json!({
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": negotiate_protocol_version(params),
                 "capabilities": {
-                    "tools": {},
+                    "tools": if core { json!({ "listChanged": true }) } else { json!({}) },
                     "resources": {},
                     "logging": {}
                 },
@@ -423,124 +2296,212 @@ impl McpServer {
                     "name": "tokensave",
                     "version": env!("CARGO_PKG_VERSION")
                 },
-                "instructions": "tokensave is a code-graph MCP server. \
-                    Start with tokensave_context for any code exploration task \
-                    — it returns relevant symbols, relationships, and code \
-                    snippets for a natural-language query. Use tokensave_search \
-                    to find specific symbols by name. All tools are read-only \
-                    and safe to call in parallel. \
-                    When a tool result contains a `tokensave_metrics:` line, \
-                    report the savings to the user (e.g. 'TokenSave\\'d ~N tokens')."
+                "instructions": instructions
             }),
         )
     }
 
-    /// Handles the `tools/list` method, returning all available tool definitions.
+    /// Handles the `tools/list` method, returning the tool definitions of the
+    /// configured toolset (#576). A tool that is not listed still answers a
+    /// `tools/call`.
     fn handle_tools_list(&self, id: Value) -> JsonRpcResponse {
-        let tools = get_tool_definitions();
+        let revealed = self
+            .revealed_areas
+            .lock()
+            .map(|areas| areas.clone())
+            .unwrap_or_default();
+        let tools = get_listed_tool_definitions(self.toolset(), &revealed);
+        // Marks the schema as actually delivered so `handle_tools_call` knows
+        // it's fair to debit `schema_overhead_tokens` against this session —
+        // see `schema_served`.
+        self.schema_served.store(true, Ordering::Relaxed);
         JsonRpcResponse::success(id, json!({ "tools": tools }))
     }
 
-    /// Handles the `resources/list` method, returning available resources.
-    fn handle_resources_list(&self, id: Value) -> JsonRpcResponse {
-        JsonRpcResponse::success(id, json!({
-            "resources": [
-                {
-                    "uri": "tokensave://status",
-                    "name": "Graph Status",
-                    "description": "Code graph statistics: node/edge/file counts, languages, DB size, and index freshness.",
-                    "mimeType": "application/json"
-                },
-                {
-                    "uri": "tokensave://files",
-                    "name": "File List",
-                    "description": "All indexed project files grouped by directory with symbol counts.",
-                    "mimeType": "text/plain"
-                },
-                {
-                    "uri": "tokensave://overview",
-                    "name": "Project Overview",
-                    "description": "High-level project summary: language distribution, largest modules, and top entry points.",
-                    "mimeType": "text/plain"
-                },
-                {
-                    "uri": "tokensave://branches",
-                    "name": "Tracked Branches",
-                    "description": "List of tracked branches with DB sizes, parent branch, and last sync time. Empty if multi-branch is not active.",
-                    "mimeType": "application/json"
+    /// Handles `tokensave_more` (#576): lists one more tool area from now on.
+    ///
+    /// This is server state, not a graph query, so it does not go through the
+    /// tool handlers. A new area queues `notifications/tools/list_changed`,
+    /// which the run loop writes before this response, and the client then
+    /// fetches `tools/list` again.
+    fn handle_more(&self, id: Value, arguments: &Value) -> JsonRpcResponse {
+        let area = arguments.get("area").and_then(Value::as_str).unwrap_or("");
+        if !is_tool_area(area) {
+            let names: Vec<&str> = TOOL_AREAS.iter().map(|(name, _, _)| *name).collect();
+            return JsonRpcResponse::error(
+                id,
+                ErrorCode::InvalidParams,
+                format!("unknown area '{area}'. Areas: {}, all", names.join(", ")),
+            );
+        }
+        let text = if self.toolset() == crate::config::Toolset::Full {
+            "All tools are already listed.".to_string()
+        } else {
+            let added = self
+                .revealed_areas
+                .lock()
+                .is_ok_and(|mut areas| areas.insert(area.to_string()));
+            if added {
+                if let Ok(mut pending) = self.pending_notifications.lock() {
+                    pending.push(json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/tools/list_changed"
+                    }));
                 }
-            ]
-        }))
+            }
+            let names: Vec<String> = get_tool_definitions()
+                .into_iter()
+                .filter(|definition| !is_hidden_tool(definition))
+                .map(|definition| definition.name)
+                .filter(|name| !CORE_TOOLS.contains(&name.as_str()))
+                .filter(|name| area == "all" || tool_area(name) == area)
+                .collect();
+            format!("Listed from now on ({area}): {}", names.join(", "))
+        };
+        JsonRpcResponse::success(id, json!({ "content": [{ "type": "text", "text": text }] }))
+    }
+
+    /// Handles the `resources/list` method, returning available resources.
+    fn handle_resources_list(id: Value) -> JsonRpcResponse {
+        JsonRpcResponse::success(
+            id,
+            json!({
+                "resources": [
+                    {
+                        "uri": "tokensave://status",
+                        "name": "Graph Status",
+                        "description": "Code graph statistics: node/edge/file counts, languages, DB size, and index freshness.",
+                        "mimeType": "application/json"
+                    },
+                    {
+                        "uri": "tokensave://files",
+                        "name": "File List",
+                        "description": "All indexed project files grouped by directory with symbol counts.",
+                        "mimeType": "text/plain"
+                    },
+                    {
+                        "uri": "tokensave://overview",
+                        "name": "Project Overview",
+                        "description": "High-level project summary: language distribution, largest modules, and top entry points.",
+                        "mimeType": "text/plain"
+                    },
+                    {
+                        "uri": "tokensave://branches",
+                        "name": "Tracked Branches",
+                        "description": "List of tracked branches with DB sizes, parent branch, and last sync time. Empty if multi-branch is not active.",
+                        "mimeType": "application/json"
+                    },
+                    {
+                        "uri": "tokensave://schema",
+                        "name": "SQLite Schema",
+                        "description": "Documentation for the .tokensave/tokensave.db schema: tables, columns, indexes, and common query recipes. Use when MCP tools don't cover your query and you need to drop down to raw SQL.",
+                        "mimeType": "text/markdown"
+                    }
+                ]
+            }),
+        )
     }
 
     /// Handles the `resources/read` method, returning resource contents.
-    async fn handle_resources_read(&self, id: Value, params: &Option<Value>) -> JsonRpcResponse {
-        let uri = params
-            .as_ref()
-            .and_then(|p| p.get("uri"))
-            .and_then(|v| v.as_str());
+    async fn handle_resources_read(&self, id: Value, params: Option<&Value>) -> JsonRpcResponse {
+        let uri = params.and_then(|p| p.get("uri")).and_then(|v| v.as_str());
 
-        let uri = match uri {
-            Some(u) => u,
-            None => {
-                return JsonRpcResponse::error(
-                    id,
-                    ErrorCode::InvalidParams,
-                    "missing 'uri' in resources/read params".to_string(),
-                );
-            }
+        let Some(uri) = uri else {
+            return JsonRpcResponse::error(
+                id,
+                ErrorCode::InvalidParams,
+                "missing 'uri' in resources/read params".to_string(),
+            );
         };
 
+        if uri == "tokensave://schema" {
+            return Self::read_resource_schema(id);
+        }
+        // Every other resource describes the default project (#606).
+        let Some(cg) = self.cg.as_ref() else {
+            return self.no_default_project_error(id);
+        };
+        let lease = match self.branch_runtime.lease(cg).await {
+            Ok(lease) => lease,
+            Err(error) => {
+                return JsonRpcResponse::error(
+                    id,
+                    ErrorCode::InternalError,
+                    format!("branch context switch failed: {error}"),
+                )
+            }
+        };
+        let cg = lease.as_deref().unwrap_or(cg);
         match uri {
-            "tokensave://status" => self.read_resource_status(id).await,
-            "tokensave://files" => self.read_resource_files(id).await,
-            "tokensave://overview" => self.read_resource_overview(id).await,
-            "tokensave://branches" => self.read_resource_branches(id),
+            "tokensave://status" => Self::read_resource_status(cg, id).await,
+            "tokensave://files" => Self::read_resource_files(cg, id).await,
+            "tokensave://overview" => Self::read_resource_overview(cg, id).await,
+            "tokensave://branches" => Self::read_resource_branches(cg, id),
             _ => JsonRpcResponse::error(
                 id,
                 ErrorCode::InvalidParams,
-                format!("unknown resource URI: {}", uri),
+                format!("unknown resource URI: {uri}"),
             ),
         }
     }
 
+    /// Returns the `SQLite` schema documentation as a markdown resource.
+    /// Sourced from `src/db/migrations.rs::create_schema` — keep in sync.
+    fn read_resource_schema(id: Value) -> JsonRpcResponse {
+        JsonRpcResponse::success(
+            id,
+            json!({
+                "contents": [{
+                    "uri": "tokensave://schema",
+                    "mimeType": "text/markdown",
+                    "text": SCHEMA_MARKDOWN
+                }]
+            }),
+        )
+    }
+
     /// Returns graph statistics as a JSON resource.
-    async fn read_resource_status(&self, id: Value) -> JsonRpcResponse {
-        match self.cg.get_stats().await {
+    async fn read_resource_status(cg: &TokenSave, id: Value) -> JsonRpcResponse {
+        match cg.get_stats().await {
             Ok(stats) => {
                 let text = serde_json::to_string_pretty(&stats).unwrap_or_default();
-                JsonRpcResponse::success(id, json!({
-                    "contents": [{
-                        "uri": "tokensave://status",
-                        "mimeType": "application/json",
-                        "text": text
-                    }]
-                }))
+                JsonRpcResponse::success(
+                    id,
+                    json!({
+                        "contents": [{
+                            "uri": "tokensave://status",
+                            "mimeType": "application/json",
+                            "text": text
+                        }]
+                    }),
+                )
             }
             Err(e) => JsonRpcResponse::error(
                 id,
                 ErrorCode::InternalError,
-                format!("failed to read graph stats: {}", e),
+                format!("failed to read graph stats: {e}"),
             ),
         }
     }
 
     /// Returns the file list as a text resource (grouped by directory).
-    async fn read_resource_files(&self, id: Value) -> JsonRpcResponse {
-        match self.cg.get_all_files().await {
+    async fn read_resource_files(cg: &TokenSave, id: Value) -> JsonRpcResponse {
+        match cg.get_all_files().await {
             Ok(mut files) => {
                 files.sort_by(|a, b| a.path.cmp(&b.path));
                 let mut groups: std::collections::BTreeMap<String, Vec<String>> =
                     std::collections::BTreeMap::new();
                 for f in &files {
-                    let dir = f.path.rfind('/')
-                        .map(|i| &f.path[..i])
-                        .unwrap_or(".")
-                        .to_string();
-                    let name = f.path.rfind('/')
+                    let dir = f.path.rfind('/').map_or(".", |i| &f.path[..i]).to_string();
+                    #[allow(clippy::map_unwrap_or)]
+                    let name = f
+                        .path
+                        .rfind('/')
                         .map(|i| &f.path[i + 1..])
                         .unwrap_or(&f.path);
-                    groups.entry(dir).or_default()
+                    groups
+                        .entry(dir)
+                        .or_default()
                         .push(format!("{} ({} symbols)", name, f.node_count));
                 }
                 let mut lines = Vec::new();
@@ -548,41 +2509,44 @@ impl McpServer {
                 for (dir, entries) in &groups {
                     lines.push(format!("\n{}/ ({} files)", dir, entries.len()));
                     for entry in entries {
-                        lines.push(format!("  {}", entry));
+                        lines.push(format!("  {entry}"));
                     }
                 }
                 let text = lines.join("\n");
-                JsonRpcResponse::success(id, json!({
-                    "contents": [{
-                        "uri": "tokensave://files",
-                        "mimeType": "text/plain",
-                        "text": text
-                    }]
-                }))
+                JsonRpcResponse::success(
+                    id,
+                    json!({
+                        "contents": [{
+                            "uri": "tokensave://files",
+                            "mimeType": "text/plain",
+                            "text": text
+                        }]
+                    }),
+                )
             }
             Err(e) => JsonRpcResponse::error(
                 id,
                 ErrorCode::InternalError,
-                format!("failed to read file list: {}", e),
+                format!("failed to read file list: {e}"),
             ),
         }
     }
 
     /// Returns a high-level project overview as a text resource.
-    async fn read_resource_overview(&self, id: Value) -> JsonRpcResponse {
-        let stats = match self.cg.get_stats().await {
+    async fn read_resource_overview(cg: &TokenSave, id: Value) -> JsonRpcResponse {
+        let stats = match cg.get_stats().await {
             Ok(s) => s,
             Err(e) => {
                 return JsonRpcResponse::error(
                     id,
                     ErrorCode::InternalError,
-                    format!("failed to read graph stats: {}", e),
+                    format!("failed to read graph stats: {e}"),
                 );
             }
         };
 
         let mut lines = Vec::new();
-        lines.push(format!("Project: {}", self.cg.project_root().display()));
+        lines.push(format!("Project: {}", cg.project_root().display()));
         lines.push(format!(
             "Graph: {} nodes, {} edges, {} files",
             stats.node_count, stats.edge_count, stats.file_count
@@ -594,7 +2558,7 @@ impl McpServer {
             let mut langs: Vec<_> = stats.files_by_language.iter().collect();
             langs.sort_by(|a, b| b.1.cmp(a.1));
             for (lang, count) in &langs {
-                lines.push(format!("  {} ({} files)", lang, count));
+                lines.push(format!("  {lang} ({count} files)"));
             }
         }
 
@@ -604,23 +2568,26 @@ impl McpServer {
             let mut kinds: Vec<_> = stats.nodes_by_kind.iter().collect();
             kinds.sort_by(|a, b| b.1.cmp(a.1));
             for (kind, count) in kinds.iter().take(10) {
-                lines.push(format!("  {} ({})", kind, count));
+                lines.push(format!("  {kind} ({count})"));
             }
         }
 
         let text = lines.join("\n");
-        JsonRpcResponse::success(id, json!({
-            "contents": [{
-                "uri": "tokensave://overview",
-                "mimeType": "text/plain",
-                "text": text
-            }]
-        }))
+        JsonRpcResponse::success(
+            id,
+            json!({
+                "contents": [{
+                    "uri": "tokensave://overview",
+                    "mimeType": "text/plain",
+                    "text": text
+                }]
+            }),
+        )
     }
 
-    fn read_resource_branches(&self, id: Value) -> JsonRpcResponse {
-        let tokensave_dir = crate::config::get_tokensave_dir(self.cg.project_root());
-        let current = self.cg.active_branch();
+    fn read_resource_branches(cg: &TokenSave, id: Value) -> JsonRpcResponse {
+        let tokensave_dir = crate::config::get_tokensave_dir(cg.project_root());
+        let current = cg.active_branch();
 
         let branches: Vec<Value> = match crate::branch_meta::load_branch_meta(&tokensave_dir) {
             Some(meta) => meta
@@ -628,10 +2595,7 @@ impl McpServer {
                 .iter()
                 .map(|(name, entry)| {
                     let db_path = tokensave_dir.join(&entry.db_file);
-                    let size_bytes = db_path
-                        .metadata()
-                        .map(|m| m.len())
-                        .unwrap_or(0);
+                    let size_bytes = db_path.metadata().map_or(0, |m| m.len());
                     json!({
                         "name": name,
                         "db_file": entry.db_file,
@@ -651,86 +2615,393 @@ impl McpServer {
             "branches": branches,
         });
         let text = serde_json::to_string_pretty(&output).unwrap_or_default();
-        JsonRpcResponse::success(id, json!({
-            "contents": [{
-                "uri": "tokensave://branches",
-                "mimeType": "application/json",
-                "text": text
-            }]
-        }))
+        JsonRpcResponse::success(
+            id,
+            json!({
+                "contents": [{
+                    "uri": "tokensave://branches",
+                    "mimeType": "application/json",
+                    "text": text
+                }]
+            }),
+        )
     }
 
     /// Handles the `tools/call` method, dispatching to the appropriate tool handler.
-    async fn handle_tools_call(&self, id: Value, params: &Option<Value>) -> JsonRpcResponse {
-        debug_assert!(!id.is_null(), "handle_tools_call called with null request id");
-        let params = match params {
-            Some(p) => p,
-            None => {
-                return JsonRpcResponse::error(
-                    id,
-                    ErrorCode::InvalidParams,
-                    "missing params for tools/call".to_string(),
-                );
-            }
+    async fn handle_tools_call(
+        self: &Arc<Self>,
+        id: Value,
+        params: Option<&Value>,
+    ) -> JsonRpcResponse {
+        debug_assert!(
+            !id.is_null(),
+            "handle_tools_call called with null request id"
+        );
+        let Some(params) = params else {
+            return JsonRpcResponse::error(
+                id,
+                ErrorCode::InvalidParams,
+                "missing params for tools/call".to_string(),
+            );
         };
 
-        let tool_name = match params.get("name").and_then(|v| v.as_str()) {
-            Some(name) => name,
-            None => {
-                return JsonRpcResponse::error(
-                    id,
-                    ErrorCode::InvalidParams,
-                    "missing 'name' in tools/call params".to_string(),
-                );
-            }
+        let Some(tool_name) = params.get("name").and_then(|v| v.as_str()) else {
+            return JsonRpcResponse::error(
+                id,
+                ErrorCode::InvalidParams,
+                "missing 'name' in tools/call params".to_string(),
+            );
         };
 
-        let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+        // Logged before selector validation and before the pre-dispatch
+        // freshness/reindex gates (#535). Those gates can outlast a client's
+        // request deadline, and a call that hangs inside them used to print
+        // nothing at all, leaving the stderr tail naming the *previous* call
+        // and misdirecting the diagnosis. Entry and dispatch are separate
+        // lines so a tail ending in `tool call:` with no matching `dispatch:`
+        // localises the hang to the pre-dispatch work.
+        eprintln!("[tokensave] tool call: {tool_name}");
 
+        let mut arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+
+        // Request-side cost of this call (tool name + arguments + JSON-RPC
+        // framing) — computed before graph selectors or qualified IDs are
+        // removed from the mutable dispatch arguments below. Folded into
+        // `after` alongside the response text, since the model pays for
+        // sending the original call.
+        let request_overhead = request_overhead_tokens(tool_name, &arguments);
+
+        // Count every named tool attempt before selector validation. Rejected
+        // selectors are still deliberate calls, but they must not reach
+        // freshness work or handler dispatch.
         self.stats.tool_calls.fetch_add(1, Ordering::Relaxed);
-        eprintln!("[tokensave] tool call: {}", tool_name);
         if let Ok(mut counts) = self.tool_call_counts.lock() {
             *counts.entry(tool_name.to_string()).or_insert(0) += 1;
         }
 
-        let server_stats = if tool_name == "tokensave_status" {
+        if tool_name == MORE_TOOL {
+            return self.handle_more(id, &arguments);
+        }
+
+        let has_selector = arguments.as_object().is_some_and(|object| {
+            object.contains_key("graph_root") || object.contains_key("graph_branch")
+        });
+        if has_selector && !self.graph_scoped_tools.contains(tool_name) {
+            return JsonRpcResponse::error(
+                id,
+                ErrorCode::InvalidParams,
+                format!("tool '{tool_name}' does not support graph_root or graph_branch selectors"),
+            );
+        }
+
+        let selection = if has_selector {
+            match GraphSelector::take(&mut arguments) {
+                Ok(Some(selection)) => Some(selection),
+                Ok(None) => unreachable!("has_selector guarantees a selector field"),
+                Err(error) => {
+                    return JsonRpcResponse::error(
+                        id,
+                        ErrorCode::InvalidParams,
+                        format!("invalid graph selector: {error}"),
+                    );
+                }
+            }
+        } else {
+            None
+        };
+
+        // Federation (#376). Handled before the single-graph pipeline because
+        // it runs that pipeline once per root and merges. Selected calls are
+        // already outside savings accounting (#363), so an early return here
+        // loses nothing a single-root selected call would have recorded.
+        if let Some(selection) = selection.as_ref() {
+            if selection.is_federated() {
+                if !FEDERATABLE_TOOLS.contains(&tool_name) {
+                    return JsonRpcResponse::error(
+                        id,
+                        ErrorCode::InvalidParams,
+                        format!(
+                            "tool '{tool_name}' answers about a single graph, so it accepts one \
+                             graph_root rather than an array; a union of two graphs is not a \
+                             larger answer. Federation is available for: {}",
+                            FEDERATABLE_TOOLS.join(", ")
+                        ),
+                    );
+                }
+                return self
+                    .handle_federated_call(id, tool_name, &arguments, selection)
+                    .await;
+            }
+        }
+
+        let selected = if let Some(selection) = selection {
+            let selector = selection
+                .selectors()
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| unreachable!("a selection always names at least one root"));
+            let selected = match select_graph(selector, self.served_root()).await {
+                Ok(selected) => selected,
+                Err(TokenSaveError::Config { message }) => {
+                    return JsonRpcResponse::error(
+                        id,
+                        ErrorCode::InvalidParams,
+                        format!("invalid graph selector: {message}"),
+                    );
+                }
+                Err(error) => {
+                    return JsonRpcResponse::error(
+                        id,
+                        ErrorCode::InternalError,
+                        format!("failed to open selected graph: {error}"),
+                    );
+                }
+            };
+            if let Err(error) = decode_selected_inputs(&selected, &mut arguments) {
+                return JsonRpcResponse::error(
+                    id,
+                    ErrorCode::InvalidParams,
+                    format!("invalid selected graph arguments: {error}"),
+                );
+            }
+            Some(selected)
+        } else {
+            if let Err(error) = validate_local_inputs(&arguments) {
+                return JsonRpcResponse::error(
+                    id,
+                    ErrorCode::InvalidParams,
+                    format!("invalid local graph arguments: {error}"),
+                );
+            }
+            None
+        };
+
+        // A local operation holds its branch lease through dispatch. This
+        // serializes transitions with concurrent calls without mutating handles
+        // retained by startup/background tasks or explicit graph selections.
+        let runtime_lease = if selected.is_none() {
+            if let Some(initial) = self.cg.as_ref() {
+                match self.branch_runtime.lease(initial).await {
+                    Ok(lease) => Some(lease),
+                    Err(error) => {
+                        return JsonRpcResponse::error(
+                            id,
+                            ErrorCode::InternalError,
+                            format!("branch context switch failed: {error}"),
+                        )
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let local_graph = runtime_lease
+            .as_ref()
+            .and_then(|lease| lease.as_deref())
+            .or(self.cg.as_ref());
+
+        if selected.is_none() {
+            // #606: with no default project, only `graph_root` can answer —
+            // except `tokensave_status`, the diagnostic tool, which reports
+            // that state instead of refusing.
+            if self.cg.is_none() {
+                if tool_name == "tokensave_status" {
+                    return JsonRpcResponse::success(id, self.no_default_project_status().await);
+                }
+                return self.no_default_project_error(id);
+            }
+            let Some(cg) = local_graph else {
+                return self.no_default_project_error(id);
+            };
+            if let Some(reason) = self.branch_drift_refusal(cg, tool_name) {
+                return JsonRpcResponse::error(id, ErrorCode::InvalidRequest, reason);
+            }
+
+            // Strict mode (#372 §2): refuse rather than answer from a tree the
+            // user is not in. Checked before freshness and before dispatch, so
+            // a refused call does no work. Selected graphs are exempt — naming
+            // `graph_root` is an explicit request for another project's
+            // snapshot, so "this isn't your working tree" is the point.
+            if let Some(reason) = self.strict_tree_refusal(cg, tool_name) {
+                return JsonRpcResponse::error(id, ErrorCode::InvalidRequest, reason);
+            }
+
+            // Notification-free freshness: walk the local tree and resync any
+            // stale files, gated by a 30 s cooldown. Explicitly selected
+            // graphs are read-only snapshots and never run local repair.
+            let quality_comparison = tool_name == "tokensave_branch_diff"
+                && arguments.get("quality").and_then(Value::as_bool) == Some(true);
+            if !quality_comparison && runtime_lease.as_ref().is_some_and(|lease| lease.is_none()) {
+                self.maybe_sync_if_stale().await;
+            }
+
+            // Evaluate the local project's version-aware reindex on every
+            // local path. The atomic once-gate keeps this at most once per
+            // session without letting a selected call consume the check.
+            if !quality_comparison && runtime_lease.as_ref().is_some_and(|lease| lease.is_none()) {
+                self.maybe_reindex_on_version_bump();
+            }
+        }
+
+        eprintln!("[tokensave] dispatch: {tool_name}");
+
+        let server_stats = if selected.is_none() && tool_name == "tokensave_status" {
             Some(self.server_stats_json().await)
         } else {
             None
         };
 
-        match handle_tool_call(&self.cg, tool_name, arguments, server_stats).await {
+        let timings_enabled = self.timings_enabled();
+        let handler_start = if timings_enabled {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+        let (dispatch_graph, scope_prefix) = match (selected.as_ref(), local_graph) {
+            (Some(selected), _) => (&selected.cg, None),
+            (None, Some(cg)) => (cg, self.scope_prefix()),
+            (None, None) => return self.no_default_project_error(id),
+        };
+        if selected.is_none() && runtime_lease.as_ref().is_some_and(|lease| lease.is_some()) {
+            if let Ok(fresh) = dispatch_graph.get_file_token_map().await {
+                if let Ok(mut map) = self.file_token_map.lock() {
+                    *map = fresh;
+                }
+            }
+        }
+        let baseline = baseline_policy(tool_name, &arguments);
+        let dispatch_outcome = handle_tool_call_with_session(
+            dispatch_graph,
+            tool_name,
+            arguments,
+            server_stats,
+            scope_prefix,
+            selected.is_some(),
+            Some(&self.session_state),
+        )
+        .await;
+        let handler_elapsed_us = handler_start.map(|t| t.elapsed().as_micros() as u64);
+        match dispatch_outcome {
             Ok(mut result) => {
-                let raw_file_tokens = self.accumulate_tokens_saved(&result.touched_files).await;
-                crate::monitor::write_entry(
-                    self.cg.project_root(),
-                    tool_name,
-                    raw_file_tokens,
-                    raw_file_tokens,
-                );
-                self.maybe_flush_worldwide().await;
-
-                // Estimate approximate token count of the graph response.
-                let response_tokens: u64 = result.value
-                    .get("content")
-                    .and_then(|c| c.as_array())
-                    .map(|arr| {
-                        let total_chars: usize = arr.iter()
-                            .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
-                            .map(|text| text.len())
-                            .sum();
-                        (total_chars / 4) as u64
-                    })
-                    .unwrap_or(0);
-
-                // Append per-call token savings to the response content.
-                if raw_file_tokens > 0 {
-                    if let Some(content) = result.value.get_mut("content").and_then(|c| c.as_array_mut()) {
-                        content.push(json!({"type": "text", "text": format!(
-                            "\ntokensave_metrics: before={raw_file_tokens} after={response_tokens}"
-                        )}));
+                if let Some(us) = handler_elapsed_us {
+                    let obj = result.value.as_object_mut();
+                    if let Some(map) = obj {
+                        let meta = map.entry("_meta").or_insert_with(|| json!({}));
+                        if let Some(meta_obj) = meta.as_object_mut() {
+                            meta_obj.insert("duration_us".to_string(), json!(us));
+                        }
                     }
                 }
+                if let Some(selected) = selected.as_ref() {
+                    if let Err(error) = qualify_result(selected, &mut result).await {
+                        return JsonRpcResponse::error(
+                            id,
+                            ErrorCode::InternalError,
+                            format!("tool execution failed: {error}"),
+                        );
+                    }
+
+                    // Selected graphs are read-only and intentionally skip
+                    // all local repair, accounting, and current-project
+                    // warnings. Only warnings recorded by the selected graph
+                    // itself are relevant to this response.
+                    if selected.cg.fallback_warning().is_some() {
+                        let warning = format_selected_fallback_warning(selected);
+                        if let Some(content) = result
+                            .value
+                            .get_mut("content")
+                            .and_then(|content| content.as_array_mut())
+                        {
+                            content.insert(0, json!({"type": "text", "text": warning}));
+                        }
+                    }
+                    let last_time = selected.cg.last_sync_timestamp().await;
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64;
+                    let age_secs = now.saturating_sub(last_time);
+                    let is_stale = last_time > 0 && age_secs > 3600;
+                    let is_suppressed = is_zero_hit_or_diagnostic(tool_name, &result);
+
+                    let prev_warned_at = self.selected_age_warnings_at.lock().map_or(0, |map| {
+                        map.get(&selected.provenance_root).copied().unwrap_or(0)
+                    });
+                    let should_warn = if should_emit_index_age_warning(
+                        prev_warned_at,
+                        now,
+                        is_stale,
+                        is_suppressed,
+                    ) {
+                        if let Ok(mut map) = self.selected_age_warnings_at.lock() {
+                            map.insert(selected.provenance_root.clone(), now);
+                        }
+                        true
+                    } else {
+                        if !is_stale {
+                            if let Ok(mut map) = self.selected_age_warnings_at.lock() {
+                                map.remove(&selected.provenance_root);
+                            }
+                        }
+                        false
+                    };
+
+                    if is_stale {
+                        if let Some(obj) = result.value.as_object_mut() {
+                            let meta = obj.entry("_meta").or_insert_with(|| json!({}));
+                            if let Some(meta_obj) = meta.as_object_mut() {
+                                meta_obj.insert(
+                                    "freshness".to_string(),
+                                    json!({
+                                        "index_age_secs": age_secs,
+                                        "last_sync_at": last_time,
+                                        "stale": true,
+                                        "warning_emitted": should_warn,
+                                    }),
+                                );
+                            }
+                        }
+                    }
+
+                    if should_warn {
+                        let warning = format_selected_index_age_warning(selected, age_secs);
+                        if let Some(content) = result
+                            .value
+                            .get_mut("content")
+                            .and_then(|content| content.as_array_mut())
+                        {
+                            content.insert(0, json!({"type": "text", "text": warning}));
+                        }
+                    }
+
+                    crate::memstats::record(tool_name);
+                    return JsonRpcResponse::success(id, result.value);
+                }
+
+                // Past the selected-graph return, the default project
+                // answered this call.
+                let cg = dispatch_graph;
+
+                // Estimate approximate token count of the tool's own answer,
+                // before any of the warnings/banners below are attached.
+                // Used as the baseline-cap basis (see `before_tokens` below)
+                // so a large staleness banner can't loosen the cap on a
+                // `Reference` tool's savings — the cap should track what the
+                // *answer* delivered, not incidental warning text.
+                let tool_response_tokens: u64 = result
+                    .value
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .map_or(0, |arr| {
+                        let total_bytes: usize = arr
+                            .iter()
+                            .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                            .map(str::len)
+                            .sum();
+                        (total_bytes / 4) as u64
+                    });
 
                 // Prepend version-update warning + queue logging notification.
                 if let Some(warning) = self.check_version_update().await {
@@ -754,62 +3025,344 @@ impl McpServer {
                     }
                 }
 
-                // Check per-file staleness for files touched by this tool call.
+                // Per-file staleness banner (#428 design): files this response
+                // referenced that are still pending after the in-line sync
+                // attempt get a focused banner naming them with edit ages,
+                // telling the agent to Read THOSE files directly while
+                // treating the rest of the response as authoritative.
+                // Replaces the previous all-or-nothing "STALE INDEX"
+                // warning that made agents distrust the entire answer.
                 if !result.touched_files.is_empty() {
-                    let stale_files = self.cg.check_file_staleness(&result.touched_files).await;
+                    let stale_files = cg.check_file_staleness(&result.touched_files).await;
                     if !stale_files.is_empty() {
-                        let warning = format!(
-                            "WARNING: STALE INDEX — {} file(s) modified since last sync: {}. Run `tokensave sync` to update.",
-                            stale_files.len(),
-                            stale_files.join(", ")
-                        );
-                        if let Some(content) = result.value.get_mut("content").and_then(|c| c.as_array_mut()) {
-                            content.insert(0, json!({"type": "text", "text": &warning}));
+                        let still_stale = match cg.sync_if_stale(&stale_files).await {
+                            Ok(false) => false,        // sync completed; files now fresh
+                            Ok(true) | Err(_) => true, // still stale (lock contention / sync error)
+                        };
+                        if still_stale {
+                            let banner =
+                                format_per_file_staleness_banner(cg.project_root(), &stale_files);
+                            // Machine-readable marker. Same shape as before
+                            // so existing scrapers keep working.
+                            let stale_json = serde_json::to_string(&stale_files)
+                                .unwrap_or_else(|_| "[]".to_string());
+                            let marker = format!("\ntokensave_graph_stale: {stale_json}");
+                            debug_assert!(
+                                result.value.is_object(),
+                                "tool result must be a JSON object so graph_stale can be attached"
+                            );
+                            if let Some(obj) = result.value.as_object_mut() {
+                                obj.insert("graph_stale".to_string(), json!(stale_files));
+                            }
+                            if let Some(content) = result
+                                .value
+                                .get_mut("content")
+                                .and_then(|c| c.as_array_mut())
+                            {
+                                content.insert(0, json!({"type": "text", "text": &banner}));
+                                content.push(json!({"type": "text", "text": marker}));
+                            }
                         }
                     }
                 }
 
                 // Warn if serving from a fallback (ancestor) branch DB.
-                if let Some(warning) = self.cg.fallback_warning() {
+                if let Some(warning) = cg.fallback_warning() {
                     let warning = format!("WARNING: {warning}");
-                    if let Some(content) = result.value.get_mut("content").and_then(|c| c.as_array_mut()) {
+                    if let Some(content) = result
+                        .value
+                        .get_mut("content")
+                        .and_then(|c| c.as_array_mut())
+                    {
                         content.insert(0, json!({"type": "text", "text": &warning}));
                     }
                 }
 
                 // Check overall index age (warn if older than 1 hour).
-                if let Ok(last_time) = self.cg.last_index_time().await {
+                // Uses `last_sync_timestamp` (sync execution time) not the
+                // max file `indexed_at` — a no-change sync still updates the
+                // sync metadata even though no file gets a fresh `indexed_at`,
+                // so a per-file fallback fires the warning forever on quiet
+                // repos (#86).
+                {
+                    let last_time = cg.last_sync_timestamp().await;
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs() as i64;
-                    let age_secs = now - last_time;
-                    if age_secs > 3600 {
-                        let hours = age_secs / 3600;
-                        let mins = (age_secs % 3600) / 60;
-                        let warning = if hours >= 24 {
-                            format!(
-                                "WARNING: Index last synced {}d {}h ago. Run `tokensave sync` to update.",
-                                hours / 24, hours % 24
-                            )
-                        } else {
-                            format!(
-                                "WARNING: Index last synced {}h {}m ago. Run `tokensave sync` to update.",
-                                hours, mins
-                            )
-                        };
-                        if let Some(content) = result.value.get_mut("content").and_then(|c| c.as_array_mut()) {
+                    let age_secs = now.saturating_sub(last_time);
+                    let is_stale = last_time > 0 && age_secs > 3600;
+                    let is_suppressed = is_zero_hit_or_diagnostic(tool_name, &result);
+
+                    let should_warn = if should_emit_index_age_warning(
+                        self.last_local_age_warning_at.load(Ordering::Acquire),
+                        now,
+                        is_stale,
+                        is_suppressed,
+                    ) {
+                        self.last_local_age_warning_at.store(now, Ordering::Release);
+                        true
+                    } else {
+                        if !is_stale {
+                            self.last_local_age_warning_at.store(0, Ordering::Release);
+                        }
+                        false
+                    };
+
+                    if is_stale {
+                        if let Some(obj) = result.value.as_object_mut() {
+                            let meta = obj.entry("_meta").or_insert_with(|| json!({}));
+                            if let Some(meta_obj) = meta.as_object_mut() {
+                                meta_obj.insert(
+                                    "freshness".to_string(),
+                                    json!({
+                                        "index_age_secs": age_secs,
+                                        "last_sync_at": last_time,
+                                        "stale": true,
+                                        "warning_emitted": should_warn,
+                                    }),
+                                );
+                            }
+                        }
+                    }
+
+                    if should_warn {
+                        let warning = format_local_index_age_warning(age_secs);
+                        if let Some(content) = result
+                            .value
+                            .get_mut("content")
+                            .and_then(|c| c.as_array_mut())
+                        {
                             content.insert(0, json!({"type": "text", "text": &warning}));
                         }
                     }
                 }
 
+                // Borrowed-worktree heads-up (#312). Inserted LAST so it
+                // appears FIRST in the response — the index serving the
+                // wrong branch is the most serious of these warnings to
+                // surface to the agent.
+                if let Some(ref m) = self.worktree_mismatch {
+                    let notice = crate::worktree::worktree_mismatch_notice(m);
+                    if let Some(content) = result
+                        .value
+                        .get_mut("content")
+                        .and_then(|c| c.as_array_mut())
+                    {
+                        content.insert(0, json!({"type": "text", "text": notice}));
+                    }
+                }
+
+                // Branch drift (#400). Unlike the worktree mismatch above,
+                // this is re-checked per call rather than cached at startup:
+                // it is caused by a `git checkout` *during* the session, so a
+                // value computed once would always say "no drift". Same
+                // failure shape though — answers about a tree the user is not
+                // in — so it rides the same channel.
+                if let Some(drift) = cg.branch_drift() {
+                    let notice = format!(
+                        "WARNING: tokensave results below come from branch '{}', but your \
+                         working tree is on '{}' — symbols that exist only on '{}' are \
+                         missing, and symbols shown may not exist on it. Restart the MCP \
+                         server to serve this branch.",
+                        drift.serving, drift.working_tree, drift.working_tree
+                    );
+                    if let Some(content) = result
+                        .value
+                        .get_mut("content")
+                        .and_then(|c| c.as_array_mut())
+                    {
+                        content.insert(0, json!({"type": "text", "text": notice}));
+                    }
+                }
+
+                // Every warning/banner above has now been attached to
+                // `content` — re-measure the *whole* response so `after`
+                // reflects what the model actually receives, not just the
+                // tool's own answer. Version warnings and staleness banners
+                // in particular can be substantial text; measuring before
+                // they were attached (the original bug) left `after`
+                // understating real cost and `saved` correspondingly
+                // inflated.
+                let full_response_tokens: u64 = result
+                    .value
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .map_or(0, |arr| {
+                        let total_bytes: usize = arr
+                            .iter()
+                            .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                            .map(str::len)
+                            .sum();
+                        (total_bytes / 4) as u64
+                    });
+
+                // `after`: everything the model actually paid for this call —
+                // the full response text (answer + any banners), the request
+                // it sent (name + args + JSON-RPC framing), and, once per
+                // session, the tool schema it loaded up front via
+                // `tools/list`. The original metric only counted the tool's
+                // own answer text, so overhead that's very real to the
+                // model — 80+ tool schemas, the call itself, warning banners
+                // — was invisible. Debited only once `schema_served` is
+                // true (i.e. `tools/list` actually ran): a client that
+                // invokes a known tool directly never paid for the schema
+                // listing, so charging it here would be a real cost with no
+                // matching event. If `tools/list` hasn't run yet,
+                // `schema_overhead_charged` is left unset so the overhead
+                // still gets debited on the first accounted call after it
+                // eventually does.
+                let schema_overhead = if self.schema_served.load(Ordering::Relaxed)
+                    && !self.schema_overhead_charged.swap(true, Ordering::Relaxed)
+                {
+                    self.schema_overhead_tokens
+                } else {
+                    0
+                };
+                let after_pre_metrics = full_response_tokens + request_overhead + schema_overhead;
+
+                // `before`: the full weight of every touched file, capped per
+                // the tool's baseline policy. Most tools return references
+                // (file paths, symbol names) rather than file content, so an
+                // agent would never have read every touched file in full —
+                // charging that full weight as the counterfactual wildly
+                // overstates savings for e.g. a dead-code scan touching 50
+                // files, or a cached/partial `tokensave_read` claiming a
+                // large file's full weight for a stub. The cap scales with
+                // `tool_response_tokens` alone (not `after`) — schema/
+                // request/banner overhead are real costs but say nothing
+                // about how much source the answer stood in for, and mixing
+                // them in would loosen the cap most on a session's first
+                // call, where the schema overhead is largest. It also never
+                // binds on a genuine full-file response, since that response
+                // is always at least as large as the source it wraps — see
+                // `accounting::baseline_policy`.
+                let full_file_tokens = self.touched_file_tokens(&result.touched_files);
+                let before_tokens = cap_baseline(baseline, full_file_tokens, tool_response_tokens);
+
+                // The metrics line itself is appended to `content` below, so
+                // it too costs the model tokens. Two-pass: render it once
+                // against the pre-metrics `after` to measure its own byte
+                // cost, then fold that in and re-render with the final
+                // numbers. `saved`'s digit count essentially never changes
+                // between the two passes, so this converges in one extra
+                // pass.
+                // The line is only ever appended to `content` when
+                // `before_tokens > 0` (see the shared `emit_metrics_line`
+                // below) — so its own token cost only belongs in `after` in
+                // that same case. Charging for it unconditionally would
+                // record phantom response tokens for a line that was never
+                // sent, and would also make a schema charge landing on a
+                // `before == 0` call invisible in both the response and
+                // what's persisted. One shared bool drives both decisions so
+                // they can't drift apart again.
+                // `report_savings = false` suppresses the line outright (#356).
+                // It flows through the same bool as the `before_tokens > 0`
+                // case, so the line's own token cost is not charged for a line
+                // that was never sent — and accounting to the global DB below
+                // is deliberately left outside this gate, so `tokensave gain`
+                // still sees every call.
+                let emit_metrics_line = before_tokens > 0 && cg.report_savings();
+                let render_metrics = |before: u64, after: u64, result: u64, saved: u64| -> String {
+                    format!("\ntokensave_metrics: before={before} after={after} result={result} saved={saved}")
+                };
+                let metrics_line_tokens = if emit_metrics_line {
+                    let provisional = render_metrics(
+                        before_tokens,
+                        after_pre_metrics,
+                        tool_response_tokens,
+                        before_tokens.saturating_sub(after_pre_metrics),
+                    );
+                    (provisional.len() / 4) as u64
+                } else {
+                    0
+                };
+                let after_tokens = after_pre_metrics + metrics_line_tokens;
+
+                // Per-call net, saturating: what this call alone reports as
+                // saved, never negative. Drives the displayed metrics line
+                // and the monitor log — unlike the persisted counter below,
+                // these stay simple, per-call figures with no carry-forward.
+                let net_saved = before_tokens.saturating_sub(after_tokens);
+
+                // What actually accrues to the persisted counter. Unlike
+                // `net_saved` above, a call whose `after` exceeds `before` —
+                // most notably the one that absorbs the one-time schema
+                // charge — doesn't just lose the excess: it's carried
+                // forward as session debt and paid down out of later calls'
+                // surplus first. See `settle_against_session_debt`.
+                let raw_delta = before_tokens as i64 - after_tokens as i64;
+                let credited = self.settle_against_session_debt(raw_delta);
+                self.add_tokens_saved(dispatch_graph, credited).await;
+                crate::monitor::write_entry(
+                    cg.project_root(),
+                    "tokensave",
+                    tool_name,
+                    net_saved,
+                    before_tokens,
+                );
+                // Memory instrumentation for #253: one RSS sample per
+                // handled tool call, attributed to the tool name. This
+                // generically covers every handler that materializes the
+                // graph (get_all_nodes callers included) at the single
+                // dispatch point.
+                crate::memstats::record(tool_name);
+                self.maybe_flush_worldwide().await;
+
+                // Append per-call token savings to the response content.
+                if emit_metrics_line {
+                    if let Some(content) = result
+                        .value
+                        .get_mut("content")
+                        .and_then(|c| c.as_array_mut())
+                    {
+                        content.push(json!({
+                            "type": "text",
+                            "text": render_metrics(before_tokens, after_tokens, tool_response_tokens, net_saved)
+                        }));
+                    }
+                }
+
+                // Persist to the cross-project savings ledger (best-effort, non-blocking).
+                {
+                    let project_path_str = cg.project_root().to_string_lossy().to_string();
+                    let tool_name_owned = tool_name.to_string();
+                    let ts = crate::tokensave::current_timestamp();
+                    #[cfg(feature = "test-transport")]
+                    let accounting_tasks_pending = {
+                        self.accounting_tasks_started.fetch_add(1, Ordering::AcqRel);
+                        self.accounting_tasks_pending.fetch_add(1, Ordering::AcqRel);
+                        Arc::clone(&self.accounting_tasks_pending)
+                    };
+                    tokio::spawn(async move {
+                        #[cfg(feature = "test-transport")]
+                        let _guard = AccountingTaskGuard(accounting_tasks_pending);
+                        if let Some(gdb) = crate::global_db::GlobalDb::open().await {
+                            gdb.record_savings(
+                                &project_path_str,
+                                &tool_name_owned,
+                                before_tokens,
+                                after_tokens,
+                                ts,
+                            )
+                            .await;
+                        }
+                    });
+                }
+
                 JsonRpcResponse::success(id, result.value)
+            }
+            Err(TokenSaveError::Config { message }) if selected.is_some() => {
+                JsonRpcResponse::error(
+                    id,
+                    ErrorCode::InvalidParams,
+                    format!("invalid selected graph arguments: {message}"),
+                )
             }
             Err(e) => JsonRpcResponse::error(
                 id,
                 ErrorCode::InternalError,
-                format!("tool execution failed: {}", e),
+                format!("tool execution failed: {e}"),
             ),
         }
     }
@@ -839,6 +3392,157 @@ impl McpServer {
             }
         }
 
+        // Surface the verbose worktree-mismatch warning when present, so
+        // `tokensave_status` is the one tool whose output is loud about
+        // serving a borrowed index (#312).
+        if let Some(ref m) = self.worktree_mismatch {
+            stats["worktree_mismatch"] = json!({
+                "worktree_root": m.worktree_root.display().to_string(),
+                "index_root": m.index_root.display().to_string(),
+                "warning": crate::worktree::worktree_mismatch_warning(m),
+            });
+        }
+
         stats
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod staleness_banner_tests {
+    use super::{
+        format_per_file_staleness_banner, format_selected_fallback_guidance, humanize_age,
+    };
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn humanize_age_picks_right_unit() {
+        assert_eq!(humanize_age(0), "0s ago");
+        assert_eq!(humanize_age(45), "45s ago");
+        assert_eq!(humanize_age(125), "2m ago");
+        assert_eq!(humanize_age(3_700), "1h ago");
+        assert_eq!(humanize_age(90_000), "1d ago");
+    }
+
+    #[test]
+    fn banner_lists_stale_files_with_age() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src").join("a.rs"), "fn a() {}").unwrap();
+        fs::write(root.join("src").join("b.rs"), "fn b() {}").unwrap();
+
+        let stale = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+        let banner = format_per_file_staleness_banner(root, &stale);
+        assert!(banner.contains("2 file(s) referenced below were edited"));
+        assert!(banner.contains("src/a.rs ("));
+        assert!(banner.contains("src/b.rs ("));
+        assert!(banner.contains("ago)"));
+        assert!(banner.contains("tokensave sync"));
+        // Critical UX shift: should NOT say "STALE INDEX" — the whole
+        // point of #428 is to scope the warning, not blanket-distrust
+        // the entire response.
+        assert!(!banner.contains("STALE INDEX"));
+    }
+
+    #[test]
+    fn banner_handles_missing_file_gracefully() {
+        let tmp = tempdir().unwrap();
+        let stale = vec!["does/not/exist.rs".to_string()];
+        let banner = format_per_file_staleness_banner(tmp.path(), &stale);
+        // Missing files still get listed (e.g. file deleted between
+        // sync and tool response). Age falls back to 0s.
+        assert!(banner.contains("does/not/exist.rs"));
+    }
+
+    #[test]
+    fn selected_fallback_guidance_treats_values_as_inert_text() {
+        let warning =
+            format_selected_fallback_guidance("/tmp/project $(touch pwned)", Some("review; id"));
+
+        assert!(warning.contains("\"/tmp/project $(touch pwned)\""));
+        assert!(warning.contains("\"review; id\""));
+        assert!(warning.contains("is using a fallback index"));
+        assert!(!warning.contains("branch fallback"));
+        assert!(!warning.contains('`'));
+        assert!(!warning.contains("tokensave branch add"));
+        assert!(!warning.contains("tokensave sync --path"));
+    }
+
+    #[test]
+    fn should_emit_index_age_warning_truth_table() {
+        use super::should_emit_index_age_warning;
+        // fresh -> no warning
+        assert!(!should_emit_index_age_warning(0, 10000, false, false));
+        // stale and suppressed (e.g. zero-hit or status) -> no warning
+        assert!(!should_emit_index_age_warning(0, 10000, true, true));
+        // stale, never warned -> warn
+        assert!(should_emit_index_age_warning(0, 10000, true, false));
+        // stale, warned recently (< 3600s ago) -> dedup / do not warn
+        assert!(!should_emit_index_age_warning(9000, 10000, true, false));
+        // stale, warned >= 3600s ago -> warn
+        assert!(should_emit_index_age_warning(6400, 10000, true, false));
+    }
+}
+
+#[cfg(test)]
+mod idle_timeout_tests {
+    use super::defer_idle_exit;
+
+    /// Startup catch-up is spawned unconditionally, so "not done" means it is
+    /// genuinely still walking the tree — and cutting that off would abandon
+    /// work the next client request depends on.
+    #[test]
+    fn a_running_startup_catch_up_defers_the_exit() {
+        assert!(defer_idle_exit(false, false, false));
+        assert!(defer_idle_exit(false, true, true));
+    }
+
+    /// The case that would have made the whole option a no-op: a session that
+    /// never triggers a version reindex leaves `reindex_done` false forever, so
+    /// keying on that alone would defer every expiry on every server.
+    #[test]
+    fn a_reindex_that_never_started_does_not_defer_forever() {
+        assert!(
+            !defer_idle_exit(true, false, false),
+            "an ordinary idle server must be allowed to exit"
+        );
+    }
+
+    #[test]
+    fn a_running_version_reindex_defers_the_exit() {
+        assert!(defer_idle_exit(true, true, false));
+    }
+
+    #[test]
+    fn a_finished_reindex_stops_deferring() {
+        assert!(!defer_idle_exit(true, true, true));
+    }
+}
+
+#[cfg(test)]
+mod startup_metadata_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn startup_metadata_preserves_registry_routing_and_schema_cost() {
+        let definitions = get_tool_definitions();
+        let graph: HashSet<_> = definitions
+            .iter()
+            .filter(|d| is_graph_scoped_tool(d))
+            .map(|d| d.name.clone())
+            .collect();
+        let selectorless: HashSet<_> = definitions
+            .iter()
+            .filter(|d| is_selectorless_local_graph_tool(d))
+            .map(|d| d.name.clone())
+            .collect();
+        let cost = schema_overhead_tokens(&crate::mcp::tools::get_always_load_tool_definitions());
+        let server = McpServer::new_without_project(Vec::new()).await;
+        assert_eq!(server.graph_scoped_tools, graph);
+        assert_eq!(server.selectorless_local_graph_tools, selectorless);
+        assert_eq!(server.schema_overhead_tokens, cost);
+        server.shutdown().await;
     }
 }

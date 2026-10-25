@@ -1,59 +1,123 @@
-//! Shared memory-mapped ring buffer for live token-savings monitoring.
+//! Global memory-mapped ring buffer for live token-savings monitoring.
 //!
-//! The MCP server calls [`write_entry`] after each tool call. The
-//! `tokensave monitor` TUI reads via [`MmapReader`]. Communication is
-//! lock-free: the writer increments `write_idx` after filling a slot;
-//! the reader polls `write_idx` to detect new entries.
+//! The mmap lives at `~/.tokensave/monitor.mmap` so a single TUI can
+//! show activity from every project on the machine. Multiple MCP server
+//! instances (one per project) write concurrently using file locking.
+//!
+//! Entry format is generic: each entry carries a **prefix** (tool suite
+//! name, e.g. "tokensave"), a **project** (folder name), and a
+//! **`tool_name`** (the specific MCP call).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use fs2::FileExt;
 
 // ── Layout constants ────────────────────────────────────────────────
-const VERSION: u8 = 1;
 const HEADER_SIZE: usize = 32;
-const ENTRY_SIZE: usize = 88;
+const ENTRY_SIZE: usize = 128;
 const RING_CAPACITY: usize = 256;
-const FILE_SIZE: usize = HEADER_SIZE + ENTRY_SIZE * RING_CAPACITY; // 22_560
+const FILE_SIZE: usize = HEADER_SIZE + ENTRY_SIZE * RING_CAPACITY;
 
-const NAME_LEN: usize = 64; // null-padded UTF-8
+const FIELD_LEN: usize = 32; // null-padded UTF-8 per string field
 
 // Header offsets
-const OFF_VERSION: usize = 0;
-const OFF_TOTAL_SAVED: usize = 1;
-const OFF_WRITE_IDX: usize = 9;
+const OFF_WRITE_IDX: usize = 0;
+// bytes 8..32 reserved
 
 // Entry field offsets (relative to entry start)
-const EOFF_NAME: usize = 0;
-const EOFF_DELTA: usize = 64;
-const EOFF_BEFORE: usize = 72;
-const EOFF_TIMESTAMP: usize = 80;
+const EOFF_PREFIX: usize = 0;
+const EOFF_PROJECT: usize = 32;
+const EOFF_TOOL: usize = 64;
+const EOFF_DELTA: usize = 96;
+const EOFF_BEFORE: usize = 104;
+const EOFF_TIMESTAMP: usize = 112;
+// bytes 120..128 padding
 
 const MMAP_FILENAME: &str = "monitor.mmap";
+const LOCK_FILENAME: &str = "monitor.lock";
+
+/// Resolve the global `~/.tokensave/` directory.
+///
+/// Resolved the way [`crate::global_db::global_db_path`] resolves it (`HOME`,
+/// then `USERPROFILE`), so the monitor and the savings ledger it mirrors live
+/// under one home. `dirs::home_dir` asks the known-folder API on Windows and
+/// ignores both variables, which split the two whenever `HOME` or
+/// `USERPROFILE` pointed elsewhere.
+fn global_tokensave_dir() -> Option<PathBuf> {
+    crate::agents::home_dir().map(|h| h.join(".tokensave"))
+}
 
 /// A single ring-buffer entry read from the mmap.
 #[derive(Debug, Clone)]
 pub struct MonitorEntry {
+    pub prefix: String,
+    pub project: String,
     pub tool_name: String,
     pub delta: u64,
     pub before: u64,
     pub timestamp: u64,
 }
 
+impl MonitorEntry {
+    /// Display label: `prefix - project - tool_name`
+    pub fn label(&self) -> String {
+        format!("{} - {} - {}", self.prefix, self.project, self.tool_name)
+    }
+}
+
 // ── Writer (called by MCP server) ───────────────────────────────────
 
-/// Write a tool-call entry to the monitor mmap. Best-effort: silently
-/// returns on any failure (file missing, mmap error, etc.).
-pub fn write_entry(project_root: &Path, tool_name: &str, delta: u64, before: u64) {
-    let mmap_path = project_root.join(".tokensave").join(MMAP_FILENAME);
-    let _ = write_entry_inner(&mmap_path, tool_name, delta, before);
+/// Write a tool-call entry to the global monitor mmap.
+///
+/// `project_root` is used to derive the folder name. `prefix` identifies
+/// the tool suite (e.g. "tokensave"). Best-effort: silently returns on
+/// any failure.
+pub fn write_entry(project_root: &Path, prefix: &str, tool_name: &str, delta: u64, before: u64) {
+    let Some(dir) = global_tokensave_dir() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let mmap_path = dir.join(MMAP_FILENAME);
+    let project = project_root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let _ = write_entry_inner(&mmap_path, prefix, &project, tool_name, delta, before);
+}
+
+/// Write a tool-call entry to a specific mmap directory (for testing).
+pub fn write_entry_to(
+    dir: &Path,
+    project_root: &Path,
+    prefix: &str,
+    tool_name: &str,
+    delta: u64,
+    before: u64,
+) {
+    let _ = std::fs::create_dir_all(dir);
+    let mmap_path = dir.join(MMAP_FILENAME);
+    let project = project_root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let _ = write_entry_inner(&mmap_path, prefix, &project, tool_name, delta, before);
+}
+
+fn write_str(mmap: &mut memmap2::MmapMut, offset: usize, value: &str) {
+    let bytes = value.as_bytes();
+    let copy_len = bytes.len().min(FIELD_LEN - 1);
+    mmap[offset..offset + FIELD_LEN].fill(0);
+    mmap[offset..offset + copy_len].copy_from_slice(&bytes[..copy_len]);
 }
 
 fn write_entry_inner(
     mmap_path: &Path,
+    prefix: &str,
+    project: &str,
     tool_name: &str,
     delta: u64,
     before: u64,
 ) -> std::io::Result<()> {
-    // Create or open the file, ensuring it is the right size.
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -61,20 +125,15 @@ fn write_entry_inner(
         .truncate(false)
         .open(mmap_path)?;
 
+    // Exclusive lock for concurrent writer safety.
+    file.lock_exclusive()?;
+
     let len = file.metadata()?.len() as usize;
     if len < FILE_SIZE {
         file.set_len(FILE_SIZE as u64)?;
     }
 
-    // Safety: we are the sole writer (MCP server is single-threaded for
-    // tool dispatch), and the reader only reads. The worst case for a
-    // torn read is a single garbled entry, which is acceptable.
     let mut mmap = unsafe { memmap2::MmapMut::map_mut(&file)? };
-
-    // Write version if fresh.
-    if mmap[OFF_VERSION] != VERSION {
-        mmap[OFF_VERSION] = VERSION;
-    }
 
     // Read current write_idx.
     let write_idx = u64::from_le_bytes(
@@ -83,61 +142,67 @@ fn write_entry_inner(
             .unwrap_or([0; 8]),
     );
     let slot = (write_idx as usize) % RING_CAPACITY;
-    let entry_off = HEADER_SIZE + slot * ENTRY_SIZE;
+    let off = HEADER_SIZE + slot * ENTRY_SIZE;
 
-    // Write tool name (null-padded).
-    let name_bytes = tool_name.as_bytes();
-    let copy_len = name_bytes.len().min(NAME_LEN - 1);
-    mmap[entry_off + EOFF_NAME..entry_off + EOFF_NAME + NAME_LEN].fill(0);
-    mmap[entry_off + EOFF_NAME..entry_off + EOFF_NAME + copy_len]
-        .copy_from_slice(&name_bytes[..copy_len]);
+    // Write string fields.
+    write_str(&mut mmap, off + EOFF_PREFIX, prefix);
+    write_str(&mut mmap, off + EOFF_PROJECT, project);
+    write_str(&mut mmap, off + EOFF_TOOL, tool_name);
 
-    // Write delta, before, timestamp.
-    mmap[entry_off + EOFF_DELTA..entry_off + EOFF_DELTA + 8]
-        .copy_from_slice(&delta.to_le_bytes());
-    mmap[entry_off + EOFF_BEFORE..entry_off + EOFF_BEFORE + 8]
-        .copy_from_slice(&before.to_le_bytes());
+    // Write numeric fields.
+    mmap[off + EOFF_DELTA..off + EOFF_DELTA + 8].copy_from_slice(&delta.to_le_bytes());
+    mmap[off + EOFF_BEFORE..off + EOFF_BEFORE + 8].copy_from_slice(&before.to_le_bytes());
 
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    mmap[entry_off + EOFF_TIMESTAMP..entry_off + EOFF_TIMESTAMP + 8]
-        .copy_from_slice(&timestamp.to_le_bytes());
+    mmap[off + EOFF_TIMESTAMP..off + EOFF_TIMESTAMP + 8].copy_from_slice(&timestamp.to_le_bytes());
 
-    // Update total_saved (add delta to current total).
-    let current_total = u64::from_le_bytes(
-        mmap[OFF_TOTAL_SAVED..OFF_TOTAL_SAVED + 8]
-            .try_into()
-            .unwrap_or([0; 8]),
-    );
-    let new_total = current_total + delta;
-    mmap[OFF_TOTAL_SAVED..OFF_TOTAL_SAVED + 8].copy_from_slice(&new_total.to_le_bytes());
-
-    // Increment write_idx (release fence — reader sees this last).
+    // Increment write_idx (reader sees this last).
     let new_idx = write_idx + 1;
     mmap[OFF_WRITE_IDX..OFF_WRITE_IDX + 8].copy_from_slice(&new_idx.to_le_bytes());
 
     mmap.flush()?;
+    file.unlock()?;
     Ok(())
 }
 
 // ── Reader (used by monitor TUI and tests) ──────────────────────────
 
-/// Read-only view of the monitor mmap.
+/// Read-only view of the global monitor mmap.
 pub struct MmapReader {
     mmap: memmap2::Mmap,
+    dir: PathBuf,
+}
+
+fn read_str(mmap: &memmap2::Mmap, offset: usize) -> String {
+    let bytes = &mmap[offset..offset + FIELD_LEN];
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(FIELD_LEN);
+    String::from_utf8_lossy(&bytes[..end]).to_string()
 }
 
 impl MmapReader {
-    /// Open an existing monitor mmap for reading.
-    pub fn open(project_root: &Path) -> std::io::Result<Self> {
-        let mmap_path = project_root.join(".tokensave").join(MMAP_FILENAME);
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .open(&mmap_path)?;
+    /// Open the global monitor mmap for reading.
+    pub fn open() -> std::io::Result<Self> {
+        let dir = global_tokensave_dir().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "cannot resolve home directory",
+            )
+        })?;
+        Self::open_at(&dir)
+    }
+
+    /// Open a monitor mmap at an explicit directory (for testing).
+    pub fn open_at(dir: &Path) -> std::io::Result<Self> {
+        let mmap_path = dir.join(MMAP_FILENAME);
+        let file = std::fs::OpenOptions::new().read(true).open(&mmap_path)?;
         let mmap = unsafe { memmap2::Mmap::map(&file)? };
-        Ok(Self { mmap })
+        Ok(Self {
+            mmap,
+            dir: dir.to_path_buf(),
+        })
     }
 
     /// Current write index (number of entries ever written).
@@ -152,52 +217,39 @@ impl MmapReader {
         )
     }
 
-    /// Cumulative total tokens saved.
-    pub fn total_saved(&self) -> u64 {
-        if self.mmap.len() < HEADER_SIZE {
-            return 0;
-        }
-        u64::from_le_bytes(
-            self.mmap[OFF_TOTAL_SAVED..OFF_TOTAL_SAVED + 8]
-                .try_into()
-                .unwrap_or([0; 8]),
-        )
-    }
-
     /// Read the entry at the given ring-buffer slot (0..255).
     pub fn entry(&self, slot: usize) -> Option<MonitorEntry> {
         if slot >= RING_CAPACITY {
             return None;
         }
-        let entry_off = HEADER_SIZE + slot * ENTRY_SIZE;
-        if self.mmap.len() < entry_off + ENTRY_SIZE {
+        let off = HEADER_SIZE + slot * ENTRY_SIZE;
+        if self.mmap.len() < off + ENTRY_SIZE {
             return None;
         }
 
-        let name_bytes = &self.mmap[entry_off + EOFF_NAME..entry_off + EOFF_NAME + NAME_LEN];
-        let name_end = name_bytes
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(NAME_LEN);
-        let tool_name = String::from_utf8_lossy(&name_bytes[..name_end]).to_string();
+        let prefix = read_str(&self.mmap, off + EOFF_PREFIX);
+        let project = read_str(&self.mmap, off + EOFF_PROJECT);
+        let tool_name = read_str(&self.mmap, off + EOFF_TOOL);
 
         let delta = u64::from_le_bytes(
-            self.mmap[entry_off + EOFF_DELTA..entry_off + EOFF_DELTA + 8]
+            self.mmap[off + EOFF_DELTA..off + EOFF_DELTA + 8]
                 .try_into()
                 .unwrap_or([0; 8]),
         );
         let before = u64::from_le_bytes(
-            self.mmap[entry_off + EOFF_BEFORE..entry_off + EOFF_BEFORE + 8]
+            self.mmap[off + EOFF_BEFORE..off + EOFF_BEFORE + 8]
                 .try_into()
                 .unwrap_or([0; 8]),
         );
         let timestamp = u64::from_le_bytes(
-            self.mmap[entry_off + EOFF_TIMESTAMP..entry_off + EOFF_TIMESTAMP + 8]
+            self.mmap[off + EOFF_TIMESTAMP..off + EOFF_TIMESTAMP + 8]
                 .try_into()
                 .unwrap_or([0; 8]),
         );
 
         Some(MonitorEntry {
+            prefix,
+            project,
             tool_name,
             delta,
             before,
@@ -210,11 +262,9 @@ impl MmapReader {
         RING_CAPACITY
     }
 
-    /// Re-read the mmap to pick up new writes. On some OSes the kernel
-    /// handles coherence automatically, but an explicit remap guarantees
-    /// freshness on all platforms.
-    pub fn refresh(&mut self, project_root: &Path) -> std::io::Result<()> {
-        let mmap_path = project_root.join(".tokensave").join(MMAP_FILENAME);
+    /// Re-read the mmap to pick up new writes.
+    pub fn refresh(&mut self) -> std::io::Result<()> {
+        let mmap_path = self.dir.join(MMAP_FILENAME);
         let file = std::fs::OpenOptions::new().read(true).open(&mmap_path)?;
         self.mmap = unsafe { memmap2::Mmap::map(&file)? };
         Ok(())
@@ -225,18 +275,22 @@ impl MmapReader {
 
 use std::io::Write;
 
-const LOCK_FILENAME: &str = "monitor.lock";
-
 /// Run the monitor TUI. Blocks until Ctrl+C.
-pub fn run(project_root: &Path) -> std::io::Result<()> {
-    let tokensave_dir = project_root.join(".tokensave");
-    if !tokensave_dir.is_dir() {
-        eprintln!("No .tokensave directory found. Run `tokensave sync` first.");
-        return Ok(());
-    }
+pub fn run() -> std::io::Result<()> {
+    use crossterm::{
+        cursor, execute, terminal,
+        terminal::{EnterAlternateScreen, LeaveAlternateScreen},
+    };
+    let dir = global_tokensave_dir().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "cannot resolve home directory",
+        )
+    })?;
+    std::fs::create_dir_all(&dir)?;
 
     // Single-instance lock.
-    let lock_path = tokensave_dir.join(LOCK_FILENAME);
+    let lock_path = dir.join(LOCK_FILENAME);
     let lock_file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -244,24 +298,22 @@ pub fn run(project_root: &Path) -> std::io::Result<()> {
         .truncate(false)
         .open(&lock_path)?;
 
-    use fs2::FileExt;
     if lock_file.try_lock_exclusive().is_err() {
         eprintln!("Monitor already running.");
         return Ok(());
     }
 
     // Ensure mmap file exists.
-    let mmap_path = tokensave_dir.join(MMAP_FILENAME);
+    let mmap_path = dir.join(MMAP_FILENAME);
     if !mmap_path.exists() {
         let f = std::fs::File::create(&mmap_path)?;
         f.set_len(FILE_SIZE as u64)?;
     }
 
-    let mut reader = MmapReader::open(project_root)?;
-    let initial_total = reader.total_saved();
-    let mut baseline = initial_total;
+    let mut reader = MmapReader::open()?;
     let mut last_idx = reader.write_idx();
     let mut entries: Vec<MonitorEntry> = Vec::new();
+    let mut recent_updates: Vec<(String, String)> = Vec::new();
 
     // Populate with existing entries in the ring buffer (up to write_idx).
     let populated = last_idx.min(RING_CAPACITY as u64) as usize;
@@ -275,6 +327,7 @@ pub fn run(project_root: &Path) -> std::io::Result<()> {
             let slot = (start_slot + i) % RING_CAPACITY;
             if let Some(e) = reader.entry(slot) {
                 if e.delta > 0 {
+                    push_recent_update(&mut recent_updates, &e.project, &e.tool_name);
                     entries.push(e);
                 }
             }
@@ -282,19 +335,14 @@ pub fn run(project_root: &Path) -> std::io::Result<()> {
     }
 
     // Enter raw mode + alternate screen.
-    use crossterm::{
-        cursor, execute, terminal,
-        terminal::{EnterAlternateScreen, LeaveAlternateScreen},
-    };
     let mut stdout = std::io::stdout();
     terminal::enable_raw_mode()?;
     execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
 
     let result = monitor_loop(
-        project_root,
         &mut reader,
         &mut entries,
-        &mut baseline,
+        &mut recent_updates,
         &mut last_idx,
         &mut stdout,
     );
@@ -303,22 +351,228 @@ pub fn run(project_root: &Path) -> std::io::Result<()> {
     execute!(stdout, cursor::Show, LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
 
-    // Release lock (dropped when lock_file goes out of scope, but explicit).
     let _ = lock_file.unlock();
     let _ = std::fs::remove_file(&lock_path);
 
     result
 }
 
+/// Cached cost data for the monitor panel, refreshed periodically.
+pub struct CostCache {
+    pub today_cost: f64,
+    pub week_cost: f64,
+    pub tokens_saved: u64,
+    pub efficiency_pct: f64,
+    pub top_model: String,
+    pub top_model_cost: f64,
+    /// Droid Factory credits spent today (`None` when the window query returned no credit data).
+    pub today_credits: Option<u64>,
+    /// Droid Factory credits spent in the past 7 days (`None` when the window query returned no credit data).
+    pub week_credits: Option<u64>,
+    /// Sum of all Droid raw tokens (input + output + `cache_write` + `cache_read`) for the week.
+    pub week_droid_tokens: u64,
+    /// Coverage quality of the Droid accounting source.
+    pub droid_state: crate::accounting::parser::CoverageState,
+    pub last_refresh: std::time::Instant,
+}
+
+impl CostCache {
+    fn new() -> Self {
+        Self {
+            today_cost: 0.0,
+            week_cost: 0.0,
+            tokens_saved: 0,
+            efficiency_pct: 0.0,
+            top_model: String::new(),
+            top_model_cost: 0.0,
+            today_credits: None,
+            week_credits: None,
+            week_droid_tokens: 0,
+            droid_state: crate::accounting::parser::CoverageState::Absent,
+            last_refresh: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(999))
+                .unwrap_or_else(std::time::Instant::now),
+        }
+    }
+
+    fn is_stale(&self) -> bool {
+        self.last_refresh.elapsed() > std::time::Duration::from_secs(30)
+    }
+
+    /// Returns true if there is any meaningful activity to display:
+    /// USD today/week, Droid credits (Some and positive), or Droid raw tokens.
+    pub fn has_activity(&self) -> bool {
+        self.today_cost >= 0.001
+            || self.week_cost >= 0.001
+            || self.week_credits.is_some_and(|c| c > 0)
+            || self.week_droid_tokens > 0
+    }
+}
+
+/// Truncate a string to at most `width` Unicode scalar values.
+pub fn truncate_to_chars(s: &str, width: usize) -> String {
+    let mut chars = s.chars();
+    let collected: String = (&mut chars).take(width).collect();
+    collected
+}
+
+/// Build the cost-panel display lines from cached data.
+///
+/// Without a Droid source, returns the original two-line monitor panel.
+/// With Droid coverage, inserts the native-usage line between USD and efficiency.
+/// Each line starts with two spaces of indent. Does **not** pad or truncate —
+/// callers truncate to terminal width before padding.
+pub fn cost_panel_lines(cache: &CostCache) -> Vec<String> {
+    use crate::accounting::parser::CoverageState;
+
+    let saved_str = crate::display::format_token_count(cache.tokens_saved);
+    let top_model_part = if cache.top_model.is_empty() {
+        "n/a".to_string()
+    } else {
+        format!("{} (${:.2})", cache.top_model, cache.top_model_cost)
+    };
+
+    if cache.droid_state == CoverageState::Absent {
+        return vec![
+            format!(
+                "  Spent: ${:.2} today | ${:.2} 7d    Saved: {}",
+                cache.today_cost, cache.week_cost, saved_str
+            ),
+            format!(
+                "  Efficiency: {:.0}%    Top model: {}",
+                cache.efficiency_pct, top_model_part
+            ),
+        ];
+    }
+
+    let week_t = crate::display::format_token_count(cache.week_droid_tokens);
+    let droid_line = match (cache.droid_state, cache.week_credits) {
+        (_, Some(wc)) => {
+            let today_c = crate::display::format_token_count(cache.today_credits.unwrap_or(0));
+            let week_c = crate::display::format_token_count(wc);
+            let note = if cache.droid_state == CoverageState::Partial {
+                "observed locally, partial source, session-start"
+            } else {
+                "session-start"
+            };
+            format!(
+                "  Droid: {today_c} credits today | {week_c} 7d    {week_t} raw tokens ({note})"
+            )
+        }
+        (CoverageState::Complete, None) if cache.week_droid_tokens == 0 => {
+            "  Droid: no usage in 7d (session-start)".to_string()
+        }
+        (CoverageState::Complete, None) => {
+            format!("  Droid: credits n/a    {week_t} raw tokens (session-start)")
+        }
+        (CoverageState::Partial, None) => {
+            format!("  Droid: credits n/a    {week_t} raw tokens (partial source, session-start)")
+        }
+        (CoverageState::Absent, None) => unreachable!("handled above"),
+    };
+
+    vec![
+        format!(
+            "  USD spent: ${:.2} today | ${:.2} 7d    Saved: {}",
+            cache.today_cost, cache.week_cost, saved_str
+        ),
+        droid_line,
+        format!(
+            "  Efficiency: {:.0}%    Top priced model: {}",
+            cache.efficiency_pct, top_model_part
+        ),
+    ]
+}
+
+/// Refresh cost data from the global DB. Best-effort, non-blocking.
+/// Uses a tokio runtime because `GlobalDb` is async.
+fn refresh_cost_cache(cache: &mut CostCache) {
+    let future = async {
+        let Some(gdb) = crate::global_db::GlobalDb::open().await else {
+            return;
+        };
+
+        // Full coordinated ingest (Claude + Droid); capture coverage.
+        let stats = crate::accounting::parser::ingest(&gdb).await;
+
+        // Capture Droid coverage state from ingest stats.
+        cache.droid_state = stats
+            .coverage
+            .iter()
+            .find(|c| c.agent == "droid")
+            .map_or(crate::accounting::parser::CoverageState::Absent, |c| {
+                c.state
+            });
+
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let today_start = now_epoch - (now_epoch % 86400);
+        let week_start = now_epoch.saturating_sub(7 * 86400);
+
+        // Claude USD costs (legacy by-model query is Claude-only).
+        cache.today_cost = gdb.total_cost_since(today_start).await.unwrap_or(0.0);
+        cache.week_cost = gdb.total_cost_since(week_start).await.unwrap_or(0.0);
+
+        let week_agents = gdb.cost_by_agent_since(week_start).await;
+        let week_consumed = crate::accounting::metrics::consumed_tokens(
+            &week_agents,
+            cache.droid_state != crate::accounting::parser::CoverageState::Absent,
+        );
+        cache.tokens_saved = gdb.global_tokens_saved().await.unwrap_or(0);
+
+        cache.efficiency_pct = if cache.tokens_saved + week_consumed > 0 {
+            (cache.tokens_saved as f64 / (cache.tokens_saved + week_consumed) as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let models = gdb.cost_by_model_since(today_start).await;
+        if let Some((model, cost, _)) = models.first() {
+            cache.top_model.clone_from(model);
+            cache.top_model_cost = *cost;
+        }
+
+        // Droid credits and raw tokens.
+        cache.today_credits = None;
+        cache.week_credits = None;
+        cache.week_droid_tokens = 0;
+
+        let today_agents = gdb.cost_by_agent_since(today_start).await;
+        if let Some(d) = today_agents.iter().find(|s| s.agent == "droid") {
+            cache.today_credits = d.credits;
+        }
+
+        if let Some(d) = week_agents.iter().find(|s| s.agent == "droid") {
+            cache.week_credits = d.credits;
+            cache.week_droid_tokens = d
+                .input_tokens
+                .saturating_add(d.output_tokens)
+                .saturating_add(d.cache_write_tokens)
+                .saturating_add(d.cache_read_tokens);
+        }
+    };
+    // monitor::run() is always invoked from inside #[tokio::main]'s
+    // multi-threaded runtime, so creating a new runtime would panic.
+    // Use block_in_place + the existing handle on every platform.
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future));
+    cache.last_refresh = std::time::Instant::now();
+}
+
 fn monitor_loop(
-    project_root: &Path,
     reader: &mut MmapReader,
     entries: &mut Vec<MonitorEntry>,
-    baseline: &mut u64,
+    recent_updates: &mut Vec<(String, String)>,
     last_idx: &mut u64,
     stdout: &mut std::io::Stdout,
 ) -> std::io::Result<()> {
     use crossterm::{cursor, event, execute, terminal};
+    use std::collections::HashMap;
+
+    let mut cost_cache = CostCache::new();
+    let mut scroll_offset: usize = 0;
+    let mut last_log_lines: usize = 20;
 
     loop {
         // Poll for key events (100ms timeout = our refresh rate).
@@ -333,8 +587,21 @@ fn monitor_loop(
                     event::KeyCode::Char('r')
                         if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
                     {
-                        *baseline = reader.total_saved();
                         entries.clear();
+                        recent_updates.clear();
+                        scroll_offset = 0;
+                    }
+                    event::KeyCode::Up => {
+                        scroll_offset = scroll_offset.saturating_add(1);
+                    }
+                    event::KeyCode::Down => {
+                        scroll_offset = scroll_offset.saturating_sub(1);
+                    }
+                    event::KeyCode::PageUp => {
+                        scroll_offset = scroll_offset.saturating_add(last_log_lines.max(1));
+                    }
+                    event::KeyCode::PageDown => {
+                        scroll_offset = scroll_offset.saturating_sub(last_log_lines.max(1));
                     }
                     _ => {}
                 }
@@ -342,19 +609,22 @@ fn monitor_loop(
         }
 
         // Re-read mmap for new entries.
-        let _ = reader.refresh(project_root);
+        let _ = reader.refresh();
         let current_idx = reader.write_idx();
         if current_idx > *last_idx {
-            // Read new entries.
-            let start = *last_idx;
-            let end = current_idx;
-            for i in start..end {
+            for i in *last_idx..current_idx {
                 let slot = (i as usize) % RING_CAPACITY;
                 if let Some(e) = reader.entry(slot) {
+                    push_recent_update(recent_updates, &e.project, &e.tool_name);
                     entries.push(e);
                 }
             }
             *last_idx = current_idx;
+        }
+
+        // Refresh cost cache every 30 seconds.
+        if cost_cache.is_stale() {
+            refresh_cost_cache(&mut cost_cache);
         }
 
         // Render.
@@ -364,50 +634,173 @@ fn monitor_loop(
 
         execute!(stdout, cursor::MoveTo(0, 0))?;
 
-        // Footer takes 3 lines. Log area = h - 3.
-        let log_lines = if h > 4 { h - 4 } else { 1 };
+        // Layout: dynamic cost panel + log + separator + footer (2 lines).
+        let has_activity = cost_cache.has_activity();
+        let panel_lines = if has_activity {
+            cost_panel_lines(&cost_cache)
+        } else {
+            Vec::new()
+        };
+        let cost_lines = if has_activity {
+            panel_lines.len() + 1
+        } else {
+            0
+        };
+        let footer_lines = 4; // separator + 2 footer lines + bottom separator
+        let log_lines = h.saturating_sub(cost_lines + footer_lines).max(1);
+        last_log_lines = log_lines;
 
-        // Print log entries (most recent at bottom of log area).
-        let visible: Vec<&MonitorEntry> = entries
-            .iter()
-            .rev()
-            .take(log_lines)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
+        // ── Cost panel ──
+        if has_activity {
+            let sep = "\u{2500}".repeat(w);
+
+            for line in &panel_lines {
+                let truncated = truncate_to_chars(line, w);
+                let padding = w.saturating_sub(truncated.chars().count());
+                write!(
+                    stdout,
+                    "\r\x1b[36m{}\x1b[0m{}\r\n",
+                    truncated,
+                    " ".repeat(padding)
+                )?;
+            }
+            write!(stdout, "\r{sep}\r\n")?;
+        }
+
+        // ── Grouped log entries ──
+        let mut grouped: HashMap<String, HashMap<String, u64>> = HashMap::new();
+        for entry in entries.iter() {
+            let project = &entry.project;
+            let method = &entry.tool_name;
+            *grouped
+                .entry(project.clone())
+                .or_default()
+                .entry(method.clone())
+                .or_default() += entry.delta;
+        }
+
+        let mut projects: Vec<String> = grouped
+            .keys()
+            .filter(|p| !is_temp_dir_name(p) && !p.is_empty())
+            .cloned()
             .collect();
-        let blank_lines = log_lines.saturating_sub(visible.len());
+        projects.sort();
+
+        // Each line carries an optional ANSI color prefix; padding is computed
+        // from the plain text length so escape bytes don't affect alignment.
+        let mut all_lines: Vec<(&'static str, String)> = Vec::new();
+        let mut grand_total: u64 = 0;
+
+        for project in &projects {
+            let Some(methods) = grouped.get(project) else {
+                continue;
+            };
+            let mut method_lines: Vec<String> = methods.keys().cloned().collect();
+            method_lines.sort();
+
+            let project_total: u64 = methods.values().sum::<u64>();
+            grand_total += project_total;
+
+            all_lines.push((
+                "",
+                format!("{} ({})", project, format_number(project_total)),
+            ));
+            for method in &method_lines {
+                let delta = *methods.get(method).unwrap_or(&0);
+                let color = update_color_for(recent_updates, project, method);
+                all_lines.push((color, format!("  {}  {}", method, format_number(delta))));
+            }
+        }
+        all_lines.push(("", format!("TOTAL  {}", format_number(grand_total))));
+
+        // Clamp scroll offset to valid range.
+        let max_offset = all_lines.len().saturating_sub(log_lines);
+        if scroll_offset > max_offset {
+            scroll_offset = max_offset;
+        }
+
+        let total = all_lines.len();
+        let end = total.saturating_sub(scroll_offset);
+        let start = end.saturating_sub(log_lines);
+        let visible_lines = &all_lines[start..end];
+        let blank_lines = log_lines.saturating_sub(visible_lines.len());
 
         for _ in 0..blank_lines {
             write!(stdout, "\r{}\r\n", " ".repeat(w))?;
         }
 
-        for entry in &visible {
-            let name = &entry.tool_name;
-            let delta_str = format_number(entry.delta);
-            let padding = w.saturating_sub(name.len() + delta_str.len() + 2);
-            write!(stdout, "\r{}{}{}\r\n", name, " ".repeat(padding), delta_str,)?;
+        for (color, line) in visible_lines {
+            let padding = w.saturating_sub(line.len());
+            if color.is_empty() {
+                write!(stdout, "\r{}{}\r\n", line, " ".repeat(padding))?;
+            } else {
+                write!(
+                    stdout,
+                    "\r{}{}\x1b[0m{}\r\n",
+                    color,
+                    line,
+                    " ".repeat(padding)
+                )?;
+            }
         }
 
-        // Footer.
+        // ── Footer ──
+        // Show the same authoritative lifetime "saved" figure as the cost
+        // panel's `Saved:` (both sourced from `global_tokens_saved()` in the
+        // global DB). Previously the footer summed the in-memory ring deltas,
+        // which double-count per-call file-token estimates and only cover the
+        // last RING_CAPACITY events — so the prominent header "Saved" and the
+        // footer "saved tokens" disagreed and looked stale.
         let sep = "\u{2500}".repeat(w);
-        let total_saved = reader.total_saved().saturating_sub(*baseline);
+        let total_saved: u64 = cost_cache.tokens_saved;
         let total_str = format_number(total_saved);
         let label = "TokenSave Monitor";
         let suffix = "saved tokens";
-        let footer_content = format!("{}  {} {}", label, total_str, suffix);
+        let footer_content = format!("{label}  {total_str} {suffix}");
         let footer_padding = w.saturating_sub(footer_content.len());
-        let hint = "Ctrl+R reset | Ctrl+C quit";
+        let hint = "\u{2191}\u{2193}/PgUp/PgDn scroll | Ctrl+R reset | Ctrl+C quit";
         let hint_padding = w.saturating_sub(hint.len());
 
-        write!(stdout, "\r{}\r\n", sep)?;
-        write!(stdout, "\r{}{}\r\n", " ".repeat(footer_padding), footer_content)?;
+        write!(stdout, "\r{sep}\r\n")?;
+        write!(
+            stdout,
+            "\r{}{}\r\n",
+            " ".repeat(footer_padding),
+            footer_content
+        )?;
         write!(stdout, "\r{}{}\r\n", " ".repeat(hint_padding), hint)?;
-        write!(stdout, "\r{}", sep)?;
+        write!(stdout, "\r{sep}")?;
 
         stdout.flush()?;
     }
     Ok(())
+}
+
+fn is_temp_dir_name(name: &str) -> bool {
+    name.starts_with(".tmp") && name.len() > 4
+}
+
+/// Push a (project, `tool_name`) pair onto the front of the recent-updates list.
+/// If the pair is already present, it is moved to the front (no duplicates).
+/// The list is truncated to the three most recent distinct pairs.
+fn push_recent_update(recent: &mut Vec<(String, String)>, project: &str, tool_name: &str) {
+    recent.retain(|(p, t)| !(p == project && t == tool_name));
+    recent.insert(0, (project.to_string(), tool_name.to_string()));
+    recent.truncate(3);
+}
+
+/// Return the ANSI color prefix for a method line based on its recency.
+/// Latest = green, 2nd latest = orange, 3rd latest = yellow, else no color.
+fn update_color_for(recent: &[(String, String)], project: &str, tool_name: &str) -> &'static str {
+    match recent
+        .iter()
+        .position(|(p, t)| p == project && t == tool_name)
+    {
+        Some(0) => "\x1b[32m",       // green: latest
+        Some(1) => "\x1b[38;5;208m", // orange: 2nd latest
+        Some(2) => "\x1b[33m",       // yellow: 3rd latest
+        _ => "",
+    }
 }
 
 fn format_number(n: u64) -> String {
@@ -420,4 +813,74 @@ fn format_number(n: u64) -> String {
         result.push(c);
     }
     result.chars().rev().collect()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::{push_recent_update, update_color_for};
+
+    #[test]
+    fn push_recent_update_keeps_three_most_recent() {
+        let mut recent: Vec<(String, String)> = Vec::new();
+        push_recent_update(&mut recent, "proj", "tool_a");
+        push_recent_update(&mut recent, "proj", "tool_b");
+        push_recent_update(&mut recent, "proj", "tool_c");
+        push_recent_update(&mut recent, "proj", "tool_d");
+        assert_eq!(recent.len(), 3);
+        // Most recent first.
+        assert_eq!(recent[0].1, "tool_d");
+        assert_eq!(recent[1].1, "tool_c");
+        assert_eq!(recent[2].1, "tool_b");
+    }
+
+    #[test]
+    fn push_recent_update_dedups_and_bumps_to_front() {
+        let mut recent: Vec<(String, String)> = Vec::new();
+        push_recent_update(&mut recent, "proj", "tool_a");
+        push_recent_update(&mut recent, "proj", "tool_b");
+        push_recent_update(&mut recent, "proj", "tool_a"); // already present
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].1, "tool_a");
+        assert_eq!(recent[1].1, "tool_b");
+    }
+
+    #[test]
+    fn update_color_for_returns_three_colors_by_position() {
+        let recent = vec![
+            ("p".to_string(), "newest".to_string()),
+            ("p".to_string(), "mid".to_string()),
+            ("p".to_string(), "oldest".to_string()),
+        ];
+        assert_eq!(update_color_for(&recent, "p", "newest"), "\x1b[32m");
+        assert_eq!(update_color_for(&recent, "p", "mid"), "\x1b[38;5;208m");
+        assert_eq!(update_color_for(&recent, "p", "oldest"), "\x1b[33m");
+        assert_eq!(update_color_for(&recent, "p", "other"), "");
+        assert_eq!(update_color_for(&recent, "other_proj", "newest"), "");
+    }
+
+    /// Regression test for issue #39: `tokensave monitor` panicked on
+    /// macOS/Linux with "Cannot start a runtime from within a runtime."
+    ///
+    /// `refresh_cost_cache` was building a fresh `tokio::runtime` and
+    /// calling `block_on` inside `#[tokio::main]`, which always panics on
+    /// a multi-thread runtime. The fix uses `block_in_place` +
+    /// `Handle::current().block_on()` — safe inside a multi-thread runtime.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refresh_cost_cache_runtime_pattern_does_not_panic() {
+        let result = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async { 42 })
+        });
+        assert_eq!(result, 42);
+    }
+
+    /// Verify the pre-fix pattern (`Runtime::new()` inside a running
+    /// multi-thread runtime) panics — locking in the bug we are guarding
+    /// against. tokio's exact wording varies across versions, so we just
+    /// match on "runtime".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[should_panic(expected = "runtime")]
+    async fn nested_runtime_new_panics() {
+        let _rt = tokio::runtime::Runtime::new().unwrap();
+    }
 }
