@@ -1,8 +1,8 @@
 # SQL query optimization summary
 
-Review date: 2026-10-24. Tracking issue: [#786](https://github.com/aovestdipaperino/tokensave/issues/786).
+Review date: 2026-10-25. Tracking issue: [#786](https://github.com/aovestdipaperino/tokensave/issues/786).
 
-This document consolidates the related SQL query optimizations, implementation status, benchmark decisions, validation, and remaining limitations. Published PRs are implementations awaiting merge; they are not yet in master.
+This document consolidates the related SQL query optimizations, implementation status, benchmark decisions, validation, and remaining limitations. The seven PR branches below are integrated into `beta` in dependency order. Their application changes are not in `master`; only the AGENTS.md summary rule was separately imported there in commit `20459af`. The test counts in the table describe the original individual branches, not the combined integration.
 
 | Implementation | Issue | PR | Local full-suite result |
 | --- | --- | --- | --- |
@@ -18,10 +18,32 @@ The test totals differ because these are separate branches with different depend
 
 ## Dependencies and integration
 
-- [#779](https://github.com/aovestdipaperino/tokensave/pull/779) is stacked on [#776](https://github.com/aovestdipaperino/tokensave/pull/776); [#781](https://github.com/aovestdipaperino/tokensave/pull/781) is stacked on [#779](https://github.com/aovestdipaperino/tokensave/pull/779). Rebase/retarget after their dependencies merge.
-- [#783](https://github.com/aovestdipaperino/tokensave/pull/783) and [#785](https://github.com/aovestdipaperino/tokensave/pull/785) target master independently; the FTS and summary follow-ups do too. The summary PR can merge independently: its benchmark runner supports both the original BM25 SQL and the rank-column implementation.
-- Reconcile query-report IDs, source links, counts, schema migrations, and changelog entries during integration, then run the full suite on the combined result.
-- Schema v19/v20 use the existing full-reindex-on-migration behavior. The independent ranking/FTS changes need no migration.
+- Integration target: upstream [`beta`](https://github.com/aovestdipaperino/tokensave/tree/beta). Refs #786. The pre-existing beta history is preserved; its obsolete hook implementation was superseded by current master before integrating the optimizations. That baseline merge produces exactly the master tree.
+- Merge order: #776 → #779 → #781 → #783 → #785 → #787 → #788. The #779/#781 stack is preserved. All seven PRs are retargeted to beta.
+- Integration merge commits: #776 `a00e291`, #779 `6b570ae`, #781 `e458586`, #783 `59c77d9`, #785 `a7e0d54`, #787 `c01b966`, #788 `9ff2b49`. These commits record integration into beta, not promotion to master.
+- Independent branch conflicts were reconciled by retaining every added regression test and changelog entry; the new inheritance/hydration entries were moved into Unreleased rather than the already published 7.16.0 section. No application source conflicts occurred within the optimization batch.
+- The combined SQL report retains stable IDs, adds the scoped inheritance fragment as Q0353, contains 350 entries and 173 construction functions, and refreshes copied functions and source links against the integrated source.
+- Schema v19/v20 retain the existing full-reindex-on-migration behavior. The independent ranking/FTS changes need no migration. Beta testing should use a disposable index; promoting these migrations remains a separate master integration decision.
+- CI push and pull-request triggers cover both master and beta so the combined tree receives the existing Linux/macOS/Windows, format, MSRV, and clippy checks. The disabled beta release workflow remains disabled; this integration does not publish a release.
+- Combined validation and remaining work are recorded below. Original branch test totals must not be added together.
+
+## Combined beta validation and resource review
+
+Combined local validation completed on 2026-10-25:
+
+- Full workspace suite: **4,416 passed, zero failed, four ignored, none filtered** across 16 test-result groups, including doc tests.
+- `cargo fmt --all -- --check`: passed.
+- `cargo clippy --workspace --all-targets --locked` (shared target directory): passed with warnings.
+- `python3 scripts/benchmark-query-review.py --repetitions 5`: all 24 synthetic analytical/FTS cases completed with the runner's equivalence assertions. This was a smoke check under build load, not new performance evidence.
+- SQL inventory: 350 unique IDs, per-file totals sum to 350; 349 SQL literals/templates matched integrated source strings after trimming outer whitespace. Q0253 is the unchanged pre-existing Ruby `begin` marker. All 173 copied construction functions were refreshed from integrated source, and changed SQL was reviewed against the report.
+- Both conflicted test files retain all original async test/helper names from the six implementation branches. All seven PR heads are ancestors of the integrated tree. `git diff --check` passed.
+- GitHub cross-platform CI remains pending until the beta push; local results do not establish Windows/macOS behavior.
+
+The final full-suite run uses `cargo test --target-dir /home/tont/tokensave/target --workspace --locked` outside the filesystem sandbox. Earlier attempts exposed harness constraints: the sandbox injects a synthetic `/tmp/.git` marker that breaks two project-discovery assertions, and exporting a shared `CARGO_TARGET_DIR` makes a nested-Cargo dispatch test contend for the parent build lock. The final command avoids both conditions; the previously affected tests pass there. No application or test changes were made to bypass those failures.
+
+Resource review of the combined source confirms that body insert parameter batches retain the 128-row / 256-KiB limits, with one input-sized oversized document allowed. Candidate membership storage scales with input candidate relationships. SQL ranking materialization and FTS cursor state remain request-scoped and can scale with the candidate or matching set; LIMIT bounds returned rows, not all database work. File deletion and body insertion retain write-lock ownership, transactions, and explicit error rollback. No new background task, polling loop, persistent cache, or concurrency layer is added by integration.
+
+Long-running RSS stabilization, production concurrency and percentile latency, and cancellation during active writes have not been measured on the combined tree. The schema/index write overhead and rare/all-matching FTS regressions recorded below remain beta evaluation risks. Remaining work: observe cross-platform CI and exercise representative beta workflows before proposing promotion to master. Keep the tracking and performance issues open.
 
 ## Q0119/Q0120 benchmark decisions
 
@@ -64,4 +86,4 @@ sequences because the original queries do not specify an ID tie-breaker.
 
 [AGENTS.md](../AGENTS.md) requires a maintained consolidated summary when a topic spans multiple implementations or related PRs, including status, links, dependencies, validation, limitations, and remaining work.
 
-The agreed implementation batch has been implemented and published, and all recorded local checks passed. The PRs remain unmerged. Q0119 is deferred as workload-sensitive; the tested Q0120 rewrite is rejected. This summary does not claim that every possible query optimization has been exhausted. Issue closure is left to the maintainer.
+The agreed implementation batch is integrated into beta for validation; it has not been promoted to master. Original individual-branch checks passed as recorded above. Q0119 is deferred as workload-sensitive; the tested Q0120 rewrite is rejected. This summary does not claim that every possible query optimization has been exhausted. Issue closure is left to the maintainer.

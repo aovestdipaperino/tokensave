@@ -7,7 +7,15 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### CI
+
+- Validate pushes and pull requests targeting the beta integration branch with the existing CI matrix (Refs #786).
+
 ### Performance
+
+- Restrict scoped inheritance-depth traversal to matching starting nodes while preserving ancestors across file boundaries, cycle detection, and the depth cap (Refs #782).
+
+- Rank edge-count and god-class candidates using IDs and counts before loading full node data for the selected results, with deterministic ordering for equal counts (Refs #784).
 
 - Index executable-body cleanup by file using external-content FTS and maintain exact ambiguous-call candidate lookups in a relational index. Schema v20 preserves existing documents and candidate records and uses the existing full-reindex-on-migration behavior (Refs #778).
 
@@ -30,10 +38,6 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ## [7.16.0] - 2026-10-22
 
 ### Performance
-
-- Restrict scoped inheritance-depth traversal to matching starting nodes while preserving ancestors across file boundaries, cycle detection, and the depth cap (Refs #782).
-
-- Rank edge-count and god-class candidates using IDs and counts before loading full node data for the selected results, with deterministic ordering for equal counts (Refs #784).
 
 - Construct the MCP tool registry once during server startup and release schemas before opening the global database, preserving routing gates and schema accounting without retaining a schema cache (#735).
 
