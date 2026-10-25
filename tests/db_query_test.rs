@@ -905,6 +905,113 @@ async fn test_get_inheritance_depth_terminates_on_cycle() {
     }
 }
 
+/// Scoping selects starting nodes, never the ancestors that determine depth.
+#[tokio::test]
+async fn test_get_inheritance_depth_scoped_matches_global() {
+    let (_dir, db) = setup_db().await;
+    let scope = "src/a_%'quoted";
+    let definitions = [
+        ("sc-deep", scope),
+        ("sc-child", "src/a_%'quoted/child.rs"),
+        ("sc-parent", "outside/parent.rs"),
+        ("sc-root", "outside/root.rs"),
+        ("sc-branch", "outside/branch.rs"),
+        ("sc-cycle", "src/a_%'quoted/cycle.rs"),
+        ("sc-cycle-other", "outside/cycle.rs"),
+        ("sc-self", "src/a_%'quoted/self.rs"),
+        ("sc-empty", "src/a_%'quoted/empty.rs"),
+        ("sc-sibling", "src/a_%'quoted-sibling/file.rs"),
+        ("sc-wildcard", "src/abXX'quoted/file.rs"),
+    ];
+    let mut nodes: Vec<_> = definitions
+        .iter()
+        .map(|(id, path)| {
+            let mut node = sample_node(id, id, path);
+            node.kind = NodeKind::Class;
+            node
+        })
+        .collect();
+    // A selected leaf's ancestors are all outside scope, including beyond
+    // the existing 50-hop cap.
+    nodes.extend((0..60).map(|i| {
+        let mut node = sample_node(&format!("sc-chain-{i}"), "Ancestor", "outside/chain.rs");
+        node.kind = NodeKind::Class;
+        node
+    }));
+    db.insert_nodes(&nodes).await.unwrap();
+    let mut edges: Vec<_> = [
+        ("sc-deep", "sc-chain-0"),
+        ("sc-child", "sc-parent"),
+        ("sc-child", "sc-branch"),
+        ("sc-branch", "sc-parent"),
+        ("sc-parent", "sc-root"),
+        ("sc-cycle", "sc-cycle-other"),
+        ("sc-cycle-other", "sc-cycle"),
+        ("sc-self", "sc-self"),
+        ("sc-sibling", "sc-root"),
+        ("sc-wildcard", "sc-root"),
+    ]
+    .into_iter()
+    .map(|(source, target)| sample_edge(source, target, EdgeKind::Extends))
+    .collect();
+    edges.extend((0..59).map(|i| {
+        sample_edge(
+            &format!("sc-chain-{i}"),
+            &format!("sc-chain-{}", i + 1),
+            EdgeKind::Extends,
+        )
+    }));
+    // Other edge kinds must not affect inheritance depth.
+    edges.push(sample_edge("sc-empty", "sc-child", EdgeKind::Calls));
+    db.insert_edges(&edges).await.unwrap();
+
+    let global = db.get_inheritance_depth(None, 200).await.unwrap();
+    for prefix in [
+        scope,
+        "src/a_%'quoted/child.rs",
+        "outside",
+        "missing",
+        "src/a_%'quoted/",
+    ] {
+        let exact = prefix.trim_end_matches('/');
+        let expected: std::collections::BTreeMap<_, _> = global
+            .iter()
+            .filter(|(n, _)| n.file_path == exact || n.file_path.starts_with(&format!("{exact}/")))
+            .map(|(n, depth)| (n.id.clone(), *depth))
+            .collect();
+        let scoped = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            db.get_inheritance_depth(Some(prefix), 200),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let actual: std::collections::BTreeMap<_, _> = scoped
+            .iter()
+            .map(|(n, depth)| (n.id.clone(), *depth))
+            .collect();
+        assert_eq!(actual, expected, "scope: {prefix}");
+        assert_eq!(scoped.len(), actual.len(), "duplicate leaves: {prefix}");
+        assert!(scoped.windows(2).all(|pair| pair[0].1 >= pair[1].1));
+    }
+    let scoped = db.get_inheritance_depth(Some(scope), 200).await.unwrap();
+    let depth = |id: &str| scoped.iter().find(|(n, _)| n.id == id).unwrap().1;
+    assert_eq!(depth("sc-deep"), 50);
+    assert_eq!(depth("sc-child"), 3); // Maximum across both inheritance routes.
+    assert_eq!(depth("sc-cycle"), 1);
+    assert_eq!(depth("sc-self"), 1);
+    assert!(!scoped.iter().any(|(n, _)| n.id == "sc-empty"));
+    let top = db.get_inheritance_depth(Some(scope), 1).await.unwrap();
+    assert_eq!(top.len(), 1);
+    assert_eq!(top[0].0.id, "sc-deep");
+    assert_eq!(top[0].1, 50);
+    assert!(db
+        .get_inheritance_depth(Some(scope), 0)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
 // -------------------------------------------------------------------------
 // get_node_distribution
 // -------------------------------------------------------------------------

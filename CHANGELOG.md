@@ -27,6 +27,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Performance
 
+- Restrict scoped inheritance-depth traversal to matching starting nodes while preserving ancestors across file boundaries, cycle detection, and the depth cap (Refs #782).
+
 - Construct the MCP tool registry once during server startup and release schemas before opening the global database, preserving routing gates and schema accounting without retaining a schema cache (#735).
 
 ### Added

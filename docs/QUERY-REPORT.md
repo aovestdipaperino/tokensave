@@ -1861,14 +1861,15 @@ SELECT {group_alias}.file_path, COUNT(DISTINCT {count_alias}.file_path) AS coupl
 
 #### Q0121 — `get_inheritance_depth`
 
-Source: [src/db/queries/edges.rs:1096](../src/db/queries/edges.rs#L1096).
+Source: [src/db/queries/edges.rs:1097](../src/db/queries/edges.rs#L1097).
 
 ```sql
 WITH RECURSIVE hierarchy(leaf_id, current_id, depth, path) AS (
                  SELECT e.source, e.target, 1,
                         ',' || e.source || ',' || e.target || ','
-                 FROM edges e
+                 FROM edges e {seed_join}
                  WHERE e.kind = 'extends'
+                   {path_filter}
                  UNION ALL
                  SELECT h.leaf_id, e.target, h.depth + 1,
                         h.path || e.target || ','
@@ -1888,14 +1889,26 @@ WITH RECURSIVE hierarchy(leaf_id, current_id, depth, path) AS (
                     ld.max_depth
              FROM leaf_depths ld
              JOIN nodes n ON ld.leaf_id = n.id
-             {path_filter}
              ORDER BY ld.max_depth DESC
              LIMIT ?1
 ```
 
+#### Q0353 — `get_inheritance_depth` scoped seed fragment
+
+Source: [src/db/queries/edges.rs:1076](../src/db/queries/edges.rs#L1076).
+
+```sql
+JOIN nodes seed ON seed.id = e.source
+```
+
+Q0121 inserts this join only in its non-recursive seed. The builder appends
+`AND` and the shared exact-or-prefix predicate for `seed.file_path`, including
+SQL quoting and LIKE escaping, to the seed WHERE clause. `None` supplies empty
+join/filter fragments. The only bound parameter remains `?1 = limit`.
+
 #### Q0122 — `get_node_distribution`
 
-Source: [src/db/queries/edges.rs:1162](../src/db/queries/edges.rs#L1162).
+Source: [src/db/queries/edges.rs:1163](../src/db/queries/edges.rs#L1163).
 
 ```sql
 SELECT file_path, kind, COUNT(*) AS cnt FROM nodes
@@ -1903,7 +1916,7 @@ SELECT file_path, kind, COUNT(*) AS cnt FROM nodes
 
 #### Q0123 — `get_call_edges`
 
-Source: [src/db/queries/edges.rs:1210](../src/db/queries/edges.rs#L1210).
+Source: [src/db/queries/edges.rs:1211](../src/db/queries/edges.rs#L1211).
 
 ```sql
 SELECT e.source, e.target FROM edges e
@@ -1913,7 +1926,7 @@ SELECT e.source, e.target FROM edges e
 
 #### Q0124 — `get_call_edges`
 
-Source: [src/db/queries/edges.rs:1218](../src/db/queries/edges.rs#L1218).
+Source: [src/db/queries/edges.rs:1219](../src/db/queries/edges.rs#L1219).
 
 ```sql
 SELECT source, target FROM edges WHERE kind = 'calls'
@@ -1921,7 +1934,7 @@ SELECT source, target FROM edges WHERE kind = 'calls'
 
 #### Q0125 — `get_call_edges_with_lines`
 
-Source: [src/db/queries/edges.rs:1261](../src/db/queries/edges.rs#L1261).
+Source: [src/db/queries/edges.rs:1262](../src/db/queries/edges.rs#L1262).
 
 ```sql
 SELECT e.source, e.target, e.line FROM edges e
@@ -1931,7 +1944,7 @@ SELECT e.source, e.target, e.line FROM edges e
 
 #### Q0126 — `get_call_edges_with_lines`
 
-Source: [src/db/queries/edges.rs:1269](../src/db/queries/edges.rs#L1269).
+Source: [src/db/queries/edges.rs:1270](../src/db/queries/edges.rs#L1270).
 
 ```sql
 SELECT source, target, line FROM edges WHERE kind = 'calls'
@@ -7502,13 +7515,13 @@ Source: [src/db/queries/edges.rs:1067](../src/db/queries/edges.rs#L1067).
         path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(Node, u64)>> {
-        let path_filter = match path_prefix {
+        let (seed_join, path_filter) = match path_prefix {
             Some(prefix) => {
-                let mut f = String::from("WHERE ");
-                push_path_prefix_filter(&mut f, "n.", prefix);
-                f
+                let mut f = String::from("AND ");
+                push_path_prefix_filter(&mut f, "seed.", prefix);
+                ("JOIN nodes seed ON seed.id = e.source", f)
             }
-            None => String::new(),
+            None => ("", String::new()),
         };
 
         // Track visited node IDs in `path` to avoid blowing up on cycles in the
@@ -7521,16 +7534,18 @@ Source: [src/db/queries/edges.rs:1067](../src/db/queries/edges.rs#L1067).
         // Note the predicate order in the recursive step: `h.depth < 50` is a
         // cheap integer compare and is evaluated before the path `instr`
         // string-scan, so cycles still under the depth bound short-circuit
-        // without paying for the substring search. Reducing the hierarchy to
-        // `(leaf_id, max_depth)` in an inner subquery before joining `nodes`
-        // means the `LIKE` path filter only runs against distinct leaves,
-        // not against the (potentially huge) full hierarchy table.
+        // without paying for the substring search. Scope only the starting
+        // nodes: ancestors outside the requested path still contribute to the
+        // maximum depth. The seed join allows the planner to start from the
+        // extends edges on sparse graphs, avoiding a scan of unrelated nodes.
+        // Unscoped requests retain the original seed without a nodes lookup.
         let sql = format!(
             "WITH RECURSIVE hierarchy(leaf_id, current_id, depth, path) AS (
                  SELECT e.source, e.target, 1,
                         ',' || e.source || ',' || e.target || ','
-                 FROM edges e
+                 FROM edges e {seed_join}
                  WHERE e.kind = 'extends'
+                   {path_filter}
                  UNION ALL
                  SELECT h.leaf_id, e.target, h.depth + 1,
                         h.path || e.target || ','
@@ -7550,7 +7565,6 @@ Source: [src/db/queries/edges.rs:1067](../src/db/queries/edges.rs#L1067).
                     ld.max_depth
              FROM leaf_depths ld
              JOIN nodes n ON ld.leaf_id = n.id
-             {path_filter}
              ORDER BY ld.max_depth DESC
              LIMIT ?1"
         );
@@ -7585,9 +7599,9 @@ Source: [src/db/queries/edges.rs:1067](../src/db/queries/edges.rs#L1067).
     }
 ```
 
-### `get_node_distribution` — src/db/queries/edges.rs:1158
+### `get_node_distribution` — src/db/queries/edges.rs:1159
 
-Source: [src/db/queries/edges.rs:1158](../src/db/queries/edges.rs#L1158).
+Source: [src/db/queries/edges.rs:1159](../src/db/queries/edges.rs#L1159).
 
 ```rust
     pub async fn get_node_distribution(
@@ -7635,9 +7649,9 @@ Source: [src/db/queries/edges.rs:1158](../src/db/queries/edges.rs#L1158).
     }
 ```
 
-### `get_call_edges` — src/db/queries/edges.rs:1205
+### `get_call_edges` — src/db/queries/edges.rs:1206
 
-Source: [src/db/queries/edges.rs:1205](../src/db/queries/edges.rs#L1205).
+Source: [src/db/queries/edges.rs:1206](../src/db/queries/edges.rs#L1206).
 
 ```rust
     pub async fn get_call_edges(&self, path_prefix: Option<&str>) -> Result<Vec<(String, String)>> {
@@ -7686,9 +7700,9 @@ Source: [src/db/queries/edges.rs:1205](../src/db/queries/edges.rs#L1205).
     }
 ```
 
-### `get_call_edges_with_lines` — src/db/queries/edges.rs:1253
+### `get_call_edges_with_lines` — src/db/queries/edges.rs:1254
 
-Source: [src/db/queries/edges.rs:1253](../src/db/queries/edges.rs#L1253).
+Source: [src/db/queries/edges.rs:1254](../src/db/queries/edges.rs#L1254).
 
 ```rust
     pub async fn get_call_edges_with_lines(
@@ -7741,9 +7755,9 @@ Source: [src/db/queries/edges.rs:1253](../src/db/queries/edges.rs#L1253).
     }
 ```
 
-### `get_complexity_ranked` — src/db/queries/edges.rs:1307
+### `get_complexity_ranked` — src/db/queries/edges.rs:1308
 
-Source: [src/db/queries/edges.rs:1307](../src/db/queries/edges.rs#L1307).
+Source: [src/db/queries/edges.rs:1308](../src/db/queries/edges.rs#L1308).
 
 ```rust
     pub async fn get_complexity_ranked(
@@ -13153,6 +13167,35 @@ direct FTS writes, 0.179 s for per-row content triggers, and 0.055 s for
 128-row trigger batches. Thus batching mitigates the trigger overhead but
 there is still a write/index-maintenance tradeoff; these are not production
 or bundled-libSQL throughput guarantees.
+
+## Scoped inheritance traversal (Refs #782)
+
+Q0121 uses Q0353 and its path predicate in the recursive seed, restricting
+starting nodes before expansion. The recursive step still follows ancestors
+across path boundaries;
+maximum-depth aggregation, cycle detection, the 50-hop bound, ordering, row
+shape, and limit binding remain unchanged. Unscoped requests retain the original
+seed without the nodes join. No schema or index change is required.
+
+The scoped seed join lets the planner start from inheritance edges on sparse
+graphs instead of materializing candidates from all nodes. Recursive state scales
+with reachable inheritance paths from matching starting nodes; the existing
+depth cap does not bound branching width. No retained cache, task,
+connection, or Rust-side graph collection is added. Regression fixtures compare
+scoped results with filtered global results across escaped paths, branching,
+cycles, self loops, external ancestors, missing scopes, limits and the depth cap.
+
+A synthetic SQLite 3.46.1 fixture with ANALYZE statistics compared identical
+results on 16,000 nodes in 800 chains, 15,200 extends edges, and eight selected
+starting nodes. After two warmups, seven alternating old/new runs with LIMIT 20
+had narrow-scope medians of 419.158 → 8.731 ms and generated 152,000 → 152
+recursive rows. Broad-scope medians were 441.083 → 453.042 ms; unscoped medians
+were 417.660 → 439.030 ms with identical recursive row counts and SQL apart
+from whitespace. Broad scopes can add seed-join overhead without saving much
+traversal. A sparse fixture with 116,000 nodes and three extends edges measured
+0.025 → 0.021 ms; its plan started from edges and looked up source nodes by ID.
+These local measurements depend on planner statistics and are not production
+or bundled-libSQL latency guarantees. Long-running RSS was not measured.
 
 ## Coverage and limitations
 
