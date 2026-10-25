@@ -32,6 +32,35 @@
 >
 > Install from source: `cargo install --git https://github.com/aovestdipaperino/tokensave.git --branch beta --locked --force`
 
+## Table of Contents
+
+- [Why tokensave?](#why-tokensave)
+- [Key Features](#key-features)
+- [Quick Start](#quick-start)
+- [Crash-Resilient Sync](#crash-resilient-sync)
+- [Multi-Branch Indexing (Optional)](#multi-branch-indexing-optional)
+- [Cross-Session Memory](#cross-session-memory)
+- [Savings Ledger](#savings-ledger)
+- [Reproducible Benchmark](#reproducible-benchmark)
+- [80+ MCP Tools](#80-mcp-tools)
+- [Token Tracking](#token-tracking)
+- [Index Freshness](#index-freshness)
+- [Self-Upgrade](#self-upgrade)
+- [Versioning & upgrades](#versioning--upgrades)
+- [CLI Reference](#cli-reference)
+- [tokensave doctor](#tokensave-doctor)
+- [How It Works with Claude Code](#how-it-works-with-claude-code)
+- [Network Calls & Privacy](#network-calls--privacy)
+- [50+ Languages](#50-languages)
+- [tokensave vs CodeGraph](#tokensave-vs-codegraph)
+- [Why tokensave Over the Alternatives](#why-tokensave-over-the-alternatives)
+- [Troubleshooting](#troubleshooting)
+- [Origin](#origin)
+- [Building](#building)
+- [Star History](#star-history)
+- [Sponsors](#sponsors)
+- [License](#license)
+
 ## Why tokensave?
 
 AI coding agents waste tokens exploring codebases. Every grep, glob, and file read costs money. On complex tasks, agents spawn multiple Explore sub-agents that scan hundreds of files just to build context.
