@@ -23,6 +23,34 @@ Every graph and diagram created or updated for repository documentation MUST
 use Mermaid. Embed Mermaid source in fenced `mermaid` code blocks in Markdown
 so GitHub can render it and contributors can edit it directly.
 
+## README consistency and installation
+
+Keep `README.md` synchronized between `master` and `beta`. Installation
+instructions are the only permitted branch-specific difference in README
+content; keep all other content the same, including the beta announcement.
+Record this rule identically in both branches' `AGENTS.md` files.
+
+- On `master`, preserve the stable installation guide: Homebrew
+  (`brew install aovestdipaperino/tap/tokensave`), crates.io
+  (`cargo install tokensave`), `cargo binstall tokensave`, Windows Scoop
+  (add `https://github.com/aovestdipaperino/scoop-bucket` as the `tokensave`
+  bucket, then `scoop install tokensave`), and prebuilt binaries from the
+  latest release added to `PATH`. Retain the Cargo medium/lite variants and
+  the documented release archive table.
+- On `beta`, preserve installation directly from the beta branch:
+  `cargo install --git https://github.com/aovestdipaperino/tokensave.git --branch beta --locked --force`.
+  Retain the alternative of cloning `beta` and running
+  `cargo build --release --locked` with the pinned toolchain, then adding
+  the resulting binary to `PATH`, plus the source-based medium/lite variants.
+  Keep the explanation that Homebrew, Scoop, crates.io, cargo-binstall, and
+  published release binaries install stable releases; no prebuilt beta
+  archives are published. Preserve the schema-migration/full-reindex notice,
+  disposable-checkout advice, and link to the master guide for returning
+  to stable.
+- Preserve these installation differences when merging or synchronizing the
+  branches. The beta announcement on both branches may continue to show the
+  explicit beta installation command.
+
 ## README beta announcement
 
 Keep the beta announcement near the top of `README.md` current with the new
