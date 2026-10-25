@@ -40,33 +40,30 @@ AI coding agents waste tokens exploring codebases. Every grep, glob, and file re
 
 ### How It Works
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  AI Coding Agent (Claude Code, Codex, Gemini, Cursor, ...)   │
-│                                                              │
-│  "Implement user authentication"                             │
-│        │                                                     │
-│        ▼                                                     │
-│  ┌─────────────────┐       ┌─────────────────┐               │
-│  │  Sub-agent      │ ───── │  Sub-agent      │               │
-│  └────────┬────────┘       └─────────┬───────┘               │
-└───────────┼──────────────────────────┼───────────────────────┘
-            │                          │
-            ▼                          ▼
-┌──────────────────────────────────────────────────────────────┐
-│  tokensave MCP Server                                        │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │
-│  │   Search    │  │   Callers   │  │   Context   │           │
-│  │   "auth"    │  │  "login()"  │  │   for task  │           │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘           │
-│         └────────────────┼────────────────┘                  │
-│                          ▼                                   │
-│              ┌───────────────────────┐                       │
-│              │   libSQL Graph DB     │                       │
-│              │   • Instant lookups   │                       │
-│              │   • FTS5 search       │                       │
-│              └───────────────────────┘                       │
-└──────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph agent["AI Coding Agent (Claude Code, Codex, Gemini, Cursor, ...)"]
+        task["Implement user authentication"]
+        first["Sub-agent"]
+        second["Sub-agent"]
+        task --> first
+        task --> second
+        first --- second
+    end
+
+    subgraph server["tokensave MCP Server"]
+        search["Search: auth"]
+        callers["Callers: login()"]
+        context["Context for task"]
+        db[("libSQL Graph DB<br/>Instant lookups<br/>FTS5 search")]
+        search --> db
+        callers --> db
+        context --> db
+    end
+
+    first --> search
+    first --> callers
+    second --> context
 ```
 
 **Without tokensave:** Agents use `grep`, `glob`, and `Read` to scan files -- many API calls, high token usage.
