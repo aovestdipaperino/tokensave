@@ -104,12 +104,16 @@ routing integration are **unsupported**, not silently enabled.
 ## Validation and implementation status
 
 This document is the consolidated implementation record for detection, MCP
-cooperation, diagnostics, and benchmarks. The implementation is prepared for
-**draft review** and remains unmerged. A live metered-agent telemetry adapter,
-independently scored model tasks, and actual A/B measurements are unfinished;
-the runner and its synthetic accounting tests do not complete performance
-validation. Tracking issue and PR publication require GitHub API authentication.
-Link the PR with `Refs #N` when the tracking issue is created; never auto-close it.
+cooperation, diagnostics, and benchmarks. The implementation is published in
+[draft PR #800](https://github.com/aovestdipaperino/tokensave/pull/800),
+Refs [#797](https://github.com/aovestdipaperino/tokensave/issues/797), and remains
+unmerged. A live metered-agent telemetry adapter, independently scored model
+tasks, and actual A/B measurements are unfinished; the runner and its synthetic
+accounting tests do not complete performance validation. The default-on
+cooperation preference also needs reconciliation with #797's opt-in adoption
+criterion before readiness. The companion Headroom evaluation is tracked in
+[#798](https://github.com/aovestdipaperino/tokensave/issues/798); it remains a
+separate adoption decision. No issue is closed by this PR.
 
 | Component | Status | Validation / remaining work |
 | --- | --- | --- |
@@ -160,5 +164,6 @@ stable installation. Beta retains its query-debugging guidance. The beta source
 port and live agent benchmarks remain pending; companion documentation must ship
 with that source port, rather than advertising the feature on a published branch
 without its implementation. The current changes are prepared on
-`feat/caveman-compatibility` for draft review against master. No merge or release
-is part of this work; beta synchronization remains a separate pending change.
+`feat/caveman-compatibility` and published as draft PR #800 against master.
+No merge or release is part of this work; beta synchronization remains a separate
+pending change.
