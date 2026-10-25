@@ -139,6 +139,32 @@ To choose an agent, use `--agent` (for example, `codex`, `claude`, or `cursor`):
 tokensave install --agent codex
 ```
 
+Supported agents (use the identifier with `--agent`):
+
+| Agent | Identifier |
+|---|---|
+| Antigravity | `antigravity` |
+| AugmentCode | `auggie` |
+| Claude Code | `claude` |
+| Cline | `cline` |
+| Codex CLI | `codex` |
+| GitHub Copilot | `copilot` |
+| Cursor | `cursor` |
+| Factory Droid | `droid` |
+| Gemini CLI | `gemini` |
+| Grok Build | `grok` |
+| Kilo CLI | `kilo` |
+| Kimi CLI | `kimi` |
+| Kiro | `kiro` |
+| Oh My Pi (OMP) | `omp` |
+| OpenCode | `opencode` |
+| Pi | `pi` |
+| Plank (macOS only) | `plank` |
+| Qwen Code | `qwen` |
+| Roo Code | `roo-code` |
+| Mistral Vibe | `vibe` |
+| Zed | `zed` |
+
 Setup registers the MCP server and the agent's integration. It also offers global Git hooks to keep initialized projects up to date. You can safely run setup again after upgrading.
 
 <details>
