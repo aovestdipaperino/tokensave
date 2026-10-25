@@ -7,6 +7,11 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Documentation
+
+- Require agents to keep the README beta announcement aligned with beta release features on master and beta.
+- Announce the beta with improved queries in the README, with beta links and a source installation command.
+
 ### Added
 
 - Add a SQL query inventory in `docs/QUERY-REPORT.md` with source links and dynamic construction context, and require agents to keep it synchronized with query changes (Refs #773).
