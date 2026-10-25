@@ -1733,3 +1733,75 @@ async fn test_v19_indexes_dispatch_deletion_on_fresh_and_upgraded_databases() {
     drop(rows);
     assert!(!migrate(&conn).await.unwrap());
 }
+
+#[tokio::test]
+async fn v20_preserves_legacy_body_rowids_and_backfills_exact_candidate_membership() {
+    let (_dir, conn, _db) = create_raw_db().await;
+    create_schema(&conn).await.unwrap();
+    conn.execute_batch(
+        "DROP TRIGGER executable_bodies_insert;
+         DROP TRIGGER executable_bodies_delete;
+         DROP TRIGGER executable_bodies_update;
+         DROP TABLE executable_body_fts;
+         DROP TABLE executable_bodies;
+         CREATE VIRTUAL TABLE executable_body_fts USING fts5(node_id UNINDEXED,file_path UNINDEXED,body,tokenize='unicode61');
+         INSERT INTO executable_body_fts(rowid,node_id,file_path,body)
+            VALUES (7,'a','src/a.rs','alpha beta'),(20,'b','src/b.rs','gamma delta');
+         DROP TRIGGER ambiguous_candidates_insert;
+         DROP TRIGGER ambiguous_candidates_delete;
+         DROP TRIGGER ambiguous_candidates_update;
+         DROP TABLE ambiguous_call_candidates;
+         INSERT INTO ambiguous_calls VALUES ('caller','ref','src/a.rs',1,'[\"first\",\"first\",\"second\"]');
+         INSERT INTO ambiguous_calls VALUES ('bad','ref','src/b.rs',1,'not JSON');",
+    ).await.unwrap();
+    set_user_version(&conn, 19).await;
+    assert!(migrate(&conn).await.unwrap());
+    assert_eq!(get_user_version(&conn).await, latest_version());
+    assert!(index_exists(&conn, "idx_executable_bodies_file").await);
+    assert!(index_exists(&conn, "idx_ambiguous_candidates_node").await);
+    let mut rows = conn
+        .query(
+            "SELECT rowid,node_id FROM executable_body_fts WHERE executable_body_fts MATCH 'alpha'",
+            (),
+        )
+        .await
+        .unwrap();
+    let row = rows.next().await.unwrap().unwrap();
+    assert_eq!(row.get::<i64>(0).unwrap(), 7);
+    assert_eq!(row.get::<String>(1).unwrap(), "a");
+    drop(rows);
+    let mut rows = conn
+        .query(
+            "SELECT candidate_node_id FROM ambiguous_call_candidates ORDER BY candidate_node_id",
+            (),
+        )
+        .await
+        .unwrap();
+    let mut candidates = vec![];
+    while let Some(row) = rows.next().await.unwrap() {
+        candidates.push(row.get::<String>(0).unwrap());
+    }
+    assert_eq!(candidates, vec!["first", "second"]);
+    drop(rows);
+    conn.execute(
+        "INSERT INTO executable_body_fts(executable_body_fts,rank) VALUES('integrity-check',1)",
+        (),
+    )
+    .await
+    .unwrap();
+    // A replay against already-converted storage preserves its content.
+    set_user_version(&conn, 19).await;
+    assert!(migrate(&conn).await.unwrap());
+    let mut rows = conn
+        .query("SELECT id FROM executable_bodies ORDER BY id", ())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+        7
+    );
+    assert_eq!(
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+        20
+    );
+}

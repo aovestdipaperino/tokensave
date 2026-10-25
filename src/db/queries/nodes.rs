@@ -889,24 +889,19 @@ impl Database {
 
     /// Recorded ambiguous calls that name `node_id` among their candidates.
     ///
-    /// `candidate_node_ids` is a JSON array, so the `LIKE` is a cheap
-    /// prefilter on the quoted id and the decoded array is checked exactly.
+    /// Membership is indexed relationally; the original JSON remains the
+    /// public representation and is decoded/validated before returning rows.
     pub async fn get_ambiguous_calls_naming(&self, node_id: &str) -> Result<Vec<AmbiguousCall>> {
-        let pattern = format!(
-            "%\"{}\"%",
-            node_id
-                .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
-        );
         let mut rows = self
             .conn()
             .query(
-                "SELECT from_node_id, reference_name, file_path, line, candidate_node_ids
-                 FROM ambiguous_calls
-                 WHERE candidate_node_ids LIKE ?1 ESCAPE '\\'
-                 ORDER BY file_path, line",
-                params![pattern],
+                "SELECT a.from_node_id, a.reference_name, a.file_path, a.line, a.candidate_node_ids
+                 FROM ambiguous_call_candidates c
+                 JOIN ambiguous_calls a ON a.from_node_id = c.from_node_id
+                    AND a.reference_name = c.reference_name AND a.line = c.line
+                 WHERE c.candidate_node_id = ?1
+                 ORDER BY a.file_path, a.line",
+                params![node_id],
             )
             .await
             .map_err(|e| TokenSaveError::Database {
@@ -1130,7 +1125,7 @@ impl Database {
             // or issuing three statements for every node in the file. Explicit
             // deletes also preserve cleanup when foreign keys are disabled.
             for sql in [
-                "DELETE FROM executable_body_fts WHERE file_path = ?1",
+                "DELETE FROM executable_bodies WHERE file_path = ?1",
                 "DELETE FROM edges
                  WHERE source IN (SELECT id FROM nodes WHERE file_path = ?1)
                     OR target IN (SELECT id FROM nodes WHERE file_path = ?1)",

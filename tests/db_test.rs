@@ -817,7 +817,7 @@ async fn test_delete_nodes_by_file_cleans_dependents_and_preserves_other_files()
                        ('keep-a', 'missing', 'calls', 1, 0, 'src/keep.rs');
              INSERT INTO vectors(node_id, embedding, model, created_at)
                 VALUES ('del-0', X'00', 'test', 1), ('keep-a', X'00', 'test', 1);
-             INSERT INTO executable_body_fts(node_id, file_path, body)
+             INSERT INTO executable_bodies(node_id, file_path, body)
                 VALUES ('del-0', 'src/deleted.rs', 'deleted body'),
                        ('keep-a', 'src/keep.rs', 'kept body');
              INSERT INTO trait_dispatch_callers(concrete_method_id, trait_method_id, caller_id, line)
@@ -857,7 +857,7 @@ async fn test_delete_nodes_by_file_cleans_dependents_and_preserves_other_files()
             assert_eq!(actual, expected, "foreign_keys={foreign_keys}: {sql}");
         }
         // FTS cleanup must also run when no graph node remains for a file.
-        db.conn().execute("INSERT INTO executable_body_fts(node_id, file_path, body) VALUES ('orphan', 'src/absent.rs', 'orphan')", ()).await.unwrap();
+        db.conn().execute("INSERT INTO executable_bodies(node_id, file_path, body) VALUES ('orphan', 'src/absent.rs', 'orphan')", ()).await.unwrap();
         db.delete_nodes_by_file("src/absent.rs").await.unwrap();
         let mut rows = db
             .conn()
@@ -880,14 +880,17 @@ async fn test_delete_nodes_by_file_rolls_back_fts_and_dependents_on_error() {
     ])
     .await
     .unwrap();
-    db.conn().execute_batch(
-        "INSERT INTO edges(source, target, kind) VALUES ('a', 'b', 'calls');
+    db.conn()
+        .execute_batch(
+            "INSERT INTO edges(source, target, kind) VALUES ('a', 'b', 'calls');
          INSERT INTO vectors(node_id, embedding, model, created_at) VALUES ('a', X'00', 'test', 1);
-         INSERT INTO executable_body_fts(node_id, file_path, body) VALUES ('a', 'src/a.rs', 'alpha');
+         INSERT INTO executable_bodies(node_id, file_path, body) VALUES ('a', 'src/a.rs', 'alpha');
          CREATE TRIGGER prevent_vector_delete BEFORE DELETE ON vectors BEGIN
              SELECT RAISE(ABORT, 'injected failure');
          END;",
-    ).await.unwrap();
+        )
+        .await
+        .unwrap();
     assert!(db.delete_nodes_by_file("src/a.rs").await.is_err());
     for table in ["nodes", "edges", "vectors", "executable_body_fts"] {
         let mut rows = db
@@ -907,4 +910,273 @@ async fn test_delete_nodes_by_file_rolls_back_fts_and_dependents_on_error() {
         .await
         .unwrap();
     db.delete_nodes_by_file("src/a.rs").await.unwrap();
+}
+
+#[tokio::test]
+async fn indexed_body_storage_preserves_match_update_delete_and_insert_rollback() {
+    let (_dir, db) = setup_db().await;
+    for (id, file) in [("a", "src/a.rs"), ("b", "src/b.rs")] {
+        db.insert_node(&sample_node(id, id, file)).await.unwrap();
+    }
+    let document = |id: &str, file: &str, body: &str| ExecutableBodyDocument {
+        node_id: id.into(),
+        file_path: file.into(),
+        body: body.into(),
+    };
+    db.insert_executable_body_documents(&[
+        document("a", "src/a.rs", "alpha beta"),
+        document("b", "src/b.rs", "alpha beta"),
+    ])
+    .await
+    .unwrap();
+    let terms = vec!["alpha".into(), "beta".into()];
+    assert_eq!(
+        db.search_executable_bodies(&terms, 10).await.unwrap().len(),
+        2
+    );
+    db.conn()
+        .execute(
+            "UPDATE executable_bodies SET body='gamma delta' WHERE node_id='a'",
+            (),
+        )
+        .await
+        .unwrap();
+    let hits = db.search_executable_bodies(&terms, 10).await.unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].0.id, "b");
+    db.delete_nodes_by_file("src/a.rs").await.unwrap();
+    assert!(db
+        .search_executable_bodies(&["gamma".into(), "delta".into()], 10)
+        .await
+        .unwrap()
+        .is_empty());
+    let mut plan = db
+        .conn()
+        .query(
+            "EXPLAIN QUERY PLAN DELETE FROM executable_bodies WHERE file_path='src/a.rs'",
+            (),
+        )
+        .await
+        .unwrap();
+    assert!(plan
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get::<String>(3)
+        .unwrap()
+        .contains("idx_executable_bodies_file"));
+    drop(plan);
+    db.conn().execute_batch("CREATE TRIGGER fail_body_insert BEFORE INSERT ON executable_bodies WHEN NEW.node_id='fail' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").await.unwrap();
+    assert!(db
+        .insert_executable_body_documents(&[
+            document("b", "src/b.rs", "epsilon zeta"),
+            document("fail", "src/f.rs", "epsilon zeta"),
+        ])
+        .await
+        .is_err());
+    assert!(db
+        .search_executable_bodies(&["epsilon".into(), "zeta".into()], 10)
+        .await
+        .unwrap()
+        .is_empty());
+    db.conn()
+        .execute_batch("DROP TRIGGER fail_body_insert")
+        .await
+        .unwrap();
+    db.insert_executable_body_documents(&[document("b", "src/b.rs", "epsilon zeta")])
+        .await
+        .unwrap();
+    assert_eq!(
+        db.search_executable_bodies(&["epsilon".into(), "zeta".into()], 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    db.clear().await.unwrap();
+    assert!(db
+        .search_executable_bodies(&terms, 10)
+        .await
+        .unwrap()
+        .is_empty());
+    db.conn().execute("INSERT INTO executable_body_fts(executable_body_fts, rank) VALUES('integrity-check', 1)", ()).await.unwrap();
+}
+
+#[tokio::test]
+async fn ambiguity_membership_tracks_replacement_updates_deletion_and_exact_ids() {
+    let (_dir, db) = setup_db().await;
+    db.conn()
+        .execute_batch("PRAGMA foreign_keys=OFF")
+        .await
+        .unwrap();
+    let special = "id_%\\\"é";
+    let mut call = AmbiguousCall {
+        from_node_id: "caller".into(),
+        reference_name: "target".into(),
+        file_path: "src/a.rs".into(),
+        line: 7,
+        column: 0,
+        candidate_node_ids: vec![special.into(), special.into(), "other".into()],
+    };
+    db.replace_ambiguous_calls(&[], &[call.clone()])
+        .await
+        .unwrap();
+    assert_eq!(
+        db.get_ambiguous_calls_naming(special).await.unwrap().len(),
+        1
+    );
+    for absent in ["id", "ID_%\\\"é", "other-extra", ""] {
+        assert!(db
+            .get_ambiguous_calls_naming(absent)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+    call.candidate_node_ids = vec!["replacement".into()];
+    db.replace_ambiguous_calls(&[], &[call.clone()])
+        .await
+        .unwrap();
+    assert!(db
+        .get_ambiguous_calls_naming(special)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        db.get_ambiguous_calls_naming("replacement")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    db.conn()
+        .execute(
+            "UPDATE ambiguous_calls SET line=8, candidate_node_ids='[\"updated\"]'",
+            (),
+        )
+        .await
+        .unwrap();
+    assert!(db
+        .get_ambiguous_calls_naming("replacement")
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        db.get_ambiguous_calls_naming("updated").await.unwrap()[0].line,
+        8
+    );
+    let key = tokensave::resolution::AmbiguityRefKey {
+        from_node_id: "caller".into(),
+        reference_name: "target".into(),
+        file_path: "src/a.rs".into(),
+        line: 8,
+    };
+    db.replace_ambiguous_calls_for_refs(&[key], &[])
+        .await
+        .unwrap();
+    assert!(db
+        .get_ambiguous_calls_naming("updated")
+        .await
+        .unwrap()
+        .is_empty());
+    db.replace_ambiguous_calls(&[], &[call.clone()])
+        .await
+        .unwrap();
+    db.replace_ambiguous_calls(&["src/a.rs".into()], &[])
+        .await
+        .unwrap();
+    assert!(db
+        .get_ambiguous_calls_naming("replacement")
+        .await
+        .unwrap()
+        .is_empty());
+    db.replace_ambiguous_calls(&[], &[call]).await.unwrap();
+    db.clear().await.unwrap();
+    assert!(db
+        .get_ambiguous_calls_naming("replacement")
+        .await
+        .unwrap()
+        .is_empty());
+    let mut rows = db
+        .conn()
+        .query("SELECT COUNT(*) FROM ambiguous_call_candidates", ())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+        0
+    );
+    drop(rows);
+    let mut plan = db.conn().query("EXPLAIN QUERY PLAN SELECT from_node_id FROM ambiguous_call_candidates WHERE candidate_node_id='updated'", ()).await.unwrap();
+    assert!(plan
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get::<String>(3)
+        .unwrap()
+        .contains("idx_ambiguous_candidates_node"));
+}
+
+#[tokio::test]
+async fn body_batches_bound_large_documents_and_roll_back_earlier_batches() {
+    let (_dir, db) = setup_db().await;
+    let mut documents = vec![ExecutableBodyDocument {
+        node_id: "large".into(),
+        file_path: "src/large.rs".into(),
+        body: "largeword ".repeat(30_000),
+    }];
+    documents.extend((0..260).map(|i| ExecutableBodyDocument {
+        node_id: format!("small-{i}"),
+        file_path: "src/small.rs".into(),
+        body: "smallword document".into(),
+    }));
+    documents.push(ExecutableBodyDocument {
+        node_id: "fail".into(),
+        file_path: "src/fail.rs".into(),
+        body: "failure".into(),
+    });
+    db.conn().execute_batch("CREATE TRIGGER fail_body_batch BEFORE INSERT ON executable_bodies WHEN NEW.node_id='fail' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").await.unwrap();
+    assert!(db
+        .insert_executable_body_documents(&documents)
+        .await
+        .is_err());
+    let mut rows = db
+        .conn()
+        .query("SELECT COUNT(*) FROM executable_bodies", ())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+        0
+    );
+    drop(rows);
+    db.conn()
+        .execute_batch("DROP TRIGGER fail_body_batch")
+        .await
+        .unwrap();
+    db.insert_executable_body_documents(&documents)
+        .await
+        .unwrap();
+    for (term, expected) in [("largeword", 1), ("smallword", 260), ("failure", 1)] {
+        let mut rows = db
+            .conn()
+            .query(
+                "SELECT COUNT(*) FROM executable_body_fts WHERE executable_body_fts MATCH ?1",
+                libsql::params![term],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            expected
+        );
+    }
+    db.conn()
+        .execute(
+            "INSERT INTO executable_body_fts(executable_body_fts,rank) VALUES('integrity-check',1)",
+            (),
+        )
+        .await
+        .unwrap();
 }
