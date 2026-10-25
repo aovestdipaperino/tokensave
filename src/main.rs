@@ -1247,6 +1247,15 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 process::exit(code);
             }
         }
+        Commands::HookPiPreToolUse => {
+            let code = tokensave::hooks::hook_pi_pre_tool_use();
+            if code != 0 {
+                process::exit(code);
+            }
+        }
+        Commands::HookPiStop => {
+            tokensave::hooks::hook_pi_stop().await;
+        }
         Commands::Serve {
             path,
             timings,
@@ -1991,6 +2000,8 @@ fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
             | Commands::HookKiroPromptSubmit
             | Commands::HookKiroPostToolUse
             | Commands::HookDroidPreToolUse
+            | Commands::HookPiPreToolUse
+            | Commands::HookPiStop
     )
 }
 
@@ -2330,6 +2341,8 @@ mod startup_tests {
             Commands::HookKiroPromptSubmit,
             Commands::HookKiroPostToolUse,
             Commands::HookDroidPreToolUse,
+            Commands::HookPiPreToolUse,
+            Commands::HookPiStop,
         ] {
             assert!(
                 should_skip_agent_install_maintenance(&command),

@@ -99,6 +99,7 @@ mod hook_648_test;
 mod hook_excluded_paths_test;
 mod hook_find_glob_test;
 mod hook_include_glob_test;
+mod hook_pi_test;
 mod hooks_test;
 mod html_css_extraction_test;
 mod index_scope_test;
