@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Documentation
+
+- Require agents to keep the README beta announcement aligned with beta release features on master and beta.
+
 ### CI
 
 - Validate pushes and pull requests targeting the beta integration branch with the existing CI matrix (Refs #786).

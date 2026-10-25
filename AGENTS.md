@@ -2,6 +2,16 @@
 
 This file provides guidance to the agent when working with code in this repository.
 
+## README beta announcement
+
+Keep the beta announcement near the top of `README.md` current with the new
+release features available on `beta`. When adding or changing beta features,
+update the announcement's highlights and links accordingly on both `master`
+and `beta`; describe only features already available on the beta branch.
+When those features reach a stable release, revise or remove the announcement
+so it continues to describe what is available in beta beyond stable. Keep the
+installation instructions accurate and link to the beta changelog for details.
+
 ## Contributing
 
 Follow [CONTRIBUTING.md](CONTRIBUTING.md) when changing this repository, including
