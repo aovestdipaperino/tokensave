@@ -9,6 +9,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Documentation
 
+- Evaluate optional Graphify coexistence at a pinned revision, with a disposable CLI probe, recorded resource measurements, and explicit requirements and remaining work before any adapter (Refs #791).
+
 - Add a linked table of contents near the top of the README.
 
 - List all supported agents and their `--agent` identifiers beside the README setup command.

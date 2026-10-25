@@ -117,6 +117,7 @@ portable string formats, and documented path-syntax test fixtures.
 
 ### Non-standard test/bench harnesses
 
+- Graphify coexistence evaluation (#791): `python3 scripts/graphify_probe.py --graphify /path/to/pinned/graphify --benchmark-repo "$PWD" --output /tmp/graphify-results.json`. Requires Linux, GNU time, git, both CLIs, and the Graphify revision in `docs/GRAPHIFY-EVALUATION.md`. Uses disposable copies; does not install assistant integrations. The evaluation records limits and outstanding checks.
 - Criterion bench against large real repos: `TOKENSAVE_BENCH_REPOS_DIR=~/tokensave-bench-cache cargo bench --bench large_repos`. Without `TOKENSAVE_BENCH_REPOS_DIR` it registers zero benchmarks. Filter with `cargo bench --bench large_repos -- 'scipy/tokensave_search'`. Repos and pinned refs are in `benches/repos.rs`; delete the `<repo>/.bench-ref` marker to force a re-fetch.
 - MCP test-matrix probe: `cargo build --release --bin tokensave && python3 scripts/mcp_probe/probe.py && python3 scripts/mcp_probe/build_matrix.py > matrix.md`. `scripts/mcp_probe/repos.toml` lists target repos (override with `TOKENSAVE_PROBE_REPOS`).
 - `tokensave bench` is a separate CLI benchmark (fixed query set, retrieval-savings report).
