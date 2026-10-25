@@ -7,7 +7,9 @@
 
 use std::path::{Path, PathBuf};
 
-use libsql::{params, Builder, Connection, Database as LibsqlDatabase};
+use libsql::{params, Builder, Database as LibsqlDatabase};
+
+use crate::db::debug_sql::Connection;
 
 /// Total savings + call count for a project (or all projects when `project` is None).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -213,7 +215,7 @@ impl GlobalDb {
         }
 
         let db = Builder::new_local(db_path).build().await.ok()?;
-        let conn = db.connect().ok()?;
+        let conn = Connection::new(db.connect().ok()?, "global");
 
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;

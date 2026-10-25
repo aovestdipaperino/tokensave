@@ -27,6 +27,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- Add global opt-in SQL diagnostics and `EXPLAIN QUERY PLAN` output on stderr, configured with `tokensave config debug-sql`; keep application stdout unchanged and bound diagnostic records (Refs #789).
+
 - Add a consolidated SQL optimization summary and reproducible query benchmarks, and require agents to maintain summaries across related implementations (Refs #786).
 
 - Add a SQL query inventory in `docs/QUERY-REPORT.md` with source links and dynamic construction context, and require agents to keep it synchronized with query changes (Refs #773).

@@ -1956,3 +1956,71 @@ binary when you want the configured path to be durable.
 ### Getting help
 
 If you run into something not covered here, check the [GitHub repository](https://github.com/aovestdipaperino/tokensave) or open an issue.
+
+## SQL debugging (beta)
+
+SQL debugging is a global preference in `~/.tokensave/config.toml`, off by
+default. Show or change it with:
+
+```bash
+tokensave config debug-sql
+tokensave config debug-sql --enabled true
+tokensave config debug-sql --enabled true --explain true
+tokensave config debug-sql --enabled false
+```
+
+The equivalent top-level TOML keys (before any `[table]`) are:
+
+```toml
+debug_sql = true
+debug_sql_explain = true
+```
+
+Explain is effective only while `debug_sql` is true. Connections snapshot these
+settings when opened: restart existing MCP servers after a change. Disabling
+SQL debugging leaves the explain preference saved for the next debugging run.
+
+Each operation emits one JSON line on **stderr**, alongside ordinary diagnostic
+messages. MCP and CLI stdout retain their existing formats. For example:
+
+```bash
+tokensave tool search --query MySymbol --format json 2>sql-debug.log
+```
+
+Filter lines with `event == "tokensave.sql"`. Records include process and
+connection IDs, a per-connection sequence number, the database category
+(`project` or `global`), operation, SQL template, parameter count, duration in
+microseconds, and success flag. Bound parameter values and error messages
+are omitted; named placeholders remain in the SQL template. SQL literals and query-plan details can still contain private
+information; review a captured log before sharing it. No log is uploaded or
+written to disk automatically. Any file created through shell redirection is
+managed by the user and can grow with the number of operations.
+
+Explain mode adds a `plan` object produced by `EXPLAIN QUERY PLAN` with the
+same bindings. It compiles a plan without replaying the original operation.
+Plan failures appear as `{"error":true}` and never replace an application
+result. Batches are logged as one operation and are not split or explained.
+Prepare is recorded separately; its bound plan is obtained when the statement
+is executed. Explicit transaction begin/commit/rollback are recorded; automatic
+rollback on drop keeps libsql's behavior and does not emit a rollback record.
+
+Coverage includes runtime project graph operations, prepared statements,
+transactions, and the global database, including its setup. Project database
+setup pragmas/schema migrations run before the debug wrapper is installed.
+Independent raw connections (for example, the index verifier), explicitly
+coerced raw libsql helpers, SQLite trigger internals, and row-iteration errors
+are outside this tracing surface. This is local debugging, separate from the
+aggregate profiling work tracked in #754.
+
+`duration_us` measures the underlying call until it returns, excluding explain
+and log output. For queries it includes obtaining the row stream, **not**
+consuming all rows; it is not total query or MCP request latency. Use
+`tokensave serve --timings` for handler latency. Plans add parsing/planning work
+and copy bindings temporarily, and can alter warm-cache measurements. Keep
+explain disabled when measuring normal throughput.
+
+SQL text is capped at 8 KiB per record, plans at 64 rows, and each plan detail
+at 1 KiB, with truncation flags. Logs retain no in-process history. The original
+SQL and bindings remain input-sized while an operation runs; a debug prepared
+statement retains its SQL and connection until dropped. Logging writes
+synchronously to stderr with backpressure; sink write failures are ignored.
