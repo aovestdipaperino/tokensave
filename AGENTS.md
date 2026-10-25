@@ -14,6 +14,17 @@ create issues for identified bugs and enhancements, link PRs with "Refs #N" (nev
 "Fixes #N" / "Closes #N"), and never close an issue (including via `gh issue close`)
 without explicit permission — issue closure is left to the repository maintainer.
 
+## Summaries for related implementations
+
+When a topic spans multiple implementations or related pull requests, the
+agent MUST write and maintain a consolidated summary. Include each change's
+scope, linked issues/PRs, implementation and merge status, dependencies,
+validation results and limitations, and any remaining work. Update the summary
+as related changes are added or their status changes, and link it in the final
+handoff. Use an existing parent/tracking issue when available; a repository
+summary document may hold the detailed record. Do not describe published but
+unmerged work as merged, or benchmark candidates as completed implementations.
+
 ## SQL query inventory
 
 Keep [docs/QUERY-REPORT.md](docs/QUERY-REPORT.md) synchronized with every SQL
