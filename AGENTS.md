@@ -17,6 +17,12 @@ Keep shared rules synchronized between `master` and `beta`, and verify the
 instructions against the affected branch's files before committing. Report any
 remaining differences and why they are needed in the handoff.
 
+## Graphs and diagrams
+
+Every graph and diagram created or updated for repository documentation MUST
+use Mermaid. Embed Mermaid source in fenced `mermaid` code blocks in Markdown
+so GitHub can render it and contributors can edit it directly.
+
 ## README beta announcement
 
 Keep the beta announcement near the top of `README.md` current with the new
