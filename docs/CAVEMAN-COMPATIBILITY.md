@@ -112,7 +112,7 @@ Refs [#797](https://github.com/aovestdipaperino/tokensave/issues/797), and remai
 unmerged. A live metered-agent telemetry adapter, independently scored model
 tasks, and actual A/B measurements are unfinished; the runner and its synthetic
 accounting tests do not complete performance validation. The local follow-up defaults cooperation off to match #797's opt-in
-adoption criterion; it remains unpushed and subject to review. The companion
+adoption criterion; it is included in draft PR #800 and remains subject to review. The companion
 Headroom evaluation is tracked in
 [#798](https://github.com/aovestdipaperino/tokensave/issues/798); it remains a
 separate adoption decision. No issue is closed by this PR.
@@ -171,9 +171,10 @@ No merge or release is part of this work; beta synchronization remains a separat
 pending change.
 
 
-## Companion Caveman preservation work (unpublished)
+## Companion Caveman preservation draft
 
-A companion change in the Caveman working tree adds opt-in `preserve_tools` rules
+The companion [Caveman draft PR #1404](https://github.com/JuliusBrussee/caveman/pull/1404)
+adds opt-in `preserve_tools` rules
 in its existing proxy configuration and a `CAVEMAN_PRESERVE_TOOLS` JSON-array
 override. This is not part of the inspected released Caveman revision. Do not
 assume an installed Caveman binary supports it. The proposed rules match exact
@@ -191,9 +192,10 @@ matching MCP/OpenAI tool envelopes, descriptions, and complete schemas.
 Raw Engine calls have no tool identity and are outside this policy.
 
 These controls remain Caveman-owned: TokenSave does not set them, add a proxy,
-replace endpoints, or change its MCP contracts. Link the companion issue and PR
-with `Refs #N` once published. The existing TokenSave draft PR is #800; its follow-up and the Caveman PR remain
-unpublished. Both changes remain unmerged.
+replace endpoints, or change its MCP contracts. Caveman tracks the work in
+[issue #1403](https://github.com/JuliusBrussee/caveman/issues/1403). TokenSave
+tracks it in issue #797 and draft PR #800. Both implementation branches are
+pushed; both PRs remain drafts and unmerged. No issue is automatically closed.
 The TokenSave follow-up makes cooperation opt-in by default, makes index
 readiness explicit in conditional instructions, and adds errors to the
 exact-payload contract. Explicit saved preferences remain honored. It changes no
