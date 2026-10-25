@@ -40,6 +40,30 @@ coverage changes, update the report's scope and limitations. Before finishing,
 review the source diff for SQL changes and verify that each is reflected in the
 report. Git history records the changes; the report describes the current source.
 
+## Keep beta query debugging available
+
+All beta builds MUST keep the supported query debugging and testing methods
+available on demand: CLI tool replay (`tokensave tool`), SQL tracing and
+`EXPLAIN QUERY PLAN` through the global `debug_sql` / `debug_sql_explain`
+settings (`tokensave config debug-sql`), MCP handler timings
+(`tokensave serve --timings`), and sync diagnostics (`tokensave sync --doctor`
+and `--verbose`). Do not remove these methods, compile them out of beta builds,
+or require a custom binary to use them. Keep SQL debugging off by default and
+preserve runtime activation through global settings; restart existing MCP
+servers after changing those settings.
+
+Keep the regression tests and documented reproduction commands usable as beta
+evolves. Changes to these paths MUST preserve parameter redaction, bounded
+diagnostic output, unchanged CLI/MCP stdout, and application results when
+diagnostics fail. Run the relevant SQL wrapper, settings, and CLI/MCP tests
+(`cargo test --lib db::debug_sql::tests`,
+`cargo test --lib user_config::tests::sql_debug_`, and
+`cargo test --test integration sql_debug_cli_test::`). For real-project
+init/sync checks, use a disposable snapshot and private home so the user's
+index and global settings are preserved. Maintain the coverage and timing
+limitations in [the SQL debugging guide](docs/USER-GUIDE.md#sql-debugging-beta).
+Refs #789; the initial implementation is PR #790, targeting beta only.
+
 ## Build, lint, and test
 
 Follow the mandatory [filesystem path construction rule](CONTRIBUTING.md#filesystem-path-construction):
