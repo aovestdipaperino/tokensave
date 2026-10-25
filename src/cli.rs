@@ -240,6 +240,12 @@ pub enum Commands {
     /// Factory Droid PreToolUse hook handler (called by Droid, not by users directly)
     #[command(name = "hook-droid-pre-tool-use", hide = true)]
     HookDroidPreToolUse,
+    /// Pi tool-call guardrail handler (called by the Pi extension, not by users directly)
+    #[command(name = "hook-pi-pre-tool-use", hide = true)]
+    HookPiPreToolUse,
+    /// Pi session-settled handler (called by the Pi extension, not by users directly)
+    #[command(name = "hook-pi-stop", hide = true)]
+    HookPiStop,
     /// Start MCP server over stdio
     Serve {
         /// Project path

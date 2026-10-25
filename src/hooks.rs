@@ -2265,6 +2265,70 @@ pub fn evaluate_droid_pre_tool_use_with_env(raw: &str, env: &HookEnv) -> Option<
     evaluate_hook_decision_core(&tool_input.to_string(), &env)
 }
 
+/// Pi `tool_call` guardrail handler, called by the installed extension.
+///
+/// Pi delivers `{ toolName, input, cwd }` on stdin, and the extension reads the
+/// decision from the exit status: 2 and a stderr reason block the call, 0 lets
+/// it through. The same channel Kiro and Droid use, because Pi has no
+/// hook-JSON contract of its own.
+pub fn hook_pi_pre_tool_use() -> i32 {
+    let event = read_stdin_to_string();
+    if let Some(reason) = evaluate_pi_pre_tool_use(&event) {
+        eprintln!("{reason}");
+        2
+    } else {
+        0
+    }
+}
+
+/// Pure decision logic for Pi `tool_call` events, using the real process
+/// environment.
+pub fn evaluate_pi_pre_tool_use(raw: &str) -> Option<String> {
+    evaluate_pi_pre_tool_use_with_env(raw, &HookEnv::from_runtime())
+}
+
+/// [`evaluate_pi_pre_tool_use`] with an explicit environment snapshot.
+///
+/// Pi's native tools are named in lowercase and take payloads that are close to
+/// Claude's but not identical, so each one is normalized before it reaches the
+/// shared [`evaluate_hook_decision_core`]:
+///
+/// - `grep` always returns matching lines, but the core only redirects a
+///   content search, which it recognizes by Claude's `output_mode`, so the
+///   adapter supplies `content`.
+/// - `find` is a glob search: `pattern` plus an optional `path`, and nothing
+///   else, which is exactly how the core tells a path search from a content
+///   search.
+/// - `bash` already carries `command`.
+///
+/// Anything else passes untouched, and so does a payload that is not Pi's
+/// envelope.
+pub fn evaluate_pi_pre_tool_use_with_env(raw: &str, env: &HookEnv) -> Option<String> {
+    let Ok(event) = serde_json::from_str::<Value>(raw) else {
+        return evaluate_hook_decision_core(raw, env);
+    };
+    let Some(tool_name) = event.get("toolName").and_then(Value::as_str) else {
+        return evaluate_hook_decision_core(raw, env);
+    };
+    // The extension reports the session's directory; without it the hook
+    // process's own cwd would be the wrong base for relative targets.
+    let env = env.for_event(&event);
+    let mut tool_input = event
+        .get("input")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    match tool_name {
+        "grep" => {
+            tool_input["output_mode"] = Value::String("content".to_string());
+        }
+        "find" | "bash" => {}
+        _ => return None,
+    }
+
+    evaluate_hook_decision_core(&tool_input.to_string(), &env)
+}
+
 fn kiro_event_has_research_text(value: &Value) -> bool {
     let mut text = Vec::new();
     collect_kiro_task_strings(value, &mut text);
@@ -2413,6 +2477,29 @@ pub async fn hook_stop() {
     };
 
     let stats = crate::accounting::parser::ingest_claude_only(&gdb).await;
+    print_session_receipt(&stats).await;
+}
+
+/// Pi `agent_settled` hook handler, called by the installed extension.
+///
+/// The Pi counterpart of [`hook_stop`]: it ingests only Pi sessions, so the
+/// hot path stays free of the Claude and Droid scans, and prints the same
+/// receipt. The extension shows stderr to the user, which is why nothing is
+/// written to stdout.
+pub async fn hook_pi_stop() {
+    let Some(gdb) = crate::global_db::GlobalDb::open().await else {
+        return;
+    };
+
+    let stats = crate::accounting::parser::ingest_pi_only(&gdb).await;
+    print_session_receipt(&stats).await;
+}
+
+/// Prints the one-line session receipt to stderr for `stats`.
+///
+/// A run that ingested no new turn prints nothing, so a receipt always
+/// describes fresh work.
+async fn print_session_receipt(stats: &crate::accounting::IngestStats) {
     if stats.turns_inserted == 0 {
         return;
     }
