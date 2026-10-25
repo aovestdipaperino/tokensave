@@ -1621,8 +1621,18 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 );
             }
         }
-        Commands::Doctor { agent } => {
-            tokensave::doctor::run_doctor(agent.as_deref()).await;
+        Commands::Doctor {
+            agent,
+            caveman,
+            session_id,
+        } => {
+            if caveman {
+                let reports =
+                    tokensave::caveman::diagnostics(agent.as_deref(), session_id.as_deref());
+                println!("{}", serde_json::to_string_pretty(&reports)?);
+            } else {
+                tokensave::doctor::run_doctor(agent.as_deref()).await;
+            }
         }
         Commands::Cost {
             range,
@@ -2273,6 +2283,8 @@ mod startup_tests {
     fn doctor_skips_agent_install_maintenance() {
         let command = Commands::Doctor {
             agent: Some("kiro".to_string()),
+            caveman: false,
+            session_id: None,
         };
         assert!(should_skip_agent_install_maintenance(&command));
     }

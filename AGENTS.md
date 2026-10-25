@@ -160,3 +160,13 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - **`codegraph` is a git submodule** (`codegraph/`), not part of the crate.
 - **`test-transport` feature** adds test-only JSON-RPC transport hooks in `src/mcp/`.
 - **Release workflow** builds per-platform binaries and skips beta/prerelease tags (handled by `release-beta.yml`).
+
+## Caveman compatibility
+
+`src/caveman.rs` contributes only read-only discovery and conditional MCP
+initialization instructions. Keep semantic retrieval results exact, and leave
+Caveman installation, activation, configuration and routing independently owned.
+Maintain `docs/CAVEMAN-COMPATIBILITY.md` as the implementation and validation
+record. Run the `caveman_test` integration module and semantic-preservation
+regression for changes here; benchmark-accounting checks use
+`python3 -m unittest discover -s scripts/caveman_bench -p 'test_*.py'`.

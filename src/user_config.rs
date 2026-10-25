@@ -137,6 +137,10 @@ pub struct UserConfig {
     #[serde(default = "default_true")]
     pub claude_hooks: bool,
 
+    /// Cooperate with independently installed Caveman through MCP instructions.
+    #[serde(default = "default_true")]
+    pub caveman_compatibility: bool,
+
     /// Machine-wide CPU usage profile for projects whose
     /// `.tokensave/config.json` has no `cpu_usage` (#752). It takes
     /// precedence over the saved hardware benchmark; `TOKENSAVE_CPU_USAGE`
@@ -265,6 +269,7 @@ impl Default for UserConfig {
             wildcard_permissions: false,
             manage_rules: true,
             claude_hooks: true,
+            caveman_compatibility: true,
             cpu_usage: None,
             benchmark: BenchmarkPreferences::default(),
             loaded_config: Mutex::new(None),
@@ -290,6 +295,8 @@ pub(crate) struct ConfigFile {
     manage_rules: bool,
     #[serde(default = "default_true")]
     claude_hooks: bool,
+    #[serde(default = "default_true")]
+    caveman_compatibility: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cpu_usage: Option<crate::cpu::CpuUsage>,
     // Last: a TOML table has to follow the plain keys.
@@ -307,6 +314,7 @@ impl ConfigFile {
             wildcard_permissions: c.wildcard_permissions,
             manage_rules: c.manage_rules,
             claude_hooks: c.claude_hooks,
+            caveman_compatibility: c.caveman_compatibility,
             cpu_usage: c.cpu_usage,
             benchmark: c.benchmark,
         }
@@ -1119,6 +1127,7 @@ impl UserConfig {
             || self.wildcard_permissions != base.wildcard_permissions
             || self.manage_rules != base.manage_rules
             || self.claude_hooks != base.claude_hooks
+            || self.caveman_compatibility != base.caveman_compatibility
             || self.cpu_usage != base.cpu_usage
             || self.benchmark != base.benchmark;
         if !changed && !self.loaded_legacy_state.load(Ordering::Relaxed) {
@@ -1164,6 +1173,11 @@ impl UserConfig {
                 on_disk.claude_hooks
             } else {
                 self.claude_hooks
+            },
+            caveman_compatibility: if self.caveman_compatibility == base.caveman_compatibility {
+                on_disk.caveman_compatibility
+            } else {
+                self.caveman_compatibility
             },
             cpu_usage: if self.cpu_usage == base.cpu_usage {
                 on_disk.cpu_usage
@@ -1300,6 +1314,7 @@ mod tests {
             wildcard_permissions: true,
             manage_rules: false,
             claude_hooks: false,
+            caveman_compatibility: false,
             cpu_usage: Some(crate::cpu::CpuUsage::Low),
             benchmark: BenchmarkPreferences {
                 enabled: true,
@@ -1309,6 +1324,26 @@ mod tests {
             loaded_state: Mutex::new(None),
             loaded_legacy_state: AtomicBool::new(false),
         }
+    }
+
+    #[test]
+    fn caveman_preference_defaults_round_trips_and_preserves_concurrent_changes() {
+        let _home = test_home();
+        assert!(UserConfig::default().caveman_compatibility);
+        let initial = UserConfig::load();
+        assert!(initial.caveman_compatibility);
+        assert!(initial.save());
+        let mut stale = UserConfig::load();
+        let mut changed = UserConfig::load();
+        changed.caveman_compatibility = false;
+        assert!(changed.save());
+        stale.upload_enabled = !stale.upload_enabled;
+        assert!(stale.save());
+        assert!(!UserConfig::load().caveman_compatibility);
+        let persisted = std::fs::read_to_string(config_path().unwrap()).unwrap();
+        assert!(persisted.contains("caveman_compatibility = false"));
+        let state = std::fs::read_to_string(state_path().unwrap()).unwrap();
+        assert!(!state.contains("caveman_compatibility"));
     }
 
     #[test]

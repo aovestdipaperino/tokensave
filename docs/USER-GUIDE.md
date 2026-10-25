@@ -1956,3 +1956,18 @@ binary when you want the configured path to be durable.
 ### Getting help
 
 If you run into something not covered here, check the [GitHub repository](https://github.com/aovestdipaperino/tokensave) or open an issue.
+
+## Caveman cooperation
+
+TokenSave automatically adds conditional MCP cooperation instructions when it
+finds a recognisable independent Caveman installation. It never activates,
+installs, or reconfigures Caveman. Inspect `tokensave doctor --caveman` or
+`tokensave doctor --caveman --agent claude --session-id SESSION_ID` for read-only
+JSON diagnostics. Set `caveman_compatibility = false` in
+`~/.tokensave/config.toml`, or `TOKENSAVE_CAVEMAN_COMPATIBILITY=0` on the server,
+to opt out; reconnect MCP afterward.
+
+A skill file is availability evidence, not proof of session activation. Proxy
+compression cannot be excluded per TokenSave result through a verified interface.
+See [Caveman compatibility](CAVEMAN-COMPATIBILITY.md) for supported agents,
+version checks, exact-data boundaries, and the reproducible benchmark protocol.
