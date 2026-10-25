@@ -91,34 +91,34 @@ flowchart TB
 
 ### 1. Install
 
-**Homebrew (macOS):**
+Choose one installation method:
 
-```bash
-brew install aovestdipaperino/tap/tokensave
-```
+| Platform | Command |
+|---|---|
+| macOS (Homebrew) | `brew install aovestdipaperino/tap/tokensave` |
+| Any platform with Rust | `cargo install tokensave` |
+| Any platform with cargo-binstall | `cargo binstall tokensave` |
 
-**Scoop (Windows):**
+On Windows with Scoop:
 
 ```powershell
 scoop bucket add tokensave https://github.com/aovestdipaperino/scoop-bucket
 scoop install tokensave
 ```
 
-**Cargo / cargo-binstall (any platform):**
+You can also download a [prebuilt binary](https://github.com/aovestdipaperino/tokensave/releases/latest) and add it to your `PATH`.
+
+<details>
+<summary>Installation alternatives and language tiers</summary>
+
+The default Cargo build includes all supported languages. For a smaller build:
 
 ```bash
-# Fast install prebuilt binary without compiling:
-cargo binstall tokensave
-
-# Or compile from source:
-cargo install tokensave                          # full (50+ languages, default)
-cargo install tokensave --features medium        # medium tier
+cargo install tokensave --no-default-features --features medium
 cargo install tokensave --no-default-features    # lite (smallest binary)
 ```
 
-**Prebuilt binaries (Linux, Windows, macOS):**
-
-Download from the [latest release](https://github.com/aovestdipaperino/tokensave/releases/latest) and place the binary in your `PATH`.
+Prebuilt release archives:
 
 | Platform | Archive |
 |---|---|
@@ -127,36 +127,26 @@ Download from the [latest release](https://github.com/aovestdipaperino/tokensave
 | Linux (ARM64) | `tokensave-vX.Y.Z-aarch64-linux.tar.gz` |
 | Windows (x86_64) | `tokensave-vX.Y.Z-x86_64-windows.zip` |
 
+</details>
+
 ### 2. Configure your agent
 
+Run the setup command to auto-detect your installed agents:
+
 ```bash
-tokensave install                         # auto-detects installed agents
-tokensave install --agent antigravity     # Google Antigravity (formerly Windsurf)
-tokensave install --agent auggie          # AugmentCode
-tokensave install --agent claude          # Claude Code
-tokensave install --agent cline           # Cline
-tokensave install --agent codex           # OpenAI Codex CLI
-tokensave install --agent copilot         # GitHub Copilot
-tokensave install --agent cursor          # Cursor
-tokensave install --agent droid           # Factory Droid
-tokensave install --agent gemini          # Gemini CLI
-tokensave install --agent kilo            # Kilo CLI
-tokensave install --agent kiro            # AWS Kiro
-tokensave install --agent kimi            # Moonshot Kimi CLI
-tokensave install --agent omp             # Oh My Pi (OMP)
-tokensave install --agent opencode        # OpenCode
-tokensave install --agent pi              # Pi (pi.dev)
-tokensave install --agent plank           # Plank (macOS only)
-tokensave install --agent qwen            # Qwen Code
-tokensave install --agent roo-code        # Roo Code
-tokensave install --agent vibe            # Mistral Vibe
-tokensave install --agent zed             # Zed
-tokensave install --agent grok            # Grok Build (xAI)
-tokensave install --git-hook yes           # auto-install the global post-commit and post-checkout hooks (no prompt)
-tokensave install --git-hook no            # skip the post-commit and post-checkout hooks (no prompt)
-tokensave githooks                         # show which global git hooks tokensave owns
-tokensave githooks off                     # remove them, leaving any hook content you wrote
+tokensave install
 ```
+
+To choose an agent, use `--agent` (for example, `codex`, `claude`, or `cursor`):
+
+```bash
+tokensave install --agent codex
+```
+
+Setup registers the MCP server and the agent's integration. It also offers global Git hooks to keep initialized projects up to date. You can safely run setup again after upgrading.
+
+<details>
+<summary>Multiple agents, project-local setup, and integration details</summary>
 
 Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, and a tokensave-managed default agent with permissive built-in/tokensave tool approval, delegation guardrail hooks, and post-write sync; user-managed Kiro agents are preserved.
 
@@ -164,7 +154,7 @@ Global OMP installs target the profile reported by bare `omp config path`, writi
 
 All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered global git post-commit and post-checkout hooks. `tokensave uninstall` removes those hooks along with the agent integrations; pass `--keep-git-hooks` to leave them, or manage them on their own with `tokensave githooks`.
 
-### Install for several agents at once
+#### Install for several agents at once
 
 Repeat `--agent` to install several agents in a single run. The permission grant, git-hook offer, and global config write each happen once, no matter how many agents you list:
 
@@ -172,7 +162,7 @@ Repeat `--agent` to install several agents in a single run. The permission grant
 tokensave install --agent claude --agent cursor --agent droid
 ```
 
-### Project-local install
+#### Project-local install
 
 By default `tokensave install` registers the MCP server in your **global** agent config (e.g. `~/.claude.json`). To register tokensave for just the current project instead, add `--local`:
 
@@ -184,6 +174,12 @@ tokensave install --local --agent omp
 This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`; OMP uses `./.omp/mcp.json` and `./.omp/rules/tokensave.md` without invoking the OMP CLI. Supported agents: **claude, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie, omp, plank, pi** (each writes its own project file, e.g. `.cursor/mcp.json`, `.factory/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`, `.augment/settings.json`, `.omp/mcp.json`, `.mcp.json` for plank, `.pi/mcp.json` and `./AGENTS.md` for pi). Other agents have no project-scoped config and report an error with `--local`.
 
 Remove a project-local install with `tokensave uninstall --local`.
+
+To accept or skip the Git hooks without a prompt, add `--git-hook yes` or `--git-hook no`. Use `tokensave githooks` to inspect them, or `tokensave githooks off` to remove them.
+
+For agent-specific instructions, see [Connecting to Your Agent](docs/USER-GUIDE.md#connecting-to-your-agent).
+
+</details>
 
 ### 3. Index your project
 

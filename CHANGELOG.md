@@ -9,6 +9,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Documentation
 
+- Simplify README installation and agent setup, keeping advanced options in expandable sections and correcting the medium-tier Cargo command.
+
 - Convert the README architecture diagram to Mermaid and require Mermaid for all documentation graphs and diagrams in `AGENTS.md`.
 
 - Require upstream-master comparison and maintenance of shared agent guidance on master and beta as repository workflows change.
