@@ -2,6 +2,21 @@
 
 This file provides guidance to the agent when working with code in this repository.
 
+## Keeping agent guidance current
+
+Treat `AGENTS.md` on the original repository's `master` branch
+(`aovestdipaperino/tokensave`) as the baseline for shared repository guidance.
+Before changing this file or preparing a branch for merge, compare it with the
+latest upstream `master` version and incorporate missing shared instructions.
+Preserve branch-specific instructions and intentional differences; do not
+blindly replace the file. If upstream cannot be checked, disclose that limit.
+
+Update this file in the same change whenever build/test commands, architecture,
+tooling, contributor policies, or release workflows make its guidance outdated.
+Keep shared rules synchronized between `master` and `beta`, and verify the
+instructions against the affected branch's files before committing. Report any
+remaining differences and why they are needed in the handoff.
+
 ## README beta announcement
 
 Keep the beta announcement near the top of `README.md` current with the new

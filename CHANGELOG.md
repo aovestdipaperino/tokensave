@@ -9,6 +9,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Documentation
 
+- Require upstream-master comparison and maintenance of shared agent guidance on master and beta as repository workflows change.
+
 - Require agents to keep the README beta announcement aligned with beta release features on master and beta.
 
 ### CI
