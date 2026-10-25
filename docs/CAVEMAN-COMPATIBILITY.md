@@ -1,7 +1,7 @@
 # Caveman compatibility
 
 TokenSave remains the semantic retrieval server. Caveman remains independently
-installed and managed. When a recognisable Caveman installation is found,
+installed and managed. When cooperation is explicitly enabled and a recognisable Caveman installation is found,
 TokenSave adds a conditional cooperation paragraph to MCP `initialize`
 instructions. It asks for targeted semantic queries, avoids redundant exploration,
 leaves prose style to an active Caveman skill, and requires exact preservation of
@@ -16,16 +16,18 @@ TokenSave never installs Caveman and requires no new dependency.
 
 ## Configuration and diagnostics
 
-Automatic cooperation defaults on. Set this top-level key in
-`~/.tokensave/config.toml` to opt out:
+Cooperation defaults off. Set this top-level key in
+`~/.tokensave/config.toml` to opt in:
 
 ```toml
-caveman_compatibility = false
+caveman_compatibility = true
 ```
 
-Alternatively set `TOKENSAVE_CAVEMAN_COMPATIBILITY=0` for a particular MCP server
-process. This disables the additional instructions, while diagnostics remain
-available. It does not disable Caveman or alter its files.
+Alternatively set `TOKENSAVE_CAVEMAN_COMPATIBILITY=1` for a particular MCP server
+process. Set the preference to `false` or the override to `0` to disable the
+additional instructions; diagnostics remain available. Explicit saved preferences
+remain honored; this default change does not erase an existing opt-in. It does
+not disable Caveman or alter its files.
 
 ```bash
 tokensave doctor --caveman
@@ -109,9 +111,9 @@ cooperation, diagnostics, and benchmarks. The implementation is published in
 Refs [#797](https://github.com/aovestdipaperino/tokensave/issues/797), and remains
 unmerged. A live metered-agent telemetry adapter, independently scored model
 tasks, and actual A/B measurements are unfinished; the runner and its synthetic
-accounting tests do not complete performance validation. The default-on
-cooperation preference also needs reconciliation with #797's opt-in adoption
-criterion before readiness. The companion Headroom evaluation is tracked in
+accounting tests do not complete performance validation. The local follow-up defaults cooperation off to match #797's opt-in
+adoption criterion; it remains unpushed and subject to review. The companion
+Headroom evaluation is tracked in
 [#798](https://github.com/aovestdipaperino/tokensave/issues/798); it remains a
 separate adoption decision. No issue is closed by this PR.
 
@@ -119,7 +121,7 @@ separate adoption decision. No issue is closed by this PR.
 | --- | --- | --- |
 | Read-only Rust discovery and diagnostics | Implemented locally | Fixture coverage in `tests/caveman_test.rs`; supported/inactive/unknown, malformed, opt-out, custom homes, plugin metadata, removal. |
 | MCP cooperation | Implemented locally | Only initialization instructions change. Semantic preservation regression in `tests/mcp_handler_test.rs`. Real agent activation and proxy ingress still require manual trials. |
-| Preferences | Implemented locally | Default-on setting follows the existing config/state and concurrent-save ownership patterns. |
+| Preferences | Implemented locally | Opt-in setting follows the existing config/state and concurrent-save ownership patterns. |
 | Performance comparison | Runner implemented; measurements pending | [Protocol and adapter contract](../scripts/caveman_bench/README.md). No real agent A/B trials, token savings, completion or cost claims. A telemetry-enabled agent and billing evidence are required. |
 
 Run focused Rust checks with:
@@ -167,3 +169,41 @@ without its implementation. The current changes are prepared on
 `feat/caveman-compatibility` and published as draft PR #800 against master.
 No merge or release is part of this work; beta synchronization remains a separate
 pending change.
+
+
+## Companion Caveman preservation work (unpublished)
+
+A companion change in the Caveman working tree adds opt-in `preserve_tools` rules
+in its existing proxy configuration and a `CAVEMAN_PRESERVE_TOOLS` JSON-array
+override. This is not part of the inspected released Caveman revision. Do not
+assume an installed Caveman binary supports it. The proposed rules match exact
+model-visible names or a nonempty prefix ending in `*`; TokenSave tool definitions
+use `tokensave_...`, while its Claude/Codex integration permission names use
+`mcp__tokensave__...`. Renamed MCP servers require operator-selected rules.
+
+The companion adapters correlate Anthropic, OpenAI Chat, and OpenAI Responses
+results with calls; Gemini uses `functionResponse.name`. Unsupported protocols
+are reported. Matching results bypass candidate collection before compression
+or cached substitution. Missing call identities stay raw when policy is enabled.
+Pixel mode passes through and proxy catalog annotation stripping is disabled
+while preservation is configured. The separate catalog shrinker preserves
+matching MCP/OpenAI tool envelopes, descriptions, and complete schemas.
+Raw Engine calls have no tool identity and are outside this policy.
+
+These controls remain Caveman-owned: TokenSave does not set them, add a proxy,
+replace endpoints, or change its MCP contracts. Link the companion issue and PR
+with `Refs #N` once published. The existing TokenSave draft PR is #800; its follow-up and the Caveman PR remain
+unpublished. Both changes remain unmerged.
+The TokenSave follow-up makes cooperation opt-in by default, makes index
+readiness explicit in conditional instructions, and adds errors to the
+exact-payload contract. Explicit saved preferences remain honored. It changes no
+retrieval formatter or SQL. There are no added caches, scans, background tasks,
+or resource ownership changes in this follow-up.
+
+Current-turn validation is recorded separately from the historical checks above:
+format checks, the three Python benchmark-accounting tests, and all 12 focused
+Rust integration tests passed in the isolated follow-up checkout. Existing lite
+feature dead-code/unused-import warnings remain. The opt-in follow-up passed 49 user-configuration tests, all 12 focused
+compatibility tests, and Clippy with existing unrelated warnings. The
+accounting tests are synthetic and provide no measured agent savings. Live
+telemetry, paid model trials, independent task scoring, and billing remain pending.

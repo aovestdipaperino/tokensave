@@ -235,3 +235,12 @@ fn doctor_emits_read_only_json_and_honors_opt_out() {
     assert!(!tmp.path().join(".claude").exists());
     assert!(!project.join(".tokensave").exists());
 }
+
+#[test]
+fn cooperation_requires_index_readiness_and_preserves_error_payloads() {
+    let instructions = tokensave::caveman::COOPERATION_INSTRUCTIONS;
+    assert!(instructions.contains("indexed project"));
+    assert!(instructions.contains("tokensave_status"));
+    assert!(instructions.contains("errors"));
+    assert!(instructions.contains("User instructions take precedence"));
+}

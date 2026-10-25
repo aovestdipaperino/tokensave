@@ -11,10 +11,11 @@ use serde::Serialize;
 
 /// Instructions concern responsibilities, not Caveman's implementation details.
 pub const COOPERATION_INSTRUCTIONS: &str = " If Caveman is active in this session, \
-    use targeted TokenSave semantic queries for code understanding when suitable, \
+    use targeted TokenSave semantic queries for an indexed project when suitable; \
+    if readiness is uncertain, check tokensave_status first, \
     and avoid repeating broad exploration after a sufficient result. Caveman owns \
     its supported prose style and efficiency features. Preserve code, identifiers, \
-    paths, signatures, numbers, and semantic relationships exactly; never compress \
+    paths, signatures, errors, numbers, and semantic relationships exactly; never compress \
     or paraphrase structured TokenSave results. These retrieval instructions do \
     not select models, route providers, configure proxies, or govern unrelated \
     delegation. User instructions take precedence.";

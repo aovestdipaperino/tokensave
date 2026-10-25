@@ -137,8 +137,8 @@ pub struct UserConfig {
     #[serde(default = "default_true")]
     pub claude_hooks: bool,
 
-    /// Cooperate with independently installed Caveman through MCP instructions.
-    #[serde(default = "default_true")]
+    /// Opt in to cooperation with independently installed Caveman through MCP instructions.
+    #[serde(default)]
     pub caveman_compatibility: bool,
 
     /// Machine-wide CPU usage profile for projects whose
@@ -269,7 +269,7 @@ impl Default for UserConfig {
             wildcard_permissions: false,
             manage_rules: true,
             claude_hooks: true,
-            caveman_compatibility: true,
+            caveman_compatibility: false,
             cpu_usage: None,
             benchmark: BenchmarkPreferences::default(),
             loaded_config: Mutex::new(None),
@@ -295,7 +295,7 @@ pub(crate) struct ConfigFile {
     manage_rules: bool,
     #[serde(default = "default_true")]
     claude_hooks: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     caveman_compatibility: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cpu_usage: Option<crate::cpu::CpuUsage>,
@@ -1329,19 +1329,19 @@ mod tests {
     #[test]
     fn caveman_preference_defaults_round_trips_and_preserves_concurrent_changes() {
         let _home = test_home();
-        assert!(UserConfig::default().caveman_compatibility);
+        assert!(!UserConfig::default().caveman_compatibility);
         let initial = UserConfig::load();
-        assert!(initial.caveman_compatibility);
+        assert!(!initial.caveman_compatibility);
         assert!(initial.save());
         let mut stale = UserConfig::load();
         let mut changed = UserConfig::load();
-        changed.caveman_compatibility = false;
+        changed.caveman_compatibility = true;
         assert!(changed.save());
         stale.upload_enabled = !stale.upload_enabled;
         assert!(stale.save());
-        assert!(!UserConfig::load().caveman_compatibility);
+        assert!(UserConfig::load().caveman_compatibility);
         let persisted = std::fs::read_to_string(config_path().unwrap()).unwrap();
-        assert!(persisted.contains("caveman_compatibility = false"));
+        assert!(persisted.contains("caveman_compatibility = true"));
         let state = std::fs::read_to_string(state_path().unwrap()).unwrap();
         assert!(!state.contains("caveman_compatibility"));
     }

@@ -1959,8 +1959,9 @@ If you run into something not covered here, check the [GitHub repository](https:
 
 ## Caveman cooperation
 
-TokenSave automatically adds conditional MCP cooperation instructions when it
-finds a recognisable independent Caveman installation. It never activates,
+With `caveman_compatibility = true` in `~/.tokensave/config.toml`, TokenSave adds
+conditional MCP cooperation instructions when it finds a recognisable independent
+Caveman installation. Cooperation defaults off. It never activates,
 installs, or reconfigures Caveman. Inspect `tokensave doctor --caveman` or
 `tokensave doctor --caveman --agent claude --session-id SESSION_ID` for read-only
 JSON diagnostics. Set `caveman_compatibility = false` in
