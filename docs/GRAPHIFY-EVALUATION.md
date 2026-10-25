@@ -146,6 +146,15 @@ consumer's permissiveness, not evidence that schema 999 is compatible. A future
 adapter must reject unknown versions itself. No adapter was built because
 lossless interchange and a beneficial document workflow remain unconfirmed.
 
+Repository checks: Python syntax, JSON parsing, missing-executable preflight,
+`git diff --check`, and `cargo fmt --all -- --check` passed. Clippy completed
+with seven warnings in unchanged Rust files. `cargo test --workspace --locked`
+stopped in library tests: 1,118 passed, 2 failed, 4 ignored. The failures were
+`config::discovery_tests::global_state_directory_in_home_is_not_a_project` and
+`config::discovery_tests::non_git_workspace_project_is_shared_by_the_repositories_inside_it`.
+This change modifies no Rust code/tests; the failure causes were not investigated
+and subsequent test binaries were not reached.
+
 The two CLIs run sequentially. Peak RSS is per command as reported by GNU time,
 not a sampled combined process-tree total; do not add peaks and label the sum a
 measured concurrent peak. There is no persistent CLI process after completion,
@@ -194,7 +203,7 @@ before any bundling, and re-evaluate interfaces when upgrading the pinned revisi
 | --- | --- | --- | --- |
 | [#780](https://github.com/aovestdipaperino/tokensave/issues/780) | Elasticsearch, embeddings, worktree/server concerns | Issue closed; no implementation result inferred | Graph traversal does not provide a vector index. |
 | [#742](https://github.com/aovestdipaperino/tokensave/issues/742) | Shared database backends | Issue open at evaluation time; no backend result asserted here | Independent storage/process work; Graphify coexistence does not consolidate databases, handles, or MCP processes. |
-| [#791](https://github.com/aovestdipaperino/tokensave/issues/791), this change | Pinned interface review, coexistence workflow and executable probe | Proposed PR; unmerged until recorded otherwise | No adapter. Further work: mixed-document retrieval study, representative multi-repository runs, concurrent/idle server profiling, rendering, cancellation recovery and schema rejection contract. |
+| [#791](https://github.com/aovestdipaperino/tokensave/issues/791), [PR #799](https://github.com/aovestdipaperino/tokensave/pull/799) | Pinned interface review, coexistence workflow and executable probe | Draft PR; published, unmerged | No adapter. Further work: mixed-document retrieval study, representative multi-repository runs, concurrent/idle server profiling, rendering, cancellation recovery and schema rejection contract. |
 
 Keep this table current when related PRs are added or merged. The recommendation
 is limited to optional coexistence; the outstanding checks above prevent an
