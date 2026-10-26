@@ -17,6 +17,23 @@ Keep shared rules synchronized between `master` and `beta`, and verify the
 instructions against the affected branch's files before committing. Report any
 remaining differences and why they are needed in the handoff.
 
+## Keep beta executable identity on beta
+
+The executable-identity changes in [PR #802](https://github.com/aovestdipaperino/tokensave/pull/802)
+(Refs #801) MUST remain exclusively on `beta`. Merge that PR only into `beta`;
+do not backport, cherry-pick, or otherwise propagate these changes to `master`
+or any other branch.
+
+This restriction includes the beta executable names, icons, application and
+version metadata, operating-system identity, build/packaging configuration,
+associated CI changes, and their agent/build guidance. When merging or
+synchronizing branches later, explicitly exclude these changes from every
+destination other than `beta`.
+
+This policy and the beta-identity build guidance are intentional beta-only
+exceptions to the shared-guidance synchronization rule above. Do not copy them
+to other branches while synchronizing shared instructions.
+
 ## Graphs and diagrams
 
 Every graph and diagram created or updated for repository documentation MUST
