@@ -56,6 +56,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Update the locked `der` dependency from yanked 0.8.0 to compatible 0.8.3, used by the ONNX Runtime build dependency chain (Refs #805).
+
 - Replace the deprecated atomic session-debt update with `try_update`, preserving memory orderings and return behavior (Refs #804).
 
 - Resolve the project that owns the current directory the same way in every command run without an explicit path: `init`, `tool`, `doctor`, `verify`, `quality-diff`, `branch`, `gitignore`, the counters, a bare `tokensave`, and the prompt-submit and stop hooks. `sync`, `status`, `serve`, and the MCP roots fallback already did. `init` in a subdirectory of an existing project now reports that project and exits 0 instead of creating a nested index. In an uninitialized git repository, `init` initializes the repository root. Git repository roots isolate nested independent repositories (nested clones and submodules) from an outer repository's index, and a partial `.tokensave/` is no longer skipped in favor of an outer project (#749).
