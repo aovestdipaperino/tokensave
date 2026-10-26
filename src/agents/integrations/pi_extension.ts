@@ -15,6 +15,14 @@ const TOKENSAVE_BIN = "__TOKENSAVE_BIN__";
 /** Tools whose input the guardrail classifies; everything else passes through. */
 const GUARDED_TOOLS = new Set(["bash", "find", "grep"]);
 
+// A separate section also works with Pi's custom prompt prefix. Keep this
+// conditional: MCP readiness and adapter discovery can happen after our handler.
+const RETRIEVAL_GUIDANCE = `For repository code exploration, prefer tokensave when its tools are reachable and an appropriate project index is available.
+Start with tokensave_context for a question, tokensave_search for a symbol, tokensave_callers or tokensave_callees for relationships, and tokensave_read for indexed source ranges. Use tokensave_files for indexed file discovery.
+With Pi's built-in MCP, use the declared mcp__tokensave__<tool> names. With pi-mcp-adapter, use its declared direct tools or mcp proxy and its discovery instructions; do not invent tool names.
+Native read, grep, find, and shell tools remain useful for documentation, configuration, logs, unindexed or unsupported files, exact text or regex searches the index cannot answer, and exact current-source verification before edits.
+If the tools or index are missing, stale, failing, or insufficient, use native tools to finish the task. Refresh the index when appropriate; do not repeatedly retry unavailable retrieval or treat an empty index result as proof that source is absent.`;
+
 interface TokensaveRun {
   /** Process exit code, or null when the process could not run at all. */
   code: number | null;
@@ -64,7 +72,12 @@ export default function (pi: ExtensionAPI) {
     };
   });
 
-  pi.on("before_agent_start", async () => {
+  pi.on("before_agent_start", async (event) => {
+    // Mutate the supported structured options rather than replacing Pi's prompt.
+    // Older Pi versions retain the installed AGENTS.md rules and accounting.
+    if (event.systemPromptOptions?.sections) {
+      event.systemPromptOptions.sections.tokensave_retrieval = RETRIEVAL_GUIDANCE;
+    }
     await runTokensave(["hook-prompt-submit"], "");
   });
 

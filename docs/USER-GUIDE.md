@@ -311,6 +311,19 @@ This writes project-scoped config you can commit and share with your team. For C
 
 Remove a project-local install with `tokensave uninstall --local`.
 
+### Pi retrieval preference
+
+The managed Pi extension adds a conditional indexed-retrieval preference through
+`before_agent_start.systemPromptOptions.sections` on each run. Native tools stay
+available for documentation, configuration, unindexed files, exact source checks,
+and missing, stale, or insufficient indexes. It supports the declared tools from
+built-in MCP or `pi-mcp-adapter`; it does not expand search interception or block
+`read`. Older Pi versions without structured prompt options retain the installed
+`AGENTS.md` guidance. After updating tokensave, rerun `tokensave install --agent pi`
+(add `--local` for a project install), then restart or reload Pi to load the
+updated extension. See [the investigation and validation record](PI-INTEGRATION.md)
+for API details, evidence, and evaluation limitations.
+
 ### Removing an integration
 
 ```bash
