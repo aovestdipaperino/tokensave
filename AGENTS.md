@@ -17,6 +17,23 @@ Keep shared rules synchronized between `master` and `beta`, and verify the
 instructions against the affected branch's files before committing. Report any
 remaining differences and why they are needed in the handoff.
 
+## Keep beta executable identity on beta
+
+The executable-identity changes in [PR #802](https://github.com/aovestdipaperino/tokensave/pull/802)
+(Refs #801) MUST remain exclusively on `beta`. Merge that PR only into `beta`;
+do not backport, cherry-pick, or otherwise propagate these changes to `master`
+or any other branch.
+
+This restriction includes the beta executable names, icons, application and
+version metadata, operating-system identity, build/packaging configuration,
+associated CI changes, and their agent/build guidance. When merging or
+synchronizing branches later, explicitly exclude these changes from every
+destination other than `beta`.
+
+This policy and the beta-identity build guidance are intentional beta-only
+exceptions to the shared-guidance synchronization rule above. Do not copy them
+to other branches while synchronizing shared instructions.
+
 ## Graphs and diagrams
 
 Every graph and diagram created or updated for repository documentation MUST
@@ -135,6 +152,12 @@ portable string formats, and documented path-syntax test fixtures.
 - `cargo test --workspace` is the CI test command. On Windows set `RUST_MIN_STACK=8388608` (CI does this; async-heavy tests overflow the 1 MB MSVC default).
 - `cargo clippy --workspace --all-targets` (CI runs it with `continue-on-error: true`).
 - `cargo fmt --all -- --check`.
+- Executable identity is centralized in `build/identity.json`. Stable Cargo builds
+  retain their identity; `--features beta` or a prerelease package version selects
+  beta metadata. Package independently named binaries with
+  `python3 scripts/build-app.py --channel beta` (or `stable`); beta releases pass
+  `--version <base>-beta.N`. See `docs/BUILD-IDENTITY.md` for output paths,
+  compatibility, and platform validation. The beta release workflow remains disabled.
 - `src/lib.rs` denies `clippy::all`, `clippy::unwrap_used`, and `clippy::expect_used`, and warns on `clippy::pedantic` — avoid `unwrap()`/`expect()` in library code.
 - Language-specific tests: `cargo test --test integration rust_extraction_test::`; single test: `cargo test test_find_stale_files`; filter: `cargo test sync`. Lite-only local loop: `cargo test-lite`.
 - Integration tests live in `tests/` (one file per module/language) but compile into a single binary, `tests/integration.rs` (`autotests = false`): a new test file must be added there as a `mod`. Files that mutate env vars or the `cancel` flag are separate `[[test]]` targets in `Cargo.toml` instead. Helpers are shared via `crate::common` (`tests/common/mod.rs`); fixtures are in `tests/fixtures/`. See CONTRIBUTING.md "Test layout".

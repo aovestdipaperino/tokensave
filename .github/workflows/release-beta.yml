@@ -64,7 +64,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: python scripts/build-app.py --channel beta --target ${{ matrix.target }} --version "${{ github.ref_name }}"
 
       - name: Get version
         id: version
@@ -78,15 +78,15 @@ jobs:
       - name: Package binary (unix)
         if: matrix.archive == 'tar.gz'
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.tar.gz tokensave
-          cd ../../..
+          cd target/beta/${{ matrix.target }}/release
+          tar czf ../../../../tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.tar.gz tokensave-beta
+          cd ../../../..
 
       - name: Package binary (windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/tokensave.exe -DestinationPath tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.zip
+          Compress-Archive -Path target/beta/${{ matrix.target }}/release/TokenSave-Beta.exe -DestinationPath tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.zip
 
       - name: Upload binary archive
         env:
@@ -123,8 +123,8 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           BOTTLE_TAG="${{ matrix.bottle_tag }}"
           mkdir -p tokensave-beta/${VERSION}/bin
-          cp target/${{ matrix.target }}/release/tokensave tokensave-beta/${VERSION}/bin/tokensave
-          chmod +x tokensave-beta/${VERSION}/bin/tokensave
+          cp target/beta/${{ matrix.target }}/release/tokensave-beta tokensave-beta/${VERSION}/bin/tokensave-beta
+          chmod +x tokensave-beta/${VERSION}/bin/tokensave-beta
           tar czf "tokensave-beta-${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" tokensave-beta/
 
       - name: Upload bottle artifact
@@ -243,14 +243,14 @@ jobs:
 
             depends_on "rust" => :build
 
-            conflicts_with "tokensave", because: "both install a `tokensave` binary"
-
             def install
-              system "cargo", "install", *std_cargo_args
+              ENV["TOKENSAVE_BETA_VERSION"] = "${VERSION}"
+              system "cargo", "install", *std_cargo_args, "--features", "beta"
+              mv bin/"tokensave", bin/"tokensave-beta"
             end
 
             test do
-              system "#{bin}/tokensave", "--help"
+              system "#{bin}/tokensave-beta", "--help"
             end
           end
           EOF
@@ -320,7 +320,7 @@ jobs:
                 "hash": "${SHA256_ARM}"
               }
             },
-            "bin": "tokensave.exe",
+            "bin": "TokenSave-Beta.exe",
             "checkver": {
               "github": "https://github.com/aovestdipaperino/tokensave",
               "regex": "v([\\d.]+-beta[\\d.]*)"

@@ -295,7 +295,16 @@ fn download_and_extract(url: &str, bin_name: &str, expected_sha256: &str) -> Res
     })
 }
 
-/// Extracts `bin_name` from a `.tar.gz` archive (Unix).
+/// Beta archives historically used the stable executable's filename.
+fn archive_entry_matches(name: Option<&str>, requested: &str) -> bool {
+    name == Some(requested)
+        || [false, true].iter().any(|&windows| {
+            requested == crate::identity::archive_executable(true, windows)
+                && name == Some(crate::identity::archive_executable(false, windows))
+        })
+}
+
+/// Extracts the channel executable, accepting legacy beta archive names.
 #[cfg(not(windows))]
 fn extract_targz(data: &[u8], bin_name: &str, dest: &Path) -> Result<()> {
     use flate2::read::GzDecoder;
@@ -312,7 +321,7 @@ fn extract_targz(data: &[u8], bin_name: &str, dest: &Path) -> Result<()> {
             .map_err(io_err("archive path error"))?
             .to_path_buf();
 
-        if path.file_name().and_then(|n| n.to_str()) == Some(bin_name) {
+        if archive_entry_matches(path.file_name().and_then(|n| n.to_str()), bin_name) {
             entry.unpack(dest).map_err(io_err("extract failed"))?;
 
             #[cfg(unix)]
@@ -349,7 +358,10 @@ fn extract_zip(data: &[u8], bin_name: &str, dest: &Path) -> Result<()> {
             message: format!("zip entry error: {e}"),
         })?;
 
-        if Path::new(file.name()).file_name().and_then(|n| n.to_str()) == Some(bin_name) {
+        if archive_entry_matches(
+            Path::new(file.name()).file_name().and_then(|n| n.to_str()),
+            bin_name,
+        ) {
             let mut out = std::fs::File::create(dest).map_err(io_err("create temp file failed"))?;
             std::io::copy(&mut file, &mut out).map_err(io_err("extract failed"))?;
             return Ok(());
@@ -666,7 +678,7 @@ fn preflight_asset_check(version: &str, is_beta: bool) -> Result<VerifiedAsset> 
 /// transition (e.g. minor/major bumps re-register agents to pick up new MCP
 /// tools or hook changes; patch bumps just update the field).
 fn record_previous_version() {
-    let current = env!("CARGO_PKG_VERSION");
+    let current = env!("TOKENSAVE_BUILD_VERSION");
     let mut cfg = UserConfig::load();
     if cfg.previous_version == current {
         return;
@@ -681,11 +693,7 @@ fn record_previous_version() {
 }
 
 fn perform_upgrade(version: &str, asset: &VerifiedAsset, method: &InstallMethod) -> Result<()> {
-    let bin_name = if cfg!(windows) {
-        "tokensave.exe"
-    } else {
-        "tokensave"
-    };
+    let bin_name = crate::identity::archive_executable(version.contains('-'), cfg!(windows));
 
     let staged = download_and_extract(&asset.url, bin_name, &asset.sha256)?;
 
@@ -774,7 +782,7 @@ fn strip_windows_exe_suffix(name: &str) -> &str {
 /// exercise Windows matching semantics on any host platform.
 #[cfg(any(windows, test))]
 fn is_tokensave_stem_windows(stem: &str) -> bool {
-    stem.eq_ignore_ascii_case("tokensave")
+    stem.eq_ignore_ascii_case("tokensave") || stem.eq_ignore_ascii_case("tokensave-beta")
 }
 
 /// Is `name` the tokensave binary (platform-dependent extension included)?
@@ -787,7 +795,7 @@ fn is_tokensave_process_name(name: &str) -> bool {
     #[cfg(not(windows))]
     {
         let stem = name.strip_suffix(".exe").unwrap_or(name);
-        stem == "tokensave"
+        stem == "tokensave" || stem == "tokensave-beta"
     }
 }
 
@@ -988,7 +996,7 @@ fn handle_running_processes(kill: bool) -> Result<()> {
 ///
 /// Returns the new version string on success.
 pub fn run_upgrade(kill: bool) -> Result<String> {
-    let current = env!("CARGO_PKG_VERSION");
+    let current = env!("TOKENSAVE_BUILD_VERSION");
     let is_beta = cloud::is_beta();
     let channel = if is_beta { "beta" } else { "stable" };
     let method = cloud::detect_install_method();
@@ -1044,14 +1052,14 @@ pub fn run_upgrade(kill: bool) -> Result<String> {
 
 /// Print the current channel.
 pub fn show_channel() {
-    let current = env!("CARGO_PKG_VERSION");
+    let current = env!("TOKENSAVE_BUILD_VERSION");
     let channel = if cloud::is_beta() { "beta" } else { "stable" };
     eprintln!("v{current} ({channel})");
 }
 
 /// Switch to a different channel by downloading the latest release from it.
 pub fn switch_channel(target_channel: &str) -> Result<String> {
-    let current = env!("CARGO_PKG_VERSION");
+    let current = env!("TOKENSAVE_BUILD_VERSION");
     let current_is_beta = cloud::is_beta();
     let current_channel = if current_is_beta { "beta" } else { "stable" };
     let method = cloud::detect_install_method();
@@ -1288,9 +1296,54 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  tokensave-v1.2
     fn tokensave_process_names_are_recognized() {
         assert!(is_tokensave_process_name("tokensave"));
         assert!(is_tokensave_process_name("tokensave.exe"));
+        assert!(is_tokensave_process_name("tokensave-beta"));
+        assert!(is_tokensave_stem_windows("TokenSave-Beta"));
         assert!(!is_tokensave_process_name("tokensave-helper"));
         assert!(!is_tokensave_process_name("cargo"));
         assert!(!is_tokensave_process_name(""));
+    }
+
+    #[test]
+    fn beta_archives_support_new_and_legacy_names() {
+        assert!(archive_entry_matches(
+            Some("tokensave-beta"),
+            "tokensave-beta"
+        ));
+        assert!(archive_entry_matches(Some("tokensave"), "tokensave-beta"));
+        assert!(archive_entry_matches(
+            Some("TokenSave-Beta.exe"),
+            "TokenSave-Beta.exe"
+        ));
+        assert!(archive_entry_matches(
+            Some("tokensave.exe"),
+            "TokenSave-Beta.exe"
+        ));
+        assert!(!archive_entry_matches(Some("tokensave-beta"), "tokensave"));
+        assert!(!archive_entry_matches(Some("other"), "tokensave-beta"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn extracts_new_and_legacy_beta_tarballs() {
+        for name in ["tokensave-beta", "tokensave"] {
+            let mut archive = tar::Builder::new(Vec::new());
+            let mut header = tar::Header::new_gnu();
+            header.set_size(4);
+            header.set_mode(0o755);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, name, &b"beta"[..])
+                .unwrap();
+            let raw = archive.into_inner().unwrap();
+            let mut gzip =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            std::io::Write::write_all(&mut gzip, &raw).unwrap();
+            let compressed = gzip.finish().unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let destination = directory.path().join("extracted");
+            extract_targz(&compressed, "tokensave-beta", &destination).unwrap();
+            assert_eq!(std::fs::read(destination).unwrap(), b"beta");
+        }
     }
 
     #[test]
@@ -1618,7 +1671,7 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  tokensave-v1.2
 
     #[test]
     fn switch_channel_same_channel_is_a_successful_noop() {
-        let current = env!("CARGO_PKG_VERSION").to_string();
+        let current = env!("TOKENSAVE_BUILD_VERSION").to_string();
         let current_channel = if cloud::is_beta() { "beta" } else { "stable" };
 
         let result = switch_channel(current_channel);

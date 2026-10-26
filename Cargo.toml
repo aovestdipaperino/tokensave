@@ -51,6 +51,7 @@ pkg-fmt = "zip"
 
 [features]
 default = ["full"]
+beta = []
 
 # Lite tier (11 languages) — always compiled, no feature flag needed:
 # Rust, Go, Java, Scala, TypeScript/JavaScript, Python, C, C++, Kotlin, C#, Swift
@@ -181,11 +182,13 @@ tar = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 zip = { version = "8", default-features = false, features = ["deflate"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_IO"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_IO", "Win32_System_Console"] }
 
 [build-dependencies]
 logo-art = "0.2"
 cc = "1"
+embed-resource = "3"
+serde_json = "1"
 
 # Probe for the OS trust store before asking ureq to validate against it.
 # `rustls-platform-verifier` loads Linux/BSD roots through this same crate and

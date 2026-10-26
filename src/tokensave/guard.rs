@@ -19,7 +19,7 @@ pub(crate) fn write_dirty_sentinel(project_root: &Path) {
             "pid={}\ntime={}\nversion={}",
             std::process::id(),
             current_timestamp(),
-            env!("CARGO_PKG_VERSION"),
+            env!("TOKENSAVE_BUILD_VERSION"),
         ),
     );
 }
@@ -102,7 +102,7 @@ pub(crate) fn delete_db_files(db_path: &std::path::Path) {
 /// Prints a user-facing warning about database corruption with a request to
 /// report the issue.
 pub(crate) fn print_corruption_warning() {
-    let version = env!("CARGO_PKG_VERSION");
+    let version = env!("TOKENSAVE_BUILD_VERSION");
     eprintln!("[tokensave] \x1b[33m⚠ database corruption detected — rebuilding index\x1b[0m");
     eprintln!("[tokensave]");
     eprintln!("[tokensave] This was likely caused by a crash or kill during indexing.");

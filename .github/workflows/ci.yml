@@ -69,6 +69,19 @@ jobs:
         # adds no dependencies, so this is a superset of the plain run.
         run: cargo test --workspace --locked --features test-transport
 
+      - name: Check stable executable identity
+        run: python scripts/check-app-identity.py --channel stable target/debug/tokensave${{ runner.os == 'Windows' && '.exe' || '' }}
+
+      - name: Build beta executable and check identity
+        shell: bash
+        run: |
+          python scripts/build-app.py --channel beta --profile dev --lite --target-dir target
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            python scripts/check-app-identity.py --channel beta target/debug/TokenSave-Beta.exe
+          else
+            python scripts/check-app-identity.py --channel beta target/debug/tokensave-beta
+          fi
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest

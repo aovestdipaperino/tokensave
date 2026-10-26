@@ -1,0 +1,18 @@
+{
+  "stable": {
+    "product_name": "TokenSave",
+    "cli_name": "tokensave",
+    "windows_executable": "tokensave.exe",
+    "unix_executable": "tokensave",
+    "application_id": "TokenSave.TokenSave"
+  },
+  "beta": {
+    "product_name": "TokenSave Beta",
+    "cli_name": "tokensave-beta",
+    "windows_executable": "TokenSave-Beta.exe",
+    "unix_executable": "tokensave-beta",
+    "application_id": "TokenSave.TokenSave.Beta",
+    "version_suffix": "beta.1",
+    "icon": "src/resources/tokensave-beta.ico"
+  }
+}

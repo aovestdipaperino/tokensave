@@ -1113,7 +1113,7 @@ impl McpServer {
             "default_project": Value::Null,
             "registered_projects": self.registered_projects,
             "hint": no_default_project_message(&self.registered_projects),
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": env!("TOKENSAVE_BUILD_VERSION"),
             "server": self.server_stats_json().await,
         });
         let text = serde_json::to_string_pretty(&status).unwrap_or_default();
@@ -1445,7 +1445,7 @@ impl McpServer {
     /// Best-effort: any failure is logged, never panics, and still advances the
     /// session gate so the work is not retried in a tight loop.
     async fn run_version_reindex(&self) {
-        let running = env!("CARGO_PKG_VERSION");
+        let running = env!("TOKENSAVE_BUILD_VERSION");
         let Some(cg) = self.cg.as_ref() else {
             return;
         };
@@ -1618,7 +1618,7 @@ impl McpServer {
         if !crate::cloud::update_check_enabled() {
             return None;
         }
-        let current = env!("CARGO_PKG_VERSION");
+        let current = env!("TOKENSAVE_BUILD_VERSION");
 
         // Fast path: serve from cache if still fresh.
         {
@@ -2294,7 +2294,7 @@ impl McpServer {
                 },
                 "serverInfo": {
                     "name": "tokensave",
-                    "version": env!("CARGO_PKG_VERSION")
+                    "version": env!("TOKENSAVE_BUILD_VERSION")
                 },
                 "instructions": instructions
             }),

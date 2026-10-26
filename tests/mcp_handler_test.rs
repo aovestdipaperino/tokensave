@@ -6997,7 +6997,7 @@ async fn test_status_staleness_falls_back_to_last_sync_at_when_files_empty() {
     // Reporter's side request in #267: status must carry the server version.
     assert_eq!(
         status["version"],
-        json!(env!("CARGO_PKG_VERSION")),
+        json!(tokensave::identity::VERSION),
         "status must report the running tokensave version, got: {text}"
     );
 }

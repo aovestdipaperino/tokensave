@@ -606,7 +606,7 @@ impl TokenSave {
             .await?;
         self.db.set_metadata("last_sync_at", &now_str).await?;
         self.db
-            .set_metadata("last_full_index_version", env!("CARGO_PKG_VERSION"))
+            .set_metadata("last_full_index_version", env!("TOKENSAVE_BUILD_VERSION"))
             .await?;
         self.touch_branch_synced();
         self.db
@@ -654,7 +654,7 @@ impl TokenSave {
     /// Best-effort: failing to persist the marker must not fail an index that
     /// otherwise succeeded.
     fn record_indexed_version(&self) {
-        let running = env!("CARGO_PKG_VERSION");
+        let running = env!("TOKENSAVE_BUILD_VERSION");
         match crate::config::load_config(&self.project_root) {
             Ok(mut config) if config.last_indexed_version != running => {
                 config.last_indexed_version = running.to_string();
