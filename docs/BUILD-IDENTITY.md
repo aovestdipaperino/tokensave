@@ -138,6 +138,12 @@ Initial validation on 2026-10-26, before rebasing the implementation onto upstre
   This probe excludes the application's unrelated parsers and CLI implementation;
   complete Windows/macOS builds remain covered by the updated CI workflow.
 
+After rebasing onto upstream `beta`, the lite beta library suite passed:
+1,120 tests passed and 4 were ignored, including identity, archive compatibility,
+SQL-wrapper diagnostics, and SQL-debug settings tests. The rebased SQL-debug CLI
+regression checks are recorded in the pull request. The former full-suite count
+above does not represent a full-workspace run on the rebased beta tree.
+
 Native taskbar/Explorer appearance, interactive title restoration, ARM64 Windows,
 and macOS rendering have not been manually validated. No SQL queries changed.
 
