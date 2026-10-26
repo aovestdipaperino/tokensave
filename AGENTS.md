@@ -73,6 +73,27 @@ create issues for identified bugs and enhancements, link PRs with "Refs #N" (nev
 "Fixes #N" / "Closes #N"), and never close an issue (including via `gh issue close`)
 without explicit permission — issue closure is left to the repository maintainer.
 
+## Issue closure verification and merged-result summaries
+
+Before closing an issue, and only with the explicit permission required above,
+the agent MUST:
+
+- Identify the linked pull requests and check their current state on GitHub.
+  Distinguish open, closed without merging, and merged PRs; a closed PR is not
+  evidence that its changes were merged.
+- For each merged PR, post a summary on the issue listing the new improvements.
+  Link the PR and merge commit, identify the actual destination branch, and
+  record validation results, limitations, and remaining work. Do not infer that
+  a release was published merely because a PR merged.
+- For open or closed-but-unmerged PRs, state their actual status and do not
+  describe their changes as merged or delivered to the destination branch.
+  If no related PR exists, record that rather than inventing a merge status.
+
+Perform this verification and publish the applicable summary before closing the
+issue. For multiple related PRs, distinguish merged work from pending or
+unmerged work. If a PR merges after the issue was closed, update the issue with
+the merged improvements and actual destination branch.
+
 ## Summaries for related implementations
 
 When a topic spans multiple implementations or related pull requests, the
@@ -170,3 +191,11 @@ Maintain `docs/CAVEMAN-COMPATIBILITY.md` as the implementation and validation
 record. Run the `caveman_test` integration module and semantic-preservation
 regression for changes here; benchmark-accounting checks use
 `python3 -m unittest discover -s scripts/caveman_bench -p 'test_*.py'`.
+
+The optional metered benchmark agent and manifest builder are
+`scripts/caveman_bench/anthropic_driver.py` and `configure_anthropic.py`.
+They require Python 3.11+ and POSIX. Keep provider usage, model-visible source
+read auditing, candidate/scorer pins, private trace retention and process cleanup
+covered by the same Python test command. Tests use synthetic provider responses;
+never describe them as paid trials or stock-agent activation evidence. Paid runs
+require explicit model/pricing configuration and operator-provided credentials.

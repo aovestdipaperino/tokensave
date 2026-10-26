@@ -24,7 +24,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
-- Add read-only discovery of independently installed Caveman, conditional MCP cooperation instructions, a default-on `caveman_compatibility` preference and opt-out, `doctor --caveman` JSON diagnostics, explicit Claude session-state inspection for verified 4.0.1 installations, and a paired performance benchmark runner. Retrieval results and routing settings remain unchanged; per-tool proxy compression exclusion and measured token savings are not claimed.
+- Add a pinned three-task Caveman benchmark suite, independent scoring, a direct metered Anthropic benchmark adapter, exact source-read auditing, private trace verification, and candidate/pricing pinning (Refs #797). Validation is offline; paid trials, stock-agent activation, and measured savings remain pending.
+
+- Add read-only discovery of independently installed Caveman, conditional MCP cooperation instructions, an opt-in `caveman_compatibility` preference and environment override, `doctor --caveman` JSON diagnostics, explicit Claude session-state inspection for verified 4.0.1 installations, and a paired performance benchmark runner. Retrieval results and routing settings remain unchanged; per-tool proxy compression exclusion and measured token savings are not claimed.
 
 - Add a SQL query inventory in `docs/QUERY-REPORT.md` with source links and dynamic construction context, and require agents to keep it synchronized with query changes (Refs #773).
 

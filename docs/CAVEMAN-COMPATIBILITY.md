@@ -109,9 +109,10 @@ This document is the consolidated implementation record for detection, MCP
 cooperation, diagnostics, and benchmarks. The implementation is published in
 [draft PR #800](https://github.com/aovestdipaperino/tokensave/pull/800),
 Refs [#797](https://github.com/aovestdipaperino/tokensave/issues/797), and remains
-unmerged. A live metered-agent telemetry adapter, independently scored model
-tasks, and actual A/B measurements are unfinished; the runner and its synthetic
-accounting tests do not complete performance validation. The local follow-up defaults cooperation off to match #797's opt-in
+unmerged. A direct Anthropic benchmark adapter and independently scored tasks
+are now implemented locally and validated offline. Actual paid A/B measurements
+and stock-agent activation are unfinished; synthetic accounting tests and mocked
+provider responses do not complete performance validation. The local follow-up defaults cooperation off to match #797's opt-in
 adoption criterion; it is included in draft PR #800 and remains subject to review. The companion
 Headroom evaluation is tracked in
 [#798](https://github.com/aovestdipaperino/tokensave/issues/798); it remains a
@@ -122,7 +123,7 @@ separate adoption decision. No issue is closed by this PR.
 | Read-only Rust discovery and diagnostics | Implemented locally | Fixture coverage in `tests/caveman_test.rs`; supported/inactive/unknown, malformed, opt-out, custom homes, plugin metadata, removal. |
 | MCP cooperation | Implemented locally | Only initialization instructions change. Semantic preservation regression in `tests/mcp_handler_test.rs`. Real agent activation and proxy ingress still require manual trials. |
 | Preferences | Implemented locally | Opt-in setting follows the existing config/state and concurrent-save ownership patterns. |
-| Performance comparison | Runner implemented; measurements pending | [Protocol and adapter contract](../scripts/caveman_bench/README.md). No real agent A/B trials, token savings, completion or cost claims. A telemetry-enabled agent and billing evidence are required. |
+| Performance comparison | Runner, concrete tasks and direct Anthropic adapter implemented locally; paid measurements pending | [Protocol, adapter and preparation](../scripts/caveman_bench/README.md). Offline tests and local MCP smoke checks use mocked provider replies. No measured savings, paid completion or cost claims. |
 
 Run focused Rust checks with:
 
@@ -209,3 +210,95 @@ feature dead-code/unused-import warnings remain. The opt-in follow-up passed 49 
 compatibility tests, and Clippy with existing unrelated warnings. The
 accounting tests are synthetic and provide no measured agent savings. Live
 telemetry, paid model trials, independent task scoring, and billing remain pending.
+
+
+## Benchmark task follow-up
+
+The continuation in draft PR #800 adds a concrete three-task invoice
+suite (`scripts/caveman_bench/tasks.py`): code understanding, caller/impact
+analysis, and a discount-rounding edit. The generator pins the fixture commit
+and external scoring artifacts. The runner rejects changed scoring hashes
+before trials and before/after scoring. This work is included in draft PR #800 and remains unmerged.
+It uses existing issue #797; no separate adoption decision or issue closure
+is implied.
+
+The verifier requires complete exact answers, preserves unchanged sources,
+and checks 251 edit inputs through five public call paths. Tests include the
+original buggy implementation as a negative control, incomplete answers,
+missing/duplicate callers, source tampering, extra modules, and changed scorer
+hashes. All ten Python tests passed. No Rust or SQL source changed; the Rust
+suite was not rerun for this Python-only follow-up.
+
+Resource review: trial execution remains sequential; artifact reads are capped
+at 1 MiB each and answer JSON at 4 KiB. The fixed edit workload runs in an owned
+subprocess with a ten-second timeout, the runner's 16 MiB capture limit, and
+POSIX process-group termination/reaping. Files and temporary repositories have
+scoped ownership. Native trace disk limits remain a driver responsibility;
+large-repository CPU/RSS and long-running live sessions remain unmeasured.
+The verifier is correctness scoring, not a sandbox for hostile code.
+
+Still pending after task specification: validation of the locally implemented
+adapter against a paid provider; pinned real model/provider/pricing settings;
+actual paired trials and billing; real activation/model-ingress preservation;
+and the beta source/documentation port. The fixture completes concrete task
+specification and independent scoring only. See the
+[task preparation instructions](../scripts/caveman_bench/README.md#concrete-task-suite).
+
+
+## Direct metered adapter follow-up (offline validation)
+
+The continuation also implements `anthropic_driver.py`, a small direct
+Anthropic Messages benchmark agent, `transport.py` for bounded stdio MCP, and
+`configure_anthropic.py` to pin candidates and pricing. It is a voice-only
+benchmark implementation, not a stock-agent session adapter. Both arms use the
+same binary, model settings and restricted toolset; B explicitly includes the
+pinned independent Caveman skill in its system prompt and disposable skill home.
+The activation record identifies that benchmark mechanism. It does not claim
+Claude Code/Codex activation or support the unmerged companion proxy interface.
+
+The driver records each provider request/response, actual usage, MCP call and
+native/TokenSave source-read range/content digest. It forwards complete MCP
+result JSON into outgoing tool results. It has no shell, delegation or proxy;
+context snippets are unsupported so source delivery is auditable through
+`tokensave_read` or the native reader. Unexpected cached, regional, server-tool,
+nonstandard-tier or long-context billing invalidates a run. Cost derives from
+actual usage and the pinned standard pricing snapshot; invoices remain separate
+evidence. See [adapter scope and commands](../scripts/caveman_bench/README.md#direct-anthropic-benchmark-adapter).
+
+The runner now retains private traces beyond temporary checkout cleanup,
+verifies returned trace paths and hashes, compares optional immutable settings
+between arms, and rejects ambiguous read telemetry. All 27 Python tests passed,
+including accounting, pricing/model mismatches, malformed read ranges, native/MCP
+read equivalence, source newline boundaries, artifact mutation, trace tampering,
+turn-budget accounting, stdio notification handling, and timeout/reaping.
+A separate offline full-driver smoke exercised both arms against the existing
+local `target/debug/tokensave` binary, with mocked provider responses and a
+synthetic independent Caveman Git fixture: exact read equality, private trace
+hashes, explicit skill inclusion/exclusion and independent task scoring passed.
+This checks transport/assembly, not provenance of a newly rebuilt Rust binary,
+upstream Caveman behavior, a real HTTP request, billing or model performance.
+
+Resource review: requests execute sequentially; turns, messages, tool blocks,
+context, artifact reads and private trace size are capped. Model credentials
+are withheld from the owned MCP process. The transport closes stdin, then
+terminates/kills and reaps a server that does not exit; the runner additionally
+cleans up the entire trial process group. Extraction subprocesses are disabled
+for the benchmark server. Partial traces survive failure. Retained evidence
+scales with requested trial count (up to 64 MiB per adapter trace); the operator
+owns removal of results. No persistent server cache or background task is added.
+Fixed-workload long-running CPU/RSS stabilization, non-POSIX operation and paid
+provider behavior remain unmeasured. No Rust or SQL source changed in this
+continuation, so Cargo tests were not rerun.
+
+Per the user's instruction, paid trials are deliberately pending. No credentials
+were requested in chat and no paid requests ran. Stock-agent activation,
+companion proxy model-ingress preservation and beta source/documentation
+synchronization also remain pending. The follow-up is published on draft PR #800's branch and remains unmerged,
+Refs #797.
+
+Guidance comparison: upstream master `AGENTS.md` was checked through GitHub
+(blob `0d96aeeb702006183c98905d2420da35266b5c51`). Its missing shared issue-closure
+verification section was incorporated. Its Pi-specific test commands were not
+copied because this branch lacks those test/harness files. The Caveman benchmark
+guidance remains branch-specific until the pending source port reaches beta;
+installation guides and README content were not changed by this continuation.
