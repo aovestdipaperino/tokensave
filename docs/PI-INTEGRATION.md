@@ -259,7 +259,7 @@ issues #792/#793 and Pi #11410 already cover the related integration/design topi
 | --- | --- | --- |
 | Real lifecycle tests | [#807](https://github.com/aovestdipaperino/tokensave/pull/807), open, unmerged; follow-up to #806 | 4 real-harness tests passed on pinned Pi 1.4.0, plus 8 existing Pi prompt tests. Actual compaction is exercised with a deterministic summary; proxy/direct errors are simulated, with no paid model or live adapter. |
 | Safer fallback | [#808](https://github.com/aovestdipaperino/tokensave/pull/808), open, unmerged, stacked on #807, extension only | Active direct tools gate interception; retrieval errors release native searches until the next run. Mocked subprocess decisions and the real lifecycle suite pass. Proxy-only/custom-prefix setups stay advisory; no live adapter health guarantee. |
-| Diagnostics | `fix/pi-integration-diagnostics`, proposed on top of #808, Pi integration only | Static freshness/shadowing/exposure/settings checks plus live `/tokensave-status`; no transport or index health claims. |
+| Diagnostics | [#809](https://github.com/aovestdipaperino/tokensave/pull/809), open, unmerged, stacked on #808, Pi integration only | Static freshness/shadowing/exposure/settings checks plus live `/tokensave-status`; no transport or index health claims. |
 
 All three follow-ups target Tokensave rather than Pi core. Shared guidance needs
 synchronization to beta when merged; beta is not edited by this series.
@@ -306,3 +306,11 @@ has a read-only `/tmp/.git`; no all-green workspace claim is made. Logs are in
 `/tmp/pi-followups-workspace.log`, `/tmp/pi-followups-clippy-final.log`, and
 `/tmp/pi-diagnostics-rust-final2.log`. Owned Pi lifecycle fixture directories
 were verified removed after the runs.
+
+Merge order for the open series: [#807](https://github.com/aovestdipaperino/tokensave/pull/807)
+(lifecycle), [#808](https://github.com/aovestdipaperino/tokensave/pull/808)
+(fallback), then [#809](https://github.com/aovestdipaperino/tokensave/pull/809)
+(diagnostics). Retarget each dependent PR to master after its parent merges.
+These are published PRs, not merged implementations. The prepared source is in
+`/tmp/tokensave-pi-followups`; the original Tokensave and Pi working trees were
+left unchanged. No issue closure or Pi issue comment is part of this series.
