@@ -90,6 +90,27 @@ create issues for identified bugs and enhancements, link PRs with "Refs #N" (nev
 "Fixes #N" / "Closes #N"), and never close an issue (including via `gh issue close`)
 without explicit permission — issue closure is left to the repository maintainer.
 
+## Issue closure verification and merged-result summaries
+
+Before closing an issue, and only with the explicit permission required above,
+the agent MUST:
+
+- Identify the linked pull requests and check their current state on GitHub.
+  Distinguish open, closed without merging, and merged PRs; a closed PR is not
+  evidence that its changes were merged.
+- For each merged PR, post a summary on the issue listing the new improvements.
+  Link the PR and merge commit, identify the actual destination branch, and
+  record validation results, limitations, and remaining work. Do not infer that
+  a release was published merely because a PR merged.
+- For open or closed-but-unmerged PRs, state their actual status and do not
+  describe their changes as merged or delivered to the destination branch.
+  If no related PR exists, record that rather than inventing a merge status.
+
+Perform this verification and publish the applicable summary before closing the
+issue. For multiple related PRs, distinguish merged work from pending or
+unmerged work. If a PR merges after the issue was closed, update the issue with
+the merged improvements and actual destination branch.
+
 ## Summaries for related implementations
 
 When a topic spans multiple implementations or related pull requests, the
