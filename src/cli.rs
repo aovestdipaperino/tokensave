@@ -14,9 +14,10 @@ pub use tokensave::agents::GitHookMode;
 /// Code intelligence for Rust codebases.
 #[derive(Parser)]
 #[command(
-    name = "tokensave",
+    name = tokensave::identity::CLI_NAME,
     about = "Code intelligence for 34 languages — semantic graph queries instead of file reads",
-    version
+    version = tokensave::identity::VERSION,
+    long_version = env!("TOKENSAVE_LONG_VERSION")
 )]
 pub struct Cli {
     #[command(subcommand)]

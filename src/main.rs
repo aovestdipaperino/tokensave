@@ -6,6 +6,7 @@ use std::process;
 
 use tokensave::tokensave::TokenSave;
 
+mod app_identity;
 mod cli;
 mod commands;
 mod global;
@@ -165,8 +166,12 @@ fn format_agent_row(a: &tokensave::global_db::AgentCostSummary) -> String {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    #[cfg(windows)]
+    let _console_identity = app_identity::ConsoleIdentity::enter();
     if let Err(e) = run(cli).await {
         eprintln!("Error: {}", e);
+        #[cfg(windows)]
+        drop(_console_identity);
         process::exit(1);
     }
 }
@@ -318,7 +323,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     //   (b) Fallback for external upgrades (`brew upgrade`, `cargo install`):
     //       the running version is newer than `last_installed_version`.
     if !skip_agent_install_maintenance {
-        let running = env!("CARGO_PKG_VERSION");
+        let running = env!("TOKENSAVE_BUILD_VERSION");
         let paths = (
             tokensave::agents::home_dir(),
             tokensave::agents::which_tokensave(),
@@ -476,7 +481,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             // Print update notice from parallel check (suppressed for 15 min)
             if let Ok(Some(latest)) = version_handle.join() {
-                let current_version = env!("CARGO_PKG_VERSION");
+                let current_version = env!("TOKENSAVE_BUILD_VERSION");
                 let now = current_unix_timestamp();
                 let mut config = tokensave::user_config::UserConfig::load();
                 config.cached_latest_version = latest.clone();
@@ -641,7 +646,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             // Print update notice from parallel check (suppressed for 15 min)
             if let Ok(Some(latest)) = version_handle.join() {
-                let current_version = env!("CARGO_PKG_VERSION");
+                let current_version = env!("TOKENSAVE_BUILD_VERSION");
                 let now = current_unix_timestamp();
                 let mut config = tokensave::user_config::UserConfig::load();
                 config.cached_latest_version = latest.clone();
@@ -1012,7 +1017,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             // Skip global user-config writes for a project-scoped install.
             if !local {
-                user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
+                user_cfg.last_installed_version = env!("TOKENSAVE_BUILD_VERSION").to_string();
                 user_cfg.save();
                 if let Some(warning) = tokensave::agents::cargo_build_binary_warning(&tokensave_bin)
                 {
@@ -1119,7 +1124,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         failed.join(", ")
                     );
                 }
-                user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
+                user_cfg.last_installed_version = env!("TOKENSAVE_BUILD_VERSION").to_string();
                 user_cfg.save();
                 if let Some(warning) = tokensave::agents::cargo_build_binary_warning(&tokensave_bin)
                 {

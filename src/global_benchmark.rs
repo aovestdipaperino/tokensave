@@ -68,7 +68,7 @@ impl SavedBenchmark {
             schema_version: SCHEMA_VERSION,
             algorithm_version: hardware::ALGORITHM_VERSION,
             measured_at: crate::tokensave::current_timestamp(),
-            tokensave_version: env!("CARGO_PKG_VERSION").to_string(),
+            tokensave_version: env!("TOKENSAVE_BUILD_VERSION").to_string(),
             recommendation: hardware::recommend(&measurement),
             measurement,
         }

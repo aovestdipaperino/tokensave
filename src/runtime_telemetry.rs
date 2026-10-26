@@ -88,7 +88,7 @@ pub async fn collect(cg: &crate::tokensave::TokenSave) -> Result<RuntimeSnapshot
         .map_or(0, |d| d.as_secs());
     Ok(RuntimeSnapshot {
         captured_at,
-        tokensave_version: env!("CARGO_PKG_VERSION"),
+        tokensave_version: env!("TOKENSAVE_BUILD_VERSION"),
         host_os: std::env::consts::OS,
         process,
         database,

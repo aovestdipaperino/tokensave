@@ -59,7 +59,7 @@ pub(crate) fn check_for_update(
     if !tokensave::cloud::update_check_enabled() {
         return;
     }
-    let current_version = env!("CARGO_PKG_VERSION");
+    let current_version = env!("TOKENSAVE_BUILD_VERSION");
     let now = current_unix_timestamp();
 
     let latest = if !skip_cache && now - config.last_version_check_at < 300 {

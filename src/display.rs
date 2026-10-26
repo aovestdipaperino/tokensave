@@ -286,8 +286,8 @@ fn shuffle_flags(flags: &[String]) -> Vec<String> {
 }
 
 fn print_version_flags_row(country_flags: &[String], inner_width: usize) {
-    let version = env!("CARGO_PKG_VERSION");
-    let title = format!("   TokenSave v{version}");
+    let version = env!("TOKENSAVE_BUILD_VERSION");
+    let title = format!("   {} v{version}", crate::identity::PRODUCT_NAME);
     let title_display_width = title.len();
     let available = inner_width.saturating_sub(2);
 
