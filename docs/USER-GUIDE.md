@@ -313,6 +313,15 @@ Remove a project-local install with `tokensave uninstall --local`.
 
 ### Pi retrieval preference
 
+Inside Pi, run `/tokensave-status` to confirm the managed extension loaded and
+inspect guidance in the current prompt, active direct tools, generic proxy
+availability, and native-search fallback mode. It does not probe transport or
+index health. `tokensave doctor` checks installation freshness and warns about
+`AGENTS.override.md` shadowing, disabled server/built-in MCP settings, discovery
+exposure, and adapter overrides. A configured MCP entry is not proof of a live
+connection; use Pi's `/mcp` panel to inspect it. Before the first prompt, guidance
+may correctly be absent. No configuration is rewritten by these diagnostics.
+
 Pi search interception requires both search and file-discovery tools to be active
 under recognized direct names. Proxy-only, custom-prefix, or unavailable tools
 keep advisory guidance and native search access. After a direct retrieval error,

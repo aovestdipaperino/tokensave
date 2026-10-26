@@ -60,6 +60,26 @@ export default function (pi: ExtensionAPI) {
   // A failed retrieval releases native searches for this run. Retry indexed
   // retrieval on the next run; retain no per-file, per-call or session history.
   let retrievalFailed = false;
+  if (typeof pi.registerCommand === "function") {
+    pi.registerCommand("tokensave-status", {
+      description: "Show live Tokensave guidance, declared tools, and fallback status",
+      handler: async (_args, ctx) => {
+        const active = pi.getActiveTools();
+        const direct = active.filter(name => /^(?:mcp__tokensave__)?tokensave_/.test(name));
+        const hasSearch = direct.some(name => /^(?:mcp__tokensave__)?tokensave_search$/.test(name));
+        const hasFiles = direct.some(name => /^(?:mcp__tokensave__)?tokensave_files$/.test(name));
+        const lines = [
+          "Managed Tokensave extension: loaded",
+          `Retrieval guidance in current prompt: ${ctx.getSystemPrompt().includes("<tokensave_retrieval>") ? "present" : "absent (submit a prompt first; also check forced prompt overrides)"}`,
+          `Recognized direct tools: ${direct.sort().join(", ") || "none"}`,
+          `Generic MCP proxy: ${active.includes("mcp") ? "active; Tokensave configuration not verified" : "not active"}`,
+          `Native-search fallback: ${retrievalFailed || !hasSearch || !hasFiles ? "enabled" : "guardrail eligible"}`,
+          "Transport and index health: not probed. Check /mcp and tokensave doctor for configuration details.",
+        ];
+        ctx.ui.notify(lines.join("\n"), "info");
+      },
+    });
+  }
   pi.on("session_start", () => { retrievalFailed = false; });
   pi.on("tool_result", (event) => {
     if (event.isError && /^(?:mcp__tokensave__)?tokensave_(?:context|search|callers|callees|impact|read|files|body)$/.test(event.toolName)) {

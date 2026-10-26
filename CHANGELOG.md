@@ -34,6 +34,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Improve Pi diagnostics for shadowed AGENTS.md rules, disabled MCP settings and discoverable versus hidden tool exposure; add `/tokensave-status` for live guidance, declarations and fallback state without claiming transport health.
+
 - Keep Pi native searches available when direct Tokensave retrieval tools are inactive or a retrieval fails during the current run; proxy-only setups use advisory guidance. Other agents are unchanged.
 
 - Add Pi real-session regression coverage for per-run retrieval guidance, compaction replay, and native reads after simulated retrieval failures.

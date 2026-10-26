@@ -139,6 +139,8 @@ portable string formats, and documented path-syntax test fixtures.
 
 ### Non-standard test/bench harnesses
 
+- Pi live-status regression: `node --experimental-strip-types --test tests/pi_status_test.mjs`; `/tokensave-status` reports the loaded extension, current prompt, declared tools and fallback mode without probing transport/index health.
+
 - Pi fallback regressions: `node --experimental-strip-types --test tests/pi_fallback_test.mjs`.
 
 - Pi real-session regressions: `node scripts/pi-tests/run.mjs /path/to/prepared/pi`; see `scripts/pi-tests/README.md` for the pinned Pi prerequisites and offline scope.

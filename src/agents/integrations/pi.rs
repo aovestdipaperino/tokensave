@@ -9,8 +9,8 @@
 //! `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD`). Pi uses the standard MCP JSON
 //! shape, so the server entry matches the other JSON-based integrations
 //! (Cursor, Cline): `{ "command", "args": ["serve"] }`, plus the `exposure`
-//! field that makes the tools reachable at all — Pi's default for an MCP
-//! server is `codemode`, which declares none of them to the model.
+//! field that declares the curated tools directly to the model. Pi's default
+//! `codemode` exposure instead requires discovery or an indirect call.
 //!
 //! Pi has both a user-level and a project-level configuration: the agent
 //! directory holds `mcp.json` and `AGENTS.md`, while a project owns `.pi/mcp.json`
@@ -100,9 +100,6 @@ fn pi_instructions_path(ctx: &InstallContext) -> PathBuf {
 /// (11 tools plus `tokensave_more`), which is the size `direct` exists for, and
 /// the rules the install writes name those tools directly.
 const PI_SERVER_EXPOSURE: &str = "direct";
-
-/// Exposure values that leave every tokensave tool unreachable from the model.
-const INVISIBLE_EXPOSURES: [&str; 3] = ["codemode", "codemode-deferred", "hidden"];
 
 /// One-line server summary Pi shows in `/mcp` and in its system prompt's
 /// `mcp_servers` section.
@@ -210,6 +207,7 @@ impl AgentIntegration for PiIntegration {
         crate::agent_note!("\n\x1b[1mPi integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home);
         doctor_check_prompt(dc, &ctx.home);
+        doctor_check_pi_settings(dc, &pi_agent_dir(&ctx.home).join("settings.json"));
         doctor_check_local_config(dc, &ctx.project_path);
         crate::agent_note!("\n\x1b[1mGuardrail extension\x1b[0m");
         doctor_check_extension(
@@ -220,6 +218,7 @@ impl AgentIntegration for PiIntegration {
                 .join("tokensave.ts"),
             "tokensave install --agent pi",
         );
+        dc.info("Static installation checks do not prove Pi loaded the extension or connected MCP; run /tokensave-status and /mcp inside Pi.");
     }
 
     fn is_detected(&self, home: &Path) -> bool {
@@ -321,16 +320,7 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
     match server.and_then(|v| v.as_object()) {
         Some(server) => {
             dc.pass(&format!("MCP server registered in {}", mcp_path.display()));
-            if exposure_declares_tools(server) {
-                dc.pass(&format!(
-                    "Tools exposed to the model (exposure: {PI_SERVER_EXPOSURE})"
-                ));
-            } else {
-                dc.fail(
-                    "MCP tools are not reachable from the model (exposure is missing or codemode) — \
-                     run `tokensave install --agent pi`",
-                );
-            }
+            doctor_check_exposure(dc, server);
         }
         None => dc.fail(&format!(
             "MCP server NOT registered in {} — run `tokensave install --agent pi`",
@@ -339,11 +329,71 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
     }
 }
 
-/// Reports whether a server entry exposes its tools to the model.
-fn exposure_declares_tools(server: &serde_json::Map<String, serde_json::Value>) -> bool {
-    match server.get("exposure").and_then(|v| v.as_str()) {
-        Some(exposure) => !INVISIBLE_EXPOSURES.contains(&exposure),
-        None => false,
+/// Classify configuration only; active declarations and transport need Pi itself.
+fn doctor_check_exposure(
+    dc: &mut DoctorCounters,
+    server: &serde_json::Map<String, serde_json::Value>,
+) {
+    if server.get("enabled").and_then(serde_json::Value::as_bool) == Some(false)
+        || server.get("disabled").and_then(serde_json::Value::as_bool) == Some(true)
+    {
+        dc.warn("Tokensave server is disabled in this configuration");
+    }
+    if server
+        .get("exposure")
+        .is_some_and(|value| !value.is_string())
+    {
+        dc.fail("Tokensave MCP exposure must be a supported Pi string value");
+        return;
+    }
+    match server.get("exposure").and_then(serde_json::Value::as_str) {
+        Some("direct") => dc.pass("MCP exposure configured as direct (live availability not verified)"),
+        None | Some("codemode" | "deferred") => dc.warn("MCP tools require discovery/codemode; direct declarations are not configured. Check /mcp and /tokensave-status inside Pi."),
+        Some("hidden") => dc.fail("Tokensave MCP exposure is hidden; tools are unavailable through this server configuration"),
+        Some(_) => dc.fail("Tokensave MCP exposure is not a supported Pi value"),
+    }
+    if server.contains_key("directTools") || server.contains_key("toolExposure") {
+        dc.info("Per-tool exposure or adapter directTools overrides are configured; verify their effective declarations inside Pi.");
+    }
+}
+
+fn doctor_check_rules_selection(dc: &mut DoctorCounters, rules: &Path) {
+    if let Some(parent) = rules.parent() {
+        let override_path = parent.join("AGENTS.override.md");
+        if override_path.is_file() {
+            dc.warn(&format!("{} shadows {} in Pi; keep the required Tokensave guidance in the selected context file", override_path.display(), rules.display()));
+        }
+    }
+}
+
+fn doctor_check_pi_settings(dc: &mut DoctorCounters, path: &Path) {
+    if !path.is_file() {
+        return;
+    }
+    let settings = load_json_file(path);
+    if settings
+        .get("extensions")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.as_str() == Some("-builtin:mcp"))
+        })
+    {
+        dc.warn("Pi settings disable built-in MCP; an adapter must provide retrieval or tools will be unavailable");
+    }
+    if settings
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.as_str()
+                    .or_else(|| item.get("source").and_then(serde_json::Value::as_str))
+                    .is_some_and(|source| source.contains("pi-mcp-adapter"))
+            })
+        })
+    {
+        dc.info("Pi settings reference pi-mcp-adapter; its effective configuration/discovery can differ from built-in MCP. Verify /mcp and /tokensave-status.");
     }
 }
 
@@ -453,6 +503,7 @@ fn uninstall_prompt_rules(ctx: &InstallContext) {
 
 /// Check Pi's AGENTS.md contains the up-to-date tokensave rules block.
 fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
+    doctor_check_rules_selection(dc, &pi_rules_path(home));
     check_shared_rules_block(dc, &pi_rules_path(home), "pi");
 }
 
@@ -466,6 +517,7 @@ fn doctor_check_local_config(dc: &mut DoctorCounters, project_path: &Path) {
     }
 
     crate::agent_note!("\n\x1b[1mLocal config\x1b[0m");
+    doctor_check_pi_settings(dc, &project_path.join(".pi").join("settings.json"));
 
     let mcp_path = pi_local_config_path(project_path);
     if mcp_path.exists() {
@@ -474,13 +526,7 @@ fn doctor_check_local_config(dc: &mut DoctorCounters, project_path: &Path) {
         match server.and_then(|v| v.as_object()) {
             Some(server) => {
                 dc.pass(&format!("MCP server registered in {}", mcp_path.display()));
-                if !exposure_declares_tools(server) {
-                    dc.fail(&format!(
-                        "MCP tools are not reachable from the model in {} — run \
-                         `tokensave install --agent pi --local`",
-                        mcp_path.display()
-                    ));
-                }
+                doctor_check_exposure(dc, server);
             }
             None => dc.fail(&format!(
                 "MCP server NOT registered in {} — run `tokensave install --agent pi --local`",
@@ -494,6 +540,7 @@ fn doctor_check_local_config(dc: &mut DoctorCounters, project_path: &Path) {
         ));
     }
 
+    doctor_check_rules_selection(dc, &pi_local_rules_path(project_path));
     check_shared_rules_block(dc, &pi_local_rules_path(project_path), "pi");
     doctor_check_extension(
         dc,
