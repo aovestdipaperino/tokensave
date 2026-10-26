@@ -179,8 +179,10 @@ preparation on the newer master base. The extension source on master was
 identical to that checkout; the four handler tests were rerun during PR
 preparation and passed. Full Rust validation on the new base is left to CI.
 
-The checked-out Pi has no node_modules, so its vitest suites, TypeScript API
-typecheck, real session lifecycle, and live adapter checks were not run. No model
+During the initial investigation Pi had no node_modules, so its Vitest suites,
+TypeScript API typecheck, lifecycle and live adapter checks were not run then.
+The follow-ups below now run actual offline session/compaction tests in a
+prepared temporary Pi checkout; live adapter tests remain unperformed. No model
 provider was invoked or credential inspected. No token-savings claim is made.
 
 ### Reproducible model evaluation still required
@@ -256,8 +258,8 @@ issues #792/#793 and Pi #11410 already cover the related integration/design topi
 | Scope | Branch / status | Validation and remaining work |
 | --- | --- | --- |
 | Real lifecycle tests | [#807](https://github.com/aovestdipaperino/tokensave/pull/807), open, unmerged; follow-up to #806 | 4 real-harness tests passed on pinned Pi 1.4.0, plus 8 existing Pi prompt tests. Actual compaction is exercised with a deterministic summary; proxy/direct errors are simulated, with no paid model or live adapter. |
-| Safer fallback | `fix/pi-native-fallback`, proposed on top of #807, extension only | Active direct tools gate interception; retrieval errors release native searches until the next run. Mocked subprocess decisions and the real lifecycle suite pass. Proxy-only/custom-prefix setups stay advisory; no live adapter health guarantee. |
-| Diagnostics | Planned separately, Pi integration only | Report shadowed rules, configuration limits and live declared tool availability. |
+| Safer fallback | [#808](https://github.com/aovestdipaperino/tokensave/pull/808), open, unmerged, stacked on #807, extension only | Active direct tools gate interception; retrieval errors release native searches until the next run. Mocked subprocess decisions and the real lifecycle suite pass. Proxy-only/custom-prefix setups stay advisory; no live adapter health guarantee. |
+| Diagnostics | `fix/pi-integration-diagnostics`, proposed on top of #808, Pi integration only | Static freshness/shadowing/exposure/settings checks plus live `/tokensave-status`; no transport or index health claims. |
 
 All three follow-ups target Tokensave rather than Pi core. Shared guidance needs
 synchronization to beta when merged; beta is not edited by this series.
@@ -273,3 +275,34 @@ session reset and disconnection. Four original handler tests and four real Pi
 lifecycle tests also pass. Actual transport health is inferred only from observed
 errors, not polled; an initial direct retrieval can still fail before fallback.
 No shared Rust classifier, SQL, or other agent integration changes.
+
+### Diagnostics resource and validation record
+
+Static doctor checks perform a fixed number of path checks and settings-file
+reads per global/project scope. They do not launch Pi or MCP, rewrite user
+configuration, inspect credentials, or retain caches. Adapter settings are
+reported as references, not proof that an adapter is loaded. Direct, discoverable
+(codemode/deferred), hidden, disabled and invalid exposure states are distinguished.
+Existing stale/missing extension checks remain in place.
+
+The optional live `/tokensave-status` command reads current declarations and
+prompt state only on request, reports the loaded extension and current fallback
+flag, and sends one UI notification. It retains no status history. The Node
+status regression passed, as did fallback and original handler regressions and
+the four real Pi lifecycle cases. New Rust cases cover shadowing in both scopes,
+exposure classification, disabled server and built-in settings. Final Rust and
+lint results are recorded in the diagnostics PR. No live adapter, RSS soak, or
+model-routing/savings measurement is claimed.
+
+Diagnostics final checks: all 34 Pi installer/doctor tests passed; the six Node
+handler/fallback/status tests and four real lifecycle cases passed. Formatting
+and whitespace checks passed. Clippy passed with warnings in unchanged Rust
+files. A full `cargo test --workspace --locked --offline` run stopped in library
+tests: 1117 passed, 3 failed, 4 ignored. Failures were the unchanged config
+discovery cases `global_state_directory_in_home_is_not_a_project`,
+`linked_worktree_without_an_index_reports_its_own_root`, and
+`non_git_workspace_project_is_shared_by_the_repositories_inside_it`. The sandbox
+has a read-only `/tmp/.git`; no all-green workspace claim is made. Logs are in
+`/tmp/pi-followups-workspace.log`, `/tmp/pi-followups-clippy-final.log`, and
+`/tmp/pi-diagnostics-rust-final2.log`. Owned Pi lifecycle fixture directories
+were verified removed after the runs.

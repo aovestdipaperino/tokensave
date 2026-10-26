@@ -795,10 +795,9 @@ fn test_local_install_writes_project_guardrail_extension() {
     );
 }
 
-/// A registration that leaves every tool unreachable is the failure this whole
-/// change exists to catch, so doctor has to fail on it.
+/// Codemode requires indirect access; it is discoverable rather than hidden.
 #[test]
-fn test_healthcheck_detects_tools_hidden_by_codemode_exposure() {
+fn test_healthcheck_warns_about_codemode_discovery() {
     let _guard = ENV_LOCK.lock().unwrap();
     std::env::remove_var("PI_CODING_AGENT_DIR");
 
@@ -819,8 +818,8 @@ fn test_healthcheck_detects_tools_hidden_by_codemode_exposure() {
     };
     PiIntegration.healthcheck(&mut dc, &hctx);
     assert!(
-        dc.issues > 0,
-        "doctor should fail when the exposure hides the tools"
+        dc.warnings > 0,
+        "doctor should explain that codemode requires discovery"
     );
 }
 
@@ -844,4 +843,97 @@ fn test_healthcheck_detects_stale_or_missing_guardrail_extension() {
     };
     PiIntegration.healthcheck(&mut dc, &hctx);
     assert!(dc.issues > 0, "doctor should fail on a stale extension");
+}
+
+#[test]
+fn test_pi_healthcheck_reports_shadowed_global_and_local_rules() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+    let dir = TempDir::new().unwrap();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    PiIntegration.install(&make_ctx(dir.path())).unwrap();
+    PiIntegration
+        .install(&make_local_ctx(dir.path(), &project))
+        .unwrap();
+    let hctx = HealthcheckContext {
+        home: dir.path().to_path_buf(),
+        project_path: project.clone(),
+    };
+    let mut before = DoctorCounters::new();
+    PiIntegration.healthcheck(&mut before, &hctx);
+    std::fs::write(
+        pi_rules_path(dir.path())
+            .parent()
+            .unwrap()
+            .join("AGENTS.override.md"),
+        "global override",
+    )
+    .unwrap();
+    std::fs::write(project.join("AGENTS.override.md"), "local override").unwrap();
+    let mut after = DoctorCounters::new();
+    PiIntegration.healthcheck(&mut after, &hctx);
+    assert_eq!(after.warnings, before.warnings + 2);
+    assert_eq!(after.issues, before.issues);
+}
+
+#[test]
+fn test_pi_healthcheck_distinguishes_direct_discovery_hidden_and_invalid_exposure() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+    let dir = TempDir::new().unwrap();
+    PiIntegration.install(&make_ctx(dir.path())).unwrap();
+    let hctx = HealthcheckContext {
+        home: dir.path().to_path_buf(),
+        project_path: dir.path().join("project"),
+    };
+    let path = pi_config_path(dir.path());
+    let mut config = read_json(&path);
+    for (exposure, fails, warns) in [
+        ("direct", false, false),
+        ("codemode", false, true),
+        ("deferred", false, true),
+        ("hidden", true, false),
+        ("invented", true, false),
+    ] {
+        config["mcpServers"]["tokensave"]["exposure"] = serde_json::json!(exposure);
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let mut dc = DoctorCounters::new();
+        PiIntegration.healthcheck(&mut dc, &hctx);
+        assert_eq!(dc.issues > 0, fails, "{exposure}");
+        assert_eq!(dc.warnings > 0, warns, "{exposure}");
+    }
+    config["mcpServers"]["tokensave"]["exposure"] = serde_json::json!(3);
+    std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    let mut dc = DoctorCounters::new();
+    PiIntegration.healthcheck(&mut dc, &hctx);
+    assert!(dc.issues > 0, "non-string exposure is invalid");
+}
+
+#[test]
+fn test_pi_healthcheck_warns_when_server_or_builtin_mcp_is_disabled() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+    let dir = TempDir::new().unwrap();
+    PiIntegration.install(&make_ctx(dir.path())).unwrap();
+    let hctx = HealthcheckContext {
+        home: dir.path().to_path_buf(),
+        project_path: dir.path().join("project"),
+    };
+    let mut config = read_json(&pi_config_path(dir.path()));
+    config["mcpServers"]["tokensave"]["enabled"] = serde_json::json!(false);
+    std::fs::write(
+        pi_config_path(dir.path()),
+        serde_json::to_vec(&config).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".pi").join("agent").join("settings.json"),
+        r#"{"extensions":["-builtin:mcp"],"packages":["npm:pi-mcp-adapter"]}"#,
+    )
+    .unwrap();
+    let mut dc = DoctorCounters::new();
+    PiIntegration.healthcheck(&mut dc, &hctx);
+    assert_eq!(dc.warnings, 2);
+    assert_eq!(dc.issues, 0);
 }
