@@ -1,0 +1,16 @@
+{
+  "ISSUE-786-VALIDATION.md": "2cdc5c6193a092531e6ea96afc654f9186aa667c9b155a12bfa907d38c29877d",
+  "benchmark-report.html": "3a9102a7eca0f8beabbbd64e39e9c90aff1f5a91937beb2c729a0b7204ce016f",
+  "benchmark-results.csv": "3e513282d61141213fa8fa4b097e125ae12c1e8e324b2310b4f042d8034270b8",
+  "benchmark-summary.csv": "a24d3a33c32f31e4f8b04f99125167eb46b58ab080dac33d9524420842219956",
+  "benchmark-config.json": "3baaea2a4f9b11c29cb1e3ffd6c4e1ee6357e83d02accf5e708263e76695579a",
+  "benchmark.ps1": "3f85448419cc6ac96fd9d667805a0e8d27e050625bc668c8fd468b930675814d",
+  "benchmark.py": "51117d0634e769cbe0e0ec8516f26cca5debdd1c80592543c808e499fd867bb0",
+  "extended.py": "8d524922a408362473597ee4bf88d3900297beda66bc8e6f57d513ba66d1fe05",
+  "summarize.py": "857c5d342f1564b9b69b05d6e91925459228de46d54a3b76ea2a9bf3e3021fad",
+  "README.md": "9ac3cfdaf38182a682daa370ab1a664f432761d90fbe7b2561aaa527c086a646",
+  "binaries.json": "fdac88916fedcb27ee8ff0bd739449a8e057190871927183056a1f122cb8c837",
+  "environment.json": "3de22b89c42ec34bc9c10b2720b742fc312fa7b47d113b24f156c7d24f59c1d3",
+  "correctness.json": "128890eada90dc1dece3f7ca5f43b05194cd0ce1772e1239efbf4ac6775521ba",
+  "extended-results.json": "304d288d245876ff5c79aa120729effa0c46fe83f88cfc489c55257458aa3815"
+}

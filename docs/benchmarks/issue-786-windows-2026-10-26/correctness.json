@@ -1,0 +1,312 @@
+[
+  {
+    "name": "stable-added-0",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00004-stable-addition_check-0.json"
+  },
+  {
+    "name": "stable-deleted-0",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00006-stable-deletion_check-0.json"
+  },
+  {
+    "name": "stable-verify-0",
+    "passed": true,
+    "detail": "Checked 377 files; 0 findings (0 omitted); completed: true\n"
+  },
+  {
+    "name": "beta-added-0",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00012-beta-addition_check-0.json"
+  },
+  {
+    "name": "beta-deleted-0",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00014-beta-deletion_check-0.json"
+  },
+  {
+    "name": "beta-verify-0",
+    "passed": true,
+    "detail": "Checked 377 files; 0 findings (0 omitted); completed: true\n"
+  },
+  {
+    "name": "beta-added-1",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00020-beta-addition_check-1.json"
+  },
+  {
+    "name": "beta-deleted-1",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00022-beta-deletion_check-1.json"
+  },
+  {
+    "name": "beta-verify-1",
+    "passed": true,
+    "detail": "Checked 377 files; 0 findings (0 omitted); completed: true\n"
+  },
+  {
+    "name": "stable-added-1",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00028-stable-addition_check-1.json"
+  },
+  {
+    "name": "stable-deleted-1",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00030-stable-deletion_check-1.json"
+  },
+  {
+    "name": "stable-verify-1",
+    "passed": true,
+    "detail": "Checked 377 files; 0 findings (0 omitted); completed: true\n"
+  },
+  {
+    "name": "stable-added-2",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00036-stable-addition_check-2.json"
+  },
+  {
+    "name": "stable-deleted-2",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00038-stable-deletion_check-2.json"
+  },
+  {
+    "name": "stable-verify-2",
+    "passed": true,
+    "detail": "Checked 377 files; 0 findings (0 omitted); completed: true\n"
+  },
+  {
+    "name": "beta-added-2",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00044-beta-addition_check-2.json"
+  },
+  {
+    "name": "beta-deleted-2",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00046-beta-deletion_check-2.json"
+  },
+  {
+    "name": "beta-verify-2",
+    "passed": true,
+    "detail": "Checked 377 files; 0 findings (0 omitted); completed: true\n"
+  },
+  {
+    "name": "beta-added-3",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00052-beta-addition_check-3.json"
+  },
+  {
+    "name": "beta-deleted-3",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00054-beta-deletion_check-3.json"
+  },
+  {
+    "name": "beta-verify-3",
+    "passed": true,
+    "detail": "Checked 377 files; 0 findings (0 omitted); completed: true\n"
+  },
+  {
+    "name": "stable-added-3",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00060-stable-addition_check-3.json"
+  },
+  {
+    "name": "stable-deleted-3",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00062-stable-deletion_check-3.json"
+  },
+  {
+    "name": "stable-verify-3",
+    "passed": true,
+    "detail": "Checked 377 files; 0 findings (0 omitted); completed: true\n"
+  },
+  {
+    "name": "stable-added-4",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00068-stable-addition_check-4.json"
+  },
+  {
+    "name": "stable-deleted-4",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00070-stable-deletion_check-4.json"
+  },
+  {
+    "name": "stable-verify-4",
+    "passed": true,
+    "detail": "Checked 377 files; 0 findings (0 omitted); completed: true\n"
+  },
+  {
+    "name": "beta-added-4",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00076-beta-addition_check-4.json"
+  },
+  {
+    "name": "beta-deleted-4",
+    "passed": true,
+    "detail": "Rechecked saved response for exact expected count and symbol presence/absence: logs/00078-beta-deletion_check-4.json"
+  },
+  {
+    "name": "beta-verify-4",
+    "passed": true,
+    "detail": "Checked 377 files; 0 findings (0 omitted); completed: true\n"
+  },
+  {
+    "name": "cli-equivalence-fts_common",
+    "passed": true,
+    "detail": "Exact ordered output comparison; project roots normalized."
+  },
+  {
+    "name": "cli-equivalence-fts_rare",
+    "passed": true,
+    "detail": "Exact ordered output comparison; project roots normalized."
+  },
+  {
+    "name": "cli-equivalence-fts_empty",
+    "passed": true,
+    "detail": "Exact ordered output comparison; project roots normalized."
+  },
+  {
+    "name": "cli-equivalence-complexity",
+    "passed": true,
+    "detail": "Exact ordered output comparison; project roots normalized."
+  },
+  {
+    "name": "cli-equivalence-complexity_scoped",
+    "passed": true,
+    "detail": "Exact ordered output comparison; project roots normalized."
+  },
+  {
+    "name": "cli-equivalence-inheritance",
+    "passed": true,
+    "detail": "Exact ordered output comparison; project roots normalized."
+  },
+  {
+    "name": "cli-equivalence-inheritance_scoped",
+    "passed": true,
+    "detail": "Exact ordered output comparison; project roots normalized."
+  },
+  {
+    "name": "cli-equivalence-body",
+    "passed": true,
+    "detail": "Exact ordered output comparison; project roots normalized."
+  },
+  {
+    "name": "cli-equivalence-ambiguous",
+    "passed": true,
+    "detail": "Exact ordered output comparison; project roots normalized."
+  },
+  {
+    "name": "cli-equivalence-context",
+    "passed": true,
+    "detail": "Exact ordered output comparison; project roots normalized."
+  },
+  {
+    "name": "cli-equivalence-hotspots",
+    "passed": true,
+    "detail": "Exact ordered output comparison; project roots normalized."
+  },
+  {
+    "name": "cli-equivalence-ambiguous_calls",
+    "passed": true,
+    "detail": "Exact ordered output comparison; project roots normalized."
+  },
+  {
+    "name": "mcp-equivalence-fts_common",
+    "passed": true,
+    "detail": "Exact ordered output comparison; JSON-RPC IDs, timing metadata and roots normalized."
+  },
+  {
+    "name": "mcp-equivalence-fts_rare",
+    "passed": true,
+    "detail": "Exact ordered output comparison; JSON-RPC IDs, timing metadata and roots normalized."
+  },
+  {
+    "name": "mcp-equivalence-fts_empty",
+    "passed": true,
+    "detail": "Exact ordered output comparison; JSON-RPC IDs, timing metadata and roots normalized."
+  },
+  {
+    "name": "mcp-equivalence-complexity",
+    "passed": true,
+    "detail": "Exact ordered output comparison; JSON-RPC IDs, timing metadata and roots normalized."
+  },
+  {
+    "name": "mcp-equivalence-complexity_scoped",
+    "passed": true,
+    "detail": "Exact ordered output comparison; JSON-RPC IDs, timing metadata and roots normalized."
+  },
+  {
+    "name": "mcp-equivalence-inheritance",
+    "passed": true,
+    "detail": "Exact ordered output comparison; JSON-RPC IDs, timing metadata and roots normalized."
+  },
+  {
+    "name": "mcp-equivalence-inheritance_scoped",
+    "passed": true,
+    "detail": "Exact ordered output comparison; JSON-RPC IDs, timing metadata and roots normalized."
+  },
+  {
+    "name": "mcp-equivalence-body",
+    "passed": true,
+    "detail": "Exact ordered output comparison; JSON-RPC IDs, timing metadata and roots normalized."
+  },
+  {
+    "name": "mcp-equivalence-ambiguous",
+    "passed": true,
+    "detail": "Exact ordered output comparison; JSON-RPC IDs, timing metadata and roots normalized."
+  },
+  {
+    "name": "mcp-equivalence-context",
+    "passed": true,
+    "detail": "Exact ordered output comparison; JSON-RPC IDs, timing metadata and roots normalized."
+  },
+  {
+    "name": "mcp-equivalence-hotspots",
+    "passed": true,
+    "detail": "Exact ordered output comparison; JSON-RPC IDs, timing metadata and roots normalized."
+  },
+  {
+    "name": "mcp-equivalence-ambiguous_calls",
+    "passed": true,
+    "detail": "Exact ordered output comparison; JSON-RPC IDs, timing metadata and roots normalized."
+  },
+  {
+    "name": "stable-sqlite-integrity",
+    "passed": true,
+    "detail": "[('ok',)]"
+  },
+  {
+    "name": "beta-sqlite-integrity",
+    "passed": true,
+    "detail": "[('ok',)]"
+  },
+  {
+    "name": "stable-60s-soak-no-errors",
+    "passed": true,
+    "detail": "4212 serial requests; bounded smoke soak, not production duration."
+  },
+  {
+    "name": "stable-four-reader-processes",
+    "passed": true,
+    "detail": "Four MCP processes, 30 requests each, same database; no concurrent writer."
+  },
+  {
+    "name": "stable-forced-termination-recovery",
+    "passed": true,
+    "detail": "Checked 377 files; 0 findings (0 omitted); completed: true\nWrite phase at termination unconfirmed; not graceful MCP cancellation."
+  },
+  {
+    "name": "beta-60s-soak-no-errors",
+    "passed": true,
+    "detail": "4168 serial requests; bounded smoke soak, not production duration."
+  },
+  {
+    "name": "beta-four-reader-processes",
+    "passed": true,
+    "detail": "Four MCP processes, 30 requests each, same database; no concurrent writer."
+  },
+  {
+    "name": "beta-forced-termination-recovery",
+    "passed": true,
+    "detail": "Checked 377 files; 0 findings (0 omitted); completed: true\nWrite phase at termination unconfirmed; not graceful MCP cancellation."
+  }
+]

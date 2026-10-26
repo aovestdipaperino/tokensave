@@ -1,0 +1,19 @@
+{
+  "os": {
+    "Caption": "Microsoft Windows 11 Business",
+    "Version": "10.0.26300",
+    "BuildNumber": "26300"
+  },
+  "disks": {
+    "FriendlyName": "SAMSUNG MZVLQ512HBLU-00BH1",
+    "MediaType": "SSD"
+  },
+  "cpu": {
+    "Name": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+    "NumberOfLogicalProcessors": 8
+  },
+  "power": "GUID combinazione risparmio energia: 381b4222-f694-41f0-9685-ff5bb260df2e  (Bilanciato)",
+  "memory": {
+    "TotalPhysicalMemory": 16844595200
+  }
+}

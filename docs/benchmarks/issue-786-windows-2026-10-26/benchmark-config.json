@@ -1,0 +1,13 @@
+{
+  "stable": "C:/Users/AndreaTontini/.cargo/bin/tokensave.exe",
+  "beta": "C:/Users/AndreaTontini/.cargo/bin/tokensave-beta.exe",
+  "repository": "C:/Users/AndreaTontini/Desktop/e-shock_b-challenger",
+  "commit": "b7e8d6468e43fc269082aab0707fd43a5811e602",
+  "index_repetitions": 5,
+  "cli_repetitions": 15,
+  "mcp_repetitions": 100,
+  "warmups": 2,
+  "timeout_seconds": 180,
+  "cpu_usage": "balanced",
+  "seed": 786
+}
