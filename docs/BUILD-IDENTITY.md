@@ -117,7 +117,8 @@ background workers, database queries, or polling loops.
 ## Implementation validation record
 
 Tracking issue: [#801](https://github.com/aovestdipaperino/tokensave/issues/801).
-Implementation is prepared for review and has not been merged.
+Implementation: [PR #802](https://github.com/aovestdipaperino/tokensave/pull/802).
+The pull request records the current merge status and the beta-only merge restriction.
 
 Initial validation on 2026-10-26, before rebasing the implementation onto upstream
 `beta` (these full-suite counts describe the former master-based tree):
