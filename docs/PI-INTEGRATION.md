@@ -7,7 +7,7 @@ contribute a retrieval preference to Pi's per-run structured prompt. This is a
 concrete integration improvement, not a reproduced explanation of the user's
 reported routing drift. Add a conditional `tokensave_retrieval` section on each
 run; preserve native tools and existing interception. No Pi core change is needed.
-This follow-up targets master on `fix/pi-retrieval-guidance`; it is not merged or released.
+The prompt-guidance change merged into master in [#806](https://github.com/aovestdipaperino/tokensave/pull/806) at `4aff0e4fd1566e5120ecbd9f437938a9e441e9c4`; release publication has not been verified.
 
 ## Repository and discussion record
 
@@ -250,3 +250,14 @@ original local branch and its changes remain in place. No issue closure or Pi
 issue comment is part of this work.
 An additional Tokensave issue can be drafted from this record if needed; existing
 issues #792/#793 and Pi #11410 already cover the related integration/design topic.
+
+## Pi-only follow-up implementations
+
+| Scope | Branch / status | Validation and remaining work |
+| --- | --- | --- |
+| Real lifecycle tests | `test/pi-session-lifecycle`, proposed follow-up to #806 | 4 real-harness tests passed on pinned Pi 1.4.0, plus 8 existing Pi prompt tests. Actual compaction is exercised with a deterministic summary; proxy/direct errors are simulated, with no paid model or live adapter. |
+| Safer fallback | Planned separately, extension only | Gate hard redirection on active direct retrieval; release native searches after a retrieval error. |
+| Diagnostics | Planned separately, Pi integration only | Report shadowed rules, configuration limits and live declared tool availability. |
+
+All three follow-ups target Tokensave rather than Pi core. Shared guidance needs
+synchronization to beta when merged; beta is not edited by this series.

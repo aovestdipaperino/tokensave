@@ -34,6 +34,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Add Pi real-session regression coverage for per-run retrieval guidance, compaction replay, and native reads after simulated retrieval failures.
+
 - Prefer indexed code exploration through Pi's structured per-run prompt sections, with explicit native-tool fallbacks for unavailable or stale indexes, unindexed files, documentation, configuration, and current-source verification. Existing search interception is unchanged.
 
 - Update the locked `der` dependency from yanked 0.8.0 to compatible 0.8.3, used by the ONNX Runtime build dependency chain (Refs #805).
