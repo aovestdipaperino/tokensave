@@ -7332,3 +7332,55 @@ async fn entities_accepts_path_as_an_alias_for_file() {
         extract_text(&by_path.value)
     );
 }
+
+/// Compatibility detection never rewrites the semantic MCP result surface.
+#[tokio::test]
+async fn caveman_discovery_preserves_exact_semantic_results() {
+    let (_dir, cg) = setup_project().await;
+    let node_id = find_node_id(&cg, "helper").await;
+    let queries = [
+        (
+            "tokensave_search",
+            json!({"query":"helper", "format":"json", "ids":true}),
+        ),
+        ("tokensave_node", json!({"node_id":node_id})),
+        ("tokensave_callers", json!({"node_id":node_id})),
+        ("tokensave_callees", json!({"node_id":node_id})),
+    ];
+    let mut before = Vec::new();
+    for (name, params) in &queries {
+        before.push(
+            handle_tool_call(&cg, name, params.clone(), None, None)
+                .await
+                .unwrap()
+                .value,
+        );
+    }
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join(".claude");
+    let skill = root.join("skills").join("caveman").join("SKILL.md");
+    fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    fs::write(&skill, "---\nname: caveman\n---\nPayload verbatim.").unwrap();
+    for installed in [true, false] {
+        if !installed {
+            fs::remove_dir_all(&root).unwrap();
+        }
+        let report =
+            tokensave::caveman::inspect(home.path(), cg.project_root(), "claude", None, None, true);
+        assert_eq!(
+            report.installation,
+            if installed {
+                tokensave::caveman::Installation::Installed
+            } else {
+                tokensave::caveman::Installation::Absent
+            }
+        );
+        for ((name, params), baseline) in queries.iter().zip(&before) {
+            let actual = handle_tool_call(&cg, name, params.clone(), None, None)
+                .await
+                .unwrap()
+                .value;
+            assert_eq!(&actual, baseline, "{name}: installation={installed}");
+        }
+    }
+}

@@ -361,6 +361,12 @@ pub enum Commands {
         /// Check only this agent (default: all agents)
         #[arg(long, value_parser = agent_value_parser())]
         agent: Option<String>,
+        /// Print read-only Caveman compatibility diagnostics as JSON
+        #[arg(long)]
+        caveman: bool,
+        /// Explicit Claude session identity; never inferred from a machine-wide flag
+        #[arg(long, requires = "caveman")]
+        session_id: Option<String>,
     },
     /// Token cost summary from supported local agent sessions
     Cost {

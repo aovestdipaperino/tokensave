@@ -2177,6 +2177,7 @@ impl McpServer {
                 self.report_savings(),
                 self.served_projects(),
                 self.toolset(),
+                self.served_root(),
             )),
             "initialized" | "notifications/initialized" | "notifications/roots/list_changed" => {
                 // Known notifications - no response required
@@ -2229,6 +2230,7 @@ impl McpServer {
         report_savings: bool,
         projects: ServedProjects<'_>,
         toolset: crate::config::Toolset,
+        project_root: Option<&std::path::Path>,
     ) -> JsonRpcResponse {
         const BASE_INSTRUCTIONS: &str = "tokensave is a code-graph MCP server. \
             Start with tokensave_context for any code exploration task \
@@ -2246,6 +2248,9 @@ impl McpServer {
              report the savings to the user (e.g. 'TokenSave'd ~N tokens').";
 
         let mut instructions = BASE_INSTRUCTIONS.to_string();
+        if crate::caveman::cooperation_enabled(project_root) {
+            instructions.push_str(crate::caveman::COOPERATION_INSTRUCTIONS);
+        }
         // #576: the cross-project rules are sent here once per session. The
         // `graph_root` description, which a client sends once per tool on
         // every turn, keeps only one sentence.

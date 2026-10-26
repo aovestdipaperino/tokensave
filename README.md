@@ -1025,6 +1025,13 @@ Doctor also validates that each installed hook uses the correct tokensave subcom
 
 ---
 
+Caveman is detected independently when available. TokenSave keeps semantic
+retrieval exact and leaves Caveman activation, prose style, and routing under
+Caveman's control. Use `tokensave doctor --caveman` for read-only JSON diagnostics;
+set `caveman_compatibility = false` in `~/.tokensave/config.toml` to opt out.
+See [compatibility limits and benchmarks](docs/CAVEMAN-COMPATIBILITY.md), including
+the unsupported proxy result-exclusion mechanism.
+
 ## How It Works with Claude Code
 
 Once configured, Claude Code automatically uses tokensave instead of reading raw files when it needs to understand your codebase. Three layers reinforce each other:

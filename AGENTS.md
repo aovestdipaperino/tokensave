@@ -184,3 +184,21 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - **`codegraph` is a git submodule** (`codegraph/`), not part of the crate.
 - **`test-transport` feature** adds test-only JSON-RPC transport hooks in `src/mcp/`.
 - **Release workflow** builds per-platform binaries and skips beta/prerelease tags (handled by `release-beta.yml`).
+
+## Caveman compatibility
+
+`src/caveman.rs` contributes only read-only discovery and conditional MCP
+initialization instructions. Keep semantic retrieval results exact, and leave
+Caveman installation, activation, configuration and routing independently owned.
+Maintain `docs/CAVEMAN-COMPATIBILITY.md` as the implementation and validation
+record. Run the `caveman_test` integration module and semantic-preservation
+regression for changes here; benchmark-accounting checks use
+`python3 -m unittest discover -s scripts/caveman_bench -p 'test_*.py'`.
+
+The optional metered benchmark agent and manifest builder are
+`scripts/caveman_bench/anthropic_driver.py` and `configure_anthropic.py`.
+They require Python 3.11+ and POSIX. Keep provider usage, model-visible source
+read auditing, candidate/scorer pins, private trace retention and process cleanup
+covered by the same Python test command. Tests use synthetic provider responses;
+never describe them as paid trials or stock-agent activation evidence. Paid runs
+require explicit model/pricing configuration and operator-provided credentials.
