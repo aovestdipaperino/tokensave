@@ -179,6 +179,10 @@ portable string formats, and documented path-syntax test fixtures.
 - `cargo test --workspace` is the CI test command. On Windows set `RUST_MIN_STACK=8388608` (CI does this; async-heavy tests overflow the 1 MB MSVC default).
 - `cargo clippy --workspace --all-targets` (CI runs it with `continue-on-error: true`).
 - `cargo fmt --all -- --check`.
+- Keep the beta package version prerelease-labeled (`<base>-beta.N`) in both
+  `Cargo.toml` and `Cargo.lock`, so plain `cargo install --branch beta` selects
+  beta identity without extra feature flags. This rule is beta-only. CI checks
+  the plain Cargo binary against the package version and expected channel.
 - Executable identity is centralized in `build/identity.json`. Stable Cargo builds
   retain their identity; `--features beta` or a prerelease package version selects
   beta metadata. Package independently named binaries with

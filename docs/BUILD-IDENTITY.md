@@ -36,6 +36,12 @@ For `cargo install --path . --features beta`, rename the installed executable to
 the beta name before placing it alongside stable. The beta Homebrew recipe does
 this itself. A plain stable Cargo invocation needs no new flags.
 
+The beta branch keeps a prerelease package version in `Cargo.toml` and
+`Cargo.lock`. Plain `cargo install --git https://github.com/aovestdipaperino/tokensave.git --branch beta --locked --force`
+therefore reports a beta package version and selects beta identity without the
+feature. Cargo still installs its internal `tokensave` target name; verify the
+compiled identity with `tokensave --version` and `tokensave channel`.
+
 A prerelease package version also selects beta identity without the feature.
 The helper rejects `--channel stable` for a prerelease package rather than
 packaging a beta build under a stable filename.
@@ -157,3 +163,30 @@ and macOS rendering have not been manually validated. No SQL queries changed.
 The upstream master `AGENTS.md` baseline was checked; shared instructions and
 beta-specific SQL-debugging guidance were retained, with new build guidance added. Shared README and branch-specific installation
 rules are preserved; this change does not synchronize or alter other branches.
+
+### Plain beta source installation labeling ([#810](https://github.com/aovestdipaperino/tokensave/issues/810))
+
+The follow-up to PR #802 sets the beta package and lockfile version to
+`7.16.0-beta.1`. No new identity implementation or feature flag is needed:
+the existing prerelease detection now applies to ordinary beta source installs.
+This is a direct beta commit; no follow-up PR or stable backport is intended.
+Validation results are recorded below. Runtime resource use and SQL are unchanged.
+
+Upstream master guidance was compared at `f82ce87`. Beta retains its executable
+identity and SQL-debugging instructions. Master's Pi test commands are absent
+because those test scripts are not present on beta. README installation and
+branding differences remain intentional.
+
+Validation on 2026-10-26:
+
+- Locked Cargo metadata reports `7.16.0-beta.1`; no beta feature was enabled.
+- Plain lite Cargo build and both identity unit tests passed.
+- The compiled CLI reports `tokensave-beta TokenSave Beta 7.16.0-beta.1`;
+  `channel` reports `v7.16.0-beta.1 (beta)`. The new CI smoke check passed locally.
+- Lite library suite with `TMPDIR=/var/tmp`: 1,120 passed, 4 ignored. The first
+  run under `/tmp` had three discovery failures from existing parent repository
+  state; the clean fixture-root run passed.
+- Formatting and diff whitespace checks passed. Full workspace, release-profile,
+  Windows, and macOS checks were not rerun for this metadata change. CI retains
+  its full workspace test matrix and now verifies plain Cargo identity against
+  the package version, in addition to packaged beta identity.

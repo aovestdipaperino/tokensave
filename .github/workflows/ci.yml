@@ -69,8 +69,22 @@ jobs:
         # adds no dependencies, so this is a superset of the plain run.
         run: cargo test --workspace --locked --features test-transport
 
-      - name: Check stable executable identity
-        run: python scripts/check-app-identity.py --channel stable target/debug/tokensave${{ runner.os == 'Windows' && '.exe' || '' }}
+      - name: Check plain Cargo executable identity
+        shell: bash
+        run: |
+          python - <<'PYTHON'
+          import os
+          import pathlib
+          import subprocess
+          import tomllib
+          version = tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"]
+          beta = "-" in version
+          executable = pathlib.Path("target/debug/tokensave" + (".exe" if os.name == "nt" else "")).resolve()
+          expected = f"tokensave-beta TokenSave Beta {version}" if beta else f"tokensave {version}"
+          assert subprocess.check_output([str(executable), "--version"], text=True).strip() == expected
+          channel = subprocess.run([str(executable), "channel"], capture_output=True, text=True, check=True)
+          assert f"v{version} ({'beta' if beta else 'stable'})" in channel.stderr
+          PYTHON
 
       - name: Build beta executable and check identity
         shell: bash

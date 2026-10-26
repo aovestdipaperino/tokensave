@@ -56,6 +56,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Label beta source installations as `7.16.0-beta.1`, activating beta CLI, MCP, and update-channel identity without requiring `--features beta` (Refs #810).
+
 - Update the locked `der` dependency from yanked 0.8.0 to compatible 0.8.3, used by the ONNX Runtime build dependency chain (Refs #805).
 
 - Replace the deprecated atomic session-debt update with `try_update`, preserving memory orderings and return behavior (Refs #804).
