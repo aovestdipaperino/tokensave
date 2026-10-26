@@ -34,6 +34,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Keep Pi native searches available when direct Tokensave retrieval tools are inactive or a retrieval fails during the current run; proxy-only setups use advisory guidance. Other agents are unchanged.
+
 - Add Pi real-session regression coverage for per-run retrieval guidance, compaction replay, and native reads after simulated retrieval failures.
 
 - Prefer indexed code exploration through Pi's structured per-run prompt sections, with explicit native-tool fallbacks for unavailable or stale indexes, unindexed files, documentation, configuration, and current-source verification. Existing search interception is unchanged.

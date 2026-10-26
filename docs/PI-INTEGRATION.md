@@ -255,9 +255,21 @@ issues #792/#793 and Pi #11410 already cover the related integration/design topi
 
 | Scope | Branch / status | Validation and remaining work |
 | --- | --- | --- |
-| Real lifecycle tests | `test/pi-session-lifecycle`, proposed follow-up to #806 | 4 real-harness tests passed on pinned Pi 1.4.0, plus 8 existing Pi prompt tests. Actual compaction is exercised with a deterministic summary; proxy/direct errors are simulated, with no paid model or live adapter. |
-| Safer fallback | Planned separately, extension only | Gate hard redirection on active direct retrieval; release native searches after a retrieval error. |
+| Real lifecycle tests | [#807](https://github.com/aovestdipaperino/tokensave/pull/807), open, unmerged; follow-up to #806 | 4 real-harness tests passed on pinned Pi 1.4.0, plus 8 existing Pi prompt tests. Actual compaction is exercised with a deterministic summary; proxy/direct errors are simulated, with no paid model or live adapter. |
+| Safer fallback | `fix/pi-native-fallback`, proposed on top of #807, extension only | Active direct tools gate interception; retrieval errors release native searches until the next run. Mocked subprocess decisions and the real lifecycle suite pass. Proxy-only/custom-prefix setups stay advisory; no live adapter health guarantee. |
 | Diagnostics | Planned separately, Pi integration only | Report shadowed rules, configuration limits and live declared tool availability. |
 
 All three follow-ups target Tokensave rather than Pi core. Shared guidance needs
 synchronization to beta when merged; beta is not edited by this series.
+
+### Fallback resource and validation record
+
+One boolean per extension instance is reset on session start and each run. No
+subprocess is started when declarations are insufficient or retrieval has failed.
+Active tool checks scan the current declaration list, without retaining it.
+A deterministic mocked-subprocess test covers direct and proxy-only availability,
+other-server errors, successful retrieval, retrieval failure, next-run reset,
+session reset and disconnection. Four original handler tests and four real Pi
+lifecycle tests also pass. Actual transport health is inferred only from observed
+errors, not polled; an initial direct retrieval can still fail before fallback.
+No shared Rust classifier, SQL, or other agent integration changes.
