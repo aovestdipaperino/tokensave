@@ -34,7 +34,7 @@ This policy and the beta-identity build guidance are intentional beta-only
 exceptions to the shared-guidance synchronization rule above. Do not copy them
 to other branches while synchronizing shared instructions.
 
-The `beta` README header uses `src/resources/tokensave-beta.png` with
+The `beta` README header uses `src/resources/logo-beta.png` with
 `TokenSave Beta` alt text; `master` retains its original logo. This header
 difference is an intentional exception to the README consistency rule below.
 Preserve it when synchronizing branches; do not port the beta logo header to

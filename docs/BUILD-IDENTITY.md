@@ -60,6 +60,12 @@ with a high-contrast beta badge. `src/resources/tokensave-beta.png` is its sourc
 asset; the ICO contains 16, 20, 24, 32, 40, 48, 64, 128, and 256 pixel variants.
 The original logo and stable resources are unchanged.
 
+The README uses a separate wide beta wordmark, `src/resources/logo-beta.png`,
+matching the original logo's 688 × 267 pixel canvas and the same 300 pixel
+README display width. It retains the chest, wordmark, and decorative elements
+with a beta badge, while the square application icon remains suited to small
+operating-system icon sizes. Keep this README branding difference on beta only.
+
 Windows beta executables embed the icon, `TokenSave Beta` product and file
 description, complete prerelease file/product version strings, original filename,
 and the Windows prerelease flag. Numeric version fields use the package's base
