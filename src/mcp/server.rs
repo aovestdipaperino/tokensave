@@ -1163,7 +1163,7 @@ impl McpServer {
         let mut credited = 0u64;
         let _ = self
             .session_debt
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |debt| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |debt| {
                 let (new_debt, c) = settle_session_debt(debt, raw_delta);
                 credited = c;
                 Some(new_debt)
