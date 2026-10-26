@@ -57,8 +57,28 @@ function plainText(text: string): string {
 }
 
 export default function (pi: ExtensionAPI) {
+  // A failed retrieval releases native searches for this run. Retry indexed
+  // retrieval on the next run; retain no per-file, per-call or session history.
+  let retrievalFailed = false;
+  pi.on("session_start", () => { retrievalFailed = false; });
+  pi.on("tool_result", (event) => {
+    if (event.isError && /^(?:mcp__tokensave__)?tokensave_(?:context|search|callers|callees|impact|read|files|body)$/.test(event.toolName)) {
+      retrievalFailed = true;
+    }
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     if (!GUARDED_TOOLS.has(event.toolName)) {
+      return;
+    }
+    // Tool registration is not proof of transport health, but absence from
+    // the active declarations means we cannot safely demand a direct call.
+    // A generic mcp proxy is not evidence that Tokensave is configured. Keep
+    // proxy-only and unknown/custom-prefix adapter setups advisory.
+    const active = typeof pi.getActiveTools === "function" ? pi.getActiveTools() : [];
+    const hasSearch = active.some(name => /^(?:mcp__tokensave__)?tokensave_search$/.test(name));
+    const hasFiles = active.some(name => /^(?:mcp__tokensave__)?tokensave_files$/.test(name));
+    if (retrievalFailed || !hasSearch || !hasFiles) {
       return;
     }
     const request = JSON.stringify({ toolName: event.toolName, input: event.input, cwd: ctx.cwd });
@@ -73,6 +93,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event) => {
+    retrievalFailed = false;
     // Mutate the supported structured options rather than replacing Pi's prompt.
     // Older Pi versions retain the installed AGENTS.md rules and accounting.
     if (event.systemPromptOptions?.sections) {

@@ -313,6 +313,12 @@ Remove a project-local install with `tokensave uninstall --local`.
 
 ### Pi retrieval preference
 
+Pi search interception requires both search and file-discovery tools to be active
+under recognized direct names. Proxy-only, custom-prefix, or unavailable tools
+keep advisory guidance and native search access. After a direct retrieval error,
+native searches pass for the rest of that run; a new run retries the usual policy.
+This checks declarations and observed errors, not live transport health.
+
 The managed Pi extension adds a conditional indexed-retrieval preference through
 `before_agent_start.systemPromptOptions.sections` on each run. Native tools stay
 available for documentation, configuration, unindexed files, exact source checks,
