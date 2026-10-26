@@ -34,6 +34,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Update the locked `der` dependency from yanked 0.8.0 to compatible 0.8.3, used by the ONNX Runtime build dependency chain (Refs #805).
+
 - Replace the deprecated atomic session-debt update with `try_update`, preserving memory orderings and return behavior (Refs #804).
 
 - Limit large-repository benchmark cleanup to an exclusively reserved scratch directory, preserve unrelated repository changes, and release scratch data during error unwinding.
