@@ -234,5 +234,8 @@ Validation on 2026-10-27:
   avoids an additional compilation. No RSS or long-running runtime workload was
   measured because runtime resource ownership is unchanged.
 
-Implementation remains local and unmerged on `issue-836-canonical-executable`,
-based on `beta`; no follow-up PR has been opened and issue #836 remains open.
+Implementation commit: [db4813c](https://github.com/aovestdipaperino/tokensave/commit/db4813c),
+placed directly on `beta` at the maintainer's request. No follow-up PR was used;
+there is no PR merge commit for this change. The temporary implementation branch
+is removed. Issue #836 holds the completion summary and closure record. This
+change does not publish a release.
