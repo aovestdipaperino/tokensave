@@ -7,6 +7,11 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Changed
+
+- Pi doctor distinguishes static configuration from unverified runtime state, reports possible instruction overrides and missing indexes without writes, and rejects unknown direct-tool exposure settings (Refs #833).
+
+
 ### Added
 
 - Add a pinned Pi real-model routing evaluation runner with matched guidance baseline/enabled sessions, prompt/tool traces, model-backed compaction and explicit human-review requirements; real-model results remain pending an available provider (Refs #832).
