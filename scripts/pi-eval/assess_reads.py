@@ -28,7 +28,8 @@ def assess(evidence, review):
                 raise ValueError("Evidence corpus exceeds 160 sessions")
             summary = summarize(directory)
             runs[directory.name] = {"metadata": summary["metadata"],
-                                    "guidance_verified": summary["guidance_verified"]}
+                                    "guidance_verified": summary["guidance_verified"],
+                                    "context_times": [context.get("wall_time_ms") for context in summary["contexts"]]}
     judgments = {entry["run"]: entry for entry in review.get("runs", [])}
     identities = set()
     coverage = set()
@@ -40,6 +41,8 @@ def assess(evidence, review):
         judgment = judgments.get(name, {})
         if run.get("status") != "completed" or not summary["guidance_verified"]:
             reasons.append(f"{name}: incomplete run or unverified prompt state")
+        if run.get("observed_model") != {"provider": run.get("provider"), "id": run.get("model")}:
+            reasons.append(f"{name}: requested model does not match observed Pi state")
         if judgment.get("correct") is not True or judgment.get("fallback_ok") is not True:
             reasons.append(f"{name}: correctness and native fallback need independent review")
         stats = run.get("session_stats", {})
@@ -47,6 +50,14 @@ def assess(evidence, review):
             reasons.append(f"{name}: no positive host-reported model input usage")
         if run.get("scenario") == "long" and run.get("compacted") is not True:
             reasons.append(f"{name}: compaction not completed")
+        if run.get("scenario") == "long":
+            compactions = [row.get("wall_time_ms") for row in records(evidence / name / "events.jsonl")
+                           if row["event"].get("type") == "response"
+                           and row["event"].get("command") == "compact" and row["event"].get("success") is True
+                           and isinstance(row.get("wall_time_ms"), (int, float))]
+            timestamps = [stamp for stamp in summary["context_times"] if isinstance(stamp, (int, float))]
+            if not compactions or not any(stamp < compactions[-1] for stamp in timestamps) or not any(stamp >= compactions[-1] for stamp in timestamps):
+                reasons.append(f"{name}: provider observations before and after compaction are required")
         coverage.add((run.get("repeat"), run.get("scenario"), run.get("arm")))
     if len(identities) != 1:
         reasons.append("Comparable runs must pin the same provider/model/source/binary/interface")

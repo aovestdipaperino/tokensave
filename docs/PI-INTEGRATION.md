@@ -320,12 +320,12 @@ offline/real-host checks from missing real-model evidence.
 | --- | --- | --- |
 | [#837](https://github.com/aovestdipaperino/tokensave/pull/837), Refs #833 | Diagnostics merged into master at 954e94a; inherited by this branch | Runtime observation remains explicitly unverified by doctor |
 | #832 evaluation | Runner, report, rubric and offline tests implemented; no model results | Isolated pinned Pi source runs, but model discovery returns no models; provider setup, matched paid runs, independent review and adapter coverage remain |
-| #834 conditional routing | Read-only evidence assessment implemented on `test/pi-read-routing-evidence-834`, stacked on #838; unmerged, no interception | [Review schema and conservative decision rules](../scripts/pi-eval/READ-ROUTING.md); real-model evidence and any subsequent enforcement/correctness comparison remain pending |
+| #834 conditional routing | [Draft PR #839](https://github.com/aovestdipaperino/tokensave/pull/839), stacked on #838; read-only assessment, unmerged, no interception | [Review schema and conservative decision rules](../scripts/pi-eval/READ-ROUTING.md); real-model evidence and any subsequent enforcement/correctness comparison remain pending |
 
 No issue is closed, no release is inferred and no model-routing or savings claim
 is made. Evidence collection does not itself establish a need for enforcement.
 
-The #834 assessment has ten synthetic regression tests (15 Python tests with
+The #834 assessment has ten synthetic regression tests (16 Python tests with
 the #832 suite), including each legitimate fallback category, uncertain
 index/range/interface, tool naming, retrieval failure, repeated evidence and
 comparison completeness. These are assessor tests, not handler enforcement or

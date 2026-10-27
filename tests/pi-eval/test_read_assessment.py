@@ -29,6 +29,7 @@ class ReadEvidenceTests(unittest.TestCase):
                                 "pi_version": "1.4.0", "pi_source_commit": "source-pin",
                                 "tokensave_commit": "tokensave-pin", "tokensave_binary_sha256": "binary-hash",
                                 "interface": "builtin-direct", "compacted": True,
+                                "observed_model": {"provider": "synthetic-not-real-evidence", "id": "fixture"},
                                 "session_stats": {"tokens": {"input": 10}}}
                     (directory / "run.json").write_text(json.dumps(metadata))
                     context = {"wall_time_ms": 10, "systemMessages": [{"role": "system", "content": "base",
@@ -46,6 +47,12 @@ class ReadEvidenceTests(unittest.TestCase):
                          "result": {"content": [{"type": "text", "text": "source body"}]}}},
                     ]
                     (directory / "events.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
+                    if scenario == "long":
+                        with (directory / "events.jsonl").open("a") as output:
+                            output.write(json.dumps({"wall_time_ms": 35, "event": {
+                                "type": "response", "command": "compact", "success": True}}) + "\n")
+                        with (directory / "contexts.jsonl").open("a") as output:
+                            output.write(json.dumps({**context, "wall_time_ms": 40}) + "\n")
                     self.review["runs"].append({"run": name, "correct": True, "fallback_ok": True})
                     if arm == "enabled" and scenario == "navigation":
                         self.review["reads"].append({"run": name, "call_id": "native", "path": "keys.py",
@@ -118,7 +125,7 @@ class ReadEvidenceTests(unittest.TestCase):
         self.assertEqual({row["alternative_tool"] for row in result["candidates"]}, {"mcp"})
 
     def test_missing_pair_or_compaction_or_usage_defers_decision(self):
-        for field in ["compacted", "session_stats", "model"]:
+        for field in ["compacted", "session_stats", "model", "observed_model"]:
             with self.subTest(field=field):
                 path = self.root / "0-long-enabled" / "run.json"
                 original = path.read_text()

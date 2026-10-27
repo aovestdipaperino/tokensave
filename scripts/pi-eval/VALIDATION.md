@@ -34,7 +34,7 @@ shared command guidance to beta remains required when integrating this work.
 
 ## Conditional read assessment — Refs #834
 
-The separate assessment branch adds ten synthetic tests, for **15 Python tests
+The separate assessment branch adds ten synthetic tests, for **16 Python tests
 passing** with the original runner suite. The Node observer test still passes.
 Cases cover declared direct/proxy names, all fallback categories, uncertain
 coverage/freshness/range, failed/late/empty retrieval, incomplete comparisons,

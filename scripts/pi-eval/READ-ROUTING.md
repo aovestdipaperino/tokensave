@@ -77,7 +77,8 @@ python3 scripts/pi-eval/assess_reads.py \
 
 The assessor checks complete paired repeats across all eight scenarios,
 consistent host/model/source/binary/interface metadata, positive host-reported
-usage, prompt section observations, completed compaction and independent
+usage, exact observed model identity, prompt section observations before/after
+completed compaction and independent
 correctness/fallback judgments. A read candidate must be from an enabled
 navigation/long-session run, have a successful native result and an earlier
 successful alternative, and identify a tool declared before that read. Earlier
