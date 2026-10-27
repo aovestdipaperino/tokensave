@@ -324,6 +324,24 @@ built-in MCP or `pi-mcp-adapter`; it does not expand search interception or bloc
 updated extension. See [the investigation and validation record](PI-INTEGRATION.md)
 for API details, evidence, and evaluation limitations.
 
+Run `tokensave doctor --agent pi` for read-only diagnostics. It checks global
+and project-local registration/exposure, managed rules and extension freshness,
+and potential `AGENTS.override.md` shadowing in the agent directory and project
+ancestors. Unknown exposure values require review; only `direct` satisfies the
+managed configuration. Missing configuration has scope-specific reinstall advice.
+
+An index-file check uses normal project discovery without opening the database
+or running sync. File presence does not verify schema, freshness or language
+coverage. Run `tokensave init` for an uninitialized project or `tokensave sync`
+to refresh an existing index. Diagnostics never repair configuration or indexing.
+
+Runtime fields are explicitly **UNVERIFIED**: this CLI cannot inspect a running
+Pi session's loaded extension, effective prompt, MCP readiness or declared tools.
+After reinstalling, restart/reload Pi and inspect its actual tools and prompt,
+including the `tokensave_retrieval` section. Adapter tool names and discovery
+depend on the installed adapter; use its declared interface. Static checks alone
+do not establish that a model can call TokenSave.
+
 ### Removing an integration
 
 ```bash
