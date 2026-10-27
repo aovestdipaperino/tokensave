@@ -312,7 +312,7 @@ Refs [#832](https://github.com/aovestdipaperino/tokensave/issues/832) and
 The [runner and review protocol](../scripts/pi-eval/README.md) implement matched
 baseline/enabled sessions, controlled failures, real model-backed compaction,
 provider-bound system/tool observations and host-reported usage capture.
-The implementation is in [draft PR #838](https://github.com/aovestdipaperino/tokensave/pull/838), unmerged; the
+The implementation is in [draft PR #838](https://github.com/aovestdipaperino/tokensave/pull/838), unmerged; the separate [draft assessment PR #839](https://github.com/aovestdipaperino/tokensave/pull/839) depends on it; the
 [validation record](../scripts/pi-eval/VALIDATION.md) distinguishes passing
 offline/real-host checks from missing real-model evidence.
 

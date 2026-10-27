@@ -11,7 +11,7 @@ Refs #832. No real-model results are available from this environment.
 | Model discovery | `get_available_models` returns `[]` for both source and published host in isolated profiles inheriting the process environment |
 | Local endpoints | No available model at loopback Ollama 11434, LM Studio 1234 or OpenAI-compatible 8080; repeated outside the network sandbox |
 | Credentials | No credential file inspected, printed or committed; no model call made |
-| Python offline tests | Five passed: settlement ordering, strict LF framing with U+2028 content, provider error handling, deadline/reaping, tool-delta replay and unknown state |
+| Python offline tests | Six passed (including exact runtime model identity): settlement ordering, strict LF framing with U+2028 content, provider error handling, deadline/reaping, tool-delta replay and unknown state |
 | Node observer test | One passed; observation leaves messages unchanged |
 | Real Pi lifecycle harness | Five tests in two files passed against the isolated source, including observer/provider state equivalence and the four existing lifecycle/compaction cases |
 | Diff checks | `git diff --check` passed |
