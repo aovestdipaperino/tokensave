@@ -31,3 +31,19 @@ are documented in docs/PI-INTEGRATION.md. No Cargo checks were repeated for
 these standalone scripts. Upstream master guidance was compared before editing
 AGENTS.md; the only addition documents the new commands. Synchronization of that
 shared command guidance to beta remains required when integrating this work.
+
+## Conditional read assessment — Refs #834
+
+The separate assessment branch adds ten synthetic tests, for **15 Python tests
+passing** with the original runner suite. The Node observer test still passes.
+Cases cover declared direct/proxy names, all fallback categories, uncertain
+coverage/freshness/range, failed/late/empty retrieval, incomplete comparisons,
+unreviewed outcomes and repeated call IDs. Diff checks pass. These test the
+assessor, not an enforcing handler or a real-model workload.
+
+`READ-ROUTING-DECISION.json` records the actual assessor result for an empty
+evidence directory and the unfilled review template: **defer**, no candidates,
+`enforcement_enabled: false`. It is an explicit absence-of-evidence decision,
+not a model trace, independent review or measurement. No production extension
+code was changed for #834. Real-model results, any justified handler design,
+runtime fallback tests and before/after impact measurements remain outstanding.

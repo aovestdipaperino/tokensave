@@ -149,6 +149,8 @@ an empty model list; conventional local model endpoints were unavailable.
 No credential file was inspected. Adapter direct/proxy/discovery and
 independently reviewed real-model correctness are not yet validated. Do not
 claim #832 complete or introduce #834 enforcement from these offline tests.
+For the separate read-only #834 assessment and its independent review format,
+see [READ-ROUTING.md](READ-ROUTING.md). That report never enables interception.
 
 One Pi process group runs at a time. Each command has a deadline, each session
 has a 128-assistant-turn bound, RPC data has a 4 MiB record / 256 MiB session

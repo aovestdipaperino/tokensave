@@ -14,6 +14,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- Add a read-only assessment of independently reviewed Pi native-read traces, preserving verification/recovery and deferring enforcement without real-model evidence (Refs #834).
+
 - Add a pinned Pi real-model routing evaluation runner with matched guidance baseline/enabled sessions, prompt/tool traces, model-backed compaction and explicit human-review requirements; real-model results remain pending an available provider (Refs #832).
 
 ### Documentation

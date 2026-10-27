@@ -48,7 +48,8 @@ def summarize(directory):
                 tools.pop(tool["name"], None)
             for tool in message.get("toolsAdded", []):
                 tools[tool["name"]] = tool
-        contexts.append({"sections": sections, "content": "\n\n".join(text),
+        contexts.append({"wall_time_ms": row.get("wall_time_ms"),
+                         "sections": sections, "content": "\n\n".join(text),
                          "tools": list(tools.values())})
     expected_guidance = run.get("arm") == "enabled"
     guidance_verified = bool(contexts) and all(
