@@ -264,16 +264,16 @@ synchronization to beta when merged; beta is not edited by this series.
 
 ## Open-issue implementation audit (2026-10-27)
 
-GitHub PR state was checked directly. Issues remain open; no issue closure or
-release publication is implied.
+GitHub PR state was checked directly. Updated closure dispositions are recorded
+in the follow-up section below; no release publication is inferred.
 
 | Issues / PRs | Scope and verified status | Validation / dependencies / remaining work |
 | --- | --- | --- |
 | [#792](https://github.com/aovestdipaperino/tokensave/issues/792), [#793](https://github.com/aovestdipaperino/tokensave/issues/793), [#794](https://github.com/aovestdipaperino/tokensave/issues/794) / [#795](https://github.com/aovestdipaperino/tokensave/pull/795) | Exposure, managed extension, accounting merged into master at [7902709](https://github.com/aovestdipaperino/tokensave/commit/7902709e97cddf9fed72802bb19c224482ba52a3). | Existing implementation retained; original PR validation is linked above. Open issue text claiming nothing merged is outdated. |
 | [#806](https://github.com/aovestdipaperino/tokensave/pull/806) | Structured prompt guidance merged into master at [4aff0e4](https://github.com/aovestdipaperino/tokensave/commit/4aff0e4fd1566e5120ecbd9f437938a9e441e9c4). | Deterministic guidance tests; real-model routing remains unmeasured. |
 | [#807](https://github.com/aovestdipaperino/tokensave/pull/807) | Offline lifecycle/compaction tests merged into master at [f82ce87](https://github.com/aovestdipaperino/tokensave/commit/f82ce87c73861f5e4c1f898965675c19da7d4a46). | Real Pi harness with faux provider; does not satisfy real-model evaluation. |
-| [#833](https://github.com/aovestdipaperino/tokensave/issues/833) | [PR #837](https://github.com/aovestdipaperino/tokensave/pull/837), open against master (unmerged): separate scope reporting, unknown-exposure rejection, override warnings, metadata-only index discovery and explicit runtime observation limits. | Regression fixtures cover conflicts, ancestor/global overrides and no-write index checks; existing fixtures cover healthy/missing/stale installs. No live-session inspection mechanism added; runtime remains unverified. |
-| [#832](https://github.com/aovestdipaperino/tokensave/issues/832) | Real-model evaluation outstanding. | Pi is not on PATH and the local checkout has no test dependencies. Existing offline runner is not real-model evidence. Requires prepared pinned Pi/model/adapter environment and repeated matched sessions using the protocol above. No token/cost/latency or routing result claimed. |
+| [#833](https://github.com/aovestdipaperino/tokensave/issues/833) | [PR #837](https://github.com/aovestdipaperino/tokensave/pull/837), merged into master at [954e94a](https://github.com/aovestdipaperino/tokensave/commit/954e94a0335a18f8d36e648a7f250fda036ea3ab): separate scope reporting, unknown-exposure rejection, override warnings, metadata-only index discovery and explicit runtime observation limits. | Regression fixtures cover conflicts, ancestor/global overrides and no-write index checks; existing fixtures cover healthy/missing/stale installs. No live-session inspection mechanism added; runtime remains unverified. |
+| [#832](https://github.com/aovestdipaperino/tokensave/issues/832) | Issue and PR #838 closed as not planned without merging. | Proposed runner/tests are excluded from #839; no real-model result was obtained. |
 | [#834](https://github.com/aovestdipaperino/tokensave/issues/834) | Conditional read interception not implemented. | Explicitly depends on #832 demonstrating unnecessary reads. Native reads remain available; implementing enforcement without evidence would violate the issue's prerequisite. |
 
 The separate Oh My Pi parity issue #822 concerns another integration and is not
@@ -286,8 +286,7 @@ configuration strings are released at the end of each check. Tests exercise
 repeated diagnostics and verify managed/user file bytes and index artifacts.
 Long-running RSS/CPU measurements and live Pi/adapter checks were not performed.
 Build/test commands and architecture guidance are unchanged; no AGENTS.md update
-or README change is needed. Beta synchronization is outstanding for these
-unmerged source and user-guide changes.
+or README change is needed. Beta synchronization is outstanding for the diagnostics source and user-guide changes.
 
 Validation for the diagnostic change:
 
@@ -305,3 +304,29 @@ Validation for the diagnostic change:
 - Upstream master AGENTS.md was fetched and matches the local file exactly.
 - `cargo clippy --workspace --all-targets --locked`: passed with seven warnings
   in unchanged branch/config/server/integration-test code; none in changed files.
+
+## Follow-up disposition (2026-10-27)
+
+GitHub states were verified before issue closure. This record supersedes the
+historical planning notes above.
+
+| Work | Actual scope / status | Validation and remaining work |
+| --- | --- | --- |
+| [#833](https://github.com/aovestdipaperino/tokensave/issues/833) / [#837](https://github.com/aovestdipaperino/tokensave/pull/837) | Diagnostics merged into master at [954e94a](https://github.com/aovestdipaperino/tokensave/commit/954e94a0335a18f8d36e648a7f250fda036ea3ab); issue closed with maintainer permission | 34 Pi tests, formatting and Clippy passed; two documented workspace/environment failures; runtime observation remains unverified |
+| [#832](https://github.com/aovestdipaperino/tokensave/issues/832) / [#838](https://github.com/aovestdipaperino/tokensave/pull/838) | Issue closed as not planned; PR closed without merging | Proposed real-model runner and its tests are excluded from #839. No real-model result or delivery to master is claimed |
+| [#834](https://github.com/aovestdipaperino/tokensave/issues/834) / [#839](https://github.com/aovestdipaperino/tokensave/pull/839) | Standalone read-only evidence assessment prepared for master; no dependency on merging #838 | Ten assessment tests cover the fallback matrix, interface names, provenance and repeated evidence. Real-model evidence is absent, so the recorded decision is defer and interception stays disabled |
+
+The [assessment protocol](../scripts/pi-eval/READ-ROUTING.md) documents the
+retained scope and input format; [validation](../scripts/pi-eval/VALIDATION.md)
+records checks and limits. The maintainer requested merging the assessment and
+closing its issue; that disposition does not establish that native-read
+interception was implemented or needed. The final merge commit and closure
+reason are recorded on the issue after GitHub confirms the result. No release
+publication is inferred.
+
+The assessor starts no subprocess or background work, uses bounded trace
+readers and processes annotations one run at a time without retaining tool-result
+bodies. No long-running RSS/CPU or real-model evaluation was performed. Shared
+command guidance is verified against master; beta command guidance must follow
+when the assessment source is synchronized there. README installation content
+and SQL are unchanged.

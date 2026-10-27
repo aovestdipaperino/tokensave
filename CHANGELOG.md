@@ -11,6 +11,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 - Pi doctor distinguishes static configuration from unverified runtime state, reports possible instruction overrides and missing indexes without writes, and rejects unknown direct-tool exposure settings (Refs #833).
 
+### Added
+
+- Add a read-only assessment of independently reviewed Pi native-read traces, preserving verification/recovery and deferring enforcement without real-model evidence (Refs #834).
 
 ### Documentation
 

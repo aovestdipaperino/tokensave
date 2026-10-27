@@ -140,6 +140,7 @@ portable string formats, and documented path-syntax test fixtures.
 ### Non-standard test/bench harnesses
 
 - Pi real-session regressions: `node scripts/pi-tests/run.mjs /path/to/prepared/pi`; see `scripts/pi-tests/README.md` for the pinned Pi prerequisites and offline scope.
+- Conditional Pi read-routing assessment: `python3 scripts/pi-eval/assess_reads.py --help`; see `scripts/pi-eval/READ-ROUTING.md`. This read-only assessment never enables interception; real-model traces and independent review are prerequisites for any later enforcement.
 
 - Criterion bench against large real repos: `TOKENSAVE_BENCH_REPOS_DIR=~/tokensave-bench-cache cargo bench --bench large_repos`. Without `TOKENSAVE_BENCH_REPOS_DIR` it registers zero benchmarks. Filter with `cargo bench --bench large_repos -- 'scipy/tokensave_search'`. Repos and pinned refs are in `benches/repos.rs`; delete the `<repo>/.bench-ref` marker to force a re-fetch.
 - MCP test-matrix probe: `cargo build --release --bin tokensave && python3 scripts/mcp_probe/probe.py && python3 scripts/mcp_probe/build_matrix.py > matrix.md`. `scripts/mcp_probe/repos.toml` lists target repos (override with `TOKENSAVE_PROBE_REPOS`).
