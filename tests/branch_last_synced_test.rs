@@ -32,7 +32,7 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 fn last_synced_at(root: &Path, branch: &str) -> String {
-    branch_meta::load_branch_meta(&root.join(".tokensave"))
+    branch_meta::load_branch_meta(&tokensave::config::get_tokensave_dir(root))
         .expect("branch metadata")
         .branches
         .get(branch)
@@ -44,7 +44,7 @@ fn last_synced_at(root: &Path, branch: &str) -> String {
 /// Backdates the stored timestamp so the assertion is about *advancing*
 /// rather than about wall-clock passing between two calls in the same second.
 fn backdate(root: &Path, branch: &str, to: &str) {
-    let dir = root.join(".tokensave");
+    let dir = tokensave::config::get_tokensave_dir(root);
     let mut meta = branch_meta::load_branch_meta(&dir).expect("branch metadata");
     meta.branches
         .get_mut(branch)
@@ -136,9 +136,13 @@ async fn a_sync_advances_only_the_serving_branch() {
 
     git(root, &["checkout", "-b", "feature"]);
     assert!(
-        tokensave::branch::track_branch_copy(root, &root.join(".tokensave"), "feature")
-            .await
-            .unwrap(),
+        tokensave::branch::track_branch_copy(
+            root,
+            &tokensave::config::get_tokensave_dir(root),
+            "feature"
+        )
+        .await
+        .unwrap(),
         "precondition: feature must become tracked"
     );
 

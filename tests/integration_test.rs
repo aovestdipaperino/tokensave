@@ -1206,7 +1206,7 @@ async fn test_concurrent_sync_is_rejected() {
     let cg = TokenSave::init(project).await.unwrap();
 
     // Simulate an in-progress sync by placing a lockfile with our own PID.
-    let lock_path = project.join(".tokensave").join("sync.lock");
+    let lock_path = tokensave::config::get_tokensave_dir(project).join("sync.lock");
     fs::write(&lock_path, format!("{}", std::process::id())).unwrap();
 
     let err = cg.sync().await.unwrap_err();

@@ -28,6 +28,12 @@
 
 ---
 
+> **Beta available:** Try the new, improved queries on the [beta branch](https://github.com/aovestdipaperino/tokensave/tree/beta), including optimized search ranking, graph analysis, and indexing cleanup. See the [beta changelog](https://github.com/aovestdipaperino/tokensave/blob/beta/CHANGELOG.md) for details.
+>
+> Install from source: `cargo install --git https://github.com/aovestdipaperino/tokensave.git --branch beta --locked --force`
+>
+> For builds with isolated beta storage, follow the [database compatibility guide](docs/DATABASE-COMPATIBILITY.md) when initializing beta or returning to stable. Existing shared databases are preserved; beta uses a fresh index under `.tokensave/beta/`.
+
 ## Table of Contents
 
 - [Why tokensave?](#why-tokensave)
@@ -132,7 +138,7 @@ cargo build --release --locked
 
 The binary is `target/release/tokensave` (`tokensave.exe` on Windows); put it on your `PATH`.
 
-The beta includes database schema migrations that trigger a full reindex on first use, so try it on a disposable checkout first. To go back to stable, reinstall with one of the commands on the [`master` README](https://github.com/aovestdipaperino/tokensave#1-install).
+The beta includes database schema migrations that trigger a full reindex on first use, so try it on a disposable checkout first. Builds with isolated storage require a fresh beta initialization under `.tokensave/beta/`; see the [database compatibility guide](docs/DATABASE-COMPATIBILITY.md) before transitioning existing indexes. To go back to stable, reinstall with one of the commands on the [`master` README](https://github.com/aovestdipaperino/tokensave#1-install).
 
 <details>
 <summary>Installation alternatives and language tiers</summary>
@@ -194,7 +200,9 @@ Setup registers the MCP server and the agent's integration. It also offers globa
 <details>
 <summary>Multiple agents, project-local setup, and integration details</summary>
 
-Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, and a tokensave-managed default agent with permissive built-in/tokensave tool approval, delegation guardrail hooks, and post-write sync; user-managed Kiro agents are preserved.
+The Pi extension and Pi session-accounting details below describe stable builds; beta currently retains its earlier Pi integration.
+
+Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Pi gets `"exposure": "direct"` on its MCP entry -- Pi otherwise defaults a server to `codemode`, which declares none of its tools to the model -- prompt rules in `AGENTS.md`, and a managed TypeScript extension that supplies the same guardrail, savings reset, and session receipt, because Pi has no shell hooks. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, and a tokensave-managed default agent with permissive built-in/tokensave tool approval, delegation guardrail hooks, and post-write sync; user-managed Kiro agents are preserved.
 
 Global OMP installs target the profile reported by bare `omp config path`, writing `<resolved-agent-dir>/mcp.json` and `<resolved-agent-dir>/rules/tokensave.md`. Export `OMP_PROFILE` or OMP's compatible `PI_PROFILE` when installing into a named profile; OMP's resolver also honors `PI_CONFIG_DIR` and `PI_CODING_AGENT_DIR`. Tokensave trusts that native resolver rather than duplicating OMP's profile logic. Tokensave installs MCP and advisory rules for OMP; it does not install OMP hook enforcement.
 
@@ -833,9 +841,9 @@ tokensave cost --export json       # JSON export to stdout
 tokensave cost --export csv        # CSV export to stdout
 ```
 
-Parses Claude Code session transcripts (`~/.claude/projects/**/*.jsonl`), classifies each API turn into one of 13 task categories, computes dollar cost using model pricing, and stores results in `~/.tokensave/global.db` for fast aggregate queries. Pricing is refreshed from [LiteLLM](https://github.com/BerriAI/litellm) every 24 hours and falls back to an embedded table when offline.
+Parses Claude Code session transcripts (`~/.claude/projects/**/*.jsonl`) and prices each API turn with model pricing, reads Pi sessions (`~/.pi/agent/sessions/**/*.jsonl`) using the cost Pi already reports per message, and ingests Factory Droid session settings in credits. Every turn is classified into one of 13 task categories and stored in `~/.tokensave/global.db` for fast aggregate queries. Pricing is refreshed from [LiteLLM](https://github.com/BerriAI/litellm) every 24 hours and falls back to an embedded table when offline.
 
-The `tokensave status` header includes a cost row showing today's spend, 7-day total, and efficiency ratio (tokens saved / total tokens). The `tokensave monitor` TUI shows a live cost panel alongside the savings feed. At the end of each Claude Code session, the `hook_stop` handler prints a one-line receipt to the terminal.
+The `tokensave status` header includes a cost row showing today's spend, 7-day total, and efficiency ratio (tokens saved / total tokens). The `tokensave monitor` TUI shows a live cost panel alongside the savings feed. At the end of each Claude Code session, the `hook_stop` handler prints a one-line receipt to the terminal; in Pi, the installed extension does the same through its `agent_settled` handler.
 
 Task classification categories: Coding, Debugging, Feature Dev, Refactoring, Testing, Exploration, Planning, Delegation, Git Ops, Build/Deploy, Brainstorming, Conversation, General. Classification is deterministic (pattern matching on tool names and Bash commands), requires no LLM calls, and is adapted from [AgentSeal/codeburn](https://github.com/AgentSeal/codeburn).
 
@@ -1214,7 +1222,7 @@ tokensave works at the symbol level: functions, structs, fields, call edges, typ
 
 ### Broadest agent support
 
-More than a dozen AI coding agent integrations with per-agent native configuration formats. No other tool covers as many agents with as deep an integration. Claude Code gets hooks, prompt rules, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, a managed agent with permissive built-in/tokensave tool approval, and hooks for delegation guardrails plus post-write sync. Other agents get MCP server registration in their native config format.
+More than a dozen AI coding agent integrations with per-agent native configuration formats. No other tool covers as many agents with as deep an integration. Claude Code gets hooks, prompt rules, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, a managed agent with permissive built-in/tokensave tool approval, and hooks for delegation guardrails plus post-write sync. Pi gets MCP registration with the tool exposure its rules depend on, plus a managed extension for the guardrail, savings reset, and session receipt. Other agents get MCP server registration in their native config format.
 
 ### Multi-branch indexing
 

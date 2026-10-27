@@ -46,9 +46,9 @@ pub struct GlobalDb {
     _db: LibsqlDatabase,
 }
 
-/// Returns the path to the global database: `~/.tokensave/global.db`.
+/// Returns the global database in the active channel directory.
 pub fn global_db_path() -> Option<PathBuf> {
-    crate::agents::home_dir().map(|h| h.join(".tokensave").join("global.db"))
+    crate::agents::home_dir().map(|h| crate::config::get_tokensave_dir(&h).join("global.db"))
 }
 
 /// Resolves a project directory to the canonical string used as its global-DB key.
@@ -214,8 +214,17 @@ impl GlobalDb {
             std::fs::create_dir_all(parent).ok()?;
         }
 
+        if let Err(error) = crate::db::compatibility::preflight(db_path, 0).await {
+            eprintln!("[tokensave] global database unavailable: {error}");
+            return None;
+        }
         let db = Builder::new_local(db_path).build().await.ok()?;
         let conn = Connection::new(db.connect().ok()?, "global");
+        if let Err(error) = crate::db::compatibility::check(&conn, 0).await {
+            eprintln!("[tokensave] global database unavailable: {error}");
+            return None;
+        }
+        crate::db::compatibility::mark_empty(&conn).await.ok()?;
 
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;

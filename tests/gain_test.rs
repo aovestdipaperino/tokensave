@@ -2,7 +2,7 @@ use tempfile::TempDir;
 use tokensave::global_db::GlobalDb;
 
 async fn open_isolated_db(tmp: &TempDir) -> GlobalDb {
-    let db_path = tmp.path().join(".tokensave").join("global.db");
+    let db_path = tokensave::config::get_tokensave_dir(tmp.path()).join("global.db");
     GlobalDb::open_at(&db_path).await.expect("global db open")
 }
 
@@ -58,7 +58,7 @@ async fn savings_history_buckets_by_day() {
 #[tokio::test]
 async fn savings_compound_index_upgrades_existing_ledger_and_preserves_boundaries() {
     let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join(".tokensave").join("global.db");
+    let path = tokensave::config::get_tokensave_dir(tmp.path()).join("global.db");
     {
         let db = open_isolated_db(&tmp).await;
         for (project, before, after, ts) in [

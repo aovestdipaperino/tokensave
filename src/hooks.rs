@@ -407,7 +407,7 @@ fn any_symbol_indexed(env: &HookEnv, symbols: &[String]) -> bool {
     if symbols.is_empty() {
         return true;
     }
-    let db_path = root.join(".tokensave").join("tokensave.db");
+    let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
     let placeholders = vec!["?"; symbols.len()].join(",");
     let sql = format!("SELECT 1 FROM nodes WHERE LOWER(name) IN ({placeholders}) LIMIT 1");
     let params: Vec<libsql::Value> = symbols
