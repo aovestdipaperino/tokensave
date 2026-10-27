@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve database creation channel, reject beta-origin and newer-schema databases before writes or recovery, and isolate beta project/global indexes under `.tokensave/beta` without relabeling legacy databases (Refs #835).
+
 ### Changed
 
 - Pi doctor distinguishes static configuration from unverified runtime state, reports possible instruction overrides and missing indexes without writes, and rejects unknown direct-tool exposure settings (Refs #833).

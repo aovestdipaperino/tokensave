@@ -1987,3 +1987,10 @@ binary when you want the configured path to be durable.
 ### Getting help
 
 If you run into something not covered here, check the [GitHub repository](https://github.com/aovestdipaperino/tokensave) or open an issue.
+
+## Database channel compatibility
+
+Stable and beta use separate project state and global databases. See the
+[database compatibility guide](DATABASE-COMPATIBILITY.md) for creation-origin
+markers, legacy upgrades, beta initialization, recovery refusals, and returning
+to stable without deleting beta data.

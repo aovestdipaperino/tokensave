@@ -53,6 +53,7 @@ mod csharp_interfaces_643_test;
 mod csharp_receiver_types_test;
 mod cuda_extraction_test;
 mod dart_extraction_test;
+mod database_channel_test;
 mod db_query_test;
 mod db_test;
 mod dead_code_call_attribution_test;

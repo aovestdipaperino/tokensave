@@ -10,9 +10,10 @@ async fn test_reranking_demotes_fixture_nodes() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
-        .await
-        .unwrap();
+    let (db, _) =
+        Database::initialize(&tokensave::config::get_tokensave_dir(project).join("tokensave.db"))
+            .await
+            .unwrap();
 
     // Fixture node: enum variant in tests/fixtures/
     let fixture_node = Node {
@@ -176,9 +177,10 @@ async fn test_build_context_with_db() {
     .unwrap();
 
     // Init DB and insert a node
-    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
-        .await
-        .unwrap();
+    let (db, _) =
+        Database::initialize(&tokensave::config::get_tokensave_dir(project).join("tokensave.db"))
+            .await
+            .unwrap();
     let node = Node {
         id: "function:test123".to_string(),
         kind: NodeKind::Function,
@@ -237,9 +239,10 @@ async fn test_get_code_reads_source_file() {
     )
     .unwrap();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
-        .await
-        .unwrap();
+    let (db, _) =
+        Database::initialize(&tokensave::config::get_tokensave_dir(project).join("tokensave.db"))
+            .await
+            .unwrap();
 
     let node = Node {
         id: "function:main123".to_string(),
@@ -289,9 +292,10 @@ async fn test_get_code_returns_none_for_missing_file() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
-        .await
-        .unwrap();
+    let (db, _) =
+        Database::initialize(&tokensave::config::get_tokensave_dir(project).join("tokensave.db"))
+            .await
+            .unwrap();
 
     let node = Node {
         id: "function:missing".to_string(),
@@ -338,9 +342,10 @@ async fn test_find_relevant_context() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
-        .await
-        .unwrap();
+    let (db, _) =
+        Database::initialize(&tokensave::config::get_tokensave_dir(project).join("tokensave.db"))
+            .await
+            .unwrap();
     let node = Node {
         id: "function:ctx_test".to_string(),
         kind: NodeKind::Function,
@@ -390,9 +395,10 @@ async fn test_exclude_node_ids_deduplication() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
-        .await
-        .unwrap();
+    let (db, _) =
+        Database::initialize(&tokensave::config::get_tokensave_dir(project).join("tokensave.db"))
+            .await
+            .unwrap();
 
     for (id, name) in [("fn:first", "compute"), ("fn:second", "compute_batch")] {
         db.insert_node(&Node {
@@ -460,9 +466,10 @@ async fn test_exact_name_match_wins_max_merge() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
-        .await
-        .unwrap();
+    let (db, _) =
+        Database::initialize(&tokensave::config::get_tokensave_dir(project).join("tokensave.db"))
+            .await
+            .unwrap();
 
     // Exact-match target: a low-boost node (enum variant, private). Without the
     // exact-match score it would rank dead last after structural re-ranking.
@@ -582,9 +589,10 @@ async fn test_query_ignore_filters_context_entry_points() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
-        .await
-        .unwrap();
+    let (db, _) =
+        Database::initialize(&tokensave::config::get_tokensave_dir(project).join("tokensave.db"))
+            .await
+            .unwrap();
 
     // Two nodes with the same searchable name in different directories.
     for (id, file) in [
@@ -633,7 +641,7 @@ async fn test_query_ignore_filters_context_entry_points() {
     assert!(ctx.entry_points.iter().any(|n| n.id == "fn:gen"));
 
     // With a matching queryignore pattern, the generated node is filtered out.
-    let ts_dir = project.join(".tokensave");
+    let ts_dir = tokensave::config::get_tokensave_dir(project);
     std::fs::write(ts_dir.join("queryignore"), "generated\n").unwrap();
     let query_ignore = load_query_ignore(project);
     assert!(!query_ignore.is_empty());
@@ -675,9 +683,10 @@ async fn test_merge_adjacent_code_blocks() {
     )
     .unwrap();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
-        .await
-        .unwrap();
+    let (db, _) =
+        Database::initialize(&tokensave::config::get_tokensave_dir(project).join("tokensave.db"))
+            .await
+            .unwrap();
 
     // Two adjacent functions in same file
     db.insert_node(&Node {
@@ -785,9 +794,10 @@ async fn test_entry_points_capped_to_search_limit() {
     let project = dir.path();
     fs::create_dir_all(project.join("src")).unwrap();
 
-    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
-        .await
-        .unwrap();
+    let (db, _) =
+        Database::initialize(&tokensave::config::get_tokensave_dir(project).join("tokensave.db"))
+            .await
+            .unwrap();
 
     // Insert many distinct nodes, each matching a distinct keyword. Each
     // per-keyword FTS search surfaces its node, so the candidate pool greatly
@@ -1243,9 +1253,10 @@ async fn test_context_surfaces_asset_generator_over_generic_ui_decoys() {
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    let (db, _) = Database::initialize(&project.join(".tokensave").join("tokensave.db"))
-        .await
-        .unwrap();
+    let (db, _) =
+        Database::initialize(&tokensave::config::get_tokensave_dir(project).join("tokensave.db"))
+            .await
+            .unwrap();
 
     // Unrelated UI screens sharing the query's generic vocabulary. Every
     // conceptual term the generator can match is also matched by at least

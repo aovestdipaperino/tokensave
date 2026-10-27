@@ -78,7 +78,10 @@ pub async fn load_registered_projects() -> Vec<RegisteredProject> {
 /// Probes one registered path: `None` once its index is gone from disk.
 fn probe_registered_project(path: String) -> Option<RegisteredProject> {
     let path = std::path::PathBuf::from(path);
-    if !path.join(".tokensave").join("tokensave.db").exists() {
+    if !tokensave::config::get_tokensave_dir(&path)
+        .join("tokensave.db")
+        .exists()
+    {
         return None;
     }
     let canonical = path.canonicalize().ok();
@@ -547,8 +550,12 @@ mod tests {
 
     /// A project directory with an index file, as `probe` sees one.
     fn indexed(dir: &std::path::Path) -> String {
-        std::fs::create_dir_all(dir.join(".tokensave")).unwrap();
-        std::fs::write(dir.join(".tokensave").join("tokensave.db"), b"").unwrap();
+        std::fs::create_dir_all(tokensave::config::get_tokensave_dir(dir)).unwrap();
+        std::fs::write(
+            tokensave::config::get_tokensave_dir(dir).join("tokensave.db"),
+            b"",
+        )
+        .unwrap();
         dir.to_string_lossy().into_owned()
     }
 

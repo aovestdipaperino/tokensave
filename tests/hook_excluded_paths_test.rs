@@ -47,8 +47,13 @@ fn env_rooted_at(root: &Path) -> HookEnv {
 fn project_with_excluded_dirs() -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().join("project");
-    std::fs::create_dir_all(root.join(".tokensave")).expect("create .tokensave");
-    std::fs::write(root.join(".tokensave").join("tokensave.db"), b"").expect("write db");
+    std::fs::create_dir_all(tokensave::config::get_tokensave_dir(&root))
+        .expect("create .tokensave");
+    std::fs::write(
+        tokensave::config::get_tokensave_dir(&root).join("tokensave.db"),
+        b"",
+    )
+    .expect("write db");
     write_config(
         &root,
         &[
@@ -159,8 +164,13 @@ fn an_absolute_spelling_of_an_excluded_path_is_also_allowed() {
 fn without_an_exclude_glob_the_same_path_is_still_redirected() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().join("project");
-    std::fs::create_dir_all(root.join(".tokensave")).expect("create .tokensave");
-    std::fs::write(root.join(".tokensave").join("tokensave.db"), b"").expect("write db");
+    std::fs::create_dir_all(tokensave::config::get_tokensave_dir(&root))
+        .expect("create .tokensave");
+    std::fs::write(
+        tokensave::config::get_tokensave_dir(&root).join("tokensave.db"),
+        b"",
+    )
+    .expect("write db");
     write_config(&root, &[]);
     let pkg = root.join("node_modules").join("some-package").join("lib");
     std::fs::create_dir_all(&pkg).expect("create node_modules");
