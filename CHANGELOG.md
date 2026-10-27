@@ -2186,3 +2186,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [7.14.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.14.1
 [7.15.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.15.0
 [7.16.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.16.0
+[7.17.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.17.0
