@@ -1,49 +1,28 @@
-# Evaluation preparation record — 2026-10-27
+# Standalone assessment validation — 2026-10-27
 
-Refs #832. No real-model results are available from this environment.
+Refs #834 / PR #839. The proposed runner/tests in #832 / #838 were closed as not
+planned without merging and removed from this PR before targeting master.
+The existing offline Pi lifecycle harness is unchanged.
 
 | Check | Result |
 | --- | --- |
-| Original Pi checkout | Commit `d5b3de22d0e24a3e9c38a9410d3329b099717283`, unchanged |
-| Isolated source | Local clone under `/tmp`, same commit, dependencies hydrated with `npm ci --ignore-scripts`; matching published 1.4.0 provider data supplied |
-| Source runtime | Temporary native-TypeScript Node 22.22.1; Pi source reports version 1.4.0 |
-| Published host | Temporary `@earendil-works/pi-coding-agent@1.4.0`, installed with scripts disabled, reports 1.4.0 |
-| Model discovery | `get_available_models` returns `[]` for both source and published host in isolated profiles inheriting the process environment |
-| Local endpoints | No available model at loopback Ollama 11434, LM Studio 1234 or OpenAI-compatible 8080; repeated outside the network sandbox |
-| Credentials | No credential file inspected, printed or committed; no model call made |
-| Python offline tests | Six passed (including exact runtime model identity): settlement ordering, strict LF framing with U+2028 content, provider error handling, deadline/reaping, tool-delta replay and unknown state |
-| Node observer test | One passed; observation leaves messages unchanged |
-| Real Pi lifecycle harness | Five tests in two files passed against the isolated source, including observer/provider state equivalence and the four existing lifecycle/compaction cases |
-| Diff checks | `git diff --check` passed |
+| Assessment regressions | Ten synthetic tests: fallback categories, direct/proxy names, uncertain coverage/freshness/range, failed/late/empty retrieval, model/compaction provenance, incomplete comparisons, duplicate calls and independent review |
+| Empty-evidence decision | `READ-ROUTING-DECISION.json`: defer, no candidates, enforcement disabled |
+| Runtime interception | No production extension or tool interception changed |
+| Real-model evidence | None; previously inspected isolated Pi profiles discovered no available model; credential files were not inspected |
+| Resource scope | Read-only, bounded trace readers, at most 160 runs and 4 MiB review input; temporary state for one annotated run, no subprocess/background work |
+| Limits | No actual model-routing, adapter, paid-workload or long-running RSS/CPU measurements; synthetic results are assessor tests only |
 
-The source-host checks use its supported RPC and extension interfaces. No Pi core
-code was changed. This record deliberately distinguishes real host execution
-with a faux provider from a real-model evaluation. The former passed; the latter
-is blocked by the absence of an available model. Independent correctness review,
-matched real-model usage/cost/latency, post-compaction model routing and adapter
-behavior remain unmeasured. No read enforcement or savings claim is justified
-by these results.
+Commands for the final scope:
 
-Resource checks cover fixture cleanup and child reaping on a command deadline;
-the matched paid workload and long-running memory/CPU stability were not run.
-Rust source and SQL are unchanged; the existing workspace environment failures
-are documented in docs/PI-INTEGRATION.md. No Cargo checks were repeated for
-these standalone scripts. Upstream master guidance was compared before editing
-AGENTS.md; the only addition documents the new commands. Synchronization of that
-shared command guidance to beta remains required when integrating this work.
+```sh
+python3 -m unittest discover -s tests/pi-eval -p 'test_*.py' -v
+python3 scripts/pi-eval/assess_reads.py --help
+git diff --check
+```
 
-## Conditional read assessment — Refs #834
-
-The separate assessment branch adds ten synthetic tests, for **16 Python tests
-passing** with the original runner suite. The Node observer test still passes.
-Cases cover declared direct/proxy names, all fallback categories, uncertain
-coverage/freshness/range, failed/late/empty retrieval, incomplete comparisons,
-unreviewed outcomes and repeated call IDs. Diff checks pass. These test the
-assessor, not an enforcing handler or a real-model workload.
-
-`READ-ROUTING-DECISION.json` records the actual assessor result for an empty
-evidence directory and the unfilled review template: **defer**, no candidates,
-`enforcement_enabled: false`. It is an explicit absence-of-evidence decision,
-not a model trace, independent review or measurement. No production extension
-code was changed for #834. Real-model results, any justified handler design,
-runtime fallback tests and before/after impact measurements remain outstanding.
+Rust and SQL are unchanged by the assessment. No Cargo checks were repeated for
+these standalone scripts. Prior diagnostics validation and workspace/environment
+failures are recorded in docs/PI-INTEGRATION.md. Upstream master AGENTS.md was
+compared before merge preparation; it gains only the retained assessment command.
+Beta command guidance must follow when this source is synchronized there.

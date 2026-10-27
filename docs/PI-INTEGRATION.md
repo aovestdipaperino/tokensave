@@ -264,8 +264,8 @@ synchronization to beta when merged; beta is not edited by this series.
 
 ## Open-issue implementation audit (2026-10-27)
 
-GitHub PR state was checked directly. Issues remain open; no issue closure or
-release publication is implied.
+GitHub PR state was checked directly. Updated closure dispositions are recorded
+in the follow-up section below; no release publication is inferred.
 
 | Issues / PRs | Scope and verified status | Validation / dependencies / remaining work |
 | --- | --- | --- |
@@ -273,7 +273,7 @@ release publication is implied.
 | [#806](https://github.com/aovestdipaperino/tokensave/pull/806) | Structured prompt guidance merged into master at [4aff0e4](https://github.com/aovestdipaperino/tokensave/commit/4aff0e4fd1566e5120ecbd9f437938a9e441e9c4). | Deterministic guidance tests; real-model routing remains unmeasured. |
 | [#807](https://github.com/aovestdipaperino/tokensave/pull/807) | Offline lifecycle/compaction tests merged into master at [f82ce87](https://github.com/aovestdipaperino/tokensave/commit/f82ce87c73861f5e4c1f898965675c19da7d4a46). | Real Pi harness with faux provider; does not satisfy real-model evaluation. |
 | [#833](https://github.com/aovestdipaperino/tokensave/issues/833) | [PR #837](https://github.com/aovestdipaperino/tokensave/pull/837), merged into master at [954e94a](https://github.com/aovestdipaperino/tokensave/commit/954e94a0335a18f8d36e648a7f250fda036ea3ab): separate scope reporting, unknown-exposure rejection, override warnings, metadata-only index discovery and explicit runtime observation limits. | Regression fixtures cover conflicts, ancestor/global overrides and no-write index checks; existing fixtures cover healthy/missing/stale installs. No live-session inspection mechanism added; runtime remains unverified. |
-| [#832](https://github.com/aovestdipaperino/tokensave/issues/832) | [Draft PR #838](https://github.com/aovestdipaperino/tokensave/pull/838) adds the runner; real-model evaluation outstanding. | The isolated pinned source now runs, but no model is available. Existing offline runner is not real-model evidence. Requires prepared pinned Pi/model/adapter environment and repeated matched sessions using the protocol above. No token/cost/latency or routing result claimed. |
+| [#832](https://github.com/aovestdipaperino/tokensave/issues/832) | Issue and PR #838 closed as not planned without merging. | Proposed runner/tests are excluded from #839; no real-model result was obtained. |
 | [#834](https://github.com/aovestdipaperino/tokensave/issues/834) | Conditional read interception not implemented. | Explicitly depends on #832 demonstrating unnecessary reads. Native reads remain available; implementing enforcement without evidence would violate the issue's prerequisite. |
 
 The separate Oh My Pi parity issue #822 concerns another integration and is not
@@ -305,31 +305,28 @@ Validation for the diagnostic change:
 - `cargo clippy --workspace --all-targets --locked`: passed with seven warnings
   in unchanged branch/config/server/integration-test code; none in changed files.
 
-## Real-model evaluation follow-up (2026-10-27)
+## Follow-up disposition (2026-10-27)
 
-Refs [#832](https://github.com/aovestdipaperino/tokensave/issues/832) and
-[#834](https://github.com/aovestdipaperino/tokensave/issues/834).
-The [runner and review protocol](../scripts/pi-eval/README.md) implement matched
-baseline/enabled sessions, controlled failures, real model-backed compaction,
-provider-bound system/tool observations and host-reported usage capture.
-The implementation is in [draft PR #838](https://github.com/aovestdipaperino/tokensave/pull/838), unmerged; the separate [draft assessment PR #839](https://github.com/aovestdipaperino/tokensave/pull/839) depends on it; the
-[validation record](../scripts/pi-eval/VALIDATION.md) distinguishes passing
-offline/real-host checks from missing real-model evidence.
+GitHub states were verified before issue closure. This record supersedes the
+historical planning notes above.
 
-| Related work | Scope / status | Dependencies and remaining work |
+| Work | Actual scope / status | Validation and remaining work |
 | --- | --- | --- |
-| [#837](https://github.com/aovestdipaperino/tokensave/pull/837), Refs #833 | Diagnostics merged into master at 954e94a; inherited by this branch | Runtime observation remains explicitly unverified by doctor |
-| #832 evaluation | Runner, report, rubric and offline tests implemented; no model results | Isolated pinned Pi source runs, but model discovery returns no models; provider setup, matched paid runs, independent review and adapter coverage remain |
-| #834 conditional routing | [Draft PR #839](https://github.com/aovestdipaperino/tokensave/pull/839), stacked on #838; read-only assessment, unmerged, no interception | [Review schema and conservative decision rules](../scripts/pi-eval/READ-ROUTING.md); real-model evidence and any subsequent enforcement/correctness comparison remain pending |
+| [#833](https://github.com/aovestdipaperino/tokensave/issues/833) / [#837](https://github.com/aovestdipaperino/tokensave/pull/837) | Diagnostics merged into master at [954e94a](https://github.com/aovestdipaperino/tokensave/commit/954e94a0335a18f8d36e648a7f250fda036ea3ab); issue closed with maintainer permission | 34 Pi tests, formatting and Clippy passed; two documented workspace/environment failures; runtime observation remains unverified |
+| [#832](https://github.com/aovestdipaperino/tokensave/issues/832) / [#838](https://github.com/aovestdipaperino/tokensave/pull/838) | Issue closed as not planned; PR closed without merging | Proposed real-model runner and its tests are excluded from #839. No real-model result or delivery to master is claimed |
+| [#834](https://github.com/aovestdipaperino/tokensave/issues/834) / [#839](https://github.com/aovestdipaperino/tokensave/pull/839) | Standalone read-only evidence assessment prepared for master; no dependency on merging #838 | Ten assessment tests cover the fallback matrix, interface names, provenance and repeated evidence. Real-model evidence is absent, so the recorded decision is defer and interception stays disabled |
 
-No issue is closed, no release is inferred and no model-routing or savings claim
-is made. Evidence collection does not itself establish a need for enforcement.
+The [assessment protocol](../scripts/pi-eval/READ-ROUTING.md) documents the
+retained scope and input format; [validation](../scripts/pi-eval/VALIDATION.md)
+records checks and limits. The maintainer requested merging the assessment and
+closing its issue; that disposition does not establish that native-read
+interception was implemented or needed. The final merge commit and closure
+reason are recorded on the issue after GitHub confirms the result. No release
+publication is inferred.
 
-The #834 assessment has ten synthetic regression tests (16 Python tests with
-the #832 suite), including each legitimate fallback category, uncertain
-index/range/interface, tool naming, retrieval failure, repeated evidence and
-comparison completeness. These are assessor tests, not handler enforcement or
-real-model routing validation. The current evidence-backed decision is to defer
-interception because no real-model corpus exists. The assessor never changes
-runtime tools or user configuration. Its state is bounded by trace limits and
-one annotated run's metadata; no long-running resource measurements were made.
+The assessor starts no subprocess or background work, uses bounded trace
+readers and processes annotations one run at a time without retaining tool-result
+bodies. No long-running RSS/CPU or real-model evaluation was performed. Shared
+command guidance is verified against master; beta command guidance must follow
+when the assessment source is synchronized there. README installation content
+and SQL are unchanged.

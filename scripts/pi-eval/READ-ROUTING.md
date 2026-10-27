@@ -1,8 +1,9 @@
 # Conditional native-read routing assessment (Refs #834)
 
-**Current decision: defer enforcement.** The pinned real-model evaluation runner
-exists in [PR #838](https://github.com/aovestdipaperino/tokensave/pull/838), but no
-working model was discoverable in this environment. There are no real-model
+**Current decision: defer enforcement.** The proposed real-model test runner in
+[PR #838](https://github.com/aovestdipaperino/tokensave/pull/838) and its issue #832
+were closed as not planned without merging. That runner is excluded from this
+standalone assessment. No working model was discoverable in this environment. There are no real-model
 traces demonstrating repeated unnecessary indexed-source reads. Pi's native
 `read` remains untouched. This assessment does not enable interception, alter
 tool activation, infer an adapter namespace or modify Pi core.
@@ -11,12 +12,14 @@ and the unfilled review template; it explicitly records the missing prerequisite
 
 The issue explicitly requires real-model evidence before a blocking handler is
 implemented. A code change that blocks reads now would bypass that prerequisite.
-This PR supplies reproducible assessment and deterministic fallback checks while
-leaving the enforcement decision pending. It does not claim #834 complete.
+This change supplies reproducible assessment and deterministic fallback checks.
+The maintainer elected to merge this assessment and close #834; real-model
+validation and any future enforcement remain outside the delivered scope.
 
 ## Collect and independently review evidence
 
-First run [the matched evaluation](README.md). Have an independent reviewer
+Supply independently collected traces in [the documented format](README.md).
+Have an independent reviewer
 assess task correctness and legitimate native fallback from every run's exact
 answers, tool arguments/results and provider-bound prompt/tool state. Retain the
 original artifacts and record their hashes with any published results. Missing

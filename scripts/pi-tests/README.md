@@ -19,7 +19,3 @@ start a real MCP adapter or measure model routing quality.
 Coverage includes initial/subsequent requests, actual session compaction using
 an extension-supplied summary, prompt replay, native tool declarations, and
 native reads after simulated direct/proxy retrieval errors.
-It also verifies that the real-model evaluation observer captures the same
-normalized prompt and tool state the faux provider receives, without mutation.
-See [the real-model runner](../pi-eval/README.md) for paid evaluation scope;
-these lifecycle fixtures remain offline tests.

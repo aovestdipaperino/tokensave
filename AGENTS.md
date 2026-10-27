@@ -140,7 +140,6 @@ portable string formats, and documented path-syntax test fixtures.
 ### Non-standard test/bench harnesses
 
 - Pi real-session regressions: `node scripts/pi-tests/run.mjs /path/to/prepared/pi`; see `scripts/pi-tests/README.md` for the pinned Pi prerequisites and offline scope.
-- Pi real-model routing evaluation: `python3 scripts/pi-eval/run.py --help`; see `scripts/pi-eval/README.md` for the pinned Pi 1.4.0 environment, provider prerequisites, paid-run scope and evidence limits. Offline runner checks: `python3 -m unittest discover -s tests/pi-eval -p 'test_*.py' -v` and `node --test tests/pi-eval/observer_test.mjs`. These checks do not establish model behavior.
 - Conditional Pi read-routing assessment: `python3 scripts/pi-eval/assess_reads.py --help`; see `scripts/pi-eval/READ-ROUTING.md`. This read-only assessment never enables interception; real-model traces and independent review are prerequisites for any later enforcement.
 
 - Criterion bench against large real repos: `TOKENSAVE_BENCH_REPOS_DIR=~/tokensave-bench-cache cargo bench --bench large_repos`. Without `TOKENSAVE_BENCH_REPOS_DIR` it registers zero benchmarks. Filter with `cargo bench --bench large_repos -- 'scipy/tokensave_search'`. Repos and pinned refs are in `benches/repos.rs`; delete the `<repo>/.bench-ref` marker to force a re-fetch.

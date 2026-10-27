@@ -14,11 +14,9 @@ await access(join(pkg, "test", "suite", "harness.ts"));
 const dir = await mkdtemp(join(pkg, "test", "suite", "tokensave-"));
 try {
   await copyFile(join(root, "tests", "pi", "lifecycle.test.ts"), join(dir, "lifecycle.test.ts"));
-  await copyFile(join(root, "tests", "pi", "evaluation_observer.test.ts"), join(dir, "evaluation_observer.test.ts"));
-  await copyFile(join(root, "scripts", "pi-eval", "observer.mjs"), join(dir, "evaluation-observer.mjs"));
   await copyFile(join(root, "src", "agents", "integrations", "pi_extension.ts"), join(dir, "tokensave-extension.ts"));
   const code = await new Promise((resolveRun, reject) => {
-    const child = spawn(process.execPath, [cli, "run", "--pool=threads", "--maxWorkers=1", relative(pkg, join(dir, "lifecycle.test.ts")), relative(pkg, join(dir, "evaluation_observer.test.ts"))], {
+    const child = spawn(process.execPath, [cli, "run", "--pool=threads", "--maxWorkers=1", relative(pkg, join(dir, "lifecycle.test.ts"))], {
       cwd: pkg, stdio: "inherit", env: { ...process.env, PI_OFFLINE: "1", PI_NO_LOCAL_LLM: "1" },
     });
     const timer = setTimeout(() => child.kill("SIGKILL"), 120_000);
