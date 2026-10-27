@@ -33,6 +33,14 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n")
 
 
+def verify_model(state, provider, model):
+    actual = state.get("model", {})
+    identity = {"provider": actual.get("provider"), "id": actual.get("id")}
+    if identity != {"provider": provider, "id": model}:
+        raise RuntimeError("Pi did not select the exact requested provider/model; do not compare aliases")
+    return identity
+
+
 def checked(command, cwd=None):
     process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, start_new_session=True,
@@ -206,7 +214,8 @@ def run_arm(args, scratch, output, scenario, prompt, arm, repeat):
     try:
         with (output / "events.jsonl").open("w") as trace:
             rpc = Rpc(command, cwd, env, trace)
-            rpc.command("get_state", args.timeout)
+            state = rpc.command("get_state", args.timeout)["data"]
+            metadata["observed_model"] = verify_model(state, args.provider, args.model)
             rpc.command("set_auto_retry", args.timeout, enabled=False)
             rpc.command("set_auto_compaction", args.timeout, enabled=False)
             if scenario == "long":

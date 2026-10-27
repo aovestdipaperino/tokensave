@@ -1,6 +1,6 @@
 # Pi model-routing evaluation (Refs #832)
 
-This runner uses the real Pi RPC host and a real selected provider/model. It
+This Python 3.11+ runner uses the real Pi RPC host and a real selected provider/model. It
 does not supply a faux provider or treat offline tests as behavioral evidence.
 It currently supports POSIX process groups and Pi **1.4.0**, whose API was
 inspected at commit `d5b3de22d0e24a3e9c38a9410d3329b099717283`.
@@ -54,6 +54,8 @@ pin transitive dependencies. Run with the provider's usual environment-based
 authentication, or use `--auth-file /private/path/auth.json` for a Pi auth file.
 That file is copied to private temporary profiles, never evaluation artifacts.
 Model catalog refresh is disabled; provider calls are still real and billable.
+The selected runtime provider/model must exactly match the requested IDs before
+the runner sends a prompt; fuzzy aliases or silent substitutions fail validation.
 
 ```sh
 python3 scripts/pi-eval/run.py \

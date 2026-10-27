@@ -22,6 +22,13 @@ report = module("report")
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_exact_runtime_model_is_required_before_paid_prompts(self):
+        state = {"model": {"provider": "provider", "id": "exact-model"}}
+        self.assertEqual(runner.verify_model(state, "provider", "exact-model"), state["model"])
+        for other in [{}, {"model": {"provider": "other", "id": "exact-model"}}, state]:
+            with self.assertRaises(RuntimeError):
+                runner.verify_model(other, "provider", "fuzzy-alias")
+
     def test_prompt_waits_for_settled_and_preserves_unicode(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary)
