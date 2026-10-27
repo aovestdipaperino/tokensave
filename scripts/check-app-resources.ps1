@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $info = (Get-Item -LiteralPath $Executable).VersionInfo
 if ($info.ProductName -ne 'TokenSave Beta' -or
     $info.FileDescription -ne 'TokenSave Beta' -or
-    $info.OriginalFilename -ne 'TokenSave-Beta.exe' -or
+    $info.OriginalFilename -ne 'tokensave.exe' -or
     $info.ProductVersion -notmatch '-beta\.\d+' -or
     $info.FileVersion -notmatch '-beta\.\d+' -or
     -not $info.IsPreRelease) {
@@ -18,7 +18,7 @@ try {
     if ($Executable.StartsWith('\\')) {
         $temporaryDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
         New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
-        $iconPath = Join-Path $temporaryDirectory 'TokenSave-Beta.exe'
+        $iconPath = Join-Path $temporaryDirectory 'tokensave.exe'
         Copy-Item -LiteralPath $Executable -Destination $iconPath
     }
     $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($iconPath)

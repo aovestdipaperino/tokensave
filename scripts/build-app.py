@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Build and stage an independently named release using the existing Cargo build."""
+"""Build a channel release using the canonical Cargo executable."""
 import argparse
 import json
 import os
 import pathlib
-import shutil
 import subprocess
 import sys
 
@@ -20,7 +19,6 @@ def main():
     parser.add_argument("--target-dir", type=pathlib.Path, help="Override the isolated Cargo build directory")
     parser.add_argument("--profile", choices=("dev", "release"), default="release")
     args = parser.parse_args()
-    identity = json.loads((ROOT / "build" / "identity.json").read_text())[args.channel]
     if args.channel == "stable":
         metadata = json.loads(subprocess.check_output(
             ["cargo", "metadata", "--offline", "--no-deps", "--format-version", "1"],
@@ -52,11 +50,7 @@ def main():
     if args.target:
         output /= args.target
     output /= "release" if args.profile == "release" else "debug"
-    source = output / ("tokensave.exe" if windows else "tokensave")
-    destination = output / identity["windows_executable" if windows else "unix_executable"]
-    if source != destination:
-        shutil.copy2(source, destination)
-    print(destination)
+    print(output / ("tokensave.exe" if windows else "tokensave"))
 
 
 if __name__ == "__main__":

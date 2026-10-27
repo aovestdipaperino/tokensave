@@ -295,13 +295,15 @@ fn download_and_extract(url: &str, bin_name: &str, expected_sha256: &str) -> Res
     })
 }
 
-/// Beta archives historically used the stable executable's filename.
+/// Accept canonical archive members and older branded beta members.
 fn archive_entry_matches(name: Option<&str>, requested: &str) -> bool {
+    // Older beta releases used branded members. Accept them when switching
+    // channels, while all newly produced archives use the canonical name.
     name == Some(requested)
-        || [false, true].iter().any(|&windows| {
-            requested == crate::identity::archive_executable(true, windows)
-                && name == Some(crate::identity::archive_executable(false, windows))
-        })
+        || matches!(
+            (requested, name),
+            ("tokensave", Some("tokensave-beta")) | ("tokensave.exe", Some("TokenSave-Beta.exe"))
+        )
 }
 
 /// Extracts the channel executable, accepting legacy beta archive names.
@@ -1304,22 +1306,16 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  tokensave-v1.2
     }
 
     #[test]
-    fn beta_archives_support_new_and_legacy_names() {
-        assert!(archive_entry_matches(
-            Some("tokensave-beta"),
-            "tokensave-beta"
-        ));
-        assert!(archive_entry_matches(Some("tokensave"), "tokensave-beta"));
-        assert!(archive_entry_matches(
-            Some("TokenSave-Beta.exe"),
-            "TokenSave-Beta.exe"
-        ));
-        assert!(archive_entry_matches(
-            Some("tokensave.exe"),
-            "TokenSave-Beta.exe"
-        ));
-        assert!(!archive_entry_matches(Some("tokensave-beta"), "tokensave"));
-        assert!(!archive_entry_matches(Some("other"), "tokensave-beta"));
+    fn archives_support_canonical_and_legacy_beta_names() {
+        for (canonical, legacy) in [
+            ("tokensave", "tokensave-beta"),
+            ("tokensave.exe", "TokenSave-Beta.exe"),
+        ] {
+            assert!(archive_entry_matches(Some(canonical), canonical));
+            assert!(archive_entry_matches(Some(legacy), canonical));
+            assert!(!archive_entry_matches(Some("other"), canonical));
+            assert!(!archive_entry_matches(None, canonical));
+        }
     }
 
     #[cfg(not(windows))]
@@ -1341,7 +1337,26 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  tokensave-v1.2
             let compressed = gzip.finish().unwrap();
             let directory = tempfile::tempdir().unwrap();
             let destination = directory.path().join("extracted");
-            extract_targz(&compressed, "tokensave-beta", &destination).unwrap();
+            extract_targz(&compressed, "tokensave", &destination).unwrap();
+            assert_eq!(std::fs::read(destination).unwrap(), b"beta");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn extracts_canonical_and_legacy_beta_zip_members() {
+        use std::io::{Cursor, Write};
+
+        for name in ["tokensave.exe", "TokenSave-Beta.exe"] {
+            let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            archive
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(b"beta").unwrap();
+            let raw = archive.finish().unwrap().into_inner();
+            let directory = tempfile::tempdir().unwrap();
+            let destination = directory.path().join("extracted");
+            extract_zip(&raw, "tokensave.exe", &destination).unwrap();
             assert_eq!(std::fs::read(destination).unwrap(), b"beta");
         }
     }

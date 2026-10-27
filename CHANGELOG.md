@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+
+- Use the canonical tokensave executable filename for stable and beta builds, archives, Homebrew and Scoop; preserve embedded beta branding and legacy archive upgrade support. Reuse the beta CI test executable for identity checks instead of rebuilding a lite variant (Refs #836).
+
 ### Documentation
 
 - Use a wide beta README logo matching the stable logo's dimensions and wordmark layout, with a beta badge, and preserve this intentional branch-specific branding difference (Refs #801).

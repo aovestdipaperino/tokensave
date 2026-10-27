@@ -185,10 +185,13 @@ portable string formats, and documented path-syntax test fixtures.
   the plain Cargo binary against the package version and expected channel.
 - Executable identity is centralized in `build/identity.json`. Stable Cargo builds
   retain their identity; `--features beta` or a prerelease package version selects
-  beta metadata. Package independently named binaries with
+  beta metadata. Both channels use only tokensave.exe on Windows and tokensave
+  on Unix; no post-build executable copy or rename is allowed. Build with
   `python3 scripts/build-app.py --channel beta` (or `stable`); beta releases pass
   `--version <base>-beta.N`. See `docs/BUILD-IDENTITY.md` for output paths,
-  compatibility, and platform validation. The beta release workflow remains disabled.
+  compatibility, and platform validation. Run `python3 scripts/test-build-app.py`
+  for compiler-free build-output regression checks. CI reuses the full test beta
+  executable for identity checks. The beta release workflow remains disabled.
 - `src/lib.rs` denies `clippy::all`, `clippy::unwrap_used`, and `clippy::expect_used`, and warns on `clippy::pedantic` — avoid `unwrap()`/`expect()` in library code.
 - Language-specific tests: `cargo test --test integration rust_extraction_test::`; single test: `cargo test test_find_stale_files`; filter: `cargo test sync`. Lite-only local loop: `cargo test-lite`.
 - Integration tests live in `tests/` (one file per module/language) but compile into a single binary, `tests/integration.rs` (`autotests = false`): a new test file must be added there as a `mod`. Files that mutate env vars or the `cancel` flag are separate `[[test]]` targets in `Cargo.toml` instead. Helpers are shared via `crate::common` (`tests/common/mod.rs`); fixtures are in `tests/fixtures/`. See CONTRIBUTING.md "Test layout".

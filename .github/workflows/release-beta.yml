@@ -79,14 +79,14 @@ jobs:
         if: matrix.archive == 'tar.gz'
         run: |
           cd target/beta/${{ matrix.target }}/release
-          tar czf ../../../../tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.tar.gz tokensave-beta
+          tar czf ../../../../tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.tar.gz tokensave
           cd ../../../..
 
       - name: Package binary (windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          Compress-Archive -Path target/beta/${{ matrix.target }}/release/TokenSave-Beta.exe -DestinationPath tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.zip
+          Compress-Archive -Path target/beta/${{ matrix.target }}/release/tokensave.exe -DestinationPath tokensave-beta-${{ github.ref_name }}-${{ matrix.name }}.zip
 
       - name: Upload binary archive
         env:
@@ -123,8 +123,8 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           BOTTLE_TAG="${{ matrix.bottle_tag }}"
           mkdir -p tokensave-beta/${VERSION}/bin
-          cp target/beta/${{ matrix.target }}/release/tokensave-beta tokensave-beta/${VERSION}/bin/tokensave-beta
-          chmod +x tokensave-beta/${VERSION}/bin/tokensave-beta
+          cp target/beta/${{ matrix.target }}/release/tokensave tokensave-beta/${VERSION}/bin/tokensave
+          chmod +x tokensave-beta/${VERSION}/bin/tokensave
           tar czf "tokensave-beta-${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" tokensave-beta/
 
       - name: Upload bottle artifact
@@ -246,11 +246,10 @@ jobs:
             def install
               ENV["TOKENSAVE_BETA_VERSION"] = "${VERSION}"
               system "cargo", "install", *std_cargo_args, "--features", "beta"
-              mv bin/"tokensave", bin/"tokensave-beta"
             end
 
             test do
-              system "#{bin}/tokensave-beta", "--help"
+              system "#{bin}/tokensave", "--help"
             end
           end
           EOF
@@ -320,7 +319,7 @@ jobs:
                 "hash": "${SHA256_ARM}"
               }
             },
-            "bin": "TokenSave-Beta.exe",
+            "bin": "tokensave.exe",
             "checkver": {
               "github": "https://github.com/aovestdipaperino/tokensave",
               "regex": "v([\\d.]+-beta[\\d.]*)"

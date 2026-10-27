@@ -8,8 +8,8 @@ icon/resources, CLI identity, and version.
 
 | Identity | Stable | Beta |
 | --- | --- | --- |
-| Windows executable | `tokensave.exe` | `TokenSave-Beta.exe` |
-| Linux/macOS executable | `tokensave` | `tokensave-beta` |
+| Windows executable | `tokensave.exe` | `tokensave.exe` |
+| Linux/macOS executable | `tokensave` | `tokensave` |
 | Product name | TokenSave | TokenSave Beta |
 | Windows application ID | Existing default | `TokenSave.TokenSave.Beta` |
 | Version example | `7.16.0` | `7.16.0-beta.1` |
@@ -30,11 +30,11 @@ names above. Separate Cargo build directories preserve independent outputs.
 Use `--lite` for fewer language parsers, `--profile dev` for debug builds, or
 `--target-dir` to override the isolated build directory deliberately.
 
-`cargo build --features beta` also selects beta identity, while retaining Cargo's
-internal `tokensave` target name. Use the helper for the named distributable.
-For `cargo install --path . --features beta`, rename the installed executable to
-the beta name before placing it alongside stable. The beta Homebrew recipe does
-this itself. A plain stable Cargo invocation needs no new flags.
+Both channels build the single Cargo binary target, named `tokensave`. The helper
+prints Cargo's executable path without copying or renaming it. Separate build
+directories allow both outputs to coexist; installing either channel into the
+same bin directory replaces the other. A plain stable Cargo invocation needs
+no new flags.
 
 The beta branch keeps a prerelease package version in `Cargo.toml` and
 `Cargo.lock`. Plain `cargo install --git https://github.com/aovestdipaperino/tokensave.git --branch beta --locked --force`
@@ -44,7 +44,7 @@ compiled identity with `tokensave --version` and `tokensave channel`.
 
 A prerelease package version also selects beta identity without the feature.
 The helper rejects `--channel stable` for a prerelease package rather than
-packaging a beta build under a stable filename.
+packaging beta metadata as a stable build.
 Otherwise the beta feature appends the configured `beta.1` suffix to the package
 version. `--version` passes `TOKENSAVE_BETA_VERSION` to the compiler and accepts
 `<package-base>-beta.N`, where N is a nonnegative integer with no leading zeros.
@@ -86,39 +86,38 @@ their own tab titles and taskbar icons; an executable's icon and application ID
 cannot force a host such as Windows Terminal to display the executable's icon.
 
 TokenSave is a CLI with no GUI window, macOS application bundle, or Linux desktop
-launcher. Linux and macOS distinguish the executable/process name and CLI version;
+launcher. Linux and macOS distinguish the channels through the compiled CLI version;
 this change does not introduce GUI bundles or launchers merely to attach an icon.
 
 ## Compatibility
 
 Settings, data directories, graph formats, update asset names, release channels,
-and update installation destinations are unchanged. Both binaries can coexist
-on PATH with different names, but continue to share settings and project graphs.
-Agent registration continues to use existing integration behavior; installing
-one channel can replace the shared agent registration. Separate filenames do
-not provide isolated settings or simultaneous independent agent registrations.
+and update installation destinations are unchanged. Both channels use the same
+executable filename and share settings, project graphs, and agent registration.
+Use separate installation directories if both builds must be retained.
 
-The updater recognizes the renamed executables and accepts old beta archives
-containing `tokensave`/`tokensave.exe`. Stable archive lookup continues to require
-the stable filename. Older updaters that only recognize the old beta archive
-member name must first update to a build with this support, or install the named
-beta executable manually. Channel switching replaces the existing installed path
-as before; it does not rename the installation or change update identifiers.
+The updater accepts canonical archive members and legacy beta members
+(`tokensave-beta` / `TokenSave-Beta.exe`). Channel switching replaces the existing
+installed path without renaming it. Beta archive asset names, Homebrew formula
+names, and Scoop package identifiers retain their channel suffix; their contained
+executable is always `tokensave` / `tokensave.exe`.
 
 ## Validation
 
 ```sh
+python3 scripts/test-build-app.py
 cargo test --locked --no-default-features --features lite --lib identity::tests
 cargo test --locked --no-default-features --features lite,beta --lib identity::tests
 cargo test --locked --no-default-features --features lite --lib upgrade::tests
 python3 scripts/build-app.py --channel beta --profile dev --lite
-python3 scripts/check-app-identity.py --channel beta target/beta/debug/tokensave-beta
+python3 scripts/check-app-identity.py --channel beta target/beta/debug/tokensave
 ```
 
-On Windows use `TokenSave-Beta.exe` in the final command. The smoke check also
+On Windows use `tokensave.exe` in the final command. The smoke check also
 inspects Windows Properties version fields and icon availability using PowerShell.
-CI runs stable and beta identity checks on Linux, macOS, and Windows after the
-existing stable test suite. Native taskbar, Explorer small-icon rendering, and
+CI checks the full test build on Linux, macOS, and Windows. Prerelease packages
+reuse that beta executable for resource checks; stable packages additionally
+build the beta feature with the same full feature set. Native taskbar, Explorer small-icon rendering, and
 terminal-host title behavior still require visual checks on each supported host.
 
 Resource impact is limited to compile-time parsing/resource generation and a
@@ -190,3 +189,50 @@ Validation on 2026-10-26:
   Windows, and macOS checks were not rerun for this metadata change. CI retains
   its full workspace test matrix and now verifies plain Cargo identity against
   the package version, in addition to packaged beta identity.
+
+
+### Canonical executable filename ([#836](https://github.com/aovestdipaperino/tokensave/issues/836))
+
+This local follow-up supersedes the executable naming behavior of PR #802 and
+the CLI prefix shown in the historical validation records above. Both channels
+now report the command name `tokensave`; beta retains its product name, version,
+icon, application ID and Windows prerelease resources. The helper performs one
+Cargo build with no executable copy. Release archives and package manifests use
+the canonical member name while retaining beta asset/package identifiers.
+Legacy archive extraction and process-name recognition remain supported.
+
+The beta CI job reuses the full test executable, removing the separate lite beta
+compilation without removing identity or PE resource checks. Stable-package CI
+retains an explicit beta-feature build. No SQL or runtime resource lifecycles
+changed. No release is published by this change.
+
+Upstream master guidance was checked on 2026-10-27. Beta-only identity and SQL
+debugging guidance remain here; master's Pi test commands refer to files absent
+on beta and are not copied. README content is unchanged.
+
+Validation on 2026-10-27:
+
+- Full locked workspace suite with `test-transport`: 4,543 passed,
+  4 ignored across 16 harnesses. Fixtures used `TMPDIR=/var/tmp`:
+  the initial default-root run had two unrelated discovery failures caused by
+  the existing `/tmp/.git` directory.
+- Full workspace/all-target Clippy with `test-transport` passed with warnings
+  in unchanged code. Formatting, diff whitespace, Python syntax and workflow
+  YAML parsing passed.
+- Compiler-free build-helper tests passed for both channels and Windows,
+  Linux and macOS target paths: one Cargo application build, one canonical
+  executable, no duplicate output. Cargo still defines one application target.
+- The real Linux executable passed the identity smoke check and reported
+  `tokensave TokenSave Beta 7.16.0-beta.1`; `channel` reported
+  `v7.16.0-beta.1 (beta)`.
+- Canonical/legacy tar extraction passed locally. A corresponding Windows ZIP
+  regression is included for CI. Native Windows PE checks, native macOS builds,
+  release-profile archives and package-manager installation were not executed
+  locally; the existing cross-platform checks remain in CI.
+- Resource review: no new runtime allocations, retained collections, workers,
+  queries or polling. The build helper removes an executable copy and beta CI
+  avoids an additional compilation. No RSS or long-running runtime workload was
+  measured because runtime resource ownership is unchanged.
+
+Implementation remains local and unmerged on `issue-836-canonical-executable`,
+based on `beta`; no follow-up PR has been opened and issue #836 remains open.

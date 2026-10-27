@@ -24,9 +24,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn channels_have_distinct_archive_names() {
-        assert_eq!(archive_executable(true, true), "TokenSave-Beta.exe");
-        assert_eq!(archive_executable(true, false), "tokensave-beta");
+    fn channels_share_canonical_archive_names() {
+        assert_eq!(archive_executable(true, true), "tokensave.exe");
+        assert_eq!(archive_executable(true, false), "tokensave");
         assert_eq!(archive_executable(false, true), "tokensave.exe");
         assert_eq!(archive_executable(false, false), "tokensave");
     }
@@ -35,7 +35,7 @@ mod tests {
     fn compiled_identity_matches_channel() {
         if is_beta() {
             assert_eq!(PRODUCT_NAME, "TokenSave Beta");
-            assert_eq!(CLI_NAME, "tokensave-beta");
+            assert_eq!(CLI_NAME, "tokensave");
             assert_eq!(APPLICATION_ID, "TokenSave.TokenSave.Beta");
             assert!(VERSION.contains('-'));
         } else {

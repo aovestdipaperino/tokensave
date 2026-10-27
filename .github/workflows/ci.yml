@@ -69,6 +69,9 @@ jobs:
         # adds no dependencies, so this is a superset of the plain run.
         run: cargo test --workspace --locked --features test-transport
 
+      - name: Check canonical build outputs
+        run: python scripts/test-build-app.py
+
       - name: Check plain Cargo executable identity
         shell: bash
         run: |
@@ -80,21 +83,31 @@ jobs:
           version = tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"]
           beta = "-" in version
           executable = pathlib.Path("target/debug/tokensave" + (".exe" if os.name == "nt" else "")).resolve()
-          expected = f"tokensave-beta TokenSave Beta {version}" if beta else f"tokensave {version}"
+          expected = f"tokensave TokenSave Beta {version}" if beta else f"tokensave {version}"
           assert subprocess.check_output([str(executable), "--version"], text=True).strip() == expected
           channel = subprocess.run([str(executable), "channel"], capture_output=True, text=True, check=True)
           assert f"v{version} ({'beta' if beta else 'stable'})" in channel.stderr
           PYTHON
 
-      - name: Build beta executable and check identity
+      - name: Check beta executable identity
         shell: bash
         run: |
-          python scripts/build-app.py --channel beta --profile dev --lite --target-dir target
-          if [ "${RUNNER_OS}" = "Windows" ]; then
-            python scripts/check-app-identity.py --channel beta target/debug/TokenSave-Beta.exe
-          else
-            python scripts/check-app-identity.py --channel beta target/debug/tokensave-beta
-          fi
+          # A prerelease package already selected beta in the full test build.
+          # Stable packages still need a beta-feature build; reuse the full
+          # feature set and build tree rather than recompiling the lite subset.
+          python - <<'PYTHON'
+          import os
+          import pathlib
+          import subprocess
+          import tomllib
+          version = tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"]
+          if "-" not in version.split("+")[0]:
+              subprocess.run(["cargo", "build", "--locked", "--bin", "tokensave",
+                              "--features", "test-transport,beta"], check=True)
+          executable = pathlib.Path("target/debug/tokensave" + (".exe" if os.name == "nt" else ""))
+          subprocess.run(["python", "scripts/check-app-identity.py", "--channel", "beta",
+                          str(executable)], check=True)
+          PYTHON
 
   clippy:
     name: Clippy
