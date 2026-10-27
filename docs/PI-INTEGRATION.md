@@ -261,3 +261,47 @@ issues #792/#793 and Pi #11410 already cover the related integration/design topi
 
 All three follow-ups target Tokensave rather than Pi core. Shared guidance needs
 synchronization to beta when merged; beta is not edited by this series.
+
+## Open-issue implementation audit (2026-10-27)
+
+GitHub PR state was checked directly. Issues remain open; no issue closure or
+release publication is implied.
+
+| Issues / PRs | Scope and verified status | Validation / dependencies / remaining work |
+| --- | --- | --- |
+| [#792](https://github.com/aovestdipaperino/tokensave/issues/792), [#793](https://github.com/aovestdipaperino/tokensave/issues/793), [#794](https://github.com/aovestdipaperino/tokensave/issues/794) / [#795](https://github.com/aovestdipaperino/tokensave/pull/795) | Exposure, managed extension, accounting merged into master at [7902709](https://github.com/aovestdipaperino/tokensave/commit/7902709e97cddf9fed72802bb19c224482ba52a3). | Existing implementation retained; original PR validation is linked above. Open issue text claiming nothing merged is outdated. |
+| [#806](https://github.com/aovestdipaperino/tokensave/pull/806) | Structured prompt guidance merged into master at [4aff0e4](https://github.com/aovestdipaperino/tokensave/commit/4aff0e4fd1566e5120ecbd9f437938a9e441e9c4). | Deterministic guidance tests; real-model routing remains unmeasured. |
+| [#807](https://github.com/aovestdipaperino/tokensave/pull/807) | Offline lifecycle/compaction tests merged into master at [f82ce87](https://github.com/aovestdipaperino/tokensave/commit/f82ce87c73861f5e4c1f898965675c19da7d4a46). | Real Pi harness with faux provider; does not satisfy real-model evaluation. |
+| [#833](https://github.com/aovestdipaperino/tokensave/issues/833) | [PR #837](https://github.com/aovestdipaperino/tokensave/pull/837), open against master (unmerged): separate scope reporting, unknown-exposure rejection, override warnings, metadata-only index discovery and explicit runtime observation limits. | Regression fixtures cover conflicts, ancestor/global overrides and no-write index checks; existing fixtures cover healthy/missing/stale installs. No live-session inspection mechanism added; runtime remains unverified. |
+| [#832](https://github.com/aovestdipaperino/tokensave/issues/832) | Real-model evaluation outstanding. | Pi is not on PATH and the local checkout has no test dependencies. Existing offline runner is not real-model evidence. Requires prepared pinned Pi/model/adapter environment and repeated matched sessions using the protocol above. No token/cost/latency or routing result claimed. |
+| [#834](https://github.com/aovestdipaperino/tokensave/issues/834) | Conditional read interception not implemented. | Explicitly depends on #832 demonstrating unnecessary reads. Native reads remain available; implementing enforcement without evidence would violate the issue's prerequisite. |
+
+The separate Oh My Pi parity issue #822 concerns another integration and is not
+treated as a Pi implementation issue here.
+
+Resource review for #833: checks perform a fixed number of configuration reads
+plus metadata probes proportional to ancestor depth. No database opens, SQL,
+subprocesses, background tasks, polling or retained caches are added. Temporary
+configuration strings are released at the end of each check. Tests exercise
+repeated diagnostics and verify managed/user file bytes and index artifacts.
+Long-running RSS/CPU measurements and live Pi/adapter checks were not performed.
+Build/test commands and architecture guidance are unchanged; no AGENTS.md update
+or README change is needed. Beta synchronization is outstanding for these
+unmerged source and user-guide changes.
+
+Validation for the diagnostic change:
+
+- `cargo test --locked --test pi_agent_test`: 34 passed.
+- `cargo test --workspace --locked`: stopped in the library suite, 1118 passed,
+  2 failed, 4 ignored. The unchanged project-discovery tests
+  `global_state_directory_in_home_is_not_a_project` and
+  `non_git_workspace_project_is_shared_by_the_repositories_inside_it` encounter
+  an enclosing `/tmp` Git repository, matching the earlier recorded environment
+  failures. Later workspace binaries were not executed by this command.
+- `cargo fmt --all -- --check` and `git diff --check`: passed.
+- The documented Node extension command could not start tests:
+  Node v22.22.1 reports `ERR_NO_TYPESCRIPT` (built without TypeScript support).
+  No extension source changed.
+- Upstream master AGENTS.md was fetched and matches the local file exactly.
+- `cargo clippy --workspace --all-targets --locked`: passed with seven warnings
+  in unchanged branch/config/server/integration-test code; none in changed files.

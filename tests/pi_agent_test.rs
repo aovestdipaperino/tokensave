@@ -845,3 +845,114 @@ fn test_healthcheck_detects_stale_or_missing_guardrail_extension() {
     PiIntegration.healthcheck(&mut dc, &hctx);
     assert!(dc.issues > 0, "doctor should fail on a stale extension");
 }
+
+/// Unknown exposure must not be reported as proven direct-tool availability.
+#[test]
+fn test_healthcheck_rejects_unknown_exposure_in_both_scopes() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let mut ctx = make_ctx(home);
+    PiIntegration.install(&ctx).unwrap();
+    ctx.scope = InstallScope::Local {
+        project_path: home.to_path_buf(),
+    };
+    PiIntegration.install(&ctx).unwrap();
+    for path in [pi_config_path(home), pi_local_config_path(home)] {
+        let mut settings = read_json(&path);
+        settings["mcpServers"]["tokensave"]["exposure"] = serde_json::json!("unknown-mode");
+        std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    }
+    let mut dc = DoctorCounters::new();
+    PiIntegration.healthcheck(
+        &mut dc,
+        &HealthcheckContext {
+            home: home.to_path_buf(),
+            project_path: home.to_path_buf(),
+        },
+    );
+    assert_eq!(dc.issues, 2);
+}
+
+/// Diagnostics preserve both managed files and user context overrides.
+#[test]
+fn test_healthcheck_reports_shadowing_without_writes() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+    let dir = TempDir::new().unwrap();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    let nested = project.join("src");
+    std::fs::create_dir_all(&nested).unwrap();
+    // Isolate project discovery from any enclosing checkout.
+    std::fs::create_dir(project.join(".git")).unwrap();
+    PiIntegration.install(&make_ctx(&home)).unwrap();
+    let hctx = HealthcheckContext {
+        home: home.clone(),
+        project_path: nested,
+    };
+    let mut baseline = DoctorCounters::new();
+    PiIntegration.healthcheck(&mut baseline, &hctx);
+    let paths = [
+        home.join(".pi").join("agent").join("AGENTS.override.md"),
+        project.join("AGENTS.override.md"),
+    ];
+    for path in &paths {
+        std::fs::write(path, "User-owned override\n").unwrap();
+    }
+    let managed = [
+        pi_config_path(&home),
+        pi_rules_path(&home),
+        home.join(".pi")
+            .join("agent")
+            .join("extensions")
+            .join("tokensave.ts"),
+    ];
+    let before: Vec<_> = managed.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    let mut dc = DoctorCounters::new();
+    PiIntegration.healthcheck(&mut dc, &hctx);
+    assert_eq!(dc.warnings, baseline.warnings + 2);
+    assert_eq!(dc.issues, 0);
+    for (path, bytes) in managed.iter().zip(before) {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    for path in paths {
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "User-owned override\n"
+        );
+    }
+    assert!(!project.join(".tokensave").exists());
+}
+
+#[test]
+fn test_healthcheck_index_presence_is_metadata_only() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+    let dir = TempDir::new().unwrap();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    PiIntegration.install(&make_ctx(&home)).unwrap();
+    let hctx = HealthcheckContext {
+        home,
+        project_path: project.clone(),
+    };
+    let mut missing = DoctorCounters::new();
+    PiIntegration.healthcheck(&mut missing, &hctx);
+    let index_dir = project.join(".tokensave");
+    std::fs::create_dir(&index_dir).unwrap();
+    std::fs::write(index_dir.join("config.json"), "{}").unwrap();
+    let mut incomplete = DoctorCounters::new();
+    PiIntegration.healthcheck(&mut incomplete, &hctx);
+    assert_eq!(incomplete.warnings, missing.warnings);
+    // Even an invalid database is never opened, migrated, or described as healthy.
+    let db = index_dir.join("tokensave.db");
+    std::fs::write(&db, "not a database").unwrap();
+    let mut present = DoctorCounters::new();
+    PiIntegration.healthcheck(&mut present, &hctx);
+    assert_eq!(present.warnings + 1, missing.warnings);
+    assert_eq!(std::fs::read_to_string(db).unwrap(), "not a database");
+    assert_eq!(std::fs::read_dir(index_dir).unwrap().count(), 2);
+}
