@@ -9,6 +9,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Resolve temporary test roots before comparing canonical build outputs, avoiding macOS symlink and Windows short-name CI failures (Refs #836).
+
 - Use the canonical tokensave executable filename for stable and beta builds, archives, Homebrew and Scoop; preserve embedded beta branding and legacy archive upgrade support. Reuse the beta CI test executable for identity checks instead of rebuilding a lite variant (Refs #836).
 
 ### Documentation

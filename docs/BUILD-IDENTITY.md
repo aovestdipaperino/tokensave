@@ -239,3 +239,21 @@ placed directly on `beta` at the maintainer's request. No follow-up PR was used;
 there is no PR merge commit for this change. The temporary implementation branch
 is removed. Issue #836 holds the completion summary and closure record. This
 change does not publish a release.
+
+### Canonical-output CI follow-up (Refs #836)
+
+The first CI run after direct beta delivery passed Rust tests on Linux, macOS
+and Windows, but the Python output check failed on macOS and Windows. The test
+kept unresolved temporary roots while the helper resolved paths: macOS expanded
+`/var` to `/private/var`, and Windows expanded the runner's short username.
+Resolve the test root before constructing metadata and expected outputs.
+
+Local validation on 2026-10-27: both Python tests passed with ordinary temporary
+paths and with a symlinked temporary root that reproduced all six failing
+subcases before the fix. Diff whitespace checks passed. Native macOS/Windows
+confirmation remains with CI; no Rust or runtime behavior changed. This
+follow-up is delivered directly to beta without a PR or release.
+
+Latest upstream master guidance was compared before this follow-up. Remaining
+differences are beta identity/query-debugging policy and master's Pi test
+commands for files absent on beta; shared instructions need no changes.

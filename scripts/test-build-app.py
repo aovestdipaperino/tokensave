@@ -28,7 +28,8 @@ class BuildAppTests(unittest.TestCase):
                 ("aarch64-apple-darwin", "tokensave"),
             ):
                 with self.subTest(channel=channel, target=target), tempfile.TemporaryDirectory() as tmp:
-                    root = pathlib.Path(tmp)
+                    # Match production path resolution (macOS symlinks and Windows short names).
+                    root = pathlib.Path(tmp).resolve()
                     output = root / "target" / target / "debug"
                     executable = output / filename
 
