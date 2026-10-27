@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Added
+
+- Add a pinned Pi real-model routing evaluation runner with matched guidance baseline/enabled sessions, prompt/tool traces, model-backed compaction and explicit human-review requirements; real-model results remain pending an available provider (Refs #832).
+
 ### Documentation
 
 - Require agents to verify linked PR states before closing an issue and summarize merged improvements with the actual destination branch, validation, and remaining work; synchronize this rule across master and beta (Refs #803).

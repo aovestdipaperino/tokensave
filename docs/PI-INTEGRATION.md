@@ -261,3 +261,23 @@ issues #792/#793 and Pi #11410 already cover the related integration/design topi
 
 All three follow-ups target Tokensave rather than Pi core. Shared guidance needs
 synchronization to beta when merged; beta is not edited by this series.
+
+## Real-model evaluation follow-up (2026-10-27)
+
+Refs [#832](https://github.com/aovestdipaperino/tokensave/issues/832) and
+[#834](https://github.com/aovestdipaperino/tokensave/issues/834).
+The [runner and review protocol](../scripts/pi-eval/README.md) implement matched
+baseline/enabled sessions, controlled failures, real model-backed compaction,
+provider-bound system/tool observations and host-reported usage capture.
+The implementation is on `test/pi-model-routing-832`, unmerged; the
+[validation record](../scripts/pi-eval/VALIDATION.md) distinguishes passing
+offline/real-host checks from missing real-model evidence.
+
+| Related work | Scope / status | Dependencies and remaining work |
+| --- | --- | --- |
+| [#837](https://github.com/aovestdipaperino/tokensave/pull/837), Refs #833 | Separate diagnostics PR against master; not included in this runner change | Runtime observation remains explicitly unverified by doctor |
+| #832 evaluation | Runner, report, rubric and offline tests implemented; no model results | Isolated pinned Pi source runs, but model discovery returns no models; provider setup, matched paid runs, independent review and adapter coverage remain |
+| #834 conditional routing | No read interception implemented | First assess real-model traces for repeated avoidable reads; native verification and failure fallback remain available |
+
+No issue is closed, no release is inferred and no model-routing or savings claim
+is made. Evidence collection does not itself establish a need for enforcement.
