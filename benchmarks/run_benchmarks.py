@@ -21,9 +21,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import resource
+import select
+import signal
 import shutil
 import subprocess
 import sys
@@ -184,21 +187,35 @@ class TokensaveMcp:
     Length framing — see src/mcp/transport.rs.
     """
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, initialization_timeout: float = 30,
+                 request_timeout: float = 120, shutdown_timeout: float = 3):
+        for value in (initialization_timeout, request_timeout, shutdown_timeout):
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError("MCP timeouts must be finite and positive")
+        self.initialization_timeout = initialization_timeout
+        self.request_timeout = request_timeout
+        self.shutdown_timeout = shutdown_timeout
+        self._deadline = None
+        self._buffer = bytearray()
         self.root = root
         self.proc: subprocess.Popen | None = None
         self._next_id = 1
 
     def __enter__(self) -> "TokensaveMcp":
+        if self.proc is not None:
+            raise RuntimeError("MCP client is already active or awaiting cleanup")
         self.proc = subprocess.Popen(
             [TOKENSAVE_BIN, "serve", "-p", str(self.root), "--timings"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
+            bufsize=0,
+            start_new_session=True,
         )
         try:
+            os.set_blocking(self.proc.stdin.fileno(), False)
+            os.set_blocking(self.proc.stdout.fileno(), False)
+            self._deadline = time.monotonic() + self.initialization_timeout
             self._request("initialize", {
                 "protocolVersion": "2025-03-26",
                 "capabilities": {},
@@ -208,53 +225,133 @@ class TokensaveMcp:
         except BaseException:
             # Python does not call __exit__ when __enter__ fails, including
             # KeyboardInterrupt during the initialization handshake.
-            self.__exit__()
+            self.__exit__(*sys.exc_info())
             raise
+        finally:
+            self._deadline = None
         return self
 
     def __exit__(self, *_exc) -> None:
         if self.proc is None:
             return
-        try:
-            self.proc.stdin.close()
-        except Exception:
-            pass
+        proc = self.proc
+        interrupted = False
+        # Keep ownership until reaping succeeds. SIGINT is deferred only during
+        # this bounded cleanup; the original body/entry exception wins.
+        def retry(action):
+            nonlocal interrupted
+            while True:
+                try:
+                    return action()
+                except KeyboardInterrupt:
+                    interrupted = True
+
         try:
             try:
-                self.proc.wait(timeout=3)
+                retry(proc.stdin.close)
+            except OSError:
+                # FileIO closes its descriptor even when close reports an error.
+                pass
+            try:
+                deadline = time.monotonic() + self.shutdown_timeout
+                def wait():
+                    return proc.wait(timeout=max(0, deadline - time.monotonic()))
+                retry(wait)
             except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()
+                pass
+            # The session belongs exclusively to this client. Also terminate
+            # descendants that inherited pipes, even if the leader has exited.
+            def kill_group():
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            retry(kill_group)
+            deadline = time.monotonic() + self.shutdown_timeout
+            retry(wait)
+        except Exception as cleanup_error:
+            if len(_exc) > 1 and _exc[1] is not None:
+                if hasattr(_exc[1], "add_note"):
+                    _exc[1].add_note(f"MCP cleanup failed: {cleanup_error}")
+            else:
+                raise
         finally:
-            self.proc.stdout.close()
-            self.proc = None
+            retry(proc.stdout.close)
+            self._buffer.clear()
+            if proc.returncode is not None:
+                self.proc = None
+        if interrupted and not any(_exc):
+            raise KeyboardInterrupt
+
+    def _ready(self, stream, *, writing=False):
+        deadline = self._deadline
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("tokensave MCP I/O deadline exceeded")
+        readable, writable, _ = select.select(
+            [] if writing else [stream], [stream] if writing else [], [], remaining)
+        if not (readable or writable):
+            raise TimeoutError("tokensave MCP I/O deadline exceeded")
 
     def _write(self, payload: dict) -> None:
         assert self.proc and self.proc.stdin
-        self.proc.stdin.write(json.dumps(payload) + "\n")
-        self.proc.stdin.flush()
+        data = memoryview((json.dumps(payload) + "\n").encode())
+        while data:
+            self._ready(self.proc.stdin, writing=True)
+            try:
+                size = os.write(self.proc.stdin.fileno(), data)
+                data = data[size:]
+            except BlockingIOError:
+                continue
 
     def _read_response(self, expected_id: int) -> dict:
         assert self.proc and self.proc.stdout
         while True:
-            line = self.proc.stdout.readline()
-            if not line:
-                raise RuntimeError("tokensave serve closed stdout unexpectedly")
-            try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
+            # Check even when buffered output is continuously available.
+            if time.monotonic() >= self._deadline:
+                raise TimeoutError("tokensave MCP I/O deadline exceeded")
+            newline = self._buffer.find(b"\n")
+            if newline >= 0:
+                line = bytes(self._buffer[:newline])
+                del self._buffer[:newline + 1]
+                try:
+                    msg = json.loads(line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if isinstance(msg, dict) and msg.get("id") == expected_id:
+                    return msg
                 continue
-            if msg.get("id") == expected_id:
-                return msg
+            self._ready(self.proc.stdout)
+            try:
+                chunk = os.read(self.proc.stdout.fileno(), 65536)
+            except BlockingIOError:
+                continue
+            if not chunk:
+                raise RuntimeError("tokensave serve closed stdout unexpectedly")
+            self._buffer.extend(chunk)
+            if len(self._buffer) > 16 * 1024 * 1024:
+                raise RuntimeError("tokensave MCP response exceeds 16 MiB")
 
     def _request(self, method: str, params: dict) -> dict:
         rid = self._next_id
         self._next_id += 1
-        self._write({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
-        return self._read_response(rid)
+        previous = self._deadline
+        if previous is None:
+            self._deadline = time.monotonic() + self.request_timeout
+        try:
+            self._write({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
+            return self._read_response(rid)
+        finally:
+            self._deadline = previous
 
     def _notify(self, method: str, params: dict) -> None:
-        self._write({"jsonrpc": "2.0", "method": method, "params": params})
+        previous = self._deadline
+        if previous is None:
+            self._deadline = time.monotonic() + self.request_timeout
+        try:
+            self._write({"jsonrpc": "2.0", "method": method, "params": params})
+        finally:
+            self._deadline = previous
 
     def call_tool(self, name: str, arguments: dict) -> dict:
         return self._request("tools/call", {"name": name, "arguments": arguments})
