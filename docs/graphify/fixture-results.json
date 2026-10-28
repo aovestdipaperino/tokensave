@@ -2,7 +2,7 @@
   "kind": "fixture_compatibility_smoke",
   "graphify_commit": "0a8cd4e1e342235fe53e881fb5d591bf0460071f",
   "graphify_version": "0.9.97",
-  "tokensave_version": "tokensave TokenSave Beta 7.16.0-beta.1",
+  "tokensave_version": "tokensave 7.17.0",
   "dependency_versions": {
     "graphifyy": "0.9.97",
     "networkx": "3.7",
@@ -42,367 +42,367 @@
   "runs": 5,
   "nodes": 3,
   "edges": 1,
-  "snapshot_bytes": 1885,
-  "snapshot_sha256": "624c7d3a229472da17697a40cd181b85ce7ae690aed801ffc92182d59ee29fde",
+  "snapshot_bytes": 1878,
+  "snapshot_sha256": "ed1cb7802652c2cc15b5edb5511f5942237efceed43ddd1b8c08c0bba31c3878",
   "samples": [
     {
       "phase": "graphify_commit",
-      "seconds": 0.004150194999965606,
+      "seconds": 0.004025212000215106,
       "exit_code": 0
     },
     {
       "phase": "graphify_clean",
-      "seconds": 0.007906924999588227,
+      "seconds": 0.008119105999867315,
       "exit_code": 0
     },
     {
       "phase": "graphify_package",
-      "seconds": 0.11445673299976988,
+      "seconds": 0.11433146200033661,
       "exit_code": 0
     },
     {
       "phase": "graphify_dependencies",
-      "seconds": 0.11470623000013802,
+      "seconds": 0.11433606699984011,
       "exit_code": 0
     },
     {
       "phase": "tokensave_version",
-      "seconds": 0.008312214999932621,
+      "seconds": 0.008029833000364306,
       "exit_code": 0
     },
     {
       "phase": "git_init",
-      "seconds": 0.003958028999932139,
+      "seconds": 0.004044216000238521,
       "exit_code": 0
     },
     {
       "phase": "git_commit",
-      "seconds": 0.007949392000227817,
+      "seconds": 0.008071127999755845,
       "exit_code": 0
     },
     {
       "phase": "git_add",
-      "seconds": 0.004106288999992103,
+      "seconds": 0.0039180170001600345,
       "exit_code": 0
     },
     {
       "phase": "git_source_commit",
-      "seconds": 0.008595502999924065,
+      "seconds": 0.010500741999749152,
       "exit_code": 0
     },
     {
       "phase": "tokensave_init",
-      "seconds": 0.16459899799974664,
+      "seconds": 0.1646995250002874,
       "exit_code": 0
     },
     {
       "phase": "export",
-      "seconds": 0.032232127000042965,
+      "seconds": 0.03401815400002306,
       "exit_code": 0
     },
     {
       "phase": "graphify_load",
-      "seconds": 0.2147461109998403,
+      "seconds": 0.21463614200001757,
       "exit_code": 0
     },
     {
       "phase": "graphify_explain",
-      "seconds": 0.3149446980000903,
+      "seconds": 0.36489627499986454,
       "exit_code": 0
     },
     {
       "phase": "graphify_query",
-      "seconds": 0.3650433749999138,
+      "seconds": 0.3649187030000576,
       "exit_code": 0
     },
     {
       "phase": "graphify_path",
-      "seconds": 0.31516191000036997,
+      "seconds": 0.3658641090000856,
       "exit_code": 0
     },
     {
       "phase": "export",
-      "seconds": 0.032180635999793594,
+      "seconds": 0.03269238900020355,
       "exit_code": 0
     },
     {
       "phase": "graphify_load",
-      "seconds": 0.2667795969996405,
+      "seconds": 0.26695686900029614,
       "exit_code": 0
     },
     {
       "phase": "graphify_explain",
-      "seconds": 0.2649344429996745,
+      "seconds": 0.36644036000006963,
       "exit_code": 0
     },
     {
       "phase": "graphify_query",
-      "seconds": 0.31497912899976654,
+      "seconds": 0.4680082989998482,
       "exit_code": 0
     },
     {
       "phase": "graphify_path",
-      "seconds": 0.31518632999996044,
+      "seconds": 0.3650298729999122,
       "exit_code": 0
     },
     {
       "phase": "export",
-      "seconds": 0.03239509700006238,
+      "seconds": 0.03236392799999521,
       "exit_code": 0
     },
     {
       "phase": "graphify_load",
-      "seconds": 0.26505704400005925,
+      "seconds": 0.2655155920001562,
       "exit_code": 0
     },
     {
       "phase": "graphify_explain",
-      "seconds": 0.365088268999898,
+      "seconds": 0.37107189200014545,
       "exit_code": 0
     },
     {
       "phase": "graphify_query",
-      "seconds": 0.3654068829996504,
+      "seconds": 0.5172421170000234,
       "exit_code": 0
     },
     {
       "phase": "graphify_path",
-      "seconds": 0.3148582379999425,
+      "seconds": 0.3651283770000191,
       "exit_code": 0
     },
     {
       "phase": "export",
-      "seconds": 0.03242816600004517,
+      "seconds": 0.03248601100040105,
       "exit_code": 0
     },
     {
       "phase": "graphify_load",
-      "seconds": 0.21508215999983804,
+      "seconds": 0.26591083699986484,
       "exit_code": 0
     },
     {
       "phase": "graphify_explain",
-      "seconds": 0.31498027199995704,
+      "seconds": 0.31490991999999096,
       "exit_code": 0
     },
     {
       "phase": "graphify_query",
-      "seconds": 0.3655371670001841,
+      "seconds": 0.4652577619999647,
       "exit_code": 0
     },
     {
       "phase": "graphify_path",
-      "seconds": 0.3154927069999758,
+      "seconds": 0.3160762870002145,
       "exit_code": 0
     },
     {
       "phase": "export",
-      "seconds": 0.03227830800005904,
+      "seconds": 0.06603409800027293,
       "exit_code": 0
     },
     {
       "phase": "graphify_load",
-      "seconds": 0.2648649369998566,
+      "seconds": 0.3200867139998991,
       "exit_code": 0
     },
     {
       "phase": "graphify_explain",
-      "seconds": 0.3156333120000454,
+      "seconds": 0.3652954899998804,
       "exit_code": 0
     },
     {
       "phase": "graphify_query",
-      "seconds": 0.36523330699992584,
+      "seconds": 0.415400598999895,
       "exit_code": 0
     },
     {
       "phase": "graphify_path",
-      "seconds": 0.3149727640002311,
+      "seconds": 0.4713346579997051,
       "exit_code": 0
     },
     {
       "phase": "export_refusal",
-      "seconds": 0.008031162999941444,
+      "seconds": 0.03607004600007713,
       "exit_code": 1
     },
     {
       "phase": "export_refusal",
-      "seconds": 0.032298519000050874,
+      "seconds": 0.11849461300016628,
       "exit_code": 1
     },
     {
       "phase": "export_refusal",
-      "seconds": 0.032370630000059464,
+      "seconds": 0.06741234999981316,
       "exit_code": 1
     },
     {
       "phase": "tokensave_sync",
-      "seconds": 0.11462604600001214,
+      "seconds": 0.271345182999994,
       "exit_code": 0
     },
     {
       "phase": "export",
-      "seconds": 0.0655592380003327,
+      "seconds": 0.06606940999972721,
       "exit_code": 0
     },
     {
       "phase": "worktree_add",
-      "seconds": 0.01670062199991662,
+      "seconds": 0.06701275000023088,
       "exit_code": 0
     },
     {
       "phase": "worktree_init",
-      "seconds": 0.16478946400002314,
+      "seconds": 0.16557783500002188,
       "exit_code": 0
     },
     {
       "phase": "worktree_track",
-      "seconds": 0.1662111629998435,
+      "seconds": 0.11809458399966388,
       "exit_code": 0
     },
     {
       "phase": "worktree_export",
-      "seconds": 0.03268387800017081,
+      "seconds": 0.06740968700023586,
       "exit_code": 0
     },
     {
       "phase": "graphify_html",
-      "seconds": 0.3147076539999034,
+      "seconds": 0.525922201999947,
       "exit_code": 0
     }
   ],
   "summary": {
     "export": {
       "count": 6,
-      "median_seconds": 0.03233670250006071,
-      "min_seconds": 0.032180635999793594,
-      "max_seconds": 0.0655592380003327
+      "median_seconds": 0.033355271500113304,
+      "min_seconds": 0.03236392799999521,
+      "max_seconds": 0.06606940999972721
     },
     "export_refusal": {
       "count": 3,
-      "median_seconds": 0.032298519000050874,
-      "min_seconds": 0.008031162999941444,
-      "max_seconds": 0.032370630000059464
+      "median_seconds": 0.06741234999981316,
+      "min_seconds": 0.03607004600007713,
+      "max_seconds": 0.11849461300016628
     },
     "git_add": {
       "count": 1,
-      "median_seconds": 0.004106288999992103,
-      "min_seconds": 0.004106288999992103,
-      "max_seconds": 0.004106288999992103
+      "median_seconds": 0.0039180170001600345,
+      "min_seconds": 0.0039180170001600345,
+      "max_seconds": 0.0039180170001600345
     },
     "git_commit": {
       "count": 1,
-      "median_seconds": 0.007949392000227817,
-      "min_seconds": 0.007949392000227817,
-      "max_seconds": 0.007949392000227817
+      "median_seconds": 0.008071127999755845,
+      "min_seconds": 0.008071127999755845,
+      "max_seconds": 0.008071127999755845
     },
     "git_init": {
       "count": 1,
-      "median_seconds": 0.003958028999932139,
-      "min_seconds": 0.003958028999932139,
-      "max_seconds": 0.003958028999932139
+      "median_seconds": 0.004044216000238521,
+      "min_seconds": 0.004044216000238521,
+      "max_seconds": 0.004044216000238521
     },
     "git_source_commit": {
       "count": 1,
-      "median_seconds": 0.008595502999924065,
-      "min_seconds": 0.008595502999924065,
-      "max_seconds": 0.008595502999924065
+      "median_seconds": 0.010500741999749152,
+      "min_seconds": 0.010500741999749152,
+      "max_seconds": 0.010500741999749152
     },
     "graphify_clean": {
       "count": 1,
-      "median_seconds": 0.007906924999588227,
-      "min_seconds": 0.007906924999588227,
-      "max_seconds": 0.007906924999588227
+      "median_seconds": 0.008119105999867315,
+      "min_seconds": 0.008119105999867315,
+      "max_seconds": 0.008119105999867315
     },
     "graphify_commit": {
       "count": 1,
-      "median_seconds": 0.004150194999965606,
-      "min_seconds": 0.004150194999965606,
-      "max_seconds": 0.004150194999965606
+      "median_seconds": 0.004025212000215106,
+      "min_seconds": 0.004025212000215106,
+      "max_seconds": 0.004025212000215106
     },
     "graphify_dependencies": {
       "count": 1,
-      "median_seconds": 0.11470623000013802,
-      "min_seconds": 0.11470623000013802,
-      "max_seconds": 0.11470623000013802
+      "median_seconds": 0.11433606699984011,
+      "min_seconds": 0.11433606699984011,
+      "max_seconds": 0.11433606699984011
     },
     "graphify_explain": {
       "count": 5,
-      "median_seconds": 0.31498027199995704,
-      "min_seconds": 0.2649344429996745,
-      "max_seconds": 0.365088268999898
+      "median_seconds": 0.3652954899998804,
+      "min_seconds": 0.31490991999999096,
+      "max_seconds": 0.37107189200014545
     },
     "graphify_html": {
       "count": 1,
-      "median_seconds": 0.3147076539999034,
-      "min_seconds": 0.3147076539999034,
-      "max_seconds": 0.3147076539999034
+      "median_seconds": 0.525922201999947,
+      "min_seconds": 0.525922201999947,
+      "max_seconds": 0.525922201999947
     },
     "graphify_load": {
       "count": 5,
-      "median_seconds": 0.2648649369998566,
-      "min_seconds": 0.2147461109998403,
-      "max_seconds": 0.2667795969996405
+      "median_seconds": 0.26591083699986484,
+      "min_seconds": 0.21463614200001757,
+      "max_seconds": 0.3200867139998991
     },
     "graphify_package": {
       "count": 1,
-      "median_seconds": 0.11445673299976988,
-      "min_seconds": 0.11445673299976988,
-      "max_seconds": 0.11445673299976988
+      "median_seconds": 0.11433146200033661,
+      "min_seconds": 0.11433146200033661,
+      "max_seconds": 0.11433146200033661
     },
     "graphify_path": {
       "count": 5,
-      "median_seconds": 0.31516191000036997,
-      "min_seconds": 0.3148582379999425,
-      "max_seconds": 0.3154927069999758
+      "median_seconds": 0.3651283770000191,
+      "min_seconds": 0.3160762870002145,
+      "max_seconds": 0.4713346579997051
     },
     "graphify_query": {
       "count": 5,
-      "median_seconds": 0.36523330699992584,
-      "min_seconds": 0.31497912899976654,
-      "max_seconds": 0.3655371670001841
+      "median_seconds": 0.4652577619999647,
+      "min_seconds": 0.3649187030000576,
+      "max_seconds": 0.5172421170000234
     },
     "tokensave_init": {
       "count": 1,
-      "median_seconds": 0.16459899799974664,
-      "min_seconds": 0.16459899799974664,
-      "max_seconds": 0.16459899799974664
+      "median_seconds": 0.1646995250002874,
+      "min_seconds": 0.1646995250002874,
+      "max_seconds": 0.1646995250002874
     },
     "tokensave_sync": {
       "count": 1,
-      "median_seconds": 0.11462604600001214,
-      "min_seconds": 0.11462604600001214,
-      "max_seconds": 0.11462604600001214
+      "median_seconds": 0.271345182999994,
+      "min_seconds": 0.271345182999994,
+      "max_seconds": 0.271345182999994
     },
     "tokensave_version": {
       "count": 1,
-      "median_seconds": 0.008312214999932621,
-      "min_seconds": 0.008312214999932621,
-      "max_seconds": 0.008312214999932621
+      "median_seconds": 0.008029833000364306,
+      "min_seconds": 0.008029833000364306,
+      "max_seconds": 0.008029833000364306
     },
     "worktree_add": {
       "count": 1,
-      "median_seconds": 0.01670062199991662,
-      "min_seconds": 0.01670062199991662,
-      "max_seconds": 0.01670062199991662
+      "median_seconds": 0.06701275000023088,
+      "min_seconds": 0.06701275000023088,
+      "max_seconds": 0.06701275000023088
     },
     "worktree_export": {
       "count": 1,
-      "median_seconds": 0.03268387800017081,
-      "min_seconds": 0.03268387800017081,
-      "max_seconds": 0.03268387800017081
+      "median_seconds": 0.06740968700023586,
+      "min_seconds": 0.06740968700023586,
+      "max_seconds": 0.06740968700023586
     },
     "worktree_init": {
       "count": 1,
-      "median_seconds": 0.16478946400002314,
-      "min_seconds": 0.16478946400002314,
-      "max_seconds": 0.16478946400002314
+      "median_seconds": 0.16557783500002188,
+      "min_seconds": 0.16557783500002188,
+      "max_seconds": 0.16557783500002188
     },
     "worktree_track": {
       "count": 1,
-      "median_seconds": 0.1662111629998435,
-      "min_seconds": 0.1662111629998435,
-      "max_seconds": 0.1662111629998435
+      "median_seconds": 0.11809458399966388,
+      "min_seconds": 0.11809458399966388,
+      "max_seconds": 0.11809458399966388
     }
   },
   "limitations": [

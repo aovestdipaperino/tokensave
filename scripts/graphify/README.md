@@ -51,11 +51,10 @@ commands avoid worker queues and uncontrolled parallel extraction.
 
 [Recorded fixture evidence](../../docs/graphify/fixture-results.json) establishes
 compatibility for three nodes and one edge on the reported Linux environment.
-The initial run used a debug lite beta binary, Python 3.14.4 and Graphify 0.9.97.
-It is historical evidence from before retargeting to master; master validation
-is recorded separately on #791.
-Exporter source revision: `af60a1bdb2f6b52740a3f02dd17783b32ddbb931`;
-harness source revision: `06ccb039efbdb3e3d6d34edd8bced6fa5cb25d96`. It does not
+The recorded master-based run used a debug full binary, Python 3.14.4 and Graphify
+0.9.97. Exporter source revision: `9349695c023b956c4ce4c6e2b4e4090ec064df8e`;
+harness source revision: `27198cd3a0cc84c24ded2ec41877afd9e133b291`.
+It does not
 establish production readiness, retrieval quality, throughput, or a speedup.
 Wall timings include process startup, Python's timed-wait/backoff overhead and
 harness overhead; they are diagnostic smoke measurements. No p95/p99 conclusion
