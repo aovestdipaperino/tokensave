@@ -2751,6 +2751,13 @@ impl McpServer {
                         format!("invalid graph selector: {message}"),
                     );
                 }
+                Err(error) if crate::db::compatibility::is_refusal(&error) => {
+                    return JsonRpcResponse::error(
+                        id,
+                        ErrorCode::InvalidParams,
+                        format!("invalid graph selector: {error}"),
+                    );
+                }
                 Err(error) => {
                     return JsonRpcResponse::error(
                         id,

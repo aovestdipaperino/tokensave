@@ -1696,6 +1696,43 @@ async fn selected_schema_mismatches_return_invalid_params() {
 }
 
 #[tokio::test]
+async fn selected_unknown_database_origin_returns_invalid_params() {
+    let (_local_dir, local) = setup_named_project("local_only").await;
+    let server = McpServer::new(local, None).await;
+    let (foreign_dir, foreign) = setup_named_project("foreign_only").await;
+    foreign
+        .db()
+        .conn()
+        .execute("PRAGMA application_id = 17", ())
+        .await
+        .unwrap();
+    foreign.checkpoint().await.unwrap();
+    drop(foreign);
+    let db_path = tokensave::config::get_tokensave_dir(foreign_dir.path()).join("tokensave.db");
+    let before = fs::read(&db_path).unwrap();
+
+    let response = call_server(
+        &server,
+        61,
+        "tokensave_search",
+        json!({
+            "query": "foreign_only",
+            "graph_root": foreign_dir.path().display().to_string()
+        }),
+    )
+    .await;
+
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("unrecognized database application ID 17")),
+        "{response}"
+    );
+    assert_eq!(fs::read(&db_path).unwrap(), before);
+}
+
+#[tokio::test]
 async fn selected_malformed_node_ids_return_invalid_params_before_dispatch() {
     let (_local_dir, local) = setup_named_project("local_only").await;
     let (foreign_dir, foreign) = setup_named_project("foreign_only").await;
