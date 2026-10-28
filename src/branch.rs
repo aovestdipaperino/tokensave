@@ -66,6 +66,14 @@ async fn vacuum_into(parent_db: &Path, new_db_path: &Path) -> std::result::Resul
 ///    recovers it on first open of the new DB. This path is not
 ///    race-free against an active writer — the snapshot layer above is.
 pub async fn copy_branch_db(parent_db: &Path, new_db_path: &Path) -> crate::errors::Result<()> {
+    if let Err(error) =
+        crate::db::compatibility::preflight(parent_db, crate::db::migrations::latest_version())
+            .await
+    {
+        if crate::db::compatibility::is_refusal(&error) {
+            return Err(error);
+        }
+    }
     let file_name = new_db_path.file_name().map_or_else(
         || "branch.db".to_string(),
         |n| n.to_string_lossy().into_owned(),

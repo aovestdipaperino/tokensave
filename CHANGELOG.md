@@ -7,6 +7,12 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+
+- Return MCP invalid-parameter errors for selected graphs rejected by database compatibility checks, preserving internal errors for database failures (Refs #835).
+
+- Preserve database creation channel, reject beta-origin and newer-schema databases before writes or recovery, and isolate beta project/global indexes under `.tokensave/beta` without relabeling legacy databases (Refs #835).
+
 ### Changed
 
 - Pi doctor distinguishes static configuration from unverified runtime state, reports possible instruction overrides and missing indexes without writes, and rejects unknown direct-tool exposure settings (Refs #833).
@@ -2182,3 +2188,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [7.14.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.14.1
 [7.15.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.15.0
 [7.16.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.16.0
+[7.17.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.17.0

@@ -533,7 +533,9 @@ fn doctor_check_project_index(dc: &mut DoctorCounters, project_path: &Path) {
         crate::config::ProjectDiscovery::Initialized(root) => dc.pass(&format!(
             "Project index file found at {} — schema, coverage, freshness and runtime \
              usability UNVERIFIED; use `tokensave sync` if refresh is needed",
-            root.join(".tokensave").join("tokensave.db").display()
+            crate::config::get_tokensave_dir(&root)
+                .join("tokensave.db")
+                .display()
         )),
         crate::config::ProjectDiscovery::Incomplete(root) => dc.warn(&format!(
             "Project configuration at {} has no index — run `tokensave init` in that project",

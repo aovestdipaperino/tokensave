@@ -13,8 +13,8 @@ use tokensave::config::{save_config, TokenSaveConfig};
 use tokensave::index_scope::{scope_warnings, OVERSIZED_INDEX_BYTES};
 
 fn initialize(root: &Path, db_bytes: u64) {
-    std::fs::create_dir_all(root.join(".tokensave")).expect("create .tokensave");
-    let db = root.join(".tokensave").join("tokensave.db");
+    std::fs::create_dir_all(tokensave::config::get_tokensave_dir(root)).expect("create .tokensave");
+    let db = tokensave::config::get_tokensave_dir(root).join("tokensave.db");
     let file = std::fs::File::create(&db).expect("create db");
     file.set_len(db_bytes).expect("size db");
     let config = TokenSaveConfig {
@@ -145,7 +145,7 @@ fn a_config_without_the_key_defaults_to_warning() {
     initialize(&root, 1024);
     // A real config with only this key removed — a hand-rolled minimal JSON
     // fails to parse on unrelated fields and would pass for the wrong reason.
-    let path = root.join(".tokensave").join("config.json");
+    let path = tokensave::config::get_tokensave_dir(&root).join("config.json");
     let raw = std::fs::read_to_string(&path).expect("read config");
     let mut value: serde_json::Value = serde_json::from_str(&raw).expect("parse config");
     value

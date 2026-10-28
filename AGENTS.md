@@ -162,6 +162,18 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - `src/bench.rs` — `tokensave bench` harness.
 - `build.rs` compiles vendored grammars (WGSL, ActionScript, GDScript) only when their feature is enabled.
 
+## Database channel compatibility
+
+- Creation origin uses SQLite `application_id` (`0` = legacy/unknown,
+  `0x54535354` = stable, `0x54534254` = beta); it is independent of
+  `user_version` and must never be silently relabeled on migration or open.
+- Validate origin and supported schema before write pragmas or migrations.
+  Compatibility refusals must bypass crash recovery and forced rebuilds.
+- Stable state paths stay unchanged. Prerelease builds use `.tokensave/beta/`
+  for project state and the global database. Use `get_tokensave_dir` for
+  project paths; global user settings remain shared. See
+  [docs/DATABASE-COMPATIBILITY.md](docs/DATABASE-COMPATIBILITY.md).
+
 ## Setup and environment
 
 - Rust 1.98.1 pinned via `rust-toolchain.toml`.

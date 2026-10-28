@@ -923,7 +923,7 @@ fn test_healthcheck_reports_shadowing_without_writes() {
             "User-owned override\n"
         );
     }
-    assert!(!project.join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(&project).exists());
 }
 
 #[test]
@@ -941,7 +941,7 @@ fn test_healthcheck_index_presence_is_metadata_only() {
     };
     let mut missing = DoctorCounters::new();
     PiIntegration.healthcheck(&mut missing, &hctx);
-    let index_dir = project.join(".tokensave");
+    let index_dir = tokensave::config::get_tokensave_dir(&project);
     std::fs::create_dir(&index_dir).unwrap();
     std::fs::write(index_dir.join("config.json"), "{}").unwrap();
     let mut incomplete = DoctorCounters::new();
