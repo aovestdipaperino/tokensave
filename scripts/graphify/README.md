@@ -7,7 +7,7 @@ It uses disposable repositories, private HOME/config/cache directories, model
 backends disabled, and Graphify query logging disabled. Environment values and
 authentication material are never printed or saved in the report.
 
-Requires Python 3.10+, Git, the beta TokenSave binary containing `graphify-export`,
+Requires Python 3.10+, Git, the TokenSave binary containing `graphify-export`,
 and the pinned Graphify checkout installed editable in an isolated virtualenv.
 On Unix, for example:
 
@@ -51,7 +51,9 @@ commands avoid worker queues and uncontrolled parallel extraction.
 
 [Recorded fixture evidence](../../docs/graphify/fixture-results.json) establishes
 compatibility for three nodes and one edge on the reported Linux environment.
-The run used a debug lite binary, Python 3.14.4 and Graphify 0.9.97.
+The initial run used a debug lite beta binary, Python 3.14.4 and Graphify 0.9.97.
+It is historical evidence from before retargeting to master; master validation
+is recorded separately on #791.
 Exporter source revision: `af60a1bdb2f6b52740a3f02dd17783b32ddbb931`;
 harness source revision: `06ccb039efbdb3e3d6d34edd8bced6fa5cb25d96`. It does not
 establish production readiness, retrieval quality, throughput, or a speedup.

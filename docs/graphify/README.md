@@ -84,7 +84,7 @@ resolve shared indexing or server lifecycle concerns in #742/#780.
 | Work | Implementation / merge status | Validation / remaining work |
 | --- | --- | --- |
 | [Contract PR #849](https://github.com/aovestdipaperino/tokensave/pull/849) | Open, unmerged; targets master | Pinned source contract; runtime evidence follows separately |
-| [Exporter PR #850](https://github.com/aovestdipaperino/tokensave/pull/850) | Draft, unmerged; stacked on #849, intended master | Seven focused tests and workspace suite passed; see #791 for current checks and platform limits |
+| [Exporter PR #850](https://github.com/aovestdipaperino/tokensave/pull/850) | Draft, unmerged; based on master; depends on #849 | Initial beta-based checks passed; master revalidation is tracked on #791; see #791 for current checks and platform limits |
 | [Compatibility harness](../../scripts/graphify/README.md) | Implemented in the dependent harness PR; unmerged | Five fixture runs passed, including dirty linked worktrees; [raw evidence](fixture-results.json). Representative resource/quality assessment remains open |
 | Documents and product rollout | Conditional, not implemented | User benefit and resource budgets must be reviewed first |
 | #742 shared storage | Separate open evaluation | No storage/backend result asserted here |
