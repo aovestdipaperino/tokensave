@@ -238,17 +238,23 @@ impl<'a> GraphQueryManager<'a> {
         // dead-code detection — which is why the sonium run reported zero
         // dead functions across 5,715. The narrower allowlist below restores
         // the intended semantics: "no real caller / referencer = dead".
-        // Test-marker exclusion uses a three-step "resolve + pre-join + filter":
+        // Test-marker exclusion uses a two-step "resolve + filter in SQL":
         //   1) `collect_test_marker_ids` runs the leading-wildcard `LIKE`
         //      scan exactly once over `kind = 'annotation_usage'`.
-        //   2) `collect_test_annotated_targets` reads
-        //      `edges WHERE kind='annotates' AND source IN (<marker ids>)`
-        //      in chunks of 500 ids into an in-memory `HashSet`, i.e.
-        //      "which node ids are annotated by ANY test marker."
-        //      ~15 K ids on chromium.
-        //   3) The dead-code SELECT has no test-marker clause; candidates
-        //      whose id is in that set are skipped as rows are read, one
-        //      hash probe per candidate.
+        //   2) The marker ids go to the dead-code SELECT as ONE bound
+        //      parameter, a JSON array built with `serde_json`, and the
+        //      SELECT drops test-annotated candidates with
+        //      `id NOT IN (SELECT target FROM edges WHERE kind = 'annotates'
+        //      AND source IN (SELECT value FROM json_each(?)))`.
+        //      The subquery is uncorrelated, so SQLite plans it as a
+        //      `LIST SUBQUERY`: it walks the JSON array once, probes
+        //      `idx_edges_source_kind` per marker, and builds a transient
+        //      in-memory index of the targets that each candidate probes.
+        //      That is the same shape as the old two-temp-table form,
+        //      without writing anything: selected graphs are opened with
+        //      `PRAGMA query_only = 1`, and the transient index is not a
+        //      database write. A single parameter also avoids SQLite's
+        //      bound-parameter limit, so there is no chunking.
         //
         // History — DO NOT regress this:
         // - The pre-4.14.8 form joined `nodes a ON a.id = e2.source` inside
@@ -275,10 +281,21 @@ impl<'a> GraphQueryManager<'a> {
         //   `temp.test_annotated_targets`, which fails on selected graphs
         //   (opened with `PRAGMA query_only = 1`) and let concurrent
         //   read-only calls on the shared connection drop or refill each
-        //   other's tables. The in-memory set keeps the same single
-        //   wildcard scan and per-candidate probe without any writes.
+        //   other's tables.
+        // - The next form collected the targets into an in-memory `HashSet`
+        //   (chunked SELECTs of 500 marker ids) and skipped matching rows
+        //   while reading the main query. It was read-only safe but ~11%
+        //   slower per call: rows SQL used to filter out (~2,200 of ~2,970
+        //   candidates on a 24 K-node project) were read and decoded, then
+        //   discarded. Filtering in SQL with `json_each` restores that.
         let marker_ids = self.db.collect_test_marker_ids().await?;
-        let test_annotated = self.db.collect_test_annotated_targets(&marker_ids).await?;
+        // Always bind the array, even when empty: `NOT IN` over an empty
+        // set is true, so every candidate is kept.
+        let marker_ids_json =
+            serde_json::to_string(&marker_ids).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to encode test marker ids: {e}"),
+                operation: "find_dead_code".to_string(),
+            })?;
         drop(marker_ids);
         let godot_virtuals = GODOT_ENGINE_VIRTUALS
             .iter()
@@ -313,30 +330,31 @@ impl<'a> GraphQueryManager<'a> {
                  SELECT 1 FROM edges
                  WHERE target = nodes.id
                  AND kind IN ('calls', 'implements', 'extends', 'type_of', 'returns', 'receives', 'uses')
+             )
+             AND id NOT IN (
+                 SELECT target FROM edges
+                 WHERE kind = 'annotates'
+                 AND source IN (SELECT value FROM json_each(?1))
              )"
         );
 
-        let mut rows =
-            self.db
-                .conn()
-                .query(&sql, ())
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to find dead code: {e}"),
-                    operation: "find_dead_code".to_string(),
-                })?;
+        let mut rows = self
+            .db
+            .conn()
+            .query(&sql, libsql::params![marker_ids_json])
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to find dead code: {e}"),
+                operation: "find_dead_code".to_string(),
+            })?;
 
         let mut dead = Vec::new();
         while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to read row: {e}"),
             operation: "find_dead_code".to_string(),
         })? {
-            let node = row_to_node_dead_code(&row)?;
-            if !test_annotated.contains(&node.id) {
-                dead.push(node);
-            }
+            dead.push(row_to_node_dead_code(&row)?);
         }
-        drop(test_annotated);
 
         if dead
             .iter()

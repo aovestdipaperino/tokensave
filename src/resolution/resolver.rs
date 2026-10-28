@@ -2295,7 +2295,7 @@ fn kind_compatible(uref: &UnresolvedRef, target_kind: &NodeKind) -> bool {
         // attachment of an annotation/decorator usage to the item it
         // decorates (`get_annotation_sites`, `get_test_annotated_node_ids`,
         // `get_files_with_test_annotations`,
-        // `collect_test_annotated_targets`). Extractors already
+        // `find_dead_code`). Extractors already
         // emit that edge directly at the usage site — this resolver has no
         // second, distinct relation to express under the same edge kind.
         //

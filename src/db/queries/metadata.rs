@@ -156,7 +156,8 @@ impl Database {
     /// exactly once over the `kind = 'annotation_usage'` partition.
     ///
     /// `find_dead_code` uses this in a two-step "resolve + use" pattern
-    /// (resolve the annotated targets by id, then filter in memory) so the LIKE never
+    /// (resolve the marker ids here, then pass them to the dead-code query
+    /// as one bound JSON array read with `json_each`) so the LIKE never
     /// runs in a correlated subquery — the per-row degenerate plan from the
     /// reverted 4.14.8 CTE attempt timed out at >60s on scirs; the original
     /// JOIN+LIKE form times out at >25s on chromium. Both pathologies stem
@@ -191,58 +192,5 @@ impl Database {
             ids.push(id);
         }
         Ok(ids)
-    }
-
-    /// Resolves the set of node ids that are targets of an `annotates` edge
-    /// whose source is one of `marker_ids` (see `collect_test_marker_ids`),
-    /// i.e. "which nodes carry a test marker".
-    ///
-    /// The lookup runs in bounded chunks of marker ids, each probing
-    /// `idx_edges_source_kind`, and the result is kept in memory. No TEMP
-    /// table is created, so this works on connections opened with
-    /// `PRAGMA query_only = 1` (selected graphs) and cannot race with another
-    /// concurrent read-only call that shares the same connection.
-    ///
-    /// The set holds one id per test-annotated node (~15 K on chromium) and
-    /// is dropped when `find_dead_code` returns.
-    pub async fn collect_test_annotated_targets(
-        &self,
-        marker_ids: &[String],
-    ) -> Result<HashSet<String>> {
-        // `SQLite`'s default parameter limit is 999. Chunk well under that.
-        const CHUNK_SIZE: usize = 500;
-
-        let op = "collect_test_annotated_targets";
-        let conn = self.conn();
-        let mut targets = HashSet::new();
-        for chunk in marker_ids.chunks(CHUNK_SIZE) {
-            let placeholders = vec!["?"; chunk.len()].join(", ");
-            let sql = format!(
-                "SELECT target FROM edges
-                 WHERE kind = 'annotates' AND source IN ({placeholders})"
-            );
-            let params: Vec<libsql::Value> = chunk
-                .iter()
-                .map(|id| libsql::Value::Text(id.clone()))
-                .collect();
-            let mut rows = conn
-                .query(&sql, libsql::params_from_iter(params))
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to query test-annotated targets: {e}"),
-                    operation: op.to_string(),
-                })?;
-            while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-                message: format!("failed to read test-annotated target row: {e}"),
-                operation: op.to_string(),
-            })? {
-                let target: String = row.get(0).map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to read test-annotated target column: {e}"),
-                    operation: op.to_string(),
-                })?;
-                targets.insert(target);
-            }
-        }
-        Ok(targets)
     }
 }
