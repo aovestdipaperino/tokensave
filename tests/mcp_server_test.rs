@@ -1386,6 +1386,188 @@ async fn cross_project_selected_queries_leave_both_projects_unchanged() {
     assert_eq!(selected_after, selected_before);
 }
 
+/// A git project on `main` whose `src/lib.rs` holds `lib_source`, indexed and
+/// checkpointed, with no open handle left behind.
+async fn setup_selected_main_project(lib_source: &str) -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    run_git(project, &["init", "-b", "main"]);
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src").join("lib.rs"), lib_source).unwrap();
+    run_git(project, &["add", "src/lib.rs"]);
+    run_git(project, &["commit", "-m", "main"]);
+
+    let graph = TokenSave::init(project).await.unwrap();
+    graph.index_all().await.unwrap();
+    graph.checkpoint().await.unwrap();
+    drop(graph);
+    dir
+}
+
+/// Every `node_fingerprints` row of a project's graph, read through a
+/// read-only open. `project_snapshot` does not cover this cache table, and
+/// `tokensave_redundancy` is the one tool that writes it.
+async fn fingerprint_rows(root: &Path, branch: Option<&str>) -> Vec<String> {
+    let graph = TokenSave::open_read_only(root, branch).await.unwrap();
+    query_snapshot_rows(
+        graph.db(),
+        "SELECT json_array(node_id, ast_hash, cfg_hash, call_seq_hash, shingles,
+                           body_tokens, source_hash)
+         FROM node_fingerprints ORDER BY node_id",
+    )
+    .await
+}
+
+/// Two structurally identical functions (renamed identifiers), plus one
+/// unrelated function, as in `mcp_handler_test::test_redundancy_finds_planted_duplicate`.
+const SELECTED_DUPLICATE_PAIR_SOURCE: &str = r#"
+pub fn compute_a(value: i32) -> i32 {
+    let mut acc = 0;
+    for i in 0..value {
+        if i % 2 == 0 {
+            acc += i;
+        } else {
+            acc -= i;
+        }
+    }
+    acc
+}
+
+pub fn compute_b(input: i32) -> i32 {
+    let mut total = 0;
+    for j in 0..input {
+        if j % 2 == 0 {
+            total += j;
+        } else {
+            total -= j;
+        }
+    }
+    total
+}
+
+pub fn unrelated(x: i32) -> i32 {
+    x * 2
+}
+"#;
+
+#[tokio::test]
+async fn selected_graph_redundancy_reports_selected_project_pair_without_writing() {
+    // Catches: `tokensave_redundancy` refusing `graph_root`/`graph_branch`
+    // (InvalidParams "does not support graph_root"), answering from the
+    // served project instead of the selected one, leaking raw node IDs that
+    // the caller cannot resolve against the selected graph, or persisting its
+    // fingerprint cache (or anything else) into the selected project's
+    // database during a read-only selected call.
+    let (local_dir, local) = setup_named_project("local_only").await;
+    let selected_dir = setup_selected_main_project(SELECTED_DUPLICATE_PAIR_SOURCE).await;
+    let server = McpServer::new(local, None).await;
+    assert!(
+        server
+            .wait_for_startup_catch_up(std::time::Duration::from_secs(30))
+            .await
+    );
+    server
+        .cg()
+        .expect("default project")
+        .checkpoint()
+        .await
+        .unwrap();
+
+    let local_before = project_snapshot(local_dir.path(), None, "src/main.rs").await;
+    let selected_before = project_snapshot(selected_dir.path(), Some("main"), "src/lib.rs").await;
+    let local_fingerprints_before = fingerprint_rows(local_dir.path(), None).await;
+    let selected_fingerprints_before = fingerprint_rows(selected_dir.path(), Some("main")).await;
+
+    let response = call_server(
+        &server,
+        60,
+        "tokensave_redundancy",
+        json!({
+            "min_lines": 5,
+            "similarity_threshold": 0.5,
+            "graph_root": selected_dir.path().display().to_string(),
+            "graph_branch": "main"
+        }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response}");
+
+    let payload = response_payload(&response);
+    assert_eq!(payload["pair_count"], 1, "{payload}");
+    let top = &payload["pairs"][0];
+    assert_eq!(top["overlap_kind"], "ast_isomorphic", "{payload}");
+    assert_eq!(top["severity"], "definite", "{payload}");
+    let mut names = [
+        top["a"]["name"].as_str().unwrap_or_default(),
+        top["b"]["name"].as_str().unwrap_or_default(),
+    ];
+    names.sort_unstable();
+    assert_eq!(names, ["compute_a", "compute_b"], "{payload}");
+    assert_eq!(top["a"]["file"], "src/lib.rs", "{payload}");
+    assert_eq!(top["b"]["file"], "src/lib.rs", "{payload}");
+    let ids = response_structured_ids(&response);
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert!(ids.iter().all(|id| id.starts_with("graph:")), "{ids:?}");
+
+    let local_after = project_snapshot(local_dir.path(), None, "src/main.rs").await;
+    let selected_after = project_snapshot(selected_dir.path(), Some("main"), "src/lib.rs").await;
+    assert_eq!(local_after, local_before);
+    assert_eq!(selected_after, selected_before);
+    assert_eq!(
+        fingerprint_rows(local_dir.path(), None).await,
+        local_fingerprints_before
+    );
+    assert_eq!(
+        fingerprint_rows(selected_dir.path(), Some("main")).await,
+        selected_fingerprints_before
+    );
+}
+
+#[tokio::test]
+async fn selected_graph_simplify_scan_reports_selected_project_code() {
+    // Catches: `tokensave_simplify_scan` refusing `graph_root` (InvalidParams
+    // "does not support graph_root"), or scanning the served project's graph
+    // instead of the selected one. Both projects hold a private, uncalled
+    // function, so a scan of the wrong graph names the wrong one.
+    let (local_dir, local) = setup_named_project("local_only").await;
+    fs::write(
+        local_dir.path().join("src").join("lib.rs"),
+        "fn local_only_dead() -> i32 { 1 }\n",
+    )
+    .unwrap();
+    local.index_all().await.unwrap();
+    let selected_dir = setup_selected_main_project(
+        "pub fn used() -> i32 { 0 }\nfn selected_only_dead() -> i32 { 2 }\n",
+    )
+    .await;
+    let server = McpServer::new(local, None).await;
+
+    let response = call_server(
+        &server,
+        61,
+        "tokensave_simplify_scan",
+        json!({
+            "files": ["src/lib.rs"],
+            "graph_root": selected_dir.path().display().to_string()
+        }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response}");
+
+    let payload = response_payload(&response);
+    let dead: Vec<&str> = payload["dead_introductions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no dead_introductions: {payload}"))
+        .iter()
+        .filter_map(|entry| entry["symbol"].as_str())
+        .collect();
+    assert_eq!(dead, ["selected_only_dead"], "{payload}");
+    assert_eq!(
+        payload["dead_introductions"][0]["file"], "src/lib.rs",
+        "{payload}"
+    );
+}
+
 #[tokio::test]
 async fn selected_truncated_structured_output_stays_qualified() {
     let (_local_dir, local) = setup_named_project("local_only").await;
