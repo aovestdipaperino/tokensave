@@ -72,7 +72,7 @@ fn project(auto_track: bool) -> tempfile::TempDir {
     assert!(tokensave(root, &["branch", "add"]).status.success());
     git(root, &["checkout", "-b", "feature"]);
 
-    let config_path = root.join(".tokensave").join("config.json");
+    let config_path = tokensave::config::get_tokensave_dir(root).join("config.json");
     let mut config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
     config["auto_track"] = serde_json::Value::Bool(auto_track);
@@ -82,7 +82,7 @@ fn project(auto_track: bool) -> tempfile::TempDir {
 }
 
 fn is_tracked(root: &Path, branch: &str) -> bool {
-    let meta = root.join(".tokensave").join("branch-meta.json");
+    let meta = tokensave::config::get_tokensave_dir(root).join("branch-meta.json");
     let Ok(text) = std::fs::read_to_string(meta) else {
         return false;
     };
@@ -158,7 +158,8 @@ fn repeated_branch_add_is_idempotent() {
         "first add must succeed: {}",
         String::from_utf8_lossy(&first.stderr)
     );
-    let meta_before = std::fs::read(root.join(".tokensave").join("branch-meta.json")).unwrap();
+    let meta_before =
+        std::fs::read(tokensave::config::get_tokensave_dir(root).join("branch-meta.json")).unwrap();
 
     let second = tokensave(root, &["branch", "add"]);
     assert!(
@@ -167,7 +168,7 @@ fn repeated_branch_add_is_idempotent() {
         String::from_utf8_lossy(&second.stderr)
     );
     assert_eq!(
-        std::fs::read(root.join(".tokensave").join("branch-meta.json")).unwrap(),
+        std::fs::read(tokensave::config::get_tokensave_dir(root).join("branch-meta.json")).unwrap(),
         meta_before,
         "repeated add must not rewrite branch metadata"
     );

@@ -138,7 +138,7 @@ fn tune_dry_run_never_writes() {
     let output = tokensave(&["tune", "--dry-run"], dir.path());
     assert!(output.status.success(), "{}", combined(&output));
     assert!(
-        !dir.path().join(".tokensave").exists(),
+        !tokensave::config::get_tokensave_dir(dir.path()).exists(),
         "a dry run on an uninitialized project must not create .tokensave"
     );
     assert!(
@@ -153,13 +153,16 @@ fn tune_dry_run_never_writes() {
     assert!(tokensave(&["init", "--cpu-usage", "low"], dir.path())
         .status
         .success());
-    let before = std::fs::read(dir.path().join(".tokensave").join("config.json")).unwrap();
+    let before =
+        std::fs::read(tokensave::config::get_tokensave_dir(dir.path()).join("config.json"))
+            .unwrap();
     let output = tokensave(&["tune", "--dry-run", "--json"], dir.path());
     assert!(output.status.success(), "{}", combined(&output));
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["written"], false);
     assert_eq!(
-        std::fs::read(dir.path().join(".tokensave").join("config.json")).unwrap(),
+        std::fs::read(tokensave::config::get_tokensave_dir(dir.path()).join("config.json"))
+            .unwrap(),
         before
     );
 }
@@ -170,7 +173,7 @@ fn tune_refuses_an_uninitialized_project() {
     let output = tokensave(&["tune"], dir.path());
     assert!(!output.status.success());
     assert!(combined(&output).contains("tokensave init"));
-    assert!(!dir.path().join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(dir.path()).exists());
 }
 
 /// `--json` is a machine-readable mode, so it has to produce a document on
@@ -192,5 +195,5 @@ fn tune_json_reports_an_uninitialized_project_as_a_document() {
         "{report}"
     );
     assert_eq!(report["written"].as_bool(), Some(false));
-    assert!(!dir.path().join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(dir.path()).exists());
 }

@@ -27,8 +27,13 @@ fn project() -> (tempfile::TempDir, PathBuf) {
         .tempdir()
         .expect("tempdir");
     let root = tmp.path().join("project");
-    std::fs::create_dir_all(root.join(".tokensave")).expect("create .tokensave");
-    std::fs::write(root.join(".tokensave").join("tokensave.db"), b"").expect("write db");
+    std::fs::create_dir_all(tokensave::config::get_tokensave_dir(&root))
+        .expect("create .tokensave");
+    std::fs::write(
+        tokensave::config::get_tokensave_dir(&root).join("tokensave.db"),
+        b"",
+    )
+    .expect("write db");
     let config = TokenSaveConfig {
         root_dir: root.to_string_lossy().to_string(),
         ..TokenSaveConfig::default()

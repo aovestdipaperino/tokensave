@@ -72,7 +72,9 @@ const FLUSH_CHECK_INTERVAL_SECS: i64 = 30;
 /// Mirrors `src/db/migrations.rs::create_schema`. Update both together.
 const SCHEMA_MARKDOWN: &str = r"# tokensave SQLite schema
 
-The on-disk database lives at `.tokensave/tokensave.db` (per-branch variants
+Beta builds keep project state under `.tokensave/beta/`; use that directory
+for beta databases and branch metadata, never the stable index.
+The stable on-disk database lives at `.tokensave/tokensave.db` (per-branch variants
 under multi-branch mode). All tables are plain SQLite; safe to query with any
 client. WAL mode is used, so readers do not block writers.
 
@@ -1163,7 +1165,7 @@ impl McpServer {
         let mut credited = 0u64;
         let _ = self
             .session_debt
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |debt| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |debt| {
                 let (new_debt, c) = settle_session_debt(debt, raw_delta);
                 credited = c;
                 Some(new_debt)
@@ -2747,6 +2749,13 @@ impl McpServer {
                         id,
                         ErrorCode::InvalidParams,
                         format!("invalid graph selector: {message}"),
+                    );
+                }
+                Err(error) if crate::db::compatibility::is_refusal(&error) => {
+                    return JsonRpcResponse::error(
+                        id,
+                        ErrorCode::InvalidParams,
+                        format!("invalid graph selector: {error}"),
                     );
                 }
                 Err(error) => {

@@ -95,11 +95,11 @@ fn init_at(fx: &Fixture, dir: &Path) {
 }
 
 fn db_path(root: &Path) -> PathBuf {
-    root.join(".tokensave").join("tokensave.db")
+    tokensave::config::get_tokensave_dir(root).join("tokensave.db")
 }
 
 fn config_path(root: &Path) -> PathBuf {
-    root.join(".tokensave").join("config.json")
+    tokensave::config::get_tokensave_dir(root).join("config.json")
 }
 
 /// Index contents a no-op must leave alone: the DB bytes and the config text.
@@ -130,7 +130,10 @@ fn init_below_an_existing_project_reuses_it_without_indexing() {
         assert!(err.contains(&root.display().to_string()), "stderr: {err}");
         assert!(err.contains("No initialization or indexing required"));
         assert!(!err.contains("indexing done"), "must not index: {err}");
-        assert!(!cwd.join(".tokensave").exists(), "no nested .tokensave");
+        assert!(
+            !tokensave::config::get_tokensave_dir(&cwd).exists(),
+            "no nested .tokensave"
+        );
         assert_eq!(
             snapshot(&root),
             before,
@@ -164,8 +167,8 @@ fn init_in_an_uninitialized_git_subdirectory_targets_the_git_root() {
     let out = fx.tokensave(&cwd, &["init"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert!(db_path(&root).is_file(), "the git root must be initialized");
-    assert!(!cwd.join(".tokensave").exists());
-    assert!(!root.join("src").join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(&cwd).exists());
+    assert!(!tokensave::config::get_tokensave_dir(&root.join("src")).exists());
 }
 
 #[test]
@@ -211,7 +214,7 @@ fn non_git_project_is_discovered_from_a_subdirectory() {
     let out = fx.tokensave(&cwd, &["init"]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
     assert!(stderr(&out).contains("already initialized in"));
-    assert!(!cwd.join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(&cwd).exists());
 }
 
 #[test]
@@ -230,7 +233,7 @@ fn search_from_a_subdirectory_uses_the_root_index_and_root_relative_paths() {
         !text.contains("src/backend"),
         "no cwd-relative prefix: {text}"
     );
-    assert!(!cwd.join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(&cwd).exists());
 }
 
 #[test]
@@ -244,7 +247,7 @@ fn sync_and_status_from_a_subdirectory_use_the_root_index() {
 
     let out = fx.tokensave(&cwd, &["sync"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
-    assert!(!cwd.join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(&cwd).exists());
 
     let out = fx.tokensave(&cwd, &["tool", "search", "second"]);
     assert!(stdout(&out).contains("src/more.rs"), "{}", stdout(&out));
@@ -286,7 +289,7 @@ fn malformed_parent_configuration_is_an_actionable_error() {
         "stderr: {err}"
     );
     assert!(err.contains("config.json"), "stderr: {err}");
-    assert!(!cwd.join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(&cwd).exists());
 }
 
 #[test]
@@ -346,5 +349,5 @@ fn mcp_server_launched_from_a_subdirectory_serves_the_root_project() {
         "stdout: {text}\nstderr: {}",
         stderr(&out)
     );
-    assert!(!cwd.join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(&cwd).exists());
 }

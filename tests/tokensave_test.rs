@@ -57,7 +57,7 @@ impl SelectedGraphFixture {
     }
 
     fn tokensave_dir(&self) -> PathBuf {
-        self.root.join(".tokensave")
+        tokensave::config::get_tokensave_dir(&self.root)
     }
 
     fn config_path(&self) -> PathBuf {
@@ -131,7 +131,7 @@ async fn setup_tracked_branch_project() -> SelectedGraphFixture {
     graph.checkpoint().await.unwrap();
     drop(graph);
 
-    let tokensave_dir = root.join(".tokensave");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(&root);
     fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
     fs::copy(
         tokensave_dir.join("tokensave.db"),
@@ -354,7 +354,7 @@ async fn open_read_only_opens_branch_only_default_database_layout() {
 #[tokio::test]
 async fn open_read_only_rejects_orphan_database_without_config() {
     let dir = TempDir::new().unwrap();
-    let tokensave_dir = dir.path().join(".tokensave");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(dir.path());
     fs::create_dir_all(&tokensave_dir).unwrap();
     let database_path = tokensave_dir.join("tokensave.db");
     fs::write(&database_path, b"orphan").unwrap();

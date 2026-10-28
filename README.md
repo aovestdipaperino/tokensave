@@ -28,6 +28,41 @@
 
 ---
 
+> **Beta available:** Try the new, improved queries on the [beta branch](https://github.com/aovestdipaperino/tokensave/tree/beta), including optimized search ranking, graph analysis, and indexing cleanup. See the [beta changelog](https://github.com/aovestdipaperino/tokensave/blob/beta/CHANGELOG.md) for details.
+>
+> Install from source: `cargo install --git https://github.com/aovestdipaperino/tokensave.git --branch beta --locked --force`
+>
+> For builds with isolated beta storage, follow the [database compatibility guide](docs/DATABASE-COMPATIBILITY.md) when initializing beta or returning to stable. Existing shared databases are preserved; beta uses a fresh index under `.tokensave/beta/`.
+
+## Table of Contents
+
+- [Why tokensave?](#why-tokensave)
+- [Key Features](#key-features)
+- [Quick Start](#quick-start)
+- [Crash-Resilient Sync](#crash-resilient-sync)
+- [Multi-Branch Indexing (Optional)](#multi-branch-indexing-optional)
+- [Cross-Session Memory](#cross-session-memory)
+- [Savings Ledger](#savings-ledger)
+- [Reproducible Benchmark](#reproducible-benchmark)
+- [80+ MCP Tools](#80-mcp-tools)
+- [Token Tracking](#token-tracking)
+- [Index Freshness](#index-freshness)
+- [Self-Upgrade](#self-upgrade)
+- [Versioning & upgrades](#versioning--upgrades)
+- [CLI Reference](#cli-reference)
+- [tokensave doctor](#tokensave-doctor)
+- [How It Works with Claude Code](#how-it-works-with-claude-code)
+- [Network Calls & Privacy](#network-calls--privacy)
+- [50+ Languages](#50-languages)
+- [tokensave vs CodeGraph](#tokensave-vs-codegraph)
+- [Why tokensave Over the Alternatives](#why-tokensave-over-the-alternatives)
+- [Troubleshooting](#troubleshooting)
+- [Origin](#origin)
+- [Building](#building)
+- [Star History](#star-history)
+- [Sponsors](#sponsors)
+- [License](#license)
+
 ## Why tokensave?
 
 AI coding agents waste tokens exploring codebases. Every grep, glob, and file read costs money. On complex tasks, agents spawn multiple Explore sub-agents that scan hundreds of files just to build context.
@@ -36,33 +71,30 @@ AI coding agents waste tokens exploring codebases. Every grep, glob, and file re
 
 ### How It Works
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  AI Coding Agent (Claude Code, Codex, Gemini, Cursor, ...)   │
-│                                                              │
-│  "Implement user authentication"                             │
-│        │                                                     │
-│        ▼                                                     │
-│  ┌─────────────────┐       ┌─────────────────┐               │
-│  │  Sub-agent      │ ───── │  Sub-agent      │               │
-│  └────────┬────────┘       └─────────┬───────┘               │
-└───────────┼──────────────────────────┼───────────────────────┘
-            │                          │
-            ▼                          ▼
-┌──────────────────────────────────────────────────────────────┐
-│  tokensave MCP Server                                        │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐           │
-│  │   Search    │  │   Callers   │  │   Context   │           │
-│  │   "auth"    │  │  "login()"  │  │   for task  │           │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘           │
-│         └────────────────┼────────────────┘                  │
-│                          ▼                                   │
-│              ┌───────────────────────┐                       │
-│              │   libSQL Graph DB     │                       │
-│              │   • Instant lookups   │                       │
-│              │   • FTS5 search       │                       │
-│              └───────────────────────┘                       │
-└──────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph agent["AI Coding Agent (Claude Code, Codex, Gemini, Cursor, ...)"]
+        task["Implement user authentication"]
+        first["Sub-agent"]
+        second["Sub-agent"]
+        task --> first
+        task --> second
+        first --- second
+    end
+
+    subgraph server["tokensave MCP Server"]
+        search["Search: auth"]
+        callers["Callers: login()"]
+        context["Context for task"]
+        db[("libSQL Graph DB<br/>Instant lookups<br/>FTS5 search")]
+        search --> db
+        callers --> db
+        context --> db
+    end
+
+    first --> search
+    first --> callers
+    second --> context
 ```
 
 **Without tokensave:** Agents use `grep`, `glob`, and `Read` to scan files -- many API calls, high token usage.
@@ -90,34 +122,34 @@ AI coding agents waste tokens exploring codebases. Every grep, glob, and file re
 
 ### 1. Install
 
-**Homebrew (macOS):**
+Choose one installation method:
 
-```bash
-brew install aovestdipaperino/tap/tokensave
-```
+| Platform | Command |
+|---|---|
+| macOS (Homebrew) | `brew install aovestdipaperino/tap/tokensave` |
+| Any platform with Rust | `cargo install tokensave` |
+| Any platform with cargo-binstall | `cargo binstall tokensave` |
 
-**Scoop (Windows):**
+On Windows with Scoop:
 
 ```powershell
 scoop bucket add tokensave https://github.com/aovestdipaperino/scoop-bucket
 scoop install tokensave
 ```
 
-**Cargo / cargo-binstall (any platform):**
+You can also download a [prebuilt binary](https://github.com/aovestdipaperino/tokensave/releases/latest) and add it to your `PATH`.
+
+<details>
+<summary>Installation alternatives and language tiers</summary>
+
+The default Cargo build includes all supported languages. For a smaller build:
 
 ```bash
-# Fast install prebuilt binary without compiling:
-cargo binstall tokensave
-
-# Or compile from source:
-cargo install tokensave                          # full (50+ languages, default)
-cargo install tokensave --features medium        # medium tier
+cargo install tokensave --no-default-features --features medium
 cargo install tokensave --no-default-features    # lite (smallest binary)
 ```
 
-**Prebuilt binaries (Linux, Windows, macOS):**
-
-Download from the [latest release](https://github.com/aovestdipaperino/tokensave/releases/latest) and place the binary in your `PATH`.
+Prebuilt release archives:
 
 | Platform | Archive |
 |---|---|
@@ -126,44 +158,62 @@ Download from the [latest release](https://github.com/aovestdipaperino/tokensave
 | Linux (ARM64) | `tokensave-vX.Y.Z-aarch64-linux.tar.gz` |
 | Windows (x86_64) | `tokensave-vX.Y.Z-x86_64-windows.zip` |
 
+</details>
+
 ### 2. Configure your agent
 
+Run the setup command to auto-detect your installed agents:
+
 ```bash
-tokensave install                         # auto-detects installed agents
-tokensave install --agent antigravity     # Google Antigravity (formerly Windsurf)
-tokensave install --agent auggie          # AugmentCode
-tokensave install --agent claude          # Claude Code
-tokensave install --agent cline           # Cline
-tokensave install --agent codex           # OpenAI Codex CLI
-tokensave install --agent copilot         # GitHub Copilot
-tokensave install --agent cursor          # Cursor
-tokensave install --agent droid           # Factory Droid
-tokensave install --agent gemini          # Gemini CLI
-tokensave install --agent kilo            # Kilo CLI
-tokensave install --agent kiro            # AWS Kiro
-tokensave install --agent kimi            # Moonshot Kimi CLI
-tokensave install --agent omp             # Oh My Pi (OMP)
-tokensave install --agent opencode        # OpenCode
-tokensave install --agent pi              # Pi (pi.dev)
-tokensave install --agent plank           # Plank (macOS only)
-tokensave install --agent qwen            # Qwen Code
-tokensave install --agent roo-code        # Roo Code
-tokensave install --agent vibe            # Mistral Vibe
-tokensave install --agent zed             # Zed
-tokensave install --agent grok            # Grok Build (xAI)
-tokensave install --git-hook yes           # auto-install the global post-commit and post-checkout hooks (no prompt)
-tokensave install --git-hook no            # skip the post-commit and post-checkout hooks (no prompt)
-tokensave githooks                         # show which global git hooks tokensave owns
-tokensave githooks off                     # remove them, leaving any hook content you wrote
+tokensave install
 ```
 
-Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, and a tokensave-managed default agent with permissive built-in/tokensave tool approval, delegation guardrail hooks, and post-write sync; user-managed Kiro agents are preserved.
+To choose an agent, use `--agent` (for example, `codex`, `claude`, or `cursor`):
+
+```bash
+tokensave install --agent codex
+```
+
+Supported agents (use the identifier with `--agent`):
+
+| Agent | Identifier |
+|---|---|
+| Antigravity | `antigravity` |
+| AugmentCode | `auggie` |
+| Claude Code | `claude` |
+| Cline | `cline` |
+| Codex CLI | `codex` |
+| GitHub Copilot | `copilot` |
+| Cursor | `cursor` |
+| Factory Droid | `droid` |
+| Gemini CLI | `gemini` |
+| Grok Build | `grok` |
+| Kilo CLI | `kilo` |
+| Kimi CLI | `kimi` |
+| Kiro | `kiro` |
+| Oh My Pi (OMP) | `omp` |
+| OpenCode | `opencode` |
+| Pi | `pi` |
+| Plank (macOS only) | `plank` |
+| Qwen Code | `qwen` |
+| Roo Code | `roo-code` |
+| Mistral Vibe | `vibe` |
+| Zed | `zed` |
+
+Setup registers the MCP server and the agent's integration. It also offers global Git hooks to keep initialized projects up to date. You can safely run setup again after upgrading.
+
+<details>
+<summary>Multiple agents, project-local setup, and integration details</summary>
+
+The Pi extension and Pi session-accounting details below describe stable builds; beta currently retains its earlier Pi integration.
+
+Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Pi gets `"exposure": "direct"` on its MCP entry -- Pi otherwise defaults a server to `codemode`, which declares none of its tools to the model -- prompt rules in `AGENTS.md`, and a managed TypeScript extension that supplies the same guardrail, savings reset, and session receipt, because Pi has no shell hooks. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, and a tokensave-managed default agent with permissive built-in/tokensave tool approval, delegation guardrail hooks, and post-write sync; user-managed Kiro agents are preserved.
 
 Global OMP installs target the profile reported by bare `omp config path`, writing `<resolved-agent-dir>/mcp.json` and `<resolved-agent-dir>/rules/tokensave.md`. Export `OMP_PROFILE` or OMP's compatible `PI_PROFILE` when installing into a named profile; OMP's resolver also honors `PI_CONFIG_DIR` and `PI_CODING_AGENT_DIR`. Tokensave trusts that native resolver rather than duplicating OMP's profile logic. Tokensave installs MCP and advisory rules for OMP; it does not install OMP hook enforcement.
 
 All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered global git post-commit and post-checkout hooks. `tokensave uninstall` removes those hooks along with the agent integrations; pass `--keep-git-hooks` to leave them, or manage them on their own with `tokensave githooks`.
 
-### Install for several agents at once
+#### Install for several agents at once
 
 Repeat `--agent` to install several agents in a single run. The permission grant, git-hook offer, and global config write each happen once, no matter how many agents you list:
 
@@ -171,7 +221,7 @@ Repeat `--agent` to install several agents in a single run. The permission grant
 tokensave install --agent claude --agent cursor --agent droid
 ```
 
-### Project-local install
+#### Project-local install
 
 By default `tokensave install` registers the MCP server in your **global** agent config (e.g. `~/.claude.json`). To register tokensave for just the current project instead, add `--local`:
 
@@ -183,6 +233,12 @@ tokensave install --local --agent omp
 This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`; OMP uses `./.omp/mcp.json` and `./.omp/rules/tokensave.md` without invoking the OMP CLI. Supported agents: **claude, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie, omp, plank, pi** (each writes its own project file, e.g. `.cursor/mcp.json`, `.factory/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`, `.augment/settings.json`, `.omp/mcp.json`, `.mcp.json` for plank, `.pi/mcp.json` and `./AGENTS.md` for pi). Other agents have no project-scoped config and report an error with `--local`.
 
 Remove a project-local install with `tokensave uninstall --local`.
+
+To accept or skip the Git hooks without a prompt, add `--git-hook yes` or `--git-hook no`. Use `tokensave githooks` to inspect them, or `tokensave githooks off` to remove them.
+
+For agent-specific instructions, see [Connecting to Your Agent](docs/USER-GUIDE.md#connecting-to-your-agent).
+
+</details>
 
 ### 3. Index your project
 
@@ -790,9 +846,9 @@ tokensave cost --export json       # JSON export to stdout
 tokensave cost --export csv        # CSV export to stdout
 ```
 
-Parses Claude Code session transcripts (`~/.claude/projects/**/*.jsonl`), classifies each API turn into one of 13 task categories, computes dollar cost using model pricing, and stores results in `~/.tokensave/global.db` for fast aggregate queries. Pricing is refreshed from [LiteLLM](https://github.com/BerriAI/litellm) every 24 hours and falls back to an embedded table when offline.
+Parses Claude Code session transcripts (`~/.claude/projects/**/*.jsonl`) and prices each API turn with model pricing, reads Pi sessions (`~/.pi/agent/sessions/**/*.jsonl`) using the cost Pi already reports per message, and ingests Factory Droid session settings in credits. Every turn is classified into one of 13 task categories and stored in `~/.tokensave/global.db` for fast aggregate queries. Pricing is refreshed from [LiteLLM](https://github.com/BerriAI/litellm) every 24 hours and falls back to an embedded table when offline.
 
-The `tokensave status` header includes a cost row showing today's spend, 7-day total, and efficiency ratio (tokens saved / total tokens). The `tokensave monitor` TUI shows a live cost panel alongside the savings feed. At the end of each Claude Code session, the `hook_stop` handler prints a one-line receipt to the terminal.
+The `tokensave status` header includes a cost row showing today's spend, 7-day total, and efficiency ratio (tokens saved / total tokens). The `tokensave monitor` TUI shows a live cost panel alongside the savings feed. At the end of each Claude Code session, the `hook_stop` handler prints a one-line receipt to the terminal; in Pi, the installed extension does the same through its `agent_settled` handler.
 
 Task classification categories: Coding, Debugging, Feature Dev, Refactoring, Testing, Exploration, Planning, Delegation, Git Ops, Build/Deploy, Brainstorming, Conversation, General. Classification is deterministic (pattern matching on tool names and Bash commands), requires no LLM calls, and is adapted from [AgentSeal/codeburn](https://github.com/AgentSeal/codeburn).
 
@@ -1171,7 +1227,7 @@ tokensave works at the symbol level: functions, structs, fields, call edges, typ
 
 ### Broadest agent support
 
-More than a dozen AI coding agent integrations with per-agent native configuration formats. No other tool covers as many agents with as deep an integration. Claude Code gets hooks, prompt rules, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, a managed agent with permissive built-in/tokensave tool approval, and hooks for delegation guardrails plus post-write sync. Other agents get MCP server registration in their native config format.
+More than a dozen AI coding agent integrations with per-agent native configuration formats. No other tool covers as many agents with as deep an integration. Claude Code gets hooks, prompt rules, and auto-allowed tool permissions. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, a managed agent with permissive built-in/tokensave tool approval, and hooks for delegation guardrails plus post-write sync. Pi gets MCP registration with the tool exposure its rules depend on, plus a managed extension for the guardrail, savings reset, and session receipt. Other agents get MCP server registration in their native config format.
 
 ### Multi-branch indexing
 

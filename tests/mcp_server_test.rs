@@ -153,7 +153,7 @@ async fn setup_selected_branch_project() -> TempDir {
     run_git(project, &["add", "src/lib.rs"]);
     run_git(project, &["commit", "-m", "feature"]);
 
-    let tokensave_dir = project.join(".tokensave");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(&project);
     fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
     fs::copy(
         tokensave_dir.join("tokensave.db"),
@@ -190,7 +190,7 @@ async fn setup_colliding_project() -> TempDir {
     graph.checkpoint().await.unwrap();
     drop(graph);
 
-    let tokensave_dir = project.join(".tokensave");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(&project);
     fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
     fs::copy(
         tokensave_dir.join("tokensave.db"),
@@ -428,8 +428,9 @@ async fn project_snapshot(root: &Path, branch: Option<&str>, source: &str) -> Pr
         source: fs::read(&source_path).unwrap(),
         source_mtime: fs::metadata(source_path).unwrap().modified().unwrap(),
         graph: semantic_graph,
-        config: fs::read(root.join(".tokensave").join("config.json")).unwrap(),
-        branch_meta: fs::read(root.join(".tokensave").join("branch-meta.json")).ok(),
+        config: fs::read(tokensave::config::get_tokensave_dir(&root).join("config.json")).unwrap(),
+        branch_meta: fs::read(tokensave::config::get_tokensave_dir(&root).join("branch-meta.json"))
+            .ok(),
         last_sync,
     }
 }
@@ -983,7 +984,7 @@ async fn selected_read_bypasses_cache_and_never_returns_unchanged() {
     drop(foreign);
     let server = McpServer::new(local, None).await;
     let graph_root = foreign_dir.path().display().to_string();
-    let db_path = foreign_dir.path().join(".tokensave").join("tokensave.db");
+    let db_path = tokensave::config::get_tokensave_dir(foreign_dir.path()).join("tokensave.db");
     let db_before = fs::read(&db_path).unwrap();
     let cache_rows_before = read_cache_row_count(&db_path).await;
     assert_eq!(cache_rows_before, 0);
@@ -1035,7 +1036,7 @@ async fn selected_read_rejects_paths_outside_canonical_selected_root() {
 
     let server = McpServer::new(local, None).await;
     let graph_root = selected_root.display().to_string();
-    let db_path = selected_root.join(".tokensave").join("tokensave.db");
+    let db_path = tokensave::config::get_tokensave_dir(&selected_root).join("tokensave.db");
     let cache_rows_before = read_cache_row_count(&db_path).await;
     let mut paths = vec![
         outside.display().to_string(),
@@ -1102,7 +1103,7 @@ async fn primary_read_rejects_paths_outside_project_root() {
     std::os::unix::fs::symlink(&outside, local_dir.path().join("linked-secret.txt")).unwrap();
 
     let server = McpServer::new(local, None).await;
-    let db_path = local_dir.path().join(".tokensave").join("tokensave.db");
+    let db_path = tokensave::config::get_tokensave_dir(local_dir.path()).join("tokensave.db");
     let cache_rows_before = read_cache_row_count(&db_path).await;
     // Both temp dirs share a parent, so `..` reaches the secret.
     let outside_name = outside_dir
@@ -1512,7 +1513,7 @@ async fn diagnostics_selectors_are_rejected_before_subprocess_or_target_creation
     .unwrap();
     let server = McpServer::new(local, None).await;
     let graph_root = selected_dir.path().display().to_string();
-    let target = selected_dir.path().join(".tokensave").join("target");
+    let target = tokensave::config::get_tokensave_dir(selected_dir.path()).join("target");
 
     for (index, arguments) in [
         json!({ "graph_root": graph_root.clone() }),
@@ -1550,9 +1551,7 @@ async fn selected_invalid_graph_selectors_return_invalid_params() {
     let selected_dir = setup_selected_branch_project().await;
     let missing_db_dir = setup_selected_branch_project().await;
     fs::remove_file(
-        missing_db_dir
-            .path()
-            .join(".tokensave")
+        tokensave::config::get_tokensave_dir(missing_db_dir.path())
             .join("branches")
             .join("feature.db"),
     )
@@ -1633,7 +1632,7 @@ async fn selected_database_open_failure_returns_internal_error() {
     foreign.checkpoint().await.unwrap();
     drop(foreign);
     fs::write(
-        foreign_dir.path().join(".tokensave").join("tokensave.db"),
+        tokensave::config::get_tokensave_dir(foreign_dir.path()).join("tokensave.db"),
         b"not a sqlite database",
     )
     .unwrap();
@@ -1694,6 +1693,43 @@ async fn selected_schema_mismatches_return_invalid_params() {
             "{response}"
         );
     }
+}
+
+#[tokio::test]
+async fn selected_unknown_database_origin_returns_invalid_params() {
+    let (_local_dir, local) = setup_named_project("local_only").await;
+    let server = McpServer::new(local, None).await;
+    let (foreign_dir, foreign) = setup_named_project("foreign_only").await;
+    foreign
+        .db()
+        .conn()
+        .execute("PRAGMA application_id = 17", ())
+        .await
+        .unwrap();
+    foreign.checkpoint().await.unwrap();
+    drop(foreign);
+    let db_path = tokensave::config::get_tokensave_dir(foreign_dir.path()).join("tokensave.db");
+    let before = fs::read(&db_path).unwrap();
+
+    let response = call_server(
+        &server,
+        61,
+        "tokensave_search",
+        json!({
+            "query": "foreign_only",
+            "graph_root": foreign_dir.path().display().to_string()
+        }),
+    )
+    .await;
+
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("unrecognized database application ID 17")),
+        "{response}"
+    );
+    assert_eq!(fs::read(&db_path).unwrap(), before);
 }
 
 #[tokio::test]
@@ -2014,9 +2050,10 @@ async fn test_index_age_warning_dedup_and_zero_hit_suppression() {
         .as_secs() as i64
         - 7200;
 
-    let (db, _migrated) = Database::open(&project.join(".tokensave").join("tokensave.db"))
-        .await
-        .unwrap();
+    let (db, _migrated) =
+        Database::open(&tokensave::config::get_tokensave_dir(&project).join("tokensave.db"))
+            .await
+            .unwrap();
     db.set_metadata("last_sync_at", &two_hours_ago.to_string())
         .await
         .unwrap();
