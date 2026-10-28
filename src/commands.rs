@@ -263,13 +263,18 @@ pub(crate) async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
     use std::fs;
     use std::path::PathBuf;
 
-    let home_tokensave: Option<PathBuf> = dirs::home_dir().map(|h| h.join(".tokensave"));
+    let home_tokensave: Option<PathBuf> =
+        dirs::home_dir().map(|h| tokensave::config::get_tokensave_dir(&h));
 
     let mut targets = global::gather_target_projects(all, &home_tokensave).await;
     if all {
         // wipe acts on the live `.tokensave/` directory; drop rows whose
         // directory is already gone (they're handled by `tokensave doctor`).
-        targets.retain(|p| p.join(".tokensave").join("tokensave.db").exists());
+        targets.retain(|p| {
+            tokensave::config::get_tokensave_dir(p)
+                .join("tokensave.db")
+                .exists()
+        });
     }
 
     if !all && targets.is_empty() {
@@ -300,11 +305,30 @@ pub(crate) async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
     // own `seen`, and the `--all` branch reads from `projects.path` which is
     // a primary key. No need for a second per-loop dedupe.
     for project_root in &targets {
-        let ts_dir = project_root.join(".tokensave");
+        let ts_dir = tokensave::config::get_tokensave_dir(project_root);
         if !ts_dir.exists() {
             continue;
         }
-        match fs::remove_dir_all(&ts_dir) {
+        let removal = if !tokensave::cloud::is_beta() && ts_dir.join("beta").exists() {
+            // Beta owns this subtree; wiping stable must preserve it.
+            (|| -> std::io::Result<()> {
+                for entry in fs::read_dir(&ts_dir)? {
+                    let entry = entry?;
+                    if entry.file_name() == "beta" {
+                        continue;
+                    }
+                    if entry.file_type()?.is_dir() {
+                        fs::remove_dir_all(entry.path())?;
+                    } else {
+                        fs::remove_file(entry.path())?;
+                    }
+                }
+                Ok(())
+            })()
+        } else {
+            fs::remove_dir_all(&ts_dir)
+        };
+        match removal {
             Ok(()) => {
                 removed += 1;
                 wiped_paths.push(project_root.clone());
@@ -353,7 +377,8 @@ pub(crate) async fn handle_list(all: bool) -> tokensave::errors::Result<()> {
     use std::path::PathBuf;
     use tokensave::display::format_token_count;
 
-    let home_tokensave: Option<PathBuf> = dirs::home_dir().map(|h| h.join(".tokensave"));
+    let home_tokensave: Option<PathBuf> =
+        dirs::home_dir().map(|h| tokensave::config::get_tokensave_dir(&h));
     let project_paths = global::gather_target_projects(all, &home_tokensave).await;
 
     if project_paths.is_empty() {
@@ -371,7 +396,7 @@ pub(crate) async fn handle_list(all: bool) -> tokensave::errors::Result<()> {
     let mut total_tokens: u64 = 0;
 
     for path in &project_paths {
-        let ts_dir = path.join(".tokensave");
+        let ts_dir = tokensave::config::get_tokensave_dir(path);
         let on_disk = ts_dir.exists();
         let size = if on_disk {
             global::tokensave_dir_size(&ts_dir)

@@ -10,6 +10,39 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ### Documentation
 
 - Evaluate optional Graphify coexistence at a pinned revision, with a disposable CLI probe, recorded resource measurements, and explicit requirements and remaining work before any adapter (Refs #791).
+- Document the optional Graphify exporter workflow, limits and privacy scope in the user guide (Refs #791).
+
+### Added
+
+- Add a pinned Graphify CLI compatibility harness covering repeated exports, queries, visualization and conflicting dirty worktrees; publish fixture evidence and remaining measurement gates (Refs #791).
+
+### Added
+
+- Add experimental `graphify-export` for bounded, read-only single-file snapshots with resolver provenance, freshness checks and no-clobber publication (Refs #791).
+
+### Documentation
+
+- Define the pinned, optional Graphify file-interchange evaluation contract and gated implementation scope (Refs #791).
+
+### Fixed
+
+- Bound comparison-benchmark MCP initialization and request I/O, reap owned process groups, and defer shutdown interruptions until cleanup completes (Refs #847).
+
+- Return MCP invalid-parameter errors for selected graphs rejected by database compatibility checks, preserving internal errors for database failures (Refs #835).
+
+- Preserve database creation channel, reject beta-origin and newer-schema databases before writes or recovery, and isolate beta project/global indexes under `.tokensave/beta` without relabeling legacy databases (Refs #835).
+
+### Changed
+
+- Pi doctor distinguishes static configuration from unverified runtime state, reports possible instruction overrides and missing indexes without writes, and rejects unknown direct-tool exposure settings (Refs #833).
+
+### Added
+
+- Add a read-only assessment of independently reviewed Pi native-read traces, preserving verification/recovery and deferring enforcement without real-model evidence (Refs #834).
+
+### Documentation
+
+- Require agents to verify linked PR states before closing an issue and summarize merged improvements with the actual destination branch, validation, and remaining work; synchronize this rule across master and beta (Refs #803).
 
 - Add a linked table of contents near the top of the README.
 
@@ -33,6 +66,16 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - **Pi sessions are part of token accounting.** `tokensave cost`, `tokensave report` and the status cost row parsed only Claude Code transcripts and Factory Droid settings, so a Pi user saw no cost for their own work. Pi's `~/.pi/agent/sessions/**/*.jsonl` is now ingested incrementally (same byte-offset tracking as Claude), using the cost Pi reports per message rather than a pricing lookup, with reasoning tokens folded into output and the coverage line naming Pi when the source is present. The missed-opportunity analyzer stays Claude-only, since Pi's tool-result sizes are not recorded.
 
 ### Fixed
+
+- Add Pi real-session regression coverage for per-run retrieval guidance, compaction replay, and native reads after simulated retrieval failures.
+
+- Prefer indexed code exploration through Pi's structured per-run prompt sections, with explicit native-tool fallbacks for unavailable or stale indexes, unindexed files, documentation, configuration, and current-source verification. Existing search interception is unchanged.
+
+- Update the locked `der` dependency from yanked 0.8.0 to compatible 0.8.3, used by the ONNX Runtime build dependency chain (Refs #805).
+
+- Replace the deprecated atomic session-debt update with `try_update`, preserving memory orderings and return behavior (Refs #804).
+
+- Limit large-repository benchmark cleanup to an exclusively reserved scratch directory, preserve unrelated repository changes, and release scratch data during error unwinding.
 
 - Resolve the project that owns the current directory the same way in every command run without an explicit path: `init`, `tool`, `doctor`, `verify`, `quality-diff`, `branch`, `gitignore`, the counters, a bare `tokensave`, and the prompt-submit and stop hooks. `sync`, `status`, `serve`, and the MCP roots fallback already did. `init` in a subdirectory of an existing project now reports that project and exits 0 instead of creating a nested index. In an uninitialized git repository, `init` initializes the repository root. Git repository roots isolate nested independent repositories (nested clones and submodules) from an outer repository's index, and a partial `.tokensave/` is no longer skipped in favor of an outer project (#749).
 
@@ -2164,3 +2207,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [7.14.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.14.1
 [7.15.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.15.0
 [7.16.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.16.0
+[7.17.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.17.0

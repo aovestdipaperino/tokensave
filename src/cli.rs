@@ -25,6 +25,22 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Export one indexed file as an experimental Graphify snapshot (no sync)
+    GraphifyExport {
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// Repository-relative source file using / separators
+        #[arg(long)]
+        file: String,
+        /// New output JSON path; existing files are refused
+        #[arg(long)]
+        output: std::path::PathBuf,
+        #[arg(long, default_value_t = 1000)]
+        max_nodes: usize,
+        #[arg(long, default_value_t = 5000)]
+        max_edges: usize,
+    },
     /// Check index integrity without changing it
     Verify {
         /// Project path (default: current directory)

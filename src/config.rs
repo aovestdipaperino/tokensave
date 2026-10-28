@@ -335,9 +335,20 @@ impl Default for TokenSaveConfig {
     }
 }
 
-/// Returns the path to the `.tokensave` directory within the given project root.
+/// Returns channel-specific project state: `.tokensave` or `.tokensave/beta`.
 pub fn get_tokensave_dir(project_root: &Path) -> PathBuf {
-    project_root.join(TOKENSAVE_DIR)
+    channel_dir(project_root, crate::cloud::is_beta())
+}
+
+/// Separate beta project state (including config, locks, and branch indexes)
+/// from stable without changing stable paths or shared user settings.
+fn channel_dir(root: &Path, beta: bool) -> PathBuf {
+    let directory = root.join(TOKENSAVE_DIR);
+    if beta {
+        directory.join("beta")
+    } else {
+        directory
+    }
 }
 
 /// Returns the path to the configuration file (`config.json`) within the `.tokensave` directory.
@@ -749,7 +760,7 @@ fn discover_project_from(start: &Path, home: Option<&Path>) -> ProjectDiscovery 
     let mut git_root: Option<PathBuf> = None;
     let mut crossed_repository = false;
     for dir in start.ancestors() {
-        let tokensave_dir = dir.join(".tokensave");
+        let tokensave_dir = get_tokensave_dir(dir);
         let found = if tokensave_dir.join("tokensave.db").exists() {
             Some(ProjectDiscovery::Initialized(dir.to_path_buf()))
         } else if Some(dir) != home && tokensave_dir.join("config.json").is_file() {
@@ -1242,7 +1253,7 @@ mod tests {
     #[test]
     fn test_load_query_ignore_reads_file() {
         let dir = TempDir::new().unwrap();
-        let ts_dir = dir.path().join(".tokensave");
+        let ts_dir = crate::config::get_tokensave_dir(dir.path());
         fs::create_dir_all(&ts_dir).unwrap();
         fs::write(ts_dir.join("queryignore"), "generated\ntests/*\n").unwrap();
 
@@ -1291,7 +1302,7 @@ mod tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod discovery_tests {
-    use super::{discover_project_from, ProjectDiscovery};
+    use super::{discover_project_from, get_tokensave_dir, ProjectDiscovery};
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;
@@ -1306,7 +1317,7 @@ mod discovery_tests {
     }
 
     fn init_project(dir: &Path) {
-        let tokensave_dir = dir.join(".tokensave");
+        let tokensave_dir = get_tokensave_dir(dir);
         fs::create_dir_all(&tokensave_dir).unwrap();
         fs::write(tokensave_dir.join("tokensave.db"), b"").unwrap();
     }
@@ -1447,7 +1458,8 @@ mod discovery_tests {
         let workspace = tmp.path().to_path_buf();
         init_project(&workspace);
         let partial = mkdirs(&workspace, &["app"]);
-        let tokensave_dir = mkdirs(&partial, &[".tokensave"]);
+        let tokensave_dir = get_tokensave_dir(&partial);
+        fs::create_dir_all(&tokensave_dir).unwrap();
         fs::write(tokensave_dir.join("config.json"), "{}").unwrap();
         let start = mkdirs(&partial, &["src"]);
         assert_eq!(discover(&start), ProjectDiscovery::Incomplete(partial));
@@ -1457,7 +1469,8 @@ mod discovery_tests {
     fn global_state_directory_in_home_is_not_a_project() {
         let tmp = TempDir::new().unwrap();
         let home = tmp.path().to_path_buf();
-        let global_dir = mkdirs(&home, &[".tokensave"]);
+        let global_dir = get_tokensave_dir(&home);
+        fs::create_dir_all(&global_dir).unwrap();
         fs::write(global_dir.join("config.json"), "{}").unwrap();
         let start = mkdirs(&home, &["scratch"]);
         assert_eq!(
@@ -1473,5 +1486,18 @@ mod discovery_tests {
         init_project(&root);
         let start = mkdirs(&root, &["sous dossier", "日本"]);
         assert_eq!(discover(&start), ProjectDiscovery::Initialized(root));
+    }
+}
+
+#[cfg(test)]
+mod channel_path_tests {
+    #[test]
+    fn beta_state_is_isolated_and_stable_layout_is_unchanged() {
+        let root = std::path::Path::new("project");
+        assert_eq!(super::channel_dir(root, false), root.join(".tokensave"));
+        assert_eq!(
+            super::channel_dir(root, true),
+            root.join(".tokensave").join("beta")
+        );
     }
 }

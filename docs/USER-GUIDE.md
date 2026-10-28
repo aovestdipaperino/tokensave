@@ -311,6 +311,37 @@ This writes project-scoped config you can commit and share with your team. For C
 
 Remove a project-local install with `tokensave uninstall --local`.
 
+### Pi retrieval preference
+
+The managed Pi extension adds a conditional indexed-retrieval preference through
+`before_agent_start.systemPromptOptions.sections` on each run. Native tools stay
+available for documentation, configuration, unindexed files, exact source checks,
+and missing, stale, or insufficient indexes. It supports the declared tools from
+built-in MCP or `pi-mcp-adapter`; it does not expand search interception or block
+`read`. Older Pi versions without structured prompt options retain the installed
+`AGENTS.md` guidance. After updating tokensave, rerun `tokensave install --agent pi`
+(add `--local` for a project install), then restart or reload Pi to load the
+updated extension. See [the investigation and validation record](PI-INTEGRATION.md)
+for API details, evidence, and evaluation limitations.
+
+Run `tokensave doctor --agent pi` for read-only diagnostics. It checks global
+and project-local registration/exposure, managed rules and extension freshness,
+and potential `AGENTS.override.md` shadowing in the agent directory and project
+ancestors. Unknown exposure values require review; only `direct` satisfies the
+managed configuration. Missing configuration has scope-specific reinstall advice.
+
+An index-file check uses normal project discovery without opening the database
+or running sync. File presence does not verify schema, freshness or language
+coverage. Run `tokensave init` for an uninitialized project or `tokensave sync`
+to refresh an existing index. Diagnostics never repair configuration or indexing.
+
+Runtime fields are explicitly **UNVERIFIED**: this CLI cannot inspect a running
+Pi session's loaded extension, effective prompt, MCP readiness or declared tools.
+After reinstalling, restart/reload Pi and inspect its actual tools and prompt,
+including the `tokensave_retrieval` section. Adapter tool names and discovery
+depend on the installed adapter; use its declared interface. Static checks alone
+do not establish that a model can call TokenSave.
+
 ### Removing an integration
 
 ```bash
@@ -1397,9 +1428,13 @@ containers, shared vCPUs or a busy machine. The profile is chosen as follows:
 
 | Selected | When |
 | --- | --- |
-| `low` | Total memory under 3 GiB, available memory under 1 GiB, at most 2 CPUs, or under 2.5 effective CPUs. |
-| `performance` | At least 6 effective CPUs, at least 60% parallel efficiency, at least 16 GiB total memory and at least 8 GiB available. |
+| `low` | Total memory under 3 GiB, at most 2 CPUs, or under 2.5 effective CPUs. |
+| `performance` | At least 6 effective CPUs, at least 60% parallel efficiency, at least 16 GiB total memory. |
 | `balanced` | Everything else, and whenever a probe fails. |
+
+Total memory means usable capacity, capped by a stricter cgroup limit. Currently
+available memory is reported for diagnostics but does not affect the saved
+profile; runtime memory safeguards handle transient pressure.
 
 #### Managing the global benchmark
 
@@ -1956,3 +1991,38 @@ binary when you want the configured path to be durable.
 ### Getting help
 
 If you run into something not covered here, check the [GitHub repository](https://github.com/aovestdipaperino/tokensave) or open an issue.
+
+## Database channel compatibility
+
+Stable and beta use separate project state and global databases. See the
+[database compatibility guide](DATABASE-COMPATIBILITY.md) for creation-origin
+markers, legacy upgrades, beta initialization, recovery refusals, and returning
+to stable without deleting beta data.
+
+
+## Experimental Graphify interoperability
+
+`tokensave graphify-export` creates a bounded, read-only snapshot of one selected
+indexed code file and the relationships whose endpoints are both in that file.
+The integration targets master; beta is currently reserved for data-critical PRs.
+Graphify remains a separate optional tool.
+
+Initialize and sync the project separately, then select a new output filename:
+
+```bash
+tokensave graphify-export --project /path/to/project --file src/main.rs --output /private/export/snapshot.json
+```
+
+Existing output is never replaced. The command refuses stale source, untracked
+branch fallback, and exceeded node/edge/size budgets. It does not install
+Graphify, run a model, change the index, or register hooks. The snapshot omits
+cross-file relationships, documents, source bodies, signatures and docstrings;
+do not use it as a complete impact graph. Names and paths can still disclose
+private project information.
+
+For the pinned Graphify version, graph schema, visualization behavior, limits,
+and reproduction steps, see [the integration contract](graphify/README.md).
+Graphify writes `graph.html` beside its input JSON and uses external JavaScript
+assets, so keep each visualization in a dedicated disposable export directory.
+Document enrichment and production rollout remain conditional on the quality
+and resource assessment tracked in [#791](https://github.com/aovestdipaperino/tokensave/issues/791).

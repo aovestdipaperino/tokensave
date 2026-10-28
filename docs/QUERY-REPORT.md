@@ -1,6 +1,6 @@
 # tokensave SQL query inventory
 
-Snapshot: `3eb8c01079a9f62ee0dd4ec29b58f5e5f27a2c25` (working-tree source inspected on 2026-10-24).
+Snapshot: existing branch inventory with #835 compatibility changes inspected on 2026-10-27. Unaffected entries retain their prior coverage.
 
 ## Scope and reading guide
 
@@ -8,13 +8,19 @@ This report interprets “queries” as SQL used by tokensave’s own Rust appli
 
 Entries are grouped by source file and retain separate occurrences, even when SQL is repeated. Each entry identifies its source line and enclosing function when available. Module-level constants and documentation/example strings are labelled as such; inline test functions are retained, so this is a source inventory rather than a runtime execution trace. A fenced block may contain an entire SQL batch or trigger definition.
 
+Compatibility construction: Q0343–Q0349 run through `scalar` (one integer row,
+no bound parameters) or an integer-only `PRAGMA application_id` template. The
+origin constants and release-channel selection are in `compatibility.rs`.
+Existing connection, migration, global-open, branch-copy, hook, and verification
+contexts below include their compatibility checks and channel-aware paths.
+
 `?`, `?1`, and similar placeholders are bound by the caller. Rust format fields such as `{placeholders}`, `{where_clause}`, `{limit}`, and `{}` are preserved as templates; they are not executable SQL until constructed. Rust string escapes and backslash-newline continuations are decoded for readability. Dynamic SQL has potentially unlimited concrete instances, so the report includes its templates and complete builder functions in the construction appendix, including conditional clauses and parameter bindings. No SQL was executed to produce this report.
 
 ## Inventory summary
 
-- SQL-bearing source files: **36**.
-- SQL literal/template occurrences: **342**.
-- Functions retained for construction/binding context: **171**.
+- SQL-bearing source files: **38**.
+- SQL literal/template occurrences: **354**.
+- Functions retained for construction/binding context: **176**.
 
 ## Source file index
 
@@ -24,6 +30,7 @@ Entries are grouped by source file and retain separate occurrences, even when SQ
 | [src/agents/mod.rs](../src/agents/mod.rs) | 1 |
 | [src/blame_engine.rs](../src/blame_engine.rs) | 16 |
 | [src/branch.rs](../src/branch.rs) | 2 |
+| [src/db/compatibility.rs](../src/db/compatibility.rs) | 7 |
 | [src/db/connection.rs](../src/db/connection.rs) | 11 |
 | [src/db/migrations.rs](../src/db/migrations.rs) | 53 |
 | [src/db/queries/clear.rs](../src/db/queries/clear.rs) | 1 |
@@ -42,6 +49,7 @@ Entries are grouped by source file and retain separate occurrences, even when SQ
 | [src/extraction/fstar_extractor.rs](../src/extraction/fstar_extractor.rs) | 2 |
 | [src/extraction/ruby_extractor.rs](../src/extraction/ruby_extractor.rs) | 1 |
 | [src/extraction/ruby_template_extractor.rs](../src/extraction/ruby_template_extractor.rs) | 1 |
+| [src/graphify.rs](../src/graphify.rs) | 5 |
 | [src/global_db.rs](../src/global_db.rs) | 41 |
 | [src/graph/imports.rs](../src/graph/imports.rs) | 1 |
 | [src/graph/queries.rs](../src/graph/queries.rs) | 5 |
@@ -245,7 +253,7 @@ VACUUM INTO ?1
 
 #### Q0023 — `copy_branch_db`
 
-Source: [src/branch.rs:94](../src/branch.rs#L94).
+Source: [src/branch.rs:102](../src/branch.rs#L102).
 
 ```sql
 PRAGMA wal_checkpoint(TRUNCATE);
@@ -255,7 +263,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 
 #### Q0024 — `try_open_read_only`
 
-Source: [src/db/connection.rs:226](../src/db/connection.rs#L226).
+Source: [src/db/connection.rs:235](../src/db/connection.rs#L235).
 
 ```sql
 PRAGMA query_only = 1; PRAGMA busy_timeout = 120000;
@@ -263,7 +271,7 @@ PRAGMA query_only = 1; PRAGMA busy_timeout = 120000;
 
 #### Q0025 — `try_open_read_only`
 
-Source: [src/db/connection.rs:234](../src/db/connection.rs#L234).
+Source: [src/db/connection.rs:243](../src/db/connection.rs#L243).
 
 ```sql
 PRAGMA user_version
@@ -271,7 +279,7 @@ PRAGMA user_version
 
 #### Q0026 — `checkpoint`
 
-Source: [src/db/connection.rs:301](../src/db/connection.rs#L301).
+Source: [src/db/connection.rs:310](../src/db/connection.rs#L310).
 
 ```sql
 PRAGMA wal_checkpoint(TRUNCATE);
@@ -279,7 +287,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 
 #### Q0027 — `optimize`
 
-Source: [src/db/connection.rs:313](../src/db/connection.rs#L313).
+Source: [src/db/connection.rs:322](../src/db/connection.rs#L322).
 
 ```sql
 VACUUM; ANALYZE;
@@ -287,7 +295,7 @@ VACUUM; ANALYZE;
 
 #### Q0028 — `size`
 
-Source: [src/db/connection.rs:327](../src/db/connection.rs#L327).
+Source: [src/db/connection.rs:336](../src/db/connection.rs#L336).
 
 ```sql
 SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()
@@ -295,7 +303,7 @@ SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()
 
 #### Q0029 — `quick_check`
 
-Source: [src/db/connection.rs:363](../src/db/connection.rs#L363).
+Source: [src/db/connection.rs:372](../src/db/connection.rs#L372).
 
 ```sql
 PRAGMA quick_check
@@ -303,7 +311,7 @@ PRAGMA quick_check
 
 #### Q0030 — `needs_bulk_load_finalization`
 
-Source: [src/db/connection.rs:394](../src/db/connection.rs#L394).
+Source: [src/db/connection.rs:403](../src/db/connection.rs#L403).
 
 ```sql
 SELECT name FROM sqlite_master WHERE type IN ('table', 'index')
@@ -311,7 +319,7 @@ SELECT name FROM sqlite_master WHERE type IN ('table', 'index')
 
 #### Q0031 — `rebuild_fts`
 
-Source: [src/db/connection.rs:423](../src/db/connection.rs#L423).
+Source: [src/db/connection.rs:432](../src/db/connection.rs#L432).
 
 ```sql
 INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')
@@ -319,7 +327,7 @@ INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')
 
 #### Q0032 — `apply_pragmas`
 
-Source: [src/db/connection.rs:440](../src/db/connection.rs#L440).
+Source: [src/db/connection.rs:449](../src/db/connection.rs#L449).
 
 ```sql
 PRAGMA page_size = 8192;
@@ -334,7 +342,7 @@ PRAGMA page_size = 8192;
 
 #### Q0033 — `begin_bulk_load`
 
-Source: [src/db/connection.rs:464](../src/db/connection.rs#L464).
+Source: [src/db/connection.rs:473](../src/db/connection.rs#L473).
 
 ```sql
 PRAGMA foreign_keys = OFF;
@@ -364,7 +372,7 @@ PRAGMA foreign_keys = OFF;
 
 #### Q0034 — `end_bulk_load`
 
-Source: [src/db/connection.rs:507](../src/db/connection.rs#L507).
+Source: [src/db/connection.rs:516](../src/db/connection.rs#L516).
 
 ```sql
 DELETE FROM edges
@@ -494,7 +502,7 @@ PRAGMA user_version = {version}
 
 #### Q0039 — `create_schema`
 
-Source: [src/db/migrations.rs:140](../src/db/migrations.rs#L140).
+Source: [src/db/migrations.rs:147](../src/db/migrations.rs#L147).
 
 ```sql
 CREATE TABLE IF NOT EXISTS nodes (
@@ -713,7 +721,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 
 #### Q0040 — `migrate`
 
-Source: [src/db/migrations.rs:401](../src/db/migrations.rs#L401).
+Source: [src/db/migrations.rs:405](../src/db/migrations.rs#L405).
 
 ```sql
 BEGIN EXCLUSIVE
@@ -721,7 +729,7 @@ BEGIN EXCLUSIVE
 
 #### Q0041 — `migrate`
 
-Source: [src/db/migrations.rs:416](../src/db/migrations.rs#L416).
+Source: [src/db/migrations.rs:431](../src/db/migrations.rs#L431).
 
 ```sql
 COMMIT
@@ -729,7 +737,7 @@ COMMIT
 
 #### Q0042 — `migrate`
 
-Source: [src/db/migrations.rs:425](../src/db/migrations.rs#L425).
+Source: [src/db/migrations.rs:440](../src/db/migrations.rs#L440).
 
 ```sql
 ROLLBACK
@@ -737,7 +745,7 @@ ROLLBACK
 
 #### Q0043 — `migrate_v1`
 
-Source: [src/db/migrations.rs:537](../src/db/migrations.rs#L537).
+Source: [src/db/migrations.rs:555](../src/db/migrations.rs#L555).
 
 ```sql
 CREATE TABLE IF NOT EXISTS nodes (
@@ -799,7 +807,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 
 #### Q0044 — `migrate_v1`
 
-Source: [src/db/migrations.rs:601](../src/db/migrations.rs#L601).
+Source: [src/db/migrations.rs:619](../src/db/migrations.rs#L619).
 
 ```sql
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
@@ -831,7 +839,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
 
 #### Q0045 — `migrate_v1`
 
-Source: [src/db/migrations.rs:635](../src/db/migrations.rs#L635).
+Source: [src/db/migrations.rs:653](../src/db/migrations.rs#L653).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
@@ -853,7 +861,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
 
 #### Q0046 — `migrate_v2`
 
-Source: [src/db/migrations.rs:667](../src/db/migrations.rs#L667).
+Source: [src/db/migrations.rs:685](../src/db/migrations.rs#L685).
 
 ```sql
 CREATE TABLE IF NOT EXISTS metadata (
@@ -864,7 +872,7 @@ CREATE TABLE IF NOT EXISTS metadata (
 
 #### Q0047 — `migrate_v2`
 
-Source: [src/db/migrations.rs:680](../src/db/migrations.rs#L680).
+Source: [src/db/migrations.rs:698](../src/db/migrations.rs#L698).
 
 ```sql
 DROP TABLE IF EXISTS schema_versions
@@ -872,7 +880,7 @@ DROP TABLE IF EXISTS schema_versions
 
 #### Q0048 — `migrate_v3`
 
-Source: [src/db/migrations.rs:697](../src/db/migrations.rs#L697).
+Source: [src/db/migrations.rs:715](../src/db/migrations.rs#L715).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN branches INTEGER NOT NULL DEFAULT 0;
@@ -883,7 +891,7 @@ ALTER TABLE nodes ADD COLUMN branches INTEGER NOT NULL DEFAULT 0;
 
 #### Q0049 — `migrate_v4`
 
-Source: [src/db/migrations.rs:718](../src/db/migrations.rs#L718).
+Source: [src/db/migrations.rs:736](../src/db/migrations.rs#L736).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN unsafe_blocks INTEGER NOT NULL DEFAULT 0;
@@ -893,7 +901,7 @@ ALTER TABLE nodes ADD COLUMN unsafe_blocks INTEGER NOT NULL DEFAULT 0;
 
 #### Q0050 — `migrate_v5`
 
-Source: [src/db/migrations.rs:743](../src/db/migrations.rs#L743).
+Source: [src/db/migrations.rs:761](../src/db/migrations.rs#L761).
 
 ```sql
 CREATE TABLE edges_dedup (
@@ -923,7 +931,7 @@ CREATE TABLE edges_dedup (
 
 #### Q0051 — `migrate_v6`
 
-Source: [src/db/migrations.rs:784](../src/db/migrations.rs#L784).
+Source: [src/db/migrations.rs:802](../src/db/migrations.rs#L802).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name))
@@ -931,7 +939,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name))
 
 #### Q0052 — `migrate_v7`
 
-Source: [src/db/migrations.rs:809](../src/db/migrations.rs#L809).
+Source: [src/db/migrations.rs:827](../src/db/migrations.rs#L827).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN attrs_start_line INTEGER NOT NULL DEFAULT 0
@@ -939,7 +947,7 @@ ALTER TABLE nodes ADD COLUMN attrs_start_line INTEGER NOT NULL DEFAULT 0
 
 #### Q0053 — `migrate_v7`
 
-Source: [src/db/migrations.rs:819](../src/db/migrations.rs#L819).
+Source: [src/db/migrations.rs:837](../src/db/migrations.rs#L837).
 
 ```sql
 UPDATE nodes SET attrs_start_line = start_line WHERE attrs_start_line = 0
@@ -947,7 +955,7 @@ UPDATE nodes SET attrs_start_line = start_line WHERE attrs_start_line = 0
 
 #### Q0054 — `migrate_v8`
 
-Source: [src/db/migrations.rs:842](../src/db/migrations.rs#L842).
+Source: [src/db/migrations.rs:860](../src/db/migrations.rs#L860).
 
 ```sql
 CREATE TABLE IF NOT EXISTS memory_decisions (
@@ -1000,7 +1008,7 @@ CREATE TABLE IF NOT EXISTS memory_decisions (
 
 #### Q0055 — `migrate_v9`
 
-Source: [src/db/migrations.rs:913](../src/db/migrations.rs#L913).
+Source: [src/db/migrations.rs:931](../src/db/migrations.rs#L931).
 
 ```sql
 CREATE TABLE IF NOT EXISTS read_cache (
@@ -1023,7 +1031,7 @@ CREATE TABLE IF NOT EXISTS read_cache (
 
 #### Q0056 — `migrate_v9`
 
-Source: [src/db/migrations.rs:942](../src/db/migrations.rs#L942).
+Source: [src/db/migrations.rs:960](../src/db/migrations.rs#L960).
 
 ```sql
 PRAGMA table_info(nodes)
@@ -1031,7 +1039,7 @@ PRAGMA table_info(nodes)
 
 #### Q0057 — `migrate_v9`
 
-Source: [src/db/migrations.rs:964](../src/db/migrations.rs#L964).
+Source: [src/db/migrations.rs:982](../src/db/migrations.rs#L982).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN parent_id TEXT
@@ -1039,7 +1047,7 @@ ALTER TABLE nodes ADD COLUMN parent_id TEXT
 
 #### Q0058 — `migrate_v9`
 
-Source: [src/db/migrations.rs:978](../src/db/migrations.rs#L978).
+Source: [src/db/migrations.rs:996](../src/db/migrations.rs#L996).
 
 ```sql
 SELECT 1 FROM sqlite_master WHERE type='table' AND name='edges'
@@ -1047,7 +1055,7 @@ SELECT 1 FROM sqlite_master WHERE type='table' AND name='edges'
 
 #### Q0059 — `migrate_v9`
 
-Source: [src/db/migrations.rs:1000](../src/db/migrations.rs#L1000).
+Source: [src/db/migrations.rs:1018](../src/db/migrations.rs#L1018).
 
 ```sql
 UPDATE nodes SET parent_id = (
@@ -1059,7 +1067,7 @@ UPDATE nodes SET parent_id = (
 
 #### Q0060 — `migrate_v9`
 
-Source: [src/db/migrations.rs:1013](../src/db/migrations.rs#L1013).
+Source: [src/db/migrations.rs:1031](../src/db/migrations.rs#L1031).
 
 ```sql
 DELETE FROM edges WHERE kind = 'contains'
@@ -1067,7 +1075,7 @@ DELETE FROM edges WHERE kind = 'contains'
 
 #### Q0061 — `migrate_v9`
 
-Source: [src/db/migrations.rs:1022](../src/db/migrations.rs#L1022).
+Source: [src/db/migrations.rs:1040](../src/db/migrations.rs#L1040).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)
@@ -1075,7 +1083,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)
 
 #### Q0062 — `migrate_v10`
 
-Source: [src/db/migrations.rs:1044](../src/db/migrations.rs#L1044).
+Source: [src/db/migrations.rs:1062](../src/db/migrations.rs#L1062).
 
 ```sql
 CREATE TABLE IF NOT EXISTS node_fingerprints (
@@ -1095,7 +1103,7 @@ CREATE TABLE IF NOT EXISTS node_fingerprints (
 
 #### Q0063 — `migrate_v11`
 
-Source: [src/db/migrations.rs:1097](../src/db/migrations.rs#L1097).
+Source: [src/db/migrations.rs:1115](../src/db/migrations.rs#L1115).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0
@@ -1103,7 +1111,7 @@ ALTER TABLE nodes ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0
 
 #### Q0064 — `migrate_v12`
 
-Source: [src/db/migrations.rs:1120](../src/db/migrations.rs#L1120).
+Source: [src/db/migrations.rs:1138](../src/db/migrations.rs#L1138).
 
 ```sql
 CREATE VIRTUAL TABLE IF NOT EXISTS executable_body_fts USING fts5(
@@ -1125,7 +1133,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS executable_body_fts USING fts5(
 
 #### Q0065 — `migrate_v12`
 
-Source: [src/db/migrations.rs:1143](../src/db/migrations.rs#L1143).
+Source: [src/db/migrations.rs:1161](../src/db/migrations.rs#L1161).
 
 ```sql
 SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
@@ -1133,7 +1141,7 @@ SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
 
 #### Q0066 — `migrate_v13`
 
-Source: [src/db/migrations.rs:1180](../src/db/migrations.rs#L1180).
+Source: [src/db/migrations.rs:1198](../src/db/migrations.rs#L1198).
 
 ```sql
 CREATE TABLE IF NOT EXISTS trait_dispatch_callers (
@@ -1149,7 +1157,7 @@ CREATE TABLE IF NOT EXISTS trait_dispatch_callers (
 
 #### Q0067 — `migrate_v13`
 
-Source: [src/db/migrations.rs:1198](../src/db/migrations.rs#L1198).
+Source: [src/db/migrations.rs:1216](../src/db/migrations.rs#L1216).
 
 ```sql
 SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
@@ -1157,7 +1165,7 @@ SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
 
 #### Q0068 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1274](../src/db/migrations.rs#L1274).
+Source: [src/db/migrations.rs:1292](../src/db/migrations.rs#L1292).
 
 ```sql
 SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
@@ -1165,7 +1173,7 @@ SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
 
 #### Q0069 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1294](../src/db/migrations.rs#L1294).
+Source: [src/db/migrations.rs:1312](../src/db/migrations.rs#L1312).
 
 ```sql
 DELETE FROM edges
@@ -1177,7 +1185,7 @@ DELETE FROM edges
 
 #### Q0070 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1311](../src/db/migrations.rs#L1311).
+Source: [src/db/migrations.rs:1329](../src/db/migrations.rs#L1329).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN search_terms TEXT NOT NULL DEFAULT ''
@@ -1185,7 +1193,7 @@ ALTER TABLE nodes ADD COLUMN search_terms TEXT NOT NULL DEFAULT ''
 
 #### Q0071 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1323](../src/db/migrations.rs#L1323).
+Source: [src/db/migrations.rs:1341](../src/db/migrations.rs#L1341).
 
 ```sql
 DROP TRIGGER IF EXISTS nodes_fts_insert;
@@ -1196,7 +1204,7 @@ DROP TRIGGER IF EXISTS nodes_fts_insert;
 
 #### Q0072 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1338](../src/db/migrations.rs#L1338).
+Source: [src/db/migrations.rs:1356](../src/db/migrations.rs#L1356).
 
 ```sql
 SELECT rowid, name, qualified_name FROM nodes
@@ -1204,7 +1212,7 @@ SELECT rowid, name, qualified_name FROM nodes
 
 #### Q0073 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1369](../src/db/migrations.rs#L1369).
+Source: [src/db/migrations.rs:1387](../src/db/migrations.rs#L1387).
 
 ```sql
 UPDATE nodes SET search_terms = ?1 WHERE rowid = ?2
@@ -1212,7 +1220,7 @@ UPDATE nodes SET search_terms = ?1 WHERE rowid = ?2
 
 #### Q0074 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1382](../src/db/migrations.rs#L1382).
+Source: [src/db/migrations.rs:1400](../src/db/migrations.rs#L1400).
 
 ```sql
 CREATE VIRTUAL TABLE nodes_fts USING fts5(
@@ -1243,7 +1251,7 @@ CREATE VIRTUAL TABLE nodes_fts USING fts5(
 
 #### Q0075 — `table_exists`
 
-Source: [src/db/migrations.rs:1441](../src/db/migrations.rs#L1441).
+Source: [src/db/migrations.rs:1459](../src/db/migrations.rs#L1459).
 
 ```sql
 SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
@@ -1251,7 +1259,7 @@ SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
 
 #### Q0076 — `migrate_v15`
 
-Source: [src/db/migrations.rs:1479](../src/db/migrations.rs#L1479).
+Source: [src/db/migrations.rs:1497](../src/db/migrations.rs#L1497).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
@@ -1263,7 +1271,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
 
 #### Q0077 — `migrate_v15`
 
-Source: [src/db/migrations.rs:1495](../src/db/migrations.rs#L1495).
+Source: [src/db/migrations.rs:1513](../src/db/migrations.rs#L1513).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source, kind);
@@ -1275,7 +1283,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source, kind);
 
 #### Q0078 — `migrate_v15`
 
-Source: [src/db/migrations.rs:1511](../src/db/migrations.rs#L1511).
+Source: [src/db/migrations.rs:1529](../src/db/migrations.rs#L1529).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_unresolved_refs_from_node_id ON unresolved_refs(from_node_id);
@@ -1285,7 +1293,7 @@ CREATE INDEX IF NOT EXISTS idx_unresolved_refs_from_node_id ON unresolved_refs(f
 
 #### Q0079 — `migrate_v15`
 
-Source: [src/db/migrations.rs:1530](../src/db/migrations.rs#L1530).
+Source: [src/db/migrations.rs:1548](../src/db/migrations.rs#L1548).
 
 ```sql
 DROP TRIGGER IF EXISTS nodes_fts_insert;
@@ -1312,7 +1320,7 @@ DROP TRIGGER IF EXISTS nodes_fts_insert;
 
 #### Q0080 — `node_columns`
 
-Source: [src/db/migrations.rs:1575](../src/db/migrations.rs#L1575).
+Source: [src/db/migrations.rs:1593](../src/db/migrations.rs#L1593).
 
 ```sql
 PRAGMA table_info(nodes)
@@ -1320,7 +1328,7 @@ PRAGMA table_info(nodes)
 
 #### Q0081 — `migrate_v16`
 
-Source: [src/db/migrations.rs:1622](../src/db/migrations.rs#L1622).
+Source: [src/db/migrations.rs:1640](../src/db/migrations.rs#L1640).
 
 ```sql
 ALTER TABLE files ADD COLUMN kind TEXT NOT NULL DEFAULT 'code';
@@ -1328,7 +1336,7 @@ ALTER TABLE files ADD COLUMN kind TEXT NOT NULL DEFAULT 'code';
 
 #### Q0082 — `indexes_naming`
 
-Source: [src/db/migrations.rs:1659](../src/db/migrations.rs#L1659).
+Source: [src/db/migrations.rs:1677](../src/db/migrations.rs#L1677).
 
 ```sql
 SELECT name FROM sqlite_master
@@ -1337,7 +1345,7 @@ SELECT name FROM sqlite_master
 
 #### Q0083 — `table_columns`
 
-Source: [src/db/migrations.rs:1683](../src/db/migrations.rs#L1683).
+Source: [src/db/migrations.rs:1701](../src/db/migrations.rs#L1701).
 
 ```sql
 PRAGMA table_info({table})
@@ -1345,7 +1353,7 @@ PRAGMA table_info({table})
 
 #### Q0084 — `migrate_v18`
 
-Source: [src/db/migrations.rs:1733](../src/db/migrations.rs#L1733).
+Source: [src/db/migrations.rs:1751](../src/db/migrations.rs#L1751).
 
 ```sql
 PRAGMA table_info(edges)
@@ -1353,7 +1361,7 @@ PRAGMA table_info(edges)
 
 #### Q0085 — `migrate_v18`
 
-Source: [src/db/migrations.rs:1762](../src/db/migrations.rs#L1762).
+Source: [src/db/migrations.rs:1780](../src/db/migrations.rs#L1780).
 
 ```sql
 DROP INDEX IF EXISTS "{index}";
@@ -1361,7 +1369,7 @@ DROP INDEX IF EXISTS "{index}";
 
 #### Q0086 — `migrate_v18`
 
-Source: [src/db/migrations.rs:1769](../src/db/migrations.rs#L1769).
+Source: [src/db/migrations.rs:1787](../src/db/migrations.rs#L1787).
 
 ```sql
 ALTER TABLE edges DROP COLUMN resolved_by;
@@ -1369,7 +1377,7 @@ ALTER TABLE edges DROP COLUMN resolved_by;
 
 #### Q0087 — `migrate_v18`
 
-Source: [src/db/migrations.rs:1776](../src/db/migrations.rs#L1776).
+Source: [src/db/migrations.rs:1794](../src/db/migrations.rs#L1794).
 
 ```sql
 ALTER TABLE edges ADD COLUMN resolved_by INTEGER;
@@ -3068,7 +3076,7 @@ begin
 
 #### Q0255 — `open_at`
 
-Source: [src/global_db.rs:219](../src/global_db.rs#L219).
+Source: [src/global_db.rs:228](../src/global_db.rs#L228).
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -3078,7 +3086,7 @@ PRAGMA journal_mode = WAL;
 
 #### Q0256 — `open_at`
 
-Source: [src/global_db.rs:227](../src/global_db.rs#L227).
+Source: [src/global_db.rs:236](../src/global_db.rs#L236).
 
 ```sql
 CREATE TABLE IF NOT EXISTS projects (
@@ -3089,7 +3097,7 @@ CREATE TABLE IF NOT EXISTS projects (
 
 #### Q0257 — `open_at`
 
-Source: [src/global_db.rs:236](../src/global_db.rs#L236).
+Source: [src/global_db.rs:245](../src/global_db.rs#L245).
 
 ```sql
 CREATE TABLE IF NOT EXISTS turns (
@@ -3131,7 +3139,7 @@ CREATE TABLE IF NOT EXISTS turns (
 
 #### Q0258 — `open_at`
 
-Source: [src/global_db.rs:276](../src/global_db.rs#L276).
+Source: [src/global_db.rs:285](../src/global_db.rs#L285).
 
 ```sql
 CREATE TABLE IF NOT EXISTS meta (
@@ -3142,7 +3150,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 #### Q0259 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:302](../src/global_db.rs#L302).
+Source: [src/global_db.rs:311](../src/global_db.rs#L311).
 
 ```sql
 PRAGMA table_info(turns)
@@ -3150,7 +3158,7 @@ PRAGMA table_info(turns)
 
 #### Q0260 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:321](../src/global_db.rs#L321).
+Source: [src/global_db.rs:330](../src/global_db.rs#L330).
 
 ```sql
 ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'
@@ -3158,7 +3166,7 @@ ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'
 
 #### Q0261 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:328](../src/global_db.rs#L328).
+Source: [src/global_db.rs:337](../src/global_db.rs#L337).
 
 ```sql
 ALTER TABLE turns ADD COLUMN credits INTEGER
@@ -3166,7 +3174,7 @@ ALTER TABLE turns ADD COLUMN credits INTEGER
 
 #### Q0262 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:338](../src/global_db.rs#L338).
+Source: [src/global_db.rs:347](../src/global_db.rs#L347).
 
 ```sql
 ALTER TABLE turns ADD COLUMN tool_result_tokens INTEGER NOT NULL DEFAULT 0
@@ -3174,7 +3182,7 @@ ALTER TABLE turns ADD COLUMN tool_result_tokens INTEGER NOT NULL DEFAULT 0
 
 #### Q0263 — `migrate_project_paths`
 
-Source: [src/global_db.rs:357](../src/global_db.rs#L357).
+Source: [src/global_db.rs:366](../src/global_db.rs#L366).
 
 ```sql
 SELECT 1 FROM meta WHERE key = 'projects_path_normalized'
@@ -3182,7 +3190,7 @@ SELECT 1 FROM meta WHERE key = 'projects_path_normalized'
 
 #### Q0264 — `migrate_project_paths`
 
-Source: [src/global_db.rs:368](../src/global_db.rs#L368).
+Source: [src/global_db.rs:377](../src/global_db.rs#L377).
 
 ```sql
 SELECT path, tokens_saved FROM projects
@@ -3190,7 +3198,7 @@ SELECT path, tokens_saved FROM projects
 
 #### Q0265 — `migrate_project_paths`
 
-Source: [src/global_db.rs:397](../src/global_db.rs#L397).
+Source: [src/global_db.rs:406](../src/global_db.rs#L406).
 
 ```sql
 DELETE FROM projects
@@ -3198,7 +3206,7 @@ DELETE FROM projects
 
 #### Q0266 — `migrate_project_paths`
 
-Source: [src/global_db.rs:403](../src/global_db.rs#L403).
+Source: [src/global_db.rs:412](../src/global_db.rs#L412).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3206,7 +3214,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0267 — `migrate_project_paths`
 
-Source: [src/global_db.rs:413](../src/global_db.rs#L413).
+Source: [src/global_db.rs:422](../src/global_db.rs#L422).
 
 ```sql
 UPDATE savings_ledger SET project_path = ?1 WHERE project_path = ?2
@@ -3214,7 +3222,7 @@ UPDATE savings_ledger SET project_path = ?1 WHERE project_path = ?2
 
 #### Q0268 — `migrate_project_paths`
 
-Source: [src/global_db.rs:422](../src/global_db.rs#L422).
+Source: [src/global_db.rs:431](../src/global_db.rs#L431).
 
 ```sql
 INSERT OR REPLACE INTO meta (key, value) VALUES ('projects_path_normalized', '1')
@@ -3222,7 +3230,7 @@ INSERT OR REPLACE INTO meta (key, value) VALUES ('projects_path_normalized', '1'
 
 #### Q0269 — `upsert`
 
-Source: [src/global_db.rs:437](../src/global_db.rs#L437).
+Source: [src/global_db.rs:446](../src/global_db.rs#L446).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3231,7 +3239,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0270 — `get_project_tokens`
 
-Source: [src/global_db.rs:450](../src/global_db.rs#L450).
+Source: [src/global_db.rs:459](../src/global_db.rs#L459).
 
 ```sql
 SELECT tokens_saved FROM projects WHERE path = ?1
@@ -3239,7 +3247,7 @@ SELECT tokens_saved FROM projects WHERE path = ?1
 
 #### Q0271 — `global_tokens_saved`
 
-Source: [src/global_db.rs:467](../src/global_db.rs#L467).
+Source: [src/global_db.rs:476](../src/global_db.rs#L476).
 
 ```sql
 SELECT COALESCE(SUM(tokens_saved), 0) FROM projects
@@ -3247,7 +3255,7 @@ SELECT COALESCE(SUM(tokens_saved), 0) FROM projects
 
 #### Q0272 — `record_savings`
 
-Source: [src/global_db.rs:489](../src/global_db.rs#L489).
+Source: [src/global_db.rs:498](../src/global_db.rs#L498).
 
 ```sql
 INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_tokens) VALUES (?1, ?2, ?3, ?4, ?5)
@@ -3255,7 +3263,7 @@ INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_to
 
 #### Q0273 — `sum_savings`
 
-Source: [src/global_db.rs:503](../src/global_db.rs#L503).
+Source: [src/global_db.rs:512](../src/global_db.rs#L512).
 
 ```sql
 SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE project_path = ?1 AND ts >= ?2
@@ -3263,7 +3271,7 @@ SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - 
 
 #### Q0274 — `sum_savings`
 
-Source: [src/global_db.rs:506](../src/global_db.rs#L506).
+Source: [src/global_db.rs:515](../src/global_db.rs#L515).
 
 ```sql
 SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE ts >= ?1
@@ -3271,7 +3279,7 @@ SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - 
 
 #### Q0275 — `savings_history`
 
-Source: [src/global_db.rs:534](../src/global_db.rs#L534).
+Source: [src/global_db.rs:543](../src/global_db.rs#L543).
 
 ```sql
 SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE project_path = ?1 AND ts >= ?2 GROUP BY day ORDER BY day DESC
@@ -3279,7 +3287,7 @@ SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tok
 
 #### Q0276 — `savings_history`
 
-Source: [src/global_db.rs:540](../src/global_db.rs#L540).
+Source: [src/global_db.rs:549](../src/global_db.rs#L549).
 
 ```sql
 SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE ts >= ?1 GROUP BY day ORDER BY day DESC
@@ -3287,7 +3295,7 @@ SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tok
 
 #### Q0277 — `delete_project`
 
-Source: [src/global_db.rs:569](../src/global_db.rs#L569).
+Source: [src/global_db.rs:578](../src/global_db.rs#L578).
 
 ```sql
 DELETE FROM projects WHERE path = ?1
@@ -3295,7 +3303,7 @@ DELETE FROM projects WHERE path = ?1
 
 #### Q0278 — `delete_projects`
 
-Source: [src/global_db.rs:588](../src/global_db.rs#L588).
+Source: [src/global_db.rs:597](../src/global_db.rs#L597).
 
 ```sql
 DELETE FROM projects WHERE path IN ({})
@@ -3303,7 +3311,7 @@ DELETE FROM projects WHERE path IN ({})
 
 #### Q0279 — `list_project_paths`
 
-Source: [src/global_db.rs:604](../src/global_db.rs#L604).
+Source: [src/global_db.rs:613](../src/global_db.rs#L613).
 
 ```sql
 SELECT path FROM projects
@@ -3311,7 +3319,7 @@ SELECT path FROM projects
 
 #### Q0280 — `insert_turn`
 
-Source: [src/global_db.rs:622](../src/global_db.rs#L622).
+Source: [src/global_db.rs:631](../src/global_db.rs#L631).
 
 ```sql
 INSERT OR IGNORE INTO turns
@@ -3323,7 +3331,7 @@ INSERT OR IGNORE INTO turns
 
 #### Q0281 — `add_tool_result_tokens`
 
-Source: [src/global_db.rs:666](../src/global_db.rs#L666).
+Source: [src/global_db.rs:675](../src/global_db.rs#L675).
 
 ```sql
 UPDATE turns SET tool_result_tokens = tool_result_tokens + ?2 WHERE message_id = ?1
@@ -3331,7 +3339,7 @@ UPDATE turns SET tool_result_tokens = tool_result_tokens + ?2 WHERE message_id =
 
 #### Q0282 — `upsert_droid_turn`
 
-Source: [src/global_db.rs:685](../src/global_db.rs#L685).
+Source: [src/global_db.rs:694](../src/global_db.rs#L694).
 
 ```sql
 INSERT INTO turns
@@ -3373,7 +3381,7 @@ INSERT INTO turns
 
 #### Q0283 — `total_cost_since`
 
-Source: [src/global_db.rs:746](../src/global_db.rs#L746).
+Source: [src/global_db.rs:755](../src/global_db.rs#L755).
 
 ```sql
 SELECT COALESCE(SUM(cost_usd), 0.0) FROM turns WHERE timestamp >= ?1
@@ -3381,7 +3389,7 @@ SELECT COALESCE(SUM(cost_usd), 0.0) FROM turns WHERE timestamp >= ?1
 
 #### Q0284 — `total_tokens_since`
 
-Source: [src/global_db.rs:760](../src/global_db.rs#L760).
+Source: [src/global_db.rs:769](../src/global_db.rs#L769).
 
 ```sql
 SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM turns WHERE timestamp >= ?1
@@ -3389,7 +3397,7 @@ SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM turns WHERE timestamp
 
 #### Q0285 — `token_breakdown_since`
 
-Source: [src/global_db.rs:775](../src/global_db.rs#L775).
+Source: [src/global_db.rs:784](../src/global_db.rs#L784).
 
 ```sql
 SELECT COALESCE(SUM(input_tokens), 0),
@@ -3401,7 +3409,7 @@ SELECT COALESCE(SUM(input_tokens), 0),
 
 #### Q0286 — `cost_by_model_since`
 
-Source: [src/global_db.rs:805](../src/global_db.rs#L805).
+Source: [src/global_db.rs:814](../src/global_db.rs#L814).
 
 ```sql
 SELECT model, SUM(cost_usd),
@@ -3412,7 +3420,7 @@ SELECT model, SUM(cost_usd),
 
 #### Q0287 — `cost_by_category_since`
 
-Source: [src/global_db.rs:831](../src/global_db.rs#L831).
+Source: [src/global_db.rs:840](../src/global_db.rs#L840).
 
 ```sql
 SELECT category, SUM(cost_usd), COUNT(*)
@@ -3422,7 +3430,7 @@ SELECT category, SUM(cost_usd), COUNT(*)
 
 #### Q0288 — `nav_turns_since`
 
-Source: [src/global_db.rs:868](../src/global_db.rs#L868).
+Source: [src/global_db.rs:877](../src/global_db.rs#L877).
 
 ```sql
 SELECT tool_names, tool_result_tokens FROM turns WHERE timestamp >= ?1 AND agent = 'claude'
@@ -3430,7 +3438,7 @@ SELECT tool_names, tool_result_tokens FROM turns WHERE timestamp >= ?1 AND agent
 
 #### Q0289 — `cost_by_agent_since`
 
-Source: [src/global_db.rs:892](../src/global_db.rs#L892).
+Source: [src/global_db.rs:901](../src/global_db.rs#L901).
 
 ```sql
 SELECT agent,
@@ -3447,7 +3455,7 @@ SELECT agent,
 
 #### Q0290 — `get_parse_offset`
 
-Source: [src/global_db.rs:940](../src/global_db.rs#L940).
+Source: [src/global_db.rs:949](../src/global_db.rs#L949).
 
 ```sql
 SELECT byte_offset, mtime FROM parse_offsets WHERE file_path = ?1
@@ -3455,7 +3463,7 @@ SELECT byte_offset, mtime FROM parse_offsets WHERE file_path = ?1
 
 #### Q0291 — `set_parse_offset`
 
-Source: [src/global_db.rs:956](../src/global_db.rs#L956).
+Source: [src/global_db.rs:965](../src/global_db.rs#L965).
 
 ```sql
 INSERT INTO parse_offsets (file_path, byte_offset, mtime) VALUES (?1, ?2, ?3)
@@ -3464,7 +3472,7 @@ INSERT INTO parse_offsets (file_path, byte_offset, mtime) VALUES (?1, ?2, ?3)
 
 #### Q0292 — `checkpoint`
 
-Source: [src/global_db.rs:967](../src/global_db.rs#L967).
+Source: [src/global_db.rs:976](../src/global_db.rs#L976).
 
 ```sql
 PRAGMA wal_checkpoint(TRUNCATE);
@@ -3472,7 +3480,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 
 #### Q0293 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1067](../src/global_db.rs#L1067).
+Source: [src/global_db.rs:1076](../src/global_db.rs#L1076).
 
 ```sql
 DELETE FROM meta WHERE key = 'projects_path_normalized';
@@ -3481,7 +3489,7 @@ DELETE FROM meta WHERE key = 'projects_path_normalized';
 
 #### Q0294 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1079](../src/global_db.rs#L1079).
+Source: [src/global_db.rs:1088](../src/global_db.rs#L1088).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3489,7 +3497,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0295 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1088](../src/global_db.rs#L1088).
+Source: [src/global_db.rs:1097](../src/global_db.rs#L1097).
 
 ```sql
 INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_tokens) VALUES (42, ?1, 'tokensave_context', 1000, 100)
@@ -3832,7 +3840,7 @@ release {tag} publishes {SUMS_ASSET} but it lists no hash for '{expected_asset}'
 
 #### Q0329 — `inspect`
 
-Source: [src/verify.rs:205](../src/verify.rs#L205).
+Source: [src/verify.rs:209](../src/verify.rs#L209).
 
 ```sql
 PRAGMA query_only=1; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192; PRAGMA mmap_size=0;
@@ -3840,7 +3848,7 @@ PRAGMA query_only=1; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192; PRAGMA m
 
 #### Q0330 — `inspect`
 
-Source: [src/verify.rs:209](../src/verify.rs#L209).
+Source: [src/verify.rs:213](../src/verify.rs#L213).
 
 ```sql
 PRAGMA user_version
@@ -3848,7 +3856,7 @@ PRAGMA user_version
 
 #### Q0331 — `inspect`
 
-Source: [src/verify.rs:228](../src/verify.rs#L228).
+Source: [src/verify.rs:232](../src/verify.rs#L232).
 
 ```sql
 PRAGMA integrity_check
@@ -3856,7 +3864,7 @@ PRAGMA integrity_check
 
 #### Q0332 — `inspect`
 
-Source: [src/verify.rs:230](../src/verify.rs#L230).
+Source: [src/verify.rs:234](../src/verify.rs#L234).
 
 ```sql
 PRAGMA quick_check
@@ -3864,7 +3872,7 @@ PRAGMA quick_check
 
 #### Q0333 — `inspect`
 
-Source: [src/verify.rs:251](../src/verify.rs#L251).
+Source: [src/verify.rs:255](../src/verify.rs#L255).
 
 ```sql
 SELECT COUNT(*) FROM edges e WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id=e.source) OR NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id=e.target)
@@ -3872,7 +3880,7 @@ SELECT COUNT(*) FROM edges e WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id=
 
 #### Q0334 — `inspect`
 
-Source: [src/verify.rs:252](../src/verify.rs#L252).
+Source: [src/verify.rs:256](../src/verify.rs#L256).
 
 ```sql
 SELECT COUNT(*) FROM nodes n WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.path=n.file_path)
@@ -3880,7 +3888,7 @@ SELECT COUNT(*) FROM nodes n WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.pat
 
 #### Q0335 — `inspect`
 
-Source: [src/verify.rs:253](../src/verify.rs#L253).
+Source: [src/verify.rs:257](../src/verify.rs#L257).
 
 ```sql
 SELECT COUNT(*) FROM nodes n WHERE n.parent_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM nodes p WHERE p.id=n.parent_id)
@@ -3888,7 +3896,7 @@ SELECT COUNT(*) FROM nodes n WHERE n.parent_id IS NOT NULL AND NOT EXISTS (SELEC
 
 #### Q0336 — `inspect`
 
-Source: [src/verify.rs:254](../src/verify.rs#L254).
+Source: [src/verify.rs:258](../src/verify.rs#L258).
 
 ```sql
 SELECT COUNT(*) FROM unresolved_refs r WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id=r.from_node_id)
@@ -3896,7 +3904,7 @@ SELECT COUNT(*) FROM unresolved_refs r WHERE NOT EXISTS (SELECT 1 FROM nodes n W
 
 #### Q0337 — `inspect`
 
-Source: [src/verify.rs:255](../src/verify.rs#L255).
+Source: [src/verify.rs:259](../src/verify.rs#L259).
 
 ```sql
 SELECT COUNT(*) FROM vectors v WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id=v.node_id)
@@ -3904,7 +3912,7 @@ SELECT COUNT(*) FROM vectors v WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.i
 
 #### Q0338 — `inspect`
 
-Source: [src/verify.rs:256](../src/verify.rs#L256).
+Source: [src/verify.rs:260](../src/verify.rs#L260).
 
 ```sql
 SELECT COUNT(*) FROM ambiguous_calls a WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id=a.from_node_id)
@@ -3912,7 +3920,7 @@ SELECT COUNT(*) FROM ambiguous_calls a WHERE NOT EXISTS (SELECT 1 FROM nodes n W
 
 #### Q0339 — `inspect`
 
-Source: [src/verify.rs:257](../src/verify.rs#L257).
+Source: [src/verify.rs:261](../src/verify.rs#L261).
 
 ```sql
 SELECT COUNT(*) FROM trait_dispatch_callers d WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id=d.concrete_method_id) OR NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id=d.trait_method_id) OR NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id=d.caller_id)
@@ -3920,7 +3928,7 @@ SELECT COUNT(*) FROM trait_dispatch_callers d WHERE NOT EXISTS (SELECT 1 FROM no
 
 #### Q0340 — `inspect`
 
-Source: [src/verify.rs:270](../src/verify.rs#L270).
+Source: [src/verify.rs:274](../src/verify.rs#L274).
 
 ```sql
 SELECT path, content_hash, modified_at FROM files ORDER BY path
@@ -3942,6 +3950,64 @@ Source: [src/worktree.rs:273](../src/worktree.rs#L273).
 
 ```sql
 commit
+```
+
+### `src/db/compatibility.rs`
+
+#### Q0343 — `check_channel`
+
+Source: [src/db/compatibility.rs:42](../src/db/compatibility.rs#L42).
+
+```sql
+PRAGMA application_id
+```
+
+#### Q0344 — `check_channel`
+
+Source: [src/db/compatibility.rs:54](../src/db/compatibility.rs#L54).
+
+```sql
+PRAGMA user_version
+```
+
+#### Q0345 — `mark_empty`
+
+Source: [src/db/compatibility.rs:91](../src/db/compatibility.rs#L91).
+
+```sql
+SELECT count(*) FROM sqlite_schema
+```
+
+#### Q0346 — `mark_empty`
+
+Source: [src/db/compatibility.rs:92](../src/db/compatibility.rs#L92).
+
+```sql
+PRAGMA application_id
+```
+
+#### Q0347 — `mark_empty`
+
+Source: [src/db/compatibility.rs:99](../src/db/compatibility.rs#L99).
+
+```sql
+PRAGMA application_id = {origin}
+```
+
+#### Q0348 — `channel_policy_preserves_origin`
+
+Source: [src/db/compatibility.rs:120](../src/db/compatibility.rs#L120).
+
+```sql
+PRAGMA application_id = {origin}
+```
+
+#### Q0349 — `channel_policy_preserves_origin`
+
+Source: [src/db/compatibility.rs:126](../src/db/compatibility.rs#L126).
+
+```sql
+PRAGMA application_id
 ```
 
 ## Dynamic construction and binding context
@@ -4324,6 +4390,14 @@ Source: [src/branch.rs:68](../src/branch.rs#L68).
 
 ```rust
 pub async fn copy_branch_db(parent_db: &Path, new_db_path: &Path) -> crate::errors::Result<()> {
+    if let Err(error) =
+        crate::db::compatibility::preflight(parent_db, crate::db::migrations::latest_version())
+            .await
+    {
+        if crate::db::compatibility::is_refusal(&error) {
+            return Err(error);
+        }
+    }
     let file_name = new_db_path.file_name().map_or_else(
         || "branch.db".to_string(),
         |n| n.to_string_lossy().into_owned(),
@@ -4361,12 +4435,13 @@ pub async fn copy_branch_db(parent_db: &Path, new_db_path: &Path) -> crate::erro
 }
 ```
 
-### `try_open_read_only` — src/db/connection.rs:212
+### `try_open_read_only` — src/db/connection.rs:220
 
-Source: [src/db/connection.rs:212](../src/db/connection.rs#L212).
+Source: [src/db/connection.rs:220](../src/db/connection.rs#L220).
 
 ```rust
     async fn try_open_read_only(db_path: &Path) -> Result<Self> {
+        super::compatibility::preflight(db_path, migrations::latest_version()).await?;
         let db = libsql::Builder::new_local(db_path)
             .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .build()
@@ -4435,9 +4510,9 @@ Source: [src/db/connection.rs:212](../src/db/connection.rs#L212).
     }
 ```
 
-### `checkpoint` — src/db/connection.rs:299
+### `checkpoint` — src/db/connection.rs:308
 
-Source: [src/db/connection.rs:299](../src/db/connection.rs#L299).
+Source: [src/db/connection.rs:308](../src/db/connection.rs#L308).
 
 ```rust
     pub async fn checkpoint(&self) -> Result<()> {
@@ -4452,9 +4527,9 @@ Source: [src/db/connection.rs:299](../src/db/connection.rs#L299).
     }
 ```
 
-### `optimize` — src/db/connection.rs:311
+### `optimize` — src/db/connection.rs:320
 
-Source: [src/db/connection.rs:311](../src/db/connection.rs#L311).
+Source: [src/db/connection.rs:320](../src/db/connection.rs#L320).
 
 ```rust
     pub async fn optimize(&self) -> Result<()> {
@@ -4469,9 +4544,9 @@ Source: [src/db/connection.rs:311](../src/db/connection.rs#L311).
     }
 ```
 
-### `size` — src/db/connection.rs:323
+### `size` — src/db/connection.rs:332
 
-Source: [src/db/connection.rs:323](../src/db/connection.rs#L323).
+Source: [src/db/connection.rs:332](../src/db/connection.rs#L332).
 
 ```rust
     pub async fn size(&self) -> Result<u64> {
@@ -4508,9 +4583,9 @@ Source: [src/db/connection.rs:323](../src/db/connection.rs#L323).
     }
 ```
 
-### `quick_check` — src/db/connection.rs:360
+### `quick_check` — src/db/connection.rs:369
 
-Source: [src/db/connection.rs:360](../src/db/connection.rs#L360).
+Source: [src/db/connection.rs:369](../src/db/connection.rs#L369).
 
 ```rust
     pub async fn quick_check(&self) -> Result<bool> {
@@ -4535,9 +4610,9 @@ Source: [src/db/connection.rs:360](../src/db/connection.rs#L360).
     }
 ```
 
-### `needs_bulk_load_finalization` — src/db/connection.rs:390
+### `needs_bulk_load_finalization` — src/db/connection.rs:399
 
-Source: [src/db/connection.rs:390](../src/db/connection.rs#L390).
+Source: [src/db/connection.rs:399](../src/db/connection.rs#L399).
 
 ```rust
     pub async fn needs_bulk_load_finalization(&self) -> Result<bool> {
@@ -4568,9 +4643,9 @@ Source: [src/db/connection.rs:390](../src/db/connection.rs#L390).
     }
 ```
 
-### `rebuild_fts` — src/db/connection.rs:421
+### `rebuild_fts` — src/db/connection.rs:430
 
-Source: [src/db/connection.rs:421](../src/db/connection.rs#L421).
+Source: [src/db/connection.rs:430](../src/db/connection.rs#L430).
 
 ```rust
     pub async fn rebuild_fts(&self) -> Result<()> {
@@ -4585,9 +4660,9 @@ Source: [src/db/connection.rs:421](../src/db/connection.rs#L421).
     }
 ```
 
-### `apply_pragmas` — src/db/connection.rs:436
+### `apply_pragmas` — src/db/connection.rs:445
 
-Source: [src/db/connection.rs:436](../src/db/connection.rs#L436).
+Source: [src/db/connection.rs:445](../src/db/connection.rs#L445).
 
 ```rust
     async fn apply_pragmas(conn: &Connection, db_file_size: u64) -> Result<()> {
@@ -4612,9 +4687,9 @@ Source: [src/db/connection.rs:436](../src/db/connection.rs#L436).
     }
 ```
 
-### `begin_bulk_load` — src/db/connection.rs:461
+### `begin_bulk_load` — src/db/connection.rs:470
 
-Source: [src/db/connection.rs:461](../src/db/connection.rs#L461).
+Source: [src/db/connection.rs:470](../src/db/connection.rs#L470).
 
 ```rust
     pub async fn begin_bulk_load(&self) -> Result<()> {
@@ -4653,9 +4728,9 @@ Source: [src/db/connection.rs:461](../src/db/connection.rs#L461).
     }
 ```
 
-### `end_bulk_load` — src/db/connection.rs:505
+### `end_bulk_load` — src/db/connection.rs:514
 
-Source: [src/db/connection.rs:505](../src/db/connection.rs#L505).
+Source: [src/db/connection.rs:514](../src/db/connection.rs#L514).
 
 ```rust
     pub async fn end_bulk_load(&self) -> Result<()> {
@@ -4761,6 +4836,13 @@ Source: [src/db/migrations.rs:138](../src/db/migrations.rs#L138).
 
 ```rust
 pub async fn create_schema(conn: &Connection) -> Result<()> {
+    super::compatibility::check(conn, LATEST_VERSION).await?;
+    // Do not stamp an existing schema as current without running migrations.
+    if get_version(conn).await? != 0 {
+        migrate(conn).await?;
+        return Ok(());
+    }
+    super::compatibility::mark_empty(conn).await?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS nodes (
             id TEXT PRIMARY KEY,
@@ -5003,17 +5085,14 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate` — src/db/migrations.rs:386
+### `migrate` — src/db/migrations.rs:393
 
-Source: [src/db/migrations.rs:386](../src/db/migrations.rs#L386).
+Source: [src/db/migrations.rs:393](../src/db/migrations.rs#L393).
 
 ```rust
 pub async fn migrate(conn: &Connection) -> Result<bool> {
     let current = get_version(conn).await?;
-    debug_assert!(
-        current <= LATEST_VERSION,
-        "database version {current} is ahead of code version {LATEST_VERSION}"
-    );
+    super::compatibility::check(conn, LATEST_VERSION).await?;
     if current >= LATEST_VERSION {
         return Ok(false);
     }
@@ -5034,7 +5113,18 @@ pub async fn migrate(conn: &Connection) -> Result<bool> {
     // check and the lock acquisition.
     let current = get_version(conn).await?;
 
-    let result = run_migrations(conn, current).await;
+    let result = async {
+        // Another process may have changed the header while we waited for
+        // the migration lock. Refuse before executing any migration writes.
+        super::compatibility::check(conn, LATEST_VERSION).await?;
+        if current == 0 {
+            // open() can also create an empty database; legacy schemas with
+            // tables remain unmarked. The stamp rolls back on migration failure.
+            super::compatibility::mark_empty(conn).await?;
+        }
+        run_migrations(conn, current).await
+    }
+    .await;
 
     match result {
         Ok(()) => {
@@ -5048,6 +5138,9 @@ pub async fn migrate(conn: &Connection) -> Result<bool> {
         }
         Err(e) => {
             let _ = conn.execute("ROLLBACK", ()).await;
+            if super::compatibility::is_refusal(&e) {
+                return Err(e);
+            }
             // A busy, locked, full or failing disk is not a broken schema: the
             // same migration succeeds once the condition clears, and the data
             // must not be thrown away for it. Those keep their own error.
@@ -5076,9 +5169,9 @@ pub async fn migrate(conn: &Connection) -> Result<bool> {
 }
 ```
 
-### `migrate_v1` — src/db/migrations.rs:534
+### `migrate_v1` — src/db/migrations.rs:552
 
-Source: [src/db/migrations.rs:534](../src/db/migrations.rs#L534).
+Source: [src/db/migrations.rs:552](../src/db/migrations.rs#L552).
 
 ```rust
 async fn migrate_v1(conn: &Connection) -> Result<()> {
@@ -5208,9 +5301,9 @@ async fn migrate_v1(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v2` — src/db/migrations.rs:665
+### `migrate_v2` — src/db/migrations.rs:683
 
-Source: [src/db/migrations.rs:665](../src/db/migrations.rs#L665).
+Source: [src/db/migrations.rs:683](../src/db/migrations.rs#L683).
 
 ```rust
 async fn migrate_v2(conn: &Connection) -> Result<()> {
@@ -5239,9 +5332,9 @@ async fn migrate_v2(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v3` — src/db/migrations.rs:695
+### `migrate_v3` — src/db/migrations.rs:713
 
-Source: [src/db/migrations.rs:695](../src/db/migrations.rs#L695).
+Source: [src/db/migrations.rs:713](../src/db/migrations.rs#L713).
 
 ```rust
 async fn migrate_v3(conn: &Connection) -> Result<()> {
@@ -5261,9 +5354,9 @@ async fn migrate_v3(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v4` — src/db/migrations.rs:716
+### `migrate_v4` — src/db/migrations.rs:734
 
-Source: [src/db/migrations.rs:716](../src/db/migrations.rs#L716).
+Source: [src/db/migrations.rs:734](../src/db/migrations.rs#L734).
 
 ```rust
 async fn migrate_v4(conn: &Connection) -> Result<()> {
@@ -5282,9 +5375,9 @@ async fn migrate_v4(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v5` — src/db/migrations.rs:738
+### `migrate_v5` — src/db/migrations.rs:756
 
-Source: [src/db/migrations.rs:738](../src/db/migrations.rs#L738).
+Source: [src/db/migrations.rs:756](../src/db/migrations.rs#L756).
 
 ```rust
 async fn migrate_v5(conn: &Connection) -> Result<()> {
@@ -5326,9 +5419,9 @@ async fn migrate_v5(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v6` — src/db/migrations.rs:782
+### `migrate_v6` — src/db/migrations.rs:800
 
-Source: [src/db/migrations.rs:782](../src/db/migrations.rs#L782).
+Source: [src/db/migrations.rs:800](../src/db/migrations.rs#L800).
 
 ```rust
 async fn migrate_v6(conn: &Connection) -> Result<()> {
@@ -5346,9 +5439,9 @@ async fn migrate_v6(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v7` — src/db/migrations.rs:807
+### `migrate_v7` — src/db/migrations.rs:825
 
-Source: [src/db/migrations.rs:807](../src/db/migrations.rs#L807).
+Source: [src/db/migrations.rs:825](../src/db/migrations.rs#L825).
 
 ```rust
 async fn migrate_v7(conn: &Connection) -> Result<()> {
@@ -5376,9 +5469,9 @@ async fn migrate_v7(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v8` — src/db/migrations.rs:840
+### `migrate_v8` — src/db/migrations.rs:858
 
-Source: [src/db/migrations.rs:840](../src/db/migrations.rs#L840).
+Source: [src/db/migrations.rs:858](../src/db/migrations.rs#L858).
 
 ```rust
 async fn migrate_v8(conn: &Connection) -> Result<()> {
@@ -5440,9 +5533,9 @@ async fn migrate_v8(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v9` — src/db/migrations.rs:911
+### `migrate_v9` — src/db/migrations.rs:929
 
-Source: [src/db/migrations.rs:911](../src/db/migrations.rs#L911).
+Source: [src/db/migrations.rs:929](../src/db/migrations.rs#L929).
 
 ```rust
 async fn migrate_v9(conn: &Connection) -> Result<()> {
@@ -5569,9 +5662,9 @@ async fn migrate_v9(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v10` — src/db/migrations.rs:1042
+### `migrate_v10` — src/db/migrations.rs:1060
 
-Source: [src/db/migrations.rs:1042](../src/db/migrations.rs#L1042).
+Source: [src/db/migrations.rs:1060](../src/db/migrations.rs#L1060).
 
 ```rust
 async fn migrate_v10(conn: &Connection) -> Result<()> {
@@ -5600,9 +5693,9 @@ async fn migrate_v10(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v11` — src/db/migrations.rs:1084
+### `migrate_v11` — src/db/migrations.rs:1102
 
-Source: [src/db/migrations.rs:1084](../src/db/migrations.rs#L1084).
+Source: [src/db/migrations.rs:1102](../src/db/migrations.rs#L1102).
 
 ```rust
 async fn migrate_v11(conn: &Connection) -> Result<()> {
@@ -5632,9 +5725,9 @@ async fn migrate_v11(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v12` — src/db/migrations.rs:1118
+### `migrate_v12` — src/db/migrations.rs:1136
 
-Source: [src/db/migrations.rs:1118](../src/db/migrations.rs#L1118).
+Source: [src/db/migrations.rs:1136](../src/db/migrations.rs#L1136).
 
 ```rust
 async fn migrate_v12(conn: &Connection) -> Result<()> {
@@ -5691,9 +5784,9 @@ async fn migrate_v12(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v13` — src/db/migrations.rs:1178
+### `migrate_v13` — src/db/migrations.rs:1196
 
-Source: [src/db/migrations.rs:1178](../src/db/migrations.rs#L1178).
+Source: [src/db/migrations.rs:1196](../src/db/migrations.rs#L1196).
 
 ```rust
 async fn migrate_v13(conn: &Connection) -> Result<()> {
@@ -5745,9 +5838,9 @@ async fn migrate_v13(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v14` — src/db/migrations.rs:1270
+### `migrate_v14` — src/db/migrations.rs:1288
 
-Source: [src/db/migrations.rs:1270](../src/db/migrations.rs#L1270).
+Source: [src/db/migrations.rs:1288](../src/db/migrations.rs#L1288).
 
 ```rust
 async fn migrate_v14(conn: &Connection) -> Result<()> {
@@ -5897,9 +5990,9 @@ async fn migrate_v14(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `table_exists` — src/db/migrations.rs:1438
+### `table_exists` — src/db/migrations.rs:1456
 
-Source: [src/db/migrations.rs:1438](../src/db/migrations.rs#L1438).
+Source: [src/db/migrations.rs:1456](../src/db/migrations.rs#L1456).
 
 ```rust
 async fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
@@ -5925,9 +6018,9 @@ async fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
 }
 ```
 
-### `migrate_v15` — src/db/migrations.rs:1470
+### `migrate_v15` — src/db/migrations.rs:1488
 
-Source: [src/db/migrations.rs:1470](../src/db/migrations.rs#L1470).
+Source: [src/db/migrations.rs:1488](../src/db/migrations.rs#L1488).
 
 ```rust
 async fn migrate_v15(conn: &Connection) -> Result<()> {
@@ -6033,9 +6126,9 @@ async fn migrate_v15(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `node_columns` — src/db/migrations.rs:1573
+### `node_columns` — src/db/migrations.rs:1591
 
-Source: [src/db/migrations.rs:1573](../src/db/migrations.rs#L1573).
+Source: [src/db/migrations.rs:1591](../src/db/migrations.rs#L1591).
 
 ```rust
 async fn node_columns(conn: &Connection) -> Result<Vec<String>> {
@@ -6062,9 +6155,9 @@ async fn node_columns(conn: &Connection) -> Result<Vec<String>> {
 }
 ```
 
-### `migrate_v16` — src/db/migrations.rs:1610
+### `migrate_v16` — src/db/migrations.rs:1628
 
-Source: [src/db/migrations.rs:1610](../src/db/migrations.rs#L1610).
+Source: [src/db/migrations.rs:1628](../src/db/migrations.rs#L1628).
 
 ```rust
 async fn migrate_v16(conn: &Connection) -> Result<()> {
@@ -6089,9 +6182,9 @@ async fn migrate_v16(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `indexes_naming` — src/db/migrations.rs:1655
+### `indexes_naming` — src/db/migrations.rs:1673
 
-Source: [src/db/migrations.rs:1655](../src/db/migrations.rs#L1655).
+Source: [src/db/migrations.rs:1673](../src/db/migrations.rs#L1673).
 
 ```rust
 async fn indexes_naming(conn: &Connection, table: &str, column: &str) -> Result<Vec<String>> {
@@ -6118,9 +6211,9 @@ async fn indexes_naming(conn: &Connection, table: &str, column: &str) -> Result<
 }
 ```
 
-### `table_columns` — src/db/migrations.rs:1679
+### `table_columns` — src/db/migrations.rs:1697
 
-Source: [src/db/migrations.rs:1679](../src/db/migrations.rs#L1679).
+Source: [src/db/migrations.rs:1697](../src/db/migrations.rs#L1697).
 
 ```rust
 async fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
@@ -6149,9 +6242,9 @@ async fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
 }
 ```
 
-### `migrate_v18` — src/db/migrations.rs:1726
+### `migrate_v18` — src/db/migrations.rs:1744
 
-Source: [src/db/migrations.rs:1726](../src/db/migrations.rs#L1726).
+Source: [src/db/migrations.rs:1744](../src/db/migrations.rs#L1744).
 
 ```rust
 async fn migrate_v18(conn: &Connection) -> Result<()> {
@@ -11104,9 +11197,9 @@ pub async fn audit(db: &Database, limit: usize) -> Result<EdgeAudit> {
 }
 ```
 
-### `delete_projects` — src/global_db.rs:579
+### `delete_projects` — src/global_db.rs:588
 
-Source: [src/global_db.rs:579](../src/global_db.rs#L579).
+Source: [src/global_db.rs:588](../src/global_db.rs#L588).
 
 ```rust
     pub async fn delete_projects(&self, project_paths: &[String]) -> usize {
@@ -11133,9 +11226,9 @@ Source: [src/global_db.rs:579](../src/global_db.rs#L579).
     }
 ```
 
-### `migration_merges_duplicates_and_drops_relative_rows` — src/global_db.rs:1054
+### `migration_merges_duplicates_and_drops_relative_rows` — src/global_db.rs:1063
 
-Source: [src/global_db.rs:1054](../src/global_db.rs#L1054).
+Source: [src/global_db.rs:1063](../src/global_db.rs#L1063).
 
 ```rust
     async fn migration_merges_duplicates_and_drops_relative_rows() {
@@ -11593,7 +11686,7 @@ fn any_symbol_indexed(env: &HookEnv, symbols: &[String]) -> bool {
     if symbols.is_empty() {
         return true;
     }
-    let db_path = root.join(".tokensave").join("tokensave.db");
+    let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
     let placeholders = vec!["?"; symbols.len()].join(",");
     let sql = format!("SELECT 1 FROM nodes WHERE LOWER(name) IN ({placeholders}) LIMIT 1");
     let params: Vec<libsql::Value> = symbols
@@ -12384,7 +12477,10 @@ Source: [src/verify.rs:178](../src/verify.rs#L178).
 
 ```rust
 async fn inspect(root: &Path, deep: bool, report: &mut Report) -> Result<bool> {
-    if !root.join(".tokensave").join("config.json").is_file() {
+    if !crate::config::get_tokensave_dir(root)
+        .join("config.json")
+        .is_file()
+    {
         report.add(
             "PROJECT_NOT_INITIALIZED",
             "error",
@@ -12405,6 +12501,7 @@ async fn inspect(root: &Path, deep: bool, report: &mut Report) -> Result<bool> {
         );
         return Ok(false);
     }
+    crate::db::compatibility::preflight(&path, u32::MAX).await?;
     let db = libsql::Builder::new_local(&path)
         .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .build()
@@ -12755,9 +12852,9 @@ Source: [src/db/queries/nodes.rs:78](../src/db/queries/nodes.rs#L78).
     }
 ```
 
-### `upsert` — src/global_db.rs:432
+### `upsert` — src/global_db.rs:441
 
-Source: [src/global_db.rs:432](../src/global_db.rs#L432).
+Source: [src/global_db.rs:441](../src/global_db.rs#L441).
 
 ```rust
     pub async fn upsert(&self, project_path: &Path, tokens_saved: u64) {
@@ -12773,9 +12870,9 @@ Source: [src/global_db.rs:432](../src/global_db.rs#L432).
     }
 ```
 
-### `upsert_droid_turn` — src/global_db.rs:682
+### `upsert_droid_turn` — src/global_db.rs:691
 
-Source: [src/global_db.rs:682](../src/global_db.rs#L682).
+Source: [src/global_db.rs:691](../src/global_db.rs#L691).
 
 ```rust
     pub async fn upsert_droid_turn(&self, turn: &crate::types::CostTurn) -> bool {
@@ -12838,8 +12935,152 @@ Source: [src/global_db.rs:682](../src/global_db.rs#L682).
     }
 ```
 
+### `scalar` — src/db/compatibility.rs:26
+
+Source: [src/db/compatibility.rs:26](../src/db/compatibility.rs#L26).
+
+```rust
+async fn scalar(conn: &Connection, sql: &str) -> Result<i64> {
+    let mut rows = conn.query(sql, ()).await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| refusal("missing database header"))?;
+    Ok(row.get(0)?)
+}
+```
+
+### `check_channel` — src/db/compatibility.rs:41
+
+Source: [src/db/compatibility.rs:41](../src/db/compatibility.rs#L41).
+
+```rust
+async fn check_channel(conn: &Connection, latest: u32, beta: bool) -> Result<()> {
+    let origin = scalar(conn, "PRAGMA application_id").await?;
+    match origin {
+        0 | STABLE => {},
+        BETA if beta => {},
+        BETA => return Err(refusal(
+            "database was created by beta; use a beta build to access it. \
+             Stable requires its own index. Preserve this database; do not force a rebuild."
+        )),
+        other => return Err(refusal(format!(
+            "unrecognized database application ID {other}; preserve this database and use a compatible build."
+        ))),
+    }
+    let version = scalar(conn, "PRAGMA user_version").await?;
+    if version < 0 || version > i64::from(latest) {
+        return Err(refusal(format!(
+            "database schema version {version} is newer than or unsupported by this build (maximum {latest}); \
+             use a compatible newer build. Preserve this database; do not force a rebuild."
+        )));
+    }
+    Ok(())
+}
+```
+
+### `mark_empty` — src/db/compatibility.rs:90
+
+Source: [src/db/compatibility.rs:90](../src/db/compatibility.rs#L90).
+
+```rust
+pub async fn mark_empty(conn: &Connection) -> Result<()> {
+    let count = scalar(conn, "SELECT count(*) FROM sqlite_schema").await?;
+    let origin = scalar(conn, "PRAGMA application_id").await?;
+    if count == 0 && origin == 0 {
+        let origin = if crate::cloud::is_beta() {
+            BETA
+        } else {
+            STABLE
+        };
+        conn.execute(&format!("PRAGMA application_id = {origin}"), ())
+            .await?;
+    }
+    Ok(())
+}
+```
+
+### `channel_policy_preserves_origin` — src/db/compatibility.rs:111
+
+Source: [src/db/compatibility.rs:111](../src/db/compatibility.rs#L111).
+
+```rust
+    async fn channel_policy_preserves_origin() {
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        for (origin, stable_ok, beta_ok) in [
+            (0, true, true),
+            (STABLE, true, true),
+            (BETA, false, true),
+            (17, false, false),
+        ] {
+            conn.execute(&format!("PRAGMA application_id = {origin}"), ())
+                .await
+                .unwrap();
+            assert_eq!(check_channel(&conn, 18, false).await.is_ok(), stable_ok);
+            assert_eq!(check_channel(&conn, 18, true).await.is_ok(), beta_ok);
+            assert_eq!(
+                scalar(&conn, "PRAGMA application_id").await.unwrap(),
+                origin
+            );
+        }
+    }
+```
+
 ## Coverage and limitations
 
 Coverage was checked against SQL-bearing string literals and database execution entry points (`query`, `execute`, `prepare`, and `execute_batch`) in the current `src/` tree. SQL passed through variables or constants is represented by the defining template and, for constructed SQL, its builder context. This static inventory does not enumerate concrete values supplied by users or runtime-generated batches. It includes historical migrations and inline tests; their presence does not imply that every statement runs on every invocation. Source line links apply to the recorded snapshot and may move after edits.
 
 The tokensave graph tools were consulted first, but reported a stale index and a different served checkout. The inventory therefore uses the current working-tree source rather than relying on graph contents. This documentation-only change does not modify application behavior; no database statements or application tests were run.
+
+
+## Graphify export additions (Refs #791)
+
+Source: [src/graphify.rs](../src/graphify.rs), `export_file`. This section adds
+five occurrences and one construction/binding context to the existing inventory.
+No existing query was changed, moved or removed. Snapshot inspected 2026-10-28.
+The dedicated read-only connection uses master's libsql API. The transaction API owns BEGIN,
+COMMIT and rollback on drop; those driver-generated statements introduce no new
+application SQL literals.
+
+#### Q0384 — `export_file`: Read-only connection limits
+
+```sql
+PRAGMA query_only=1; PRAGMA busy_timeout=1000; PRAGMA cache_size=-2048;
+```
+
+Fixed batch, no parameters; executes before the read transaction.
+
+#### Q0385 — `export_file`: Current-schema check
+
+```sql
+PRAGMA user_version
+```
+
+No bindings; exactly one scalar row. Refuse versions unequal to latest_version().
+
+#### Q0386 — `export_file`: Selected-file freshness
+
+```sql
+SELECT substr(content_hash,1,65) FROM files WHERE path=?1 AND kind='code'
+```
+
+?1 is the validated repository-relative file path. At most one row; compare with the bounded UTF-8 source SHA-256.
+
+#### Q0387 — `export_file`: Bounded node projection
+
+```sql
+SELECT substr(id,1,4097), substr(qualified_name,1,4097), substr(kind,1,4097), start_line, end_line FROM nodes WHERE file_path=?1 ORDER BY id LIMIT ?2
+```
+
+?1 is the selected file; ?2 is max_nodes + 1, integer <=1001. Extra row or text >4096 characters refuses export. No source body/signature/docstring projected.
+
+#### Q0388 — `export_file`: Bounded internal edges
+
+```sql
+SELECT substr(e.source,1,4097), substr(e.target,1,4097), substr(e.kind,1,4097), e.line, e.resolved_by FROM edges e JOIN nodes s ON s.id=e.source JOIN nodes t ON t.id=e.target WHERE s.file_path=?1 AND t.file_path=?1 ORDER BY e.source,e.target,e.kind,e.line,e.id LIMIT ?2
+```
+
+?1 is the same file for both endpoints; ?2 is max_edges + 1, integer <=5001. Extra row refuses export. id breaks ties without collapsing multiplicity; line and nullable numeric resolver provenance are retained.
+
+Construction context: max_nodes is validated in 1..=1000 and max_edges in 1..=5000 before integer conversion. SQL templates are fixed; no user text is interpolated. Queries Q0385–Q0388 use one read transaction for a consistent DB snapshot. Output is published only after successful reads, budget checks, source/branch rechecks and capped serialization. No migrations or writes occur.

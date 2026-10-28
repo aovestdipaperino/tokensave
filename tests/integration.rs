@@ -23,6 +23,7 @@ mod bare_invocation_stdout_test;
 mod bare_name_reachability_test;
 mod bash_extraction_test;
 mod batch_extraction_test;
+mod bench_repo_cleanup_test;
 mod bench_test;
 mod body_candidates_651_test;
 mod branch_add_if_enabled_test;
@@ -52,6 +53,7 @@ mod csharp_interfaces_643_test;
 mod csharp_receiver_types_test;
 mod cuda_extraction_test;
 mod dart_extraction_test;
+mod database_channel_test;
 mod db_query_test;
 mod db_test;
 mod dead_code_call_attribution_test;
@@ -212,3 +214,5 @@ mod zig_extraction_test;
 mod verify_test;
 
 mod language_aliases_test;
+
+mod graphify_export_test;

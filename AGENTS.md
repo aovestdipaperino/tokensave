@@ -73,6 +73,27 @@ create issues for identified bugs and enhancements, link PRs with "Refs #N" (nev
 "Fixes #N" / "Closes #N"), and never close an issue (including via `gh issue close`)
 without explicit permission — issue closure is left to the repository maintainer.
 
+## Issue closure verification and merged-result summaries
+
+Before closing an issue, and only with the explicit permission required above,
+the agent MUST:
+
+- Identify the linked pull requests and check their current state on GitHub.
+  Distinguish open, closed without merging, and merged PRs; a closed PR is not
+  evidence that its changes were merged.
+- For each merged PR, post a summary on the issue listing the new improvements.
+  Link the PR and merge commit, identify the actual destination branch, and
+  record validation results, limitations, and remaining work. Do not infer that
+  a release was published merely because a PR merged.
+- For open or closed-but-unmerged PRs, state their actual status and do not
+  describe their changes as merged or delivered to the destination branch.
+  If no related PR exists, record that rather than inventing a merge status.
+
+Perform this verification and publish the applicable summary before closing the
+issue. For multiple related PRs, distinguish merged work from pending or
+unmerged work. If a PR merges after the issue was closed, update the issue with
+the merged improvements and actual destination branch.
+
 ## Summaries for related implementations
 
 When a topic spans multiple implementations or related pull requests, the
@@ -111,6 +132,7 @@ portable string formats, and documented path-syntax test fixtures.
 - `cargo test --workspace` is the CI test command. On Windows set `RUST_MIN_STACK=8388608` (CI does this; async-heavy tests overflow the 1 MB MSVC default).
 - `cargo clippy --workspace --all-targets` (CI runs it with `continue-on-error: true`).
 - `cargo fmt --all -- --check`.
+- Pi extension prompt/relay tests: `node --experimental-strip-types --test tests/pi_extension_test.mjs` (Node 22.6+ with TypeScript stripping support; separate from Cargo tests).
 - `src/lib.rs` denies `clippy::all`, `clippy::unwrap_used`, and `clippy::expect_used`, and warns on `clippy::pedantic` — avoid `unwrap()`/`expect()` in library code.
 - Language-specific tests: `cargo test --test integration rust_extraction_test::`; single test: `cargo test test_find_stale_files`; filter: `cargo test sync`. Lite-only local loop: `cargo test-lite`.
 - Integration tests live in `tests/` (one file per module/language) but compile into a single binary, `tests/integration.rs` (`autotests = false`): a new test file must be added there as a `mod`. Files that mutate env vars or the `cancel` flag are separate `[[test]]` targets in `Cargo.toml` instead. Helpers are shared via `crate::common` (`tests/common/mod.rs`); fixtures are in `tests/fixtures/`. See CONTRIBUTING.md "Test layout".
@@ -118,9 +140,26 @@ portable string formats, and documented path-syntax test fixtures.
 ### Non-standard test/bench harnesses
 
 - Graphify coexistence evaluation (#791): `python3 scripts/graphify_probe.py --graphify /path/to/pinned/graphify --benchmark-repo "$PWD" --output /tmp/graphify-results.json`. Requires Linux, GNU time, git, both CLIs, and the Graphify revision in `docs/GRAPHIFY-EVALUATION.md`. Uses disposable copies; does not install assistant integrations. The evaluation records limits and outstanding checks.
+- Pi real-session regressions: `node scripts/pi-tests/run.mjs /path/to/prepared/pi`; see `scripts/pi-tests/README.md` for the pinned Pi prerequisites and offline scope.
+- Conditional Pi read-routing assessment: `python3 scripts/pi-eval/assess_reads.py --help`; see `scripts/pi-eval/READ-ROUTING.md`. This read-only assessment never enables interception; real-model traces and independent review are prerequisites for any later enforcement.
+
 - Criterion bench against large real repos: `TOKENSAVE_BENCH_REPOS_DIR=~/tokensave-bench-cache cargo bench --bench large_repos`. Without `TOKENSAVE_BENCH_REPOS_DIR` it registers zero benchmarks. Filter with `cargo bench --bench large_repos -- 'scipy/tokensave_search'`. Repos and pinned refs are in `benches/repos.rs`; delete the `<repo>/.bench-ref` marker to force a re-fetch.
 - MCP test-matrix probe: `cargo build --release --bin tokensave && python3 scripts/mcp_probe/probe.py && python3 scripts/mcp_probe/build_matrix.py > matrix.md`. `scripts/mcp_probe/repos.toml` lists target repos (override with `TOKENSAVE_PROBE_REPOS`).
 - `tokensave bench` is a separate CLI benchmark (fixed query set, retrieval-savings report).
+
+## Experimental Graphify export (master candidate)
+
+- Optional external-reader validation: `python3 scripts/graphify/run.py --help`.
+  Follow `scripts/graphify/README.md` for pinned offline prerequisites and the
+  limits of its fixture timings. This command requires the candidate files.
+
+- `tokensave graphify-export` reads one selected indexed source file without
+  automatic sync or migrations. Keep its source, field, node, edge, output and
+  lock-wait bounds; retain read-only startup and no-clobber publication.
+- Run `cargo test --test integration graphify_export_test::` for focused checks.
+  See [the pinned contract](docs/graphify/README.md). This candidate guidance is
+  branch-specific until the implementation is merged; do not copy commands to
+  branches that lack the implementation.
 
 ## Architecture
 
@@ -137,6 +176,18 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - `src/sync.rs` — incremental sync (content hashing, stale/new/removed detection).
 - `src/bench.rs` — `tokensave bench` harness.
 - `build.rs` compiles vendored grammars (WGSL, ActionScript, GDScript) only when their feature is enabled.
+
+## Database channel compatibility
+
+- Creation origin uses SQLite `application_id` (`0` = legacy/unknown,
+  `0x54535354` = stable, `0x54534254` = beta); it is independent of
+  `user_version` and must never be silently relabeled on migration or open.
+- Validate origin and supported schema before write pragmas or migrations.
+  Compatibility refusals must bypass crash recovery and forced rebuilds.
+- Stable state paths stay unchanged. Prerelease builds use `.tokensave/beta/`
+  for project state and the global database. Use `get_tokensave_dir` for
+  project paths; global user settings remain shared. See
+  [docs/DATABASE-COMPATIBILITY.md](docs/DATABASE-COMPATIBILITY.md).
 
 ## Setup and environment
 

@@ -101,9 +101,6 @@ fn pi_instructions_path(ctx: &InstallContext) -> PathBuf {
 /// the rules the install writes name those tools directly.
 const PI_SERVER_EXPOSURE: &str = "direct";
 
-/// Exposure values that leave every tokensave tool unreachable from the model.
-const INVISIBLE_EXPOSURES: [&str; 3] = ["codemode", "codemode-deferred", "hidden"];
-
 /// One-line server summary Pi shows in `/mcp` and in its system prompt's
 /// `mcp_servers` section.
 const PI_SERVER_DESCRIPTION: &str =
@@ -207,10 +204,21 @@ impl AgentIntegration for PiIntegration {
     }
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
-        crate::agent_note!("\n\x1b[1mPi integration\x1b[0m");
+        crate::agent_note!("\n\x1b[1mPi integration — static configuration\x1b[0m");
         doctor_check_settings(dc, &ctx.home);
         doctor_check_prompt(dc, &ctx.home);
         doctor_check_local_config(dc, &ctx.project_path);
+        doctor_check_shadowing(dc, &pi_agent_dir(&ctx.home));
+        for ancestor in ctx.project_path.ancestors() {
+            doctor_check_shadowing(dc, ancestor);
+        }
+        doctor_check_project_index(dc, &ctx.project_path);
+        dc.warn(
+            "Pi runtime UNVERIFIED: extension loading, declared tools, MCP readiness, adapter \
+             discovery and effective tokensave_retrieval prompt section cannot be inspected by \
+             this CLI. Restart/reload Pi, inspect its active tools and effective prompt, and \
+             test a TokenSave query. Use the names/interfaces actually declared by your host.",
+        );
         crate::agent_note!("\n\x1b[1mGuardrail extension\x1b[0m");
         doctor_check_extension(
             dc,
@@ -323,12 +331,12 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
             dc.pass(&format!("MCP server registered in {}", mcp_path.display()));
             if exposure_declares_tools(server) {
                 dc.pass(&format!(
-                    "Tools exposed to the model (exposure: {PI_SERVER_EXPOSURE})"
+                    "Direct tool exposure configured (exposure: {PI_SERVER_EXPOSURE}); runtime unverified"
                 ));
             } else {
                 dc.fail(
-                    "MCP tools are not reachable from the model (exposure is missing or codemode) — \
-                     run `tokensave install --agent pi`",
+                    "Direct MCP tool exposure is missing or unsupported — \
+                     run `tokensave install --agent pi`, then restart/reload Pi",
                 );
             }
         }
@@ -339,12 +347,9 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
     }
 }
 
-/// Reports whether a server entry exposes its tools to the model.
+/// Reports whether a server requests the managed direct exposure mode.
 fn exposure_declares_tools(server: &serde_json::Map<String, serde_json::Value>) -> bool {
-    match server.get("exposure").and_then(|v| v.as_str()) {
-        Some(exposure) => !INVISIBLE_EXPOSURES.contains(&exposure),
-        None => false,
-    }
+    server.get("exposure").and_then(|v| v.as_str()) == Some(PI_SERVER_EXPOSURE)
 }
 
 /// Write the guardrail extension, or refresh it when it is ours.
@@ -462,6 +467,7 @@ fn doctor_check_prompt(dc: &mut DoctorCounters, home: &Path) {
 /// without one has no project-scoped Pi configuration to complain about.
 fn doctor_check_local_config(dc: &mut DoctorCounters, project_path: &Path) {
     if !project_path.join(".pi").is_dir() {
+        dc.pass("Local Pi configuration absent; only global configuration applies");
         return;
     }
 
@@ -474,9 +480,11 @@ fn doctor_check_local_config(dc: &mut DoctorCounters, project_path: &Path) {
         match server.and_then(|v| v.as_object()) {
             Some(server) => {
                 dc.pass(&format!("MCP server registered in {}", mcp_path.display()));
-                if !exposure_declares_tools(server) {
+                if exposure_declares_tools(server) {
+                    dc.pass("Local direct tool exposure configured; runtime unverified");
+                } else {
                     dc.fail(&format!(
-                        "MCP tools are not reachable from the model in {} — run \
+                        "Direct MCP tool exposure is missing or unsupported in {} — run \
                          `tokensave install --agent pi --local`",
                         mcp_path.display()
                     ));
@@ -504,4 +512,38 @@ fn doctor_check_local_config(dc: &mut DoctorCounters, project_path: &Path) {
             .join("tokensave.ts"),
         "tokensave install --agent pi --local",
     );
+}
+
+/// Pi chooses override context before AGENTS.md in each directory.
+/// Report a possibility, since runtime context discovery may be customized.
+fn doctor_check_shadowing(dc: &mut DoctorCounters, directory: &Path) {
+    let override_path = directory.join("AGENTS.override.md");
+    if override_path.is_file() {
+        dc.warn(&format!(
+            "{} may shadow AGENTS.md, including TokenSave rules — review the override's \
+             guidance and Pi's effective prompt; reinstall does not change user overrides",
+            override_path.display()
+        ));
+    }
+}
+
+/// Metadata-only discovery: never open/migrate a database or trigger indexing.
+fn doctor_check_project_index(dc: &mut DoctorCounters, project_path: &Path) {
+    match crate::config::discover_project(project_path) {
+        crate::config::ProjectDiscovery::Initialized(root) => dc.pass(&format!(
+            "Project index file found at {} — schema, coverage, freshness and runtime \
+             usability UNVERIFIED; use `tokensave sync` if refresh is needed",
+            crate::config::get_tokensave_dir(&root)
+                .join("tokensave.db")
+                .display()
+        )),
+        crate::config::ProjectDiscovery::Incomplete(root) => dc.warn(&format!(
+            "Project configuration at {} has no index — run `tokensave init` in that project",
+            root.display()
+        )),
+        crate::config::ProjectDiscovery::Uninitialized { .. } => dc.warn(
+            "No project index found — run `tokensave init` in the intended project; \
+             native tools remain necessary until indexed retrieval is available",
+        ),
+    }
 }

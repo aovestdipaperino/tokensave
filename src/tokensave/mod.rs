@@ -273,6 +273,18 @@ impl TokenSave {
         let tokensave_dir = get_tokensave_dir(project_root);
         let active_branch = branch::current_branch(project_root);
 
+        let (candidate, _, _) =
+            Self::resolve_db_for_branch(project_root, &tokensave_dir, active_branch.as_deref());
+        if let Err(error) =
+            crate::db::compatibility::preflight(&candidate, crate::db::migrations::latest_version())
+                .await
+        {
+            if crate::db::compatibility::is_refusal(&error) {
+                return Err(error);
+            }
+            // Preserve existing corruption recovery below.
+        }
+
         // Transparent auto-track: when branch metadata exists and the active
         // branch is untracked, copy the ancestor DB so queries + get_stats serve
         // a real per-branch DB instead of silently falling back. Best-effort —
@@ -323,6 +335,7 @@ impl TokenSave {
         let open_result = Database::open(&db_path).await;
         let (db, migrated) = match open_result {
             Ok(pair) => pair,
+            Err(e) if crate::db::compatibility::is_refusal(&e) => return Err(e),
             Err(e)
                 if Database::is_corruption_error(&e)
                     || crashed
@@ -660,7 +673,7 @@ mod resolve_db_tests {
     /// DB file, the shape that exposes hardcoded `tokensave.db` fallbacks.
     fn setup(default_branch: &str, db_file: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::TempDir::new().unwrap();
-        let tokensave_dir = dir.path().join(".tokensave");
+        let tokensave_dir = crate::config::get_tokensave_dir(dir.path());
         std::fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
         let mut branches = HashMap::new();
         branches.insert(
@@ -735,7 +748,7 @@ mod resolve_db_tests {
     #[test]
     fn missing_branch_meta_keeps_single_db_mode() {
         let dir = tempfile::TempDir::new().unwrap();
-        let tokensave_dir = dir.path().join(".tokensave");
+        let tokensave_dir = crate::config::get_tokensave_dir(dir.path());
         std::fs::create_dir_all(&tokensave_dir).unwrap();
         let (path, serving, warning) =
             TokenSave::resolve_db_for_branch(dir.path(), &tokensave_dir, Some("anything"));

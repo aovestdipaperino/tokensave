@@ -177,6 +177,20 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         None => return commands::handle_no_command().await,
     };
 
+    // Experimental export is read-only and bypasses startup maintenance.
+    if let Commands::GraphifyExport {
+        project,
+        file,
+        output,
+        max_nodes,
+        max_edges,
+    } = &command
+    {
+        let root = tokensave::config::resolve_path_with_discovery(project.clone());
+        tokensave::cancel::install_signal_handlers();
+        return tokensave::graphify::export_file(&root, file, output, *max_nodes, *max_edges).await;
+    }
+
     // Verification must bypass config saves, telemetry and agent maintenance.
     if let Commands::Verify {
         path,
@@ -638,6 +652,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
         }
+        Commands::GraphifyExport { .. } => unreachable!("export dispatched before startup"),
         Commands::Verify { .. } => unreachable!("verify is dispatched before startup"),
         Commands::Status {
             path,
