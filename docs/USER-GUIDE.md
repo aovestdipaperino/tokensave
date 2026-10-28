@@ -1998,3 +1998,31 @@ Stable and beta use separate project state and global databases. See the
 [database compatibility guide](DATABASE-COMPATIBILITY.md) for creation-origin
 markers, legacy upgrades, beta initialization, recovery refusals, and returning
 to stable without deleting beta data.
+
+
+## Experimental Graphify interoperability
+
+`tokensave graphify-export` creates a bounded, read-only snapshot of one selected
+indexed code file and the relationships whose endpoints are both in that file.
+The integration targets master; beta is currently reserved for data-critical PRs.
+Graphify remains a separate optional tool.
+
+Initialize and sync the project separately, then select a new output filename:
+
+```bash
+tokensave graphify-export --project /path/to/project --file src/main.rs --output /private/export/snapshot.json
+```
+
+Existing output is never replaced. The command refuses stale source, untracked
+branch fallback, and exceeded node/edge/size budgets. It does not install
+Graphify, run a model, change the index, or register hooks. The snapshot omits
+cross-file relationships, documents, source bodies, signatures and docstrings;
+do not use it as a complete impact graph. Names and paths can still disclose
+private project information.
+
+For the pinned Graphify version, graph schema, visualization behavior, limits,
+and reproduction steps, see [the integration contract](graphify/README.md).
+Graphify writes `graph.html` beside its input JSON and uses external JavaScript
+assets, so keep each visualization in a dedicated disposable export directory.
+Document enrichment and production rollout remain conditional on the quality
+and resource assessment tracked in [#791](https://github.com/aovestdipaperino/tokensave/issues/791).

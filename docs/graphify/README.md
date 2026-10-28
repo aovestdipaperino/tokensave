@@ -83,9 +83,9 @@ resolve shared indexing or server lifecycle concerns in #742/#780.
 
 | Work | Implementation / merge status | Validation / remaining work |
 | --- | --- | --- |
-| [Contract PR #849](https://github.com/aovestdipaperino/tokensave/pull/849) | Open, unmerged; targets master | Pinned source contract; runtime evidence follows separately |
-| [Exporter PR #850](https://github.com/aovestdipaperino/tokensave/pull/850) | Draft, unmerged; based on master; depends on #849 | Master-based five-run Graphify fixture passed; see #791 for workspace validation and platform limits |
-| [Compatibility harness](../../scripts/graphify/README.md) | Implemented in the dependent harness PR; unmerged | Five fixture runs passed, including dirty linked worktrees; [raw evidence](fixture-results.json). Representative resource/quality assessment remains open |
+| [Contract PR #849](https://github.com/aovestdipaperino/tokensave/pull/849) | Merged to master: `943ce3617a105cd905b81671b10e0fb8ca9ed3c3` | Pinned source contract; runtime evidence follows separately |
+| [Exporter PR #850](https://github.com/aovestdipaperino/tokensave/pull/850) | Merged to master: `3477f3accb7347e88ae7e9638c42966813499a58` | Master-based five-run Graphify fixture passed; see #791 for workspace validation and platform limits |
+| [Compatibility harness](../../scripts/graphify/README.md) | Merged to master in [#852](https://github.com/aovestdipaperino/tokensave/pull/852): `6de908da392a54e8803258d9537a343cf89609af` | Five fixture runs passed, including dirty linked worktrees; [raw evidence](fixture-results.json). Representative resource/quality assessment remains open |
 | Documents and product rollout | Conditional, not implemented | User benefit and resource budgets must be reviewed first |
 | #742 shared storage | Separate open evaluation | No storage/backend result asserted here |
 
@@ -138,5 +138,5 @@ code. It also verified conflicting dirty linked-worktree isolation after explici
 branch tracking. This establishes a small interoperability candidate, not a
 benefit or resource-budget result on representative projects. Keep the exporter
 experimental and defer document enrichment and product rollout until those
-separate gates pass. All proposed changes remain unmerged unless #791 records
-verified merges; no release publication is implied.
+separate gates pass. Merge status and any remaining follow-up work are maintained in #791; no release
+publication is implied.
