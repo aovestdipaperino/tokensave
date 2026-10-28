@@ -20,7 +20,7 @@ async fn project_needing_migration() -> (TempDir, std::path::PathBuf) {
     let cg = TokenSave::init(dir.path()).await.expect("init");
     cg.index_all().await.expect("index");
     drop(cg);
-    let db_path = dir.path().join(".tokensave").join("tokensave.db");
+    let db_path = tokensave::config::get_tokensave_dir(dir.path()).join("tokensave.db");
     let db = Builder::new_local(&db_path).build().await.expect("db");
     let conn = db.connect().expect("conn");
     conn.execute_batch(

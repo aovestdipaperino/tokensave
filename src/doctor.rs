@@ -202,8 +202,7 @@ async fn check_stale_stores(dc: &mut DoctorCounters) {
         .await
         .into_iter()
         .filter(|p| {
-            !Path::new(p)
-                .join(".tokensave")
+            !crate::config::get_tokensave_dir(Path::new(p))
                 .join("tokensave.db")
                 .exists()
         })

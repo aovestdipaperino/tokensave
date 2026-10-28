@@ -197,7 +197,7 @@ async fn test_search_literal_respects_queryignore() {
     // Same query as test_search_literal_finds_string_in_body, but with the
     // matching file suppressed via .tokensave/queryignore — literal mode must
     // honor the project-level ignore just like the ranked path does.
-    let ts_dir = cg.project_root().join(".tokensave");
+    let ts_dir = tokensave::config::get_tokensave_dir(cg.project_root());
     std::fs::create_dir_all(&ts_dir).unwrap();
     std::fs::write(ts_dir.join("queryignore"), "utils\n").unwrap();
 
@@ -4083,7 +4083,8 @@ async fn test_session_start() {
     let output: serde_json::Value = serde_json::from_str(text).unwrap();
     assert!(output["quality_signal"].as_u64().is_some());
     assert_eq!(output["status"].as_str().unwrap(), "baseline_saved");
-    let baseline_path = dir.path().join(".tokensave").join("session_baseline.json");
+    let baseline_path =
+        tokensave::config::get_tokensave_dir(dir.path()).join("session_baseline.json");
     assert!(baseline_path.exists(), "baseline file should exist");
 
     // session_start emits a compact, budget-bounded memory delta (issue #122).
@@ -4113,7 +4114,8 @@ async fn test_session_end() {
     assert!(output["signal_before"].as_u64().is_some());
     assert!(output["signal_after"].as_u64().is_some());
     assert!(output["delta"].is_number());
-    let baseline_path = dir.path().join(".tokensave").join("session_baseline.json");
+    let baseline_path =
+        tokensave::config::get_tokensave_dir(dir.path()).join("session_baseline.json");
     assert!(
         !baseline_path.exists(),
         "baseline should be removed after session_end"

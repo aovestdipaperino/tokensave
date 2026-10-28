@@ -190,7 +190,7 @@ pub(crate) fn gather_local_projects_from(
 
     let mut cursor: Option<&Path> = Some(cwd);
     while let Some(dir) = cursor {
-        let ts = dir.join(".tokensave");
+        let ts = tokensave::config::get_tokensave_dir(dir);
         if is_project_dir(&ts) && seen.insert(dir.to_path_buf()) {
             out.push(dir.to_path_buf());
         }
@@ -248,11 +248,24 @@ pub(crate) fn find_descendant_tokensave(
                 // doing it for every dir entry would mean one syscall per
                 // entry on tree walks of arbitrary size.
                 if let Some(canon) = canon_home_ts {
-                    if path.canonicalize().ok().as_ref() == Some(canon) {
+                    if path
+                        .parent()
+                        .and_then(|root| {
+                            tokensave::config::get_tokensave_dir(root)
+                                .canonicalize()
+                                .ok()
+                        })
+                        .as_ref()
+                        == Some(canon)
+                    {
                         continue;
                     }
                 }
-                if path.join("tokensave.db").exists() {
+                if path.parent().is_some_and(|root| {
+                    tokensave::config::get_tokensave_dir(root)
+                        .join("tokensave.db")
+                        .exists()
+                }) {
                     if let Some(parent) = path.parent() {
                         let pb = parent.to_path_buf();
                         if seen.insert(pb.clone()) {
@@ -345,7 +358,7 @@ mod gather_tests {
 
     /// Plant a `.tokensave/tokensave.db` marker so `is_project_dir` returns true.
     fn make_project(root: &Path) {
-        let ts = root.join(".tokensave");
+        let ts = tokensave::config::get_tokensave_dir(root);
         fs::create_dir_all(&ts).unwrap();
         fs::write(ts.join("tokensave.db"), b"").unwrap();
     }
@@ -445,9 +458,9 @@ mod gather_tests {
 
         let cwd = root.clone();
         let alias_ts: PathBuf = if symlink_ok {
-            home_alias.join(".tokensave")
+            tokensave::config::get_tokensave_dir(&home_alias)
         } else {
-            home_real.join(".tokensave")
+            tokensave::config::get_tokensave_dir(&home_real)
         };
 
         let out = gather_local_projects_from(&cwd, &Some(alias_ts));

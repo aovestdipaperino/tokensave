@@ -2024,3 +2024,10 @@ at 1 KiB, with truncation flags. Logs retain no in-process history. The original
 SQL and bindings remain input-sized while an operation runs; a debug prepared
 statement retains its SQL and connection until dropped. Logging writes
 synchronously to stderr with backpressure; sink write failures are ignored.
+
+## Database channel compatibility
+
+Stable and beta use separate project state and global databases. See the
+[database compatibility guide](DATABASE-COMPATIBILITY.md) for creation-origin
+markers, legacy upgrades, beta initialization, recovery refusals, and returning
+to stable without deleting beta data.

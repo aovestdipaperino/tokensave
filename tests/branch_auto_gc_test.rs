@@ -35,7 +35,7 @@ async fn project() -> TempDir {
 }
 
 fn add_index(root: &Path, name: &str, db_file: &str) {
-    let dir = root.join(".tokensave");
+    let dir = tokensave::config::get_tokensave_dir(root);
     std::fs::create_dir_all(dir.join("branches")).unwrap();
     let mut meta = load_branch_meta(&dir).unwrap();
     meta.add_branch(name, db_file, "main");
@@ -55,23 +55,23 @@ async fn automatic_gc_is_opt_in_and_runs_on_open() {
     let root = dir.path();
     assert!(!tokensave::config::load_config(root).unwrap().auto_gc);
     let opened = TokenSave::open(root).await.unwrap();
-    assert!(root
-        .join(".tokensave")
+    assert!(tokensave::config::get_tokensave_dir(root)
         .join("branches")
         .join("gone.db")
         .exists());
     drop(opened);
     enable(root, true);
     TokenSave::open(root).await.unwrap();
-    assert!(!root
-        .join(".tokensave")
+    assert!(!tokensave::config::get_tokensave_dir(root)
         .join("branches")
         .join("gone.db")
         .exists());
-    let meta = load_branch_meta(&root.join(".tokensave")).unwrap();
+    let meta = load_branch_meta(&tokensave::config::get_tokensave_dir(root)).unwrap();
     assert!(!meta.is_tracked("gone"));
     assert!(meta.is_tracked("main"));
-    assert!(root.join(".tokensave").join("tokensave.db").exists());
+    assert!(tokensave::config::get_tokensave_dir(root)
+        .join("tokensave.db")
+        .exists());
 }
 
 #[tokio::test]
@@ -81,7 +81,9 @@ async fn gc_keeps_packed_live_refs_and_removes_deleted_indexes_and_sidecars() {
     git(root, &["branch", "live"]);
     git(root, &["pack-refs", "--all", "--prune"]);
     add_index(root, "live", "branches/live.db");
-    let db = root.join(".tokensave").join("branches").join("gone.db");
+    let db = tokensave::config::get_tokensave_dir(root)
+        .join("branches")
+        .join("gone.db");
     for suffix in ["db-wal", "db-shm"] {
         std::fs::write(db.with_extension(suffix), "sidecar").unwrap();
     }
@@ -89,8 +91,7 @@ async fn gc_keeps_packed_live_refs_and_removes_deleted_indexes_and_sidecars() {
         collect_stale_indexes(root, &[]).await.unwrap(),
         vec!["gone"]
     );
-    assert!(root
-        .join(".tokensave")
+    assert!(tokensave::config::get_tokensave_dir(root)
         .join("branches")
         .join("live.db")
         .exists());
@@ -121,8 +122,7 @@ async fn gc_protects_worktrees_even_when_their_branch_ref_is_missing() {
         collect_stale_indexes(root, &[]).await.unwrap(),
         vec!["gone"]
     );
-    assert!(root
-        .join(".tokensave")
+    assert!(tokensave::config::get_tokensave_dir(root)
         .join("branches")
         .join("occupied.db")
         .exists());
@@ -139,15 +139,17 @@ async fn gc_protects_worktrees_even_when_their_branch_ref_is_missing() {
 async fn gc_protects_open_and_shared_databases() {
     let dir = project().await;
     let root = dir.path();
-    let db = root.join(".tokensave").join("branches").join("gone.db");
+    let db = tokensave::config::get_tokensave_dir(root)
+        .join("branches")
+        .join("gone.db");
     assert!(collect_stale_indexes(root, &[db.clone()])
         .await
         .unwrap()
         .is_empty());
     assert!(db.exists());
-    let mut meta = load_branch_meta(&root.join(".tokensave")).unwrap();
+    let mut meta = load_branch_meta(&tokensave::config::get_tokensave_dir(root)).unwrap();
     meta.add_branch("alias", "branches/gone.db", "main");
-    save_branch_meta(&root.join(".tokensave"), &meta).unwrap();
+    save_branch_meta(&tokensave::config::get_tokensave_dir(root), &meta).unwrap();
     assert!(collect_stale_indexes(root, &[]).await.unwrap().is_empty());
     assert!(db.exists());
 }
@@ -161,8 +163,7 @@ async fn gc_refuses_concurrent_sync_and_recovers_after_lock_release() {
     enable(root, true);
     // Automatic maintenance must not break opening a healthy index.
     TokenSave::open(root).await.unwrap();
-    assert!(root
-        .join(".tokensave")
+    assert!(tokensave::config::get_tokensave_dir(root)
         .join("branches")
         .join("gone.db")
         .exists());
@@ -181,23 +182,20 @@ async fn gc_fails_closed_without_git_and_reloads_configuration() {
     std::fs::rename(root.join(".git"), root.join("hidden-git")).unwrap();
     assert!(collect_stale_indexes(root, &[]).await.is_err());
     collect_if_enabled(root, &[]).await;
-    assert!(root
-        .join(".tokensave")
+    assert!(tokensave::config::get_tokensave_dir(root)
         .join("branches")
         .join("gone.db")
         .exists());
     std::fs::rename(root.join("hidden-git"), root.join(".git")).unwrap();
     enable(root, false);
     collect_if_enabled(root, &[]).await;
-    assert!(root
-        .join(".tokensave")
+    assert!(tokensave::config::get_tokensave_dir(root)
         .join("branches")
         .join("gone.db")
         .exists());
     enable(root, true);
     collect_if_enabled(root, &[]).await;
-    assert!(!root
-        .join(".tokensave")
+    assert!(!tokensave::config::get_tokensave_dir(root)
         .join("branches")
         .join("gone.db")
         .exists());
@@ -209,30 +207,36 @@ async fn gc_does_not_follow_metadata_paths_outside_branch_directory() {
     let root = dir.path();
     let outside = dir.path().join("keep.db");
     std::fs::write(&outside, "keep me").unwrap();
-    let mut meta = load_branch_meta(&root.join(".tokensave")).unwrap();
+    let mut meta = load_branch_meta(&tokensave::config::get_tokensave_dir(root)).unwrap();
     meta.add_branch("outside", "../keep.db", "main");
-    save_branch_meta(&root.join(".tokensave"), &meta).unwrap();
+    save_branch_meta(&tokensave::config::get_tokensave_dir(root), &meta).unwrap();
     assert_eq!(
         collect_stale_indexes(root, &[]).await.unwrap(),
         vec!["gone"]
     );
     assert_eq!(std::fs::read_to_string(outside).unwrap(), "keep me");
-    assert!(load_branch_meta(&root.join(".tokensave"))
-        .unwrap()
-        .is_tracked("outside"));
+    assert!(
+        load_branch_meta(&tokensave::config::get_tokensave_dir(root))
+            .unwrap()
+            .is_tracked("outside")
+    );
 }
 
 #[tokio::test]
 async fn gc_retains_metadata_if_unlink_fails() {
     let dir = project().await;
     let root = dir.path();
-    let db = root.join(".tokensave").join("branches").join("gone.db");
+    let db = tokensave::config::get_tokensave_dir(root)
+        .join("branches")
+        .join("gone.db");
     std::fs::remove_file(&db).unwrap();
     std::fs::create_dir(&db).unwrap();
     assert!(collect_stale_indexes(root, &[]).await.is_err());
-    assert!(load_branch_meta(&root.join(".tokensave"))
-        .unwrap()
-        .is_tracked("gone"));
+    assert!(
+        load_branch_meta(&tokensave::config::get_tokensave_dir(root))
+            .unwrap()
+            .is_tracked("gone")
+    );
 }
 
 #[test]
@@ -265,16 +269,14 @@ async fn environment_override_can_enable_and_disable_automatic_gc() {
         );
     };
     run("1");
-    assert!(!root
-        .join(".tokensave")
+    assert!(!tokensave::config::get_tokensave_dir(root)
         .join("branches")
         .join("gone.db")
         .exists());
     add_index(root, "gone", "branches/gone.db");
     enable(root, true);
     run("0");
-    assert!(root
-        .join(".tokensave")
+    assert!(tokensave::config::get_tokensave_dir(root)
         .join("branches")
         .join("gone.db")
         .exists());
@@ -292,8 +294,7 @@ async fn mcp_freshness_checks_reload_the_cleanup_setting() {
             .wait_for_startup_catch_up(Duration::from_secs(30))
             .await
     );
-    assert!(root
-        .join(".tokensave")
+    assert!(tokensave::config::get_tokensave_dir(root)
         .join("branches")
         .join("gone.db")
         .exists());
@@ -308,8 +309,7 @@ async fn mcp_freshness_checks_reload_the_cleanup_setting() {
     server.reset_staleness_cooldown();
     server.maybe_sync_if_stale().await;
     assert!(server.wait_for_lazy_sync(Duration::from_secs(30)).await);
-    assert!(!root
-        .join(".tokensave")
+    assert!(!tokensave::config::get_tokensave_dir(root)
         .join("branches")
         .join("gone.db")
         .exists());
@@ -355,7 +355,9 @@ async fn gc_preserves_databases_registered_to_a_live_server() {
 
     let dir = project().await;
     let root = dir.path();
-    let db = root.join(".tokensave").join("branches").join("gone.db");
+    let db = tokensave::config::get_tokensave_dir(root)
+        .join("branches")
+        .join("gone.db");
     tokensave::servers::register(root, &db, None);
     let registration = Registration;
     assert!(tokensave::servers::list()
