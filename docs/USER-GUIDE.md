@@ -1428,9 +1428,13 @@ containers, shared vCPUs or a busy machine. The profile is chosen as follows:
 
 | Selected | When |
 | --- | --- |
-| `low` | Total memory under 3 GiB, available memory under 1 GiB, at most 2 CPUs, or under 2.5 effective CPUs. |
-| `performance` | At least 6 effective CPUs, at least 60% parallel efficiency, at least 16 GiB total memory and at least 8 GiB available. |
+| `low` | Total memory under 3 GiB, at most 2 CPUs, or under 2.5 effective CPUs. |
+| `performance` | At least 6 effective CPUs, at least 60% parallel efficiency, at least 16 GiB total memory. |
 | `balanced` | Everything else, and whenever a probe fails. |
+
+Total memory means usable capacity, capped by a stricter cgroup limit. Currently
+available memory is reported for diagnostics but does not affect the saved
+profile; runtime memory safeguards handle transient pressure.
 
 #### Managing the global benchmark
 
