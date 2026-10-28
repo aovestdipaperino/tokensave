@@ -67,6 +67,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- **`tokensave_dead_code` works with `graph_root` on a selected graph.** The test-marker exclusion wrote two TEMP tables (`temp.test_markers`, `temp.test_annotated_targets`), which a selected graph opened with `PRAGMA query_only = 1` rejects ("attempt to write a readonly database"). Concurrent read-only calls on the shared connection could also drop or refill each other's tables. `find_dead_code` now reads the test-annotated targets in 500-id chunks into an in-memory set and filters candidates against it, with no writes. The wildcard marker scan still runs once per call, and local results are unchanged. `Database::populate_test_marker_temp_table`, `drop_test_marker_temp_table`, `populate_test_annotated_targets_temp_table` and `drop_test_annotated_targets_temp_table` are replaced by `collect_test_annotated_targets`.
+
 - Add Pi real-session regression coverage for per-run retrieval guidance, compaction replay, and native reads after simulated retrieval failures.
 
 - Prefer indexed code exploration through Pi's structured per-run prompt sections, with explicit native-tool fallbacks for unavailable or stale indexes, unindexed files, documentation, configuration, and current-source verification. Existing search interception is unchanged.

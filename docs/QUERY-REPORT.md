@@ -19,8 +19,8 @@ contexts below include their compatibility checks and channel-aware paths.
 ## Inventory summary
 
 - SQL-bearing source files: **38**.
-- SQL literal/template occurrences: **354**.
-- Functions retained for construction/binding context: **176**.
+- SQL literal/template occurrences: **347**.
+- Functions retained for construction/binding context: **173**.
 
 ## Source file index
 
@@ -37,7 +37,7 @@ contexts below include their compatibility checks and channel-aware paths.
 | [src/db/queries/edges.rs](../src/db/queries/edges.rs) | 51 |
 | [src/db/queries/files.rs](../src/db/queries/files.rs) | 8 |
 | [src/db/queries/fingerprints.rs](../src/db/queries/fingerprints.rs) | 3 |
-| [src/db/queries/metadata.rs](../src/db/queries/metadata.rs) | 13 |
+| [src/db/queries/metadata.rs](../src/db/queries/metadata.rs) | 6 |
 | [src/db/queries/mod.rs](../src/db/queries/mod.rs) | 3 |
 | [src/db/queries/nodes.rs](../src/db/queries/nodes.rs) | 37 |
 | [src/db/queries/routes.rs](../src/db/queries/routes.rs) | 18 |
@@ -2137,71 +2137,13 @@ SELECT id FROM nodes
                      )
 ```
 
-#### Q0156 — `populate_test_marker_temp_table`
-
-Source: [src/db/queries/metadata.rs:215](../src/db/queries/metadata.rs#L215).
-
-```sql
-DROP TABLE IF EXISTS temp.test_markers
-```
-
-#### Q0157 — `populate_test_marker_temp_table`
+#### Q0343 — `collect_test_annotated_targets`
 
 Source: [src/db/queries/metadata.rs:221](../src/db/queries/metadata.rs#L221).
 
 ```sql
-CREATE TEMP TABLE test_markers (id TEXT PRIMARY KEY)
-```
-
-#### Q0158 — `populate_test_marker_temp_table`
-
-Source: [src/db/queries/metadata.rs:233](../src/db/queries/metadata.rs#L233).
-
-```sql
-INSERT INTO temp.test_markers (id) VALUES
-```
-
-#### Q0159 — `drop_test_marker_temp_table`
-
-Source: [src/db/queries/metadata.rs:261](../src/db/queries/metadata.rs#L261).
-
-```sql
-DROP TABLE IF EXISTS temp.test_markers
-```
-
-#### Q0160 — `populate_test_annotated_targets_temp_table`
-
-Source: [src/db/queries/metadata.rs:297](../src/db/queries/metadata.rs#L297).
-
-```sql
-DROP TABLE IF EXISTS temp.test_annotated_targets
-```
-
-#### Q0161 — `populate_test_annotated_targets_temp_table`
-
-Source: [src/db/queries/metadata.rs:304](../src/db/queries/metadata.rs#L304).
-
-```sql
-CREATE TEMP TABLE test_annotated_targets (target TEXT PRIMARY KEY)
-```
-
-#### Q0162 — `populate_test_annotated_targets_temp_table`
-
-Source: [src/db/queries/metadata.rs:317](../src/db/queries/metadata.rs#L317).
-
-```sql
-INSERT OR IGNORE INTO temp.test_annotated_targets (target)
-             SELECT e.target FROM edges e
-             WHERE e.kind = 'annotates'
-               AND e.source IN (SELECT id FROM temp.test_markers)
-```
-
-#### Q0163 — `drop_test_annotated_targets_temp_table`
-
-Source: [src/db/queries/metadata.rs:335](../src/db/queries/metadata.rs#L335).
-
-```sql
-DROP TABLE IF EXISTS temp.test_annotated_targets
+SELECT target FROM edges
+                 WHERE kind = 'annotates' AND source IN ({placeholders})
 ```
 
 ### src/db/queries/mod.rs
@@ -3515,9 +3457,9 @@ SELECT DISTINCT n1.file_path, n1.start_line, n1.name, n1.signature, n2.file_path
 
 ### src/graph/queries.rs
 
-#### Q0297 — `find_dead_code_inner`
+#### Q0297 — `find_dead_code`
 
-Source: [src/graph/queries.rs:305](../src/graph/queries.rs#L305).
+Source: [src/graph/queries.rs:290](../src/graph/queries.rs#L290).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
@@ -3547,7 +3489,6 @@ SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
                  WHERE target = nodes.id
                  AND kind IN ('calls', 'implements', 'extends', 'type_of', 'returns', 'receives', 'uses')
              )
-             AND id NOT IN (SELECT target FROM temp.test_annotated_targets)
 ```
 
 #### Q0298 — `gdscript_live_overrides`
@@ -8623,136 +8564,50 @@ Source: [src/db/queries/metadata.rs:164](../src/db/queries/metadata.rs#L164).
     }
 ```
 
-### `populate_test_marker_temp_table` — src/db/queries/metadata.rs:207
+### `collect_test_annotated_targets` — src/db/queries/metadata.rs:208
 
-Source: [src/db/queries/metadata.rs:207](../src/db/queries/metadata.rs#L207).
+Source: [src/db/queries/metadata.rs:208](../src/db/queries/metadata.rs#L208).
 
 ```rust
-    pub async fn populate_test_marker_temp_table(&self, ids: &[String]) -> Result<()> {
+    pub async fn collect_test_annotated_targets(
+        &self,
+        marker_ids: &[String],
+    ) -> Result<HashSet<String>> {
         // `SQLite`'s default parameter limit is 999. Chunk well under that.
         const CHUNK_SIZE: usize = 500;
 
-        let op = "populate_test_marker_temp_table";
+        let op = "collect_test_annotated_targets";
         let conn = self.conn();
-
-        // Drop + recreate so we always start from an empty table.
-        conn.execute("DROP TABLE IF EXISTS temp.test_markers", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to drop temp.test_markers: {e}"),
-                operation: op.to_string(),
-            })?;
-        conn.execute("CREATE TEMP TABLE test_markers (id TEXT PRIMARY KEY)", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to create temp.test_markers: {e}"),
-                operation: op.to_string(),
-            })?;
-
-        if ids.is_empty() {
-            return Ok(());
-        }
-
-        for chunk in ids.chunks(CHUNK_SIZE) {
-            let mut sql = String::from("INSERT INTO temp.test_markers (id) VALUES ");
-            for i in 0..chunk.len() {
-                if i > 0 {
-                    sql.push_str(", ");
-                }
-                sql.push_str("(?)");
-            }
+        let mut targets = HashSet::new();
+        for chunk in marker_ids.chunks(CHUNK_SIZE) {
+            let placeholders = vec!["?"; chunk.len()].join(", ");
+            let sql = format!(
+                "SELECT target FROM edges
+                 WHERE kind = 'annotates' AND source IN ({placeholders})"
+            );
             let params: Vec<libsql::Value> = chunk
                 .iter()
                 .map(|id| libsql::Value::Text(id.clone()))
                 .collect();
-            conn.execute(&sql, libsql::params_from_iter(params))
+            let mut rows = conn
+                .query(&sql, libsql::params_from_iter(params))
                 .await
                 .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to bulk-insert test markers: {e}"),
+                    message: format!("failed to query test-annotated targets: {e}"),
                     operation: op.to_string(),
                 })?;
-        }
-        Ok(())
-    }
-```
-
-### `drop_test_marker_temp_table` — src/db/queries/metadata.rs:259
-
-Source: [src/db/queries/metadata.rs:259](../src/db/queries/metadata.rs#L259).
-
-```rust
-    pub async fn drop_test_marker_temp_table(&self) -> Result<()> {
-        self.conn()
-            .execute("DROP TABLE IF EXISTS temp.test_markers", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to drop temp.test_markers: {e}"),
-                operation: "drop_test_marker_temp_table".to_string(),
-            })?;
-        Ok(())
-    }
-```
-
-### `populate_test_annotated_targets_temp_table` — src/db/queries/metadata.rs:291
-
-Source: [src/db/queries/metadata.rs:291](../src/db/queries/metadata.rs#L291).
-
-```rust
-    pub async fn populate_test_annotated_targets_temp_table(&self) -> Result<()> {
-        let op = "populate_test_annotated_targets_temp_table";
-        let conn = self.conn();
-
-        // Drop + recreate so we always start from an empty table — same
-        // hygiene as the test_markers temp table.
-        conn.execute("DROP TABLE IF EXISTS temp.test_annotated_targets", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to drop temp.test_annotated_targets: {e}"),
+            while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read test-annotated target row: {e}"),
                 operation: op.to_string(),
-            })?;
-        conn.execute(
-            "CREATE TEMP TABLE test_annotated_targets (target TEXT PRIMARY KEY)",
-            (),
-        )
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("failed to create temp.test_annotated_targets: {e}"),
-            operation: op.to_string(),
-        })?;
-
-        // `INSERT OR IGNORE` because a single function can have multiple
-        // test markers (e.g. `#[test] #[cfg(target_os = "linux")]`) — one
-        // row per target, not per (target, marker) pair.
-        conn.execute(
-            "INSERT OR IGNORE INTO temp.test_annotated_targets (target)
-             SELECT e.target FROM edges e
-             WHERE e.kind = 'annotates'
-               AND e.source IN (SELECT id FROM temp.test_markers)",
-            (),
-        )
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("failed to populate temp.test_annotated_targets: {e}"),
-            operation: op.to_string(),
-        })?;
-        Ok(())
-    }
-```
-
-### `drop_test_annotated_targets_temp_table` — src/db/queries/metadata.rs:333
-
-Source: [src/db/queries/metadata.rs:333](../src/db/queries/metadata.rs#L333).
-
-```rust
-    pub async fn drop_test_annotated_targets_temp_table(&self) -> Result<()> {
-        self.conn()
-            .execute("DROP TABLE IF EXISTS temp.test_annotated_targets", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to drop temp.test_annotated_targets: {e}"),
-                operation: "drop_test_annotated_targets_temp_table".to_string(),
-            })?;
-        Ok(())
+            })? {
+                let target: String = row.get(0).map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to read test-annotated target column: {e}"),
+                    operation: op.to_string(),
+                })?;
+                targets.insert(target);
+            }
+        }
+        Ok(targets)
     }
 ```
 
@@ -11350,20 +11205,124 @@ Source: [src/graph/imports.rs:183](../src/graph/imports.rs#L183).
     }
 ```
 
-### `find_dead_code_inner` — src/graph/queries.rs:289
+### `find_dead_code` — src/graph/queries.rs:170
 
-Source: [src/graph/queries.rs:289](../src/graph/queries.rs#L289).
+Source: [src/graph/queries.rs:170](../src/graph/queries.rs#L170).
 
 ```rust
-    async fn find_dead_code_inner(
+    pub async fn find_dead_code(
         &self,
-        visibility_filter: &str,
-        kind_filter: &str,
-        trait_impl_filter: &str,
+        kinds: &[NodeKind],
+        include_public: bool,
+        include_trait_impls: bool,
     ) -> Result<Vec<Node>> {
+        let kind_filter = if kinds.is_empty() {
+            String::new()
+        } else {
+            let kind_strs: Vec<String> =
+                kinds.iter().map(|k| format!("'{}'", k.as_str())).collect();
+            format!(" AND kind IN ({})", kind_strs.join(", "))
+        };
+        let visibility_filter = if include_public {
+            ""
+        } else {
+            " AND visibility != 'public'"
+        };
+
+        // Trait-impl methods (Rust `impl Trait for Type` blocks) are reached
+        // implicitly by the compiler — `Display::fmt` via `{}`, `Deref::deref`
+        // via auto-deref, `Drop::drop` via drop glue, `From::from` via `?`/
+        // `.into()` — so they carry no explicit incoming `calls` edge. They
+        // also can't be written `pub` in Rust, so they're stored as `private`
+        // and the visibility filter above never excludes them. The result is
+        // a flood of false positives (issue #137). Exclude any method whose
+        // parent is an `Impl`-kind node that is a *trait* impl (vs an inherent
+        // `impl Type` block, whose un-called methods are genuine dead code).
+        //
+        // We detect a trait impl two ways, OR'd together:
+        //   1) the impl node's signature contains ` for ` — i.e. the header is
+        //      `impl <Trait> for <Type>`. This is the PRIMARY signal and the
+        //      only one that works for the common case, because…
+        //   2) …the impl node bears an outgoing `implements` edge. This edge
+        //      only materializes when the trait resolves to an indexed node,
+        //      which it does NOT for stdlib/external traits (`Display`, `Drop`,
+        //      `Deref`, `From`, `AsRef`, …) — precisely the traits in the bug
+        //      report. So the edge alone misses almost every real case (mex has
+        //      zero `implements` edges); the signature scan is what carries the
+        //      fix. The edge is kept as a fallback for multi-line impl headers
+        //      where `extract_first_line` truncates before the ` for `.
+        //
+        // Inherent-impl signatures (`impl Type`) and ObjC `@implementation Foo`
+        // blocks contain no ` for `, so they are untouched — inherent dead
+        // methods are still reported. Class-based languages attach `implements`
+        // to the `Class` node (not an `impl`) and store interface methods
+        // `public`, so the visibility filter already covers them. The guarding
+        // `parent_id IS NULL OR` is required: `NULL NOT IN (...)` is NULL, not
+        // true, which would silently drop every top-level function.
+        let trait_impl_filter = if include_trait_impls {
+            ""
+        } else {
+            " AND (parent_id IS NULL OR parent_id NOT IN (
+                 SELECT p.id FROM nodes p
+                 WHERE p.kind = 'impl'
+                   AND (p.signature LIKE '% for %'
+                        OR p.id IN (SELECT source FROM edges WHERE kind = 'implements'))
+             ))"
+        };
+
+        // Only true "use sites" count as evidence that a symbol is alive:
+        // `calls`, `implements`, `extends`, `type_of`, `returns`, `receives`,
+        // `uses`. Bookkeeping edges (`contains`, `annotates`, `derives_macro`)
+        // are emitted by the extractor even for unused code — every Rust
+        // function tagged `#[inline]`, every `#[derive(Debug)]` on an unused
+        // struct, every annotation_usage adds an incoming edge that is NOT a
+        // real reference. Previously we excluded only `contains`, so any
+        // attribute on an otherwise-unused function masked it from
+        // dead-code detection — which is why the sonium run reported zero
+        // dead functions across 5,715. The narrower allowlist below restores
+        // the intended semantics: "no real caller / referencer = dead".
+        // Test-marker exclusion uses a three-step "resolve + pre-join + filter":
+        //   1) `collect_test_marker_ids` runs the leading-wildcard `LIKE`
+        //      scan exactly once over `kind = 'annotation_usage'`.
+        //   2) `collect_test_annotated_targets` reads
+        //      `edges WHERE kind='annotates' AND source IN (<marker ids>)`
+        //      in chunks of 500 ids into an in-memory `HashSet`, i.e.
+        //      "which node ids are annotated by ANY test marker."
+        //      ~15 K ids on chromium.
+        //   3) The dead-code SELECT has no test-marker clause; candidates
+        //      whose id is in that set are skipped as rows are read, one
+        //      hash probe per candidate.
+        //
+        // History — DO NOT regress this:
+        // - The pre-4.14.8 form joined `nodes a ON a.id = e2.source` inside
+        //   the correlated `NOT EXISTS` and ran the `a.name LIKE '%::test'`
+        //   chain per matching edge. Fast on scirs (0.1 s, 76 K
+        //   annotation_usage) but timed out on chromium at the 25 s probe
+        //   ceiling, cascade-poisoning every subsequent MCP tool call.
+        // - 4.14.8's `WITH test_marker_ids AS (...)` CTE attempt was even
+        //   worse: SQLite inlined the single-reference CTE, turning every
+        //   dead-candidate row into a full annotation_usage scan. Regressed
+        //   scirs from 0.1 s to >60 s, reverted in 4.14.9.
+        // - 4.14.12's first attempt (single temp table + correlated
+        //   `IN (SELECT id FROM temp.test_markers)` inside `NOT EXISTS`)
+        //   also failed on chromium: SQLite picked `idx_edges_unique
+        //   (source, target, kind)` for the subquery and iterated every
+        //   marker as the outer driver for every candidate
+        //   (~13K markers × ~134K candidates ≈ 1.7B probes). Timed out.
+        // - The next pre-join form (two temp tables, indexed `NOT IN`)
+        //   measured 0.75 s on chromium and 0.6 s on scirs. The
+        //   wildcard scan ran exactly once per call; the per-row
+        //   probe was against a ~15K-row indexed lookup table, not a
+        //   correlated subquery the optimiser can re-shape.
+        // - The two-temp-table form above wrote `temp.test_markers` and
+        //   `temp.test_annotated_targets`, which fails on selected graphs
+        //   (opened with `PRAGMA query_only = 1`) and let concurrent
+        //   read-only calls on the shared connection drop or refill each
+        //   other's tables. The in-memory set keeps the same single
+        //   wildcard scan and per-candidate probe without any writes.
         let marker_ids = self.db.collect_test_marker_ids().await?;
-        self.db.populate_test_marker_temp_table(&marker_ids).await?;
-        self.db.populate_test_annotated_targets_temp_table().await?;
+        let test_annotated = self.db.collect_test_annotated_targets(&marker_ids).await?;
+        drop(marker_ids);
         let godot_virtuals = GODOT_ENGINE_VIRTUALS
             .iter()
             .map(|n| format!("'{n}'"))
@@ -11397,8 +11356,7 @@ Source: [src/graph/queries.rs:289](../src/graph/queries.rs#L289).
                  SELECT 1 FROM edges
                  WHERE target = nodes.id
                  AND kind IN ('calls', 'implements', 'extends', 'type_of', 'returns', 'receives', 'uses')
-             )
-             AND id NOT IN (SELECT target FROM temp.test_annotated_targets)"
+             )"
         );
 
         let mut rows =
@@ -11417,8 +11375,11 @@ Source: [src/graph/queries.rs:289](../src/graph/queries.rs#L289).
             operation: "find_dead_code".to_string(),
         })? {
             let node = row_to_node_dead_code(&row)?;
-            dead.push(node);
+            if !test_annotated.contains(&node.id) {
+                dead.push(node);
+            }
         }
+        drop(test_annotated);
 
         if dead
             .iter()
