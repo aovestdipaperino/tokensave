@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Documentation
+
+- Document the optional Graphify exporter workflow, limits and privacy scope in the user guide (Refs #791).
+
 ### Fixed
 
 - Bound comparison-benchmark MCP initialization and request I/O, reap owned process groups, and defer shutdown interruptions until cleanup completes (Refs #847).
