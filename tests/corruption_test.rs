@@ -264,7 +264,7 @@ fn is_corruption_error_rejects_normal_errors() {
 #[test]
 fn dirty_sentinel_lifecycle() {
     let dir = TempDir::new().unwrap();
-    let ts_dir = dir.path().join(".tokensave");
+    let ts_dir = tokensave::config::get_tokensave_dir(dir.path());
     std::fs::create_dir_all(&ts_dir).unwrap();
 
     let dirty_path = ts_dir.join("dirty");
@@ -295,7 +295,7 @@ fn dirty_sentinel_survives_drop() {
     // The sentinel is a plain file, not tied to a Drop guard.
     // Simulates: process writes sentinel, then gets killed.
     let dir = TempDir::new().unwrap();
-    let ts_dir = dir.path().join(".tokensave");
+    let ts_dir = tokensave::config::get_tokensave_dir(dir.path());
     std::fs::create_dir_all(&ts_dir).unwrap();
     let dirty_path = ts_dir.join("dirty");
 
@@ -516,7 +516,7 @@ async fn open_finalizes_interrupted_bulk_load() {
 
     // The dirty sentinel a killed process would have left behind.
     std::fs::write(
-        project.join(".tokensave").join("dirty"),
+        tokensave::config::get_tokensave_dir(project).join("dirty"),
         "pid=0\nversion=test",
     )
     .unwrap();

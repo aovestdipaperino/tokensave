@@ -94,14 +94,14 @@ fn assert_disables_server(name: &str) {
         run.stderr
     );
     assert!(run.stdout.is_empty());
-    assert!(!run.project.path().join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(run.project.path()).exists());
 }
 
 #[tokio::test]
 async fn server_without_disable_reaches_the_mcp_transport() {
     let project = tempfile::tempdir().expect("temp project");
     let (db, _) = tokensave::db::Database::initialize(
-        &project.path().join(".tokensave").join("tokensave.db"),
+        &tokensave::config::get_tokensave_dir(project.path()).join("tokensave.db"),
     )
     .await
     .expect("initialize project database");
