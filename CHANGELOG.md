@@ -11,6 +11,18 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 - Document the optional Graphify exporter workflow, limits and privacy scope in the user guide (Refs #791).
 
+### Added
+
+- Add a pinned Graphify CLI compatibility harness covering repeated exports, queries, visualization and conflicting dirty worktrees; publish fixture evidence and remaining measurement gates (Refs #791).
+
+### Added
+
+- Add experimental `graphify-export` for bounded, read-only single-file snapshots with resolver provenance, freshness checks and no-clobber publication (Refs #791).
+
+### Documentation
+
+- Define the pinned, optional Graphify file-interchange evaluation contract and gated implementation scope (Refs #791).
+
 ### Fixed
 
 - Bound comparison-benchmark MCP initialization and request I/O, reap owned process groups, and defer shutdown interruptions until cleanup completes (Refs #847).
