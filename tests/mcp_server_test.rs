@@ -1568,6 +1568,181 @@ async fn selected_graph_simplify_scan_reports_selected_project_code() {
     );
 }
 
+/// A git project with two tracked, indexed branches: `other` holds the
+/// duplicate pair, `main` holds unrelated code and is the branch checked out
+/// when this returns.
+async fn setup_two_branch_project_on_main() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    run_git(project, &["init", "-b", "main"]);
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src").join("lib.rs"),
+        "pub fn main_only() -> i32 { 1 }\n",
+    )
+    .unwrap();
+    run_git(project, &["add", "src/lib.rs"]);
+    run_git(project, &["commit", "-m", "main"]);
+
+    let graph = TokenSave::init(project).await.unwrap();
+    graph.index_all().await.unwrap();
+    graph.checkpoint().await.unwrap();
+    drop(graph);
+
+    run_git(project, &["checkout", "-b", "other"]);
+    fs::write(
+        project.join("src").join("lib.rs"),
+        SELECTED_DUPLICATE_PAIR_SOURCE,
+    )
+    .unwrap();
+    run_git(project, &["add", "src/lib.rs"]);
+    run_git(project, &["commit", "-m", "other"]);
+
+    let tokensave_dir = project.join(".tokensave");
+    fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
+    fs::copy(
+        tokensave_dir.join("tokensave.db"),
+        tokensave_dir.join("branches").join("other.db"),
+    )
+    .unwrap();
+    let mut meta = branch_meta::load_branch_meta(&tokensave_dir).unwrap();
+    meta.add_branch("other", "branches/other.db", "main");
+    branch_meta::save_branch_meta(&tokensave_dir, &meta).unwrap();
+
+    let other = TokenSave::open_branch(project, "other").await.unwrap();
+    other.index_all().await.unwrap();
+    other.checkpoint().await.unwrap();
+    drop(other);
+
+    run_git(project, &["checkout", "main"]);
+    dir
+}
+
+/// Whether `message` names `branch` as a whole word, so `main` does not match
+/// inside an unrelated identifier.
+fn names_branch(message: &str, branch: &str) -> bool {
+    message
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .any(|word| word == branch)
+}
+
+#[tokio::test]
+async fn selected_graph_redundancy_refuses_branch_not_checked_out() {
+    // Catches: `tokensave_redundancy` on a selected branch that is not the
+    // one checked out in the selected root. It reads source from the working
+    // tree, so it would apply `other`'s stored line/column ranges to `main`'s
+    // files and report wrong, missing or bogus pairs. It must refuse with
+    // InvalidParams naming both branches, and leave both databases unchanged.
+    let (local_dir, local) = setup_named_project("local_only").await;
+    let selected_dir = setup_two_branch_project_on_main().await;
+    let selected = selected_dir.path();
+    let server = McpServer::new(local, None).await;
+
+    let local_before = project_snapshot(local_dir.path(), None, "src/main.rs").await;
+    let main_before = project_snapshot(selected, Some("main"), "src/lib.rs").await;
+    let other_before = project_snapshot(selected, Some("other"), "src/lib.rs").await;
+    let main_fingerprints_before = fingerprint_rows(selected, Some("main")).await;
+    let other_fingerprints_before = fingerprint_rows(selected, Some("other")).await;
+    // Precondition: the two branch databases hold different graphs.
+    assert_ne!(main_before.graph, other_before.graph);
+
+    let response = call_server(
+        &server,
+        62,
+        "tokensave_redundancy",
+        json!({
+            "min_lines": 5,
+            "similarity_threshold": 0.5,
+            "graph_root": selected.display().to_string(),
+            "graph_branch": "other"
+        }),
+    )
+    .await;
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        !message.contains("does not support graph_root"),
+        "{response}"
+    );
+    assert!(names_branch(message, "other"), "{response}");
+    assert!(names_branch(message, "main"), "{response}");
+
+    assert_eq!(
+        project_snapshot(local_dir.path(), None, "src/main.rs").await,
+        local_before
+    );
+    assert_eq!(
+        project_snapshot(selected, Some("main"), "src/lib.rs").await,
+        main_before
+    );
+    assert_eq!(
+        project_snapshot(selected, Some("other"), "src/lib.rs").await,
+        other_before
+    );
+    assert_eq!(
+        fingerprint_rows(selected, Some("main")).await,
+        main_fingerprints_before
+    );
+    assert_eq!(
+        fingerprint_rows(selected, Some("other")).await,
+        other_fingerprints_before
+    );
+}
+
+#[tokio::test]
+async fn selected_graph_redundancy_refuses_parent_branch_fallback() {
+    // Catches: `tokensave_redundancy` with only `graph_root`, where the
+    // checked-out branch (`feature`) is untracked and the read-only open
+    // falls back to the parent branch's (`main`) database. The working tree
+    // is `feature`'s, so the stored ranges belong to other file contents. It
+    // must refuse with InvalidParams naming both branches, and leave the
+    // database unchanged.
+    let (_local_dir, local) = setup_named_project("local_only").await;
+    let (selected_dir, selected_graph) = setup_fallback_project("fallback_only").await;
+    selected_graph.checkpoint().await.unwrap();
+    drop(selected_graph);
+    let selected = selected_dir.path();
+    let server = McpServer::new(local, None).await;
+
+    // Precondition: with no branch named, the read-only open really falls
+    // back from the untracked `feature` checkout to `main`'s database.
+    let probe = TokenSave::open_read_only(selected, None).await.unwrap();
+    assert_eq!(probe.serving_branch(), Some("main"));
+    assert!(probe.fallback_warning().is_some());
+    drop(probe);
+
+    let main_before = project_snapshot(selected, Some("main"), "src/main.rs").await;
+    let main_fingerprints_before = fingerprint_rows(selected, Some("main")).await;
+
+    let response = call_server(
+        &server,
+        63,
+        "tokensave_redundancy",
+        json!({
+            "min_lines": 1,
+            "graph_root": selected.display().to_string()
+        }),
+    )
+    .await;
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        !message.contains("does not support graph_root"),
+        "{response}"
+    );
+    assert!(names_branch(message, "feature"), "{response}");
+    assert!(names_branch(message, "main"), "{response}");
+
+    assert_eq!(
+        project_snapshot(selected, Some("main"), "src/main.rs").await,
+        main_before
+    );
+    assert_eq!(
+        fingerprint_rows(selected, Some("main")).await,
+        main_fingerprints_before
+    );
+}
+
 #[tokio::test]
 async fn selected_truncated_structured_output_stays_qualified() {
     let (_local_dir, local) = setup_named_project("local_only").await;
