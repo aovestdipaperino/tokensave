@@ -1,0 +1,417 @@
+{
+  "kind": "fixture_compatibility_smoke",
+  "graphify_commit": "0a8cd4e1e342235fe53e881fb5d591bf0460071f",
+  "graphify_version": "0.9.97",
+  "tokensave_version": "tokensave TokenSave Beta 7.16.0-beta.1",
+  "dependency_versions": {
+    "graphifyy": "0.9.97",
+    "networkx": "3.7",
+    "numpy": "2.5.4",
+    "PyYAML": "6.0.3",
+    "RapidFuzz": "3.14.6",
+    "tree-sitter": "0.25.2",
+    "tree-sitter-bash": "0.25.1",
+    "tree-sitter-c": "0.24.2",
+    "tree-sitter-c-sharp": "0.23.5",
+    "tree-sitter-cpp": "0.23.4",
+    "tree-sitter-elixir": "0.3.5",
+    "tree-sitter-fortran": "0.6.0",
+    "tree-sitter-go": "0.25.0",
+    "tree-sitter-groovy": "0.1.2",
+    "tree-sitter-java": "0.23.5",
+    "tree-sitter-javascript": "0.25.0",
+    "tree-sitter-json": "0.24.8",
+    "tree-sitter-julia": "0.23.1",
+    "tree-sitter-kotlin": "1.1.0",
+    "tree-sitter-lua": "0.5.0",
+    "tree-sitter-objc": "3.0.2",
+    "tree-sitter-php": "0.24.1",
+    "tree-sitter-powershell": "0.26.4",
+    "tree-sitter-python": "0.25.0",
+    "tree-sitter-ruby": "0.23.1",
+    "tree-sitter-rust": "0.24.2",
+    "tree-sitter-scala": "0.26.3",
+    "tree-sitter-swift": "0.7.4",
+    "tree-sitter-typescript": "0.23.2",
+    "tree-sitter-verilog": "1.0.3",
+    "tree-sitter-zig": "1.1.2",
+    "pip": "25.1.1"
+  },
+  "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+  "python": "3.14.4",
+  "runs": 5,
+  "nodes": 3,
+  "edges": 1,
+  "snapshot_bytes": 1885,
+  "snapshot_sha256": "624c7d3a229472da17697a40cd181b85ce7ae690aed801ffc92182d59ee29fde",
+  "samples": [
+    {
+      "phase": "graphify_commit",
+      "seconds": 0.004150194999965606,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_clean",
+      "seconds": 0.007906924999588227,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_package",
+      "seconds": 0.11445673299976988,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_dependencies",
+      "seconds": 0.11470623000013802,
+      "exit_code": 0
+    },
+    {
+      "phase": "tokensave_version",
+      "seconds": 0.008312214999932621,
+      "exit_code": 0
+    },
+    {
+      "phase": "git_init",
+      "seconds": 0.003958028999932139,
+      "exit_code": 0
+    },
+    {
+      "phase": "git_commit",
+      "seconds": 0.007949392000227817,
+      "exit_code": 0
+    },
+    {
+      "phase": "git_add",
+      "seconds": 0.004106288999992103,
+      "exit_code": 0
+    },
+    {
+      "phase": "git_source_commit",
+      "seconds": 0.008595502999924065,
+      "exit_code": 0
+    },
+    {
+      "phase": "tokensave_init",
+      "seconds": 0.16459899799974664,
+      "exit_code": 0
+    },
+    {
+      "phase": "export",
+      "seconds": 0.032232127000042965,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_load",
+      "seconds": 0.2147461109998403,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_explain",
+      "seconds": 0.3149446980000903,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_query",
+      "seconds": 0.3650433749999138,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_path",
+      "seconds": 0.31516191000036997,
+      "exit_code": 0
+    },
+    {
+      "phase": "export",
+      "seconds": 0.032180635999793594,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_load",
+      "seconds": 0.2667795969996405,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_explain",
+      "seconds": 0.2649344429996745,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_query",
+      "seconds": 0.31497912899976654,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_path",
+      "seconds": 0.31518632999996044,
+      "exit_code": 0
+    },
+    {
+      "phase": "export",
+      "seconds": 0.03239509700006238,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_load",
+      "seconds": 0.26505704400005925,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_explain",
+      "seconds": 0.365088268999898,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_query",
+      "seconds": 0.3654068829996504,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_path",
+      "seconds": 0.3148582379999425,
+      "exit_code": 0
+    },
+    {
+      "phase": "export",
+      "seconds": 0.03242816600004517,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_load",
+      "seconds": 0.21508215999983804,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_explain",
+      "seconds": 0.31498027199995704,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_query",
+      "seconds": 0.3655371670001841,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_path",
+      "seconds": 0.3154927069999758,
+      "exit_code": 0
+    },
+    {
+      "phase": "export",
+      "seconds": 0.03227830800005904,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_load",
+      "seconds": 0.2648649369998566,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_explain",
+      "seconds": 0.3156333120000454,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_query",
+      "seconds": 0.36523330699992584,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_path",
+      "seconds": 0.3149727640002311,
+      "exit_code": 0
+    },
+    {
+      "phase": "export_refusal",
+      "seconds": 0.008031162999941444,
+      "exit_code": 1
+    },
+    {
+      "phase": "export_refusal",
+      "seconds": 0.032298519000050874,
+      "exit_code": 1
+    },
+    {
+      "phase": "export_refusal",
+      "seconds": 0.032370630000059464,
+      "exit_code": 1
+    },
+    {
+      "phase": "tokensave_sync",
+      "seconds": 0.11462604600001214,
+      "exit_code": 0
+    },
+    {
+      "phase": "export",
+      "seconds": 0.0655592380003327,
+      "exit_code": 0
+    },
+    {
+      "phase": "worktree_add",
+      "seconds": 0.01670062199991662,
+      "exit_code": 0
+    },
+    {
+      "phase": "worktree_init",
+      "seconds": 0.16478946400002314,
+      "exit_code": 0
+    },
+    {
+      "phase": "worktree_track",
+      "seconds": 0.1662111629998435,
+      "exit_code": 0
+    },
+    {
+      "phase": "worktree_export",
+      "seconds": 0.03268387800017081,
+      "exit_code": 0
+    },
+    {
+      "phase": "graphify_html",
+      "seconds": 0.3147076539999034,
+      "exit_code": 0
+    }
+  ],
+  "summary": {
+    "export": {
+      "count": 6,
+      "median_seconds": 0.03233670250006071,
+      "min_seconds": 0.032180635999793594,
+      "max_seconds": 0.0655592380003327
+    },
+    "export_refusal": {
+      "count": 3,
+      "median_seconds": 0.032298519000050874,
+      "min_seconds": 0.008031162999941444,
+      "max_seconds": 0.032370630000059464
+    },
+    "git_add": {
+      "count": 1,
+      "median_seconds": 0.004106288999992103,
+      "min_seconds": 0.004106288999992103,
+      "max_seconds": 0.004106288999992103
+    },
+    "git_commit": {
+      "count": 1,
+      "median_seconds": 0.007949392000227817,
+      "min_seconds": 0.007949392000227817,
+      "max_seconds": 0.007949392000227817
+    },
+    "git_init": {
+      "count": 1,
+      "median_seconds": 0.003958028999932139,
+      "min_seconds": 0.003958028999932139,
+      "max_seconds": 0.003958028999932139
+    },
+    "git_source_commit": {
+      "count": 1,
+      "median_seconds": 0.008595502999924065,
+      "min_seconds": 0.008595502999924065,
+      "max_seconds": 0.008595502999924065
+    },
+    "graphify_clean": {
+      "count": 1,
+      "median_seconds": 0.007906924999588227,
+      "min_seconds": 0.007906924999588227,
+      "max_seconds": 0.007906924999588227
+    },
+    "graphify_commit": {
+      "count": 1,
+      "median_seconds": 0.004150194999965606,
+      "min_seconds": 0.004150194999965606,
+      "max_seconds": 0.004150194999965606
+    },
+    "graphify_dependencies": {
+      "count": 1,
+      "median_seconds": 0.11470623000013802,
+      "min_seconds": 0.11470623000013802,
+      "max_seconds": 0.11470623000013802
+    },
+    "graphify_explain": {
+      "count": 5,
+      "median_seconds": 0.31498027199995704,
+      "min_seconds": 0.2649344429996745,
+      "max_seconds": 0.365088268999898
+    },
+    "graphify_html": {
+      "count": 1,
+      "median_seconds": 0.3147076539999034,
+      "min_seconds": 0.3147076539999034,
+      "max_seconds": 0.3147076539999034
+    },
+    "graphify_load": {
+      "count": 5,
+      "median_seconds": 0.2648649369998566,
+      "min_seconds": 0.2147461109998403,
+      "max_seconds": 0.2667795969996405
+    },
+    "graphify_package": {
+      "count": 1,
+      "median_seconds": 0.11445673299976988,
+      "min_seconds": 0.11445673299976988,
+      "max_seconds": 0.11445673299976988
+    },
+    "graphify_path": {
+      "count": 5,
+      "median_seconds": 0.31516191000036997,
+      "min_seconds": 0.3148582379999425,
+      "max_seconds": 0.3154927069999758
+    },
+    "graphify_query": {
+      "count": 5,
+      "median_seconds": 0.36523330699992584,
+      "min_seconds": 0.31497912899976654,
+      "max_seconds": 0.3655371670001841
+    },
+    "tokensave_init": {
+      "count": 1,
+      "median_seconds": 0.16459899799974664,
+      "min_seconds": 0.16459899799974664,
+      "max_seconds": 0.16459899799974664
+    },
+    "tokensave_sync": {
+      "count": 1,
+      "median_seconds": 0.11462604600001214,
+      "min_seconds": 0.11462604600001214,
+      "max_seconds": 0.11462604600001214
+    },
+    "tokensave_version": {
+      "count": 1,
+      "median_seconds": 0.008312214999932621,
+      "min_seconds": 0.008312214999932621,
+      "max_seconds": 0.008312214999932621
+    },
+    "worktree_add": {
+      "count": 1,
+      "median_seconds": 0.01670062199991662,
+      "min_seconds": 0.01670062199991662,
+      "max_seconds": 0.01670062199991662
+    },
+    "worktree_export": {
+      "count": 1,
+      "median_seconds": 0.03268387800017081,
+      "min_seconds": 0.03268387800017081,
+      "max_seconds": 0.03268387800017081
+    },
+    "worktree_init": {
+      "count": 1,
+      "median_seconds": 0.16478946400002314,
+      "min_seconds": 0.16478946400002314,
+      "max_seconds": 0.16478946400002314
+    },
+    "worktree_track": {
+      "count": 1,
+      "median_seconds": 0.1662111629998435,
+      "min_seconds": 0.1662111629998435,
+      "max_seconds": 0.1662111629998435
+    }
+  },
+  "limitations": [
+    "Synthetic single-file fixture, not a representative benchmark",
+    "Separate CLI processes; no warm resident-server latency",
+    "No aggregate RSS/PSS, idle CPU, disk-growth, relevance or model-cost evaluation",
+    "No production rollout or document enrichment decision",
+    "HTML generated only; external assets and browser behavior untested",
+    "Windows process-tree cancellation untested",
+    "Process wall timings include wait/backoff and interpreter startup overhead; not performance acceptance data"
+  ]
+}

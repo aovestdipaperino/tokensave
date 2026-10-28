@@ -148,6 +148,10 @@ portable string formats, and documented path-syntax test fixtures.
 
 ## Experimental Graphify export (master candidate)
 
+- Optional external-reader validation: `python3 scripts/graphify/run.py --help`.
+  Follow `scripts/graphify/README.md` for pinned offline prerequisites and the
+  limits of its fixture timings. This command requires the candidate files.
+
 - `tokensave graphify-export` reads one selected indexed source file without
   automatic sync or migrations. Keep its source, field, node, edge, output and
   lock-wait bounds; retain read-only startup and no-clobber publication.

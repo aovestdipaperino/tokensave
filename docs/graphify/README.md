@@ -84,8 +84,8 @@ resolve shared indexing or server lifecycle concerns in #742/#780.
 | Work | Implementation / merge status | Validation / remaining work |
 | --- | --- | --- |
 | [Contract PR #849](https://github.com/aovestdipaperino/tokensave/pull/849) | Open, unmerged; targets master | Pinned source contract; runtime evidence follows separately |
-| Bounded single-file exporter | Implemented in the dependent export PR; unmerged | Focused snapshot/provenance/budget/freshness tests; see PR and #791 for current validation |
-| Compatibility / measurement harness | Next dependent PR | Real Graphify readers, repeated runs and reproducible evidence required |
+| [Exporter PR #850](https://github.com/aovestdipaperino/tokensave/pull/850) | Draft, unmerged; stacked on #849, intended master | Seven focused tests and workspace suite passed; see #791 for current checks and platform limits |
+| [Compatibility harness](../../scripts/graphify/README.md) | Implemented in the dependent harness PR; unmerged | Five fixture runs passed, including dirty linked worktrees; [raw evidence](fixture-results.json). Representative resource/quality assessment remains open |
 | Documents and product rollout | Conditional, not implemented | User benefit and resource budgets must be reviewed first |
 | #742 shared storage | Separate open evaluation | No storage/backend result asserted here |
 
@@ -128,3 +128,15 @@ repository-wide trait-dispatch cache and startup maintenance. Application memory
 scales with the capped selected graph and two bounded source reads. SQLite query
 execution has no hard CPU deadline; row budgets bound retained data, not all DB
 work. No daemon, subprocess, worker, retry queue or watcher is created.
+
+
+## Evaluation result
+
+The [fixture harness](../../scripts/graphify/README.md) verified the pinned CLI's
+file reader, explain/query/path and HTML generation without reparsing exported
+code. It also verified conflicting dirty linked-worktree isolation after explicit
+branch tracking. This establishes a small interoperability candidate, not a
+benefit or resource-budget result on representative projects. Keep the exporter
+experimental and defer document enrichment and product rollout until those
+separate gates pass. All proposed changes remain unmerged unless #791 records
+verified merges; no release publication is implied.

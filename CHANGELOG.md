@@ -9,6 +9,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- Add a pinned Graphify CLI compatibility harness covering repeated exports, queries, visualization and conflicting dirty worktrees; publish fixture evidence and remaining measurement gates (Refs #791).
+
+### Added
+
 - Add experimental `graphify-export` for bounded, read-only single-file snapshots with resolver provenance, freshness checks and no-clobber publication (Refs #791).
 
 ### Documentation
