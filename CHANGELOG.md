@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+
+- Base the machine hardware benchmark profile on total usable RAM, including stricter cgroup limits, so transient free-memory pressure cannot persistently downgrade the profile. Invalidate older benchmark recommendations for recalculation (Refs #842).
+
 ### Changed
 
 - Pi doctor distinguishes static configuration from unverified runtime state, reports possible instruction overrides and missing indexes without writes, and rejects unknown direct-tool exposure settings (Refs #833).
