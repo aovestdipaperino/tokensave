@@ -66,7 +66,7 @@ fn def_always_load(
 /// `graph_root` description for a tool that answers about one graph.
 ///
 /// It used to be one 457-byte paragraph repeated verbatim on every one of the
-/// 53 graph-scoped tools, re-sent every turn before any tool is called
+/// 55 graph-scoped tools, re-sent every turn before any tool is called
 /// (#576). Each description is now one sentence; the full cross-project rules
 /// go once per session in [`GRAPH_SELECTOR_INSTRUCTIONS`]. Only the tools in
 /// [`FEDERATABLE_TOOLS`](crate::mcp::graph_scope::FEDERATABLE_TOOLS) mention
@@ -279,7 +279,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_port_order(),
         def_commit_context(),
         def_pr_context(),
-        def_simplify_scan(),
+        graph_scoped(def_simplify_scan()),
         graph_scoped(def_test_map()),
         graph_scoped(def_type_hierarchy()),
         def_branch_search(),
@@ -295,7 +295,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         graph_scoped(def_gini()),
         graph_scoped(def_dependency_depth()),
         graph_scoped(def_health()),
-        def_redundancy(),
+        graph_scoped(def_redundancy()),
         def_runtime(),
         graph_scoped(def_dsm()),
         graph_scoped(def_test_risk()),
@@ -1752,7 +1752,7 @@ fn def_pr_context() -> ToolDefinition {
 }
 
 fn def_simplify_scan() -> ToolDefinition {
-    local_graph_no_selectors(def(
+    def(
         "tokensave_simplify_scan",
         "Simplify Scan",
         "Quality analysis of changed files: duplications, dead code, coupling, and complexity hotspots.",
@@ -1767,7 +1767,7 @@ fn def_simplify_scan() -> ToolDefinition {
             },
             "required": ["files"]
         }),
-    ))
+    )
 }
 
 fn def_test_map() -> ToolDefinition {
@@ -2133,7 +2133,7 @@ fn def_runtime() -> ToolDefinition {
 }
 
 fn def_redundancy() -> ToolDefinition {
-    local_graph_no_selectors(def(
+    def(
         "tokensave_redundancy",
         "Redundancy Hunt",
         "Find functionally duplicated function/method bodies via AST isomorphism, control-flow match, call-sequence match, and token-shingle Jaccard similarity. Each pair is bucketed as 'definite' (AST-identical), 'likely' (CFG or algorithmic match), or 'naming_only' (low confidence). Use when consolidating helpers or auditing code health. Computed lazily and cached per (node, body source hash) — first call on a fresh index can be slow on large repos.",
@@ -2162,7 +2162,7 @@ fn def_redundancy() -> ToolDefinition {
                 }
             }
         }),
-    ))
+    )
 }
 
 fn def_dsm() -> ToolDefinition {

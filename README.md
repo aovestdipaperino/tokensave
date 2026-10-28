@@ -563,9 +563,14 @@ or indexed on their behalf; querying one still requires an explicit `graph_root`
 Selectors are intentionally unavailable on tools that write, shell out, or
 depend on the current checkout: the edit primitives, VCS and branch tools,
 diagnostics and test execution, dependency and runtime introspection, workflow
-and session-memory tools, the persistent-cache tool (`tokensave_redundancy`),
-and server administration. Those tools reject a selector instead of silently
-ignoring it.
+and session-memory tools, and server administration. Those tools reject a
+selector instead of silently ignoring it.
+
+`tokensave_simplify_scan` and `tokensave_redundancy` accept selectors. On a
+selected graph, `tokensave_redundancy` reads function bodies from the selected
+project's working tree and does not write its fingerprint cache, so it refuses
+unless the selected branch is the one checked out there (not a detached HEAD,
+and not a fallback to a parent branch's index).
 
 ### Discovery
 

@@ -34,6 +34,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Changed
 
+- `tokensave_redundancy` and `tokensave_simplify_scan` accept `graph_root` and `graph_branch`, so both run against another initialized project. On a selected graph, `tokensave_redundancy` refuses with InvalidParams when the selected branch is not the one checked out in that project (a different branch, a detached HEAD, or a fallback to a parent branch's index), because it reads function bodies from the working tree; it also skips writing its fingerprint cache to the read-only selected database.
+
 - Pi doctor distinguishes static configuration from unverified runtime state, reports possible instruction overrides and missing indexes without writes, and rejects unknown direct-tool exposure settings (Refs #833).
 
 ### Added
