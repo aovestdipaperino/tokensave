@@ -83,8 +83,8 @@ resolve shared indexing or server lifecycle concerns in #742/#780.
 
 | Work | Implementation / merge status | Validation / remaining work |
 | --- | --- | --- |
-| Contract (this document) | Proposed PR, targeting master; unmerged | Source inspection only; runtime acceptance belongs to the next PR |
-| Bounded single-file exporter | Next dependent PR | Snapshot, provenance, limits, freshness and output tests required |
+| [Contract PR #849](https://github.com/aovestdipaperino/tokensave/pull/849) | Open, unmerged; targets master | Pinned source contract; runtime evidence follows separately |
+| Bounded single-file exporter | Implemented in the dependent export PR; unmerged | Focused snapshot/provenance/budget/freshness tests; see PR and #791 for current validation |
 | Compatibility / measurement harness | Next dependent PR | Real Graphify readers, repeated runs and reproducible evidence required |
 | Documents and product rollout | Conditional, not implemented | User benefit and resource budgets must be reviewed first |
 | #742 shared storage | Separate open evaluation | No storage/backend result asserted here |
@@ -92,3 +92,39 @@ resolve shared indexing or server lifecycle concerns in #742/#780.
 Maintain linked PR states and measured results in #791. Do not interpret an
 open PR, a synthetic fixture, or a benchmark candidate as merged functionality
 or a completed production integration.
+
+## Candidate exporter usage
+
+After initializing and syncing the selected checkout separately:
+
+```bash
+tokensave graphify-export --project /path/to/project --file src/main.rs --output /private/directory/snapshot.json
+```
+
+The output must not exist. Run another export to a new filename after edits and
+sync; delete old snapshots explicitly when no longer needed. Defaults and hard
+ceilings are 1,000 nodes and 5,000 internal edges. Lower them with `--max-nodes`
+and `--max-edges`. An over-budget file fails instead of yielding a partial graph.
+The current candidate accepts one source file, with no neighborhood expansion.
+
+Run the separately installed pinned Graphify in a disposable directory:
+
+```bash
+graphify explain 'qualified symbol name' --graph /private/directory/snapshot.json
+graphify path 'first symbol' 'second symbol' --directed --graph /private/directory/snapshot.json
+graphify export html --graph /private/directory/snapshot.json --node-limit 1000
+```
+
+Graphify writes `graph.html` beside the selected JSON, even when invoked from a
+different working directory. Keep the JSON in its own disposable export directory
+to avoid replacing a curated visualization. The HTML renderer uses externally hosted JavaScript. Rendering success
+is not a privacy or offline-browser validation. Query logs may retain questions;
+consult the pinned Graphify privacy settings before querying sensitive artifacts.
+The exporter itself never launches Graphify, selects a model, or sends data.
+
+The reader uses a dedicated read-only connection and transaction, a 2 MiB SQLite
+page-cache target, and a one-second SQLite busy timeout. It avoids the normal
+repository-wide trait-dispatch cache and startup maintenance. Application memory
+scales with the capped selected graph and two bounded source reads. SQLite query
+execution has no hard CPU deadline; row budgets bound retained data, not all DB
+work. No daemon, subprocess, worker, retry queue or watcher is created.

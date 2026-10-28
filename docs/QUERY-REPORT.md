@@ -18,9 +18,9 @@ contexts below include their compatibility checks and channel-aware paths.
 
 ## Inventory summary
 
-- SQL-bearing source files: **37**.
-- SQL literal/template occurrences: **349**.
-- Functions retained for construction/binding context: **175**.
+- SQL-bearing source files: **38**.
+- SQL literal/template occurrences: **354**.
+- Functions retained for construction/binding context: **176**.
 
 ## Source file index
 
@@ -49,6 +49,7 @@ contexts below include their compatibility checks and channel-aware paths.
 | [src/extraction/fstar_extractor.rs](../src/extraction/fstar_extractor.rs) | 2 |
 | [src/extraction/ruby_extractor.rs](../src/extraction/ruby_extractor.rs) | 1 |
 | [src/extraction/ruby_template_extractor.rs](../src/extraction/ruby_template_extractor.rs) | 1 |
+| [src/graphify.rs](../src/graphify.rs) | 5 |
 | [src/global_db.rs](../src/global_db.rs) | 41 |
 | [src/graph/imports.rs](../src/graph/imports.rs) | 1 |
 | [src/graph/queries.rs](../src/graph/queries.rs) | 5 |
@@ -13031,3 +13032,55 @@ Source: [src/db/compatibility.rs:111](../src/db/compatibility.rs#L111).
 Coverage was checked against SQL-bearing string literals and database execution entry points (`query`, `execute`, `prepare`, and `execute_batch`) in the current `src/` tree. SQL passed through variables or constants is represented by the defining template and, for constructed SQL, its builder context. This static inventory does not enumerate concrete values supplied by users or runtime-generated batches. It includes historical migrations and inline tests; their presence does not imply that every statement runs on every invocation. Source line links apply to the recorded snapshot and may move after edits.
 
 The tokensave graph tools were consulted first, but reported a stale index and a different served checkout. The inventory therefore uses the current working-tree source rather than relying on graph contents. This documentation-only change does not modify application behavior; no database statements or application tests were run.
+
+
+## Graphify export additions (Refs #791)
+
+Source: [src/graphify.rs](../src/graphify.rs), `export_file`. This section adds
+five occurrences and one construction/binding context to the existing inventory.
+No existing query was changed, moved or removed. Snapshot inspected 2026-10-28.
+The dedicated read-only connection uses master's libsql API. The transaction API owns BEGIN,
+COMMIT and rollback on drop; those driver-generated statements introduce no new
+application SQL literals.
+
+#### Q0384 — `export_file`: Read-only connection limits
+
+```sql
+PRAGMA query_only=1; PRAGMA busy_timeout=1000; PRAGMA cache_size=-2048;
+```
+
+Fixed batch, no parameters; executes before the read transaction.
+
+#### Q0385 — `export_file`: Current-schema check
+
+```sql
+PRAGMA user_version
+```
+
+No bindings; exactly one scalar row. Refuse versions unequal to latest_version().
+
+#### Q0386 — `export_file`: Selected-file freshness
+
+```sql
+SELECT substr(content_hash,1,65) FROM files WHERE path=?1 AND kind='code'
+```
+
+?1 is the validated repository-relative file path. At most one row; compare with the bounded UTF-8 source SHA-256.
+
+#### Q0387 — `export_file`: Bounded node projection
+
+```sql
+SELECT substr(id,1,4097), substr(qualified_name,1,4097), substr(kind,1,4097), start_line, end_line FROM nodes WHERE file_path=?1 ORDER BY id LIMIT ?2
+```
+
+?1 is the selected file; ?2 is max_nodes + 1, integer <=1001. Extra row or text >4096 characters refuses export. No source body/signature/docstring projected.
+
+#### Q0388 — `export_file`: Bounded internal edges
+
+```sql
+SELECT substr(e.source,1,4097), substr(e.target,1,4097), substr(e.kind,1,4097), e.line, e.resolved_by FROM edges e JOIN nodes s ON s.id=e.source JOIN nodes t ON t.id=e.target WHERE s.file_path=?1 AND t.file_path=?1 ORDER BY e.source,e.target,e.kind,e.line,e.id LIMIT ?2
+```
+
+?1 is the same file for both endpoints; ?2 is max_edges + 1, integer <=5001. Extra row refuses export. id breaks ties without collapsing multiplicity; line and nullable numeric resolver provenance are retained.
+
+Construction context: max_nodes is validated in 1..=1000 and max_edges in 1..=5000 before integer conversion. SQL templates are fixed; no user text is interpolated. Queries Q0385–Q0388 use one read transaction for a consistent DB snapshot. Output is published only after successful reads, budget checks, source/branch rechecks and capped serialization. No migrations or writes occur.

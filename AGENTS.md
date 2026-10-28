@@ -146,6 +146,16 @@ portable string formats, and documented path-syntax test fixtures.
 - MCP test-matrix probe: `cargo build --release --bin tokensave && python3 scripts/mcp_probe/probe.py && python3 scripts/mcp_probe/build_matrix.py > matrix.md`. `scripts/mcp_probe/repos.toml` lists target repos (override with `TOKENSAVE_PROBE_REPOS`).
 - `tokensave bench` is a separate CLI benchmark (fixed query set, retrieval-savings report).
 
+## Experimental Graphify export (master candidate)
+
+- `tokensave graphify-export` reads one selected indexed source file without
+  automatic sync or migrations. Keep its source, field, node, edge, output and
+  lock-wait bounds; retain read-only startup and no-clobber publication.
+- Run `cargo test --test integration graphify_export_test::` for focused checks.
+  See [the pinned contract](docs/graphify/README.md). This candidate guidance is
+  branch-specific until the implementation is merged; do not copy commands to
+  branches that lack the implementation.
+
 ## Architecture
 
 Pipeline: source files → tree-sitter parse → language extractors → nodes/edges/unresolved refs → reference resolver → SQLite (libSQL) graph → graph queries → CLI + MCP server.
