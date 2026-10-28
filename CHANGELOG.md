@@ -9,6 +9,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Bound comparison-benchmark MCP initialization and request I/O, reap owned process groups, and defer shutdown interruptions until cleanup completes (Refs #847).
+
 - Return MCP invalid-parameter errors for selected graphs rejected by database compatibility checks, preserving internal errors for database failures (Refs #835).
 
 - Preserve database creation channel, reject beta-origin and newer-schema databases before writes or recovery, and isolate beta project/global indexes under `.tokensave/beta` without relabeling legacy databases (Refs #835).

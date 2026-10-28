@@ -1,124 +1,177 @@
-"""MCP client lifecycle regression tests without a TokenSave build or database."""
+"""Real child lifecycle tests. Run under an outer timeout as a hang guard."""
 import importlib.util
-import io
+import os
 from pathlib import Path
+import signal
+import select
 import subprocess
 import sys
+import time
 import unittest
 from unittest import mock
 
-SPEC = importlib.util.spec_from_file_location("run_benchmarks", Path(__file__).resolve().parents[1] / "run_benchmarks.py")
+SPEC = importlib.util.spec_from_file_location('bench', Path(__file__).resolve().parents[1] / 'run_benchmarks.py')
 bench = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bench)
-
-
-def process():
-    child = mock.Mock()
-    child.stdin = io.StringIO()
-    child.stdout = io.StringIO('{"id":1,"result":{}}\n')
-    child.wait.return_value = 0
-    return child
+HANDSHAKE = 'import sys,json; sys.stdin.readline(); print(json.dumps({"id":1,"result":{}}),flush=True); '
 
 
 class McpCleanupTests(unittest.TestCase):
-    def assert_closed(self, child, client):
-        self.assertTrue(child.stdin.closed)
-        self.assertTrue(child.stdout.closed)
-        child.wait.assert_called()
-        self.assertIsNone(client.proc)
-
-    def test_success_and_repeated_cleanup(self):
-        child = process()
-        client = bench.TokensaveMcp(Path("project"))
-        with mock.patch.object(bench.subprocess, "Popen", return_value=child):
-            with client:
-                self.assertIs(client.proc, child)
-        self.assert_closed(child, client)
-        client.__exit__()
-        self.assertEqual(child.wait.call_count, 1)
-
-    def test_body_failure(self):
-        child = process()
-        client = bench.TokensaveMcp(Path("project"))
-        with mock.patch.object(bench.subprocess, "Popen", return_value=child):
-            with self.assertRaisesRegex(ValueError, "body failed"):
-                with client:
-                    raise ValueError("body failed")
-        self.assert_closed(child, client)
-
-    def test_initialization_failure_and_interruption(self):
-        for method in ["_request", "_notify"]:
-            for error in [RuntimeError("startup failed"), KeyboardInterrupt()]:
-                with self.subTest(method=method, error=type(error).__name__):
-                    child = process()
-                    client = bench.TokensaveMcp(Path("project"))
-                    with mock.patch.object(bench.subprocess, "Popen", return_value=child), \
-                         mock.patch.object(client, method, side_effect=error):
-                        with self.assertRaises(type(error)) as raised:
-                            client.__enter__()
-                    self.assertIs(raised.exception, error)
-                    self.assert_closed(child, client)
-
-    def test_spawn_failure(self):
-        client = bench.TokensaveMcp(Path("project"))
-        with mock.patch.object(bench.subprocess, "Popen", side_effect=OSError("cannot spawn")):
-            with self.assertRaises(OSError):
-                client.__enter__()
-        self.assertIsNone(client.proc)
-        client.__exit__()
-
-    def test_timeout_kills_and_reaps(self):
-        child = process()
-        child.wait.side_effect = [subprocess.TimeoutExpired("fake", 3), 0]
-        client = bench.TokensaveMcp(Path("project"))
-        with mock.patch.object(bench.subprocess, "Popen", return_value=child):
-            with client:
-                pass
-        self.assert_closed(child, client)
-        child.kill.assert_called_once()
-        self.assertEqual(child.wait.call_count, 2)
-
-    def test_independent_clients(self):
-        first, second = process(), process()
-        one, two = bench.TokensaveMcp(Path("one")), bench.TokensaveMcp(Path("two"))
-        with mock.patch.object(bench.subprocess, "Popen", side_effect=[first, second]):
-            with one:
-                with two:
-                    self.assertIs(one.proc, first)
-                    self.assertIs(two.proc, second)
-                self.assertFalse(first.stdin.closed)
-        self.assert_closed(first, one)
-        self.assert_closed(second, two)
-
-    def test_real_child_is_reaped_after_failed_entry(self):
-        # Close stdout during initialize, then wait for EOF on stdin. Without
-        # entry cleanup, the child remains alive waiting for that EOF.
+    def client(self, code, **options):
+        client = bench.TokensaveMcp(Path('unused'), initialization_timeout=.15,
+                                   request_timeout=.15, shutdown_timeout=.15, **options)
         spawn = subprocess.Popen
         children = []
         def start(*args, **kwargs):
-            child = spawn([sys.executable, "-u", "-c",
-                           "import os,sys; sys.stdin.readline(); os.close(1); sys.stdin.read()"], **kwargs)
+            child = spawn([sys.executable, '-u', '-c', code], **kwargs)
             children.append(child)
             return child
-        client = bench.TokensaveMcp(Path("unused"))
-        try:
-            with mock.patch.object(bench.subprocess, "Popen", side_effect=start):
-                with self.assertRaisesRegex(RuntimeError, "closed stdout"):
-                    client.__enter__()
-            self.assertIsNotNone(children[0].returncode)
-            self.assertTrue(children[0].stdin.closed)
-            self.assertTrue(children[0].stdout.closed)
-            self.assertIsNone(client.proc)
-        finally:
+        patch = mock.patch.object(bench.subprocess, 'Popen', side_effect=start)
+        patch.start()
+        self.addCleanup(patch.stop)
+        def repair():
             for child in children:
-                child.stdin.close()
                 try:
-                    child.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    child.kill()
-                    child.wait()
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                child.wait(timeout=2)
+                child.stdin.close()
                 child.stdout.close()
+        self.addCleanup(repair)
+        return client, children
+
+    def assert_closed(self, client, children):
+        self.assertIsNone(client.proc)
+        for child in children:
+            self.assertIsNotNone(child.returncode)
+            self.assertTrue(child.stdin.closed)
+            self.assertTrue(child.stdout.closed)
+
+    def test_success_repeated_cleanup_and_body_error(self):
+        for error in (False, True):
+            client, children = self.client(HANDSHAKE + 'sys.stdin.read()')
+            try:
+                with client:
+                    if error:
+                        raise ValueError('body')
+            except ValueError:
+                self.assertTrue(error)
+            client.__exit__()
+            self.assert_closed(client, children)
+
+    def test_stalled_initialize_and_partial_line(self):
+        for prefix in ('', 'print("partial",end="",flush=True); '):
+            client, children = self.client('import time; ' + prefix + 'time.sleep(60)')
+            with self.assertRaises(TimeoutError):
+                with client:
+                    pass
+            self.assert_closed(client, children)
+
+    def test_closed_stdout(self):
+        client, children = self.client('import os,sys; sys.stdin.readline(); os.close(1); sys.stdin.read()')
+        with self.assertRaisesRegex(RuntimeError, 'closed stdout'):
+            client.__enter__()
+        self.assert_closed(client, children)
+
+    def test_stalled_notification_write(self):
+        client, children = self.client(HANDSHAKE + 'import time; time.sleep(60)')
+        notify = client._notify
+        with mock.patch.object(client, '_notify', side_effect=lambda *args: notify('x', {'data':'x' * 1000000})):
+            with self.assertRaises(TimeoutError):
+                client.__enter__()
+        self.assert_closed(client, children)
+
+    def test_utf8_notifications_and_followup_response(self):
+        code = HANDSHAKE + 'sys.stdin.readline(); req=json.loads(sys.stdin.readline()); print("[]",flush=True); print(json.dumps({"method":"notice"}),flush=True); print(json.dumps({"id":req["id"],"result":"café"},ensure_ascii=False),flush=True); sys.stdin.read()'
+        client, children = self.client(code)
+        with client:
+            self.assertEqual(client.call_tool('hello', {})['result'], 'café')
+        self.assert_closed(client, children)
+
+    def test_request_deadline(self):
+        client, children = self.client(HANDSHAKE + 'sys.stdin.read()')
+        with client:
+            with self.assertRaises(TimeoutError):
+                client.call_tool('stalled', {})
+        self.assert_closed(client, children)
+
+    def test_repeated_interruption_during_shutdown_preserves_body_error(self):
+        client, children = self.client(HANDSHAKE + 'sys.stdin.read()')
+        with self.assertRaisesRegex(ValueError, 'original'):
+            with client:
+                wait = client.proc.wait
+                interruptions = [KeyboardInterrupt(), KeyboardInterrupt()]
+                def interrupted(*args, **kwargs):
+                    if interruptions:
+                        raise interruptions.pop()
+                    return wait(*args, **kwargs)
+                client.proc.wait = interrupted
+                raise ValueError('original')
+        self.assert_closed(client, children)
+
+    def test_interruption_on_normal_exit_is_reraised(self):
+        client, children = self.client(HANDSHAKE + 'sys.stdin.read()')
+        with self.assertRaises(KeyboardInterrupt):
+            with client:
+                wait = client.proc.wait
+                # Use the actual wait after the first interrupted attempt.
+                calls = iter([True, False])
+                def interrupted(*args, **kwargs):
+                    if next(calls, False):
+                        raise KeyboardInterrupt
+                    return wait(*args, **kwargs)
+                client.proc.wait = interrupted
+        self.assert_closed(client, children)
+
+    def test_overlapping_clients(self):
+        one, children = self.client(HANDSHAKE + 'sys.stdin.read()')
+        with one:
+            two, other = self.client(HANDSHAKE + 'sys.stdin.read()')
+            with two:
+                pass
+            self.assertIsNone(one.proc.poll())
+        self.assert_closed(one, children)
+        self.assert_closed(two, other)
+
+    def test_descendant_holding_stdout(self):
+        code = HANDSHAKE + 'import subprocess,time; subprocess.Popen([sys.executable,"-c","import time; time.sleep(60)"]); sys.exit(0)'
+        client, children = self.client(code)
+        with client:
+            descriptor = os.dup(client.proc.stdout.fileno())
+            self.addCleanup(os.close, descriptor)
+            with self.assertRaises(TimeoutError):
+                client.call_tool('stalled', {})
+        self.assert_closed(client, children)
+        self.assertTrue(select.select([descriptor], [], [], 1)[0])
+        self.assertEqual(os.read(descriptor, 1), b'')
+
+    def test_entry_interruption_preserves_original(self):
+        client, children = self.client('import sys; sys.stdin.read()')
+        error = KeyboardInterrupt()
+        with mock.patch.object(client, '_request', side_effect=error):
+            with self.assertRaises(KeyboardInterrupt) as raised:
+                client.__enter__()
+        self.assertIs(raised.exception, error)
+        self.assert_closed(client, children)
+
+    def test_oversized_unterminated_response(self):
+        client, children = self.client('import sys; sys.stdin.readline(); sys.stdout.write("x" * (17 * 1024 * 1024)); sys.stdout.flush(); sys.stdin.read()')
+        client.initialization_timeout = 3
+        with self.assertRaisesRegex(RuntimeError, '16 MiB'):
+            client.__enter__()
+        self.assert_closed(client, children)
+
+    def test_invalid_timeouts_and_spawn_failure(self):
+        for value in (0, -1, float('nan'), float('inf')):
+            with self.assertRaises(ValueError):
+                bench.TokensaveMcp(Path('unused'), initialization_timeout=value)
+        client = bench.TokensaveMcp(Path('unused'))
+        with mock.patch.object(bench.subprocess, 'Popen', side_effect=OSError('spawn')):
+            with self.assertRaises(OSError):
+                client.__enter__()
+        client.__exit__()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()
