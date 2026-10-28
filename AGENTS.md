@@ -139,6 +139,7 @@ portable string formats, and documented path-syntax test fixtures.
 
 ### Non-standard test/bench harnesses
 
+- Graphify coexistence evaluation (#791): `python3 scripts/graphify_probe.py --graphify /path/to/pinned/graphify --benchmark-repo "$PWD" --output /tmp/graphify-results.json`. Requires Linux, GNU time, git, both CLIs, and the Graphify revision in `docs/GRAPHIFY-EVALUATION.md`. Uses disposable copies; does not install assistant integrations. The evaluation records limits and outstanding checks.
 - Pi real-session regressions: `node scripts/pi-tests/run.mjs /path/to/prepared/pi`; see `scripts/pi-tests/README.md` for the pinned Pi prerequisites and offline scope.
 - Conditional Pi read-routing assessment: `python3 scripts/pi-eval/assess_reads.py --help`; see `scripts/pi-eval/READ-ROUTING.md`. This read-only assessment never enables interception; real-model traces and independent review are prerequisites for any later enforcement.
 
