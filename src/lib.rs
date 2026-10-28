@@ -64,3 +64,6 @@ pub mod user_config;
 pub mod worktree;
 
 pub mod verify;
+
+/// Experimental Graphify file interchange.
+pub mod graphify;

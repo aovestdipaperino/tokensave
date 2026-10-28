@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Added
+
+- Add experimental `graphify-export` for bounded, read-only single-file snapshots with resolver provenance, freshness checks and no-clobber publication (Refs #791).
+
 ### Documentation
 
 - Define the pinned, optional Graphify file-interchange evaluation contract and gated implementation scope (Refs #791).
