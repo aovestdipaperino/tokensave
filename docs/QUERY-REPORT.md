@@ -3489,7 +3489,7 @@ SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
 
 #### Q0298 — `gdscript_live_overrides`
 
-Source: [src/graph/queries.rs:380](../src/graph/queries.rs#L380).
+Source: [src/graph/queries.rs:385](../src/graph/queries.rs#L385).
 
 ```sql
 WITH RECURSIVE ancestry(cls, base) AS (
@@ -3512,7 +3512,7 @@ WITH RECURSIVE ancestry(cls, base) AS (
 
 #### Q0299 — `get_file_dependencies`
 
-Source: [src/graph/queries.rs:463](../src/graph/queries.rs#L463).
+Source: [src/graph/queries.rs:468](../src/graph/queries.rs#L468).
 
 ```sql
 SELECT DISTINCT e.target FROM edges e WHERE e.source IN ({}) AND e.kind IN {kind_filter}
@@ -3520,7 +3520,7 @@ SELECT DISTINCT e.target FROM edges e WHERE e.source IN ({}) AND e.kind IN {kind
 
 #### Q0300 — `get_file_dependents`
 
-Source: [src/graph/queries.rs:525](../src/graph/queries.rs#L525).
+Source: [src/graph/queries.rs:530](../src/graph/queries.rs#L530).
 
 ```sql
 SELECT DISTINCT e.source FROM edges e WHERE e.target IN ({}) AND e.kind IN {kind_filter}
@@ -3528,7 +3528,7 @@ SELECT DISTINCT e.source FROM edges e WHERE e.target IN ({}) AND e.kind IN {kind
 
 #### Q0301 — `build_file_adjacency`
 
-Source: [src/graph/queries.rs:618](../src/graph/queries.rs#L618).
+Source: [src/graph/queries.rs:623](../src/graph/queries.rs#L623).
 
 ```sql
 SELECT DISTINCT n1.file_path AS src_file, n2.file_path AS tgt_file FROM edges e JOIN nodes n1 ON e.source = n1.id JOIN nodes n2 ON e.target = n2.id WHERE e.kind IN ('calls', 'uses') AND n1.file_path != n2.file_path
@@ -11363,9 +11363,9 @@ Source: [src/graph/queries.rs:170](../src/graph/queries.rs#L170).
     }
 ```
 
-### `gdscript_live_overrides` — src/graph/queries.rs:379
+### `gdscript_live_overrides` — src/graph/queries.rs:384
 
-Source: [src/graph/queries.rs:379](../src/graph/queries.rs#L379).
+Source: [src/graph/queries.rs:384](../src/graph/queries.rs#L384).
 
 ```rust
     async fn gdscript_live_overrides(&self) -> Result<HashSet<String>> {
@@ -11408,9 +11408,9 @@ Source: [src/graph/queries.rs:379](../src/graph/queries.rs#L379).
     }
 ```
 
-### `get_file_dependencies` — src/graph/queries.rs:452
+### `get_file_dependencies` — src/graph/queries.rs:457
 
-Source: [src/graph/queries.rs:452](../src/graph/queries.rs#L452).
+Source: [src/graph/queries.rs:457](../src/graph/queries.rs#L457).
 
 ```rust
     pub async fn get_file_dependencies(&self, file_path: &str) -> Result<Vec<String>> {
@@ -11471,9 +11471,9 @@ Source: [src/graph/queries.rs:452](../src/graph/queries.rs#L452).
     }
 ```
 
-### `get_file_dependents` — src/graph/queries.rs:514
+### `get_file_dependents` — src/graph/queries.rs:519
 
-Source: [src/graph/queries.rs:514](../src/graph/queries.rs#L514).
+Source: [src/graph/queries.rs:519](../src/graph/queries.rs#L519).
 
 ```rust
     pub async fn get_file_dependents(&self, file_path: &str) -> Result<Vec<String>> {
@@ -11534,9 +11534,9 @@ Source: [src/graph/queries.rs:514](../src/graph/queries.rs#L514).
     }
 ```
 
-### `build_file_adjacency` — src/graph/queries.rs:614
+### `build_file_adjacency` — src/graph/queries.rs:619
 
-Source: [src/graph/queries.rs:614](../src/graph/queries.rs#L614).
+Source: [src/graph/queries.rs:619](../src/graph/queries.rs#L619).
 
 ```rust
     pub async fn build_file_adjacency(
