@@ -282,7 +282,10 @@ impl TokenSave {
             if crate::db::compatibility::is_refusal(&error) {
                 return Err(error);
             }
-            // Preserve existing corruption recovery below.
+            if Database::is_corruption_error(&error) {
+                return Err(corruption_refusal(&candidate, &error));
+            }
+            // Other open errors are handled below.
         }
 
         // Transparent auto-track: when branch metadata exists and the active
@@ -330,17 +333,15 @@ impl TokenSave {
             );
         }
 
-        // Try to open; if the database is completely unreadable, delete and
-        // re-initialize rather than failing permanently.
+        // Corruption must preserve the database, including user-authored state.
         let open_result = Database::open(&db_path).await;
         let (db, migrated) = match open_result {
             Ok(pair) => pair,
             Err(e) if crate::db::compatibility::is_refusal(&e) => return Err(e),
-            Err(e)
-                if Database::is_corruption_error(&e)
-                    || crashed
-                    || (rebuild_failed_migration && Database::is_migration_error(&e)) =>
-            {
+            Err(e) if Database::is_corruption_error(&e) => {
+                return Err(corruption_refusal(&db_path, &e));
+            }
+            Err(e) if rebuild_failed_migration && Database::is_migration_error(&e) => {
                 // Never delete a database over a condition that clears by
                 // itself, or while another tokensave process is using it:
                 // the holder would keep writing to an unlinked file.
@@ -355,11 +356,7 @@ impl TokenSave {
                         });
                     }
                 };
-                if Database::is_migration_error(&e) {
-                    eprintln!("[tokensave] {e}\n[tokensave] rebuilding the database…");
-                } else {
-                    print_corruption_warning();
-                }
+                eprintln!("[tokensave] {e}\n[tokensave] rebuilding the database…");
                 delete_db_files(&db_path);
                 clear_dirty_sentinel(project_root);
                 let (db, _) = Database::initialize(&db_path).await?;
@@ -387,50 +384,24 @@ impl TokenSave {
             Err(e) => return Err(e),
         };
 
-        // If the sentinel was set but the database opened successfully, run a
-        // quick integrity check.
-        if crashed {
-            let intact = db.quick_check().await.unwrap_or(false);
-            if !intact {
-                print_corruption_warning();
-                drop(db);
-                delete_db_files(&db_path);
-                clear_dirty_sentinel(project_root);
-                let (new_db, _) = Database::initialize(&db_path).await?;
-                let ts = Self {
-                    db: new_db,
-                    max_auto_sync_files: config.max_auto_sync_files,
-                    cpu_usage: crate::global_benchmark::effective_cpu_usage(config.cpu_usage),
-                    config,
-                    project_root: project_root.to_path_buf(),
-                    registry: LanguageRegistry::new(),
-                    tracks_checkout: true,
-                    active_branch: active_branch.clone(),
-                    serving_branch: serving_branch.clone(),
-                    fallback_warning: fallback_warning.clone(),
-                };
-                ts.index_all_with_progress(|c, t, f| {
-                    eprintln!("[tokensave] re-indexing [{c}/{t}] {f}");
-                })
-                .await?;
-                eprintln!("[tokensave] re-index complete.");
-                return Ok(ts);
+        // Never turn I/O or lock failures into a corruption verdict. Keep the
+        // sentinel until the complete source-derived graph has been rebuilt.
+        let recover_interrupted = crashed && !sync_in_progress(project_root);
+        if recover_interrupted {
+            match db.quick_check().await {
+                Ok(true) => {}
+                Ok(false) => return Err(corruption_refusal(&db_path, "quick_check failed")),
+                Err(e) if Database::is_corruption_error(&e) => {
+                    return Err(corruption_refusal(&db_path, &e));
+                }
+                Err(e) => return Err(e),
             }
-            // `quick_check` validates the B-tree but cannot see a bulk load
-            // that dropped its indexes and never recreated them: the rows are
-            // structurally valid, just un-indexed and possibly duplicated
-            // (#318). Detect that state and re-run finalization, which dedupes
-            // the edges and rebuilds every dropped index — far cheaper than a
-            // full re-index and enough to restore a correct, fast graph.
-            if db.needs_bulk_load_finalization().await.unwrap_or(false) {
-                eprintln!(
-                    "[tokensave] previous bulk load did not finalize — deduping edges and rebuilding indexes…"
-                );
+            // Restore external-content FTS before begin_bulk_load clears it
+            // again. Repeating DELETE against an already emptied FTS index
+            // can otherwise fail with SQLITE_CORRUPT (#864).
+            if db.needs_bulk_load_finalization().await? {
                 db.end_bulk_load().await?;
             }
-
-            // DB is fine — clean up the stale sentinel.
-            clear_dirty_sentinel(project_root);
         }
 
         let ts = Self {
@@ -446,8 +417,10 @@ impl TokenSave {
             fallback_warning,
         };
 
-        if migrated {
-            eprintln!("[tokensave] schema changed — performing full re-index…");
+        if migrated || recover_interrupted {
+            eprintln!(
+                "[tokensave] schema changed or operation interrupted — performing full re-index…"
+            );
             ts.index_all_with_progress(|current, total, file| {
                 eprintln!("[tokensave] re-indexing [{current}/{total}] {file}");
             })

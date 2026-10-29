@@ -1915,6 +1915,10 @@ or index deletion occurs. Preserve a backup before manually recovering structura
 corruption. Symlink targets outside the project are reported without reading them;
 filesystem changes during verification can require a second run.
 
+For interrupted indexing and manual backup/restore steps, see
+[Database recovery](DATABASE-RECOVERY.md), including the implementation's
+validation status and remaining crash-test coverage.
+
 ### "tokensave not initialized"
 
 The `.tokensave/` directory doesn't exist in your current project. Run:
