@@ -477,8 +477,8 @@ async fn end_bulk_load_dedupes_edges_before_unique_index() {
 /// A bulk load interrupted between `begin_bulk_load` and `end_bulk_load`
 /// leaves the graph un-indexed and possibly duplicated. `quick_check` passes
 /// (the B-tree is intact), so `TokenSave::open` must detect the missing
-/// `idx_edges_unique` on a dirty reopen and finalize the load — dedup and
-/// rebuild the indexes — rather than serve the broken graph as-is (#318).
+/// `idx_edges_unique` on a dirty reopen and rebuild the source graph and
+/// indexes rather than serve the broken graph as-is (#318, #864).
 #[tokio::test]
 async fn open_finalizes_interrupted_bulk_load() {
     let dir = TempDir::new().unwrap();
@@ -544,4 +544,261 @@ async fn open_finalizes_interrupted_bulk_load() {
         .unwrap();
     let dup_groups: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
     assert_eq!(dup_groups, 0, "recovery must remove duplicate edges");
+}
+
+/// Child exits without dropping SQLite handles, leaving a real WAL behind.
+#[tokio::test]
+async fn crash_writer_child() {
+    let Some(path) = std::env::var_os("TOKENSAVE_CRASH_FIXTURE") else {
+        return;
+    };
+    let (db, _) = Database::initialize(std::path::Path::new(&path))
+        .await
+        .unwrap();
+    db.conn()
+        .execute_batch(
+            "CREATE TABLE crash_fixture(value INTEGER);\n\
+         INSERT INTO crash_fixture VALUES(1);\n\
+         BEGIN IMMEDIATE; INSERT INTO crash_fixture VALUES(2);",
+        )
+        .await
+        .unwrap();
+    // Bypass destructors, checkpointing and transaction rollback.
+    std::process::exit(0);
+}
+
+#[tokio::test]
+async fn process_exit_preserves_commits_and_rolls_back_incomplete_writes() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("crash.db");
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &crate::common::qualified_test_name(module_path!(), "crash_writer_child"),
+        ])
+        .env("TOKENSAVE_CRASH_FIXTURE", &path)
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("could not wait for crash writer: {error}");
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("crash writer did not exit within 30 seconds");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    assert!(status.success());
+    assert!(
+        path.with_extension("db-wal").exists(),
+        "child must leave a WAL"
+    );
+    let (db, _) = Database::open(&path).await.unwrap();
+    assert!(db.quick_check().await.unwrap());
+    let mut rows = db
+        .conn()
+        .query("SELECT value FROM crash_fixture", ())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+        1
+    );
+    assert!(rows.next().await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn unreadable_database_is_preserved_even_when_dirty() {
+    assert_unreadable_database_preserved(true).await;
+}
+
+#[tokio::test]
+async fn unreadable_database_is_preserved_when_clean() {
+    assert_unreadable_database_preserved(false).await;
+}
+
+async fn assert_unreadable_database_preserved(dirty: bool) {
+    let dir = TempDir::new().unwrap();
+    let ts = tokensave::tokensave::TokenSave::init(dir.path())
+        .await
+        .unwrap();
+    drop(ts);
+    let state = tokensave::config::get_tokensave_dir(dir.path());
+    // Non-git fixtures use the single database path.
+    let path = state.join("tokensave.db");
+    assert!(path.exists());
+    let damaged = b"this is not a SQLite database";
+    std::fs::write(&path, damaged).unwrap();
+    if dirty {
+        std::fs::write(state.join("dirty"), "interrupted").unwrap();
+    }
+    let error = match tokensave::tokensave::TokenSave::open(dir.path()).await {
+        Ok(_) => panic!("corruption must refuse destructive recovery"),
+        Err(error) => {
+            assert!(
+                matches!(&error, tokensave::errors::TokenSaveError::Database { operation, .. } if operation == "database_corruption")
+            );
+            error.to_string()
+        }
+    };
+    assert!(error.contains("Database preserved"), "{error}");
+    assert!(error.contains("back up"), "{error}");
+    assert_eq!(std::fs::read(path).unwrap(), damaged);
+    assert_eq!(state.join("dirty").exists(), dirty);
+}
+
+#[tokio::test]
+async fn interrupted_partial_graph_is_reindexed_before_serving() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("lib.rs"), "fn recovered() {}\n").unwrap();
+    let ts = tokensave::tokensave::TokenSave::init(dir.path())
+        .await
+        .unwrap();
+    ts.index_all().await.unwrap();
+    let decision_id = ts
+        .record_decision("preserve this decision", None, &[], &[])
+        .await
+        .unwrap();
+    ts.db().begin_bulk_load().await.unwrap();
+    ts.db()
+        .conn()
+        .execute("DELETE FROM nodes", ())
+        .await
+        .unwrap();
+    drop(ts);
+    let state = tokensave::config::get_tokensave_dir(dir.path());
+    std::fs::write(state.join("dirty"), "interrupted").unwrap();
+    let ts = tokensave::tokensave::TokenSave::open(dir.path())
+        .await
+        .unwrap();
+    let mut rows = ts
+        .db()
+        .conn()
+        .query("SELECT name FROM nodes WHERE name = 'recovered'", ())
+        .await
+        .unwrap();
+    assert!(rows.next().await.unwrap().is_some());
+    assert!(!state.join("dirty").exists());
+    let decisions = ts.session_recall(None, None, 10).await.unwrap();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0].id, decision_id);
+    assert_eq!(decisions[0].text, "preserve this decision");
+}
+
+#[tokio::test]
+async fn live_sync_defers_dirty_recovery() {
+    let dir = TempDir::new().unwrap();
+    let ts = tokensave::tokensave::TokenSave::init(dir.path())
+        .await
+        .unwrap();
+    ts.record_decision("keep during live sync", None, &[], &[])
+        .await
+        .unwrap();
+    drop(ts);
+    let state = tokensave::config::get_tokensave_dir(dir.path());
+    std::fs::write(state.join("dirty"), "active operation").unwrap();
+    let lock = tokensave::tokensave::try_acquire_sync_lock(dir.path()).unwrap();
+    let ts = tokensave::tokensave::TokenSave::open(dir.path())
+        .await
+        .unwrap();
+    assert!(
+        state.join("dirty").exists(),
+        "a reader must not clear a writer's sentinel"
+    );
+    assert_eq!(ts.session_recall(None, None, 10).await.unwrap().len(), 1);
+    drop(ts);
+    drop(lock);
+    let ts = tokensave::tokensave::TokenSave::open(dir.path())
+        .await
+        .unwrap();
+    assert!(
+        !state.join("dirty").exists(),
+        "recovery must run after the writer exits"
+    );
+    assert_eq!(ts.session_recall(None, None, 10).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn borrowed_branch_recovery_preserves_ancestor_graph() {
+    let dir = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        assert!(std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .status()
+            .unwrap()
+            .success());
+    };
+    git(&["init", "-b", "main"]);
+    git(&[
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
+    ]);
+    std::fs::write(dir.path().join("lib.rs"), "fn ancestor() {}\n").unwrap();
+    let ts = tokensave::tokensave::TokenSave::init(dir.path())
+        .await
+        .unwrap();
+    ts.index_all().await.unwrap();
+    git(&["checkout", "-b", "untracked"]);
+    std::fs::write(dir.path().join("lib.rs"), "fn other_branch() {}\n").unwrap();
+    let state = tokensave::config::get_tokensave_dir(dir.path());
+    std::fs::write(state.join("dirty"), "interrupted").unwrap();
+    let result = tokensave::tokensave::TokenSave::open(dir.path()).await;
+    assert!(matches!(
+        result,
+        Err(tokensave::errors::TokenSaveError::Config { .. })
+    ));
+    assert!(state.join("dirty").exists());
+    let mut rows = ts
+        .db()
+        .conn()
+        .query("SELECT name FROM nodes WHERE name = 'ancestor'", ())
+        .await
+        .unwrap();
+    assert!(rows.next().await.unwrap().is_some());
+    assert!(
+        !state.join("sync.lock").exists(),
+        "refusal must release the lock"
+    );
+}
+
+#[tokio::test]
+async fn live_writer_keeps_bulk_load_unfinalized() {
+    let dir = TempDir::new().unwrap();
+    let ts = tokensave::tokensave::TokenSave::init(dir.path())
+        .await
+        .unwrap();
+    let lock = tokensave::tokensave::try_acquire_sync_lock(dir.path()).unwrap();
+    ts.db().begin_bulk_load().await.unwrap();
+    let state = tokensave::config::get_tokensave_dir(dir.path());
+    std::fs::write(state.join("dirty"), "active writer").unwrap();
+    let reader = tokensave::tokensave::TokenSave::open(dir.path())
+        .await
+        .unwrap();
+    assert!(reader.db().needs_bulk_load_finalization().await.unwrap());
+    assert!(state.join("dirty").exists());
+    drop(reader);
+    drop(lock);
+    drop(ts);
+    let recovered = tokensave::tokensave::TokenSave::open(dir.path())
+        .await
+        .unwrap();
+    assert!(!recovered.db().needs_bulk_load_finalization().await.unwrap());
+    assert!(!state.join("dirty").exists());
+    assert!(!state.join("sync.lock").exists());
 }

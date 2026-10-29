@@ -99,19 +99,19 @@ pub(crate) fn delete_db_files(db_path: &std::path::Path) {
     let _ = std::fs::remove_file(&wal);
 }
 
-/// Prints a user-facing warning about database corruption with a request to
-/// report the issue.
-pub(crate) fn print_corruption_warning() {
-    let version = env!("CARGO_PKG_VERSION");
-    eprintln!("[tokensave] \x1b[33m⚠ database corruption detected — rebuilding index\x1b[0m");
-    eprintln!("[tokensave]");
-    eprintln!("[tokensave] This was likely caused by a crash or kill during indexing.");
-    eprintln!("[tokensave] Please report this at:");
-    eprintln!("[tokensave]   https://github.com/aovestdipaperino/tokensave/issues");
-    eprintln!(
-        "[tokensave]   Include: tokensave version (v{version}), OS, and what happened before the crash."
-    );
-    eprintln!("[tokensave]");
+/// Refuse automatic destructive recovery: graph databases also contain memory.
+pub(crate) fn corruption_refusal(db_path: &Path, detail: impl std::fmt::Display) -> TokenSaveError {
+    TokenSaveError::Database {
+        operation: "database_corruption".into(),
+        message: format!(
+            "database corruption detected at '{}': {detail}. Database preserved. \
+             Stop all tokensave processes, back up the database and its -wal/-shm sidecars \
+             together, and run `tokensave verify`. Restore a known-good backup, or move \
+             the damaged database and sidecars aside and run `tokensave init` to rebuild \
+             source-derived data. A rebuild cannot restore sessions or other user-authored memory.",
+            db_path.display()
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
