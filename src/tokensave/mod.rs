@@ -386,7 +386,24 @@ impl TokenSave {
 
         // Never turn I/O or lock failures into a corruption verdict. Keep the
         // sentinel until the complete source-derived graph has been rebuilt.
-        let recover_interrupted = crashed && !sync_in_progress(project_root);
+        let recovery_lock = if crashed && !sync_in_progress(project_root) {
+            Some(try_acquire_sync_lock(project_root)?)
+        } else {
+            None
+        };
+        // Another writer may have completed between observing the sentinel
+        // and acquiring the lock. Recheck while holding exclusive ownership.
+        let recover_interrupted = recovery_lock.is_some() && has_dirty_sentinel(project_root);
+        if (recover_interrupted || migrated)
+            && serving_branch.is_some()
+            && serving_branch != active_branch
+        {
+            return Err(TokenSaveError::Config {
+                message: "Cannot rebuild a borrowed branch database from the current checkout. \
+                    Check out its owning branch and retry recovery; the dirty sentinel is preserved."
+                    .into(),
+            });
+        }
         if recover_interrupted {
             match db.quick_check().await {
                 Ok(true) => {}
@@ -421,9 +438,17 @@ impl TokenSave {
             eprintln!(
                 "[tokensave] schema changed or operation interrupted — performing full re-index…"
             );
-            ts.index_all_with_progress(|current, total, file| {
-                eprintln!("[tokensave] re-indexing [{current}/{total}] {file}");
-            })
+            let lock = match recovery_lock {
+                Some(lock) => lock,
+                None => try_acquire_sync_lock(project_root)?,
+            };
+            ts.index_all_with_lock(
+                |current, total, file| {
+                    eprintln!("[tokensave] re-indexing [{current}/{total}] {file}");
+                },
+                |_| {},
+                lock,
+            )
             .await?;
             eprintln!("[tokensave] re-index complete.");
         }

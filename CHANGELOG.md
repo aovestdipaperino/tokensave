@@ -26,6 +26,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Hold the writer lock throughout interrupted-index recovery and refuse rebuilding a borrowed branch database from another checkout (Refs #864).
+
 - Restore independent MCP selected-graph regression tests for simplify scans, redundancy branch refusal, and dead-code queries after an interleaved test insertion (Refs #854).
 
 - Bound comparison-benchmark MCP initialization and request I/O, reap owned process groups, and defer shutdown interruptions until cleanup completes (Refs #847).

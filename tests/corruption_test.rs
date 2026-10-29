@@ -726,3 +726,79 @@ async fn live_sync_defers_dirty_recovery() {
     );
     assert_eq!(ts.session_recall(None, None, 10).await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn borrowed_branch_recovery_preserves_ancestor_graph() {
+    let dir = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        assert!(std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .status()
+            .unwrap()
+            .success());
+    };
+    git(&["init", "-b", "main"]);
+    git(&[
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
+    ]);
+    std::fs::write(dir.path().join("lib.rs"), "fn ancestor() {}\n").unwrap();
+    let ts = tokensave::tokensave::TokenSave::init(dir.path())
+        .await
+        .unwrap();
+    ts.index_all().await.unwrap();
+    git(&["checkout", "-b", "untracked"]);
+    std::fs::write(dir.path().join("lib.rs"), "fn other_branch() {}\n").unwrap();
+    let state = tokensave::config::get_tokensave_dir(dir.path());
+    std::fs::write(state.join("dirty"), "interrupted").unwrap();
+    let result = tokensave::tokensave::TokenSave::open(dir.path()).await;
+    assert!(matches!(
+        result,
+        Err(tokensave::errors::TokenSaveError::Config { .. })
+    ));
+    assert!(state.join("dirty").exists());
+    let mut rows = ts
+        .db()
+        .conn()
+        .query("SELECT name FROM nodes WHERE name = 'ancestor'", ())
+        .await
+        .unwrap();
+    assert!(rows.next().await.unwrap().is_some());
+    assert!(
+        !state.join("sync.lock").exists(),
+        "refusal must release the lock"
+    );
+}
+
+#[tokio::test]
+async fn live_writer_keeps_bulk_load_unfinalized() {
+    let dir = TempDir::new().unwrap();
+    let ts = tokensave::tokensave::TokenSave::init(dir.path())
+        .await
+        .unwrap();
+    let lock = tokensave::tokensave::try_acquire_sync_lock(dir.path()).unwrap();
+    ts.db().begin_bulk_load().await.unwrap();
+    let state = tokensave::config::get_tokensave_dir(dir.path());
+    std::fs::write(state.join("dirty"), "active writer").unwrap();
+    let reader = tokensave::tokensave::TokenSave::open(dir.path())
+        .await
+        .unwrap();
+    assert!(reader.db().needs_bulk_load_finalization().await.unwrap());
+    assert!(state.join("dirty").exists());
+    drop(reader);
+    drop(lock);
+    drop(ts);
+    let recovered = tokensave::tokensave::TokenSave::open(dir.path())
+        .await
+        .unwrap();
+    assert!(!recovered.db().needs_bulk_load_finalization().await.unwrap());
+    assert!(!state.join("dirty").exists());
+    assert!(!state.join("sync.lock").exists());
+}

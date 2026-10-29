@@ -21,7 +21,13 @@ full source reindex. Finalization restores external-content FTS before it can
 be cleared again without error. The reindex recreates
 the graph, secondary indexes and source search data while retaining memory
 decisions and sessions. A live sync lock defers this recovery. Recovery itself
-acquires the normal sync lock and leaves the sentinel behind on failure.
+acquires the normal sync lock before integrity checking or bulk-load finalization,
+rechecks the sentinel under that lock, and retains the same lock through full
+indexing. Failure leaves the sentinel behind and releases the lock through RAII.
+Recovery refuses to rebuild a borrowed ancestor database from a different
+checkout, including detached HEAD; check out the owning branch to recover it.
+The sentinel remains project-wide: it does not identify the interrupted branch,
+so switching between tracked branches after a crash remains a limitation.
 An active writer can still expose transient state to concurrent readers;
 this candidate does not implement atomic snapshot publication.
 
@@ -97,3 +103,26 @@ finalizing missing indexes, because finalization cannot replace missing source
 rows. The new subprocess has bounded polling and a timeout with explicit
 reaping. Long-running RSS/CPU measurements and multi-process race testing
 remain outstanding; no leak-free claim is made.
+
+## Follow-up review changes
+
+The follow-up holds one writer lock through finalization and reindexing and
+refuses rebuilding a borrowed branch database. Regression fixtures cover an
+untracked checkout retaining the ancestor graph and dirty sentinel, and a live
+writer retaining its unfinished bulk load until lock release. These do not
+constitute deterministic force-kill or power-loss coverage. Lock ownership is
+bounded to recovery and is released on failure; no additional scans, buffers,
+workers, or polling are introduced. Long-running resource measurements remain
+outstanding.
+
+Follow-up validation (2026-10-29): the focused lite corruption suite passed
+all 25 tests. The full workspace run completed with 3,144 integration tests
+passing and one failure in `serve_without_project_test`; library tests had
+1,125 passes and two discovery-test failures. The library failures report
+`/tmp` as a Git root in this sandbox, whose `/tmp/.git` is read-only. A rerun
+with `GIT_CEILING_DIRECTORIES=/tmp` did not remove the failures. The full suite
+is therefore not green in this environment; none of the recovery regressions
+failed. Formatting and `git diff --check` passed. Changes are local and have
+not been pushed to PR #861; direct Git network access was unavailable.
+Clippy (`--workspace --all-targets --locked`) passed with warnings in unchanged
+files only. No long-running CPU/RSS or cross-platform validation was performed.
