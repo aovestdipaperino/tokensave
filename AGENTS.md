@@ -2,6 +2,16 @@
 
 This file provides guidance to the agent when working with code in this repository.
 
+## Fork-specific branch workflow
+
+- Create new work branches in the user's fork rather than in the upstream
+  repository. This rule applies to every fork. Use a work branch instead of
+  working directly on `master`, unless the user explicitly requests a direct
+  commit.
+- Use descriptive branch names that do not contain the number of any issue
+  or pull request associated with the work. Refer to issues and pull requests
+  in commit messages and PR descriptions instead.
+
 ## Keeping agent guidance current
 
 Treat `AGENTS.md` on the original repository's `master` branch
