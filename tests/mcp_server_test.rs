@@ -1552,26 +1552,6 @@ async fn selected_graph_simplify_scan_reports_selected_project_code() {
         "pub fn used() -> i32 { 0 }\nfn selected_only_dead() -> i32 { 2 }\n",
     )
     .await;
-// Catches: `tokensave_dead_code` with `graph_root` failing on the selected
-// graph's read-only (`query_only`) connection because the dead-code query
-// creates TEMP tables, and dead_code answering from the served project
-// instead of the selected one.
-#[tokio::test]
-async fn selected_graph_dead_code_reports_selected_project_unused_functions() {
-    let (_local_dir, local) = setup_named_project("local_only_unused").await;
-    let selected_dir = TempDir::new().unwrap();
-    fs::create_dir_all(selected_dir.path().join("src")).unwrap();
-    fs::write(
-        selected_dir.path().join("src").join("lib.rs"),
-        "fn selected_entry() { selected_used(); }\n\
-         fn selected_used() {}\n\
-         fn selected_unused() {}\n",
-    )
-    .unwrap();
-    let selected = TokenSave::init(selected_dir.path()).await.unwrap();
-    selected.index_all().await.unwrap();
-    selected.checkpoint().await.unwrap();
-    drop(selected);
     let server = McpServer::new(local, None).await;
 
     let response = call_server(
@@ -1773,6 +1753,32 @@ async fn selected_graph_redundancy_refuses_parent_branch_fallback() {
         fingerprint_rows(selected, Some("main")).await,
         main_fingerprints_before
     );
+}
+
+// Catches: `tokensave_dead_code` with `graph_root` failing on the selected
+// graph's read-only (`query_only`) connection because the dead-code query
+// creates TEMP tables, and dead_code answering from the served project
+// instead of the selected one.
+#[tokio::test]
+async fn selected_graph_dead_code_reports_selected_project_unused_functions() {
+    let (_local_dir, local) = setup_named_project("local_only_unused").await;
+    let selected_dir = TempDir::new().unwrap();
+    fs::create_dir_all(selected_dir.path().join("src")).unwrap();
+    fs::write(
+        selected_dir.path().join("src").join("lib.rs"),
+        "fn selected_entry() { selected_used(); }\n\
+         fn selected_used() {}\n\
+         fn selected_unused() {}\n",
+    )
+    .unwrap();
+    let selected = TokenSave::init(selected_dir.path()).await.unwrap();
+    selected.index_all().await.unwrap();
+    selected.checkpoint().await.unwrap();
+    drop(selected);
+    let server = McpServer::new(local, None).await;
+
+    let response = call_server(
+        &server,
         42,
         "tokensave_dead_code",
         json!({ "graph_root": selected_dir.path().display().to_string() }),

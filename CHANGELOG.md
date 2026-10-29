@@ -26,6 +26,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Restore independent MCP selected-graph regression tests for simplify scans, redundancy branch refusal, and dead-code queries after an interleaved test insertion (Refs #854).
+
 - Bound comparison-benchmark MCP initialization and request I/O, reap owned process groups, and defer shutdown interruptions until cleanup completes (Refs #847).
 
 - Return MCP invalid-parameter errors for selected graphs rejected by database compatibility checks, preserving internal errors for database failures (Refs #835).
