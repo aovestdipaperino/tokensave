@@ -54,6 +54,10 @@ pub(super) async fn handle_status(
         if let Some(warning) = cg.fallback_warning() {
             output["branch_warning"] = json!(warning);
         }
+        if let Some(hint) = cg.auto_track_hint() {
+            output["auto_track"] = json!(cg.auto_track_enabled());
+            output["auto_track_hint"] = json!(hint);
+        }
     }
 
     // A full reindex (`index_all`) commits its up-front `Database::clear()`

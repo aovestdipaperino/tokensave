@@ -36,6 +36,17 @@ The AI agent doesn't see tokensave tools.
 - Check that the language is supported (see [Supported Languages](LANGUAGES.md))
 - Verify the file isn't excluded by `.gitignore`
 
+## "branch '…' is not tracked" after a checkout
+
+Automatic branch tracking is opt-in. With `auto_track` disabled (the default), the `post-checkout` hook runs on every checkout but intentionally does not register new branches, and tokensave serves them from the nearest tracked ancestor's index.
+
+- Run `tokensave status` (or call `tokensave_status`) to see whether `auto_track` is enabled and why the branch was not tracked
+- Track the branch now with `tokensave branch add`
+- Track new branches automatically by setting `"auto_track": true` in `.tokensave/config.json`, or `TOKENSAVE_AUTO_TRACK=1` for one run
+- Run `TOKENSAVE_HOOK_DEBUG=1 git checkout <branch>` and read `.tokensave/hook-debug.log` to see what the hook decided
+
+See [Automatic branch tracking](MULTI-BRANCH.md#automatic-branch-tracking-v730) for details.
+
 ## Indexing is slow
 
 Large projects take longer on the first full index.

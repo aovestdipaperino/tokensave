@@ -7,6 +7,15 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Added
+
+- Explain untracked branches: `tokensave_status` reports the effective `auto_track` setting and an `auto_track_hint` saying why the branch was not tracked automatically (disabled, turned off by `TOKENSAVE_AUTO_TRACK`, failed, or a read-only view) and how to enable it; `tokensave status` prints the same hint, and a failed open-time auto-track now carries its reason on the branch warning (Refs #877).
+- Add `TOKENSAVE_HOOK_DEBUG=1`, which makes the `post-checkout` hook and `branch add --if-enabled` explain skipped actions on stderr and in a bounded `.tokensave/hook-debug.log`; hooks stay silent by default (Refs #877).
+
+### Documentation
+
+- Correct the multi-branch guide: the `post-checkout` hook tracks branches only when `auto_track` is enabled, which is off by default. Add a troubleshooting entry for untracked branches (Refs #877).
+
 ### Documentation
 
 - Adopt Google's Rust Style Guide on master with project-specific precedence, exceptions, and contributor review guidance; defer the codebase audit and cleanup to follow-up work (Refs #845).
