@@ -1,0 +1,2257 @@
+{
+  "corpora": [
+    {
+      "bodies": 1822,
+      "body_bytes": 1363098,
+      "corpus": "express",
+      "decisions": 119,
+      "golden_disk_bytes": {
+        "libsql-fts5": 3309568,
+        "turso-tantivy": 3350528
+      },
+      "nodes": 2390,
+      "phases": {
+        "build-bulk": {
+          "libsql-fts5": [
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11420,
+                "rss_kib": 11420
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6948,
+                "rss_kib": 6948
+              },
+              "memory_end": {
+                "peak_rss_kib": 18224,
+                "rss_kib": 17308
+              },
+              "result": {
+                "disk_bytes": 3342336,
+                "disk_bytes_before_fts_build": 3112960,
+                "fts_build_ms": 6.9311110000000005,
+                "fts_storage_bytes": {
+                  "executable_body_fts": 2105344,
+                  "memory_decisions_fts": 49152,
+                  "nodes_fts": 270336
+                },
+                "open_ms": 0.307762,
+                "records_per_sec": 71646.24205617534,
+                "row_load_ms": 53.518675,
+                "row_load_split_ms": {
+                  "bodies_single_row_inserts": 12.435156,
+                  "commit": 1.3820810000000001,
+                  "decisions_single_row_inserts": 2.835302,
+                  "nodes_200_row_inserts": 36.862968
+                },
+                "total_ms": 60.449786
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11264,
+                "rss_kib": 11264
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6848,
+                "rss_kib": 6848
+              },
+              "memory_end": {
+                "peak_rss_kib": 18140,
+                "rss_kib": 16780
+              },
+              "result": {
+                "disk_bytes": 3342336,
+                "disk_bytes_before_fts_build": 3112960,
+                "fts_build_ms": 21.981829,
+                "fts_storage_bytes": {
+                  "executable_body_fts": 2105344,
+                  "memory_decisions_fts": 49152,
+                  "nodes_fts": 270336
+                },
+                "open_ms": 0.670153,
+                "records_per_sec": 33709.58003615153,
+                "row_load_ms": 106.497968,
+                "row_load_split_ms": {
+                  "bodies_single_row_inserts": 27.081592,
+                  "commit": 5.832585000000001,
+                  "decisions_single_row_inserts": 7.073055,
+                  "nodes_200_row_inserts": 66.50455
+                },
+                "total_ms": 128.479797
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11468,
+                "rss_kib": 11468
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6860,
+                "rss_kib": 6860
+              },
+              "memory_end": {
+                "peak_rss_kib": 18216,
+                "rss_kib": 17424
+              },
+              "result": {
+                "disk_bytes": 3342336,
+                "disk_bytes_before_fts_build": 3112960,
+                "fts_build_ms": 9.38767,
+                "fts_storage_bytes": {
+                  "executable_body_fts": 2105344,
+                  "memory_decisions_fts": 49152,
+                  "nodes_fts": 270336
+                },
+                "open_ms": 0.601222,
+                "records_per_sec": 32944.28548545675,
+                "row_load_ms": 122.07670800000001,
+                "row_load_split_ms": {
+                  "bodies_single_row_inserts": 21.505327,
+                  "commit": 1.9626959999999998,
+                  "decisions_single_row_inserts": 4.329829,
+                  "nodes_200_row_inserts": 94.270382
+                },
+                "total_ms": 131.464378
+              }
+            }
+          ],
+          "turso-tantivy": [
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11428,
+                "rss_kib": 11428
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6952,
+                "rss_kib": 6952
+              },
+              "memory_end": {
+                "peak_rss_kib": 47824,
+                "rss_kib": 33420
+              },
+              "result": {
+                "disk_bytes": 3350528,
+                "disk_bytes_before_fts_build": 2605056,
+                "fts_build_ms": 182.668847,
+                "fts_storage_bytes": "not exposed by turso; see disk_bytes - disk_bytes_before_fts_build",
+                "open_ms": 0.979655,
+                "records_per_sec": 19918.097665400277,
+                "row_load_ms": 34.771597,
+                "row_load_split_ms": {
+                  "bodies_single_row_inserts": 7.886697999999999,
+                  "commit": 1.3650820000000001,
+                  "decisions_single_row_inserts": 1.321207,
+                  "nodes_200_row_inserts": 24.183517000000002
+                },
+                "total_ms": 217.440444
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11272,
+                "rss_kib": 11272
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 7000,
+                "rss_kib": 6996
+              },
+              "memory_end": {
+                "peak_rss_kib": 47168,
+                "rss_kib": 26544
+              },
+              "result": {
+                "disk_bytes": 3350528,
+                "disk_bytes_before_fts_build": 2605056,
+                "fts_build_ms": 81.532493,
+                "fts_storage_bytes": "not exposed by turso; see disk_bytes - disk_bytes_before_fts_build",
+                "open_ms": 0.79898,
+                "records_per_sec": 38271.78847999902,
+                "row_load_ms": 31.631803,
+                "row_load_split_ms": {
+                  "bodies_single_row_inserts": 8.182198,
+                  "commit": 1.8210419999999998,
+                  "decisions_single_row_inserts": 1.10433,
+                  "nodes_200_row_inserts": 20.515614000000003
+                },
+                "total_ms": 113.16429600000001
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11436,
+                "rss_kib": 11436
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6956,
+                "rss_kib": 6956
+              },
+              "memory_end": {
+                "peak_rss_kib": 48320,
+                "rss_kib": 26568
+              },
+              "result": {
+                "disk_bytes": 3350528,
+                "disk_bytes_before_fts_build": 2605056,
+                "fts_build_ms": 122.81873,
+                "fts_storage_bytes": "not exposed by turso; see disk_bytes - disk_bytes_before_fts_build",
+                "open_ms": 0.835405,
+                "records_per_sec": 25773.515202428498,
+                "row_load_ms": 45.221987999999996,
+                "row_load_split_ms": {
+                  "bodies_single_row_inserts": 13.225139,
+                  "commit": 2.241159,
+                  "decisions_single_row_inserts": 2.225692,
+                  "nodes_200_row_inserts": 27.51145
+                },
+                "total_ms": 168.040718
+              }
+            }
+          ]
+        },
+        "build-incremental": {
+          "libsql-fts5": [
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11424,
+                "rss_kib": 11424
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6892,
+                "rss_kib": 6888
+              },
+              "memory_end": {
+                "peak_rss_kib": 18380,
+                "rss_kib": 17580
+              },
+              "result": {
+                "disk_bytes": 3391488,
+                "disk_bytes_before_fts_build": 3391488,
+                "fts_build_ms": 0.0,
+                "fts_storage_bytes": {
+                  "executable_body_fts": 2105344,
+                  "memory_decisions_fts": 49152,
+                  "nodes_fts": 311296
+                },
+                "open_ms": 0.403002,
+                "records_per_sec": 62082.93715622793,
+                "row_load_ms": 69.76151899999999,
+                "row_load_split_ms": {
+                  "bodies_single_row_inserts": 12.68995,
+                  "commit": 1.3223550000000002,
+                  "decisions_single_row_inserts": 3.119965,
+                  "nodes_200_row_inserts": 52.624629
+                },
+                "total_ms": 69.76151899999999
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11356,
+                "rss_kib": 11356
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6936,
+                "rss_kib": 6936
+              },
+              "memory_end": {
+                "peak_rss_kib": 18380,
+                "rss_kib": 16660
+              },
+              "result": {
+                "disk_bytes": 3391488,
+                "disk_bytes_before_fts_build": 3391488,
+                "fts_build_ms": 0.0,
+                "fts_storage_bytes": {
+                  "executable_body_fts": 2105344,
+                  "memory_decisions_fts": 49152,
+                  "nodes_fts": 311296
+                },
+                "open_ms": 0.61658,
+                "records_per_sec": 23841.298576687135,
+                "row_load_ms": 181.659568,
+                "row_load_split_ms": {
+                  "bodies_single_row_inserts": 41.391824,
+                  "commit": 9.821707,
+                  "decisions_single_row_inserts": 7.216882,
+                  "nodes_200_row_inserts": 123.22209000000001
+                },
+                "total_ms": 181.659568
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11496,
+                "rss_kib": 11496
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6888,
+                "rss_kib": 6888
+              },
+              "memory_end": {
+                "peak_rss_kib": 18376,
+                "rss_kib": 17628
+              },
+              "result": {
+                "disk_bytes": 3391488,
+                "disk_bytes_before_fts_build": 3391488,
+                "fts_build_ms": 0.0,
+                "fts_storage_bytes": {
+                  "executable_body_fts": 2105344,
+                  "memory_decisions_fts": 49152,
+                  "nodes_fts": 311296
+                },
+                "open_ms": 1.136613,
+                "records_per_sec": 27011.676185273256,
+                "row_load_ms": 160.338069,
+                "row_load_split_ms": {
+                  "bodies_single_row_inserts": 33.20048,
+                  "commit": 2.39696,
+                  "decisions_single_row_inserts": 5.973274,
+                  "nodes_200_row_inserts": 118.76018
+                },
+                "total_ms": 160.338069
+              }
+            }
+          ],
+          "turso-tantivy": [
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11364,
+                "rss_kib": 11364
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6800,
+                "rss_kib": 6736
+              },
+              "memory_end": {
+                "peak_rss_kib": 39268,
+                "rss_kib": 28272
+              },
+              "result": {
+                "disk_bytes": 3702784,
+                "disk_bytes_before_fts_build": 3702784,
+                "fts_build_ms": 0.0,
+                "fts_storage_bytes": "not exposed by turso; see disk_bytes - disk_bytes_before_fts_build",
+                "open_ms": 0.771304,
+                "records_per_sec": 438.3980837614293,
+                "row_load_ms": 9879.149021,
+                "row_load_split_ms": {
+                  "bodies_single_row_inserts": 9236.906061,
+                  "commit": 2.579984,
+                  "decisions_single_row_inserts": 541.4253530000001,
+                  "nodes_200_row_inserts": 98.227898
+                },
+                "total_ms": 9879.149021
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11468,
+                "rss_kib": 11468
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6860,
+                "rss_kib": 6860
+              },
+              "memory_end": {
+                "peak_rss_kib": 39440,
+                "rss_kib": 27420
+              },
+              "result": {
+                "disk_bytes": 3702784,
+                "disk_bytes_before_fts_build": 3702784,
+                "fts_build_ms": 0.0,
+                "fts_storage_bytes": "not exposed by turso; see disk_bytes - disk_bytes_before_fts_build",
+                "open_ms": 1.055059,
+                "records_per_sec": 384.84838856812786,
+                "row_load_ms": 11253.782342999999,
+                "row_load_split_ms": {
+                  "bodies_single_row_inserts": 10355.004751999999,
+                  "commit": 6.034338999999999,
+                  "decisions_single_row_inserts": 772.753751,
+                  "nodes_200_row_inserts": 119.971231
+                },
+                "total_ms": 11253.782342999999
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11464,
+                "rss_kib": 11464
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6856,
+                "rss_kib": 6856
+              },
+              "memory_end": {
+                "peak_rss_kib": 40656,
+                "rss_kib": 28196
+              },
+              "result": {
+                "disk_bytes": 3702784,
+                "disk_bytes_before_fts_build": 3702784,
+                "fts_build_ms": 0.0,
+                "fts_storage_bytes": "not exposed by turso; see disk_bytes - disk_bytes_before_fts_build",
+                "open_ms": 1.1190099999999998,
+                "records_per_sec": 335.6415647860718,
+                "row_load_ms": 12903.646194,
+                "row_load_split_ms": {
+                  "bodies_single_row_inserts": 12227.652657,
+                  "commit": 1.97338,
+                  "decisions_single_row_inserts": 529.6672169999999,
+                  "nodes_200_row_inserts": 144.333091
+                },
+                "total_ms": 12903.646194
+              }
+            }
+          ]
+        },
+        "concurrency": {
+          "libsql-fts5": [
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11416,
+                "rss_kib": 11416
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6884,
+                "rss_kib": 6884
+              },
+              "memory_end": {
+                "peak_rss_kib": 17796,
+                "rss_kib": 16776
+              },
+              "result": {
+                "execution_model": "one connection per tokio task on a multi-thread runtime, same process",
+                "multi_connection_qps": 6839.911653991099,
+                "readers": 4,
+                "scaling": 1.279069635216824,
+                "single_connection_qps": 5347.567845930153
+              }
+            }
+          ],
+          "turso-tantivy": [
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11396,
+                "rss_kib": 11396
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6916,
+                "rss_kib": 6916
+              },
+              "memory_end": {
+                "peak_rss_kib": 29108,
+                "rss_kib": 24524
+              },
+              "result": {
+                "execution_model": "one connection per tokio task on a multi-thread runtime, same process",
+                "multi_connection_qps": 11019.010244401372,
+                "readers": 4,
+                "scaling": 2.6365163222808166,
+                "single_connection_qps": 4179.38252506966
+              }
+            }
+          ]
+        },
+        "query": {
+          "libsql-fts5": [
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11428,
+                "rss_kib": 11428
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6944,
+                "rss_kib": 6944
+              },
+              "memory_end": {
+                "peak_rss_kib": 17200,
+                "rss_kib": 16320
+              },
+              "result": {
+                "categories": {
+                  "bounded_kind_filter": {
+                    "latency_us": {
+                      "cv": 1.2392706509821723,
+                      "max": 1279.2730000000001,
+                      "mean": 226.17309999999986,
+                      "min": 26.978,
+                      "n": 120,
+                      "p50": 112.901,
+                      "p95": 882.837,
+                      "p99": 1273.595,
+                      "stddev": 280.28968487165577
+                    },
+                    "queries": 40,
+                    "rows_returned": 1059,
+                    "unsupported": 0
+                  },
+                  "complex_boolean_or": {
+                    "latency_us": {
+                      "cv": 0.740974977341987,
+                      "max": 501.95000000000005,
+                      "mean": 136.19154088050306,
+                      "min": 27.143,
+                      "n": 159,
+                      "p50": 120.03800000000001,
+                      "p95": 304.023,
+                      "p99": 483.515,
+                      "stddev": 100.91452391810105
+                    },
+                    "queries": 53,
+                    "rows_returned": 1242,
+                    "unsupported": 0
+                  },
+                  "executable_body_pairs": {
+                    "latency_us": {
+                      "cv": 0.5392647081829729,
+                      "max": 367.636,
+                      "mean": 181.1651916666666,
+                      "min": 30.769000000000002,
+                      "n": 120,
+                      "p50": 163.239,
+                      "p95": 319.1,
+                      "p99": 338.05,
+                      "stddev": 97.69599421703731
+                    },
+                    "queries": 40,
+                    "rows_returned": 12114,
+                    "unsupported": 0
+                  },
+                  "memory_recall": {
+                    "latency_us": {
+                      "cv": 0.7367013532628691,
+                      "max": 427.245,
+                      "mean": 66.69772500000002,
+                      "min": 28.175,
+                      "n": 120,
+                      "p50": 55.097,
+                      "p95": 120.80799999999999,
+                      "p99": 290.351,
+                      "stddev": 49.13630426705471
+                    },
+                    "queries": 40,
+                    "rows_returned": 1206,
+                    "unsupported": 0
+                  },
+                  "phrase": {
+                    "latency_us": {
+                      "cv": 0.9129052219875493,
+                      "max": 527.152,
+                      "mean": 107.57382222222215,
+                      "min": 25.496000000000002,
+                      "n": 360,
+                      "p50": 63.071999999999996,
+                      "p95": 318.28,
+                      "p99": 450.268,
+                      "stddev": 98.20470405582688
+                    },
+                    "queries": 120,
+                    "rows_returned": 855,
+                    "unsupported": 0
+                  },
+                  "prefix": {
+                    "latency_us": {
+                      "cv": 1.5461470895102223,
+                      "max": 2061.295,
+                      "mean": 192.04135833333336,
+                      "min": 24.494,
+                      "n": 120,
+                      "p50": 88.72,
+                      "p95": 688.53,
+                      "p99": 1571.066,
+                      "stddev": 296.92418725267305
+                    },
+                    "queries": 40,
+                    "rows_returned": 1071,
+                    "unsupported": 0
+                  },
+                  "production_search_nodes_common_subset": {
+                    "latency_us": {
+                      "cv": 0.13490583038820955,
+                      "max": 116.22,
+                      "mean": 100.63266666666668,
+                      "min": 91.396,
+                      "n": 3,
+                      "p50": 94.282,
+                      "p95": 116.22,
+                      "p99": 116.22,
+                      "stddev": 13.575933460846564
+                    },
+                    "queries": 1,
+                    "rows_returned": 18,
+                    "unsupported": 0
+                  },
+                  "repeated": {
+                    "latency_us": {
+                      "cv": 0.16888851991030623,
+                      "max": 68.81,
+                      "mean": 23.025180000000006,
+                      "min": 21.532,
+                      "n": 500,
+                      "p50": 22.053,
+                      "p95": 28.801000000000002,
+                      "p99": 42.016,
+                      "stddev": 3.888688570868386
+                    },
+                    "queries_per_sec": 43357.86926249652,
+                    "runs": 500
+                  },
+                  "single_exact_name": {
+                    "latency_us": {
+                      "cv": 2.3090279381745384,
+                      "max": 1171.742,
+                      "mean": 72.76299166666668,
+                      "min": 21.28,
+                      "n": 120,
+                      "p50": 33.157999999999994,
+                      "p95": 153.798,
+                      "p99": 1044.547,
+                      "stddev": 168.01178062349447
+                    },
+                    "queries": 40,
+                    "rows_returned": 450,
+                    "unsupported": 0
+                  }
+                },
+                "steady_state": {
+                  "peak_rss_kib": 17416,
+                  "rss_kib": 17416
+                }
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11268,
+                "rss_kib": 11268
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6996,
+                "rss_kib": 6992
+              },
+              "memory_end": {
+                "peak_rss_kib": 17080,
+                "rss_kib": 16352
+              },
+              "result": {
+                "categories": {
+                  "bounded_kind_filter": {
+                    "latency_us": {
+                      "cv": 1.607150555504308,
+                      "max": 2347.658,
+                      "mean": 216.77545000000003,
+                      "min": 25.073,
+                      "n": 120,
+                      "p50": 100.723,
+                      "p95": 824.688,
+                      "p99": 1719.1000000000001,
+                      "stddev": 348.3907848871964
+                    },
+                    "queries": 40,
+                    "rows_returned": 1059,
+                    "unsupported": 0
+                  },
+                  "complex_boolean_or": {
+                    "latency_us": {
+                      "cv": 0.783374807127393,
+                      "max": 702.913,
+                      "mean": 150.30854716981133,
+                      "min": 27.284000000000002,
+                      "n": 159,
+                      "p50": 128.453,
+                      "p95": 368.059,
+                      "p99": 566.8169999999999,
+                      "stddev": 117.74792914874962
+                    },
+                    "queries": 53,
+                    "rows_returned": 1242,
+                    "unsupported": 0
+                  },
+                  "executable_body_pairs": {
+                    "latency_us": {
+                      "cv": 0.5731700619408528,
+                      "max": 505.812,
+                      "mean": 176.5215500000001,
+                      "min": 25.605,
+                      "n": 120,
+                      "p50": 167.50900000000001,
+                      "p95": 321.34999999999997,
+                      "p99": 470.224,
+                      "stddev": 101.17686774739542
+                    },
+                    "queries": 40,
+                    "rows_returned": 12114,
+                    "unsupported": 0
+                  },
+                  "memory_recall": {
+                    "latency_us": {
+                      "cv": 0.2650727574042083,
+                      "max": 76.435,
+                      "mean": 36.117458333333325,
+                      "min": 26.650000000000002,
+                      "n": 120,
+                      "p50": 32.047,
+                      "p95": 55.839,
+                      "p99": 75.358,
+                      "stddev": 9.573754270848267
+                    },
+                    "queries": 40,
+                    "rows_returned": 1206,
+                    "unsupported": 0
+                  },
+                  "phrase": {
+                    "latency_us": {
+                      "cv": 0.9014196702697119,
+                      "max": 580.071,
+                      "mean": 104.85050555555554,
+                      "min": 25.576,
+                      "n": 360,
+                      "p50": 61.556999999999995,
+                      "p95": 303.465,
+                      "p99": 396.684,
+                      "stddev": 94.51430814550147
+                    },
+                    "queries": 120,
+                    "rows_returned": 855,
+                    "unsupported": 0
+                  },
+                  "prefix": {
+                    "latency_us": {
+                      "cv": 1.4998051398267815,
+                      "max": 1449.0919999999999,
+                      "mean": 164.4364583333334,
+                      "min": 26.34,
+                      "n": 120,
+                      "p50": 71.22,
+                      "p95": 631.5300000000001,
+                      "p99": 1188.093,
+                      "stddev": 246.62264538324584
+                    },
+                    "queries": 40,
+                    "rows_returned": 1071,
+                    "unsupported": 0
+                  },
+                  "production_search_nodes_common_subset": {
+                    "latency_us": {
+                      "cv": 0.05764443819848482,
+                      "max": 70.56899999999999,
+                      "mean": 66.20133333333332,
+                      "min": 63.512,
+                      "n": 3,
+                      "p50": 64.52300000000001,
+                      "p95": 70.56899999999999,
+                      "p99": 70.56899999999999,
+                      "stddev": 3.8161386679906255
+                    },
+                    "queries": 1,
+                    "rows_returned": 18,
+                    "unsupported": 0
+                  },
+                  "repeated": {
+                    "latency_us": {
+                      "cv": 0.9070778295376681,
+                      "max": 487.692,
+                      "mean": 30.225925999999987,
+                      "min": 20.893,
+                      "n": 500,
+                      "p50": 21.717,
+                      "p95": 63.532000000000004,
+                      "p99": 101.814,
+                      "stddev": 27.41726735184616
+                    },
+                    "queries_per_sec": 33031.08786896964,
+                    "runs": 500
+                  },
+                  "single_exact_name": {
+                    "latency_us": {
+                      "cv": 2.6355666347520246,
+                      "max": 1657.527,
+                      "mean": 86.43885833333333,
+                      "min": 22.424,
+                      "n": 120,
+                      "p50": 38.065999999999995,
+                      "p95": 199.526,
+                      "p99": 1579.619,
+                      "stddev": 227.81537096939033
+                    },
+                    "queries": 40,
+                    "rows_returned": 450,
+                    "unsupported": 0
+                  }
+                },
+                "steady_state": {
+                  "peak_rss_kib": 17352,
+                  "rss_kib": 17352
+                }
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11144,
+                "rss_kib": 11144
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6728,
+                "rss_kib": 6728
+              },
+              "memory_end": {
+                "peak_rss_kib": 17180,
+                "rss_kib": 16776
+              },
+              "result": {
+                "categories": {
+                  "bounded_kind_filter": {
+                    "latency_us": {
+                      "cv": 1.5321183936851577,
+                      "max": 2200.372,
+                      "mean": 209.24172500000003,
+                      "min": 26.636,
+                      "n": 120,
+                      "p50": 98.11500000000001,
+                      "p95": 954.38,
+                      "p99": 1287.949,
+                      "stddev": 320.58309559891154
+                    },
+                    "queries": 40,
+                    "rows_returned": 1059,
+                    "unsupported": 0
+                  },
+                  "complex_boolean_or": {
+                    "latency_us": {
+                      "cv": 0.7533276619135365,
+                      "max": 531.436,
+                      "mean": 151.3359874213836,
+                      "min": 28.15,
+                      "n": 159,
+                      "p50": 126.66000000000001,
+                      "p95": 347.326,
+                      "p99": 526.114,
+                      "stddev": 114.00558556752728
+                    },
+                    "queries": 53,
+                    "rows_returned": 1242,
+                    "unsupported": 0
+                  },
+                  "executable_body_pairs": {
+                    "latency_us": {
+                      "cv": 0.6905359334047855,
+                      "max": 802.83,
+                      "mean": 236.28352499999997,
+                      "min": 29.192,
+                      "n": 120,
+                      "p50": 219.214,
+                      "p95": 576.3149999999999,
+                      "p99": 729.197,
+                      "stddev": 163.16226448404794
+                    },
+                    "queries": 40,
+                    "rows_returned": 12114,
+                    "unsupported": 0
+                  },
+                  "memory_recall": {
+                    "latency_us": {
+                      "cv": 0.25811631666104706,
+                      "max": 99.839,
+                      "mean": 36.231841666666675,
+                      "min": 28.523,
+                      "n": 120,
+                      "p50": 32.042,
+                      "p95": 52.225,
+                      "p99": 59.864000000000004,
+                      "stddev": 9.352029516846255
+                    },
+                    "queries": 40,
+                    "rows_returned": 1206,
+                    "unsupported": 0
+                  },
+                  "phrase": {
+                    "latency_us": {
+                      "cv": 0.852162268793041,
+                      "max": 453.07000000000005,
+                      "mean": 111.28719444444442,
+                      "min": 27.933,
+                      "n": 360,
+                      "p50": 65.36,
+                      "p95": 318.98499999999996,
+                      "p99": 394.576,
+                      "stddev": 94.83474810539008
+                    },
+                    "queries": 120,
+                    "rows_returned": 855,
+                    "unsupported": 0
+                  },
+                  "prefix": {
+                    "latency_us": {
+                      "cv": 1.7481296692003883,
+                      "max": 2264.66,
+                      "mean": 207.37773333333328,
+                      "min": 29.646,
+                      "n": 120,
+                      "p50": 88.791,
+                      "p95": 777.84,
+                      "p99": 2157.105,
+                      "stddev": 362.52316837152625
+                    },
+                    "queries": 40,
+                    "rows_returned": 1071,
+                    "unsupported": 0
+                  },
+                  "production_search_nodes_common_subset": {
+                    "latency_us": {
+                      "cv": 0.08723099269517412,
+                      "max": 113.01299999999999,
+                      "mean": 102.67599999999999,
+                      "min": 97.226,
+                      "n": 3,
+                      "p50": 97.789,
+                      "p95": 113.01299999999999,
+                      "p99": 113.01299999999999,
+                      "stddev": 8.956529405969697
+                    },
+                    "queries": 1,
+                    "rows_returned": 18,
+                    "unsupported": 0
+                  },
+                  "repeated": {
+                    "latency_us": {
+                      "cv": 0.45384967315312497,
+                      "max": 206.56799999999998,
+                      "mean": 25.314300000000006,
+                      "min": 21.914,
+                      "n": 500,
+                      "p50": 22.462,
+                      "p95": 36.41,
+                      "p99": 60.535000000000004,
+                      "stddev": 11.488886781100154
+                    },
+                    "queries_per_sec": 39437.504451508314,
+                    "runs": 500
+                  },
+                  "single_exact_name": {
+                    "latency_us": {
+                      "cv": 2.569752594465558,
+                      "max": 1598.14,
+                      "mean": 81.42742500000001,
+                      "min": 22.994,
+                      "n": 120,
+                      "p50": 30.385,
+                      "p95": 139.905,
+                      "p99": 1231.892,
+                      "stddev": 209.24833665439965
+                    },
+                    "queries": 40,
+                    "rows_returned": 450,
+                    "unsupported": 0
+                  }
+                },
+                "steady_state": {
+                  "peak_rss_kib": 17392,
+                  "rss_kib": 17392
+                }
+              }
+            }
+          ],
+          "turso-tantivy": [
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11448,
+                "rss_kib": 11448
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6968,
+                "rss_kib": 6904
+              },
+              "memory_end": {
+                "peak_rss_kib": 29904,
+                "rss_kib": 24932
+              },
+              "result": {
+                "categories": {
+                  "bounded_kind_filter": {
+                    "latency_us": {
+                      "cv": 1.4458142671300107,
+                      "max": 9868.061,
+                      "mean": 764.1270833333334,
+                      "min": 277.342,
+                      "n": 120,
+                      "p50": 451.498,
+                      "p95": 2204.239,
+                      "p99": 5539.301,
+                      "stddev": 1104.785838983776
+                    },
+                    "queries": 40,
+                    "rows_returned": 1041,
+                    "unsupported": 0
+                  },
+                  "complex_boolean_or": {
+                    "latency_us": {
+                      "cv": 1.1673972798629788,
+                      "max": 4817.700000000001,
+                      "mean": 590.1960817610062,
+                      "min": 200.857,
+                      "n": 159,
+                      "p50": 407.847,
+                      "p95": 1729.863,
+                      "p99": 4556.044000000001,
+                      "stddev": 688.9933004335869
+                    },
+                    "queries": 53,
+                    "rows_returned": 1158,
+                    "unsupported": 0
+                  },
+                  "executable_body_pairs": {
+                    "latency_us": {
+                      "cv": 0.3380801705787728,
+                      "max": 748.256,
+                      "mean": 296.3644666666668,
+                      "min": 148.56599999999997,
+                      "n": 120,
+                      "p50": 302.28900000000004,
+                      "p95": 423.701,
+                      "p99": 726.827,
+                      "stddev": 100.19494944415374
+                    },
+                    "queries": 40,
+                    "rows_returned": 12114,
+                    "unsupported": 0
+                  },
+                  "memory_recall": {
+                    "latency_us": {
+                      "cv": 0.49655737326656585,
+                      "max": 1066.3300000000002,
+                      "mean": 245.33356666666657,
+                      "min": 121.48400000000001,
+                      "n": 120,
+                      "p50": 219.32399999999998,
+                      "p95": 369.802,
+                      "p99": 726.227,
+                      "stddev": 121.82219143811787
+                    },
+                    "queries": 40,
+                    "rows_returned": 1206,
+                    "unsupported": 0
+                  },
+                  "phrase": {
+                    "latency_us": {
+                      "cv": 1.6200518116059592,
+                      "max": 9520.064,
+                      "mean": 395.4433472222225,
+                      "min": 153.95,
+                      "n": 360,
+                      "p50": 322.431,
+                      "p95": 574.978,
+                      "p99": 1518.087,
+                      "stddev": 640.6387110548859
+                    },
+                    "queries": 120,
+                    "rows_returned": 855,
+                    "unsupported": 0
+                  },
+                  "prefix": {
+                    "latency_us": {
+                      "cv": 0.0,
+                      "max": null,
+                      "mean": null,
+                      "min": null,
+                      "n": 0,
+                      "p50": null,
+                      "p95": null,
+                      "p99": null,
+                      "stddev": 0.0
+                    },
+                    "queries": 40,
+                    "rows_returned": 0,
+                    "unsupported": 40
+                  },
+                  "production_search_nodes_common_subset": {
+                    "latency_us": {
+                      "cv": 0.039389566584147225,
+                      "max": 417.13100000000003,
+                      "mean": 399.01866666666666,
+                      "min": 388.96900000000005,
+                      "n": 3,
+                      "p50": 390.95599999999996,
+                      "p95": 417.13100000000003,
+                      "p99": 417.13100000000003,
+                      "stddev": 15.717172338984314
+                    },
+                    "queries": 1,
+                    "rows_returned": 18,
+                    "unsupported": 0
+                  },
+                  "repeated": {
+                    "latency_us": {
+                      "cv": 0.7453958857437544,
+                      "max": 2646.9100000000003,
+                      "mean": 213.05086799999984,
+                      "min": 120.99799999999999,
+                      "n": 500,
+                      "p50": 175.373,
+                      "p95": 425.788,
+                      "p99": 730.0880000000001,
+                      "stddev": 158.80724046133557
+                    },
+                    "queries_per_sec": 4690.664512838607,
+                    "runs": 500
+                  },
+                  "single_exact_name": {
+                    "latency_us": {
+                      "cv": 0.8568820937232892,
+                      "max": 1721.681,
+                      "mean": 327.501775,
+                      "min": 125.97800000000001,
+                      "n": 120,
+                      "p50": 231.262,
+                      "p95": 825.172,
+                      "p99": 1517.1480000000001,
+                      "stddev": 280.63040666009357
+                    },
+                    "queries": 40,
+                    "rows_returned": 432,
+                    "unsupported": 0
+                  }
+                },
+                "steady_state": {
+                  "peak_rss_kib": 30332,
+                  "rss_kib": 30332
+                }
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11504,
+                "rss_kib": 11504
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6892,
+                "rss_kib": 6892
+              },
+              "memory_end": {
+                "peak_rss_kib": 30016,
+                "rss_kib": 25244
+              },
+              "result": {
+                "categories": {
+                  "bounded_kind_filter": {
+                    "latency_us": {
+                      "cv": 1.4751116060532714,
+                      "max": 8449.954000000002,
+                      "mean": 559.3360333333333,
+                      "min": 182.282,
+                      "n": 120,
+                      "p50": 352.572,
+                      "p95": 1470.3,
+                      "p99": 2199.3450000000003,
+                      "stddev": 825.0830744537994
+                    },
+                    "queries": 40,
+                    "rows_returned": 1041,
+                    "unsupported": 0
+                  },
+                  "complex_boolean_or": {
+                    "latency_us": {
+                      "cv": 0.4501564825677253,
+                      "max": 903.635,
+                      "mean": 307.80761635220125,
+                      "min": 149.18,
+                      "n": 159,
+                      "p50": 268.879,
+                      "p95": 623.2479999999999,
+                      "p99": 865.1690000000001,
+                      "stddev": 138.56159388466276
+                    },
+                    "queries": 53,
+                    "rows_returned": 1158,
+                    "unsupported": 0
+                  },
+                  "executable_body_pairs": {
+                    "latency_us": {
+                      "cv": 0.31957382097994536,
+                      "max": 622.274,
+                      "mean": 317.02617499999985,
+                      "min": 158.83800000000002,
+                      "n": 120,
+                      "p50": 313.685,
+                      "p95": 519.933,
+                      "p99": 572.576,
+                      "stddev": 101.31326609540677
+                    },
+                    "queries": 40,
+                    "rows_returned": 12114,
+                    "unsupported": 0
+                  },
+                  "memory_recall": {
+                    "latency_us": {
+                      "cv": 0.6966529976820752,
+                      "max": 1345.431,
+                      "mean": 243.6183,
+                      "min": 115.568,
+                      "n": 120,
+                      "p50": 199.929,
+                      "p95": 592.5830000000001,
+                      "p99": 780.029,
+                      "stddev": 169.7174189852111
+                    },
+                    "queries": 40,
+                    "rows_returned": 1206,
+                    "unsupported": 0
+                  },
+                  "phrase": {
+                    "latency_us": {
+                      "cv": 0.4954749889824752,
+                      "max": 1457.065,
+                      "mean": 268.51629722222236,
+                      "min": 135.104,
+                      "n": 360,
+                      "p50": 233.552,
+                      "p95": 450.649,
+                      "p99": 874.86,
+                      "stddev": 133.04310940779567
+                    },
+                    "queries": 120,
+                    "rows_returned": 855,
+                    "unsupported": 0
+                  },
+                  "prefix": {
+                    "latency_us": {
+                      "cv": 0.0,
+                      "max": null,
+                      "mean": null,
+                      "min": null,
+                      "n": 0,
+                      "p50": null,
+                      "p95": null,
+                      "p99": null,
+                      "stddev": 0.0
+                    },
+                    "queries": 40,
+                    "rows_returned": 0,
+                    "unsupported": 40
+                  },
+                  "production_search_nodes_common_subset": {
+                    "latency_us": {
+                      "cv": 0.2553584534666292,
+                      "max": 3511.902,
+                      "mean": 2717.761,
+                      "min": 2227.709,
+                      "n": 3,
+                      "p50": 2413.672,
+                      "p95": 3511.902,
+                      "p99": 3511.902,
+                      "stddev": 694.0032458519197
+                    },
+                    "queries": 1,
+                    "rows_returned": 18,
+                    "unsupported": 0
+                  },
+                  "repeated": {
+                    "latency_us": {
+                      "cv": 0.521776164466854,
+                      "max": 1556.932,
+                      "mean": 224.01555800000023,
+                      "min": 114.83,
+                      "n": 500,
+                      "p50": 193.464,
+                      "p95": 416.743,
+                      "p99": 535.263,
+                      "stddev": 116.8859786341422
+                    },
+                    "queries_per_sec": 4461.390829311345,
+                    "runs": 500
+                  },
+                  "single_exact_name": {
+                    "latency_us": {
+                      "cv": 0.3094951656305332,
+                      "max": 562.952,
+                      "mean": 213.90542499999984,
+                      "min": 127.21600000000001,
+                      "n": 120,
+                      "p50": 204.113,
+                      "p95": 326.904,
+                      "p99": 381.348,
+                      "stddev": 66.20269493964454
+                    },
+                    "queries": 40,
+                    "rows_returned": 432,
+                    "unsupported": 0
+                  }
+                },
+                "steady_state": {
+                  "peak_rss_kib": 30376,
+                  "rss_kib": 30376
+                }
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11340,
+                "rss_kib": 11340
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6852,
+                "rss_kib": 6852
+              },
+              "memory_end": {
+                "peak_rss_kib": 30632,
+                "rss_kib": 25420
+              },
+              "result": {
+                "categories": {
+                  "bounded_kind_filter": {
+                    "latency_us": {
+                      "cv": 0.7429819394229802,
+                      "max": 938.389,
+                      "mean": 204.52174166666654,
+                      "min": 114.92,
+                      "n": 120,
+                      "p50": 156.334,
+                      "p95": 390.056,
+                      "p99": 929.221,
+                      "stddev": 151.95596027766564
+                    },
+                    "queries": 40,
+                    "rows_returned": 1041,
+                    "unsupported": 0
+                  },
+                  "complex_boolean_or": {
+                    "latency_us": {
+                      "cv": 0.256477529523176,
+                      "max": 412.022,
+                      "mean": 146.24218867924537,
+                      "min": 100.751,
+                      "n": 159,
+                      "p50": 143.39499999999998,
+                      "p95": 185.195,
+                      "p99": 303.044,
+                      "stddev": 37.50783526451503
+                    },
+                    "queries": 53,
+                    "rows_returned": 1158,
+                    "unsupported": 0
+                  },
+                  "executable_body_pairs": {
+                    "latency_us": {
+                      "cv": 0.3090355612537984,
+                      "max": 375.853,
+                      "mean": 179.13078333333334,
+                      "min": 105.14,
+                      "n": 120,
+                      "p50": 177.587,
+                      "p95": 255.994,
+                      "p99": 309.891,
+                      "stddev": 55.35778216524922
+                    },
+                    "queries": 40,
+                    "rows_returned": 12114,
+                    "unsupported": 0
+                  },
+                  "memory_recall": {
+                    "latency_us": {
+                      "cv": 0.12707291558327297,
+                      "max": 136.232,
+                      "mean": 86.27900000000002,
+                      "min": 75.44,
+                      "n": 120,
+                      "p50": 81.395,
+                      "p95": 107.068,
+                      "p99": 116.609,
+                      "stddev": 10.963724083609211
+                    },
+                    "queries": 40,
+                    "rows_returned": 1206,
+                    "unsupported": 0
+                  },
+                  "phrase": {
+                    "latency_us": {
+                      "cv": 0.3571779811482874,
+                      "max": 762.9209999999999,
+                      "mean": 141.3568083333334,
+                      "min": 90.215,
+                      "n": 360,
+                      "p50": 133.142,
+                      "p95": 197.286,
+                      "p99": 323.315,
+                      "stddev": 50.489539422065434
+                    },
+                    "queries": 120,
+                    "rows_returned": 855,
+                    "unsupported": 0
+                  },
+                  "prefix": {
+                    "latency_us": {
+                      "cv": 0.0,
+                      "max": null,
+                      "mean": null,
+                      "min": null,
+                      "n": 0,
+                      "p50": null,
+                      "p95": null,
+                      "p99": null,
+                      "stddev": 0.0
+                    },
+                    "queries": 40,
+                    "rows_returned": 0,
+                    "unsupported": 40
+                  },
+                  "production_search_nodes_common_subset": {
+                    "latency_us": {
+                      "cv": 0.03195499422205246,
+                      "max": 231.9,
+                      "mean": 225.70866666666666,
+                      "min": 217.789,
+                      "n": 3,
+                      "p50": 227.437,
+                      "p95": 231.9,
+                      "p99": 231.9,
+                      "stddev": 7.212519139200498
+                    },
+                    "queries": 1,
+                    "rows_returned": 18,
+                    "unsupported": 0
+                  },
+                  "repeated": {
+                    "latency_us": {
+                      "cv": 0.23673928992002144,
+                      "max": 245.431,
+                      "mean": 93.468638,
+                      "min": 78.839,
+                      "n": 500,
+                      "p50": 84.781,
+                      "p95": 140.554,
+                      "p99": 168.318,
+                      "stddev": 22.127698989911533
+                    },
+                    "queries_per_sec": 10691.283875226045,
+                    "runs": 500
+                  },
+                  "single_exact_name": {
+                    "latency_us": {
+                      "cv": 0.16912523707581684,
+                      "max": 170.844,
+                      "mean": 96.79701666666664,
+                      "min": 81.22800000000001,
+                      "n": 120,
+                      "p50": 92.14699999999999,
+                      "p95": 131.154,
+                      "p99": 150.69,
+                      "stddev": 16.37081839198179
+                    },
+                    "queries": 40,
+                    "rows_returned": 432,
+                    "unsupported": 0
+                  }
+                },
+                "steady_state": {
+                  "peak_rss_kib": 30820,
+                  "rss_kib": 30820
+                }
+              }
+            }
+          ]
+        },
+        "startup-cold-cache": {
+          "libsql-fts5": [
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11428,
+                "rss_kib": 11428
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6948,
+                "rss_kib": 6948
+              },
+              "memory_end": {
+                "peak_rss_kib": 14332,
+                "rss_kib": 13948
+              },
+              "result": {
+                "first_query_ms": 0.180869,
+                "open_ms": 0.435647,
+                "second_query_ms": 0.041901
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11360,
+                "rss_kib": 11360
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6948,
+                "rss_kib": 6948
+              },
+              "memory_end": {
+                "peak_rss_kib": 14352,
+                "rss_kib": 14096
+              },
+              "result": {
+                "first_query_ms": 0.179948,
+                "open_ms": 0.458747,
+                "second_query_ms": 0.037996
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11340,
+                "rss_kib": 11340
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6876,
+                "rss_kib": 6808
+              },
+              "memory_end": {
+                "peak_rss_kib": 14268,
+                "rss_kib": 13888
+              },
+              "result": {
+                "first_query_ms": 0.178457,
+                "open_ms": 0.453936,
+                "second_query_ms": 0.040722
+              }
+            }
+          ],
+          "turso-tantivy": [
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11500,
+                "rss_kib": 11500
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6896,
+                "rss_kib": 6896
+              },
+              "memory_end": {
+                "peak_rss_kib": 26772,
+                "rss_kib": 23452
+              },
+              "result": {
+                "first_query_ms": 3.2981059999999998,
+                "open_ms": 5.610796000000001,
+                "second_query_ms": 0.39988399999999996
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11376,
+                "rss_kib": 11376
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 7024,
+                "rss_kib": 7024
+              },
+              "memory_end": {
+                "peak_rss_kib": 28480,
+                "rss_kib": 23328
+              },
+              "result": {
+                "first_query_ms": 2.78653,
+                "open_ms": 1.919899,
+                "second_query_ms": 0.471302
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11308,
+                "rss_kib": 11308
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 7028,
+                "rss_kib": 7028
+              },
+              "memory_end": {
+                "peak_rss_kib": 26420,
+                "rss_kib": 23288
+              },
+              "result": {
+                "first_query_ms": 1.476469,
+                "open_ms": 1.7035150000000001,
+                "second_query_ms": 0.159296
+              }
+            }
+          ]
+        },
+        "startup-warm-cache": {
+          "libsql-fts5": [
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11468,
+                "rss_kib": 11468
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6988,
+                "rss_kib": 6924
+              },
+              "memory_end": {
+                "peak_rss_kib": 14316,
+                "rss_kib": 13988
+              },
+              "result": {
+                "first_query_ms": 0.203842,
+                "open_ms": 0.552238,
+                "second_query_ms": 0.03647
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11400,
+                "rss_kib": 11400
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6920,
+                "rss_kib": 6920
+              },
+              "memory_end": {
+                "peak_rss_kib": 14372,
+                "rss_kib": 13940
+              },
+              "result": {
+                "first_query_ms": 0.185969,
+                "open_ms": 0.462915,
+                "second_query_ms": 0.042323
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11372,
+                "rss_kib": 11372
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6888,
+                "rss_kib": 6884
+              },
+              "memory_end": {
+                "peak_rss_kib": 14384,
+                "rss_kib": 13940
+              },
+              "result": {
+                "first_query_ms": 0.181371,
+                "open_ms": 0.466808,
+                "second_query_ms": 0.040082
+              }
+            }
+          ],
+          "turso-tantivy": [
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11424,
+                "rss_kib": 11424
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6944,
+                "rss_kib": 6944
+              },
+              "memory_end": {
+                "peak_rss_kib": 28588,
+                "rss_kib": 23436
+              },
+              "result": {
+                "first_query_ms": 2.463618,
+                "open_ms": 1.544955,
+                "second_query_ms": 0.260146
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11424,
+                "rss_kib": 11424
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6944,
+                "rss_kib": 6944
+              },
+              "memory_end": {
+                "peak_rss_kib": 26824,
+                "rss_kib": 23500
+              },
+              "result": {
+                "first_query_ms": 3.191585,
+                "open_ms": 2.032036,
+                "second_query_ms": 0.30962
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11496,
+                "rss_kib": 11496
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6880,
+                "rss_kib": 6880
+              },
+              "memory_end": {
+                "peak_rss_kib": 26660,
+                "rss_kib": 23444
+              },
+              "result": {
+                "first_query_ms": 1.500853,
+                "open_ms": 0.9460529999999999,
+                "second_query_ms": 0.167156
+              }
+            }
+          ]
+        },
+        "update": {
+          "libsql-fts5": [
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11344,
+                "rss_kib": 11344
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6928,
+                "rss_kib": 6928
+              },
+              "memory_end": {
+                "peak_rss_kib": 21172,
+                "rss_kib": 20556
+              },
+              "result": {
+                "disk_bytes_after_updates": 4431872,
+                "exact_name_after_optimize_latency_us": {
+                  "cv": 2.4702202240649602,
+                  "max": 2585.1479999999997,
+                  "mean": 162.76215,
+                  "min": 24.12,
+                  "n": 40,
+                  "p50": 65.529,
+                  "p95": 285.17100000000005,
+                  "p99": 2585.1479999999997,
+                  "stddev": 402.05835464229466
+                },
+                "exact_name_after_updates_latency_us": {
+                  "cv": 2.0122879551363493,
+                  "max": 3149.5719999999997,
+                  "mean": 249.92040000000003,
+                  "min": 35.062,
+                  "n": 40,
+                  "p50": 115.696,
+                  "p95": 503.636,
+                  "p99": 3149.5719999999997,
+                  "stddev": 502.91181066285856
+                },
+                "file_deletes": {
+                  "check_deleted_not_found": "12/12",
+                  "latency_ms": {
+                    "cv": 0.586381894480859,
+                    "max": 2.389011,
+                    "mean": 1.0489528499999998,
+                    "min": 0.49779200000000007,
+                    "n": 20,
+                    "p50": 0.87575,
+                    "p95": 2.3390899999999997,
+                    "p99": 2.389011,
+                    "stddev": 0.6150869594040962
+                  },
+                  "nodes_deleted": 186,
+                  "transactions": 20
+                },
+                "file_edits": {
+                  "check_added_symbols_found": "50/50",
+                  "check_renamed_found": "20/20",
+                  "latency_ms": {
+                    "cv": 0.7627813951849779,
+                    "max": 12.435882000000001,
+                    "mean": 3.497886060000001,
+                    "min": 0.9382699999999999,
+                    "n": 50,
+                    "p50": 2.440778,
+                    "p95": 9.342539,
+                    "p99": 12.435882000000001,
+                    "stddev": 2.668122409044886
+                  },
+                  "rows_per_sec": 10804.571012682829,
+                  "rows_written": 1890,
+                  "transactions": 50
+                },
+                "optimize_nodes_fts_ms": 3.3920220000000003,
+                "row_updates": {
+                  "check_new_text_found": "20/20",
+                  "latency_ms": {
+                    "cv": 0.909435281751921,
+                    "max": 0.639033,
+                    "mean": 0.07765054166666666,
+                    "min": 0.041047999999999994,
+                    "n": 96,
+                    "p50": 0.059313,
+                    "p95": 0.20105599999999998,
+                    "p99": 0.639033,
+                    "stddev": 0.07061814223881427
+                  },
+                  "updates": 96
+                }
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11484,
+                "rss_kib": 11484
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6876,
+                "rss_kib": 6876
+              },
+              "memory_end": {
+                "peak_rss_kib": 21316,
+                "rss_kib": 20776
+              },
+              "result": {
+                "disk_bytes_after_updates": 4431872,
+                "exact_name_after_optimize_latency_us": {
+                  "cv": 2.206991869866533,
+                  "max": 1233.546,
+                  "mean": 87.69652500000002,
+                  "min": 17.268,
+                  "n": 40,
+                  "p50": 38.64,
+                  "p95": 190.17000000000002,
+                  "p99": 1233.546,
+                  "stddev": 193.5455176905472
+                },
+                "exact_name_after_updates_latency_us": {
+                  "cv": 1.8839376205313847,
+                  "max": 1671.721,
+                  "mean": 136.18962500000004,
+                  "min": 31.724999999999998,
+                  "n": 40,
+                  "p50": 74.126,
+                  "p95": 217.837,
+                  "p99": 1671.721,
+                  "stddev": 256.57275806356165
+                },
+                "file_deletes": {
+                  "check_deleted_not_found": "12/12",
+                  "latency_ms": {
+                    "cv": 0.8701965214207407,
+                    "max": 4.208984,
+                    "mean": 1.1560606999999998,
+                    "min": 0.416956,
+                    "n": 20,
+                    "p50": 0.78385,
+                    "p95": 3.0573,
+                    "p99": 4.208984,
+                    "stddev": 1.0059999996912263
+                  },
+                  "nodes_deleted": 186,
+                  "transactions": 20
+                },
+                "file_edits": {
+                  "check_added_symbols_found": "50/50",
+                  "check_renamed_found": "20/20",
+                  "latency_ms": {
+                    "cv": 0.7932491429438012,
+                    "max": 6.776423,
+                    "mean": 1.7908905199999998,
+                    "min": 0.665384,
+                    "n": 50,
+                    "p50": 1.101409,
+                    "p95": 4.414985,
+                    "p99": 6.776423,
+                    "stddev": 1.4206223700961784
+                  },
+                  "rows_per_sec": 21103.199805609383,
+                  "rows_written": 1890,
+                  "transactions": 50
+                },
+                "optimize_nodes_fts_ms": 2.287857,
+                "row_updates": {
+                  "check_new_text_found": "20/20",
+                  "latency_ms": {
+                    "cv": 0.998460605081462,
+                    "max": 0.5680970000000001,
+                    "mean": 0.05834580208333332,
+                    "min": 0.033609,
+                    "n": 96,
+                    "p50": 0.043892,
+                    "p95": 0.129192,
+                    "p99": 0.5680970000000001,
+                    "stddev": 0.05825598485208821
+                  },
+                  "updates": 96
+                }
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11440,
+                "rss_kib": 11440
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6960,
+                "rss_kib": 6960
+              },
+              "memory_end": {
+                "peak_rss_kib": 21176,
+                "rss_kib": 20684
+              },
+              "result": {
+                "disk_bytes_after_updates": 4431872,
+                "exact_name_after_optimize_latency_us": {
+                  "cv": 2.8328301848145045,
+                  "max": 2230.201,
+                  "mean": 122.91139999999999,
+                  "min": 25.428,
+                  "n": 40,
+                  "p50": 37.669999999999995,
+                  "p95": 232.98899999999998,
+                  "p99": 2230.201,
+                  "stddev": 348.18712397780945
+                },
+                "exact_name_after_updates_latency_us": {
+                  "cv": 2.331844430361312,
+                  "max": 2419.571,
+                  "mean": 160.10809999999998,
+                  "min": 42.449,
+                  "n": 40,
+                  "p50": 70.363,
+                  "p95": 276.624,
+                  "p99": 2419.571,
+                  "stddev": 373.34718124073197
+                },
+                "file_deletes": {
+                  "check_deleted_not_found": "12/12",
+                  "latency_ms": {
+                    "cv": 0.6911287442441165,
+                    "max": 2.359401,
+                    "mean": 0.7753059999999998,
+                    "min": 0.37704699999999997,
+                    "n": 20,
+                    "p50": 0.547659,
+                    "p95": 1.909559,
+                    "p99": 2.359401,
+                    "stddev": 0.5358362621849289
+                  },
+                  "nodes_deleted": 186,
+                  "transactions": 20
+                },
+                "file_edits": {
+                  "check_added_symbols_found": "50/50",
+                  "check_renamed_found": "20/20",
+                  "latency_ms": {
+                    "cv": 0.780144704908397,
+                    "max": 5.975842,
+                    "mean": 1.8078731800000003,
+                    "min": 0.6785880000000001,
+                    "n": 50,
+                    "p50": 1.118874,
+                    "p95": 4.987723,
+                    "p99": 5.975842,
+                    "stddev": 1.4104026885229055
+                  },
+                  "rows_per_sec": 20905.19979680146,
+                  "rows_written": 1890,
+                  "transactions": 50
+                },
+                "optimize_nodes_fts_ms": 3.463896,
+                "row_updates": {
+                  "check_new_text_found": "20/20",
+                  "latency_ms": {
+                    "cv": 1.0525832045677366,
+                    "max": 0.539164,
+                    "mean": 0.05254124999999998,
+                    "min": 0.033505,
+                    "n": 96,
+                    "p50": 0.040827,
+                    "p95": 0.116927,
+                    "p99": 0.539164,
+                    "stddev": 0.05530403729699457
+                  },
+                  "updates": 96
+                }
+              }
+            }
+          ],
+          "turso-tantivy": [
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11380,
+                "rss_kib": 11380
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6904,
+                "rss_kib": 6904
+              },
+              "memory_end": {
+                "peak_rss_kib": 52788,
+                "rss_kib": 46412
+              },
+              "result": {
+                "disk_bytes_after_updates": 4505600,
+                "exact_name_after_optimize_latency_us": {
+                  "cv": 0.5723197526945274,
+                  "max": 1126.317,
+                  "mean": 288.97897499999993,
+                  "min": 179.712,
+                  "n": 40,
+                  "p50": 230.851,
+                  "p95": 518.733,
+                  "p99": 1126.317,
+                  "stddev": 165.38837550591796
+                },
+                "exact_name_after_updates_latency_us": {
+                  "cv": 0.15711255691418632,
+                  "max": 1063.885,
+                  "mean": 830.8599999999999,
+                  "min": 632.546,
+                  "n": 40,
+                  "p50": 785.22,
+                  "p95": 1038.5240000000001,
+                  "p99": 1063.885,
+                  "stddev": 130.53853903772082
+                },
+                "file_deletes": {
+                  "check_deleted_not_found": "12/12",
+                  "latency_ms": {
+                    "cv": 0.4653125785461678,
+                    "max": 4.904823,
+                    "mean": 2.3304354500000004,
+                    "min": 1.241428,
+                    "n": 20,
+                    "p50": 1.6038890000000001,
+                    "p95": 4.47499,
+                    "p99": 4.904823,
+                    "stddev": 1.084380928374899
+                  },
+                  "nodes_deleted": 186,
+                  "transactions": 20
+                },
+                "file_edits": {
+                  "check_added_symbols_found": "50/50",
+                  "check_renamed_found": "20/20",
+                  "latency_ms": {
+                    "cv": 1.2165107761453187,
+                    "max": 745.5384280000001,
+                    "mean": 105.30360299999997,
+                    "min": 5.692267,
+                    "n": 50,
+                    "p50": 61.097762,
+                    "p95": 310.943613,
+                    "p99": 745.5384280000001,
+                    "stddev": 128.10296781642847
+                  },
+                  "rows_per_sec": 358.96008715763634,
+                  "rows_written": 1890,
+                  "transactions": 50
+                },
+                "optimize_nodes_fts_ms": 49.030953000000004,
+                "row_updates": {
+                  "check_new_text_found": "20/20",
+                  "latency_ms": {
+                    "cv": 0.5004260014892662,
+                    "max": 29.938289,
+                    "mean": 10.023359906249999,
+                    "min": 4.781747,
+                    "n": 96,
+                    "p50": 8.772253000000001,
+                    "p95": 17.712335,
+                    "p99": 29.938289,
+                    "stddev": 5.015949919372513
+                  },
+                  "updates": 96
+                }
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11472,
+                "rss_kib": 11472
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6992,
+                "rss_kib": 6992
+              },
+              "memory_end": {
+                "peak_rss_kib": 53032,
+                "rss_kib": 46552
+              },
+              "result": {
+                "disk_bytes_after_updates": 4489216,
+                "exact_name_after_optimize_latency_us": {
+                  "cv": 0.49398606752570556,
+                  "max": 495.32099999999997,
+                  "mean": 127.52569999999999,
+                  "min": 94.855,
+                  "n": 40,
+                  "p50": 110.584,
+                  "p95": 166.61200000000002,
+                  "p99": 495.32099999999997,
+                  "stddev": 62.99591905146286
+                },
+                "exact_name_after_updates_latency_us": {
+                  "cv": 0.25457141339625217,
+                  "max": 1075.407,
+                  "mean": 646.664625,
+                  "min": 486.803,
+                  "n": 40,
+                  "p50": 577.981,
+                  "p95": 969.294,
+                  "p99": 1075.407,
+                  "stddev": 164.6223275796074
+                },
+                "file_deletes": {
+                  "check_deleted_not_found": "12/12",
+                  "latency_ms": {
+                    "cv": 0.46167257837312786,
+                    "max": 3.596422,
+                    "mean": 1.9245821500000002,
+                    "min": 0.873269,
+                    "n": 20,
+                    "p50": 1.7761280000000002,
+                    "p95": 3.572465,
+                    "p99": 3.596422,
+                    "stddev": 0.888526803481398
+                  },
+                  "nodes_deleted": 186,
+                  "transactions": 20
+                },
+                "file_edits": {
+                  "check_added_symbols_found": "50/50",
+                  "check_renamed_found": "20/20",
+                  "latency_ms": {
+                    "cv": 1.4934199239728632,
+                    "max": 1359.783766,
+                    "mean": 147.75243884,
+                    "min": 8.041675999999999,
+                    "n": 50,
+                    "p50": 70.506131,
+                    "p95": 503.31106800000003,
+                    "p99": 1359.783766,
+                    "stddev": 220.6564359792379
+                  },
+                  "rows_per_sec": 255.83187783719754,
+                  "rows_written": 1890,
+                  "transactions": 50
+                },
+                "optimize_nodes_fts_ms": 22.439718,
+                "row_updates": {
+                  "check_new_text_found": "20/20",
+                  "latency_ms": {
+                    "cv": 0.36826713798379185,
+                    "max": 16.084228,
+                    "mean": 4.873839625000001,
+                    "min": 3.48554,
+                    "n": 96,
+                    "p50": 4.368914,
+                    "p95": 7.189045,
+                    "p99": 16.084228,
+                    "stddev": 1.7948749696907478
+                  },
+                  "updates": 96
+                }
+              }
+            },
+            {
+              "memory_after_corpus_load": {
+                "peak_rss_kib": 11236,
+                "rss_kib": 11236
+              },
+              "memory_baseline": {
+                "peak_rss_kib": 6820,
+                "rss_kib": 6820
+              },
+              "memory_end": {
+                "peak_rss_kib": 44600,
+                "rss_kib": 32020
+              },
+              "result": {
+                "disk_bytes_after_updates": 4489216,
+                "exact_name_after_optimize_latency_us": {
+                  "cv": 1.3526395648484009,
+                  "max": 2898.2000000000003,
+                  "mean": 344.43017499999996,
+                  "min": 115.115,
+                  "n": 40,
+                  "p50": 227.593,
+                  "p95": 819.497,
+                  "p99": 2898.2000000000003,
+                  "stddev": 465.8898820326585
+                },
+                "exact_name_after_updates_latency_us": {
+                  "cv": 0.0917352811369056,
+                  "max": 783.1360000000001,
+                  "mean": 611.17185,
+                  "min": 548.3629999999999,
+                  "n": 40,
+                  "p50": 589.705,
+                  "p95": 726.8059999999999,
+                  "p99": 783.1360000000001,
+                  "stddev": 56.06602148271269
+                },
+                "file_deletes": {
+                  "check_deleted_not_found": "12/12",
+                  "latency_ms": {
+                    "cv": 0.3993197026454108,
+                    "max": 3.479559,
+                    "mean": 2.0583523999999995,
+                    "min": 1.080214,
+                    "n": 20,
+                    "p50": 1.671597,
+                    "p95": 3.478004,
+                    "p99": 3.479559,
+                    "stddev": 0.8219406683074675
+                  },
+                  "nodes_deleted": 186,
+                  "transactions": 20
+                },
+                "file_edits": {
+                  "check_added_symbols_found": "50/50",
+                  "check_renamed_found": "20/20",
+                  "latency_ms": {
+                    "cv": 1.290354952451404,
+                    "max": 642.099767,
+                    "mean": 104.34406773999997,
+                    "min": 5.422688999999999,
+                    "n": 50,
+                    "p50": 54.86352,
+                    "p95": 440.386068,
+                    "p99": 642.099767,
+                    "stddev": 134.64088456723374
+                  },
+                  "rows_per_sec": 362.2612250444323,
+                  "rows_written": 1890,
+                  "transactions": 50
+                },
+                "optimize_nodes_fts_ms": 29.234571000000003,
+                "row_updates": {
+                  "check_new_text_found": "20/20",
+                  "latency_ms": {
+                    "cv": 0.537265887467646,
+                    "max": 27.533733,
+                    "mean": 8.086613427083332,
+                    "min": 5.08691,
+                    "n": 96,
+                    "p50": 6.604855,
+                    "p95": 19.012978,
+                    "p99": 27.533733,
+                    "stddev": 4.344661539509709
+                  },
+                  "updates": 96
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "environment": {
+    "allocator": "system",
+    "build_profile": "release",
+    "cpu_model": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+    "kernel": "6.18.33.2-microsoft-standard-WSL2",
+    "libsql": "0.9.30",
+    "logical_cpus": 8,
+    "mem_available_kib": 6070248,
+    "mem_total_kib": 7970432,
+    "os": "Ubuntu 26.04.1 LTS",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "sqlite_bundled": "3.45.1 (vendored libsql, FTS5 enabled)",
+    "tantivy": "0.26.2",
+    "tokio_runtime": "multi_thread (default worker count)",
+    "turso": "0.8.3",
+    "turso_core": "0.8.3"
+  },
+  "measured_passes_per_query": 3,
+  "repetitions": 3,
+  "seed": 123239349612405
+}

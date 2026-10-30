@@ -1,0 +1,165 @@
+number,scenario,adapter,class,got,reason
+1,exact_symbol,libsql-fts5,pass,[parse_config],
+1,exact_symbol,turso-tantivy,pass,[parse_config],
+1,exact_symbol,turso-tantivy-simple,pass,[parse_config],
+1,exact_symbol,turso-tantivy-ngram,pass,[parse_config],
+2,partial_symbol,libsql-fts5,pass,[update_cloud],
+2,partial_symbol,turso-tantivy,pass,[update_cloud],
+2,partial_symbol,turso-tantivy-simple,configurable,[],the 'simple' tokenizer does not lowercase
+2,partial_symbol,turso-tantivy-ngram,pass,[update_cloud],
+3,prefix_single,libsql-fts5,pass,"[parser_file,parser_state,parsing_doc,parse_config]",
+3,prefix_single,turso-tantivy,unsupported,,"single-token prefix query: Tantivy's query parser accepts ""a b""* (phrase prefix, >= 2 tokens) only; ""a""* is a parse error and a* silently matches nothing"
+3,prefix_single,turso-tantivy-simple,unsupported,,"single-token prefix query: Tantivy's query parser accepts ""a b""* (phrase prefix, >= 2 tokens) only; ""a""* is a parse error and a* silently matches nothing"
+3,prefix_single,turso-tantivy-ngram,approximation,"[parser_state,parser_file,sparse_matrix,parse_config,parsing_doc]","n-gram index matches substrings, a superset of prefix matches"
+3b,prefix_phrase,libsql-fts5,pass,[data_api],
+3b,prefix_phrase,turso-tantivy,pass,[data_api],
+3b,prefix_phrase,turso-tantivy-simple,pass,[data_api],
+3b,prefix_phrase,turso-tantivy-ngram,pass,[data_api],
+4,qualified_name,libsql-fts5,pass,[parse_config],
+4,qualified_name,turso-tantivy,pass,[parse_config],
+4,qualified_name,turso-tantivy-simple,pass,[parse_config],
+4,qualified_name,turso-tantivy-ngram,pass,[parse_config],
+5,signature,libsql-fts5,pass,[run_query],
+5,signature,turso-tantivy,pass,[run_query],
+5,signature,turso-tantivy-simple,pass,[run_query],
+5,signature,turso-tantivy-ngram,pass,[run_query],
+6,nl_doc,libsql-fts5,pass,"[parse_config,long_ident]",
+6,nl_doc,turso-tantivy,pass,"[long_ident,parse_config]",
+6,nl_doc,turso-tantivy-simple,pass,"[parse_config,long_ident]",
+6,nl_doc,turso-tantivy-ngram,pass,"[long_ident,parse_config]",
+6b,nl_doc_stemmed,libsql-fts5,pass,"[runs,run_loop,run_query,parser_state]",
+6b,nl_doc_stemmed,turso-tantivy,expected-semantic,[parser_state],no stemming tokenizer is available (FTS5 uses porter)
+6b,nl_doc_stemmed,turso-tantivy-simple,expected-semantic,[parser_state],no stemming tokenizer is available (FTS5 uses porter)
+6b,nl_doc_stemmed,turso-tantivy-ngram,expected-semantic,[parser_state],no stemming tokenizer is available (FTS5 uses porter)
+7,phrase,libsql-fts5,pass,"[data_api,run_query]",
+7,phrase,turso-tantivy,pass,"[run_query,data_api]",
+7,phrase,turso-tantivy-simple,pass,"[run_query,data_api]",
+7,phrase,turso-tantivy-ngram,pass,"[run_query,data_api]",
+8a,bool_and,libsql-fts5,pass,"[run_query,data_api]",
+8a,bool_and,turso-tantivy,pass,"[run_query,data_api]",
+8a,bool_and,turso-tantivy-simple,pass,"[run_query,data_api]",
+8a,bool_and,turso-tantivy-ngram,pass,"[run_query,data_api]",
+8b,bool_or,libsql-fts5,pass,"[sparse_matrix,update_cloud]",
+8b,bool_or,turso-tantivy,pass,"[sparse_matrix,update_cloud]",
+8b,bool_or,turso-tantivy-simple,configurable,[sparse_matrix],the 'simple' tokenizer does not lowercase
+8b,bool_or,turso-tantivy-ngram,pass,"[sparse_matrix,update_cloud]",
+8c,bool_not,libsql-fts5,pass,[run_query],
+8c,bool_not,turso-tantivy,pass,[run_query],
+8c,bool_not,turso-tantivy-simple,pass,[run_query],
+8c,bool_not,turso-tantivy-ngram,pass,[run_query],
+8d,bool_phrase_prefix,libsql-fts5,pass,"[run_loop,data_api]",
+8d,bool_phrase_prefix,turso-tantivy,pass,"[run_loop,data_api]",
+8d,bool_phrase_prefix,turso-tantivy-simple,pass,"[run_loop,data_api]",
+8d,bool_phrase_prefix,turso-tantivy-ngram,correctness-failure,[data_api],"expected set [""data_api"", ""run_loop""]"
+9a,ident_snake,libsql-fts5,pass,[parse_config],
+9a,ident_snake,turso-tantivy,pass,[parse_config],
+9a,ident_snake,turso-tantivy-simple,pass,[parse_config],
+9a,ident_snake,turso-tantivy-ngram,approximation,"[parse_config,long_ident]","n-gram index matches substrings, a superset of prefix matches"
+9b,ident_camel,libsql-fts5,pass,"[update_cloud,data_api]",
+9b,ident_camel,turso-tantivy,pass,"[update_cloud,data_api]",
+9b,ident_camel,turso-tantivy-simple,pass,"[update_cloud,data_api]",
+9b,ident_camel,turso-tantivy-ngram,pass,"[update_cloud,data_api]",
+9c,ident_digits,libsql-fts5,pass,[utf8_decode],
+9c,ident_digits,turso-tantivy,pass,[utf8_decode],
+9c,ident_digits,turso-tantivy-simple,pass,[utf8_decode],
+9c,ident_digits,turso-tantivy-ngram,pass,[utf8_decode],
+9d,ident_long,libsql-fts5,pass,[long_ident],
+9d,ident_long,turso-tantivy,configurable,[],the 'default' tokenizer drops tokens over 40 bytes; 'simple' keeps them but is case-sensitive
+9d,ident_long,turso-tantivy-simple,pass,[long_ident],
+9d,ident_long,turso-tantivy-ngram,pass,[long_ident],
+10a,case_upper,libsql-fts5,pass,[parse_config],
+10a,case_upper,turso-tantivy,pass,[parse_config],
+10a,case_upper,turso-tantivy-simple,configurable,[],the 'simple' tokenizer does not lowercase
+10a,case_upper,turso-tantivy-ngram,pass,[parse_config],
+10b,case_acronym,libsql-fts5,pass,[http_server],
+10b,case_acronym,turso-tantivy,pass,[http_server],
+10b,case_acronym,turso-tantivy-simple,configurable,[],the 'simple' tokenizer does not lowercase
+10b,case_acronym,turso-tantivy-ngram,pass,[http_server],
+11a,unicode_latin,libsql-fts5,pass,[groesse],
+11a,unicode_latin,turso-tantivy,pass,[groesse],
+11a,unicode_latin,turso-tantivy-simple,pass,[groesse],
+11a,unicode_latin,turso-tantivy-ngram,pass,[groesse],
+11b,unicode_fold,libsql-fts5,pass,"[cafe_menu,groesse]",
+11b,unicode_fold,turso-tantivy,expected-semantic,[],no diacritic folding (FTS5 unicode61 remove_diacritics=1)
+11b,unicode_fold,turso-tantivy-simple,expected-semantic,[],no diacritic folding (FTS5 unicode61 remove_diacritics=1)
+11b,unicode_fold,turso-tantivy-ngram,expected-semantic,[],no diacritic folding (FTS5 unicode61 remove_diacritics=1)
+11c,unicode_cjk,libsql-fts5,pass,[cjk],
+11c,unicode_cjk,turso-tantivy,pass,[cjk],
+11c,unicode_cjk,turso-tantivy-simple,pass,[cjk],
+11c,unicode_cjk,turso-tantivy-ngram,pass,[cjk],
+11d,unicode_cyrillic_case,libsql-fts5,pass,[cyrillic],
+11d,unicode_cyrillic_case,turso-tantivy,pass,[cyrillic],
+11d,unicode_cyrillic_case,turso-tantivy-simple,configurable,[],the 'simple' tokenizer does not lowercase
+11d,unicode_cyrillic_case,turso-tantivy-ngram,pass,[cyrillic],
+12,update,libsql-fts5,pass,"[sparse=[],dense=[sparse_matrix]]",
+12,update,turso-tantivy,pass,"[sparse=[],dense=[sparse_matrix]]",
+12,update,turso-tantivy-simple,pass,"[sparse=[],dense=[sparse_matrix]]",
+12,update,turso-tantivy-ngram,pass,"[sparse=[],dense=[sparse_matrix]]",
+13,delete,libsql-fts5,pass,"[before=[utf8_decode],after=[]]",
+13,delete,turso-tantivy,pass,"[before=[utf8_decode],after=[]]",
+13,delete,turso-tantivy-simple,pass,"[before=[utf8_decode],after=[]]",
+13,delete,turso-tantivy-ngram,pass,"[before=[utf8_decode],after=[]]",
+14,after_commit,libsql-fts5,pass,"[writer=[fresh],reader=[fresh]]",
+14,after_commit,turso-tantivy,pass,"[writer=[fresh],reader=[fresh]]",
+14,after_commit,turso-tantivy-simple,pass,"[writer=[fresh],reader=[fresh]]",
+14,after_commit,turso-tantivy-ngram,pass,"[writer=[fresh],reader=[fresh]]",
+15,uncommitted,libsql-fts5,pass,"[writer=[pending],reader=[],after_rollback=[]]",
+15,uncommitted,turso-tantivy,pass,"[writer=[pending],reader=[],after_rollback=[]]",
+15,uncommitted,turso-tantivy-simple,pass,"[writer=[pending],reader=[],after_rollback=[]]",
+15,uncommitted,turso-tantivy-ngram,pass,"[writer=[pending],reader=[],after_rollback=[]]",
+16,weighting,libsql-fts5,pass,"[run_loop,drain_events]",
+16,weighting,turso-tantivy,pass,"[run_loop,drain_events]",
+16,weighting,turso-tantivy-simple,pass,"[run_loop,drain_events]",
+16,weighting,turso-tantivy-ngram,pass,"[run_loop,drain_events]",
+17,contract,libsql-fts5,pass,[contract=ok],
+17,contract,turso-tantivy,pass,[contract=ok],
+17,contract,turso-tantivy-simple,pass,[contract=ok],
+17,contract,turso-tantivy-ngram,pass,[contract=ok],
+18,bounded_exclude,libsql-fts5,pass,[parser_state],
+18,bounded_exclude,turso-tantivy,pass,[parser_state],
+18,bounded_exclude,turso-tantivy-simple,pass,[parser_state],
+18,bounded_exclude,turso-tantivy-ngram,pass,[parser_state],
+19,production_search,libsql-fts5,pass,"[parse_config,long_ident,parser_file,parser_state,parsing_doc]",
+19,production_search,turso-tantivy,unsupported,,"single-token prefix query: Tantivy's query parser accepts ""a b""* (phrase prefix, >= 2 tokens) only; ""a""* is a parse error and a* silently matches nothing"
+19,production_search,turso-tantivy-simple,unsupported,,"single-token prefix query: Tantivy's query parser accepts ""a b""* (phrase prefix, >= 2 tokens) only; ""a""* is a parse error and a* silently matches nothing"
+19,production_search,turso-tantivy-ngram,pass,"[parse_config,parser_state,long_ident,parser_file,sparse_matrix]",
+20,column_filter,libsql-fts5,pass,"[parsing_doc,parse_config]",
+20,column_filter,turso-tantivy,expected-semantic,[parse_config],no stemming tokenizer is available (FTS5 uses porter)
+20,column_filter,turso-tantivy-simple,expected-semantic,[parse_config],no stemming tokenizer is available (FTS5 uses porter)
+20,column_filter,turso-tantivy-ngram,approximation,"[parser_file,parser_state,parse_config,sparse_matrix]",no stemming (misses Parsing) and substring matching (adds every name containing 'parse')
+21a,recall_production_shape,libsql-fts5,pass,"[2,7]",
+21a,recall_production_shape,turso-tantivy,correctness-failure,"[2,1]","expected ordered [""2"", ""7""]"
+21a,recall_production_shape,turso-tantivy-simple,correctness-failure,"[2,1]","expected ordered [""2"", ""7""]"
+21a,recall_production_shape,turso-tantivy-ngram,correctness-failure,"[2,1]","expected ordered [""2"", ""7""]"
+21b,recall_adapted,libsql-fts5,pass,"[2,7]",
+21b,recall_adapted,turso-tantivy,pass,"[2,7]",
+21b,recall_adapted,turso-tantivy-simple,pass,"[2,7]",
+21b,recall_adapted,turso-tantivy-ngram,pass,"[2,7]",
+21c,recall_since,libsql-fts5,pass,"[2,7,5]",
+21c,recall_since,turso-tantivy,pass,"[2,7,5]",
+21c,recall_since,turso-tantivy-simple,pass,"[2,7,5]",
+21c,recall_since,turso-tantivy-ngram,pass,"[2,7,5]",
+22a,body_prefix_pairs,libsql-fts5,pass,[b_precond],
+22a,body_prefix_pairs,turso-tantivy,unsupported,,"single-token prefix query: Tantivy's query parser accepts ""a b""* (phrase prefix, >= 2 tokens) only; ""a""* is a parse error and a* silently matches nothing"
+22a,body_prefix_pairs,turso-tantivy-simple,unsupported,,"single-token prefix query: Tantivy's query parser accepts ""a b""* (phrase prefix, >= 2 tokens) only; ""a""* is a parse error and a* silently matches nothing"
+22a,body_prefix_pairs,turso-tantivy-ngram,pass,[b_precond],
+22b,body_exact_pairs,libsql-fts5,pass,[b_precond],
+22b,body_exact_pairs,turso-tantivy,pass,[b_precond],
+22b,body_exact_pairs,turso-tantivy-simple,pass,[b_precond],
+22b,body_exact_pairs,turso-tantivy-ngram,pass,[b_precond],
+23,incremental_path,libsql-fts5,pass,[parse_config],
+23,incremental_path,turso-tantivy,pass,[parse_config],
+23,incremental_path,turso-tantivy-simple,pass,[parse_config],
+23,incremental_path,turso-tantivy-ngram,pass,[parse_config],
+24,reopen,libsql-fts5,pass,[parse_config],
+24,reopen,turso-tantivy,pass,[parse_config],
+24,reopen,turso-tantivy-simple,pass,[parse_config],
+24,reopen,turso-tantivy-ngram,pass,[parse_config],
+25,planner_guard,libsql-fts5,n/a,,turso-only check
+25,planner_guard,turso-tantivy,hazard,,"no IndexMethodQuery in plan for: SELECT id, fts_score(name, ?1) FROM nodes WHERE fts_match(name, ?1); unguarded statement returned []"
+25,planner_guard,turso-tantivy-simple,hazard,,"no IndexMethodQuery in plan for: SELECT id, fts_score(name, ?1) FROM nodes WHERE fts_match(name, ?1); unguarded statement returned []"
+25,planner_guard,turso-tantivy-ngram,hazard,,"no IndexMethodQuery in plan for: SELECT id, fts_score(name, ?1) FROM nodes WHERE fts_match(name, ?1); unguarded statement returned []"
+26,stem_tokenizer,libsql-fts5,n/a,,turso-only check
+26,stem_tokenizer,turso-tantivy,unsupported,,"Parse error: unsupported FTS tokenizer 'en_stem'. Supported tokenizers: default, raw, simple, whitespace, ngram"
+26,stem_tokenizer,turso-tantivy-simple,unsupported,,"Parse error: unsupported FTS tokenizer 'en_stem'. Supported tokenizers: default, raw, simple, whitespace, ngram"
+26,stem_tokenizer,turso-tantivy-ngram,unsupported,,"Parse error: unsupported FTS tokenizer 'en_stem'. Supported tokenizers: default, raw, simple, whitespace, ngram"
