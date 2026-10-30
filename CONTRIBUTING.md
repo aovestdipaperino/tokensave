@@ -210,7 +210,7 @@ cargo test --locked test_find_stale_files
 cargo test --locked sync
 
 # Faster local loop: only the 11 lite-tier languages (language tests for the
-# other tiers are compiled out). CI still runs the full feature set.
+# other tiers are compiled out). CI runs the full set and also this lite run.
 cargo test-lite
 ```
 

@@ -1,15 +1,19 @@
 name: Release (Beta)
 
-# Beta channel is DISABLED as of 6.0.0.
+# Beta channel is DISABLED as of 6.0.0; beta now installs from the `beta`
+# branch and publishes no release assets.
 #
 # The workflow code is intentionally preserved so the beta channel can be
 # revived later by:
 #   1. Reverting this `on:` block to the previous `release: [published]`
 #      trigger.
-#   2. Removing the `BETA_CHANNEL_ENABLED` guard from every job (`if:`).
+#   2. Setting the repository variable BETA_CHANNEL_ENABLED to `true`
+#      (Settings > Secrets and variables > Actions > Variables), or removing
+#      the guard from every job's `if:`.
 #
-# While the guard is `false`, the workflow can still be exercised
-# manually via `workflow_dispatch` for debugging — the jobs simply skip.
+# The guard reads `vars`, not `env`: the `env` context is not available in
+# a job-level `if:`, and using it made GitHub reject the whole file. While
+# the variable is unset, a manual `workflow_dispatch` run skips every job.
 on:
   workflow_dispatch:
 
@@ -20,14 +24,11 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Single toggle that gates every job in this workflow. Flip to `true`
-  # (or remove the guard from each `if:` line below) to re-enable.
-  BETA_CHANNEL_ENABLED: 'false'
 
 jobs:
   build:
     name: Build ${{ matrix.name }}
-    if: env.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease
+    if: vars.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -140,7 +141,7 @@ jobs:
   # upgrades for it rather than silently skipping verification.
   checksums:
     name: Publish SHA256SUMS
-    if: env.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease
+    if: vars.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -171,7 +172,7 @@ jobs:
     # bottle leaves that sha unset and publishes a formula with an empty hash,
     # which Homebrew then fails to verify.
     if: >-
-      env.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease
+      vars.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease
       && !cancelled() && needs.build.result == 'success'
     needs: build
     runs-on: ubuntu-latest
@@ -264,7 +265,7 @@ jobs:
 
   update-scoop:
     name: Update Scoop bucket (beta)
-    if: env.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease && !cancelled()
+    if: vars.BETA_CHANNEL_ENABLED == 'true' && github.event.release.prerelease && !cancelled()
     needs: build
     runs-on: ubuntu-latest
     steps:

@@ -180,10 +180,10 @@ portable string formats, and documented path-syntax test fixtures.
 
 - Toolchain is pinned by `rust-toolchain.toml` (Rust 1.98.1, clippy + rustfmt).
 - `cargo build` builds the default `full` feature set (50+ languages). For fast dev cycles use `cargo build --no-default-features --features lite` (or `medium`).
-- `cargo test --workspace` is the CI test command. On Windows set `RUST_MIN_STACK=8388608` (CI does this; async-heavy tests overflow the 1 MB MSVC default).
+- `cargo test --workspace --locked --features test-transport` is the CI test command; CI also runs `cargo test --workspace --locked --no-default-features --features lite` and `cargo check --workspace --all-targets --locked --no-default-features --features medium` on Linux. On Windows set `RUST_MIN_STACK=8388608` (CI does this; async-heavy tests overflow the 1 MB MSVC default).
 - `cargo clippy --workspace --all-targets` (CI runs it with `continue-on-error: true`).
 - `cargo fmt --all -- --check`.
-- Pi extension prompt/relay tests: `node --experimental-strip-types --test tests/pi_extension_test.mjs` (Node 22.6+ with TypeScript stripping support; separate from Cargo tests).
+- Pi extension prompt/relay tests: `node --experimental-strip-types --test tests/pi_extension_test.mjs` (Node 22.6+ with TypeScript stripping support; separate from Cargo tests; run by the `Pi extension` CI job).
 - Documentation checks: `python3 scripts/wiki/sync_wiki.py check` (links, anchors, wiki sidebar) and `python3 -m unittest discover -s scripts/wiki`; preview the wiki with `python3 scripts/wiki/sync_wiki.py build --out /tmp/tokensave-wiki`. Run by `.github/workflows/wiki.yml`, separate from Cargo tests.
 - `src/lib.rs` denies `clippy::all`, `clippy::unwrap_used`, and `clippy::expect_used`, and warns on `clippy::pedantic` — avoid `unwrap()`/`expect()` in library code.
 - Language-specific tests: `cargo test --test integration rust_extraction_test::`; single test: `cargo test test_find_stale_files`; filter: `cargo test sync`. Lite-only local loop: `cargo test-lite`.
@@ -263,4 +263,4 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - **Multi-agent work assumes git worktrees.** tokensave detects nested worktrees and serves the correct branch graph; changes accumulate independently and reconcile via merge/rebase.
 - **`codegraph` is a git submodule** (`codegraph/`), not part of the crate.
 - **`test-transport` feature** adds test-only JSON-RPC transport hooks in `src/mcp/`.
-- **Release workflow** builds per-platform binaries and skips beta/prerelease tags (handled by `release-beta.yml`).
+- **Release workflow** builds per-platform binaries with `--locked` on the pinned toolchain and skips beta/prerelease tags. `release-beta.yml` is disabled: its jobs are gated on the `BETA_CHANNEL_ENABLED` repository variable (`vars`, because `env` is not available in a job-level `if:`), and beta installs from the `beta` branch.
