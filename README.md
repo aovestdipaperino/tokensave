@@ -97,8 +97,7 @@ Choose one installation method:
 
 | Platform | Command |
 |---|---|
-| Any platform with Rust | `cargo install tokensave` |
-| Any platform with cargo-binstall | `cargo binstall tokensave` |
+| Any platform (Cargo) | `cargo install tokensave`<br>or, with cargo-binstall, `cargo binstall tokensave` |
 | macOS (Homebrew) | `brew install aovestdipaperino/tap/tokensave` |
 | Windows (Scoop) | `scoop bucket add tokensave https://github.com/aovestdipaperino/scoop-bucket`<br>`scoop install tokensave` |
 
