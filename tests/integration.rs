@@ -18,6 +18,7 @@ mod analysis_stability_test;
 mod artifact_indexing_test;
 mod astro_extraction_test;
 mod augment_agent_test;
+mod auto_init_test;
 mod auto_sync_bound_test;
 mod bare_invocation_stdout_test;
 mod bare_name_reachability_test;

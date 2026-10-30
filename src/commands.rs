@@ -630,7 +630,7 @@ fn announce_benchmark(status: &tokensave::global_benchmark::CacheStatus, forced:
 /// `--cpu-usage` pins one. When the project will follow the global hardware
 /// benchmark, makes sure a valid one is saved, measuring only if none is, so
 /// the next project on this machine reuses it (#752).
-fn prepare_initial_cpu_usage(
+pub(crate) fn prepare_initial_cpu_usage(
     project_path: &Path,
     requested: Option<tokensave::cpu::CpuUsage>,
 ) -> tokensave::errors::Result<Option<tokensave::cpu::CpuUsage>> {
