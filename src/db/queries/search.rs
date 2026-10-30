@@ -520,7 +520,8 @@ impl Database {
     pub fn is_corruption_error(e: &TokenSaveError) -> bool {
         match e {
             TokenSaveError::Database { message, .. } => {
-                message.contains("malformed")
+                message.contains("file is not a database")
+                    || message.contains("malformed")
                     || message.contains("corrupt")
                     || message.contains("disk image")
             }

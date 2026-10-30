@@ -239,17 +239,23 @@ impl<'a> GraphQueryManager<'a> {
         // dead-code detection — which is why the sonium run reported zero
         // dead functions across 5,715. The narrower allowlist below restores
         // the intended semantics: "no real caller / referencer = dead".
-        // Test-marker exclusion uses a THREE-step "resolve + pre-join + probe":
+        // Test-marker exclusion uses a two-step "resolve + filter in SQL":
         //   1) `collect_test_marker_ids` runs the leading-wildcard `LIKE`
         //      scan exactly once over `kind = 'annotation_usage'`.
-        //   2) Those ids land in `temp.test_markers` (PK on `id`).
-        //   3) `temp.test_annotated_targets` is built from
-        //      `edges WHERE kind='annotates' AND source IN temp.test_markers`
-        //      — i.e., "which node ids are annotated by ANY test marker."
-        //      ~15 K rows on chromium.
-        //   4) The dead-code SELECT then uses
-        //      `nodes.id NOT IN (SELECT target FROM temp.test_annotated_targets)`
-        //      — a single PK probe per candidate against a small table.
+        //   2) The marker ids go to the dead-code SELECT as ONE bound
+        //      parameter, a JSON array built with `serde_json`, and the
+        //      SELECT drops test-annotated candidates with
+        //      `id NOT IN (SELECT target FROM edges WHERE kind = 'annotates'
+        //      AND source IN (SELECT value FROM json_each(?)))`.
+        //      The subquery is uncorrelated, so SQLite plans it as a
+        //      `LIST SUBQUERY`: it walks the JSON array once, probes
+        //      `idx_edges_source_kind` per marker, and builds a transient
+        //      in-memory index of the targets that each candidate probes.
+        //      That is the same shape as the old two-temp-table form,
+        //      without writing anything: selected graphs are opened with
+        //      `PRAGMA query_only = 1`, and the transient index is not a
+        //      database write. A single parameter also avoids SQLite's
+        //      bound-parameter limit, so there is no chunking.
         //
         // History — DO NOT regress this:
         // - The pre-4.14.8 form joined `nodes a ON a.id = e2.source` inside
@@ -267,35 +273,31 @@ impl<'a> GraphQueryManager<'a> {
         //   (source, target, kind)` for the subquery and iterated every
         //   marker as the outer driver for every candidate
         //   (~13K markers × ~134K candidates ≈ 1.7B probes). Timed out.
-        // - The current pre-join form (two temp tables, indexed `NOT IN`)
-        //   measures 0.75 s on chromium and 0.6 s on scirs. The
-        //   wildcard scan still runs exactly once per call; the per-row
-        //   probe is now against a ~15K-row indexed lookup table, not a
+        // - The next pre-join form (two temp tables, indexed `NOT IN`)
+        //   measured 0.75 s on chromium and 0.6 s on scirs. The
+        //   wildcard scan ran exactly once per call; the per-row
+        //   probe was against a ~15K-row indexed lookup table, not a
         //   correlated subquery the optimiser can re-shape.
-        let result = self
-            .find_dead_code_inner(visibility_filter, &kind_filter, trait_impl_filter)
-            .await;
-
-        // Always drop both temp tables, even on the error path, so a
-        // failed query does not leak rows to the next caller on the same
-        // connection. Best-effort: a drop failure shouldn't mask the
-        // original error.
-        let _ = self.db.drop_test_annotated_targets_temp_table().await;
-        let _ = self.db.drop_test_marker_temp_table().await;
-        result
-    }
-
-    /// Body of `find_dead_code`. Split out so the caller can wrap us in a
-    /// guaranteed `drop_*_temp_table()` even on the error path.
-    async fn find_dead_code_inner(
-        &self,
-        visibility_filter: &str,
-        kind_filter: &str,
-        trait_impl_filter: &str,
-    ) -> Result<Vec<Node>> {
+        // - The two-temp-table form above wrote `temp.test_markers` and
+        //   `temp.test_annotated_targets`, which fails on selected graphs
+        //   (opened with `PRAGMA query_only = 1`) and let concurrent
+        //   read-only calls on the shared connection drop or refill each
+        //   other's tables.
+        // - The next form collected the targets into an in-memory `HashSet`
+        //   (chunked SELECTs of 500 marker ids) and skipped matching rows
+        //   while reading the main query. It was read-only safe but ~11%
+        //   slower per call: rows SQL used to filter out (~2,200 of ~2,970
+        //   candidates on a 24 K-node project) were read and decoded, then
+        //   discarded. Filtering in SQL with `json_each` restores that.
         let marker_ids = self.db.collect_test_marker_ids().await?;
-        self.db.populate_test_marker_temp_table(&marker_ids).await?;
-        self.db.populate_test_annotated_targets_temp_table().await?;
+        // Always bind the array, even when empty: `NOT IN` over an empty
+        // set is true, so every candidate is kept.
+        let marker_ids_json =
+            serde_json::to_string(&marker_ids).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to encode test marker ids: {e}"),
+                operation: "find_dead_code".to_string(),
+            })?;
+        drop(marker_ids);
         let godot_virtuals = GODOT_ENGINE_VIRTUALS
             .iter()
             .map(|n| format!("'{n}'"))
@@ -330,12 +332,16 @@ impl<'a> GraphQueryManager<'a> {
                  WHERE target = nodes.id
                  AND kind IN ('calls', 'implements', 'extends', 'type_of', 'returns', 'receives', 'uses')
              )
-             AND id NOT IN (SELECT target FROM temp.test_annotated_targets)"
+             AND id NOT IN (
+                 SELECT target FROM edges
+                 WHERE kind = 'annotates'
+                 AND source IN (SELECT value FROM json_each(?1))
+             )"
         );
 
         let mut rows = self
             .db
-            .profiled_query(DbOp::FindDeadCode, &sql, ())
+            .profiled_query(DbOp::FindDeadCode, &sql, libsql::params![marker_ids_json])
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to find dead code: {e}"),
@@ -347,8 +353,7 @@ impl<'a> GraphQueryManager<'a> {
             message: format!("failed to read row: {e}"),
             operation: "find_dead_code".to_string(),
         })? {
-            let node = row_to_node_dead_code(&row)?;
-            dead.push(node);
+            dead.push(row_to_node_dead_code(&row)?);
         }
 
         if dead

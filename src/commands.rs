@@ -22,6 +22,9 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             };
             let current = branch::current_branch(&project_path);
             eprintln!("Default branch: {}", meta.default_branch);
+            if let Some(warning) = branch::default_branch_state(&project_path, &meta).warning() {
+                eprintln!("\x1b[33mwarning:\x1b[0m {warning}");
+            }
             eprintln!();
             for (name, entry) in &meta.branches {
                 let db_path = tokensave_dir.join(&entry.db_file);
@@ -60,12 +63,18 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             // authoritative — on fresh installs as much as old ones. Checked
             // before anything is read or written, so a declined auto-track
             // costs nothing. Silent by design: a hook runs on every checkout
-            // and must not narrate.
+            // and must not narrate, unless `TOKENSAVE_HOOK_DEBUG` asks (#877).
             if if_enabled {
                 let config = tokensave::config::load_config(&project_path).unwrap_or_default();
                 let enabled =
                     tokensave::config::env_bool_override("TOKENSAVE_AUTO_TRACK", config.auto_track);
                 if !enabled {
+                    hook_debug(&project_path, || {
+                        format!(
+                            "branch add --if-enabled: {}",
+                            auto_track_disabled_reason(&project_path, name.as_deref())
+                        )
+                    });
                     return Ok(());
                 }
             }
@@ -88,12 +97,22 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             let _branch_lock =
                 tokensave::tokensave::acquire_branch_operation_lock(&tokensave_dir).await?;
 
-            // Load or bootstrap metadata
-            let mut meta = branch_meta::load_branch_meta(&tokensave_dir).unwrap_or_else(|| {
-                let default = branch::detect_default_branch(&project_path)
-                    .unwrap_or_else(|| "main".to_string());
-                branch_meta::BranchMeta::new(&default)
-            });
+            // Load or bootstrap metadata, detecting the default the same way
+            // `init` does: a hard-coded "main" recorded a branch that does
+            // not exist in a `master` repository (#874).
+            let mut meta = match branch_meta::load_branch_meta(&tokensave_dir) {
+                Some(meta) => meta,
+                None => {
+                    let default = branch::detect_default_branch(&project_path)
+                        .or_else(|| branch::current_branch(&project_path))
+                        .ok_or_else(|| tokensave::errors::TokenSaveError::Config {
+                            message: "cannot detect the default branch (detached HEAD?). \
+                                      Check out the default branch and retry."
+                                .to_string(),
+                        })?;
+                    branch_meta::BranchMeta::new(&default)
+                }
+            };
 
             if meta.is_tracked(&branch_name) {
                 eprintln!("Branch '{branch_name}' is already tracked.");
@@ -206,6 +225,28 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
                 eprintln!("Branch '{name}' is not tracked.");
             }
         }
+        BranchAction::SetDefault { name, path } => {
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
+            let tokensave_dir = get_tokensave_dir(&project_path);
+            match branch::set_default_branch(&project_path, &tokensave_dir, &name).await? {
+                branch::SetDefaultOutcome::Unchanged => {
+                    eprintln!("Branch '{name}' is already the default.");
+                }
+                branch::SetDefaultOutcome::Renamed { previous } => {
+                    eprintln!(
+                        "\x1b[32m✔\x1b[0m Default branch is now '{name}' \
+                         (renamed from '{previous}', index kept)."
+                    );
+                }
+                branch::SetDefaultOutcome::Promoted { previous } => {
+                    eprintln!(
+                        "\x1b[32m✔\x1b[0m Default branch is now '{name}'. \
+                         '{previous}' is an ordinary branch now; run \
+                         `tokensave branch remove {previous}` to delete its index."
+                    );
+                }
+            }
+        }
         BranchAction::Removeall { path } => {
             let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
@@ -263,13 +304,18 @@ pub(crate) async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
     use std::fs;
     use std::path::PathBuf;
 
-    let home_tokensave: Option<PathBuf> = dirs::home_dir().map(|h| h.join(".tokensave"));
+    let home_tokensave: Option<PathBuf> =
+        dirs::home_dir().map(|h| tokensave::config::get_tokensave_dir(&h));
 
     let mut targets = global::gather_target_projects(all, &home_tokensave).await;
     if all {
         // wipe acts on the live `.tokensave/` directory; drop rows whose
         // directory is already gone (they're handled by `tokensave doctor`).
-        targets.retain(|p| p.join(".tokensave").join("tokensave.db").exists());
+        targets.retain(|p| {
+            tokensave::config::get_tokensave_dir(p)
+                .join("tokensave.db")
+                .exists()
+        });
     }
 
     if !all && targets.is_empty() {
@@ -300,11 +346,30 @@ pub(crate) async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
     // own `seen`, and the `--all` branch reads from `projects.path` which is
     // a primary key. No need for a second per-loop dedupe.
     for project_root in &targets {
-        let ts_dir = project_root.join(".tokensave");
+        let ts_dir = tokensave::config::get_tokensave_dir(project_root);
         if !ts_dir.exists() {
             continue;
         }
-        match fs::remove_dir_all(&ts_dir) {
+        let removal = if !tokensave::cloud::is_beta() && ts_dir.join("beta").exists() {
+            // Beta owns this subtree; wiping stable must preserve it.
+            (|| -> std::io::Result<()> {
+                for entry in fs::read_dir(&ts_dir)? {
+                    let entry = entry?;
+                    if entry.file_name() == "beta" {
+                        continue;
+                    }
+                    if entry.file_type()?.is_dir() {
+                        fs::remove_dir_all(entry.path())?;
+                    } else {
+                        fs::remove_file(entry.path())?;
+                    }
+                }
+                Ok(())
+            })()
+        } else {
+            fs::remove_dir_all(&ts_dir)
+        };
+        match removal {
             Ok(()) => {
                 removed += 1;
                 wiped_paths.push(project_root.clone());
@@ -353,7 +418,8 @@ pub(crate) async fn handle_list(all: bool) -> tokensave::errors::Result<()> {
     use std::path::PathBuf;
     use tokensave::display::format_token_count;
 
-    let home_tokensave: Option<PathBuf> = dirs::home_dir().map(|h| h.join(".tokensave"));
+    let home_tokensave: Option<PathBuf> =
+        dirs::home_dir().map(|h| tokensave::config::get_tokensave_dir(&h));
     let project_paths = global::gather_target_projects(all, &home_tokensave).await;
 
     if project_paths.is_empty() {
@@ -371,7 +437,7 @@ pub(crate) async fn handle_list(all: bool) -> tokensave::errors::Result<()> {
     let mut total_tokens: u64 = 0;
 
     for path in &project_paths {
-        let ts_dir = path.join(".tokensave");
+        let ts_dir = tokensave::config::get_tokensave_dir(path);
         let on_disk = ts_dir.exists();
         let size = if on_disk {
             global::tokensave_dir_size(&ts_dir)
@@ -605,7 +671,7 @@ fn announce_benchmark(status: &tokensave::global_benchmark::CacheStatus, forced:
 /// `--cpu-usage` pins one. When the project will follow the global hardware
 /// benchmark, makes sure a valid one is saved, measuring only if none is, so
 /// the next project on this machine reuses it (#752).
-fn prepare_initial_cpu_usage(
+pub(crate) fn prepare_initial_cpu_usage(
     project_path: &Path,
     requested: Option<tokensave::cpu::CpuUsage>,
 ) -> tokensave::errors::Result<Option<tokensave::cpu::CpuUsage>> {
@@ -1472,7 +1538,8 @@ mod skipped_summary_tests {
 /// Tracking always goes through the `auto_track` gate (#397), so the knob
 /// stays authoritative on this path. Silent by design and never fails the
 /// checkout: a hook runs on every branch switch and must neither narrate nor
-/// be able to break `git checkout`.
+/// be able to break `git checkout`. `TOKENSAVE_HOOK_DEBUG` makes it explain
+/// each decision through [`hook_debug`] (#877).
 pub async fn hook_post_checkout(prev_head: Option<&str>, branch_flag: Option<&str>) {
     use tokensave::agents::hooks::{classify_checkout, is_under_temp_dir, CheckoutAction};
 
@@ -1488,6 +1555,9 @@ pub async fn hook_post_checkout(prev_head: Option<&str>, branch_flag: Option<&st
     let canonical_project_path =
         std::fs::canonicalize(&project_path).unwrap_or_else(|_| project_path.clone());
     if is_under_temp_dir(&canonical_project_path, &system_temp) {
+        hook_debug(&project_path, || {
+            "post-checkout: skipped, the project is under the system temp directory".to_string()
+        });
         return;
     }
 
@@ -1496,25 +1566,105 @@ pub async fn hook_post_checkout(prev_head: Option<&str>, branch_flag: Option<&st
             // `init` on an already-initialised project returns an error;
             // either way tracking still runs, matching the shell's
             // `init || exit 0` followed by the track.
-            let _ = init_and_index(&project_path, &[], false, None).await;
+            if let Err(e) = init_and_index(&project_path, &[], false, None).await {
+                hook_debug(&project_path, || {
+                    format!("post-checkout: init skipped: {e}")
+                });
+            }
             track_current_branch_if_enabled(&project_path).await;
         }
         CheckoutAction::TrackOnly => track_current_branch_if_enabled(&project_path).await,
-        CheckoutAction::Nothing => {}
+        CheckoutAction::Nothing => hook_debug(&project_path, || {
+            "post-checkout: file checkout, nothing to do".to_string()
+        }),
     }
 }
 
 /// Tracks the current branch when `auto_track` allows it, swallowing every
 /// failure. Shared by both arms of [`hook_post_checkout`].
-async fn track_current_branch_if_enabled(project_path: &std::path::Path) {
+async fn track_current_branch_if_enabled(project_path: &Path) {
     let config = tokensave::config::load_config(project_path).unwrap_or_default();
     if !tokensave::config::env_bool_override("TOKENSAVE_AUTO_TRACK", config.auto_track) {
+        hook_debug(project_path, || {
+            format!(
+                "post-checkout: {}",
+                auto_track_disabled_reason(project_path, None)
+            )
+        });
         return;
     }
-    let _ = handle_branch_action(BranchAction::Add {
+    let result = handle_branch_action(BranchAction::Add {
         name: None,
         path: Some(project_path.display().to_string()),
         if_enabled: true,
     })
     .await;
+    hook_debug(project_path, || match result {
+        Ok(()) => {
+            "post-checkout: tracked the current branch, or it was already tracked".to_string()
+        }
+        Err(e) => format!("post-checkout: tracking the current branch failed: {e}"),
+    });
+}
+
+/// Size at which [`hook_debug`] starts its log afresh, so a debug setting left
+/// on cannot grow the file without bound.
+const HOOK_DEBUG_LOG_LIMIT: u64 = 256 * 1024;
+
+/// Explains a git hook's decision when `TOKENSAVE_HOOK_DEBUG` asks for it
+/// (#877); otherwise does nothing, and `message` is never built.
+///
+/// The installed hooks discard tokensave's output, so besides stderr the line
+/// is appended to `hook-debug.log` in the project's tokensave directory — only
+/// when that directory already exists, because a global hook must never create
+/// state in an uninitialised repository. Best-effort: a failed write never
+/// fails the hook.
+fn hook_debug(project_path: &Path, message: impl FnOnce() -> String) {
+    if !tokensave::config::env_bool_override("TOKENSAVE_HOOK_DEBUG", false) {
+        return;
+    }
+    let message = message();
+    eprintln!("[tokensave] {message}");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(project_path);
+    if !tokensave_dir.is_dir() {
+        return;
+    }
+    let log_path = tokensave_dir.join("hook-debug.log");
+    let restart = std::fs::metadata(&log_path).is_ok_and(|meta| meta.len() >= HOOK_DEBUG_LOG_LIMIT);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(!restart)
+        .truncate(restart)
+        .open(&log_path);
+    if let Ok(mut file) = file {
+        let _ = writeln!(
+            file,
+            "{} {message}",
+            tokensave::tokensave::current_timestamp()
+        );
+    }
+}
+
+/// Says why automatic tracking skipped `branch` (the current branch when
+/// `None`) and how to enable it, for [`hook_debug`].
+fn auto_track_disabled_reason(project_path: &Path, branch: Option<&str>) -> String {
+    let branch = branch
+        .map(str::to_string)
+        .or_else(|| tokensave::branch::current_branch(project_path))
+        .map_or_else(
+            || "the current branch".to_string(),
+            |b| format!("branch '{b}'"),
+        );
+    let config_path = tokensave::config::get_tokensave_dir(project_path).join("config.json");
+    let config_path = config_path
+        .strip_prefix(project_path)
+        .unwrap_or(&config_path)
+        .display()
+        .to_string();
+    format!(
+        "did not track {branch}: automatic branch tracking is disabled. Set \
+         `\"auto_track\": true` in {config_path} or TOKENSAVE_AUTO_TRACK=1 to enable it, \
+         or run `tokensave branch add`."
+    )
 }

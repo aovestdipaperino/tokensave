@@ -14,6 +14,60 @@ pub async fn ensure_initialized(project_path: &Path) -> tokensave::errors::Resul
     })
 }
 
+/// Initializes and indexes the git repository at `cwd` when `auto_init`
+/// allows it (#876), then opens it for serving. `None` leaves `serve` on its
+/// usual fallbacks: the repository did not qualify, or initializing it failed.
+///
+/// The index is built before the server starts answering, so the first tool
+/// call sees a complete graph. [`tokensave::auto_init::decide`] caps the
+/// repository at `max_auto_sync_files`, which bounds that wait. Progress goes
+/// nowhere: stdout carries JSON-RPC, and a spinner would only flood the
+/// host's stderr log.
+pub async fn auto_initialize(cwd: &Path) -> Option<TokenSave> {
+    let root = match tokensave::auto_init::decide(cwd) {
+        tokensave::auto_init::Decision::Init(root) => root,
+        tokensave::auto_init::Decision::Skip(skip) => {
+            if let Some(hint) = skip.hint(cwd) {
+                eprintln!("[tokensave] {hint}");
+            }
+            return None;
+        }
+    };
+    eprintln!(
+        "[tokensave] no index at '{}'; initializing it (auto_init)",
+        root.display()
+    );
+    let indexed = async {
+        let pin = crate::commands::prepare_initial_cpu_usage(&root, None)?;
+        let cg = TokenSave::init_with_cpu_usage(&root, pin).await?;
+        // `init` applies the same default when stdin is not a terminal.
+        if !tokensave::config::is_in_gitignore(&root) {
+            tokensave::config::add_to_git_info_exclude(&root);
+        }
+        let result = cg.index_all().await?;
+        crate::global::update_global_db(&cg).await;
+        tokensave::errors::Result::Ok(result)
+    }
+    .await;
+    match indexed {
+        Ok(result) => eprintln!(
+            "[tokensave] auto_init indexed {} files ({} nodes) in {}ms",
+            result.file_count, result.node_count, result.duration_ms
+        ),
+        Err(e) => {
+            eprintln!("[tokensave] auto_init failed: {e}");
+            return None;
+        }
+    }
+    match TokenSave::open(&root).await {
+        Ok(cg) => Some(cg),
+        Err(e) => {
+            eprintln!("[tokensave] auto_init: could not open the new index: {e}");
+            None
+        }
+    }
+}
+
 /// Fallback for `serve`: when CWD-based discovery fails inside a linked git
 /// worktree that sits outside its main checkout, discover the project from
 /// the main checkout's equivalent path instead. A worktree nested inside the
@@ -78,7 +132,10 @@ pub async fn load_registered_projects() -> Vec<RegisteredProject> {
 /// Probes one registered path: `None` once its index is gone from disk.
 fn probe_registered_project(path: String) -> Option<RegisteredProject> {
     let path = std::path::PathBuf::from(path);
-    if !path.join(".tokensave").join("tokensave.db").exists() {
+    if !tokensave::config::get_tokensave_dir(&path)
+        .join("tokensave.db")
+        .exists()
+    {
         return None;
     }
     let canonical = path.canonicalize().ok();
@@ -547,8 +604,12 @@ mod tests {
 
     /// A project directory with an index file, as `probe` sees one.
     fn indexed(dir: &std::path::Path) -> String {
-        std::fs::create_dir_all(dir.join(".tokensave")).unwrap();
-        std::fs::write(dir.join(".tokensave").join("tokensave.db"), b"").unwrap();
+        std::fs::create_dir_all(tokensave::config::get_tokensave_dir(dir)).unwrap();
+        std::fs::write(
+            tokensave::config::get_tokensave_dir(dir).join("tokensave.db"),
+            b"",
+        )
+        .unwrap();
         dir.to_string_lossy().into_owned()
     }
 

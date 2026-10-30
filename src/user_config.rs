@@ -137,6 +137,15 @@ pub struct UserConfig {
     #[serde(default = "default_true")]
     pub claude_hooks: bool,
 
+    /// When true, a git repository with no index is initialized the first
+    /// time tokensave runs in it unasked: from the `post-commit`/`post-merge`
+    /// hooks' `sync`, or from `serve` (#876). Only a repository's top level
+    /// qualifies, never one under the system temp dir or `$HOME` itself, and
+    /// never one with more candidate files than `max_auto_sync_files`.
+    /// `TOKENSAVE_AUTO_INIT` overrides it per run.
+    #[serde(default = "default_true")]
+    pub auto_init: bool,
+
     /// Machine-wide CPU usage profile for projects whose
     /// `.tokensave/config.json` has no `cpu_usage` (#752). It takes
     /// precedence over the saved hardware benchmark; `TOKENSAVE_CPU_USAGE`
@@ -325,6 +334,7 @@ impl Default for UserConfig {
             wildcard_permissions: false,
             manage_rules: true,
             claude_hooks: true,
+            auto_init: true,
             cpu_usage: None,
             benchmark: BenchmarkPreferences::default(),
             profiling: ProfilingPreferences::default(),
@@ -351,6 +361,8 @@ pub(crate) struct ConfigFile {
     manage_rules: bool,
     #[serde(default = "default_true")]
     claude_hooks: bool,
+    #[serde(default = "default_true")]
+    auto_init: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cpu_usage: Option<crate::cpu::CpuUsage>,
     // Last: a TOML table has to follow the plain keys.
@@ -370,6 +382,7 @@ impl ConfigFile {
             wildcard_permissions: c.wildcard_permissions,
             manage_rules: c.manage_rules,
             claude_hooks: c.claude_hooks,
+            auto_init: c.auto_init,
             cpu_usage: c.cpu_usage,
             benchmark: c.benchmark,
             profiling: c.profiling,
@@ -873,6 +886,16 @@ pub fn profiling_preferences() -> ProfilingPreferences {
         .unwrap_or_default()
 }
 
+/// The `auto_init` setting in `config.toml` (#876), read without the side
+/// effects of [`UserConfig::load`]. A missing or unparseable file means the
+/// default, `true`.
+pub fn auto_init_setting() -> bool {
+    config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|contents| toml::from_str::<ConfigFile>(&contents).ok())
+        .is_none_or(|file| file.auto_init)
+}
+
 /// Returns the path to the advisory lock guarding `config.toml`'s
 /// read-modify-write span in `save()` (see `merge_config_file`'s doc
 /// comment). A distinct sidecar path rather than locking `config.toml`
@@ -1200,6 +1223,7 @@ impl UserConfig {
             || self.wildcard_permissions != base.wildcard_permissions
             || self.manage_rules != base.manage_rules
             || self.claude_hooks != base.claude_hooks
+            || self.auto_init != base.auto_init
             || self.cpu_usage != base.cpu_usage
             || self.benchmark != base.benchmark
             || self.profiling != base.profiling;
@@ -1246,6 +1270,11 @@ impl UserConfig {
                 on_disk.claude_hooks
             } else {
                 self.claude_hooks
+            },
+            auto_init: if self.auto_init == base.auto_init {
+                on_disk.auto_init
+            } else {
+                self.auto_init
             },
             cpu_usage: if self.cpu_usage == base.cpu_usage {
                 on_disk.cpu_usage
@@ -1387,6 +1416,7 @@ mod tests {
             wildcard_permissions: true,
             manage_rules: false,
             claude_hooks: false,
+            auto_init: false,
             cpu_usage: Some(crate::cpu::CpuUsage::Low),
             benchmark: BenchmarkPreferences {
                 enabled: true,
@@ -1422,6 +1452,19 @@ mod tests {
         let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
         assert!(text.contains("cpu_usage = \"low\""), "{text}");
         assert!(text.contains("[benchmark]"), "{text}");
+    }
+
+    #[test]
+    fn auto_init_defaults_on_and_round_trips() {
+        let _home = test_home();
+        assert!(auto_init_setting(), "no config.toml means the default");
+        assert!(UserConfig::default().auto_init);
+
+        assert!(sample_config().save());
+        assert!(!UserConfig::load().auto_init);
+        assert!(!auto_init_setting());
+        let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
+        assert!(text.contains("auto_init = false"), "{text}");
     }
 
     #[test]

@@ -131,7 +131,9 @@ async fn a_cancelled_sync_stops_and_leaves_the_index_marked_stale() {
             "the error must name the cause, got: {err}"
         );
         assert!(
-            project.join(".tokensave").join("dirty").exists(),
+            tokensave::config::get_tokensave_dir(&project)
+                .join("dirty")
+                .exists(),
             "the dirty sentinel must survive, so the next sync redoes the work"
         );
         // The lock is RAII, so a later sync must be able to run at all — the
@@ -141,7 +143,9 @@ async fn a_cancelled_sync_stops_and_leaves_the_index_marked_stale() {
             .await
             .expect("a sync after a cancelled one must be able to take the lock");
         assert!(
-            !project.join(".tokensave").join("dirty").exists(),
+            !tokensave::config::get_tokensave_dir(&project)
+                .join("dirty")
+                .exists(),
             "the completing sync must clear the sentinel"
         );
         // Also cancel after extraction has actually run under this profile.
@@ -153,10 +157,14 @@ async fn a_cancelled_sync_stops_and_leaves_the_index_marked_stale() {
             result.is_err(),
             "in-flight cancellation must not publish a graph"
         );
-        assert!(project.join(".tokensave").join("dirty").exists());
+        assert!(tokensave::config::get_tokensave_dir(&project)
+            .join("dirty")
+            .exists());
         cg.index_all()
             .await
             .expect("recovery after in-flight cancellation");
-        assert!(!project.join(".tokensave").join("dirty").exists());
+        assert!(!tokensave::config::get_tokensave_dir(&project)
+            .join("dirty")
+            .exists());
     }
 }

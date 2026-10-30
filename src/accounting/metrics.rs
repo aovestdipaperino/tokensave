@@ -129,32 +129,36 @@ pub(crate) fn consumed_tokens(by_agent: &[AgentCostSummary], droid_present: bool
         })
 }
 
-/// Format a human-readable coverage string when a Droid source exists.
-///
-/// Returns an empty string when Droid is absent so existing Claude-only output
-/// remains unchanged.
-pub fn format_coverage(coverage: &[SourceCoverage], by_agent: &[AgentCostSummary]) -> String {
-    let claude_state = coverage
-        .iter()
-        .find(|c| c.agent == "claude")
-        .map_or(CoverageState::Absent, |c| c.state);
+/// The word a coverage state is reported with.
+fn coverage_word(state: CoverageState) -> &'static str {
+    match state {
+        CoverageState::Complete => "complete",
+        CoverageState::Partial => "partial",
+        CoverageState::Absent => "absent",
+    }
+}
 
-    let droid_state = coverage
-        .iter()
-        .find(|c| c.agent == "droid")
-        .map_or(CoverageState::Absent, |c| c.state);
-    if droid_state == CoverageState::Absent {
+/// Format a human-readable coverage string.
+///
+/// The Claude clause is always reported. A source is named only when it is
+/// present, so a Claude-only machine keeps its one-line output and a Pi or
+/// Droid install gains its own clause instead of losing the whole line.
+pub fn format_coverage(coverage: &[SourceCoverage], by_agent: &[AgentCostSummary]) -> String {
+    let state_of = |agent: &str| {
+        coverage
+            .iter()
+            .find(|c| c.agent == agent)
+            .map_or(CoverageState::Absent, |c| c.state)
+    };
+
+    let claude_state = state_of("claude");
+    let droid_state = state_of("droid");
+    let pi_state = state_of("pi");
+    if droid_state == CoverageState::Absent && pi_state == CoverageState::Absent {
         return String::new();
     }
 
-    let claude_text = format!(
-        "Claude {}",
-        match claude_state {
-            CoverageState::Complete => "complete",
-            CoverageState::Partial => "partial",
-            CoverageState::Absent => "absent",
-        }
-    );
+    let claude_text = format!("Claude {}", coverage_word(claude_state));
     let usage = by_agent.iter().find(|a| a.agent == "droid");
     let raw = usage.map(|u| {
         u.input_tokens
@@ -162,6 +166,10 @@ pub fn format_coverage(coverage: &[SourceCoverage], by_agent: &[AgentCostSummary
             .saturating_add(u.cache_write_tokens)
             .saturating_add(u.cache_read_tokens)
     });
+    if droid_state == CoverageState::Absent {
+        return format!("Coverage: {claude_text}; Pi {}", coverage_word(pi_state));
+    }
+
     let droid_text = match droid_state {
         CoverageState::Absent => unreachable!("handled above"),
         CoverageState::Partial => match (usage, raw) {
@@ -193,7 +201,14 @@ pub fn format_coverage(coverage: &[SourceCoverage], by_agent: &[AgentCostSummary
             _ => "Droid complete; no usage in range".to_string(),
         },
     };
-    format!("Coverage: {claude_text}; {droid_text}")
+    if pi_state == CoverageState::Absent {
+        format!("Coverage: {claude_text}; {droid_text}")
+    } else {
+        format!(
+            "Coverage: {claude_text}; {droid_text}; Pi {}",
+            coverage_word(pi_state)
+        )
+    }
 }
 
 /// Parse a range string into a unix timestamp for "since".
@@ -400,6 +415,49 @@ mod tests {
             got,
             "Coverage: Claude complete; Droid complete; no usage in range"
         );
+    }
+
+    /// Pi is a source of its own: it names itself in the coverage line without
+    /// changing what a Claude+Droid machine reports.
+    #[test]
+    fn format_coverage_names_a_present_pi_source() {
+        let coverage = vec![
+            SourceCoverage {
+                agent: "claude",
+                state: CoverageState::Complete,
+                sessions: 1,
+            },
+            SourceCoverage {
+                agent: "droid",
+                state: CoverageState::Absent,
+                sessions: 0,
+            },
+            SourceCoverage {
+                agent: "pi",
+                state: CoverageState::Partial,
+                sessions: 2,
+            },
+        ];
+        let got = format_coverage(&coverage, &[]);
+        assert_eq!(got, "Coverage: Claude complete; Pi partial");
+    }
+
+    #[test]
+    fn format_coverage_stays_empty_when_only_claude_is_present() {
+        let coverage = vec![
+            SourceCoverage {
+                agent: "claude",
+                state: CoverageState::Complete,
+                sessions: 1,
+            },
+            SourceCoverage {
+                agent: "pi",
+                state: CoverageState::Absent,
+                sessions: 0,
+            },
+        ];
+        let got = format_coverage(&coverage, &[]);
+        assert!(got.is_empty(), "{got}");
     }
 
     #[test]
