@@ -311,6 +311,32 @@ mod tests {
     use crate::global_db::{AgentCostSummary, GlobalDb};
     use crate::types::CostTurn;
 
+    #[test]
+    fn format_coverage_preserves_pi_alongside_copilot() {
+        let coverage = [
+            SourceCoverage {
+                agent: "claude",
+                state: CoverageState::Complete,
+                sessions: 1,
+            },
+            SourceCoverage {
+                agent: "pi",
+                state: CoverageState::Partial,
+                sessions: 2,
+            },
+            SourceCoverage {
+                agent: "copilot",
+                state: CoverageState::Complete,
+                sessions: 1,
+            },
+        ];
+
+        let got = format_coverage(&coverage, &[]);
+
+        assert!(got.contains("Pi partial"), "{got}");
+        assert!(got.contains("Copilot"), "{got}");
+    }
+
     #[tokio::test]
     async fn legacy_summary_includes_cache_write_tokens() {
         let temp = tempfile::tempdir().unwrap();
@@ -556,11 +582,12 @@ mod tests {
             },
         ];
         let got = format_coverage(&coverage, &[]);
-        assert_eq!(got, "Coverage: Claude complete; Pi partial");
+        assert!(got.contains("Claude complete"), "{got}");
+        assert!(got.contains("Pi partial"), "{got}");
     }
 
     #[test]
-    fn format_coverage_stays_empty_when_only_claude_is_present() {
+    fn format_coverage_omits_an_absent_pi_source() {
         let coverage = vec![
             SourceCoverage {
                 agent: "claude",
@@ -574,7 +601,8 @@ mod tests {
             },
         ];
         let got = format_coverage(&coverage, &[]);
-        assert!(got.is_empty(), "{got}");
+        assert!(got.contains("Claude complete"), "{got}");
+        assert!(!got.contains("Pi"), "{got}");
     }
 
     #[test]
