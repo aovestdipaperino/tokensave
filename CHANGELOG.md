@@ -15,6 +15,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- **Repositories created with `git init` are indexed automatically (Refs #876).** A new user-level `auto_init` setting in `~/.tokensave/config.toml`, on by default, lets a pathless `tokensave sync` (what the `post-commit` and `post-merge` hooks run) and `tokensave serve` initialize the top level of a git repository that has no index, so hooks installed by earlier versions pick it up without being rewritten. Repositories under the system temp dir, your home directory itself, bare repositories, subdirectories, explicit `sync <path>`/`serve --path` targets and trees with more candidate files than `max_auto_sync_files` are skipped; the last prints a hint to run `tokensave init`. `TOKENSAVE_AUTO_INIT` overrides the setting for one run, and `tokensave doctor` reports the effective value.
 - Add a pinned Graphify CLI compatibility harness covering repeated exports, queries, visualization and conflicting dirty worktrees; publish fixture evidence and remaining measurement gates (Refs #791).
 
 ### Added

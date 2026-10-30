@@ -533,14 +533,37 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // on a large tree; Ctrl-C must stop it at the next phase boundary
             // rather than at the end (#450).
             tokensave::cancel::install_signal_handlers();
+            let explicit_path = path.is_some();
             let project_path = tokensave::config::resolve_path_with_discovery(path);
+            // #876: the installed `post-commit` and `post-merge` hooks run a
+            // pathless `sync`, so a repository started with `git init` reaches
+            // here on its first commit. With `auto_init` on, initialize it
+            // instead of failing. The decision lives in the binary, so hooks
+            // written by earlier versions get it without being rewritten.
+            let mut auto_initialize = false;
             if !TokenSave::is_initialized(&project_path) {
-                eprintln!(
-                    "\x1b[31merror:\x1b[0m no TokenSave index found at '{}'.\n\
-                     Run \x1b[1mtokensave init\x1b[0m to create one first.",
-                    project_path.display()
-                );
-                std::process::exit(1);
+                match (!explicit_path).then(|| tokensave::auto_init::decide(&project_path)) {
+                    Some(tokensave::auto_init::Decision::Init(_)) => {
+                        eprintln!(
+                            "No TokenSave index at '{}'; initializing it (auto_init).",
+                            project_path.display()
+                        );
+                        auto_initialize = true;
+                    }
+                    decision => {
+                        if let Some(tokensave::auto_init::Decision::Skip(skip)) = &decision {
+                            if let Some(hint) = skip.hint(&project_path) {
+                                eprintln!("{hint}");
+                            }
+                        }
+                        eprintln!(
+                            "\x1b[31merror:\x1b[0m no TokenSave index found at '{}'.\n\
+                             Run \x1b[1mtokensave init\x1b[0m to create one first.",
+                            project_path.display()
+                        );
+                        std::process::exit(1);
+                    }
+                }
             }
             // Warn if legacy .codegraph directory exists
             if project_path.join(".codegraph").is_dir() {
@@ -559,7 +582,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             tokensave::memstats::init("sync", &project_path);
             tokensave::memstats::record("start");
 
-            if force {
+            if force || auto_initialize {
                 commands::init_and_index(&project_path, &skip_folders, verbose, None).await?;
             } else {
                 let mut cg = TokenSave::open(&project_path).await?;
@@ -1301,7 +1324,20 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // discovery fails: every fallback below and a server with no
             // default project read the same list (#606).
             let mut registered: Option<Vec<serve::RegisteredProject>> = None;
-            let cg = match serve::ensure_initialized(&project_path).await {
+            // #876: a git repository with no index is initialized here when
+            // `auto_init` allows it, before any fallback can pick another
+            // project. Only for a CWD-discovered root: an explicit `--path`
+            // keeps its no-default-project behavior (#606).
+            let auto_initialized = if explicit_path || TokenSave::is_initialized(&project_path) {
+                None
+            } else {
+                serve::auto_initialize(&project_path).await
+            };
+            let opened = match auto_initialized {
+                Some(cg) => Ok(cg),
+                None => serve::ensure_initialized(&project_path).await,
+            };
+            let cg = match opened {
                 Ok(cg) => Some(cg),
                 // An explicit `--path` names the project to serve. A folder
                 // without an index gets no default project rather than

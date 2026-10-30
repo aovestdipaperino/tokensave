@@ -150,9 +150,10 @@ cd /path/to/your/project
 tokensave init
 ```
 
-This creates a `.tokensave/` directory with the knowledge graph database. `init`
-is a one-time opt-in per project; after it, `tokensave sync` updates the index
-incrementally, and a connected agent keeps it fresh automatically. Commands work
+This creates a `.tokensave/` directory with the knowledge graph database. A
+repository you create with `git init` is initialized automatically on its first
+commit or agent session (`auto_init`, on by default). After that,
+`tokensave sync` updates the index incrementally, and a connected agent keeps it fresh automatically. Commands work
 from any subdirectory of the project. See
 [Indexing and Freshness](docs/guide/INDEXING.md) for details.
 
