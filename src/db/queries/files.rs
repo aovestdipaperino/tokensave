@@ -1,5 +1,6 @@
 //! File-record queries.
 use super::*;
+use crate::profile::DbOp;
 
 // ---------------------------------------------------------------------------
 // File operations
@@ -9,6 +10,16 @@ impl Database {
     /// Inserts or replaces a file record.
     /// Batch upserts multiple file records using raw SQL for throughput.
     pub async fn upsert_files(&self, files: &[FileRecord]) -> Result<()> {
+        crate::profile::measure_write(
+            DbOp::UpsertFiles,
+            files.len(),
+            self.upsert_files_unprofiled(files),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::upsert_files`].
+    async fn upsert_files_unprofiled(&self, files: &[FileRecord]) -> Result<()> {
         if files.is_empty() {
             return Ok(());
         }
@@ -58,6 +69,11 @@ impl Database {
     }
 
     pub async fn upsert_file(&self, file: &FileRecord) -> Result<()> {
+        crate::profile::measure_write(DbOp::UpsertFile, 1, self.upsert_file_unprofiled(file)).await
+    }
+
+    /// Unprofiled body of [`Self::upsert_file`].
+    async fn upsert_file_unprofiled(&self, file: &FileRecord) -> Result<()> {
         self.conn()
             .execute(
                 "INSERT OR REPLACE INTO files

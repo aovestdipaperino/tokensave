@@ -479,8 +479,20 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // from inside indexing.rs) against this process.
             tokensave::memstats::init("index", &project_path);
             tokensave::memstats::record("start");
+            // Opt-in profiling (#754); a no-op unless enabled.
+            let profiler = tokensave::profile::Profiler::start_from_environment();
 
-            commands::init_and_index(&project_path, &skip_folders, false, cpu_usage).await?;
+            tokensave::profile::invocation(commands::init_and_index(
+                &project_path,
+                &skip_folders,
+                false,
+                cpu_usage,
+            ))
+            .await
+            .0?;
+            if let Some(profiler) = profiler {
+                profiler.shutdown();
+            }
 
             // Offer this repository's own git hooks (#455). Local rather than
             // global, because the global path claims `core.hooksPath` — one
@@ -581,46 +593,54 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // inside the indexing code itself.
             tokensave::memstats::init("sync", &project_path);
             tokensave::memstats::record("start");
+            // Opt-in profiling (#754); a no-op unless enabled.
+            let profiler = tokensave::profile::Profiler::start_from_environment();
 
             if force || auto_initialize {
-                commands::init_and_index(&project_path, &skip_folders, verbose, None).await?;
+                tokensave::profile::invocation(commands::init_and_index(
+                    &project_path,
+                    &skip_folders,
+                    verbose,
+                    None,
+                ))
+                .await
+                .0?;
             } else {
                 let mut cg = TokenSave::open(&project_path).await?;
                 cg.add_skip_folders(&skip_folders);
                 let spinner = Spinner::new();
                 let sync_start = std::time::Instant::now();
-                let result = cg
-                    .sync_with_progress_verbose(
-                        |current, total, detail| {
-                            if current == 0 {
-                                // Phase message (scanning, hashing, detecting, resolving)
-                                spinner.set_message(detail);
-                            } else {
-                                // Per-file progress with ETA
-                                let elapsed = sync_start.elapsed().as_secs_f64();
-                                let eta = if current > 1 {
-                                    let per_file = elapsed / (current - 1) as f64;
-                                    let remaining = per_file * (total - current) as f64;
-                                    if remaining >= 1.0 {
-                                        format!(" (ETA: {remaining:.0}s)")
-                                    } else {
-                                        String::new()
-                                    }
+                let result = tokensave::profile::invocation(cg.sync_with_progress_verbose(
+                    |current, total, detail| {
+                        if current == 0 {
+                            // Phase message (scanning, hashing, detecting, resolving)
+                            spinner.set_message(detail);
+                        } else {
+                            // Per-file progress with ETA
+                            let elapsed = sync_start.elapsed().as_secs_f64();
+                            let eta = if current > 1 {
+                                let per_file = elapsed / (current - 1) as f64;
+                                let remaining = per_file * (total - current) as f64;
+                                if remaining >= 1.0 {
+                                    format!(" (ETA: {remaining:.0}s)")
                                 } else {
                                     String::new()
-                                };
-                                spinner.set_message(&format!(
-                                    "[{current}/{total}] syncing {detail}{eta}"
-                                ));
-                            }
-                        },
-                        |msg| {
-                            if verbose {
-                                eprintln!("  \x1b[2m[verbose]\x1b[0m {msg}");
-                            }
-                        },
-                    )
-                    .await?;
+                                }
+                            } else {
+                                String::new()
+                            };
+                            spinner
+                                .set_message(&format!("[{current}/{total}] syncing {detail}{eta}"));
+                        }
+                    },
+                    |msg| {
+                        if verbose {
+                            eprintln!("  \x1b[2m[verbose]\x1b[0m {msg}");
+                        }
+                    },
+                ))
+                .await
+                .0?;
                 let skipped_msg = if result.skipped_paths.is_empty() {
                     String::new()
                 } else {
@@ -653,6 +673,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     commands::print_skipped_extension_summary(&result.skipped_extensions);
                 }
                 global::update_global_db(&cg).await;
+            }
+            if let Some(profiler) = profiler {
+                profiler.shutdown();
             }
 
             // Print update notice from parallel check (suppressed for 15 min)

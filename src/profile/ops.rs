@@ -46,6 +46,20 @@ op_enum! {
         WriteLockWait => "write_lock_wait",
         /// A write transaction, from BEGIN to COMMIT or ROLLBACK.
         Transaction => "transaction",
+        /// Bulk node insert.
+        InsertNodes => "insert_nodes",
+        /// Bulk edge insert.
+        InsertEdges => "insert_edges",
+        /// Executable-body FTS document insert.
+        InsertExecutableBodyDocuments => "insert_executable_body_documents",
+        /// Unresolved reference insert.
+        InsertUnresolvedRefs => "insert_unresolved_refs",
+        /// Batch file record upsert.
+        UpsertFiles => "upsert_files",
+        /// Single file record upsert.
+        UpsertFile => "upsert_file",
+        /// Leaving bulk-load mode: edge dedup, index and FTS rebuild.
+        EndBulkLoad => "end_bulk_load",
         /// Look up one node by id.
         GetNodeById => "get_node_by_id",
         /// Batch node lookup by ids.
@@ -150,12 +164,73 @@ op_enum! {
     }
 }
 
+op_enum! {
+    /// Phases of an incremental sync run. Kept apart from [`IndexPhase`]
+    /// (full index) so each run kind has its own series.
+    SyncPhase, "sync" {
+        /// The whole run, end to end.
+        Total => "total",
+        /// Discovering files and stat-checking them for changes.
+        Scan => "scan",
+        /// Hashing changed files.
+        Hash => "hash",
+        /// Parsing, extraction and writing the changed files.
+        Extract => "extract",
+        /// Reference resolution and edge insertion.
+        Resolve => "resolve",
+        /// Rebuilding derived edges (Ruby reopenings, Rails routes, trait
+        /// dispatch).
+        EdgeBuild => "edge_build",
+        /// Recording sync metadata.
+        Commit => "commit",
+    }
+}
+
+op_enum! {
+    /// Whole runs by kind and bucketed repository size (file count), so
+    /// latency can be compared across repository sizes without recording
+    /// any repository identity.
+    RunBucket, "run" {
+        IndexLt100 => "index.files_lt_100",
+        Index100To1k => "index.files_100_1k",
+        Index1kTo10k => "index.files_1k_10k",
+        Index10kTo100k => "index.files_10k_100k",
+        IndexGe100k => "index.files_ge_100k",
+        SyncLt100 => "sync.files_lt_100",
+        Sync100To1k => "sync.files_100_1k",
+        Sync1kTo10k => "sync.files_1k_10k",
+        Sync10kTo100k => "sync.files_10k_100k",
+        SyncGe100k => "sync.files_ge_100k",
+    }
+}
+
+impl RunBucket {
+    /// Bucket for a full index (`full`) or incremental sync over `files`
+    /// project files.
+    pub const fn for_run(full: bool, files: usize) -> Self {
+        match (full, files) {
+            (true, 0..=99) => Self::IndexLt100,
+            (true, 100..=999) => Self::Index100To1k,
+            (true, 1_000..=9_999) => Self::Index1kTo10k,
+            (true, 10_000..=99_999) => Self::Index10kTo100k,
+            (true, _) => Self::IndexGe100k,
+            (false, 0..=99) => Self::SyncLt100,
+            (false, 100..=999) => Self::Sync100To1k,
+            (false, 1_000..=9_999) => Self::Sync1kTo10k,
+            (false, 10_000..=99_999) => Self::Sync10kTo100k,
+            (false, _) => Self::SyncGe100k,
+        }
+    }
+}
+
 /// Broad grouping of an [`Op`], used for attribution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
     Db,
     Mcp,
     Index,
+    Sync,
+    Run,
 }
 
 /// Any profiled operation.
@@ -164,16 +239,20 @@ pub enum Op {
     Db(DbOp),
     Mcp(McpPhase),
     Index(IndexPhase),
+    Sync(SyncPhase),
+    Run(RunBucket),
 }
 
 const DB_BASE: usize = 0;
 const MCP_BASE: usize = DB_BASE + DbOp::ALL.len();
 const INDEX_BASE: usize = MCP_BASE + McpPhase::ALL.len();
+const SYNC_BASE: usize = INDEX_BASE + IndexPhase::ALL.len();
+const RUN_BASE: usize = SYNC_BASE + SyncPhase::ALL.len();
 
 impl Op {
     /// Number of distinct operations, and so the number of series a
     /// recorder holds.
-    pub const COUNT: usize = INDEX_BASE + IndexPhase::ALL.len();
+    pub const COUNT: usize = RUN_BASE + RunBucket::ALL.len();
 
     /// Dense index in `0..Op::COUNT`.
     pub const fn index(self) -> usize {
@@ -181,6 +260,8 @@ impl Op {
             Self::Db(op) => DB_BASE + op as usize,
             Self::Mcp(op) => MCP_BASE + op as usize,
             Self::Index(op) => INDEX_BASE + op as usize,
+            Self::Sync(op) => SYNC_BASE + op as usize,
+            Self::Run(op) => RUN_BASE + op as usize,
         }
     }
 
@@ -190,11 +271,18 @@ impl Op {
             DbOp::ALL.get(index - DB_BASE).copied().map(Self::Db)
         } else if index < INDEX_BASE {
             McpPhase::ALL.get(index - MCP_BASE).copied().map(Self::Mcp)
-        } else {
+        } else if index < SYNC_BASE {
             IndexPhase::ALL
                 .get(index - INDEX_BASE)
                 .copied()
                 .map(Self::Index)
+        } else if index < RUN_BASE {
+            SyncPhase::ALL
+                .get(index - SYNC_BASE)
+                .copied()
+                .map(Self::Sync)
+        } else {
+            RunBucket::ALL.get(index - RUN_BASE).copied().map(Self::Run)
         }
     }
 
@@ -204,6 +292,8 @@ impl Op {
             Self::Db(op) => op.name(),
             Self::Mcp(op) => op.name(),
             Self::Index(op) => op.name(),
+            Self::Sync(op) => op.name(),
+            Self::Run(op) => op.name(),
         }
     }
 
@@ -212,6 +302,8 @@ impl Op {
             Self::Db(_) => Category::Db,
             Self::Mcp(_) => Category::Mcp,
             Self::Index(_) => Category::Index,
+            Self::Sync(_) => Category::Sync,
+            Self::Run(_) => Category::Run,
         }
     }
 
@@ -241,6 +333,18 @@ impl From<IndexPhase> for Op {
     }
 }
 
+impl From<SyncPhase> for Op {
+    fn from(op: SyncPhase) -> Self {
+        Self::Sync(op)
+    }
+}
+
+impl From<RunBucket> for Op {
+    fn from(op: RunBucket) -> Self {
+        Self::Run(op)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -266,8 +370,19 @@ mod tests {
                 Category::Db => "db.",
                 Category::Mcp => "mcp.",
                 Category::Index => "index.",
+                Category::Sync => "sync.",
+                Category::Run => "run.",
             };
             assert!(op.name().starts_with(prefix), "{}", op.name());
         }
+    }
+
+    #[test]
+    fn run_buckets_split_by_kind_and_size() {
+        assert_eq!(RunBucket::for_run(true, 0), RunBucket::IndexLt100);
+        assert_eq!(RunBucket::for_run(true, 100), RunBucket::Index100To1k);
+        assert_eq!(RunBucket::for_run(false, 9_999), RunBucket::Sync1kTo10k);
+        assert_eq!(RunBucket::for_run(false, 10_000), RunBucket::Sync10kTo100k);
+        assert_eq!(RunBucket::for_run(true, usize::MAX), RunBucket::IndexGe100k);
     }
 }

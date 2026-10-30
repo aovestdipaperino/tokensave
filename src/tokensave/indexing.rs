@@ -1,6 +1,7 @@
 //! Full and incremental indexing.
 use super::query::resolve_symbol_for_edit;
 use super::*;
+use crate::profile::{IndexPhase, SyncPhase};
 
 const RAILS_ROUTE_REFERENCES_METADATA: &str = "rails_route_references_v3";
 
@@ -378,6 +379,9 @@ impl TokenSave {
         let dispatch_revision = self.dispatch_revision();
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
+        // Profiling (#754): phase spans keep the verbose timings above
+        // unchanged; an early `?` return records the open phase as failed.
+        let run_span = crate::profile::span(IndexPhase::Total);
 
         // 1. Enter bulk-load mode, then clear existing data. Order matters:
         // `begin_bulk_load` can fail while another process holds the table
@@ -392,9 +396,11 @@ impl TokenSave {
 
         // 2. Scan for source files
         let phase_start = Instant::now();
+        let scan_span = crate::profile::span(IndexPhase::Scan);
         let detection_before = crate::language_detection::statistics();
         let (files, skipped_extensions) = self.scan_files_diagnostics();
         let total = files.len();
+        scan_span.finish();
         on_verbose(&format!(
             "scanned {} files in {:.1}s",
             total,
@@ -407,6 +413,7 @@ impl TokenSave {
         let registry = &self.registry;
 
         let phase_start = Instant::now();
+        let extract_span = crate::profile::span(IndexPhase::Extract);
         crate::memstats::record("index:extract");
         let (files, artifact_files) = self.partition_artifacts(files, &self.artifact_extensions());
         if self.config.language_detection.enabled {
@@ -461,6 +468,7 @@ impl TokenSave {
             all_unresolved.extend(result.unresolved_refs);
         }
 
+        extract_span.finish();
         on_verbose(&format!(
             "extracted {} nodes, {} edges from {} files in {:.1}s",
             total_nodes,
@@ -499,6 +507,7 @@ impl TokenSave {
 
         // 5. Resolve references in-memory (parallel) before DB insert
         let phase_start = Instant::now();
+        let resolve_span = crate::profile::span(IndexPhase::Resolve);
         crate::memstats::set_graph_nodes(all_nodes.len() as u64);
         // Last point before anything is written in the full-index path: the
         // inserts all happen after resolution, so leaving here still commits
@@ -532,6 +541,7 @@ impl TokenSave {
             all_edges.extend(variant_edges);
         }
         crate::memstats::record("index:resolve:done");
+        resolve_span.finish();
         on_verbose(&format!(
             "resolved {} references in {:.1}s",
             all_unresolved.len(),
@@ -569,6 +579,7 @@ impl TokenSave {
 
         // 7. Bulk-insert via prepared statements (zero SQL re-parsing)
         let phase_start = Instant::now();
+        let write_span = crate::profile::span(IndexPhase::DbWrite);
         crate::memstats::record("index:insert");
         self.db.insert_nodes(&all_nodes).await?;
         self.db
@@ -595,17 +606,24 @@ impl TokenSave {
             self.db.insert_unresolved_refs(&all_unresolved).await?;
         }
 
+        write_span.finish();
+
         // 8. Restore indexes and normal durability
+        let fts_span = crate::profile::span(IndexPhase::FtsMaintenance);
         self.db.end_bulk_load().await?;
+        fts_span.finish();
+        let edge_span = crate::profile::span(IndexPhase::EdgeBuild);
         self.db.rebuild_ruby_reopenings().await?;
         self.rebuild_rails_routes_best_effort(true).await;
         self.db.rebuild_trait_dispatch_callers().await?;
+        edge_span.finish();
         on_verbose(&format!(
             "wrote to database in {:.1}s",
             phase_start.elapsed().as_secs_f64()
         ));
 
         let duration_ms = start.elapsed().as_millis() as u64;
+        let commit_span = crate::profile::span(IndexPhase::Commit);
         let now_str = current_timestamp().to_string();
         self.db.set_metadata("last_full_sync_at", &now_str).await?;
         self.db
@@ -638,6 +656,10 @@ impl TokenSave {
         self.db
             .set_metadata("language_dispatch_revision", &dispatch_revision)
             .await?;
+        commit_span.finish();
+        if let Some(elapsed_us) = run_span.end(true) {
+            crate::profile::record_run(true, total, elapsed_us, total_nodes + total_edges);
+        }
         let result = IndexResult {
             file_count: extraction_count,
             node_count: total_nodes,
@@ -1270,10 +1292,13 @@ impl TokenSave {
         let dispatch_revision = self.dispatch_revision();
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
+        // Profiling (#754): see `index_all_with_progress_verbose`.
+        let run_span = crate::profile::span(SyncPhase::Total);
 
         crate::cancel::check("sync")?;
         on_progress(0, 0, "scanning files");
         let phase_start = Instant::now();
+        let scan_span = crate::profile::span(SyncPhase::Scan);
         let detection_before = crate::language_detection::statistics();
         let (current_files, skipped_extensions) = self.scan_files_diagnostics();
         if self.config.language_detection.enabled {
@@ -1301,6 +1326,7 @@ impl TokenSave {
                 })
                 .collect()
         })?;
+        scan_span.finish();
         on_verbose(&format!(
             "stat-checked {} files in {:.1}s",
             file_stats.len(),
@@ -1393,6 +1419,7 @@ impl TokenSave {
         // Read + hash only files with changed stats or new files
         on_progress(0, 0, "hashing changed files");
         let phase_start = Instant::now();
+        let hash_span = crate::profile::span(SyncPhase::Hash);
         let needs_read: Vec<&String> = new_files.iter().chain(stat_changed.iter()).collect();
         let hash_results: Vec<_> = self.cpu_usage().run(|| {
             needs_read
@@ -1419,6 +1446,7 @@ impl TokenSave {
                 }
             }
         }
+        hash_span.finish();
         on_verbose(&format!(
             "hashed {} files in {:.1}s ({} read errors)",
             hash_map.len(),
@@ -1567,6 +1595,7 @@ impl TokenSave {
         let registry = &self.registry;
 
         let phase_start = Instant::now();
+        let extract_span = crate::profile::span(SyncPhase::Extract);
         let _ = stat_map; // worker re-stats internally
         crate::memstats::record("sync:extract");
         let (sync_extractions, sync_skipped): (Vec<_>, Vec<_>) = extract_files_isolated(
@@ -1653,6 +1682,7 @@ impl TokenSave {
         if !queued_edges.is_empty() {
             self.db.insert_edges(&queued_edges).await?;
         }
+        extract_span.finish();
 
         if !to_index.is_empty() {
             on_verbose(&format!(
@@ -1670,6 +1700,7 @@ impl TokenSave {
         if !to_index.is_empty() {
             on_progress(0, 0, "resolving references");
             let phase_start = Instant::now();
+            let resolve_span = crate::profile::span(SyncPhase::Resolve);
             // Every sample here is taken *after* the work it names. They used
             // to be taken before it, so each one reported the RSS of the
             // previous step under the next step's name — which is how the
@@ -1724,6 +1755,7 @@ impl TokenSave {
             }
             // Reports what was re-attempted against what the table holds, so
             // the incremental narrowing (#484) is visible rather than implied.
+            resolve_span.finish();
             on_verbose(&format!(
                 "resolved {attempted_refs} of {pending_refs} references ({} names touched) in {:.1}s",
                 touched.name_count(),
@@ -1731,6 +1763,7 @@ impl TokenSave {
             ));
         }
 
+        let edge_span = crate::profile::span(SyncPhase::EdgeBuild);
         if ruby_changed {
             self.db.rebuild_ruby_reopenings().await?;
         }
@@ -1742,7 +1775,9 @@ impl TokenSave {
         )
         .await;
         self.db.rebuild_trait_dispatch_callers().await?;
+        edge_span.finish();
         let duration_ms = start.elapsed().as_millis() as u64;
+        let commit_span = crate::profile::span(SyncPhase::Commit);
         self.db
             .set_metadata("last_sync_at", &current_timestamp().to_string())
             .await?;
@@ -1769,6 +1804,15 @@ impl TokenSave {
         self.db
             .set_metadata("language_dispatch_revision", &dispatch_revision)
             .await?;
+        commit_span.finish();
+        if let Some(elapsed_us) = run_span.end(true) {
+            crate::profile::record_run(
+                false,
+                file_stats.len(),
+                elapsed_us,
+                total_nodes + total_edges,
+            );
+        }
         clear_dirty_sentinel(&self.project_root);
         crate::memstats::record("sync:done");
         Ok(SyncResult {

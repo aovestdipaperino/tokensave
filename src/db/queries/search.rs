@@ -53,6 +53,19 @@ impl Database {
         &self,
         documents: &[ExecutableBodyDocument],
     ) -> Result<()> {
+        crate::profile::measure_write(
+            DbOp::InsertExecutableBodyDocuments,
+            documents.len(),
+            self.insert_executable_body_documents_unprofiled(documents),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::insert_executable_body_documents`].
+    async fn insert_executable_body_documents_unprofiled(
+        &self,
+        documents: &[ExecutableBodyDocument],
+    ) -> Result<()> {
         if documents.is_empty() {
             return Ok(());
         }

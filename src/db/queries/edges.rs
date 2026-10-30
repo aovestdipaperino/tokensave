@@ -129,6 +129,16 @@ impl Database {
     /// referenced file is indexed. `Contains` edges are denormalized into
     /// `nodes.parent_id` via UPDATE; they do not produce edge rows.
     pub async fn insert_edges(&self, edges: &[Edge]) -> Result<()> {
+        crate::profile::measure_write(
+            DbOp::InsertEdges,
+            edges.len(),
+            self.insert_edges_unprofiled(edges),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::insert_edges`].
+    async fn insert_edges_unprofiled(&self, edges: &[Edge]) -> Result<()> {
         if edges.is_empty() {
             return Ok(());
         }
