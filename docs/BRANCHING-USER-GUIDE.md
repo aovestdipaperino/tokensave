@@ -157,6 +157,10 @@ Run `tokensave branch add experiment-x` to track it.
 This means queries still work, but results may be stale for files that differ between the
 branches.
 
+`tokensave_status` adds `auto_track` and `auto_track_hint` to explain why the branch was not
+tracked automatically — usually because `auto_track` is disabled, which is the default — and how
+to enable it. See [Automatic branch tracking](guide/MULTI-BRANCH.md#automatic-branch-tracking-v730).
+
 Note that the fallback is also chosen at startup. If you check out an untracked branch under a
 running server, files you change land in whichever database that server opened with — the
 outcome the warning describes, but reached because of the startup choice rather than because

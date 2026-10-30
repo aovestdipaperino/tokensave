@@ -840,6 +840,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     );
                 }
 
+                // #877: the table shows only a `[fallback]` marker; say why
+                // the branch is untracked and how to track it.
+                if let (Some(warning), Some(hint)) = (cg.fallback_warning(), cg.auto_track_hint()) {
+                    eprintln!("\n\x1b[33mWarning: {warning}\n{hint}\x1b[0m");
+                }
+
                 // Warn if .tokensave is not in .gitignore
                 if !tokensave::config::is_in_gitignore(&project_path) {
                     eprintln!(

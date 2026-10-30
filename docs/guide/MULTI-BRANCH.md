@@ -31,6 +31,8 @@ Three MCP tools enable cross-branch queries without switching your checkout:
 
 When the MCP server can't find a database for the current branch, it serves from the nearest ancestor branch's DB and includes a warning in every tool response suggesting you run `tokensave branch add`.
 
+`tokensave_status` (and the CLI `tokensave status`) also explain *why* the branch is untracked. The status response gains `auto_track` (the effective setting) and `auto_track_hint`, which says whether automatic tracking is disabled, turned off for this run by `TOKENSAVE_AUTO_TRACK`, failed, or does not apply to a read-only view, and how to track the branch or enable automatic tracking. The hint itself is reported by the status tool only; the one exception is a tracking *failure*, whose reason is appended to the shared fallback warning so that MCP clients, which never see stderr, learn about it too.
+
 ## Default branch
 
 `tokensave init` records the repository's default branch in `.tokensave/branch-meta.json`. It uses the branch `refs/remotes/origin/HEAD` points to while that branch still exists locally or under `origin/`, then a local `main` or `master`, then the branch checked out at the time. `tokensave branch add` detects it the same way when it creates the branch metadata.
@@ -44,14 +46,15 @@ Renaming the default branch after init (`git branch -m master main`, or a rename
 `tokensave branch set-default <name>` sets the default explicitly. If `<name>` is untracked, it takes over the current default's entry and database. If `<name>` is already tracked, its entry becomes the default and the previous default stays as an ordinary branch entry, which `tokensave branch remove` can delete. The command refuses a name that is neither a local nor an `origin/` branch.
 
 A stale default is reported by `tokensave branch list`, by the `default_branch_warning` field of the `tokensave_status` and `tokensave_branch_list` MCP tools, and as a `BRANCH_DEFAULT_STALE` warning by `tokensave verify`.
+>>>>>>> origin/master
 
 ## Automatic branch tracking (v7.3.0)
 
-Once multi-branch mode is bootstrapped (a first manual `tokensave branch add` created the branch metadata), new branches can be tracked automatically instead of falling back to the ancestor DB. Two independent mechanisms cover this; projects in single-DB mode are never affected, and neither mechanism ever touches the default branch's database.
+Once multi-branch mode is bootstrapped (a first manual `tokensave branch add` created the branch metadata), new branches can be tracked automatically instead of falling back to the ancestor DB. Automatic tracking is **opt-in**: the `auto_track` config field defaults to `false`, and until you enable it neither mechanism below registers a branch — new branches use the ancestor fallback until you run `tokensave branch add`. Enable it per project with `"auto_track": true` in `.tokensave/config.json`, or for one run with the `TOKENSAVE_AUTO_TRACK` environment variable, which overrides the config (any value enables it except `0`, `false`, `no`, `off`, or empty). Projects in single-DB mode are never affected, and neither mechanism ever touches the default branch's database.
 
-**Git hook (on branch checkout).** The `post-checkout` hook that `tokensave install` sets up recognizes a *branch* checkout (as opposed to a file checkout) and runs `tokensave branch add` in the background. That command is a no-op when the branch is already tracked or is the default branch, so ordinary switching between known branches costs nothing. The initial checkout of a fresh `git clone` and of a new `git worktree add` is a branch checkout too, and it can land on a branch that is not the default one (`git clone -b feature`, `git worktree add -b feature`); there the hook runs `tokensave init` first and `tokensave branch add` after it, in that order. A hook written by an earlier version keeps the body it was installed with — the installer never rewrites an existing one — so on those installs a fresh worktree still needs `auto_track` below, or a manual `tokensave branch add`.
+**Git hook (on branch checkout).** The `post-checkout` hook that `tokensave install` sets up recognizes a *branch* checkout (as opposed to a file checkout) and, when `auto_track` is enabled, tracks the checked-out branch in the background. With `auto_track` disabled the hook still runs on every checkout but deliberately does nothing and prints nothing, so a quiet checkout does not mean the hook is broken (see [diagnosing automatic tracking](#diagnosing-automatic-tracking)). Tracking is a no-op when the branch is already tracked or is the default branch, so ordinary switching between known branches costs nothing. The initial checkout of a fresh `git clone` and of a new `git worktree add` is a branch checkout too, and it can land on a branch that is not the default one (`git clone -b feature`, `git worktree add -b feature`); there the hook runs `tokensave init` first and tracks the branch after it (when `auto_track` is enabled), in that order. A hook written by an earlier version keeps the body it was installed with — the installer never rewrites an existing one — so on those installs a fresh worktree still needs open-time auto-track below, or a manual `tokensave branch add`.
 
-**Open-time auto-track (opt-in).** When `TokenSave::open` runs — CLI command or MCP server start — and the active branch is untracked, tokensave can track it on the spot by copying the nearest tracked ancestor's DB and recording it in the branch metadata. This is gated by the `auto_track` config field (default `false`) or the `TOKENSAVE_AUTO_TRACK` environment variable, which overrides the config per-run (any value enables it except `0`, `false`, `no`, `off`, or empty). The copy is the same near-instant ancestor-DB copy a manual `branch add` performs; no sync runs at that moment — the `post-commit` hook keeps the new branch DB fresh as you commit, or run `tokensave sync` to refresh immediately. Auto-tracking is strictly best-effort: any failure is reported as a warning and `open()` proceeds with the usual ancestor fallback, so it can never break a tool call.
+**Open-time auto-track (opt-in).** When `TokenSave::open` runs — CLI command or MCP server start — and the active branch is untracked, tokensave can track it on the spot by copying the nearest tracked ancestor's DB and recording it in the branch metadata. This is gated by the same `auto_track` setting and `TOKENSAVE_AUTO_TRACK` override. Read-only views of another project (for example a `graph_root` query) never track. The copy is the same near-instant ancestor-DB copy a manual `branch add` performs; no sync runs at that moment — the `post-commit` hook keeps the new branch DB fresh as you commit, or run `tokensave sync` to refresh immediately. Auto-tracking is strictly best-effort: any failure is reported as a warning and `open()` proceeds with the usual ancestor fallback, so it can never break a tool call.
 
 **Automatic cleanup (opt-in).** Set `"auto_gc": true` in `.tokensave/config.json`
 (or `TOKENSAVE_AUTO_GC=1` for one run) to collect indexes whose local Git branches
@@ -64,7 +67,18 @@ default is `false`, so older projects retain their indexes until explicitly
 cleaned. `TOKENSAVE_AUTO_GC=0` overrides an enabled project setting; an explicit
 `tokensave branch gc` runs regardless of this setting.
 
-In short: with the hook installed, checking out a new feature branch — including the branch a fresh clone or worktree starts on — transparently gives it its own per-branch graph; with `auto_track` enabled, even a branch created outside a checkout is picked up the first time tokensave opens the project on it.
+In short: with `auto_track` enabled and the hook installed, checking out a new feature branch — including the branch a fresh clone or worktree starts on — transparently gives it its own per-branch graph, and even a branch created outside a checkout is picked up the first time tokensave opens the project on it. With `auto_track` disabled (the default), track each branch you want its own graph for with `tokensave branch add`.
+
+### Diagnosing automatic tracking
+
+Installed hooks run in the background with their output discarded, so normal checkouts stay silent. To see what the `post-checkout` hook decided, set `TOKENSAVE_HOOK_DEBUG=1` for the git command:
+
+```bash
+TOKENSAVE_HOOK_DEBUG=1 git checkout -b feature-x
+cat .tokensave/hook-debug.log
+```
+
+Each decision — a skipped file checkout, tracking skipped because `auto_track` is disabled, a branch tracked, or a failure — is printed to stderr and appended, with a UNIX timestamp, to `hook-debug.log` in the project's `.tokensave` directory. The log is written only for an initialized project (the hook never creates `.tokensave` in other repositories) and starts afresh once it reaches 256 KiB. `tokensave branch add --if-enabled`, the command older hook scripts call, honours the same variable. For an untracked branch you are already on, `tokensave status` or the `tokensave_status` MCP tool explains the cause without debug logging.
 
 See the [Multi-Branch Indexing Guide](../BRANCHING-USER-GUIDE.md) for the storage layout and
 workflows in depth.

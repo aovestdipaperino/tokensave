@@ -311,6 +311,7 @@ impl TokenSave {
         // per-run via TOKENSAVE_AUTO_TRACK (git-hook path is separate).
         let auto_track =
             crate::config::env_bool_override("TOKENSAVE_AUTO_TRACK", config.auto_track);
+        let mut auto_track_error = None;
         if auto_track {
             if let Some(b) = active_branch.as_deref() {
                 match branch::track_branch_copy(project_root, &tokensave_dir, b).await {
@@ -319,13 +320,22 @@ impl TokenSave {
                          ancestor; run `tokensave sync` to refresh)"
                     ),
                     Ok(false) => {}
-                    Err(e) => eprintln!("[tokensave] auto-track skipped for '{b}': {e}"),
+                    Err(e) => {
+                        eprintln!("[tokensave] auto-track skipped for '{b}': {e}");
+                        auto_track_error = Some(e.to_string());
+                    }
                 }
             }
         }
 
-        let (db_path, serving_branch, fallback_warning) =
+        let (db_path, serving_branch, mut fallback_warning) =
             Self::resolve_db_for_branch(project_root, &tokensave_dir, active_branch.as_deref());
+        // #877: stderr never reaches an MCP client, so carry the reason
+        // automatic tracking failed on the warning the client does see.
+        if let (Some(warning), Some(error)) = (fallback_warning.as_mut(), auto_track_error) {
+            warning.push_str(" Automatic branch tracking failed: ");
+            warning.push_str(&error);
+        }
 
         // Protect the selected DB as well as HEAD: an untracked branch can
         // be borrowing the index of an ancestor whose Git ref was deleted.
