@@ -14,8 +14,8 @@
 //!   free. See `.overlay/notes/adding-a-model.md`.
 //! - Token mapping mirrors Claude: `cached_input_tokens` are billed at the
 //!   cache-read rate, so they move to `cache_read_tokens` and are subtracted from
-//!   the billable `input_tokens`; `reasoning_output_tokens` are billed as output,
-//!   so they fold into `output_tokens`. Codex has no cache-write line.
+//!   the billable `input_tokens`. Native `output_tokens` already includes
+//!   `reasoning_output_tokens`; never add reasoning again. Codex has no cache-write line.
 //! - No network or browser auth; all parsing is local and offline.
 
 use std::path::{Path, PathBuf};
@@ -55,13 +55,28 @@ struct SessionScan {
     start_timestamp: Option<String>,
     model: Option<String>,
     usage: Option<Usage>,
+    invalid_usage: bool,
 }
 
-/// Read a `u64` token counter from a JSON object, defaulting to zero.
-fn u64_field(obj: &serde_json::Value, key: &str) -> u64 {
-    obj.get(key)
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0)
+fn parse_usage(obj: &serde_json::Value) -> Option<Usage> {
+    let usage = Usage {
+        input: obj.get("input_tokens")?.as_u64()?,
+        cached_input: obj.get("cached_input_tokens")?.as_u64()?,
+        output: obj.get("output_tokens")?.as_u64()?,
+        reasoning_output: obj
+            .get("reasoning_output_tokens")
+            .map_or(Some(0), serde_json::Value::as_u64)?,
+        total: obj.get("total_tokens")?.as_u64()?,
+    };
+    (usage.cached_input <= usage.input
+        && usage.reasoning_output <= usage.output
+        && usage.input.checked_add(usage.output) == Some(usage.total)
+        && usage.total <= i64::MAX as u64
+        && usage
+            .output
+            .checked_add(usage.reasoning_output)
+            .is_some_and(|n| n <= i64::MAX as u64))
+    .then_some(usage)
 }
 
 /// Scan one rollout file for the session id, start timestamp, active model, and
@@ -76,6 +91,7 @@ fn scan_session(contents: &str) -> SessionScan {
     let mut start_timestamp: Option<String> = None;
     let mut model: Option<String> = None;
     let mut best: Option<Usage> = None;
+    let mut invalid_usage = false;
 
     for line in contents.lines() {
         let trimmed = line.trim();
@@ -117,12 +133,9 @@ fn scan_session(contents: &str) -> SessionScan {
                 else {
                     continue;
                 };
-                let candidate = Usage {
-                    input: u64_field(total, "input_tokens"),
-                    cached_input: u64_field(total, "cached_input_tokens"),
-                    output: u64_field(total, "output_tokens"),
-                    reasoning_output: u64_field(total, "reasoning_output_tokens"),
-                    total: u64_field(total, "total_tokens"),
+                let Some(candidate) = parse_usage(total) else {
+                    invalid_usage = true;
+                    continue;
                 };
                 match &best {
                     Some(b) if candidate.total <= b.total => {}
@@ -138,6 +151,7 @@ fn scan_session(contents: &str) -> SessionScan {
         start_timestamp,
         model,
         usage: best,
+        invalid_usage,
     }
 }
 
@@ -180,6 +194,7 @@ pub(crate) fn find_rollout_files(root: &Path) -> Vec<PathBuf> {
 pub(crate) struct ParsedSession {
     pub turn: CostTurn,
     pub priced: bool,
+    legacy_output_tokens: u64,
 }
 
 /// Parse a single Codex rollout file at `path`.
@@ -198,6 +213,9 @@ pub(crate) struct ParsedSession {
 pub(crate) fn parse_rollout_file(path: &Path) -> Result<Option<ParsedSession>, ()> {
     let contents = std::fs::read_to_string(path).map_err(|_| ())?;
     let scan = scan_session(&contents);
+    if scan.invalid_usage {
+        return Err(());
+    }
 
     let Some(usage) = scan.usage else {
         return Ok(None);
@@ -213,10 +231,10 @@ pub(crate) fn parse_rollout_file(path: &Path) -> Result<Option<ParsedSession>, (
         .ok_or(())?;
 
     // Cached input is billed at the cache-read rate; the billable input is the
-    // non-cached remainder. Reasoning output is billed as output.
+    // non-cached remainder. Reasoning is already part of native output.
     let cache_read_tokens = usage.cached_input;
     let input_tokens = usage.input.saturating_sub(usage.cached_input);
-    let output_tokens = usage.output.saturating_add(usage.reasoning_output);
+    let output_tokens = usage.output;
 
     let model = scan.model.unwrap_or_else(|| "unknown".to_string());
     let priced = pricing::is_priced(&model);
@@ -242,6 +260,7 @@ pub(crate) fn parse_rollout_file(path: &Path) -> Result<Option<ParsedSession>, (
             credits: None,
         },
         priced,
+        legacy_output_tokens: usage.output + usage.reasoning_output,
     }))
 }
 
@@ -266,20 +285,9 @@ pub(crate) struct CodexIngestResult {
 pub(crate) async fn ingest_dir(gdb: &crate::global_db::GlobalDb, root: &Path) -> CodexIngestResult {
     let (files, walk_errors) = collect_rollouts(root);
 
-    if files.is_empty() && walk_errors == 0 {
-        return CodexIngestResult {
-            coverage: SourceCoverage {
-                agent: "codex",
-                state: CoverageState::Absent,
-                sessions: 0,
-            },
-            rows_changed: 0,
-        };
-    }
-
     let mut parse_errors: u64 = 0;
     let mut unpriced: u64 = 0;
-    let mut turns: Vec<CostTurn> = Vec::new();
+    let mut turns: Vec<ParsedSession> = Vec::new();
 
     for file in &files {
         match parse_rollout_file(file) {
@@ -289,27 +297,41 @@ pub(crate) async fn ingest_dir(gdb: &crate::global_db::GlobalDb, root: &Path) ->
                 if !parsed.priced {
                     unpriced += 1;
                 }
-                turns.push(parsed.turn);
+                turns.push(parsed);
             }
         }
     }
 
     let sessions = turns.len() as u64;
 
-    let state = if parse_errors > 0 || walk_errors > 0 || unpriced > 0 {
+    let mut rows_changed: u64 = 0;
+    for parsed in &turns {
+        match gdb
+            .upsert_codex_turn(&parsed.turn, parsed.legacy_output_tokens)
+            .await
+        {
+            Ok(true) => rows_changed += 1,
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("[tokensave] Codex accounting snapshot failed: {error}");
+                parse_errors += 1;
+            }
+        }
+    }
+    let repair_pending = match gdb.legacy_codex_rows().await {
+        Ok(rows) => rows > 0,
+        Err(error) => {
+            eprintln!("[tokensave] Codex legacy repair status unknown: {error}");
+            true
+        }
+    };
+    let state = if parse_errors > 0 || walk_errors > 0 || unpriced > 0 || repair_pending {
         CoverageState::Partial
     } else if sessions == 0 {
         CoverageState::Absent
     } else {
         CoverageState::Complete
     };
-
-    let mut rows_changed: u64 = 0;
-    for turn in &turns {
-        if gdb.upsert_droid_turn(turn).await {
-            rows_changed += 1;
-        }
-    }
 
     CodexIngestResult {
         coverage: SourceCoverage {
@@ -373,6 +395,17 @@ mod tests {
         )
     }
 
+    async fn stored_usage(gdb: &crate::global_db::GlobalDb) -> (u64, u64, u64, u64) {
+        let rows = gdb.cost_by_agent_since(0).await;
+        let row = rows.iter().find(|row| row.agent == "codex").unwrap();
+        (
+            row.input_tokens,
+            row.output_tokens,
+            row.cache_read_tokens,
+            row.cache_write_tokens,
+        )
+    }
+
     #[test]
     fn real_shape_session_parses_with_usd_and_token_mapping() {
         let tmp = TempDir::new().unwrap();
@@ -393,11 +426,14 @@ mod tests {
         // billable input = 5000 - 4000 cached = 1000; cache_read = 4000
         assert_eq!(turn.input_tokens, 1_000);
         assert_eq!(turn.cache_read_tokens, 4_000);
-        // output + reasoning = 800 + 300 = 1100
-        assert_eq!(turn.output_tokens, 1_100);
+        assert_eq!(turn.output_tokens, 800);
+        assert_eq!(
+            turn.input_tokens + turn.output_tokens + turn.cache_read_tokens,
+            5_800
+        );
         assert_eq!(turn.cache_write_tokens, 0);
         assert!(parsed.priced);
-        assert!(turn.cost_usd > 0.0);
+        assert!((turn.cost_usd - 0.027).abs() < 1e-12);
     }
 
     #[test]
@@ -564,5 +600,124 @@ mod tests {
         let res = ingest_dir(&gdb, root_tmp.path()).await;
         assert_eq!(res.coverage.state, CoverageState::Partial);
         assert_eq!(res.coverage.sessions, 2);
+    }
+
+    #[test]
+    fn inconsistent_native_checkpoints_are_not_authoritative() {
+        let tmp = TempDir::new().unwrap();
+        let valid = real_shape_session("invalid", "claude-opus-4");
+        for contents in [
+            valid.replace("\"total_tokens\":5800", "\"total_tokens\":5801"),
+            valid.replace(
+                "\"reasoning_output_tokens\":300",
+                "\"reasoning_output_tokens\":900",
+            ),
+            valid.replace("\"input_tokens\":5000", "\"input_tokens\":\"5000\""),
+        ] {
+            let path = write_rollout(tmp.path(), "invalid", &contents);
+            assert!(parse_rollout_file(&path).is_err(), "{contents}");
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_overcount_is_repaired_after_reopen_then_remains_monotonic() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("sessions");
+        let contents = real_shape_session("repair", "claude-opus-4");
+        let path = write_rollout(&root, "repair", &contents);
+        let db_path = tmp.path().join("global.db");
+        let gdb = crate::global_db::GlobalDb::open_at(&db_path).await.unwrap();
+        let mut legacy = parse_rollout_file(&path).unwrap().unwrap().turn;
+        legacy.output_tokens = 1_100;
+        legacy.cost_usd = 0.0345;
+        assert!(gdb.insert_turn(&legacy).await);
+        drop(gdb);
+
+        let gdb = crate::global_db::GlobalDb::open_at(&db_path).await.unwrap();
+        let repaired = ingest_dir(&gdb, &root).await;
+        assert_eq!(repaired.rows_changed, 1);
+        assert_eq!(repaired.coverage.state, CoverageState::Complete);
+        assert_eq!(stored_usage(&gdb).await, (1_000, 800, 4_000, 0));
+        assert!((gdb.total_cost_since(0).await.unwrap() - 0.027).abs() < 1e-12);
+        assert_eq!(ingest_dir(&gdb, &root).await.rows_changed, 0);
+
+        let grown = contents.replace(
+            &token_count_line(5_000, 4_000, 800, 300, 5_800),
+            &token_count_line(6_000, 4_500, 1_000, 400, 7_000),
+        );
+        fs::write(&path, grown).unwrap();
+        assert_eq!(ingest_dir(&gdb, &root).await.rows_changed, 1);
+        assert_eq!(stored_usage(&gdb).await, (1_500, 1_000, 4_500, 0));
+        fs::write(&path, contents).unwrap();
+        assert_eq!(ingest_dir(&gdb, &root).await.rows_changed, 0);
+        assert_eq!(stored_usage(&gdb).await, (1_500, 1_000, 4_500, 0));
+        // An older API must not downgrade the repaired row in this runtime.
+        legacy.output_tokens = 2_000;
+        assert!(!gdb.upsert_droid_turn(&legacy).await);
+    }
+
+    #[tokio::test]
+    async fn stale_first_repair_retains_legacy_counters_and_partial_coverage() {
+        for (input, output, cached) in [
+            (1_000, 1_500, 4_000),
+            (2_000, 1_100, 4_000),
+            (1_000, 1_100, 4_500),
+        ] {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().join("sessions");
+            let path = write_rollout(
+                &root,
+                "stale",
+                &real_shape_session("stale", "claude-opus-4"),
+            );
+            let gdb = crate::global_db::GlobalDb::open_at(&tmp.path().join("global.db"))
+                .await
+                .unwrap();
+            let mut legacy = parse_rollout_file(&path).unwrap().unwrap().turn;
+            legacy.input_tokens = input;
+            legacy.output_tokens = output;
+            legacy.cache_read_tokens = cached;
+            assert!(gdb.insert_turn(&legacy).await);
+            let result = ingest_dir(&gdb, &root).await;
+            assert_eq!(result.rows_changed, 0);
+            assert_eq!(result.coverage.state, CoverageState::Partial);
+            assert_eq!(stored_usage(&gdb).await, (input, output, cached, 0));
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_source_preserves_unrepaired_legacy_rows() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_rollout(
+            tmp.path(),
+            "missing",
+            &real_shape_session("missing", "claude-opus-4"),
+        );
+        let gdb = crate::global_db::GlobalDb::open_at(&tmp.path().join("global.db"))
+            .await
+            .unwrap();
+        let mut legacy = parse_rollout_file(&path).unwrap().unwrap().turn;
+        legacy.output_tokens = 1_100;
+        assert!(gdb.insert_turn(&legacy).await);
+        fs::remove_file(path).unwrap();
+        let result = ingest_dir(&gdb, tmp.path()).await;
+        assert_eq!(result.coverage.state, CoverageState::Partial);
+        assert_eq!(result.rows_changed, 0);
+        assert_eq!(stored_usage(&gdb).await, (1_000, 1_100, 4_000, 0));
+    }
+
+    #[tokio::test]
+    async fn failed_repair_count_is_unknown_not_absent() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("global.db");
+        let gdb = crate::global_db::GlobalDb::open_at(&db_path).await.unwrap();
+        let db = libsql::Builder::new_local(&db_path).build().await.unwrap();
+        db.connect()
+            .unwrap()
+            .execute("DROP TABLE turns", ())
+            .await
+            .unwrap();
+        let result = ingest_dir(&gdb, &tmp.path().join("absent")).await;
+        assert_eq!(result.coverage.state, CoverageState::Partial);
     }
 }

@@ -1,9 +1,8 @@
 //! User-level database that tracks all `TokenSave` projects and their saved tokens.
 //!
 //! Stored at `~/.tokensave/global.db`, this DB holds one row per project with
-//! the project's DB path and its cumulative tokens-saved count. All operations
-//! are best-effort: failures are silently ignored so they never block the main
-//! MCP server loop.
+//! the project's DB path and its cumulative tokens-saved count. Savings are
+//! best-effort; accounting snapshot schema and write failures are reported.
 
 use std::path::{Path, PathBuf};
 
@@ -42,6 +41,13 @@ pub struct AgentCostSummary {
 pub struct GlobalDb {
     conn: Connection,
     _db: LibsqlDatabase,
+}
+
+#[derive(Clone, Copy)]
+enum SnapshotKind {
+    Droid,
+    Copilot,
+    Codex { legacy_output_tokens: u64 },
 }
 
 /// Returns the global database in the active channel directory.
@@ -257,7 +263,8 @@ impl GlobalDb {
                 tool_names TEXT NOT NULL DEFAULT '',
                 agent TEXT NOT NULL DEFAULT 'claude',
                 credits INTEGER,
-                tool_result_tokens INTEGER NOT NULL DEFAULT 0
+                tool_result_tokens INTEGER NOT NULL DEFAULT 0,
+                usage_revision INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp);
             CREATE INDEX IF NOT EXISTS idx_turns_project ON turns(project_hash);
@@ -290,8 +297,10 @@ impl GlobalDb {
         .await
         .ok()?;
 
-        // Migrate existing DBs: add agent/credits columns if absent.
-        Self::migrate_turns_columns(&conn).await;
+        if let Err(error) = Self::migrate_turns_columns(&conn).await {
+            eprintln!("[tokensave] global accounting schema migration failed: {error}");
+            return None;
+        }
         Self::migrate_project_paths(&conn).await;
 
         Some(Self { conn, _db: db })
@@ -304,51 +313,48 @@ impl GlobalDb {
         Self::open_at(&db_path).await
     }
 
-    /// Add `agent`, `credits` and `tool_result_tokens` columns to an existing
-    /// turns table if absent.
-    /// Best-effort: failures are silently ignored (matches `open_at` pattern).
-    async fn migrate_turns_columns(conn: &Connection) {
-        let Ok(mut rows) = conn.query("PRAGMA table_info(turns)", ()).await else {
-            return;
-        };
-        let mut has_agent = false;
-        let mut has_credits = false;
-        let mut has_tool_result_tokens = false;
-        while let Ok(Some(row)) = rows.next().await {
-            if let Ok(name) = row.get::<String>(1) {
-                match name.as_str() {
-                    "agent" => has_agent = true,
-                    "credits" => has_credits = true,
-                    "tool_result_tokens" => has_tool_result_tokens = true,
-                    _ => {}
+    async fn turns_columns(
+        conn: &Connection,
+    ) -> crate::errors::Result<std::collections::HashSet<String>> {
+        let mut rows = conn.query("PRAGMA table_info(turns)", ()).await?;
+        let mut columns = std::collections::HashSet::new();
+        while let Some(row) = rows.next().await? {
+            columns.insert(row.get::<String>(1)?);
+        }
+        Ok(columns)
+    }
+
+    /// Add missing snapshot columns, resolving concurrent ALTERs by actual schema.
+    async fn migrate_turns_columns(conn: &Connection) -> crate::errors::Result<()> {
+        let columns = Self::turns_columns(conn).await?;
+        for (column, statement) in [
+            (
+                "agent",
+                "ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
+            ),
+            ("credits", "ALTER TABLE turns ADD COLUMN credits INTEGER"),
+            (
+                "tool_result_tokens",
+                "ALTER TABLE turns ADD COLUMN tool_result_tokens INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "usage_revision",
+                "ALTER TABLE turns ADD COLUMN usage_revision INTEGER NOT NULL DEFAULT 0",
+            ),
+        ] {
+            if !columns.contains(column) {
+                if let Err(error) = conn.execute(statement, ()).await {
+                    if !Self::turns_columns(conn).await?.contains(column) {
+                        return Err(error.into());
+                    }
                 }
             }
         }
-        if !has_agent {
-            let _ = conn
-                .execute(
-                    "ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
-                    (),
-                )
-                .await;
-        }
-        if !has_credits {
-            let _ = conn
-                .execute("ALTER TABLE turns ADD COLUMN credits INTEGER", ())
-                .await;
-        }
-        if !has_tool_result_tokens {
-            // Backfilled as 0 rather than recomputed: the figure comes from
-            // transcript lines this database does not keep, and re-reading
-            // every session to fill history in would cost more than the metric
-            // is worth. Turns parsed from here on carry it (#474).
-            let _ = conn
-                .execute(
-                    "ALTER TABLE turns ADD COLUMN tool_result_tokens INTEGER NOT NULL DEFAULT 0",
-                    (),
-                )
-                .await;
-        }
+        conn.prepare(
+            "SELECT agent, credits, tool_result_tokens, usage_revision FROM turns LIMIT 0",
+        )
+        .await?;
+        Ok(())
     }
 
     /// Rewrites pre-existing project keys to their canonical form, once per DB.
@@ -690,57 +696,113 @@ impl GlobalDb {
     ///
     /// Returns `true` if a row was inserted or updated, `false` otherwise.
     pub async fn upsert_droid_turn(&self, turn: &crate::types::CostTurn) -> bool {
-        self.upsert_monotonic_turn(turn, false).await
+        self.upsert_monotonic_turn(turn, SnapshotKind::Droid)
+            .await
+            .unwrap_or_else(|error| {
+                eprintln!("[tokensave] Droid accounting snapshot failed: {error}");
+                false
+            })
     }
 
     /// Upsert a Copilot cumulative checkpoint, moving its timestamp when the
     /// stored AIU total increases.
     pub async fn upsert_copilot_turn(&self, turn: &crate::types::CostTurn) -> bool {
-        self.upsert_monotonic_turn(turn, true).await
+        self.upsert_monotonic_turn(turn, SnapshotKind::Copilot)
+            .await
+            .unwrap_or_else(|error| {
+                eprintln!("[tokensave] Copilot accounting snapshot failed: {error}");
+                false
+            })
+    }
+
+    /// Store validated Codex native counters, repairing a dominated legacy snapshot once.
+    pub(crate) async fn upsert_codex_turn(
+        &self,
+        turn: &crate::types::CostTurn,
+        legacy_output_tokens: u64,
+    ) -> crate::errors::Result<bool> {
+        self.upsert_monotonic_turn(
+            turn,
+            SnapshotKind::Codex {
+                legacy_output_tokens,
+            },
+        )
+        .await
+    }
+
+    /// Cached Codex rows still requiring authoritative native-source replay.
+    pub async fn legacy_codex_rows(&self) -> crate::errors::Result<u64> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT COUNT(*) FROM turns WHERE agent = 'codex' AND usage_revision = 0",
+                (),
+            )
+            .await?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| crate::errors::TokenSaveError::Database {
+                message: "missing legacy snapshot count".to_string(),
+                operation: "count legacy Codex snapshots".to_string(),
+            })?;
+        Ok(row.get::<i64>(0)? as u64)
     }
 
     async fn upsert_monotonic_turn(
         &self,
         turn: &crate::types::CostTurn,
-        update_timestamp: bool,
-    ) -> bool {
-        self.conn
+        kind: SnapshotKind,
+    ) -> crate::errors::Result<bool> {
+        let (revision, legacy_output_tokens) = match kind {
+            SnapshotKind::Codex {
+                legacy_output_tokens,
+            } => (1, Some(legacy_output_tokens as i64)),
+            _ => (0, None),
+        };
+        let changed = self.conn
             .execute(
                 "INSERT INTO turns
                  (message_id, project_hash, session_id, model, timestamp,
                   input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
-                  cost_usd, category, tool_names, agent, credits)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                  cost_usd, category, tool_names, agent, credits, usage_revision)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?16)
                  ON CONFLICT(message_id) DO UPDATE SET
                      project_hash        = excluded.project_hash,
                      session_id          = excluded.session_id,
                      model               = excluded.model,
                      timestamp           = CASE WHEN ?15 THEN excluded.timestamp ELSE turns.timestamp END,
-                     input_tokens        = MAX(excluded.input_tokens,        turns.input_tokens),
-                     output_tokens       = MAX(excluded.output_tokens,       turns.output_tokens),
-                     cache_write_tokens  = MAX(excluded.cache_write_tokens,  turns.cache_write_tokens),
-                     cache_read_tokens   = MAX(excluded.cache_read_tokens,   turns.cache_read_tokens),
+                     input_tokens        = excluded.input_tokens,
+                     output_tokens       = excluded.output_tokens,
+                     cache_write_tokens  = excluded.cache_write_tokens,
+                     cache_read_tokens   = excluded.cache_read_tokens,
                      cost_usd            = excluded.cost_usd,
                      category            = excluded.category,
                      tool_names          = excluded.tool_names,
                      agent               = excluded.agent,
-                     credits             = COALESCE(excluded.credits, turns.credits)
+                     credits             = COALESCE(excluded.credits, turns.credits),
+                     usage_revision      = excluded.usage_revision
                  WHERE
-                     excluded.input_tokens        >= turns.input_tokens
-                     AND excluded.output_tokens       >= turns.output_tokens
+                     excluded.agent = turns.agent
+                     AND excluded.input_tokens        >= turns.input_tokens
                      AND excluded.cache_write_tokens  >= turns.cache_write_tokens
                      AND excluded.cache_read_tokens   >= turns.cache_read_tokens
                      AND (excluded.credits IS NULL
                           OR turns.credits IS NULL
                           OR excluded.credits >= turns.credits)
                      AND (
-                         excluded.input_tokens        > turns.input_tokens
-                         OR excluded.output_tokens       > turns.output_tokens
-                         OR excluded.cache_write_tokens  > turns.cache_write_tokens
-                         OR excluded.cache_read_tokens   > turns.cache_read_tokens
-                         OR (excluded.credits IS NOT NULL
-                             AND (turns.credits IS NULL
-                                  OR excluded.credits > turns.credits))
+                         (excluded.usage_revision = turns.usage_revision
+                          AND excluded.output_tokens >= turns.output_tokens
+                          AND (excluded.input_tokens        > turns.input_tokens
+                               OR excluded.output_tokens       > turns.output_tokens
+                               OR excluded.cache_write_tokens  > turns.cache_write_tokens
+                               OR excluded.cache_read_tokens   > turns.cache_read_tokens
+                               OR (excluded.credits IS NOT NULL
+                                   AND (turns.credits IS NULL
+                                        OR excluded.credits > turns.credits))))
+                         OR (excluded.agent = 'codex'
+                             AND turns.usage_revision = 0 AND excluded.usage_revision = 1
+                             AND ?17 >= turns.output_tokens)
                      )",
                 params![
                     turn.message_id.clone(),
@@ -757,11 +819,13 @@ impl GlobalDb {
                     turn.tool_names.clone(),
                     turn.agent.clone(),
                     turn.credits.map(|c| c as i64),
-                    i64::from(update_timestamp),
+                    i64::from(matches!(kind, SnapshotKind::Copilot)),
+                    revision,
+                    legacy_output_tokens,
                 ],
             )
-            .await
-            .is_ok_and(|n| n > 0)
+            .await?;
+        Ok(changed > 0)
     }
 
     /// Total cost in USD since a given unix timestamp.
@@ -1004,6 +1068,61 @@ impl GlobalDb {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn snapshot_migration_fails_closed_then_retries_when_writable() {
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE turns (agent TEXT, credits INTEGER, tool_result_tokens INTEGER);
+             PRAGMA query_only = ON;",
+        )
+        .await
+        .unwrap();
+        assert!(GlobalDb::migrate_turns_columns(&conn).await.is_err());
+        conn.execute_batch("PRAGMA query_only = OFF;")
+            .await
+            .unwrap();
+        GlobalDb::migrate_turns_columns(&conn).await.unwrap();
+        GlobalDb::migrate_turns_columns(&conn).await.unwrap();
+        assert!(GlobalDb::turns_columns(&conn)
+            .await
+            .unwrap()
+            .contains("usage_revision"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_snapshot_migrations_recheck_actual_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Builder::new_local(dir.path().join("legacy.db"))
+            .build()
+            .await
+            .unwrap();
+        let first = db.connect().unwrap();
+        let second = db.connect().unwrap();
+        first
+            .execute_batch(
+                "PRAGMA journal_mode = WAL;
+             PRAGMA busy_timeout = 5000;
+             CREATE TABLE turns (agent TEXT, credits INTEGER, tool_result_tokens INTEGER);",
+            )
+            .await
+            .unwrap();
+        second
+            .execute_batch("PRAGMA busy_timeout = 5000;")
+            .await
+            .unwrap();
+        let (a, b) = tokio::join!(
+            GlobalDb::migrate_turns_columns(&first),
+            GlobalDb::migrate_turns_columns(&second)
+        );
+        a.unwrap();
+        b.unwrap();
+        assert!(GlobalDb::turns_columns(&first)
+            .await
+            .unwrap()
+            .contains("usage_revision"));
+    }
 
     #[test]
     fn dot_resolves_to_the_same_key_as_the_absolute_path() {
