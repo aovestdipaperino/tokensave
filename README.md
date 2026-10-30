@@ -98,9 +98,9 @@ Choose one installation method:
 | Platform | Command |
 |---|---|
 | macOS (Homebrew) | `brew install aovestdipaperino/tap/tokensave` |
+| Windows (Scoop) | `scoop bucket add tokensave https://github.com/aovestdipaperino/scoop-bucket`<br>`scoop install tokensave` |
 | Any platform with Rust | `cargo install tokensave` |
 | Any platform with cargo-binstall | `cargo binstall tokensave` |
-| Windows (Scoop) | `scoop bucket add tokensave https://github.com/aovestdipaperino/scoop-bucket`<br>`scoop install tokensave` |
 
 You can also download a [prebuilt binary](https://github.com/aovestdipaperino/tokensave/releases/latest) and add it to your `PATH`.
 
