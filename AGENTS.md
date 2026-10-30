@@ -179,6 +179,83 @@ coverage changes, update the report's scope and limitations. Before finishing,
 review the source diff for SQL changes and verify that each is reflected in the
 report. Git history records the changes; the report describes the current source.
 
+## Rust style guide (master only)
+
+TokenSave has adopted [Google's Rust Style Guide](https://google.github.io/styleguide/rustguide.html)
+for Rust code on `master` (#845). It applies to every new or modified Rust
+file in `src/`, `tests/`, `benches/`, `examples/` and `build.rs`. `vendor/`,
+the `codegraph/` submodule and generated or vendored grammar sources are
+excluded. This section is an intentional difference between the branches. Do
+not copy it, the matching CONTRIBUTING.md section or the style cleanup to
+`beta` unless a later decision extends the adoption.
+
+This change integrates the rules only. The repository-wide audit and any
+cleanup of existing code remain follow-up work tracked by #845; adoption does
+not imply that the current codebase has been audited or is fully compliant.
+
+Precedence, highest first:
+
+1. TokenSave's explicitly documented rules: this file, CONTRIBUTING.md
+   (including path construction and memory/resource management), the crate
+   lint configuration in `src/lib.rs`, and the exceptions listed below.
+2. Google's Rust Style Guide.
+3. The official [Rust Style Guide](https://doc.rust-lang.org/style-guide/) and
+   [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/), as the
+   Google guide directs.
+4. Default `rustfmt` output from the pinned toolchain.
+
+Guide sections marked `[chrome]`, Chromium, Android or Fuchsia do not apply.
+These include small crates, flat file layout, `chromium::import!`, the bans on
+`async` and standard-library threads, and the gtest/Fuchsia test frameworks.
+TokenSave is application code (a CLI and MCP server), so, following the
+guide's "Apply API design rules in context" section, its API-design rules are
+strong recommendations rather than binding requirements.
+
+Project-specific exceptions:
+
+- **No `unwrap`/`expect` in library code.** `src/lib.rs` denies
+  `clippy::unwrap_used` and `clippy::expect_used`. This overrides the guide's
+  "Prefer `expect` over `unwrap`". Use pattern matching, `?`, `let ... else` or
+  a typed error instead. Inline library tests inherit these crate lints unless
+  explicitly overridden. In separate test crates and the binary entry point,
+  where permitted by their lint configuration, prefer `expect` with a message
+  that states the invariant.
+- **Errors instead of panics.** Library code reports broken invariants through
+  `Result` or `Option`, using the guide's option to avoid panics entirely.
+- **`catch_unwind` as defense in depth.** `safe_extract` in
+  `src/tokensave/extract.rs` catches extractor panics so that one bad file is
+  skipped. Subprocess isolation remains the primary defense. This falls under
+  the guide's defense-in-depth exception. Add no other `catch_unwind` use
+  unless it has the same justification and is approved in review.
+- **Async, threads and `Arc`.** Tokio, `async`/`.await` and worker threads are
+  part of the architecture. `Arc` is acceptable for state shared across tasks
+  or threads. Justify any other `Rc`/`Arc` use as the guide requires.
+- **No `rustfmt.toml`.** The guide's `imports_granularity = Module`,
+  `hex_literal_case = Lower` and `format_macro_matchers` options are not
+  available on the pinned stable toolchain, and the guide allows them to be
+  omitted. `max_width = 100` is already the default. Apply one-module-per-`use`
+  and lowercase hex literals by hand in new code.
+- **Glob imports (tracked deviation).** `src/lib.rs` allows
+  `clippy::wildcard_imports`, and existing code contains glob imports. New
+  code must not add glob imports outside the guide's permitted cases: `use
+  super::*` in inline modules (such as `mod tests`), `use Enum::*` in code
+  focused on that enum, and `pub use submodule::*` re-exports. Existing glob
+  imports are handled by the #845 audit, not in unrelated changes.
+
+Exceptions and upstream revisions:
+
+- Every deviation must either be listed above or be justified where it occurs,
+  with `#[allow(lint, reason = "...")]` or a nearby comment, and be accepted in
+  PR review. Do not deviate silently.
+- When Google revises the guide, update this section and CONTRIBUTING.md in a
+  dedicated docs PR that names the revision reviewed and any rules that change.
+- Keep style-only cleanup behavior-preserving and in separate, reviewable PRs,
+  split by module. Do not mix it with functional changes or reformat unrelated
+  code in a feature PR.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md#rust-coding-style) for which rules tooling
+enforces and which need manual review.
+
 ## Build, lint, and test
 
 Follow the mandatory [filesystem path construction rule](CONTRIBUTING.md#filesystem-path-construction):
