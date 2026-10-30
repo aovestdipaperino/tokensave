@@ -8,9 +8,17 @@ This file provides guidance to the agent when working with code in this reposito
   repository. This rule applies to every fork. Use a work branch instead of
   working directly on `master`, unless the user explicitly requests a direct
   commit.
-- Use descriptive branch names that do not contain the number of any issue
-  or pull request associated with the work. Refer to issues and pull requests
-  in commit messages and PR descriptions instead.
+- Name branches `<type>/<short-description>`, using the same Conventional
+  Commits types as commit messages (for example `feat/dart-annotations`,
+  `fix/utf16-sync`, `refactor/resolver-lookup`, `ci/release-workflow`). Keep
+  the description descriptive, lowercase, and hyphenated, and do not include
+  the number of any issue or pull request associated with the work. Refer to
+  issues and pull requests in commit messages and PR descriptions instead.
+- Write commit messages and PR titles using
+  [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`,
+  `fix:`, `docs:`, `ci:`, `refactor:`, `test:`, `chore:`, with an optional
+  scope such as `fix(db):`), as described in
+  [CONTRIBUTING.md](CONTRIBUTING.md#commit-messages).
 
 ## Keeping agent guidance current
 
