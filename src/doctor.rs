@@ -202,8 +202,7 @@ async fn check_stale_stores(dc: &mut DoctorCounters) {
         .await
         .into_iter()
         .filter(|p| {
-            !Path::new(p)
-                .join(".tokensave")
+            !crate::config::get_tokensave_dir(Path::new(p))
                 .join("tokensave.db")
                 .exists()
         })
@@ -272,6 +271,20 @@ fn check_user_config(dc: &mut DoctorCounters) {
         }
     } else {
         dc.fail("Could not determine home directory for config");
+    }
+    let source = if std::env::var_os(crate::auto_init::AUTO_INIT_ENV).is_some() {
+        crate::auto_init::AUTO_INIT_ENV
+    } else {
+        "config.toml"
+    };
+    if crate::auto_init::enabled() {
+        dc.info(&format!(
+            "auto_init on ({source}): new git repositories are indexed on first commit or serve"
+        ));
+    } else {
+        dc.info(&format!(
+            "auto_init off ({source}): run `tokensave init` in new repositories"
+        ));
     }
 }
 

@@ -135,6 +135,7 @@ async fn ensure_fingerprints(
 ) -> Result<(HashMap<String, Fingerprint>, usize)> {
     let registry = crate::extraction::LanguageRegistry::new();
     let project_root = cg.project_root().to_path_buf();
+    let read_only = cg.db().is_read_only();
 
     // Group candidates by file so we parse each file at most once.
     let mut by_file: HashMap<String, Vec<&Node>> = HashMap::new();
@@ -250,10 +251,14 @@ async fn ensure_fingerprints(
                 continue;
             };
             let fp = compute_fingerprint(&source, ts_node);
-            // Persist for next time. Errors are logged but not fatal —
-            // the redundancy query still returns results.
-            if let Err(e) = cg.db().upsert_fingerprint(&node.id, &fp).await {
-                eprintln!("[tokensave] redundancy: upsert_fingerprint failed: {e}");
+            // Persist for next time. Errors are logged but not fatal:
+            // the redundancy query still returns results. A read-only
+            // database (a selected graph) is never written, so the cache is
+            // skipped there rather than attempted and logged per function.
+            if !read_only {
+                if let Err(e) = cg.db().upsert_fingerprint(&node.id, &fp).await {
+                    eprintln!("[tokensave] redundancy: upsert_fingerprint failed: {e}");
+                }
             }
             out.insert(node.id.clone(), fp);
         }
