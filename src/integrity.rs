@@ -147,7 +147,8 @@ impl Check {
             .write(true)
             .open(sidecar(&path, ".integrity.lock"))?;
         if let Err(error) = lock.try_lock_exclusive() {
-            if error.kind() == std::io::ErrorKind::WouldBlock {
+            // Windows reports contention as ERROR_LOCK_VIOLATION, not WouldBlock.
+            if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
                 return Ok(None);
             }
             return Err(error.into());
