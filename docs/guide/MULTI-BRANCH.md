@@ -16,6 +16,7 @@ tokensave branch list             # see tracked branches and DB sizes
 tokensave branch remove <name>    # stop tracking a branch
 tokensave branch removeall        # remove all tracked branches except default
 tokensave branch gc               # clean up branches deleted from git
+tokensave branch set-default <name>  # make <name> the default branch, keeping its index
 ```
 
 ## Cross-branch MCP tools
@@ -29,6 +30,20 @@ Three MCP tools enable cross-branch queries without switching your checkout:
 ## Branch fallback
 
 When the MCP server can't find a database for the current branch, it serves from the nearest ancestor branch's DB and includes a warning in every tool response suggesting you run `tokensave branch add`.
+
+## Default branch
+
+`tokensave init` records the repository's default branch in `.tokensave/branch-meta.json`. It uses the branch `refs/remotes/origin/HEAD` points to while that branch still exists locally or under `origin/`, then a local `main` or `master`, then the branch checked out at the time. `tokensave branch add` detects it the same way when it creates the branch metadata.
+
+Renaming the default branch after init (`git branch -m master main`, or a rename on the hosting side followed by a local one) leaves that record naming a branch that no longer exists. Every time tokensave opens the project, it compares the record with the repository:
+
+- **The recorded branch is gone and the detected default is untracked.** tokensave renames the entry in place, keeping its database, and logs one line such as `default branch updated: master → main (master no longer exists)`. Branches copied from the old name follow the rename. No database is copied or deleted.
+- **The recorded branch is gone and the detected default is already tracked with its own database.** This happens when `main` was tracked (by `branch add` or `auto_track`) before the rename was noticed. tokensave changes nothing and prints a warning instead. Run `tokensave branch set-default main` to make that entry the default, then `tokensave branch remove master` to delete the old index.
+- **Both branches still exist.** Nothing changes; you may track `master` on purpose.
+
+`tokensave branch set-default <name>` sets the default explicitly. If `<name>` is untracked, it takes over the current default's entry and database. If `<name>` is already tracked, its entry becomes the default and the previous default stays as an ordinary branch entry, which `tokensave branch remove` can delete. The command refuses a name that is neither a local nor an `origin/` branch.
+
+A stale default is reported by `tokensave branch list`, by the `default_branch_warning` field of the `tokensave_status` and `tokensave_branch_list` MCP tools, and as a `BRANCH_DEFAULT_STALE` warning by `tokensave verify`.
 
 ## Automatic branch tracking (v7.3.0)
 
