@@ -288,6 +288,22 @@ impl TokenSave {
             // Other open errors are handled below.
         }
 
+        // A default branch renamed since init would otherwise be auto-tracked
+        // below as an ordinary branch, duplicating its database (#874). Best
+        // effort, like auto-track: never fail open() on this.
+        match branch::reconcile_default_branch(project_root, &tokensave_dir).await {
+            Ok(branch::DefaultBranchState::Renamable { recorded, detected }) => eprintln!(
+                "[tokensave] default branch updated: {recorded} → {detected} \
+                 ({recorded} no longer exists)"
+            ),
+            Ok(state) => {
+                if let Some(warning) = state.warning() {
+                    eprintln!("[tokensave] warning: {warning}");
+                }
+            }
+            Err(e) => eprintln!("[tokensave] default branch check skipped: {e}"),
+        }
+
         // Transparent auto-track: when branch metadata exists and the active
         // branch is untracked, copy the ancestor DB so queries + get_stats serve
         // a real per-branch DB instead of silently falling back. Best-effort —

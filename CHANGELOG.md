@@ -24,6 +24,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- **Repositories created with `git init` are indexed automatically (Refs #876).** A new user-level `auto_init` setting in `~/.tokensave/config.toml`, on by default, lets a pathless `tokensave sync` (what the `post-commit` and `post-merge` hooks run) and `tokensave serve` initialize the top level of a git repository that has no index, so hooks installed by earlier versions pick it up without being rewritten. Repositories under the system temp dir, your home directory itself, bare repositories, subdirectories, explicit `sync <path>`/`serve --path` targets and trees with more candidate files than `max_auto_sync_files` are skipped; the last prints a hint to run `tokensave init`. `TOKENSAVE_AUTO_INIT` overrides the setting for one run, and `tokensave doctor` reports the effective value.
 - Add a pinned Graphify CLI compatibility harness covering repeated exports, queries, visualization and conflicting dirty worktrees; publish fixture evidence and remaining measurement gates (Refs #791).
 
 ### Added
@@ -35,6 +36,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - Define the pinned, optional Graphify file-interchange evaluation contract and gated implementation scope (Refs #791).
 
 ### Fixed
+
+- Let the Python comparison benchmark reuse `TOKENSAVE_BENCH_REPOS_DIR` and standard temporary-directory selection, and report clone-storage failures with the destination and a relocation hint (Refs #767).
+
+- Keep the recorded default branch in step with the repository: opening a project renames a default entry whose branch no longer exists (for example after `git branch -m master main`) instead of serving the real default as an untracked branch or duplicating its database; `origin/HEAD` is used only while its branch exists, and `branch add` detects the default like `init` instead of assuming `main`. Add `tokensave branch set-default`, a `BRANCH_DEFAULT_STALE` warning in `tokensave verify`, and a `default_branch_warning` in `tokensave branch list`, `tokensave_status` and `tokensave_branch_list` (Refs #874).
 
 - Hold the writer lock throughout interrupted-index recovery and refuse rebuilding a borrowed branch database from another checkout (Refs #864).
 

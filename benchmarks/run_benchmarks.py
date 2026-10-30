@@ -30,6 +30,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import tracemalloc
 from pathlib import Path
@@ -39,7 +40,6 @@ REPOS: dict[str, str] = {
     "cpython": "https://github.com/python/cpython.git",
 }
 
-CLONE_DIR = Path("/tmp/tokensave-bench")
 RESULTS_DIR = Path(__file__).resolve().parent
 RESULTS_JSON = RESULTS_DIR / "comparison-results.json"
 REPORT_MD = RESULTS_DIR / "comparison-report.md"
@@ -59,12 +59,20 @@ def log(msg: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def clone_root() -> Path:
+    """Persistent clone cache; share the Criterion harness's directory override."""
+    configured = os.environ.get("TOKENSAVE_BENCH_REPOS_DIR")
+    if configured:
+        return Path(configured)
+    return Path(tempfile.gettempdir()) / "tokensave-bench"
+
+
 def clone_repo(name: str, url: str, skip_clone: bool) -> Path:
-    dest = CLONE_DIR / name
+    dest = clone_root() / name
     if dest.exists():
         log(f"{name}: reusing existing clone at {dest}")
         return dest
-    CLONE_DIR.mkdir(parents=True, exist_ok=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
     log(f"{name}: cloning {url} (shallow, depth=1) ...")
     subprocess.run(
         ["git", "clone", "--depth=1", "--single-branch", url, str(dest)],
@@ -592,8 +600,11 @@ def main() -> None:
     for name in args.repos:
         try:
             root = clone_repo(name, REPOS[name], skip_clone=args.skip_clone)
-        except subprocess.CalledProcessError as exc:
-            log(f"SKIP {name}: clone failed -- {exc.stderr.strip()[:200]}")
+        except (OSError, subprocess.CalledProcessError) as exc:
+            detail = (exc.stderr or str(exc)) if isinstance(exc, subprocess.CalledProcessError) else str(exc)
+            log(f"SKIP {name}: clone failed in {clone_root() / name}: {detail.strip()[:200]}")
+            log("Check free space and permissions there; set TOKENSAVE_BENCH_REPOS_DIR "
+                "to a writable disk-backed directory to relocate the clone cache.")
             continue
 
         naive_sizes[name] = naive_source_size(str(root))

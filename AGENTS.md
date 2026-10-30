@@ -265,10 +265,10 @@ portable string formats, and documented path-syntax test fixtures.
 
 - Toolchain is pinned by `rust-toolchain.toml` (Rust 1.98.1, clippy + rustfmt).
 - `cargo build` builds the default `full` feature set (50+ languages). For fast dev cycles use `cargo build --no-default-features --features lite` (or `medium`).
-- `cargo test --workspace` is the CI test command. On Windows set `RUST_MIN_STACK=8388608` (CI does this; async-heavy tests overflow the 1 MB MSVC default).
+- `cargo test --workspace --locked --features test-transport` is the CI test command; CI also runs `cargo test --workspace --locked --no-default-features --features lite` and `cargo check --workspace --all-targets --locked --no-default-features --features medium` on Linux. On Windows set `RUST_MIN_STACK=8388608` (CI does this; async-heavy tests overflow the 1 MB MSVC default).
 - `cargo clippy --workspace --all-targets` (CI runs it with `continue-on-error: true`).
 - `cargo fmt --all -- --check`.
-- Pi extension prompt/relay tests: `node --experimental-strip-types --test tests/pi_extension_test.mjs` (Node 22.6+ with TypeScript stripping support; separate from Cargo tests).
+- Pi extension prompt/relay tests: `node --experimental-strip-types --test tests/pi_extension_test.mjs` (Node 22.6+ with TypeScript stripping support; separate from Cargo tests; run by the `Pi extension` CI job).
 - Documentation checks: `python3 scripts/wiki/sync_wiki.py check` (links, anchors, wiki sidebar) and `python3 -m unittest discover -s scripts/wiki`; preview the wiki with `python3 scripts/wiki/sync_wiki.py build --out /tmp/tokensave-wiki`. Run by `.github/workflows/wiki.yml`, separate from Cargo tests.
 - `src/lib.rs` denies `clippy::all`, `clippy::unwrap_used`, and `clippy::expect_used`, and warns on `clippy::pedantic` — avoid `unwrap()`/`expect()` in library code.
 - Language-specific tests: `cargo test --test integration rust_extraction_test::`; single test: `cargo test test_find_stale_files`; filter: `cargo test sync`. Lite-only local loop: `cargo test-lite`.
@@ -335,6 +335,7 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - `TOKENSAVE_DISABLE_GREP_HOOK=1` — opt out of the Claude PreToolUse grep guardrail (useful for headless/subagent dispatch).
 - `TOKENSAVE_AUTO_TRACK` — per-run override of the `auto_track` config field (truthy values enable; `0`/`false`/`no`/`off`/empty disable).
 - `TOKENSAVE_HOOK_DEBUG` — makes the `post-checkout` hook and `branch add --if-enabled` explain skipped actions on stderr and in `.tokensave/hook-debug.log` (initialized projects only; restarts at 256 KiB). Off by default so hooks stay quiet.
+- `TOKENSAVE_AUTO_INIT` — per-run override of the user-level `auto_init` setting in `~/.tokensave/config.toml` (same parsing as `TOKENSAVE_AUTO_TRACK`).
 - Bench vars: `TOKENSAVE_BENCH_REPOS_DIR` (required), `TOKENSAVE_BENCH_REPOS`, `TOKENSAVE_BENCH_SKIP_CLONE`; probe: `TOKENSAVE_PROBE_REPOS`.
 
 ## Gotchas and workflow quirks
@@ -345,8 +346,8 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - **CHANGELOG.md is huge (~500 KB).** The release workflow extracts the `## [<version>]` block; run `scripts/prepare-release.py` before a release to promote `[Unreleased]` content into it (idempotent).
 - **CI disk-space flake.** The Linux runner ships ~10 GB free; the ~713 MB cache restore plus the cargo target dir (34 tree-sitter parsers) can exceed it, so CI frees disk space first.
 - **No daemon / file watcher.** Since 6.1.1 the design is on-demand staleness: every MCP tool call checks for stale files (30 s cooldown), and the server runs a catch-up sync on connect. CLI-only workflows rely on git hooks (`scripts/post-commit`, `scripts/post-checkout`) to keep the index fresh.
-- **`init` vs `sync`.** `init` is one-time opt-in per project; `sync` only updates already-initialized projects. Global git hooks never create DBs in uninitialized repos.
+- **`init` vs `sync`.** `sync <path>` only updates already-initialized projects. A pathless `sync` (what the `post-commit`/`post-merge` hooks run) and `serve` initialize an uninitialized git repository top level when the user-level `auto_init` setting allows it (default on, #876); the gate and its guards (temp dir, `$HOME`, bare/subdirectory, `max_auto_sync_files`) live in `src/auto_init.rs`. Repositories under the system temp dir are always skipped, so tests that expect the old behavior keep it; tests of auto-init give the child its own `TMPDIR`.
 - **Multi-agent work assumes git worktrees.** tokensave detects nested worktrees and serves the correct branch graph; changes accumulate independently and reconcile via merge/rebase.
 - **`codegraph` is a git submodule** (`codegraph/`), not part of the crate.
 - **`test-transport` feature** adds test-only JSON-RPC transport hooks in `src/mcp/`.
-- **Release workflow** builds per-platform binaries and skips beta/prerelease tags (handled by `release-beta.yml`).
+- **Release workflow** builds per-platform binaries with `--locked` on the pinned toolchain and skips beta/prerelease tags. `release-beta.yml` is disabled: its jobs are gated on the `BETA_CHANNEL_ENABLED` repository variable (`vars`, because `env` is not available in a job-level `if:`), and beta installs from the `beta` branch.

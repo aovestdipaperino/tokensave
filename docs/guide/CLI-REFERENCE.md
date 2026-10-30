@@ -11,7 +11,7 @@ tokensave config benchmark --show  # Show the saved benchmark and settings (neve
 tokensave config benchmark --force # Measure this machine again
 tokensave config benchmark --reset # Delete the saved benchmark
 tokensave tune [path] [--dry-run]  # Re-benchmark, save globally, update a pinned cpu_usage
-tokensave sync [path]              # Incremental sync (must be initialized first)
+tokensave sync [path]              # Incremental sync; without a path, auto_init may initialize a new repo
 tokensave sync --force [path]      # Force a full re-index
 tokensave sync --doctor [path]     # Sync and list added/modified/removed files
 tokensave verify [path]            # Read-only index integrity and source-stat checks
@@ -37,9 +37,18 @@ tokensave upgrade                  # Self-update to latest version
 tokensave channel [stable|beta]    # Show or switch update channel
 tokensave doctor [--agent NAME]    # Check installation health
 tokensave githooks [on|off] [--local]  # Manage git hooks (--local: this repo only, no core.hooksPath)
-tokensave branch add|list|remove|removeall|gc   # Multi-branch management
+tokensave branch add|list|remove|removeall|gc|set-default   # Multi-branch management
 tokensave current-counter          # Show per-project token counter
 tokensave reset-counter            # Reset per-project token counter
 tokensave disable-upload-counter   # Opt out of worldwide counter uploads
 tokensave enable-upload-counter    # Re-enable worldwide counter uploads
 ```
+
+## Settings for automatic initialization
+
+| Setting | Where | Effect |
+|---|---|---|
+| `auto_init` | `~/.tokensave/config.toml` | `true` (default): a git repository with no index is initialized by a pathless `sync` (the `post-commit` and `post-merge` hooks) or by `serve`. `false`: run `tokensave init` yourself. |
+| `TOKENSAVE_AUTO_INIT` | environment | Overrides `auto_init` for one run. `0`, `false`, `no`, `off` or empty turn it off; any other value turns it on. |
+
+See [Automatic initialization](INDEXING.md#automatic-initialization) for the guards that apply.

@@ -9,10 +9,26 @@ cd /path/to/your/project
 tokensave init
 ```
 
-This creates a `.tokensave/` directory with the knowledge graph database. Initialization and sync are separate commands: `init` is a one-time opt-in per project, while `sync` only updates projects that were already initialized. This prevents the global git hooks from silently creating databases in repos you never intended to index. After `init`, use `tokensave sync` to incrementally update -- only changed files are re-indexed.
+This creates a `.tokensave/` directory with the knowledge graph database. After `init`, use `tokensave sync` to incrementally update -- only changed files are re-indexed. A repository you start with `git init` can also be initialized for you; see [Automatic initialization](#automatic-initialization).
 
 The [user guide](../USER-GUIDE.md#your-first-index) covers skipped folders,
 `.gitignore` handling, forced re-indexing, and diagnosing slow syncs.
+
+## Automatic initialization
+
+A cloned repository is indexed by the `post-checkout` hook on its first checkout. A repository started with `git init` gets no checkout, so the `auto_init` setting (on by default) covers it. Two entry points initialize a git repository that has no index yet:
+
+- **The first commit.** The `post-commit` and `post-merge` hooks run `tokensave sync` with no path. In a repository with no index, that `sync` runs `init` instead of failing. Hooks installed by earlier versions get this behavior too: the decision is made by the binary, not the hook script.
+- **The MCP server.** `tokensave serve` started at the top level of such a repository initializes and indexes it before it answers the first request. This also covers machines without the global git hooks.
+
+Both apply only when every guard passes. Otherwise `sync` fails as it always has, and `serve` falls back as usual.
+
+- The directory is the top level of a git working tree. A subdirectory, a bare repository, a folder outside any repository, and an explicit `sync <path>` or `serve --path` never qualify, so no state is created outside the repository root.
+- No project already owns the directory, including an outer non-git workspace that indexes the repository.
+- The repository is not under the system temp dir, where other tools stage throwaway clones, and is not your home directory itself.
+- The repository has no more candidate files than `max_auto_sync_files` (2,000). A larger tree, such as `git init` in an existing large directory, is not indexed; `sync` prints a hint to run `tokensave init` deliberately.
+
+To turn it off, set `auto_init = false` in `~/.tokensave/config.toml`. `TOKENSAVE_AUTO_INIT` overrides the setting for one run: `0`, `false`, `no`, `off` or an empty value turn it off, and any other value turns it on. `tokensave doctor` reports the effective value.
 
 ## Running from subdirectories
 

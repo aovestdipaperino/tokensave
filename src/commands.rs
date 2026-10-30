@@ -22,6 +22,9 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             };
             let current = branch::current_branch(&project_path);
             eprintln!("Default branch: {}", meta.default_branch);
+            if let Some(warning) = branch::default_branch_state(&project_path, &meta).warning() {
+                eprintln!("\x1b[33mwarning:\x1b[0m {warning}");
+            }
             eprintln!();
             for (name, entry) in &meta.branches {
                 let db_path = tokensave_dir.join(&entry.db_file);
@@ -94,12 +97,22 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             let _branch_lock =
                 tokensave::tokensave::acquire_branch_operation_lock(&tokensave_dir).await?;
 
-            // Load or bootstrap metadata
-            let mut meta = branch_meta::load_branch_meta(&tokensave_dir).unwrap_or_else(|| {
-                let default = branch::detect_default_branch(&project_path)
-                    .unwrap_or_else(|| "main".to_string());
-                branch_meta::BranchMeta::new(&default)
-            });
+            // Load or bootstrap metadata, detecting the default the same way
+            // `init` does: a hard-coded "main" recorded a branch that does
+            // not exist in a `master` repository (#874).
+            let mut meta = match branch_meta::load_branch_meta(&tokensave_dir) {
+                Some(meta) => meta,
+                None => {
+                    let default = branch::detect_default_branch(&project_path)
+                        .or_else(|| branch::current_branch(&project_path))
+                        .ok_or_else(|| tokensave::errors::TokenSaveError::Config {
+                            message: "cannot detect the default branch (detached HEAD?). \
+                                      Check out the default branch and retry."
+                                .to_string(),
+                        })?;
+                    branch_meta::BranchMeta::new(&default)
+                }
+            };
 
             if meta.is_tracked(&branch_name) {
                 eprintln!("Branch '{branch_name}' is already tracked.");
@@ -210,6 +223,28 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
                 eprintln!("\x1b[32m✔\x1b[0m Branch '{name}' removed.");
             } else {
                 eprintln!("Branch '{name}' is not tracked.");
+            }
+        }
+        BranchAction::SetDefault { name, path } => {
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
+            let tokensave_dir = get_tokensave_dir(&project_path);
+            match branch::set_default_branch(&project_path, &tokensave_dir, &name).await? {
+                branch::SetDefaultOutcome::Unchanged => {
+                    eprintln!("Branch '{name}' is already the default.");
+                }
+                branch::SetDefaultOutcome::Renamed { previous } => {
+                    eprintln!(
+                        "\x1b[32m✔\x1b[0m Default branch is now '{name}' \
+                         (renamed from '{previous}', index kept)."
+                    );
+                }
+                branch::SetDefaultOutcome::Promoted { previous } => {
+                    eprintln!(
+                        "\x1b[32m✔\x1b[0m Default branch is now '{name}'. \
+                         '{previous}' is an ordinary branch now; run \
+                         `tokensave branch remove {previous}` to delete its index."
+                    );
+                }
             }
         }
         BranchAction::Removeall { path } => {
@@ -636,7 +671,7 @@ fn announce_benchmark(status: &tokensave::global_benchmark::CacheStatus, forced:
 /// `--cpu-usage` pins one. When the project will follow the global hardware
 /// benchmark, makes sure a valid one is saved, measuring only if none is, so
 /// the next project on this machine reuses it (#752).
-fn prepare_initial_cpu_usage(
+pub(crate) fn prepare_initial_cpu_usage(
     project_path: &Path,
     requested: Option<tokensave::cpu::CpuUsage>,
 ) -> tokensave::errors::Result<Option<tokensave::cpu::CpuUsage>> {

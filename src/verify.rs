@@ -96,6 +96,17 @@ fn database_path(root: &Path, report: &mut Report) -> Result<Option<PathBuf>> {
         );
         return Ok(None);
     }
+    if crate::branch::default_branch_state(root, &meta)
+        .warning()
+        .is_some()
+    {
+        report.add(
+            "BRANCH_DEFAULT_STALE",
+            "warning",
+            &meta.default_branch,
+            "The recorded default branch no longer exists; run `tokensave branch list` for the fix, or `tokensave branch set-default <branch>`.",
+        );
+    }
     let canonical_directory = directory.canonicalize()?;
     for (name, entry) in &meta.branches {
         if !relative(&entry.db_file) {

@@ -52,7 +52,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
-          profile: minimal
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
@@ -77,7 +76,6 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
-          profile: minimal
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --locked
@@ -100,6 +98,32 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
-          profile: minimal
           components: rustfmt
       - run: cargo fmt --all -- --check
+
+  # The test job builds only the default `full` set, so code that silently
+  # assumes a `full`-only language goes unnoticed in smaller builds (#586).
+  features:
+    name: Feature tiers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust-features
+      - name: Test lite
+        run: cargo test --workspace --locked --no-default-features --features lite
+      - name: Check medium
+        run: cargo check --workspace --all-targets --locked --no-default-features --features medium
+
+  pi-extension:
+    name: Pi extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          # --experimental-strip-types needs Node 22.6+.
+          node-version: '22'
+      - run: node --experimental-strip-types --test tests/pi_extension_test.mjs
