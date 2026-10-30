@@ -28,6 +28,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Let the Python comparison benchmark reuse `TOKENSAVE_BENCH_REPOS_DIR` and standard temporary-directory selection, and report clone-storage failures with the destination and a relocation hint (Refs #767).
+
 - Keep the recorded default branch in step with the repository: opening a project renames a default entry whose branch no longer exists (for example after `git branch -m master main`) instead of serving the real default as an untracked branch or duplicating its database; `origin/HEAD` is used only while its branch exists, and `branch add` detects the default like `init` instead of assuming `main`. Add `tokensave branch set-default`, a `BRANCH_DEFAULT_STALE` warning in `tokensave verify`, and a `default_branch_warning` in `tokensave branch list`, `tokensave_status` and `tokensave_branch_list` (Refs #874).
 
 - Hold the writer lock throughout interrupted-index recovery and refuse rebuilding a borrowed branch database from another checkout (Refs #864).
