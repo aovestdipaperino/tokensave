@@ -11,7 +11,7 @@ use tokensave::global_db::GlobalDb;
 use tokensave::types::CostTurn;
 
 async fn open_isolated_db(tmp: &TempDir) -> GlobalDb {
-    let db_path = tmp.path().join(".tokensave").join("global.db");
+    let db_path = tokensave::config::get_tokensave_dir(tmp.path()).join("global.db");
     GlobalDb::open_at(&db_path).await.expect("global db open")
 }
 

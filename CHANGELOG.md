@@ -9,11 +9,98 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
-- Opt-in performance profiling infrastructure (#754): a `[profiling]` table in `config.toml` (`mode = "off" | "light" | "detailed"`, slow threshold, retention, size limit, detailed-mode expiry) with a `TOKENSAVE_PROFILE` per-run override, a static operation registry, mergeable fixed-bucket latency histograms, sharded lock-free aggregation, spans with inclusive/exclusive time and per-invocation database attribution, and bounded hourly files under `~/.tokensave/profile/`. Off by default; no call sites are instrumented yet, and with profiling off nothing is measured or written.
+- Opt-in performance profiling infrastructure (#754): a `[profiling]` table in `config.toml` (`mode = "off" | "light" | "detailed"`, slow threshold, retention, size limit, detailed-mode expiry) with a `TOKENSAVE_PROFILE` per-run override, a static operation registry, mergeable fixed-bucket latency histograms, sharded lock-free aggregation, spans with inclusive/exclusive time and per-invocation database attribution, and bounded hourly files under `~/.tokensave/profile/`. Off by default; with profiling off nothing is measured or written.
+
+- Explain untracked branches: `tokensave_status` reports the effective `auto_track` setting and an `auto_track_hint` saying why the branch was not tracked automatically (disabled, turned off by `TOKENSAVE_AUTO_TRACK`, failed, or a read-only view) and how to enable it; `tokensave status` prints the same hint, and a failed open-time auto-track now carries its reason on the branch warning (Refs #877).
+- Add `TOKENSAVE_HOOK_DEBUG=1`, which makes the `post-checkout` hook and `branch add --if-enabled` explain skipped actions on stderr and in a bounded `.tokensave/hook-debug.log`; hooks stay silent by default (Refs #877).
+
+### Documentation
+
+- Correct the multi-branch guide: the `post-checkout` hook tracks branches only when `auto_track` is enabled, which is off by default. Add a troubleshooting entry for untracked branches (Refs #877).
+
+### Documentation
+
+- Adopt Google's Rust Style Guide on master with project-specific precedence, exceptions, and contributor review guidance; defer the codebase audit and cleanup to follow-up work (Refs #845).
+- Evaluate optional Graphify coexistence at a pinned revision, with a disposable CLI probe, recorded resource measurements, and explicit requirements and remaining work before any adapter (Refs #791).
+- Document the optional Graphify exporter workflow, limits and privacy scope in the user guide (Refs #791).
+
+### Added
+
+- **Repositories created with `git init` are indexed automatically (Refs #876).** A new user-level `auto_init` setting in `~/.tokensave/config.toml`, on by default, lets a pathless `tokensave sync` (what the `post-commit` and `post-merge` hooks run) and `tokensave serve` initialize the top level of a git repository that has no index, so hooks installed by earlier versions pick it up without being rewritten. Repositories under the system temp dir, your home directory itself, bare repositories, subdirectories, explicit `sync <path>`/`serve --path` targets and trees with more candidate files than `max_auto_sync_files` are skipped; the last prints a hint to run `tokensave init`. `TOKENSAVE_AUTO_INIT` overrides the setting for one run, and `tokensave doctor` reports the effective value.
+- Add a pinned Graphify CLI compatibility harness covering repeated exports, queries, visualization and conflicting dirty worktrees; publish fixture evidence and remaining measurement gates (Refs #791).
+
+### Added
+
+- Add experimental `graphify-export` for bounded, read-only single-file snapshots with resolver provenance, freshness checks and no-clobber publication (Refs #791).
+
+### Documentation
+
+- Define the pinned, optional Graphify file-interchange evaluation contract and gated implementation scope (Refs #791).
 
 ### Fixed
 
-- Restore Clippy checks for profiling unit tests by keeping test-only unwraps scoped to their test modules (#754).
+- Let the Python comparison benchmark reuse `TOKENSAVE_BENCH_REPOS_DIR` and standard temporary-directory selection, and report clone-storage failures with the destination and a relocation hint (Refs #767).
+
+- Keep the recorded default branch in step with the repository: opening a project renames a default entry whose branch no longer exists (for example after `git branch -m master main`) instead of serving the real default as an untracked branch or duplicating its database; `origin/HEAD` is used only while its branch exists, and `branch add` detects the default like `init` instead of assuming `main`. Add `tokensave branch set-default`, a `BRANCH_DEFAULT_STALE` warning in `tokensave verify`, and a `default_branch_warning` in `tokensave branch list`, `tokensave_status` and `tokensave_branch_list` (Refs #874).
+
+- Hold the writer lock throughout interrupted-index recovery and refuse rebuilding a borrowed branch database from another checkout (Refs #864).
+
+- Restore independent MCP selected-graph regression tests for simplify scans, redundancy branch refusal, and dead-code queries after an interleaved test insertion (Refs #854).
+
+- Bound comparison-benchmark MCP initialization and request I/O, reap owned process groups, and defer shutdown interruptions until cleanup completes (Refs #847).
+
+- Return MCP invalid-parameter errors for selected graphs rejected by database compatibility checks, preserving internal errors for database failures (Refs #835).
+
+- Preserve database creation channel, reject beta-origin and newer-schema databases before writes or recovery, and isolate beta project/global indexes under `.tokensave/beta` without relabeling legacy databases (Refs #835).
+
+### Changed
+
+- `tokensave_redundancy` and `tokensave_simplify_scan` accept `graph_root` and `graph_branch`, so both run against another initialized project. On a selected graph, `tokensave_redundancy` refuses with InvalidParams when the selected branch is not the one checked out in that project (a different branch, a detached HEAD, or a fallback to a parent branch's index), because it reads function bodies from the working tree; it also skips writing its fingerprint cache to the read-only selected database.
+
+- Pi doctor distinguishes static configuration from unverified runtime state, reports possible instruction overrides and missing indexes without writes, and rejects unknown direct-tool exposure settings (Refs #833).
+
+### Added
+
+- Add a read-only assessment of independently reviewed Pi native-read traces, preserving verification/recovery and deferring enforcement without real-model evidence (Refs #834).
+
+### Documentation
+
+- Require agents to verify linked PR states before closing an issue and summarize merged improvements with the actual destination branch, validation, and remaining work; synchronize this rule across master and beta (Refs #803).
+
+- Add a linked table of contents near the top of the README.
+
+- List all supported agents and their `--agent` identifiers beside the README setup command.
+
+- Simplify README installation and agent setup, keeping advanced options in expandable sections and correcting the medium-tier Cargo command.
+
+- Convert the README architecture diagram to Mermaid and require Mermaid for all documentation graphs and diagrams in `AGENTS.md`.
+
+- Require upstream-master comparison and maintenance of shared agent guidance on master and beta as repository workflows change.
+
+- Require agents to keep the README beta announcement aligned with beta release features on master and beta.
+- Announce the beta with improved queries in the README, with beta links and a source installation command.
+
+### Added
+
+- Add a SQL query inventory in `docs/QUERY-REPORT.md` with source links and dynamic construction context, and require agents to keep it synchronized with query changes (Refs #773).
+
+- **Pi reaches tokensave's tools, and gets the guardrail and the receipt Claude Code has.** Pi defaults an MCP server to `exposure: "codemode"`, which declares none of the server's tools to the model, so an installed tokensave answered nothing and the agent fell back to grep. `tokensave install --agent pi` now registers the server with `"exposure": "direct"` (which `pi-mcp-adapter` maps to `directTools`) and a one-line description, writes a Pi rules overlay naming the tools as Pi declares them (`mcp__tokensave__<tool>`) and forbidding research-subagent fan-out for code exploration, and installs a managed TypeScript extension in `<agent-dir>/extensions` (project: `.pi/extensions`) because Pi has no shell hooks. That extension relays Pi's `grep`/`find`/`bash` calls to a new `hook-pi-pre-tool-use` subcommand that normalizes them for the existing classifier, resets the per-turn savings counter, and prints the session receipt from a new `hook-pi-stop` subcommand. `tokensave doctor` now fails when the exposure hides the tools or the extension is missing or stale.
+
+- **Pi sessions are part of token accounting.** `tokensave cost`, `tokensave report` and the status cost row parsed only Claude Code transcripts and Factory Droid settings, so a Pi user saw no cost for their own work. Pi's `~/.pi/agent/sessions/**/*.jsonl` is now ingested incrementally (same byte-offset tracking as Claude), using the cost Pi reports per message rather than a pricing lookup, with reasoning tokens folded into output and the coverage line naming Pi when the source is present. The missed-opportunity analyzer stays Claude-only, since Pi's tool-result sizes are not recorded.
+
+### Fixed
+
+- **`tokensave_dead_code` works with `graph_root` on a selected graph.** The test-marker exclusion wrote two TEMP tables (`temp.test_markers`, `temp.test_annotated_targets`), which a selected graph opened with `PRAGMA query_only = 1` rejects ("attempt to write a readonly database"). Concurrent read-only calls on the shared connection could also drop or refill each other's tables. `find_dead_code` now passes the test-marker ids to the dead-code query as one bound JSON array and filters in SQL with `id NOT IN (SELECT target FROM edges WHERE kind = 'annotates' AND source IN (SELECT value FROM json_each(?)))`, with no writes. The wildcard marker scan still runs once per call, and local results are unchanged. `Database::populate_test_marker_temp_table`, `drop_test_marker_temp_table`, `populate_test_annotated_targets_temp_table` and `drop_test_annotated_targets_temp_table` are removed.
+
+- Add Pi real-session regression coverage for per-run retrieval guidance, compaction replay, and native reads after simulated retrieval failures.
+
+- Prefer indexed code exploration through Pi's structured per-run prompt sections, with explicit native-tool fallbacks for unavailable or stale indexes, unindexed files, documentation, configuration, and current-source verification. Existing search interception is unchanged.
+
+- Update the locked `der` dependency from yanked 0.8.0 to compatible 0.8.3, used by the ONNX Runtime build dependency chain (Refs #805).
+
+- Replace the deprecated atomic session-debt update with `try_update`, preserving memory orderings and return behavior (Refs #804).
+
+- Limit large-repository benchmark cleanup to an exclusively reserved scratch directory, preserve unrelated repository changes, and release scratch data during error unwinding.
 
 - Resolve the project that owns the current directory the same way in every command run without an explicit path: `init`, `tool`, `doctor`, `verify`, `quality-diff`, `branch`, `gitignore`, the counters, a bare `tokensave`, and the prompt-submit and stop hooks. `sync`, `status`, `serve`, and the MCP roots fallback already did. `init` in a subdirectory of an existing project now reports that project and exits 0 instead of creating a nested index. In an uninitialized git repository, `init` initializes the repository root. Git repository roots isolate nested independent repositories (nested clones and submodules) from an outer repository's index, and a partial `.tokensave/` is no longer skipped in favor of an outer project (#749).
 
@@ -56,6 +143,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - **`Path::join` call sites use native path separators.** A path built as `dir.join("a/b")` stored the literal slashes, so on Windows the resulting `PathBuf` mixed `\` and `/` even though every filesystem call still succeeded. Each multi-segment path is now built with one `join` per segment (`dir.join("a").join("b")`), so the stored string matches the OS's separator. Six `Vec::join("/")` call sites in `src/config.rs`, `src/db/queries/routes.rs`, `src/extraction/rails_routes.rs`, `src/extraction/mcfunction_extractor.rs`, `src/graph/imports.rs` and `src/resolution/js_specifier.rs` are deliberately unchanged because they join string segments, not paths; the `a/b/c/../c/tokensave` fixture in `src/upgrade.rs` is also left intact to keep the dotdot resolution intent visible. Refs #737.
 ### Fixed
 
+- Preserve line breaks in the Claude Explore-agent brief so installed rules render a blockquote without stray inline `>` markers (#765).
 - **A literal search scans the project in parallel, and asks the database only about the files that matched (#685).** `literal: true` read every indexed file one at a time on the async runtime, and asked the database for a file's nodes before it knew whether that file contained the query at all. A repository-wide literal search was several times slower than `git grep`, and in the MCP server it held the tool loop for the whole scan. The scan now runs in chunks, in parallel, inside the project's CPU profile pool and off the async runtime, and the per-file node lookup happens only for a file that matched. The scope prefix filters the scan set up front, so a scoped search no longer reads files it will not report on. The response is unchanged: matches still come in file order, `total` is still the exact count over the whole project (#645), and `truncated` still says when the answer is capped.
 - **Edit tools keep the callers of the symbols in the file they edit.** After `tokensave_str_replace`, `tokensave_insert_at`, `tokensave_replace_lines` or another edit tool changed any line of a file, `tokensave_callers` returned nothing for that file's symbols: calls from other files and from the same file were both gone, and `tokensave sync` did not bring them back because the edit had already stored the new hash. A later `tokensave_rename` then saw the real call sites only as text matches and renamed only the definition. `reindex_file` deleted the file's nodes and their edges and never resolved references again; it now goes through `sync_single_files`, the path `sync` takes for a changed file and the one `tokensave_rename` moved to in #633.
 - Accept Git LF/CRLF line-ending conversion when validating quality-diff indexes, so freshly indexed Windows checkouts are not incorrectly reported as stale (#710).
@@ -2144,3 +2232,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [7.14.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.14.1
 [7.15.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.15.0
 [7.16.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.16.0
+[7.17.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.17.0

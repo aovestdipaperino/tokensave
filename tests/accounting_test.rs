@@ -13,7 +13,7 @@ use tokensave::global_db::GlobalDb;
 use tokensave::types::CostTurn;
 
 async fn open_isolated_db(tmp: &TempDir) -> GlobalDb {
-    let db_path = tmp.path().join(".tokensave").join("global.db");
+    let db_path = tokensave::config::get_tokensave_dir(tmp.path()).join("global.db");
     GlobalDb::open_at(&db_path).await.expect("global db open")
 }
 
@@ -60,7 +60,7 @@ fn droid_turn(id: &str, input: u64, output: u64, credits: Option<u64>) -> CostTu
 #[tokio::test]
 async fn legacy_migration_adds_agent_and_credits() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join(".tokensave").join("global.db");
+    let db_path = tokensave::config::get_tokensave_dir(tmp.path()).join("global.db");
     std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
 
     // Build an old-schema DB without agent/credits columns.

@@ -116,6 +116,11 @@ impl Database {
     }
 
     async fn try_initialize(db_path: &Path) -> Result<(Self, bool)> {
+        super::compatibility::preflight(db_path, migrations::latest_version()).await?;
+        // Reinitialization is an open/migrate, never a schema-version reset.
+        if db_path.exists() && std::fs::metadata(db_path)?.len() > 0 {
+            return Self::try_open(db_path).await;
+        }
         let db =
             Builder::new_local(db_path)
                 .build()
@@ -130,6 +135,7 @@ impl Database {
             operation: "initialize".to_string(),
         })?;
 
+        super::compatibility::check(&conn, migrations::latest_version()).await?;
         Self::apply_pragmas(&conn, 0).await?;
         migrations::create_schema(&conn).await?;
 
@@ -163,6 +169,7 @@ impl Database {
     }
 
     async fn try_open(db_path: &Path) -> Result<(Self, bool)> {
+        super::compatibility::preflight(db_path, migrations::latest_version()).await?;
         let db =
             Builder::new_local(db_path)
                 .build()
@@ -177,6 +184,7 @@ impl Database {
             operation: "open".to_string(),
         })?;
 
+        super::compatibility::check(&conn, migrations::latest_version()).await?;
         let file_size = std::fs::metadata(db_path).map_or(0, |m| m.len());
         Self::apply_pragmas(&conn, file_size).await?;
         let migrated = migrations::migrate(&conn).await?;
@@ -210,6 +218,7 @@ impl Database {
     }
 
     async fn try_open_read_only(db_path: &Path) -> Result<Self> {
+        super::compatibility::preflight(db_path, migrations::latest_version()).await?;
         let db = libsql::Builder::new_local(db_path)
             .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .build()
