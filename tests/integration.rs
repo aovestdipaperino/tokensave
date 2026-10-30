@@ -216,3 +216,5 @@ mod verify_test;
 mod language_aliases_test;
 
 mod graphify_export_test;
+
+mod integrity_test;

@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Added
+
+- Add configurable idle MCP database integrity checks and a bounded read-only `integrity-check` command with persisted diagnostics; checks never trigger automatic recovery (Refs #864).
+
 ### Documentation
 
 - Evaluate optional Graphify coexistence at a pinned revision, with a disposable CLI probe, recorded resource measurements, and explicit requirements and remaining work before any adapter (Refs #791).

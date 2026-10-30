@@ -171,6 +171,16 @@ portable string formats, and documented path-syntax test fixtures.
   branch-specific until the implementation is merged; do not copy commands to
   branches that lack the implementation.
 
+## Periodic integrity checks (master candidate)
+
+- `tokensave integrity-check <database> [--full|--status]` uses a bounded,
+  read-only child and never invokes recovery or migrations. Keep child timeout,
+  cancellation/reaping, cross-process lock and diagnostic bounds intact.
+- MCP checks run only during idle time; `integrity_interval_secs` defaults to
+  86400 and zero disables them. See [docs/DATABASE-INTEGRITY.md](docs/DATABASE-INTEGRITY.md).
+- Focused tests: `cargo test --test integration integrity_test::`.
+  This guidance is branch-specific until merged; beta lacks this implementation.
+
 ## Architecture
 
 Pipeline: source files → tree-sitter parse → language extractors → nodes/edges/unresolved refs → reference resolver → SQLite (libSQL) graph → graph queries → CLI + MCP server.

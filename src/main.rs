@@ -177,6 +177,39 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         None => return commands::handle_no_command().await,
     };
 
+    if let Commands::IntegrityCheck {
+        database,
+        full,
+        status,
+        worker,
+    } = &command
+    {
+        if *worker {
+            return tokensave::integrity::worker(database, *full).await;
+        }
+        let report = if *status {
+            tokensave::integrity::load(database)?
+        } else {
+            let Some(mut check) = tokensave::integrity::Check::start(
+                database,
+                &std::env::current_exe()?,
+                *full,
+                None,
+            )?
+            else {
+                return Err(tokensave::errors::TokenSaveError::Config {
+                    message: "another integrity check is running".into(),
+                });
+            };
+            while !check.poll().await? {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            check.report()?
+        };
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        process::exit(report.exit_code());
+    }
+
     // Experimental export is read-only and bypasses startup maintenance.
     if let Commands::GraphifyExport {
         project,
@@ -653,6 +686,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
         }
         Commands::GraphifyExport { .. } => unreachable!("export dispatched before startup"),
+        Commands::IntegrityCheck { .. } => {
+            unreachable!("integrity check dispatched before startup")
+        }
         Commands::Verify { .. } => unreachable!("verify is dispatched before startup"),
         Commands::Status {
             path,
