@@ -25,6 +25,22 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Export one indexed file as an experimental Graphify snapshot (no sync)
+    GraphifyExport {
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// Repository-relative source file using / separators
+        #[arg(long)]
+        file: String,
+        /// New output JSON path; existing files are refused
+        #[arg(long)]
+        output: std::path::PathBuf,
+        #[arg(long, default_value_t = 1000)]
+        max_nodes: usize,
+        #[arg(long, default_value_t = 5000)]
+        max_edges: usize,
+    },
     /// Check index integrity without changing it
     Verify {
         /// Project path (default: current directory)
@@ -240,6 +256,12 @@ pub enum Commands {
     /// Factory Droid PreToolUse hook handler (called by Droid, not by users directly)
     #[command(name = "hook-droid-pre-tool-use", hide = true)]
     HookDroidPreToolUse,
+    /// Pi tool-call guardrail handler (called by the Pi extension, not by users directly)
+    #[command(name = "hook-pi-pre-tool-use", hide = true)]
+    HookPiPreToolUse,
+    /// Pi session-settled handler (called by the Pi extension, not by users directly)
+    #[command(name = "hook-pi-stop", hide = true)]
+    HookPiStop,
     /// Start MCP server over stdio
     Serve {
         /// Project path
@@ -689,6 +711,18 @@ pub enum BranchAction {
     /// Remove a tracked branch and delete its DB
     Remove {
         /// Branch name to remove
+        name: String,
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+    },
+    /// Make a branch the default, keeping the data already indexed
+    ///
+    /// An untracked branch takes over the current default's entry and
+    /// database. A tracked branch becomes the default with its own
+    /// database; the previous default stays as an ordinary branch entry.
+    SetDefault {
+        /// Branch to make the default
         name: String,
         /// Project path (default: current directory)
         #[arg(short, long)]

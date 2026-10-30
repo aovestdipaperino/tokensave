@@ -73,7 +73,9 @@ const FLUSH_CHECK_INTERVAL_SECS: i64 = 30;
 /// Mirrors `src/db/migrations.rs::create_schema`. Update both together.
 const SCHEMA_MARKDOWN: &str = r"# tokensave SQLite schema
 
-The on-disk database lives at `.tokensave/tokensave.db` (per-branch variants
+Beta builds keep project state under `.tokensave/beta/`; use that directory
+for beta databases and branch metadata, never the stable index.
+The stable on-disk database lives at `.tokensave/tokensave.db` (per-branch variants
 under multi-branch mode). All tables are plain SQLite; safe to query with any
 client. WAL mode is used, so readers do not block writers.
 
@@ -249,6 +251,64 @@ fn format_selected_fallback_guidance(root: &str, branch: Option<&str>) -> String
         },
     );
     format!("WARNING: Selected graph at {root} is using a fallback index. {guidance}")
+}
+
+/// Why `tokensave_redundancy` must refuse a selected graph, or `None` when it
+/// may run.
+///
+/// Redundancy re-reads function bodies from the selected root's working tree
+/// and slices them with the graph's stored line/column ranges. Those ranges
+/// only fit the files of the branch the graph indexed, so the graph's served
+/// branch must be the one checked out in `root`, with no ancestor fallback.
+/// A project without branch tracking (`serving` is `None` and no fallback)
+/// has a single index of its one working tree and runs as before.
+fn selected_redundancy_checkout_refusal(
+    root: &str,
+    serving: Option<&str>,
+    checked_out: Option<&str>,
+    is_fallback: bool,
+) -> Option<String> {
+    let Some(served) = serving else {
+        if !is_fallback {
+            return None;
+        }
+        return Some(format!(
+            "tokensave_redundancy cannot run on the selected graph at {}: it is using a \
+             fallback index of unknown branch, and redundancy reads function bodies from that \
+             project's working tree. Track and sync the checked-out branch there, then call again.",
+            quote_inert_value(root)
+        ));
+    };
+    let root = quote_inert_value(root);
+    let served_quoted = quote_inert_value(served);
+    let preamble = "tokensave_redundancy reads function bodies from the selected project's \
+                    working tree, so the selected graph must be the index of the branch \
+                    checked out there.";
+    match checked_out {
+        None => Some(format!(
+            "{preamble} The working tree at {root} has a detached HEAD (no branch checked out), \
+             so it cannot be matched to the selected graph's branch {served_quoted}. Check out \
+             branch {served_quoted} in that project, then call again."
+        )),
+        Some(current) if current == served && !is_fallback => None,
+        Some(current) if is_fallback => {
+            let current = quote_inert_value(current);
+            Some(format!(
+                "{preamble} The working tree at {root} has branch {current} checked out, which \
+                 is not tracked, so the graph fell back to branch {served_quoted}'s index. Run \
+                 `tokensave branch add {current}` in that project, or check out branch \
+                 {served_quoted} there, then call again."
+            ))
+        }
+        Some(current) => {
+            let current = quote_inert_value(current);
+            Some(format!(
+                "{preamble} The selected graph is branch {served_quoted}, but the working tree \
+                 at {root} has branch {current} checked out. Check out branch {served_quoted} \
+                 in that project, or pass graph_branch {current}, then call again."
+            ))
+        }
+    }
 }
 
 fn format_selected_fallback_warning(selected: &super::graph_scope::SelectedGraph) -> String {
@@ -1169,7 +1229,7 @@ impl McpServer {
         let mut credited = 0u64;
         let _ = self
             .session_debt
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |debt| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |debt| {
                 let (new_debt, c) = settle_session_debt(debt, raw_delta);
                 credited = c;
                 Some(new_debt)
@@ -2792,6 +2852,13 @@ impl McpServer {
                         format!("invalid graph selector: {message}"),
                     );
                 }
+                Err(error) if crate::db::compatibility::is_refusal(&error) => {
+                    return JsonRpcResponse::error(
+                        id,
+                        ErrorCode::InvalidParams,
+                        format!("invalid graph selector: {error}"),
+                    );
+                }
                 Err(error) => {
                     return JsonRpcResponse::error(
                         id,
@@ -2806,6 +2873,19 @@ impl McpServer {
                     ErrorCode::InvalidParams,
                     format!("invalid selected graph arguments: {error}"),
                 );
+            }
+            // Fail closed before any work: redundancy slices the selected
+            // root's working tree with the graph's stored ranges.
+            if tool_name == "tokensave_redundancy" {
+                let checked_out = crate::branch::current_branch(selected.cg.project_root());
+                if let Some(reason) = selected_redundancy_checkout_refusal(
+                    &selected.provenance_root,
+                    selected.cg.serving_branch(),
+                    checked_out.as_deref(),
+                    selected.cg.is_fallback(),
+                ) {
+                    return JsonRpcResponse::error(id, ErrorCode::InvalidParams, reason);
+                }
             }
             Some(selected)
         } else {
@@ -3648,5 +3728,37 @@ mod startup_metadata_tests {
         assert_eq!(server.selectorless_local_graph_tools, selectorless);
         assert_eq!(server.schema_overhead_tokens, cost);
         server.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod redundancy_checkout_refusal_tests {
+    use super::selected_redundancy_checkout_refusal;
+
+    #[test]
+    fn detached_head_refuses_and_says_so() {
+        // Catches: a detached HEAD in the selected root (no branch name)
+        // being treated as a match, so redundancy slices an arbitrary commit's
+        // files with the served branch's stored ranges.
+        let reason = selected_redundancy_checkout_refusal("/repo", Some("main"), None, false)
+            .expect("detached HEAD must refuse");
+        assert!(reason.contains("detached HEAD"), "{reason}");
+        assert!(reason.contains("\"main\""), "{reason}");
+    }
+
+    #[test]
+    fn untracked_project_and_matching_branch_run() {
+        // Catches: the gate refusing a project with no branch tracking (one
+        // index of its one working tree), or refusing a selected branch that
+        // is the one checked out.
+        assert_eq!(
+            selected_redundancy_checkout_refusal("/repo", None, None, false),
+            None
+        );
+        assert_eq!(
+            selected_redundancy_checkout_refusal("/repo", Some("main"), Some("main"), false),
+            None
+        );
     }
 }

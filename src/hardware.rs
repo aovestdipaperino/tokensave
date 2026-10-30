@@ -21,7 +21,7 @@ const GIB: u64 = 1 << 30;
 /// a saved recommendation wrong for the same machine (a new workload, new
 /// thresholds), so cached results in `~/.tokensave/benchmark.toml` are
 /// measured again. A release that leaves both alone keeps the cache.
-pub const ALGORITHM_VERSION: u32 = 1;
+pub const ALGORITHM_VERSION: u32 = 2;
 
 /// Single-thread time the calibration aims for. Short enough that the whole
 /// benchmark normally finishes in well under a second.
@@ -39,8 +39,6 @@ const UNIT_ITERS: u32 = 4096;
 /// Below this total (or cgroup-limited) memory, `low` is selected. A "4 GB"
 /// device reports about 3.7 GiB, so it stays above the line.
 const LOW_TOTAL_MEMORY: u64 = 3 * GIB;
-/// Below this currently available memory, `low` is selected.
-const LOW_AVAILABLE_MEMORY: u64 = GIB;
 /// Hosts with at most this many CPUs get `low`; `balanced` would also use one worker.
 const LOW_MAX_CPUS: usize = 2;
 /// Below this measured parallel throughput (in CPUs), `low` is selected.
@@ -49,10 +47,8 @@ const LOW_EFFECTIVE_CPUS: f64 = 2.5;
 const PERFORMANCE_EFFECTIVE_CPUS: f64 = 6.0;
 /// …this parallel efficiency (speedup / threads; turbo boost pushes it above 1)…
 const PERFORMANCE_EFFICIENCY: f64 = 0.6;
-/// …this much total memory…
+/// …and this much total (or cgroup-limited) memory.
 const PERFORMANCE_TOTAL_MEMORY: u64 = 16 * GIB;
-/// …and this much currently available memory.
-const PERFORMANCE_AVAILABLE_MEMORY: u64 = 8 * GIB;
 
 /// Static host capacity. `None` means the probe failed or is unsupported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,9 +264,10 @@ fn run_benchmark(cpus: usize) -> Option<ParallelBenchmark> {
 
 /// Maps a measurement to an existing profile. Pure and deterministic.
 ///
-/// Memory and CPU are each checked for `low` first; `performance` requires
-/// every signal to be known and ample; anything else (including a failed
-/// probe) keeps the `balanced` default.
+/// Total usable memory and CPU are each checked for `low` first; `performance`
+/// requires both capacities to be known and ample. Currently available memory
+/// is diagnostic only: runtime safeguards handle transient memory pressure.
+/// Anything else (including a failed probe) keeps the `balanced` default.
 pub fn recommend(m: &Measurement) -> Recommendation {
     let r = &m.resources;
     let pick = |profile, reason: String| Recommendation { profile, reason };
@@ -283,18 +280,6 @@ pub fn recommend(m: &Measurement) -> Recommendation {
                     "{} total memory is below {}",
                     gib(total),
                     gib(LOW_TOTAL_MEMORY)
-                ),
-            );
-        }
-    }
-    if let Some(available) = r.memory_available {
-        if available < LOW_AVAILABLE_MEMORY {
-            return pick(
-                CpuUsage::Low,
-                format!(
-                    "{} available memory is below {}",
-                    gib(available),
-                    gib(LOW_AVAILABLE_MEMORY)
                 ),
             );
         }
@@ -327,9 +312,7 @@ pub fn recommend(m: &Measurement) -> Recommendation {
     let efficiency = m.benchmark.map_or(0.0, |b| b.efficiency());
     let ample_memory = r
         .memory_total
-        .is_some_and(|t| t >= PERFORMANCE_TOTAL_MEMORY)
-        && r.memory_available
-            .is_some_and(|a| a >= PERFORMANCE_AVAILABLE_MEMORY);
+        .is_some_and(|t| t >= PERFORMANCE_TOTAL_MEMORY);
     if effective >= PERFORMANCE_EFFECTIVE_CPUS
         && efficiency >= PERFORMANCE_EFFICIENCY
         && ample_memory
@@ -384,14 +367,14 @@ mod tests {
             (Some(4), Some(3.7), Some(3.0), Some(3.6), Balanced), // Pi 4 GB
             (Some(2), Some(8.0), Some(6.0), Some(1.9), Low), // 2-vCPU VM
             (Some(8), Some(0.5), Some(0.4), Some(7.0), Low), // 512 MiB container
-            (Some(8), Some(16.0), Some(0.5), Some(7.0), Low), // memory exhausted
+            (Some(8), Some(16.0), Some(0.5), Some(7.0), Performance), // memory in use
             (Some(8), Some(7.6), Some(5.0), Some(6.5), Balanced), // laptop
             (Some(8), Some(32.0), Some(20.0), Some(7.0), Performance), // idle 8-core
             (Some(16), Some(64.0), Some(40.0), Some(13.0), Performance),
             (Some(64), Some(256.0), Some(200.0), Some(14.0), Performance), // 16 bench threads
             (Some(16), Some(64.0), Some(40.0), Some(6.0), Balanced),       // busy or shared
             (Some(8), Some(32.0), Some(20.0), Some(1.5), Low),             // over-reported quota
-            (Some(12), Some(16.0), Some(6.0), Some(10.0), Balanced),       // memory in use
+            (Some(12), Some(16.0), Some(6.0), Some(10.0), Performance),    // memory in use
         ];
         for (cpus, total, avail, speedup, expected) in cases {
             let m = host(cpus, total, avail, speedup);
@@ -400,6 +383,42 @@ mod tests {
                 expected,
                 "{cpus:?} CPUs, {total:?}/{avail:?} GiB, {speedup:?}x"
             );
+        }
+    }
+
+    #[test]
+    fn available_memory_does_not_change_recommendation() {
+        for (cpus, total, speedup) in [
+            (Some(8), Some(32.0), Some(7.0)),
+            (Some(8), Some(8.0), Some(7.0)),
+            (Some(8), Some(2.0), Some(7.0)),
+            (Some(8), Some(32.0), Some(1.5)),
+            (Some(8), None, Some(7.0)),
+            (None, Some(32.0), None),
+        ] {
+            let expected = recommend(&host(cpus, total, None, speedup));
+            for available in [None, Some(0.0), Some(0.5), Some(6.0), Some(8.0), Some(32.0)] {
+                assert_eq!(
+                    recommend(&host(cpus, total, available, speedup)),
+                    expected,
+                    "{cpus:?} CPUs, {total:?} GiB total, {available:?} GiB available"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn effective_total_memory_controls_profile_at_capacity_boundaries() {
+        // The probe supplies the stricter of host RAM and the cgroup limit.
+        for (total, expected) in [
+            (LOW_TOTAL_MEMORY - 1, CpuUsage::Low),
+            (LOW_TOTAL_MEMORY, CpuUsage::Balanced),
+            (PERFORMANCE_TOTAL_MEMORY - 1, CpuUsage::Balanced),
+            (PERFORMANCE_TOTAL_MEMORY, CpuUsage::Performance),
+        ] {
+            let mut m = host(Some(8), Some(32.0), Some(0.5), Some(7.0));
+            m.resources.memory_total = min_known(Some(32 * GIB), Some(total));
+            assert_eq!(recommend(&m).profile, expected, "{total} bytes");
         }
     }
 
