@@ -30,7 +30,7 @@ Three MCP tools enable cross-branch queries without switching your checkout:
 
 When the MCP server can't find a database for the current branch, it serves from the nearest ancestor branch's DB and includes a warning in every tool response suggesting you run `tokensave branch add`.
 
-`tokensave_status` (and the CLI `tokensave status`) also explain *why* the branch is untracked. The status response gains `auto_track` (the effective setting) and `auto_track_hint`, which says whether automatic tracking is disabled, turned off for this run by `TOKENSAVE_AUTO_TRACK`, failed, or does not apply to a read-only view, and how to track the branch or enable automatic tracking. The hint is reported by the status tool only, so it does not lengthen every tool response.
+`tokensave_status` (and the CLI `tokensave status`) also explain *why* the branch is untracked. The status response gains `auto_track` (the effective setting) and `auto_track_hint`, which says whether automatic tracking is disabled, turned off for this run by `TOKENSAVE_AUTO_TRACK`, failed, or does not apply to a read-only view, and how to track the branch or enable automatic tracking. The hint itself is reported by the status tool only; the one exception is a tracking *failure*, whose reason is appended to the shared fallback warning so that MCP clients, which never see stderr, learn about it too.
 
 ## Automatic branch tracking (v7.3.0)
 
