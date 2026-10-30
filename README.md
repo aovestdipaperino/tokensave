@@ -28,12 +28,6 @@
 
 ---
 
-> **Beta available:** Try the new, improved queries on the [beta branch](https://github.com/aovestdipaperino/tokensave/tree/beta), including optimized search ranking, graph analysis, and indexing cleanup. See the [beta changelog](https://github.com/aovestdipaperino/tokensave/blob/beta/CHANGELOG.md) for details.
->
-> Install from source: `cargo install --git https://github.com/aovestdipaperino/tokensave.git --branch beta --locked --force`
->
-> For builds with isolated beta storage, follow the [database compatibility guide](docs/DATABASE-COMPATIBILITY.md) when initializing beta or returning to stable. Existing shared databases are preserved; beta uses a fresh index under `.tokensave/beta/`.
-
 ## Why tokensave?
 
 AI coding agents waste tokens exploring codebases. Every grep, glob, and file read costs money. On complex tasks, agents spawn multiple Explore sub-agents that scan hundreds of files just to build context.

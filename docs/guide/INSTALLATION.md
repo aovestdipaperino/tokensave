@@ -49,6 +49,24 @@ After installing, connect your agent with `tokensave install` (see
 [Agent Integrations](AGENT-INTEGRATIONS.md)) and index a project with
 `tokensave init` (see [Indexing and Freshness](INDEXING.md)).
 
+## Trying the beta
+
+The [beta branch](https://github.com/aovestdipaperino/tokensave/tree/beta) has new,
+improved queries, including optimized search ranking, graph analysis, and
+indexing cleanup. See the [beta changelog](https://github.com/aovestdipaperino/tokensave/blob/beta/CHANGELOG.md)
+for details.
+
+Install it from source:
+
+```bash
+cargo install --git https://github.com/aovestdipaperino/tokensave.git --branch beta --locked --force
+```
+
+For builds with isolated beta storage, follow the
+[database compatibility guide](../DATABASE-COMPATIBILITY.md) when initializing beta
+or returning to stable. Existing shared databases are preserved; beta uses a fresh
+index under `.tokensave/beta/`.
+
 ## Self-upgrade
 
 ```bash

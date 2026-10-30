@@ -37,7 +37,7 @@ so GitHub can render it and contributors can edit it directly.
 
 Keep `README.md` synchronized between `master` and `beta`. Installation
 instructions are the only permitted branch-specific difference in README
-content; keep all other content the same, including the beta announcement.
+content; keep all other content the same.
 Record this rule identically in both branches' `AGENTS.md` files.
 
 - On `master`, preserve the stable installation guide: Homebrew
@@ -58,18 +58,19 @@ Record this rule identically in both branches' `AGENTS.md` files.
   disposable-checkout advice, and link to the master guide for returning
   to stable.
 - Preserve these installation differences when merging or synchronizing the
-  branches. The beta announcement on both branches may continue to show the
-  explicit beta installation command.
+  branches.
 
-## README beta announcement
+## Beta announcement
 
-Keep the beta announcement near the top of `README.md` current with the new
-release features available on `beta`. When adding or changing beta features,
-update the announcement's highlights and links accordingly on both `master`
-and `beta`; describe only features already available on the beta branch.
-When those features reach a stable release, revise or remove the announcement
-so it continues to describe what is available in beta beyond stable. Keep the
-installation instructions accurate and link to the beta changelog for details.
+`README.md` carries no beta announcement. The beta is described in the
+"Trying the beta" section of `docs/guide/INSTALLATION.md` on `master`, which
+also shows the explicit beta installation command. Keep that section current
+with the new release features available on `beta`: when adding or changing
+beta features, update its highlights and links, and describe only features
+already available on the beta branch. When those features reach a stable
+release, revise or remove the section so it continues to describe what is
+available in beta beyond stable. Keep the installation instructions accurate
+and link to the beta changelog for details.
 
 ## Documentation and GitHub Wiki
 
