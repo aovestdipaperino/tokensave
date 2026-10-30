@@ -172,6 +172,7 @@ mirrored to the [GitHub Wiki](https://github.com/aovestdipaperino/tokensave/wiki
 | [MCP Tools](docs/guide/MCP-TOOLS.md) | The 80+ tools by category, cross-project queries, MCP resources |
 | [Multi-Branch Indexing](docs/guide/MULTI-BRANCH.md) | Per-branch graphs, automatic tracking, branch quality regressions |
 | [Token Tracking and Cost](docs/guide/TOKEN-TRACKING.md) | Savings ledger, cost reports, live monitor, memory diagnostics |
+| [Performance Profiling](docs/PROFILING.md) | Opt-in latency attribution for database operations, MCP tool phases and indexing |
 | [CLI Reference](docs/guide/CLI-REFERENCE.md) | Every command at a glance |
 | [Supported Languages](docs/guide/LANGUAGES.md) | 50+ languages and their feature tiers |
 | [Network Calls and Privacy](docs/guide/PRIVACY.md) | What leaves your machine and how to opt out |

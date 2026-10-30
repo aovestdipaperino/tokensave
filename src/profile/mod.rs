@@ -13,6 +13,8 @@
 //!   database attribution.
 //! - [`storage`]: bounded per-process hourly files, merged at report time.
 //! - [`tools`]: per-tool MCP invocation aggregates.
+//! - [`report`] and [`export`]: `tokensave profile` reports and the
+//!   sanitized export.
 //!
 //! With profiling off, [`span`] costs one relaxed atomic load: no clock
 //! read, no allocation and no I/O, and no file or directory is created.
@@ -22,9 +24,11 @@
 //! This module never touches the network.
 
 pub mod context;
+pub mod export;
 pub mod histogram;
 pub mod ops;
 pub mod recorder;
+pub mod report;
 pub mod storage;
 pub mod tools;
 
@@ -485,6 +489,9 @@ mod tests {
             include_str!("recorder.rs"),
             include_str!("context.rs"),
             include_str!("storage.rs"),
+            include_str!("tools.rs"),
+            include_str!("report.rs"),
+            include_str!("export.rs"),
         ];
         // Built with concat! so this test's own source does not match.
         let forbidden = [

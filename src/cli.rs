@@ -443,6 +443,11 @@ pub enum Commands {
         #[arg(long)]
         clean: bool,
     },
+    /// Opt-in performance profiling: status, reports and sanitized export (#754)
+    Profile {
+        #[command(subcommand)]
+        action: ProfileAction,
+    },
     /// Compare code quality at two indexed branch tips without changing files.
     QualityDiff {
         #[arg(long)]
@@ -594,6 +599,62 @@ mod tests {
             err_kind
         );
     }
+}
+
+#[derive(Subcommand)]
+pub enum ProfileAction {
+    /// Show the profiling mode, storage use, recorded samples and overhead
+    Status,
+    /// Enable profiling for new tokensave processes (data stays local)
+    Enable {
+        /// Collect detailed data; falls back to light after `--for`
+        #[arg(long)]
+        detailed: bool,
+        /// How long detailed mode lasts, e.g. 2h or 1d (default: 24h)
+        #[arg(long = "for", value_name = "DURATION", requires = "detailed")]
+        duration: Option<String>,
+    },
+    /// Disable profiling (recorded data is kept until `profile reset`)
+    Disable,
+    /// Report recorded latency by operation, ranked by cumulative time
+    Report {
+        /// Only MCP phases and per-tool invocations
+        #[arg(long, group = "profile_section")]
+        mcp: bool,
+        /// Only database operations
+        #[arg(long, group = "profile_section")]
+        database: bool,
+        /// Only index, sync and run-size series
+        #[arg(long, group = "profile_section")]
+        indexing: bool,
+        /// Window to include, e.g. 30m, 24h or 7d
+        #[arg(long, default_value = "24h")]
+        since: String,
+        /// Only this engine (e.g. libsql)
+        #[arg(long)]
+        engine: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List operations with executions at or above the slow threshold
+    SlowQueries {
+        /// Window to include, e.g. 30m, 24h or 7d
+        #[arg(long, default_value = "24h")]
+        since: String,
+    },
+    /// Print the sanitized export (static operation names and aggregates
+    /// only), e.g. to attach to a GitHub issue
+    Export {
+        /// Window to include, e.g. 24h or 7d
+        #[arg(long, default_value = "7d")]
+        since: String,
+        /// Write to this file instead of stdout
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
+    },
+    /// Delete all recorded profile data
+    Reset,
 }
 
 #[derive(Subcommand)]
