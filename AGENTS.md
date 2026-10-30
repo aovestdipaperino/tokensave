@@ -189,6 +189,10 @@ excluded. This section is an intentional difference between the branches. Do
 not copy it, the matching CONTRIBUTING.md section or the style cleanup to
 `beta` unless a later decision extends the adoption.
 
+This change integrates the rules only. The repository-wide audit and any
+cleanup of existing code remain follow-up work tracked by #845; adoption does
+not imply that the current codebase has been audited or is fully compliant.
+
 Precedence, highest first:
 
 1. TokenSave's explicitly documented rules: this file, CONTRIBUTING.md
@@ -212,8 +216,10 @@ Project-specific exceptions:
 - **No `unwrap`/`expect` in library code.** `src/lib.rs` denies
   `clippy::unwrap_used` and `clippy::expect_used`. This overrides the guide's
   "Prefer `expect` over `unwrap`". Use pattern matching, `?`, `let ... else` or
-  a typed error instead. In tests and the binary entry point, where the lint
-  does not apply, prefer `expect` with a message that states the invariant.
+  a typed error instead. Inline library tests inherit these crate lints unless
+  explicitly overridden. In separate test crates and the binary entry point,
+  where permitted by their lint configuration, prefer `expect` with a message
+  that states the invariant.
 - **Errors instead of panics.** Library code reports broken invariants through
   `Result` or `Option`, using the guide's option to avoid panics entirely.
 - **`catch_unwind` as defense in depth.** `safe_extract` in

@@ -92,14 +92,17 @@ On `master`, Rust code follows
 precedence and TokenSave's documented exceptions. TokenSave's own rules take
 precedence; for example, library code must not use `unwrap()` or `expect()`.
 This applies to `master` only; `beta` has not adopted the guide.
+The repository-wide audit and cleanup remain follow-up work tracked by #845;
+this documentation change does not establish compliance of existing code.
 
 ### Enforced by tooling
 
 These checks are the enforceable baseline. Run them with the pinned toolchain
 before opening a PR:
 
-- `cargo fmt --all -- --check`: formatting, including the 100-column limit.
-  CI blocks on this check.
+- `cargo fmt --all -- --check`: standard formatting with the default
+  `max_width = 100`. This is a formatting target, not a guarantee that every
+  line is at most 100 columns. CI blocks on this check.
 - `cargo clippy --workspace --all-targets --locked`: the crate lints configured
   in `src/lib.rs` (`clippy::all` denied, `clippy::pedantic` warned,
   `unwrap_used`/`expect_used` denied). These cover several guide rules,
@@ -110,8 +113,8 @@ before opening a PR:
 
 ### Requires manual review
 
-Tooling does not check these rules, so authors and reviewers check them on
-every changed Rust file:
+Tooling does not fully enforce these rules, so authors and reviewers check
+them on every changed Rust file:
 
 - **Imports:** no new glob imports beyond the guide's permitted cases; one
   module per `use` statement; call free functions through their module
