@@ -169,7 +169,7 @@ MCP requests, and long-running server workloads, including error paths.
 - Contributors and agents MUST NOT claim code is leak-free without supporting
   evidence, and MUST qualify conclusions by the paths and workloads checked.
 
-Use the existing [memory diagnostics](README.md#memory-diagnostics) for sampled
+Use the existing [memory diagnostics](docs/guide/TOKEN-TRACKING.md#memory-diagnostics) for sampled
 RSS and phase attribution, the [automatic-sync and server lifecycle guide](docs/USER-GUIDE.md#how-the-mcp-server-refreshes-the-index)
 for operational constraints, and [query optimization notes](docs/QUERY-OPTIMIZATIONS.md)
 for existing database strategies. These describe specific mechanisms; the policy
@@ -282,6 +282,40 @@ independent definitions are reordered. Concurrent reads do not test simultaneous
 writers or establish a public output-order guarantee. Repeated small full
 indexes exercise the production parallel extraction path, without timing
 assertions or a large repository stress test.
+
+## Documentation
+
+User documentation lives in [`docs/guide/`](docs/guide/README.md) and is published
+to the [GitHub Wiki](https://github.com/aovestdipaperino/tokensave/wiki). The
+guide is the single source: the wiki is generated from it by
+`.github/workflows/wiki.yml` on every push to `master` that changes it, and any
+edit made directly in the wiki is overwritten.
+
+- **Keep `README.md` short.** It holds what tokensave is, the installation guide,
+  the quick start, and links into the guide. Put details in the guide page for
+  that topic, or add a page if no existing page fits.
+- **Update the docs with the code.** A change that adds, removes, or changes a
+  command, flag, MCP tool, configuration field, environment variable, supported
+  agent, or language updates the affected guide pages (and `README.md`, if it is
+  mentioned there) in the same pull request.
+- **One place per fact.** Explain each topic on one guide page and link to it
+  from other pages instead of copying it. The installation commands are the one
+  intended duplicate: keep `README.md` and
+  [`docs/guide/INSTALLATION.md`](docs/guide/INSTALLATION.md) identical.
+- **Linking.** Link to other guide pages with relative links such as
+  `[MCP Tools](MCP-TOOLS.md#tools-by-category)`, and to other repository files
+  with relative paths. Keep each page's single `# Title`: the wiki names the
+  page after it.
+- **New pages.** Use an uppercase, hyphenated file name (`NEW-TOPIC.md`) and add
+  it to the `wiki-sidebar` list in [`docs/guide/README.md`](docs/guide/README.md)
+  and to the table in `README.md`.
+- **Check before submitting.** Run `python3 scripts/wiki/sync_wiki.py check` to
+  validate links, anchors, and the sidebar, and
+  `python3 scripts/wiki/sync_wiki.py build --out /tmp/tokensave-wiki` to
+  preview the generated wiki pages.
+
+Design notes, evaluations, and reports stay in `docs/` outside the guide and are
+not published to the wiki.
 
 ## Environment Variables
 
