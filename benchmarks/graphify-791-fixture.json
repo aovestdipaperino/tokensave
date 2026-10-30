@@ -1,0 +1,223 @@
+{
+  "measurements": [
+    {
+      "step": "tokensave-version",
+      "wall_seconds": 0.0,
+      "cpu_seconds": 0.0,
+      "peak_rss_kib": 7420,
+      "status": 0
+    },
+    {
+      "step": "graphify-version",
+      "wall_seconds": 0.14,
+      "cpu_seconds": 0.13,
+      "peak_rss_kib": 24292,
+      "status": 0
+    },
+    {
+      "step": "tokensave-init",
+      "wall_seconds": 0.1,
+      "cpu_seconds": 0.04,
+      "peak_rss_kib": 20024,
+      "status": 0
+    },
+    {
+      "step": "graphify-extract",
+      "wall_seconds": 0.84,
+      "cpu_seconds": 1.41,
+      "peak_rss_kib": 62912,
+      "status": 0
+    },
+    {
+      "step": "tokensave-search",
+      "wall_seconds": 0.1,
+      "cpu_seconds": 0.02,
+      "peak_rss_kib": 17692,
+      "status": 0
+    },
+    {
+      "step": "graphify-explain",
+      "wall_seconds": 0.36,
+      "cpu_seconds": 0.35,
+      "peak_rss_kib": 40756,
+      "status": 0
+    },
+    {
+      "step": "graphify-future-schema-explain",
+      "wall_seconds": 0.26,
+      "cpu_seconds": 0.25,
+      "peak_rss_kib": 40768,
+      "status": 0
+    },
+    {
+      "step": "tokensave-noop-0",
+      "wall_seconds": 0.09,
+      "cpu_seconds": 0.02,
+      "peak_rss_kib": 19160,
+      "status": 0
+    },
+    {
+      "step": "graphify-noop-0",
+      "wall_seconds": 0.52,
+      "cpu_seconds": 1.1,
+      "peak_rss_kib": 62460,
+      "status": 0
+    },
+    {
+      "step": "tokensave-noop-1",
+      "wall_seconds": 0.09,
+      "cpu_seconds": 0.01,
+      "peak_rss_kib": 19144,
+      "status": 0
+    },
+    {
+      "step": "graphify-noop-1",
+      "wall_seconds": 0.5,
+      "cpu_seconds": 1.08,
+      "peak_rss_kib": 62240,
+      "status": 0
+    },
+    {
+      "step": "tokensave-noop-2",
+      "wall_seconds": 0.09,
+      "cpu_seconds": 0.02,
+      "peak_rss_kib": 19056,
+      "status": 0
+    },
+    {
+      "step": "graphify-noop-2",
+      "wall_seconds": 0.59,
+      "cpu_seconds": 1.1600000000000001,
+      "peak_rss_kib": 62396,
+      "status": 0
+    },
+    {
+      "step": "tokensave-edit",
+      "wall_seconds": 0.09,
+      "cpu_seconds": 0.02,
+      "peak_rss_kib": 20084,
+      "status": 0
+    },
+    {
+      "step": "graphify-edit",
+      "wall_seconds": 0.69,
+      "cpu_seconds": 1.2599999999999998,
+      "peak_rss_kib": 62792,
+      "status": 0
+    },
+    {
+      "step": "graphify-file-rename",
+      "wall_seconds": 0.61,
+      "cpu_seconds": 1.1500000000000001,
+      "peak_rss_kib": 62680,
+      "status": 0
+    },
+    {
+      "step": "graphify-delete",
+      "wall_seconds": 0.65,
+      "cpu_seconds": 1.21,
+      "peak_rss_kib": 63160,
+      "status": 0
+    },
+    {
+      "step": "graphify-worktree",
+      "wall_seconds": 0.64,
+      "cpu_seconds": 1.0,
+      "peak_rss_kib": 63116,
+      "status": 0
+    }
+  ],
+  "checks": {
+    "code_only_skips_document": true,
+    "version_and_call_provenance": true,
+    "future_schema_accepted_by_explain": true,
+    "uncommitted_symbol_rename": true,
+    "file_rename_prunes_old_source": true,
+    "deletion": true,
+    "separate_worktree_output": true
+  },
+  "tokensave_version": "tokensave 7.16.0",
+  "graphify_version": "graphify 0.9.95",
+  "initial_graph": {
+    "nodes": 3,
+    "edges": 3,
+    "metadata": {
+      "schema_version": 1,
+      "graphify_version": "0.9.95"
+    },
+    "sample_nodes": [
+      {
+        "id": "app_entry",
+        "label": "entry()",
+        "_callable": true,
+        "_origin": "ast",
+        "community": 0,
+        "file_type": "code",
+        "norm_label": "entry()",
+        "source_file": "app.py",
+        "source_location": "L4"
+      },
+      {
+        "id": "app_helper",
+        "label": "helper()",
+        "_callable": true,
+        "_origin": "ast",
+        "community": 0,
+        "file_type": "code",
+        "norm_label": "helper()",
+        "source_file": "app.py",
+        "source_location": "L1"
+      },
+      {
+        "id": "app",
+        "label": "app.py",
+        "_origin": "ast",
+        "community": 0,
+        "file_type": "code",
+        "norm_label": "app.py",
+        "source_file": "app.py",
+        "source_location": "L1"
+      }
+    ],
+    "sample_edges": [
+      {
+        "source": "app_entry",
+        "target": "app_helper",
+        "relation": "calls",
+        "_origin": "ast",
+        "confidence": "EXTRACTED",
+        "confidence_score": 1.0,
+        "context": "call",
+        "source_file": "app.py",
+        "source_location": "L5",
+        "weight": 1.0
+      },
+      {
+        "source": "app",
+        "target": "app_helper",
+        "relation": "contains",
+        "_origin": "ast",
+        "confidence": "EXTRACTED",
+        "confidence_score": 1.0,
+        "source_file": "app.py",
+        "source_location": "L1",
+        "weight": 1.0
+      },
+      {
+        "source": "app",
+        "target": "app_entry",
+        "relation": "contains",
+        "_origin": "ast",
+        "confidence": "EXTRACTED",
+        "confidence_score": 1.0,
+        "source_file": "app.py",
+        "source_location": "L4",
+        "weight": 1.0
+      }
+    ]
+  },
+  "artifact_bytes": {
+    ".tokensave": 476578,
+    "graphify-out": 5335
+  }
+}

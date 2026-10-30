@@ -57,7 +57,7 @@ impl SelectedGraphFixture {
     }
 
     fn tokensave_dir(&self) -> PathBuf {
-        self.root.join(".tokensave")
+        tokensave::config::get_tokensave_dir(&self.root)
     }
 
     fn config_path(&self) -> PathBuf {
@@ -131,7 +131,7 @@ async fn setup_tracked_branch_project() -> SelectedGraphFixture {
     graph.checkpoint().await.unwrap();
     drop(graph);
 
-    let tokensave_dir = root.join(".tokensave");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(&root);
     fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
     fs::copy(
         tokensave_dir.join("tokensave.db"),
@@ -326,6 +326,119 @@ async fn open_read_only_env_helper() {
     assert_eq!(selected.serving_branch(), Some("master"));
 }
 
+fn set_auto_track(fixture: &SelectedGraphFixture, enabled: bool) {
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.config_path()).unwrap()).unwrap();
+    config["auto_track"] = serde_json::Value::Bool(enabled);
+    fs::write(
+        fixture.config_path(),
+        serde_json::to_vec_pretty(&config).unwrap(),
+    )
+    .unwrap();
+}
+
+/// #877: an untracked branch explains that `auto_track` is off and how to
+/// turn it on, instead of only suggesting `branch add`.
+#[tokio::test]
+async fn untracked_branch_hint_explains_disabled_auto_track() {
+    let fixture = setup_tracked_branch_project().await;
+    run_git(fixture.root(), &["checkout", "-b", "work"]);
+    set_auto_track(&fixture, false);
+
+    let cg = TokenSave::open(fixture.root()).await.unwrap();
+
+    assert!(cg.is_fallback());
+    assert!(!cg.auto_track_enabled());
+    let hint = cg.auto_track_hint().expect("untracked branch has a hint");
+    assert!(
+        hint.contains("Automatic branch tracking is disabled"),
+        "{hint}"
+    );
+    assert!(hint.contains("`tokensave branch add 'work'`"), "{hint}");
+    assert!(hint.contains("\"auto_track\": true"), "{hint}");
+    assert!(hint.contains("TOKENSAVE_AUTO_TRACK=1"), "{hint}");
+    assert!(hint.contains("config.json"), "{hint}");
+}
+
+/// `tokensave_status` carries the hint next to the branch warning.
+#[tokio::test]
+async fn status_tool_reports_auto_track_hint_for_untracked_branch() {
+    let fixture = setup_tracked_branch_project().await;
+    run_git(fixture.root(), &["checkout", "-b", "work"]);
+    set_auto_track(&fixture, false);
+    let cg = TokenSave::open(fixture.root()).await.unwrap();
+
+    let result = tokensave::mcp::handle_tool_call(
+        &cg,
+        "tokensave_status",
+        serde_json::json!({}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = result.value["content"][0]["text"].as_str().unwrap();
+    let status: serde_json::Value = serde_json::from_str(text).unwrap();
+
+    assert_eq!(status["branch_fallback"], true);
+    assert_eq!(status["auto_track"], false);
+    let hint = status["auto_track_hint"].as_str().unwrap();
+    assert!(
+        hint.contains("Automatic branch tracking is disabled"),
+        "{hint}"
+    );
+}
+
+/// With `auto_track` on, opening tracks the branch, so there is no fallback
+/// and nothing to explain.
+#[tokio::test]
+async fn enabled_auto_track_leaves_no_untracked_branch_hint() {
+    let fixture = setup_tracked_branch_project().await;
+    run_git(fixture.root(), &["checkout", "-b", "work"]);
+    set_auto_track(&fixture, true);
+
+    let cg = TokenSave::open(fixture.root()).await.unwrap();
+
+    assert!(cg.auto_track_enabled());
+    assert!(!cg.is_fallback());
+    assert_eq!(cg.auto_track_hint(), None);
+}
+
+/// A read-only view never tracks, even with `auto_track` on; the hint must
+/// say so rather than claim the setting is off.
+#[tokio::test]
+async fn read_only_view_explains_why_enabled_auto_track_did_not_run() {
+    let fixture = setup_tracked_branch_project().await;
+    run_git(fixture.root(), &["checkout", "-b", "work"]);
+    set_auto_track(&fixture, true);
+
+    let selected = TokenSave::open_read_only(fixture.root(), None)
+        .await
+        .unwrap();
+
+    assert!(selected.is_fallback());
+    let hint = selected
+        .auto_track_hint()
+        .expect("untracked branch has a hint");
+    assert!(hint.contains("enabled"), "{hint}");
+    assert!(hint.contains("read-only view"), "{hint}");
+}
+
+/// The tracked default branch and a detached HEAD have nothing to track.
+#[tokio::test]
+async fn tracked_branch_and_detached_head_have_no_hint() {
+    let fixture = setup_tracked_branch_project().await;
+    set_auto_track(&fixture, false);
+
+    let cg = TokenSave::open(fixture.root()).await.unwrap();
+    assert_eq!(cg.auto_track_hint(), None);
+    drop(cg);
+
+    run_git(fixture.root(), &["checkout", "--detach"]);
+    let cg = TokenSave::open(fixture.root()).await.unwrap();
+    assert_eq!(cg.auto_track_hint(), None);
+}
+
 #[tokio::test]
 async fn open_read_only_opens_branch_only_default_database_layout() {
     let fixture = setup_single_db_project("branch_only").await;
@@ -354,7 +467,7 @@ async fn open_read_only_opens_branch_only_default_database_layout() {
 #[tokio::test]
 async fn open_read_only_rejects_orphan_database_without_config() {
     let dir = TempDir::new().unwrap();
-    let tokensave_dir = dir.path().join(".tokensave");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(dir.path());
     fs::create_dir_all(&tokensave_dir).unwrap();
     let database_path = tokensave_dir.join("tokensave.db");
     fs::write(&database_path, b"orphan").unwrap();

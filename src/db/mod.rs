@@ -1,3 +1,4 @@
+pub mod compatibility;
 mod connection;
 pub mod migrations;
 mod profiled;

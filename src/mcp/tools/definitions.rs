@@ -66,7 +66,7 @@ fn def_always_load(
 /// `graph_root` description for a tool that answers about one graph.
 ///
 /// It used to be one 457-byte paragraph repeated verbatim on every one of the
-/// 53 graph-scoped tools, re-sent every turn before any tool is called
+/// 55 graph-scoped tools, re-sent every turn before any tool is called
 /// (#576). Each description is now one sentence; the full cross-project rules
 /// go once per session in [`GRAPH_SELECTOR_INSTRUCTIONS`]. Only the tools in
 /// [`FEDERATABLE_TOOLS`](crate::mcp::graph_scope::FEDERATABLE_TOOLS) mention
@@ -279,7 +279,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_port_order(),
         def_commit_context(),
         def_pr_context(),
-        def_simplify_scan(),
+        graph_scoped(def_simplify_scan()),
         graph_scoped(def_test_map()),
         graph_scoped(def_type_hierarchy()),
         def_branch_search(),
@@ -295,7 +295,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         graph_scoped(def_gini()),
         graph_scoped(def_dependency_depth()),
         graph_scoped(def_health()),
-        def_redundancy(),
+        graph_scoped(def_redundancy()),
         def_runtime(),
         graph_scoped(def_dsm()),
         graph_scoped(def_test_risk()),
@@ -1752,7 +1752,7 @@ fn def_pr_context() -> ToolDefinition {
 }
 
 fn def_simplify_scan() -> ToolDefinition {
-    local_graph_no_selectors(def(
+    def(
         "tokensave_simplify_scan",
         "Simplify Scan",
         "Quality analysis of changed files: duplications, dead code, coupling, and complexity hotspots.",
@@ -1767,7 +1767,7 @@ fn def_simplify_scan() -> ToolDefinition {
             },
             "required": ["files"]
         }),
-    ))
+    )
 }
 
 fn def_test_map() -> ToolDefinition {
@@ -2133,7 +2133,7 @@ fn def_runtime() -> ToolDefinition {
 }
 
 fn def_redundancy() -> ToolDefinition {
-    local_graph_no_selectors(def(
+    def(
         "tokensave_redundancy",
         "Redundancy Hunt",
         "Find functionally duplicated function/method bodies via AST isomorphism, control-flow match, call-sequence match, and token-shingle Jaccard similarity. Each pair is bucketed as 'definite' (AST-identical), 'likely' (CFG or algorithmic match), or 'naming_only' (low confidence). Use when consolidating helpers or auditing code health. Computed lazily and cached per (node, body source hash) — first call on a fresh index can be slow on large repos.",
@@ -2162,7 +2162,7 @@ fn def_redundancy() -> ToolDefinition {
                 }
             }
         }),
-    ))
+    )
 }
 
 fn def_dsm() -> ToolDefinition {
@@ -3293,6 +3293,12 @@ mod tests {
             "tokensave_file_dependents",
             "tokensave_find_exact_symbol",
             "tokensave_imports",
+            // Graph-scoped by owner decision: both read only the selected
+            // graph (and, for redundancy, its project's source files); the
+            // redundancy fingerprint cache is not written on a read-only
+            // selected graph.
+            "tokensave_simplify_scan",
+            "tokensave_redundancy",
         ]
         .into_iter()
         .collect()
@@ -3531,7 +3537,7 @@ mod tests {
                     definition.name
                 );
                 // #576: the array rule reaches only the two tools that honour
-                // it, so the other 51 do not pay for it on every turn.
+                // it, so the other 53 do not pay for it on every turn.
                 assert_eq!(
                     graph_root.unwrap()["description"]
                         .as_str()
@@ -3574,7 +3580,7 @@ mod tests {
             .filter(|definition| is_graph_scoped_tool(definition))
             .map(|definition| definition.name.as_str())
             .collect();
-        assert_eq!(actual.len(), 53);
+        assert_eq!(actual.len(), 55);
         assert_eq!(actual, canonical);
     }
 
@@ -3628,7 +3634,7 @@ mod tests {
     }
 
     #[test]
-    fn selectorless_refusal_set_is_derived_and_covers_the_known_six() {
+    fn selectorless_refusal_set_is_derived_and_covers_the_known_four() {
         // The branch-drift gate refuses this exact set today; deriving it
         // from the registry marker must reproduce the same membership, and
         // any future selector-less local graph tool must appear here
@@ -3637,8 +3643,6 @@ mod tests {
         let expected: BTreeSet<String> = [
             "tokensave_affected",
             "tokensave_diff_context",
-            "tokensave_simplify_scan",
-            "tokensave_redundancy",
             "tokensave_diagnostics",
             "tokensave_diagnose",
         ]
@@ -3650,6 +3654,15 @@ mod tests {
             "derived selector-less refusal set lost members: missing={:?}",
             expected.difference(&derived).collect::<Vec<_>>()
         );
+        // Catches: `tokensave_simplify_scan` or `tokensave_redundancy` still
+        // marked selector-less local-only after becoming graph-scoped, which
+        // would keep refusing `graph_root`/`graph_branch` before dispatch.
+        for graph_scoped in ["tokensave_simplify_scan", "tokensave_redundancy"] {
+            assert!(
+                !derived.contains(graph_scoped),
+                "{graph_scoped} is graph-scoped and must leave the selector-less refusal set"
+            );
+        }
     }
 
     #[test]

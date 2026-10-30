@@ -226,7 +226,7 @@ async fn reindexing_the_same_tree_produces_the_same_edges() {
     drop(cg);
 
     let root: &Path = tmp.path();
-    std::fs::remove_dir_all(root.join(".tokensave")).unwrap();
+    std::fs::remove_dir_all(tokensave::config::get_tokensave_dir(root)).unwrap();
     let cg = TokenSave::init(root).await.unwrap();
     cg.sync().await.unwrap();
 
