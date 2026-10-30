@@ -28,7 +28,20 @@ pub const AUTO_INIT_ENV: &str = "TOKENSAVE_AUTO_INIT";
 /// The effective `auto_init` value: `TOKENSAVE_AUTO_INIT` when set, otherwise
 /// `auto_init` in `~/.tokensave/config.toml`, otherwise `true`.
 pub fn enabled() -> bool {
-    crate::config::env_bool_override(AUTO_INIT_ENV, crate::user_config::auto_init_setting())
+    crate::config::env_bool_override(AUTO_INIT_ENV, setting())
+}
+
+/// `auto_init` from the `config.toml` under the same home [`decide`] guards
+/// against, like `manage_rules` (#603). `UserConfig` finds home another way
+/// on Windows (the known-folder API, not `HOME`/`USERPROFILE`), and a setting
+/// read from one home must not decide about another (the split behind #575).
+fn setting() -> bool {
+    crate::agents::home_dir()
+        .map(|home| home.join(".tokensave").join("config.toml"))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|contents| contents.parse::<toml::Table>().ok())
+        .and_then(|table| table.get("auto_init").and_then(toml::Value::as_bool))
+        .unwrap_or_else(crate::user_config::auto_init_setting)
 }
 
 /// Why [`decide`] declined to initialize a directory.
