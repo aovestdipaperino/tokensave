@@ -46,7 +46,6 @@ Renaming the default branch after init (`git branch -m master main`, or a rename
 `tokensave branch set-default <name>` sets the default explicitly. If `<name>` is untracked, it takes over the current default's entry and database. If `<name>` is already tracked, its entry becomes the default and the previous default stays as an ordinary branch entry, which `tokensave branch remove` can delete. The command refuses a name that is neither a local nor an `origin/` branch.
 
 A stale default is reported by `tokensave branch list`, by the `default_branch_warning` field of the `tokensave_status` and `tokensave_branch_list` MCP tools, and as a `BRANCH_DEFAULT_STALE` warning by `tokensave verify`.
->>>>>>> origin/master
 
 ## Automatic branch tracking (v7.3.0)
 
