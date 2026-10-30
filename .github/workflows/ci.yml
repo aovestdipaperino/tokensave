@@ -124,6 +124,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          # --experimental-strip-types needs Node 22.6+.
+          # --experimental-strip-types needs Node >= 22.6. '22' resolves to the
+          # newest 22.x, which always satisfies that floor; pinning '22.6' would
+          # freeze an older patch line instead of enforcing the minimum.
           node-version: '22'
       - run: node --experimental-strip-types --test tests/pi_extension_test.mjs
