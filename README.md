@@ -101,14 +101,6 @@ Choose one installation method:
 | Any platform with Rust | `cargo install tokensave` |
 | Any platform with cargo-binstall | `cargo binstall tokensave` |
 
-To install the latest code directly from the upstream `master` branch instead of the published crates.io release:
-
-```bash
-cargo install --git https://github.com/aovestdipaperino/tokensave.git --branch master --locked --force
-```
-
-This builds the current `master` branch from source. It may include changes not yet published in a stable release and requires the Rust toolchain.
-
 On Windows with Scoop:
 
 ```powershell
@@ -117,6 +109,9 @@ scoop install tokensave
 ```
 
 You can also download a [prebuilt binary](https://github.com/aovestdipaperino/tokensave/releases/latest) and add it to your `PATH`.
+
+To build unreleased code from the upstream `master` branch, see
+[Installing from upstream master](docs/guide/INSTALLATION.md#installing-from-upstream-master).
 
 <details>
 <summary>Installation alternatives and language tiers</summary>

@@ -93,7 +93,10 @@ overwritten.
 - Describe each topic on one guide page and link to it elsewhere. The
   installation commands are the one intended duplicate: keep
   `docs/guide/INSTALLATION.md` consistent with the README installation guide
-  and the branch-specific installation rules above.
+  and the branch-specific installation rules above. The README keeps only the
+  common methods; less common ones, such as installing from upstream
+  `master`, live only in `docs/guide/INSTALLATION.md` and are linked from the
+  README.
 - New guide pages use uppercase, hyphenated file names, a single `# Title`
   (the wiki page is named after it), and an entry in both the `wiki-sidebar`
   list in `docs/guide/README.md` and the README documentation table.

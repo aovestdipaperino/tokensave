@@ -300,8 +300,9 @@ edit made directly in the wiki is overwritten.
   mentioned there) in the same pull request.
 - **One place per fact.** Explain each topic on one guide page and link to it
   from other pages instead of copying it. The installation commands are the one
-  intended duplicate: keep `README.md` and
-  [`docs/guide/INSTALLATION.md`](docs/guide/INSTALLATION.md) identical.
+  intended duplicate: every method in `README.md` must appear unchanged in
+  [`docs/guide/INSTALLATION.md`](docs/guide/INSTALLATION.md), which also holds
+  the less common ones (such as installing from upstream `master`).
 - **Linking.** Link to other guide pages with relative links such as
   `[MCP Tools](MCP-TOOLS.md#tools-by-category)`, and to other repository files
   with relative paths. Keep each page's single `# Title`: the wiki names the
