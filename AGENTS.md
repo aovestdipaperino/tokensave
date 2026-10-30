@@ -37,7 +37,7 @@ so GitHub can render it and contributors can edit it directly.
 
 Keep `README.md` synchronized between `master` and `beta`. Installation
 instructions are the only permitted branch-specific difference in README
-content; keep all other content the same, including the beta announcement.
+content; keep all other content the same.
 Record this rule identically in both branches' `AGENTS.md` files.
 
 - On `master`, preserve the stable installation guide: Homebrew
@@ -58,18 +58,59 @@ Record this rule identically in both branches' `AGENTS.md` files.
   disposable-checkout advice, and link to the master guide for returning
   to stable.
 - Preserve these installation differences when merging or synchronizing the
-  branches. The beta announcement on both branches may continue to show the
-  explicit beta installation command.
+  branches.
 
-## README beta announcement
+## Beta announcement
 
-Keep the beta announcement near the top of `README.md` current with the new
-release features available on `beta`. When adding or changing beta features,
-update the announcement's highlights and links accordingly on both `master`
-and `beta`; describe only features already available on the beta branch.
-When those features reach a stable release, revise or remove the announcement
-so it continues to describe what is available in beta beyond stable. Keep the
-installation instructions accurate and link to the beta changelog for details.
+`README.md` carries no beta announcement. The beta is described in the
+"Trying the beta" section of `docs/guide/INSTALLATION.md` on `master`, which
+also shows the explicit beta installation command. Keep that section current
+with the new release features available on `beta`: when adding or changing
+beta features, update its highlights and links, and describe only features
+already available on the beta branch. When those features reach a stable
+release, revise or remove the section so it continues to describe what is
+available in beta beyond stable. Keep the installation instructions accurate
+and link to the beta changelog for details.
+
+## Documentation and GitHub Wiki
+
+User documentation is published both as Markdown in `docs/guide/` and as the
+[GitHub Wiki](https://github.com/aovestdipaperino/tokensave/wiki), and the two
+MUST stay aligned. `docs/guide/` is the single source:
+`.github/workflows/wiki.yml` regenerates the whole wiki from it with
+`scripts/wiki/sync_wiki.py` on every relevant push to `master`. Never edit the
+wiki directly, and never copy wiki content back by hand; direct wiki edits are
+overwritten.
+
+- Keep `README.md` a concise entry point: what tokensave is, the installation
+  guide required above, the quick start, and the documentation table linking
+  into `docs/guide/`. Put detailed explanations in the matching guide page.
+- When a change adds, removes, or changes user-visible behavior (a command,
+  flag, MCP tool, configuration field, environment variable, supported agent,
+  language, or default), update the affected `docs/guide/` pages, and the
+  README if it mentions the behavior, in the same change. A pull request that
+  changes such behavior without the matching documentation update is
+  incomplete.
+- Describe each topic on one guide page and link to it elsewhere. The
+  installation commands are the one intended duplicate: keep
+  `docs/guide/INSTALLATION.md` consistent with the README installation guide
+  and the branch-specific installation rules above. The README keeps only the
+  common methods; less common ones, such as installing from upstream
+  `master`, live only in `docs/guide/INSTALLATION.md` and are linked from the
+  README.
+- New guide pages use uppercase, hyphenated file names, a single `# Title`
+  (the wiki page is named after it), and an entry in both the `wiki-sidebar`
+  list in `docs/guide/README.md` and the README documentation table.
+- Before finishing, run `python3 scripts/wiki/sync_wiki.py check` and
+  `python3 -m unittest discover -s scripts/wiki`, and report the results.
+- The wiki describes `master` (stable) only. On `beta`, `docs/guide/` describes
+  beta behavior and is not published; keep its page structure the same as on
+  `master` so the branches can be synchronized like `README.md`.
+- Design notes, evaluations, and reports remain in `docs/` outside
+  `docs/guide/` and are not published to the wiki.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md#documentation) for the contributor-facing
+version of these rules.
 
 ## Contributing
 
@@ -143,6 +184,7 @@ portable string formats, and documented path-syntax test fixtures.
 - `cargo clippy --workspace --all-targets` (CI runs it with `continue-on-error: true`).
 - `cargo fmt --all -- --check`.
 - Pi extension prompt/relay tests: `node --experimental-strip-types --test tests/pi_extension_test.mjs` (Node 22.6+ with TypeScript stripping support; separate from Cargo tests).
+- Documentation checks: `python3 scripts/wiki/sync_wiki.py check` (links, anchors, wiki sidebar) and `python3 -m unittest discover -s scripts/wiki`; preview the wiki with `python3 scripts/wiki/sync_wiki.py build --out /tmp/tokensave-wiki`. Run by `.github/workflows/wiki.yml`, separate from Cargo tests.
 - `src/lib.rs` denies `clippy::all`, `clippy::unwrap_used`, and `clippy::expect_used`, and warns on `clippy::pedantic` — avoid `unwrap()`/`expect()` in library code.
 - Language-specific tests: `cargo test --test integration rust_extraction_test::`; single test: `cargo test test_find_stale_files`; filter: `cargo test sync`. Lite-only local loop: `cargo test-lite`.
 - Integration tests live in `tests/` (one file per module/language) but compile into a single binary, `tests/integration.rs` (`autotests = false`): a new test file must be added there as a `mod`. Files that mutate env vars or the `cancel` flag are separate `[[test]]` targets in `Cargo.toml` instead. Helpers are shared via `crate::common` (`tests/common/mod.rs`); fixtures are in `tests/fixtures/`. See CONTRIBUTING.md "Test layout".
