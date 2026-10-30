@@ -22,6 +22,9 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             };
             let current = branch::current_branch(&project_path);
             eprintln!("Default branch: {}", meta.default_branch);
+            if let Some(warning) = branch::default_branch_state(&project_path, &meta).warning() {
+                eprintln!("\x1b[33mwarning:\x1b[0m {warning}");
+            }
             eprintln!();
             for (name, entry) in &meta.branches {
                 let db_path = tokensave_dir.join(&entry.db_file);
@@ -88,12 +91,22 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             let _branch_lock =
                 tokensave::tokensave::acquire_branch_operation_lock(&tokensave_dir).await?;
 
-            // Load or bootstrap metadata
-            let mut meta = branch_meta::load_branch_meta(&tokensave_dir).unwrap_or_else(|| {
-                let default = branch::detect_default_branch(&project_path)
-                    .unwrap_or_else(|| "main".to_string());
-                branch_meta::BranchMeta::new(&default)
-            });
+            // Load or bootstrap metadata, detecting the default the same way
+            // `init` does: a hard-coded "main" recorded a branch that does
+            // not exist in a `master` repository (#874).
+            let mut meta = match branch_meta::load_branch_meta(&tokensave_dir) {
+                Some(meta) => meta,
+                None => {
+                    let default = branch::detect_default_branch(&project_path)
+                        .or_else(|| branch::current_branch(&project_path))
+                        .ok_or_else(|| tokensave::errors::TokenSaveError::Config {
+                            message: "cannot detect the default branch (detached HEAD?). \
+                                      Check out the default branch and retry."
+                                .to_string(),
+                        })?;
+                    branch_meta::BranchMeta::new(&default)
+                }
+            };
 
             if meta.is_tracked(&branch_name) {
                 eprintln!("Branch '{branch_name}' is already tracked.");
@@ -206,6 +219,28 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
                 eprintln!("Branch '{name}' is not tracked.");
             }
         }
+        BranchAction::SetDefault { name, path } => {
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
+            let tokensave_dir = get_tokensave_dir(&project_path);
+            match branch::set_default_branch(&project_path, &tokensave_dir, &name).await? {
+                branch::SetDefaultOutcome::Unchanged => {
+                    eprintln!("Branch '{name}' is already the default.");
+                }
+                branch::SetDefaultOutcome::Renamed { previous } => {
+                    eprintln!(
+                        "\x1b[32m✔\x1b[0m Default branch is now '{name}' \
+                         (renamed from '{previous}', index kept)."
+                    );
+                }
+                branch::SetDefaultOutcome::Promoted { previous } => {
+                    eprintln!(
+                        "\x1b[32m✔\x1b[0m Default branch is now '{name}'. \
+                         '{previous}' is an ordinary branch now; run \
+                         `tokensave branch remove {previous}` to delete its index."
+                    );
+                }
+            }
+        }
         BranchAction::Removeall { path } => {
             let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
@@ -263,13 +298,18 @@ pub(crate) async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
     use std::fs;
     use std::path::PathBuf;
 
-    let home_tokensave: Option<PathBuf> = dirs::home_dir().map(|h| h.join(".tokensave"));
+    let home_tokensave: Option<PathBuf> =
+        dirs::home_dir().map(|h| tokensave::config::get_tokensave_dir(&h));
 
     let mut targets = global::gather_target_projects(all, &home_tokensave).await;
     if all {
         // wipe acts on the live `.tokensave/` directory; drop rows whose
         // directory is already gone (they're handled by `tokensave doctor`).
-        targets.retain(|p| p.join(".tokensave").join("tokensave.db").exists());
+        targets.retain(|p| {
+            tokensave::config::get_tokensave_dir(p)
+                .join("tokensave.db")
+                .exists()
+        });
     }
 
     if !all && targets.is_empty() {
@@ -300,11 +340,30 @@ pub(crate) async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
     // own `seen`, and the `--all` branch reads from `projects.path` which is
     // a primary key. No need for a second per-loop dedupe.
     for project_root in &targets {
-        let ts_dir = project_root.join(".tokensave");
+        let ts_dir = tokensave::config::get_tokensave_dir(project_root);
         if !ts_dir.exists() {
             continue;
         }
-        match fs::remove_dir_all(&ts_dir) {
+        let removal = if !tokensave::cloud::is_beta() && ts_dir.join("beta").exists() {
+            // Beta owns this subtree; wiping stable must preserve it.
+            (|| -> std::io::Result<()> {
+                for entry in fs::read_dir(&ts_dir)? {
+                    let entry = entry?;
+                    if entry.file_name() == "beta" {
+                        continue;
+                    }
+                    if entry.file_type()?.is_dir() {
+                        fs::remove_dir_all(entry.path())?;
+                    } else {
+                        fs::remove_file(entry.path())?;
+                    }
+                }
+                Ok(())
+            })()
+        } else {
+            fs::remove_dir_all(&ts_dir)
+        };
+        match removal {
             Ok(()) => {
                 removed += 1;
                 wiped_paths.push(project_root.clone());
@@ -353,7 +412,8 @@ pub(crate) async fn handle_list(all: bool) -> tokensave::errors::Result<()> {
     use std::path::PathBuf;
     use tokensave::display::format_token_count;
 
-    let home_tokensave: Option<PathBuf> = dirs::home_dir().map(|h| h.join(".tokensave"));
+    let home_tokensave: Option<PathBuf> =
+        dirs::home_dir().map(|h| tokensave::config::get_tokensave_dir(&h));
     let project_paths = global::gather_target_projects(all, &home_tokensave).await;
 
     if project_paths.is_empty() {
@@ -371,7 +431,7 @@ pub(crate) async fn handle_list(all: bool) -> tokensave::errors::Result<()> {
     let mut total_tokens: u64 = 0;
 
     for path in &project_paths {
-        let ts_dir = path.join(".tokensave");
+        let ts_dir = tokensave::config::get_tokensave_dir(path);
         let on_disk = ts_dir.exists();
         let size = if on_disk {
             global::tokensave_dir_size(&ts_dir)
@@ -605,7 +665,7 @@ fn announce_benchmark(status: &tokensave::global_benchmark::CacheStatus, forced:
 /// `--cpu-usage` pins one. When the project will follow the global hardware
 /// benchmark, makes sure a valid one is saved, measuring only if none is, so
 /// the next project on this machine reuses it (#752).
-fn prepare_initial_cpu_usage(
+pub(crate) fn prepare_initial_cpu_usage(
     project_path: &Path,
     requested: Option<tokensave::cpu::CpuUsage>,
 ) -> tokensave::errors::Result<Option<tokensave::cpu::CpuUsage>> {

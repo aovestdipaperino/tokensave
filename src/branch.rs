@@ -66,6 +66,14 @@ async fn vacuum_into(parent_db: &Path, new_db_path: &Path) -> std::result::Resul
 ///    recovers it on first open of the new DB. This path is not
 ///    race-free against an active writer — the snapshot layer above is.
 pub async fn copy_branch_db(parent_db: &Path, new_db_path: &Path) -> crate::errors::Result<()> {
+    if let Err(error) =
+        crate::db::compatibility::preflight(parent_db, crate::db::migrations::latest_version())
+            .await
+    {
+        if crate::db::compatibility::is_refusal(&error) {
+            return Err(error);
+        }
+    }
     let file_name = new_db_path.file_name().map_or_else(
         || "branch.db".to_string(),
         |n| n.to_string_lossy().into_owned(),
@@ -191,10 +199,52 @@ fn local_branches_git(project_root: &Path) -> Option<std::collections::HashSet<S
     )
 }
 
+/// The refs that make `name` a branch of the repository: a local branch, or
+/// a remote-tracking branch of `origin`.
+fn branch_refs(name: &str) -> [String; 2] {
+    [
+        format!("refs/heads/{name}"),
+        format!("refs/remotes/origin/{name}"),
+    ]
+}
+
+fn has_branch_ref(repo: &gix::Repository, name: &str) -> bool {
+    branch_refs(name)
+        .iter()
+        .any(|r| repo.find_reference(r.as_str()).is_ok())
+}
+
+/// Returns whether `name` exists as a local branch or as a remote-tracking
+/// branch of `origin`, or `None` when the repository cannot be queried.
+///
+/// A ref `gix` cannot find is confirmed with `git show-ref` before it is
+/// reported missing: callers rename metadata on a `false`, and a repository
+/// layout `gix` does not read (#501) must not look like a deleted branch.
+pub fn branch_exists(project_root: &Path, name: &str) -> Option<bool> {
+    if gix::open(project_root).is_ok_and(|repo| has_branch_ref(&repo, name)) {
+        return Some(true);
+    }
+    for refname in branch_refs(name) {
+        let status = std::process::Command::new("git")
+            .args(["show-ref", "--verify", "--quiet", &refname])
+            .current_dir(project_root)
+            .status()
+            .ok()?;
+        match status.code() {
+            Some(0) => return Some(true),
+            Some(1) => {}
+            _ => return None,
+        }
+    }
+    Some(false)
+}
+
 /// Auto-detects the default branch (main or master).
 ///
 /// Strategy:
-/// 1. Try `git symbolic-ref refs/remotes/origin/HEAD`
+/// 1. Try `git symbolic-ref refs/remotes/origin/HEAD`, accepting its target
+///    only while that branch still exists: `git fetch` never updates
+///    `origin/HEAD`, so it can name a branch renamed upstream (#874)
 /// 2. Fall back to checking if `main` or `master` exists locally
 pub fn detect_default_branch(project_root: &Path) -> Option<String> {
     let repo = gix::open(project_root).ok()?;
@@ -208,7 +258,9 @@ pub fn detect_default_branch(project_root: &Path) -> Option<String> {
                 .to_string()
                 .strip_prefix("refs/remotes/origin/")
             {
-                return Some(name.to_string());
+                if has_branch_ref(&repo, name) {
+                    return Some(name.to_string());
+                }
             }
         }
     }
@@ -222,6 +274,156 @@ pub fn detect_default_branch(project_root: &Path) -> Option<String> {
     }
 
     None
+}
+
+/// How the recorded default branch compares with the repository (#874).
+///
+/// `branch-meta.json` records the default branch once, at init. A rename
+/// (`git branch -m master main`) or a stale `origin/HEAD` leaves it naming a
+/// branch that no longer exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DefaultBranchState {
+    /// The recorded default still exists, or the repository cannot be read.
+    Current,
+    /// The recorded default is gone and the detected default has no entry of
+    /// its own, so the default entry can be renamed in place.
+    Renamable { recorded: String, detected: String },
+    /// The recorded default is gone and the detected default is already
+    /// tracked with its own database. Never merged automatically.
+    Duplicate { recorded: String, detected: String },
+    /// The recorded default is gone and no replacement was detected.
+    Undetected { recorded: String },
+}
+
+impl DefaultBranchState {
+    /// A one-line explanation with the command that fixes it, or `None`
+    /// when the recorded default is current.
+    pub fn warning(&self) -> Option<String> {
+        match self {
+            Self::Current => None,
+            Self::Renamable { recorded, detected } => Some(format!(
+                "default branch '{recorded}' no longer exists; the repository's default is \
+                 '{detected}'. The next tokensave command renames it, or run \
+                 `tokensave branch set-default {detected}`."
+            )),
+            Self::Duplicate { recorded, detected } => Some(format!(
+                "default branch '{recorded}' no longer exists, and '{detected}' is tracked \
+                 with its own database. Run `tokensave branch set-default {detected}`, then \
+                 `tokensave branch remove {recorded}` to drop the old index."
+            )),
+            Self::Undetected { recorded } => Some(format!(
+                "default branch '{recorded}' no longer exists. Run \
+                 `tokensave branch set-default <branch>` to choose the new default."
+            )),
+        }
+    }
+}
+
+/// Compares `meta.default_branch` with the repository. Read-only.
+pub fn default_branch_state(project_root: &Path, meta: &BranchMeta) -> DefaultBranchState {
+    let recorded = &meta.default_branch;
+    // An unborn branch (`git init` with no commit yet) has no ref but is real.
+    if branch_exists(project_root, recorded) != Some(false)
+        || current_branch(project_root).as_deref() == Some(recorded.as_str())
+    {
+        return DefaultBranchState::Current;
+    }
+    match detect_default_branch(project_root) {
+        Some(detected) if detected == *recorded => DefaultBranchState::Current,
+        Some(detected) if meta.is_tracked(&detected) => DefaultBranchState::Duplicate {
+            recorded: recorded.clone(),
+            detected,
+        },
+        Some(detected) => DefaultBranchState::Renamable {
+            recorded: recorded.clone(),
+            detected,
+        },
+        None => DefaultBranchState::Undetected {
+            recorded: recorded.clone(),
+        },
+    }
+}
+
+/// Renames a stale default-branch entry when that is unambiguous: the
+/// recorded default no longer exists and the detected default has no entry
+/// of its own. The entry keeps its `db_file`; no database is copied or
+/// deleted.
+///
+/// Returns the state found under the branch-operation lock. `Renamable`
+/// means the rename was applied; any other state was left unchanged.
+pub async fn reconcile_default_branch(
+    project_root: &Path,
+    tokensave_dir: &Path,
+) -> crate::errors::Result<DefaultBranchState> {
+    use crate::branch_meta;
+
+    let Some(meta) = branch_meta::load_branch_meta(tokensave_dir) else {
+        return Ok(DefaultBranchState::Current);
+    };
+    // Check before locking: the common, current case must stay free.
+    let unlocked = default_branch_state(project_root, &meta);
+    if !matches!(unlocked, DefaultBranchState::Renamable { .. }) {
+        return Ok(unlocked);
+    }
+    let _branch_lock = crate::tokensave::acquire_branch_operation_lock(tokensave_dir).await?;
+    let Some(mut meta) = branch_meta::load_branch_meta(tokensave_dir) else {
+        return Ok(DefaultBranchState::Current);
+    };
+    let state = default_branch_state(project_root, &meta);
+    if let DefaultBranchState::Renamable { recorded, detected } = &state {
+        if meta.rename_branch(recorded, detected) {
+            branch_meta::save_branch_meta(tokensave_dir, &meta)?;
+        }
+    }
+    Ok(state)
+}
+
+/// What `set_default_branch` changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetDefaultOutcome {
+    /// The branch already was the default.
+    Unchanged,
+    /// The branch was untracked: the previous default's entry was renamed.
+    Renamed { previous: String },
+    /// The branch was tracked: its entry became the default, and the
+    /// previous default stays as an ordinary branch entry.
+    Promoted { previous: String },
+}
+
+/// Makes `name` the default branch, keeping the data already indexed
+/// (`tokensave branch set-default`).
+pub async fn set_default_branch(
+    project_root: &Path,
+    tokensave_dir: &Path,
+    name: &str,
+) -> crate::errors::Result<SetDefaultOutcome> {
+    use crate::branch_meta;
+    use crate::errors::TokenSaveError;
+
+    let _branch_lock = crate::tokensave::acquire_branch_operation_lock(tokensave_dir).await?;
+    let mut meta =
+        branch_meta::load_branch_meta(tokensave_dir).ok_or_else(|| TokenSaveError::Config {
+            message: "no branch tracking configured; run `tokensave init` first".to_string(),
+        })?;
+    if name == meta.default_branch {
+        return Ok(SetDefaultOutcome::Unchanged);
+    }
+    let previous = meta.default_branch.clone();
+    let outcome = if meta.set_default(name) {
+        SetDefaultOutcome::Promoted { previous }
+    } else {
+        if branch_exists(project_root, name) == Some(false)
+            && current_branch(project_root).as_deref() != Some(name)
+        {
+            return Err(TokenSaveError::Config {
+                message: format!("'{name}' is not a local or origin branch of this repository"),
+            });
+        }
+        meta.rename_branch(&previous, name);
+        SetDefaultOutcome::Renamed { previous }
+    };
+    branch_meta::save_branch_meta(tokensave_dir, &meta)?;
+    Ok(outcome)
 }
 
 /// Sanitizes a branch name for use as a filename.

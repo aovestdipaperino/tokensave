@@ -1030,11 +1030,17 @@ pub(super) fn handle_branch_list(cg: &TokenSave) -> ToolResult {
         None => vec![],
     };
 
-    let result = json!({
+    let mut result = json!({
         "branch_count": branches.len(),
         "current_branch": current,
         "branches": branches,
     });
+    if let Some(warning) = meta
+        .as_ref()
+        .and_then(|meta| crate::branch::default_branch_state(cg.project_root(), meta).warning())
+    {
+        result["default_branch_warning"] = json!(warning);
+    }
 
     let output = serde_json::to_string_pretty(&result).unwrap_or_default();
     ToolResult {
