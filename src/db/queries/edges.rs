@@ -1,5 +1,6 @@
 //! Edge queries and graph-edge lookups.
 use super::*;
+use crate::profile::DbOp;
 
 // ---------------------------------------------------------------------------
 // Edge operations
@@ -10,7 +11,8 @@ impl Database {
     /// Keep declaration nodes separate so their source locations and members survive.
     /// Recomputing the full relation after each Ruby change also repairs links after deletions and moves.
     pub async fn rebuild_ruby_reopenings(&self) -> Result<()> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock_writes().await;
+        let tx_span = super::super::profiled::transaction_span();
         self.conn()
             .execute("BEGIN", ())
             .await
@@ -63,7 +65,7 @@ impl Database {
                 .conn()
                 .execute("COMMIT", ())
                 .await
-                .map(|_| ())
+                .map(|_| tx_span.finish())
                 .map_err(|e| TokenSaveError::Database {
                     message: format!("failed to commit Ruby reopening rebuild: {e}"),
                     operation: "rebuild_ruby_reopenings".to_string(),
@@ -213,8 +215,8 @@ impl Database {
     ) -> Result<Vec<Edge>> {
         if kinds.is_empty() {
             let mut rows = self
-                .conn()
-                .query(
+                .profiled_query(
+                    DbOp::GetOutgoingEdges,
                     "SELECT source, target, kind, line, resolved_by FROM edges WHERE source = ?1",
                     params![source_id],
                 )
@@ -243,8 +245,11 @@ impl Database {
             }
 
             let mut rows = self
-                .conn()
-                .query(&sql, libsql::params_from_iter(param_values))
+                .profiled_query(
+                    DbOp::GetOutgoingEdges,
+                    &sql,
+                    libsql::params_from_iter(param_values),
+                )
                 .await
                 .map_err(|e| TokenSaveError::Database {
                     message: format!("failed to query outgoing edges: {e}"),
@@ -265,8 +270,8 @@ impl Database {
     ) -> Result<Vec<Edge>> {
         if kinds.is_empty() {
             let mut rows = self
-                .conn()
-                .query(
+                .profiled_query(
+                    DbOp::GetIncomingEdges,
                     "SELECT source, target, kind, line, resolved_by FROM edges WHERE target = ?1",
                     params![target_id],
                 )
@@ -295,8 +300,11 @@ impl Database {
             }
 
             let mut rows = self
-                .conn()
-                .query(&sql, libsql::params_from_iter(param_values))
+                .profiled_query(
+                    DbOp::GetIncomingEdges,
+                    &sql,
+                    libsql::params_from_iter(param_values),
+                )
                 .await
                 .map_err(|e| TokenSaveError::Database {
                     message: format!("failed to query incoming edges: {e}"),
@@ -477,8 +485,11 @@ impl Database {
         };
 
         let mut rows = self
-            .conn()
-            .query(&sql, libsql::params_from_iter(param_values))
+            .profiled_query(
+                DbOp::GetIncomingEdgesBulk,
+                &sql,
+                libsql::params_from_iter(param_values),
+            )
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query bulk incoming edges: {e}"),
@@ -741,14 +752,13 @@ impl Database {
                    FROM nodes
                    WHERE name = ?1
                    LIMIT 200";
-        let mut rows =
-            self.conn()
-                .query(sql, params![name])
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to query by name: {e}"),
-                    operation: "get_nodes_by_name".to_string(),
-                })?;
+        let mut rows = self
+            .profiled_query(DbOp::GetNodesByName, sql, params![name])
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query by name: {e}"),
+                operation: "get_nodes_by_name".to_string(),
+            })?;
         collect_rows(&mut rows, row_to_node, "get_nodes_by_name").await
     }
 
@@ -766,8 +776,7 @@ impl Database {
                    FROM nodes
                    WHERE qualified_name = ?1";
         let mut rows = self
-            .conn()
-            .query(exact_sql, params![qname])
+            .profiled_query(DbOp::GetNodesByQualifiedName, exact_sql, params![qname])
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query by qualified_name: {e}"),
@@ -815,8 +824,11 @@ impl Database {
             )
         };
         let mut fallback_rows = self
-            .conn()
-            .query(sql, params![pattern.as_str()])
+            .profiled_query(
+                DbOp::GetNodesByQualifiedName,
+                sql,
+                params![pattern.as_str()],
+            )
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query by qualified_name fallback: {e}"),
@@ -1220,8 +1232,11 @@ impl Database {
             ),
         };
         let mut rows = self
-            .conn()
-            .query(&sql, libsql::params_from_iter(param_values))
+            .profiled_query(
+                DbOp::GetCallEdges,
+                &sql,
+                libsql::params_from_iter(param_values),
+            )
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query call edges: {e}"),
@@ -1706,8 +1721,7 @@ impl Database {
                 .map(|t| libsql::Value::Text(t.clone()))
                 .collect();
             let mut rows = self
-                .conn()
-                .query(&sql, libsql::params_from_iter(values))
+                .profiled_query(DbOp::CallsEdgesInto, &sql, libsql::params_from_iter(values))
                 .await
                 .map_err(|e| TokenSaveError::Database {
                     message: format!("failed to query calls edges into targets: {e}"),

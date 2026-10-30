@@ -1,5 +1,6 @@
 //! Node CRUD queries.
 use super::*;
+use crate::profile::DbOp;
 use std::fmt::Write as _;
 
 // ---------------------------------------------------------------------------
@@ -471,9 +472,7 @@ impl Database {
 
     /// Retrieves a node by its unique ID, returning `None` if not found.
     pub async fn get_node_by_id(&self, id: &str) -> Result<Option<Node>> {
-        let mut rows = self
-            .conn()
-            .query(
+        let mut rows = self.profiled_query(DbOp::GetNodeById,
                 "SELECT id, kind, name, qualified_name, file_path,
                         start_line, end_line, start_column, end_column,
                         docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
@@ -525,8 +524,11 @@ impl Database {
             .map(|id| libsql::Value::Text(id.clone()))
             .collect();
         let mut rows = self
-            .conn()
-            .query(&sql, libsql::params_from_iter(param_values))
+            .profiled_query(
+                DbOp::GetNodesByIds,
+                &sql,
+                libsql::params_from_iter(param_values),
+            )
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to batch query nodes: {e}"),
@@ -537,9 +539,7 @@ impl Database {
 
     /// Returns all nodes for a given file, ordered by start line.
     pub async fn get_nodes_by_file(&self, file_path: &str) -> Result<Vec<Node>> {
-        let mut rows = self
-            .conn()
-            .query(
+        let mut rows = self.profiled_query(DbOp::GetNodesByFile,
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
                     docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
@@ -559,9 +559,7 @@ impl Database {
     /// the v8 pattern of querying outgoing `Contains` edges; after v9 the
     /// edges table no longer carries that information.
     pub async fn get_children_of(&self, parent_id: &str) -> Result<Vec<Node>> {
-        let mut rows = self
-            .conn()
-            .query(
+        let mut rows = self.profiled_query(DbOp::GetChildrenOf,
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
                     docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
@@ -595,8 +593,11 @@ impl Database {
             .map(libsql::Value::Text)
             .collect::<Vec<_>>();
         let mut rows = self
-            .conn()
-            .query(&sql, libsql::params_from_iter(values))
+            .profiled_query(
+                DbOp::GetChildrenOfMany,
+                &sql,
+                libsql::params_from_iter(values),
+            )
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query children for parent set: {e}"),
@@ -612,9 +613,7 @@ impl Database {
         impl_id: &str,
         method_name: &str,
     ) -> Result<Vec<Node>> {
-        let mut rows = self
-            .conn()
-            .query(
+        let mut rows = self.profiled_query(DbOp::GetTraitMethodsForImplMethod,
                 "SELECT method.id, method.kind, method.name, method.qualified_name, method.file_path,
                         method.start_line, method.end_line, method.start_column, method.end_column,
                         method.docstring, method.signature, method.visibility, method.is_async,
@@ -643,9 +642,7 @@ impl Database {
 
     /// Returns all nodes of a given kind.
     pub async fn get_nodes_by_kind(&self, kind: NodeKind) -> Result<Vec<Node>> {
-        let mut rows = self
-            .conn()
-            .query(
+        let mut rows = self.profiled_query(DbOp::GetNodesByKind,
                 "SELECT id, kind, name, qualified_name, file_path,
                     start_line, end_line, start_column, end_column,
                     docstring, signature, visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
@@ -998,8 +995,7 @@ impl Database {
             filter.where_clause()
         );
         let mut rows = self
-            .conn()
-            .query(&sql, ())
+            .profiled_query(DbOp::GetNodesFiltered, &sql, ())
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query filtered nodes: {e}"),
@@ -1114,7 +1110,7 @@ impl Database {
         // otherwise open a second transaction while this one is active, which
         // SQLite rejects as "cannot start a transaction within a transaction"
         // (#563).
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock_writes().await;
         self.conn()
             .execute(
                 "DELETE FROM executable_body_fts WHERE file_path = ?1",
@@ -1157,6 +1153,7 @@ impl Database {
             return Ok(());
         }
 
+        let tx_span = super::super::profiled::transaction_span();
         let tx = self
             .conn()
             .transaction()
@@ -1205,9 +1202,12 @@ impl Database {
                 operation: "delete_nodes_by_file".to_string(),
             })?;
 
-        tx.commit().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to commit transaction: {e}"),
-            operation: "delete_nodes_by_file".to_string(),
-        })
+        tx.commit()
+            .await
+            .map(|()| tx_span.finish())
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to commit transaction: {e}"),
+                operation: "delete_nodes_by_file".to_string(),
+            })
     }
 }
