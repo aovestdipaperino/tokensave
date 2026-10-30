@@ -21,3 +21,7 @@ generated-illustrations/
 *#
 
 core
+
+# Python bytecode
+__pycache__/
+*.pyc
