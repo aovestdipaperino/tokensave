@@ -53,6 +53,18 @@ pub enum Commands {
         #[command(subcommand)]
         action: OkfAction,
     },
+    /// Check a database file without recovery or migrations; saves sidecar diagnostics
+    IntegrityCheck {
+        database: std::path::PathBuf,
+        /// Cross-check SQLite indexes as well as B-tree structure
+        #[arg(long)]
+        full: bool,
+        /// Show the last saved result without running a check
+        #[arg(long)]
+        status: bool,
+        #[arg(long, hide = true)]
+        worker: bool,
+    },
     /// Check index integrity without changing it
     Verify {
         /// Project path (default: current directory)

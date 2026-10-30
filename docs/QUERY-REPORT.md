@@ -73,9 +73,9 @@ unchanged.
 
 ## Inventory summary
 
-- SQL-bearing source files: **41**.
-- SQL literal/template occurrences: **382**.
-- Functions retained for construction/binding context: **182**.
+- SQL-bearing source files: **42**.
+- SQL literal/template occurrences: **385**.
+- Functions retained for construction/binding context: **183**.
 
 ## Source file index
 
@@ -111,6 +111,7 @@ unchanged.
 | [src/graph/queries.rs](../src/graph/queries.rs) | 5 |
 | [src/grep_annotate/index.rs](../src/grep_annotate/index.rs) | 7 |
 | [src/hooks.rs](../src/hooks.rs) | 1 |
+| [src/integrity.rs](../src/integrity.rs) | 3 |
 | [src/mcp/tools/definitions.rs](../src/mcp/tools/definitions.rs) | 4 |
 | [src/mcp/tools/handlers/workflow.rs](../src/mcp/tools/handlers/workflow.rs) | 1 |
 | [src/okf/export.rs](../src/okf/export.rs) | 5 |
@@ -13692,3 +13693,39 @@ Source: [src/accounting/codex.rs:710](../src/accounting/codex.rs#L710).
         assert_eq!(result.coverage.state, CoverageState::Partial);
     }
 ```
+
+
+## Periodic integrity additions (Refs #864)
+
+Source: [src/integrity.rs](../src/integrity.rs), `inspect`. Three new occurrences
+and one construction context, inspected 2026-10-30. No existing SQL changed.
+
+#### Q0426 — `inspect`: Read-only checker connection limits
+
+```sql
+PRAGMA query_only=1; PRAGMA busy_timeout=0; PRAGMA cache_size=-2048; PRAGMA mmap_size=0;
+```
+
+Fixed connection-local batch, no bindings. No write transaction or checkpoint.
+The connection uses SQLITE_OPEN_READ_ONLY; compatibility::check retains the
+existing Q0343–Q0349 policy queries with maximum schema u32::MAX because file
+integrity checking does not interpret application tables or migrate schemas.
+
+#### Q0427 — `inspect`: Full physical integrity
+
+```sql
+PRAGMA integrity_check(100)
+```
+
+#### Q0428 — `inspect`: Periodic/default physical integrity
+
+```sql
+PRAGMA quick_check(100)
+```
+
+Construction/binding context: a boolean `full` selects exactly one fixed pragma;
+there are no SQL parameters or interpolated inputs. SQLite supplies one read
+snapshot per statement. Stream rows, retain at most 100 diagnostics truncated to
+1,024 bytes each, require an `ok` row and no diagnostics for success. SQL errors
+produce incomplete checks. The owning process enforces a five-second lifetime;
+all results/connections are released on completion or process termination.
