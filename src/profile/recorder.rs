@@ -184,6 +184,20 @@ pub struct SeriesSnapshot {
     pub response_bytes: u64,
     #[serde(default, skip_serializing_if = "Histogram::is_empty")]
     pub db_ops_per_call: Histogram,
+    /// Invocation series only: database ops executed many times within one
+    /// call (N+1 candidates), keyed by static op name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub repeated: BTreeMap<String, Repeat>,
+}
+
+/// How often an op ran at least [`super::tools::REPEAT_MIN_PER_CALL`]
+/// times within a single call.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Repeat {
+    /// Calls in which the op repeated.
+    pub calls: u64,
+    /// Executions of the op within those calls.
+    pub executions: u64,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes a reference
@@ -210,6 +224,11 @@ impl SeriesSnapshot {
         self.db_ops = self.db_ops.saturating_add(other.db_ops);
         self.response_bytes = self.response_bytes.saturating_add(other.response_bytes);
         self.db_ops_per_call.merge(&other.db_ops_per_call);
+        for (op, r) in &other.repeated {
+            let entry = self.repeated.entry(op.clone()).or_default();
+            entry.calls = entry.calls.saturating_add(r.calls);
+            entry.executions = entry.executions.saturating_add(r.executions);
+        }
     }
 
     pub fn mean_us(&self) -> Option<f64> {

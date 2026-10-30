@@ -40,6 +40,7 @@ Failed operations are counted as errors and kept out of the latency histograms. 
 ```bash
 tokensave profile status
 tokensave profile report [--mcp|--database|--indexing] [--since 24h] [--engine libsql] [--json]
+tokensave profile analyze [--since 7d] [--top 10] [--json]
 tokensave profile slow-queries [--since 24h]
 tokensave profile export [--since 7d] [-o profile.json]
 tokensave profile reset
@@ -59,7 +60,18 @@ Database share of measured MCP time: 41% (outside DB: 59%)
 Times in ms. Percentiles are bucket upper bounds (<= 1.6% high). * = fewer than 100 samples, P95/P99 unreliable.
 ```
 
-Every row is ranked by cumulative time, not by its single slowest call. Percentiles carry their sample count; P95/P99 below 100 samples are marked with `*`.
+Every row is ranked by cumulative time, not by its single slowest call. `analyze` turns the same data into ranked findings:
+
+```text
+Recorded MCP calls: 8420 (window: 7d, engine: libsql)
+
+1. [excessive query count] db.get_outgoing_edges in tokensave_context
+   Impact: 18.4 s (estimated: executions x mean latency)
+   Measured: 42180 executions in 1530 of 8420 calls (at least 20 per affected call, 28 on average); median 5 DB ops per call (n=8420)
+   Hypothesis: per-item lookups in a loop (N+1); consider batching them into one query
+```
+
+Findings use exclusive time for phases, so nothing is counted twice, and the evidence is what was measured. The hypothesis is only a suggestion. Percentiles carry their sample count; P95/P99 below 100 samples are marked with `*`.
 
 ## Privacy
 

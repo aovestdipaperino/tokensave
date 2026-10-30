@@ -39,14 +39,40 @@ const EMPTY_FRAME: Frame = Frame {
     db: false,
 };
 
-/// Database time and operation count for one invocation.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Database time and operation counts for one invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvocationSummary {
     /// Time in outermost database spans; nested database spans are not
     /// counted twice.
     pub db_us: u64,
     /// Number of database spans, nested or not.
     pub db_ops: u64,
+    /// Executions per database op (indexed by [`Op::index`], saturating),
+    /// for N+1 detection. A fixed array, so an invocation never allocates.
+    pub op_counts: [u16; Op::COUNT],
+}
+
+impl InvocationSummary {
+    const EMPTY: Self = Self {
+        db_us: 0,
+        db_ops: 0,
+        op_counts: [0; Op::COUNT],
+    };
+
+    /// Database ops executed at least `min` times, with their counts.
+    pub fn repeated_ops(&self, min: u16) -> impl Iterator<Item = (Op, u16)> + '_ {
+        self.op_counts
+            .iter()
+            .enumerate()
+            .filter(move |(_, n)| **n >= min)
+            .filter_map(|(index, n)| Op::from_index(index).map(|op| (op, *n)))
+    }
+}
+
+impl Default for InvocationSummary {
+    fn default() -> Self {
+        Self::EMPTY
+    }
 }
 
 struct Context {
@@ -63,10 +89,7 @@ impl Context {
         Self {
             frames: [EMPTY_FRAME; MAX_DEPTH],
             depth: 0,
-            summary: InvocationSummary {
-                db_us: 0,
-                db_ops: 0,
-            },
+            summary: InvocationSummary::EMPTY,
             active,
         }
     }
@@ -101,6 +124,9 @@ impl Context {
         }
         if op.category() == Category::Db {
             self.summary.db_ops += 1;
+            if let Some(n) = self.summary.op_counts.get_mut(op.index()) {
+                *n = n.saturating_add(1);
+            }
             if !parent_is_db {
                 self.summary.db_us = self.summary.db_us.saturating_add(elapsed_us);
             }

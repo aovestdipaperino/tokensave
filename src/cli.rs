@@ -637,6 +637,18 @@ pub enum ProfileAction {
         #[arg(long)]
         json: bool,
     },
+    /// Rank bottlenecks by cumulative impact, with evidence and N+1 candidates
+    Analyze {
+        /// Window to include, e.g. 24h or 7d
+        #[arg(long, default_value = "7d")]
+        since: String,
+        /// Number of findings to show per engine
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+        /// Output as JSON (all findings)
+        #[arg(long)]
+        json: bool,
+    },
     /// List operations with executions at or above the slow threshold
     SlowQueries {
         /// Window to include, e.g. 30m, 24h or 7d
