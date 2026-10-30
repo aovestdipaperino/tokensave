@@ -136,6 +136,13 @@ async fn set_version(conn: &Connection, version: u32) -> Result<()> {
 /// Creates the complete latest schema from scratch for a brand-new database.
 /// This avoids running v0→v1→…→v6 migrations sequentially.
 pub async fn create_schema(conn: &Connection) -> Result<()> {
+    super::compatibility::check(conn, LATEST_VERSION).await?;
+    // Do not stamp an existing schema as current without running migrations.
+    if get_version(conn).await? != 0 {
+        migrate(conn).await?;
+        return Ok(());
+    }
+    super::compatibility::mark_empty(conn).await?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS nodes (
             id TEXT PRIMARY KEY,
@@ -385,10 +392,7 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
 /// Returns `true` if any migrations were applied, `false` if already up-to-date.
 pub async fn migrate(conn: &Connection) -> Result<bool> {
     let current = get_version(conn).await?;
-    debug_assert!(
-        current <= LATEST_VERSION,
-        "database version {current} is ahead of code version {LATEST_VERSION}"
-    );
+    super::compatibility::check(conn, LATEST_VERSION).await?;
     if current >= LATEST_VERSION {
         return Ok(false);
     }
@@ -409,7 +413,18 @@ pub async fn migrate(conn: &Connection) -> Result<bool> {
     // check and the lock acquisition.
     let current = get_version(conn).await?;
 
-    let result = run_migrations(conn, current).await;
+    let result = async {
+        // Another process may have changed the header while we waited for
+        // the migration lock. Refuse before executing any migration writes.
+        super::compatibility::check(conn, LATEST_VERSION).await?;
+        if current == 0 {
+            // open() can also create an empty database; legacy schemas with
+            // tables remain unmarked. The stamp rolls back on migration failure.
+            super::compatibility::mark_empty(conn).await?;
+        }
+        run_migrations(conn, current).await
+    }
+    .await;
 
     match result {
         Ok(()) => {
@@ -423,6 +438,9 @@ pub async fn migrate(conn: &Connection) -> Result<bool> {
         }
         Err(e) => {
             let _ = conn.execute("ROLLBACK", ()).await;
+            if super::compatibility::is_refusal(&e) {
+                return Err(e);
+            }
             // A busy, locked, full or failing disk is not a broken schema: the
             // same migration succeeds once the condition clears, and the data
             // must not be thrown away for it. Those keep their own error.

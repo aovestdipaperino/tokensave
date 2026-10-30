@@ -72,7 +72,7 @@ fn project(auto_track: bool) -> tempfile::TempDir {
     assert!(tokensave(root, &["branch", "add"]).status.success());
     git(root, &["checkout", "-b", "feature"]);
 
-    let config_path = root.join(".tokensave").join("config.json");
+    let config_path = tokensave::config::get_tokensave_dir(root).join("config.json");
     let mut config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
     config["auto_track"] = serde_json::Value::Bool(auto_track);
@@ -82,7 +82,7 @@ fn project(auto_track: bool) -> tempfile::TempDir {
 }
 
 fn is_tracked(root: &Path, branch: &str) -> bool {
-    let meta = root.join(".tokensave").join("branch-meta.json");
+    let meta = tokensave::config::get_tokensave_dir(root).join("branch-meta.json");
     let Ok(text) = std::fs::read_to_string(meta) else {
         return false;
     };
@@ -158,7 +158,8 @@ fn repeated_branch_add_is_idempotent() {
         "first add must succeed: {}",
         String::from_utf8_lossy(&first.stderr)
     );
-    let meta_before = std::fs::read(root.join(".tokensave").join("branch-meta.json")).unwrap();
+    let meta_before =
+        std::fs::read(tokensave::config::get_tokensave_dir(root).join("branch-meta.json")).unwrap();
 
     let second = tokensave(root, &["branch", "add"]);
     assert!(
@@ -167,7 +168,7 @@ fn repeated_branch_add_is_idempotent() {
         String::from_utf8_lossy(&second.stderr)
     );
     assert_eq!(
-        std::fs::read(root.join(".tokensave").join("branch-meta.json")).unwrap(),
+        std::fs::read(tokensave::config::get_tokensave_dir(root).join("branch-meta.json")).unwrap(),
         meta_before,
         "repeated add must not rewrite branch metadata"
     );
@@ -196,4 +197,159 @@ fn if_enabled_honours_the_env_override() {
         is_tracked(root, "feature"),
         "TOKENSAVE_AUTO_TRACK=1 must enable the gated path even with the config off"
     );
+}
+
+// ---------------------------------------------------------------------------
+// #877: an opt-in explanation of what the hook skipped, quiet by default.
+// ---------------------------------------------------------------------------
+
+/// Runs `tokensave` with extra environment variables. The temp-dir variables
+/// point away from the project: these fixtures live in the system temp dir,
+/// which the `post-checkout` hook skips on purpose (#569).
+fn tokensave_with_env(root: &Path, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
+    let elsewhere = root.join("elsewhere-tmp");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tokensave"));
+    command
+        .args(args)
+        .current_dir(root)
+        .env("GIT_CONFIG_COUNT", "0")
+        .env("HOME", root)
+        .env("TMPDIR", &elsewhere)
+        .env("TMP", &elsewhere)
+        .env("TEMP", &elsewhere)
+        .env_remove("TOKENSAVE_AUTO_TRACK")
+        .env_remove("TOKENSAVE_HOOK_DEBUG");
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command.output().expect("run tokensave")
+}
+
+fn hook_debug_log(root: &Path) -> Option<String> {
+    std::fs::read_to_string(tokensave::config::get_tokensave_dir(root).join("hook-debug.log")).ok()
+}
+
+/// git's arguments for an ordinary branch checkout.
+const BRANCH_CHECKOUT: &[&str] = &[
+    "hook",
+    "post-checkout",
+    "1111111111111111111111111111111111111111",
+    "2222222222222222222222222222222222222222",
+    "1",
+];
+
+#[test]
+fn a_declined_auto_track_stays_quiet_without_hook_debug() {
+    let tmp = project(false);
+    let root = tmp.path();
+
+    for args in [&["branch", "add", "--if-enabled"][..], BRANCH_CHECKOUT] {
+        let out = tokensave_with_env(root, args, &[]);
+        assert!(out.status.success());
+        assert!(
+            out.stdout.is_empty() && out.stderr.is_empty(),
+            "`tokensave {}` must not narrate a normal checkout: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert_eq!(hook_debug_log(root), None, "no debug log unless asked for");
+    assert!(!is_tracked(root, "feature"));
+}
+
+#[test]
+fn hook_debug_explains_a_declined_auto_track() {
+    let tmp = project(false);
+    let root = tmp.path();
+
+    let out = tokensave_with_env(
+        root,
+        &["branch", "add", "--if-enabled"],
+        &[("TOKENSAVE_HOOK_DEBUG", "1")],
+    );
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("did not track branch 'feature'")
+            && stderr.contains("automatic branch tracking is disabled")
+            && stderr.contains("\"auto_track\": true")
+            && stderr.contains("TOKENSAVE_AUTO_TRACK=1"),
+        "the explanation must name the setting that enables tracking: {stderr}"
+    );
+    // The installed hooks discard output, so the log is what a user reads.
+    let log = hook_debug_log(root).expect("debug log written");
+    assert!(log.contains("did not track branch 'feature'"), "{log}");
+    assert!(!is_tracked(root, "feature"));
+}
+
+#[test]
+fn post_checkout_hook_debug_explains_skipped_tracking() {
+    let tmp = project(false);
+    let root = tmp.path();
+
+    let out = tokensave_with_env(root, BRANCH_CHECKOUT, &[("TOKENSAVE_HOOK_DEBUG", "1")]);
+    assert!(out.status.success(), "a hook must never fail the checkout");
+    let log = hook_debug_log(root).expect("debug log written");
+    assert!(
+        log.contains("post-checkout: did not track branch 'feature'")
+            && log.contains("automatic branch tracking is disabled"),
+        "{log}"
+    );
+    assert!(!is_tracked(root, "feature"));
+}
+
+#[test]
+fn post_checkout_hook_debug_reports_tracking_when_enabled() {
+    let tmp = project(true);
+    let root = tmp.path();
+
+    let out = tokensave_with_env(root, BRANCH_CHECKOUT, &[("TOKENSAVE_HOOK_DEBUG", "1")]);
+    assert!(out.status.success());
+    assert!(is_tracked(root, "feature"), "auto_track is on");
+    let log = hook_debug_log(root).expect("debug log written");
+    assert!(
+        log.contains("post-checkout: tracked the current branch"),
+        "{log}"
+    );
+}
+
+#[test]
+fn post_checkout_hook_debug_explains_a_file_checkout() {
+    let tmp = project(true);
+    let root = tmp.path();
+
+    let mut args = BRANCH_CHECKOUT.to_vec();
+    *args.last_mut().unwrap() = "0";
+    let out = tokensave_with_env(root, &args, &[("TOKENSAVE_HOOK_DEBUG", "1")]);
+    assert!(out.status.success());
+    assert!(
+        !is_tracked(root, "feature"),
+        "a file checkout tracks nothing"
+    );
+    let log = hook_debug_log(root).expect("debug log written");
+    assert!(
+        log.contains("post-checkout: file checkout, nothing to do"),
+        "{log}"
+    );
+}
+
+/// A debug setting left on must not grow the log without bound: past its
+/// limit the log starts afresh.
+#[test]
+fn hook_debug_log_is_bounded() {
+    let tmp = project(false);
+    let root = tmp.path();
+    let log_path = tokensave::config::get_tokensave_dir(root).join("hook-debug.log");
+    std::fs::write(&log_path, vec![b'x'; 300 * 1024]).unwrap();
+
+    let out = tokensave_with_env(root, BRANCH_CHECKOUT, &[("TOKENSAVE_HOOK_DEBUG", "1")]);
+    assert!(out.status.success());
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    assert!(
+        log.len() < 4096,
+        "the oversized log must restart: {} bytes",
+        log.len()
+    );
+    assert!(log.contains("post-checkout: did not track branch 'feature'"));
 }

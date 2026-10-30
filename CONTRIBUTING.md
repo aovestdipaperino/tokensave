@@ -82,6 +82,73 @@ cargo test --locked --no-default-features --features lite
    cargo fmt --all -- --check
    cargo clippy --workspace --all-targets --locked
    ```
+5. **Follow the [Rust coding style](#rust-coding-style).**
+
+## Rust Coding Style
+
+On `master`, Rust code follows
+[Google's Rust Style Guide](https://google.github.io/styleguide/rustguide.html).
+[AGENTS.md](AGENTS.md#rust-style-guide-master-only) defines the scope, the
+precedence and TokenSave's documented exceptions. TokenSave's own rules take
+precedence; for example, library code must not use `unwrap()` or `expect()`.
+This applies to `master` only; `beta` has not adopted the guide.
+The repository-wide audit and cleanup remain follow-up work tracked by #845;
+this documentation change does not establish compliance of existing code.
+
+### Enforced by tooling
+
+These checks are the enforceable baseline. Run them with the pinned toolchain
+before opening a PR:
+
+- `cargo fmt --all -- --check`: standard formatting with the default
+  `max_width = 100`. This is a formatting target, not a guarantee that every
+  line is at most 100 columns. CI blocks on this check.
+- `cargo clippy --workspace --all-targets --locked`: the crate lints configured
+  in `src/lib.rs` (`clippy::all` denied, `clippy::pedantic` warned,
+  `unwrap_used`/`expect_used` denied). These cover several guide rules,
+  including `borrowed_box` and `ptr_arg` (accept `&T`, `&[T]` and `&str`),
+  `new_without_default`, `len_without_is_empty`, `should_implement_trait` and
+  `wrong_self_convention`. CI runs Clippy as non-blocking, so check its output
+  locally and do not introduce new warnings.
+
+### Requires manual review
+
+Tooling does not fully enforce these rules, so authors and reviewers check
+them on every changed Rust file:
+
+- **Imports:** no new glob imports beyond the guide's permitted cases; one
+  module per `use` statement; call free functions through their module
+  (`mem::take(...)`); import types and use them unqualified unless the names
+  are ambiguous; prefer function-local imports for traits that are used once.
+- **Modules:** name files after their primary item; keep non-leaf modules
+  limited to declarations, re-exports and a small amount of glue code.
+- **Ownership:** borrow rather than `.clone()` when it is practical; avoid
+  `Rc`/`Arc` unless sharing across owners, tasks or threads requires it.
+- **APIs:** prefer an enum over an unclear `bool` parameter; prefer named
+  fields over tuples beyond very local use; use newtypes for values that are
+  easily confused; implement standard traits instead of custom equivalents;
+  derive rather than hand-implement when possible.
+- **Naming:** `new`/`try_new`/`from_*` constructors; `as_`/`to_`/`into_`
+  conversions; `foo`/`foo_mut`/`set_foo`/`take_foo` accessors; an `Ext` suffix
+  for extension traits; descriptive lifetimes; no project-specific
+  abbreviations.
+- **Implementation:** pattern matching instead of check-then-unwrap; explicit
+  types where inference hides meaning (`.into()`, `.parse()`, long iterator
+  chains); a `for` loop instead of complex combinator chains or `for_each`; no
+  combinator chains in `for` headers; `format!`/`write!` instead of chained
+  `+` concatenation; context strings on non-obvious `assert!`s.
+- **Docs and unsafe:** `///` docs on public items that say something the code
+  does not; `//!` for module docs; no `unsafe` unless safe code cannot do it,
+  and then a `// SAFETY:` comment and a stated justification.
+- **Macros:** prefer functions, types and traits to macros; prefer
+  `macro_rules!` to procedural macros.
+
+### Exceptions and cleanup
+
+Document any deviation that is not already listed in AGENTS.md where it
+occurs (`#[allow(lint, reason = "...")]` or a comment), and call it out in the
+PR description. Keep style-only cleanup of existing code behavior-preserving
+and in its own PRs, separate from functional changes.
 
 ## Filesystem Path Construction
 
@@ -169,7 +236,7 @@ MCP requests, and long-running server workloads, including error paths.
 - Contributors and agents MUST NOT claim code is leak-free without supporting
   evidence, and MUST qualify conclusions by the paths and workloads checked.
 
-Use the existing [memory diagnostics](README.md#memory-diagnostics) for sampled
+Use the existing [memory diagnostics](docs/guide/TOKEN-TRACKING.md#memory-diagnostics) for sampled
 RSS and phase attribution, the [automatic-sync and server lifecycle guide](docs/USER-GUIDE.md#how-the-mcp-server-refreshes-the-index)
 for operational constraints, and [query optimization notes](docs/QUERY-OPTIMIZATIONS.md)
 for existing database strategies. These describe specific mechanisms; the policy
@@ -210,7 +277,7 @@ cargo test --locked test_find_stale_files
 cargo test --locked sync
 
 # Faster local loop: only the 11 lite-tier languages (language tests for the
-# other tiers are compiled out). CI still runs the full feature set.
+# other tiers are compiled out). CI runs the full set and also this lite run.
 cargo test-lite
 ```
 
@@ -282,6 +349,41 @@ independent definitions are reordered. Concurrent reads do not test simultaneous
 writers or establish a public output-order guarantee. Repeated small full
 indexes exercise the production parallel extraction path, without timing
 assertions or a large repository stress test.
+
+## Documentation
+
+User documentation lives in [`docs/guide/`](docs/guide/README.md) and is published
+to the [GitHub Wiki](https://github.com/aovestdipaperino/tokensave/wiki). The
+guide is the single source: the wiki is generated from it by
+`.github/workflows/wiki.yml` on every push to `master` that changes it, and any
+edit made directly in the wiki is overwritten.
+
+- **Keep `README.md` short.** It holds what tokensave is, the installation guide,
+  the quick start, and links into the guide. Put details in the guide page for
+  that topic, or add a page if no existing page fits.
+- **Update the docs with the code.** A change that adds, removes, or changes a
+  command, flag, MCP tool, configuration field, environment variable, supported
+  agent, or language updates the affected guide pages (and `README.md`, if it is
+  mentioned there) in the same pull request.
+- **One place per fact.** Explain each topic on one guide page and link to it
+  from other pages instead of copying it. The installation commands are the one
+  intended duplicate: every method in `README.md` must appear unchanged in
+  [`docs/guide/INSTALLATION.md`](docs/guide/INSTALLATION.md), which also holds
+  the less common ones (such as installing from upstream `master`).
+- **Linking.** Link to other guide pages with relative links such as
+  `[MCP Tools](MCP-TOOLS.md#tools-by-category)`, and to other repository files
+  with relative paths. Keep each page's single `# Title`: the wiki names the
+  page after it.
+- **New pages.** Use an uppercase, hyphenated file name (`NEW-TOPIC.md`) and add
+  it to the `wiki-sidebar` list in [`docs/guide/README.md`](docs/guide/README.md)
+  and to the table in `README.md`.
+- **Check before submitting.** Run `python3 scripts/wiki/sync_wiki.py check` to
+  validate links, anchors, and the sidebar, and
+  `python3 scripts/wiki/sync_wiki.py build --out /tmp/tokensave-wiki` to
+  preview the generated wiki pages.
+
+Design notes, evaluations, and reports stay in `docs/` outside the guide and are
+not published to the wiki.
 
 ## Environment Variables
 

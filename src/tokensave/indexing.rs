@@ -352,12 +352,26 @@ impl TokenSave {
         F: Fn(usize, usize, &str),
         V: Fn(&str),
     {
+        let lock = try_acquire_sync_lock(&self.project_root)?;
+        self.index_all_with_lock(on_file, on_verbose, lock).await
+    }
+
+    /// Keep recovery and indexing inside the same writer critical section.
+    pub(super) async fn index_all_with_lock<F, V>(
+        &self,
+        on_file: F,
+        on_verbose: V,
+        _lock: SyncLockGuard,
+    ) -> Result<IndexResult>
+    where
+        F: Fn(usize, usize, &str),
+        V: Fn(&str),
+    {
         debug_assert!(self.project_root.exists(), "project root does not exist");
         debug_assert!(
             self.project_root.is_dir(),
             "project root is not a directory"
         );
-        let _lock = try_acquire_sync_lock(&self.project_root)?;
         // Fail loudly on a broken project.json (unknown language, bad glob)
         // instead of silently indexing without the manifest (#194).
         self.ensure_current_checkout()?;

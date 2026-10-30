@@ -17,6 +17,7 @@
 
 pub mod accounting;
 pub mod agents;
+pub mod auto_init;
 pub mod bench;
 pub mod blame_engine;
 pub mod branch;
@@ -65,3 +66,6 @@ pub mod user_config;
 pub mod worktree;
 
 pub mod verify;
+
+/// Experimental Graphify file interchange.
+pub mod graphify;
