@@ -24,6 +24,18 @@ async fn finish(check: &mut Check) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+/// A child forked concurrently by another test can briefly inherit the lock
+/// descriptor until it execs, so a just-released lock may still read as held.
+async fn start_after_release(path: &Path) -> Check {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(check) = Check::start(path, executable(), false, None).unwrap() {
+            return check;
+        }
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
 #[tokio::test]
 async fn healthy_checks_preserve_database_and_persist_results() {
     let (_dir, path, db) = database().await;
@@ -85,9 +97,7 @@ async fn concurrent_writer_and_rollback_do_not_block_or_report_corruption() {
 async fn process_lock_and_cancellation_release_resources() {
     let (_dir, path, _db) = database().await;
     for _ in 0..5 {
-        let mut check = Check::start(&path, executable(), false, None)
-            .unwrap()
-            .unwrap();
+        let mut check = start_after_release(&path).await;
         assert!(Check::start(&path, executable(), false, None)
             .unwrap()
             .is_none());
@@ -99,9 +109,7 @@ async fn process_lock_and_cancellation_release_resources() {
         );
         drop(check);
     }
-    let mut check = Check::start(&path, executable(), false, None)
-        .unwrap()
-        .unwrap();
+    let mut check = start_after_release(&path).await;
     finish(&mut check).await;
     assert_eq!(check.report().unwrap().outcome, "healthy");
 }
