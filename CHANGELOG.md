@@ -9,6 +9,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- Opt-in performance profiling infrastructure (#754): a `[profiling]` table in `config.toml` (`mode = "off" | "light" | "detailed"`, slow threshold, retention, size limit, detailed-mode expiry) with a `TOKENSAVE_PROFILE` per-run override, a static operation registry, mergeable fixed-bucket latency histograms, sharded lock-free aggregation, spans with inclusive/exclusive time and per-invocation database attribution, and bounded hourly files under `~/.tokensave/profile/`. Off by default; with profiling off nothing is measured or written.
+
 - Explain untracked branches: `tokensave_status` reports the effective `auto_track` setting and an `auto_track_hint` saying why the branch was not tracked automatically (disabled, turned off by `TOKENSAVE_AUTO_TRACK`, failed, or a read-only view) and how to enable it; `tokensave status` prints the same hint, and a failed open-time auto-track now carries its reason on the branch warning (Refs #877).
 - Add `TOKENSAVE_HOOK_DEBUG=1`, which makes the `post-checkout` hook and `branch add --if-enabled` explain skipped actions on stderr and in a bounded `.tokensave/hook-debug.log`; hooks stay silent by default (Refs #877).
 
