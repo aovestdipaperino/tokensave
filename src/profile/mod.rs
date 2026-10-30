@@ -12,6 +12,7 @@
 //! - [`context`]: spans with inclusive/exclusive time and per-invocation
 //!   database attribution.
 //! - [`storage`]: bounded per-process hourly files, merged at report time.
+//! - [`tools`]: per-tool MCP invocation aggregates.
 //!
 //! With profiling off, [`span`] costs one relaxed atomic load: no clock
 //! read, no allocation and no I/O, and no file or directory is created.
@@ -25,6 +26,7 @@ pub mod histogram;
 pub mod ops;
 pub mod recorder;
 pub mod storage;
+pub mod tools;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -176,6 +178,13 @@ pub fn recorder() -> Option<&'static Recorder> {
     RECORDER.get()
 }
 
+/// Drains the op recorder and the per-tool table into one snapshot.
+fn drain(recorder: &Recorder) -> Snapshot {
+    let mut snapshot = recorder.drain();
+    tools::drain_into(&mut snapshot);
+    snapshot
+}
+
 /// Starts measuring `op`. Inert when profiling is off.
 #[inline]
 pub fn span(op: impl Into<Op>) -> Span {
@@ -245,7 +254,7 @@ impl Profiler {
                     Err(RecvTimeoutError::Timeout)
                 );
                 // Best-effort: profiling must never break the workload.
-                let _ = store.flush(&recorder.drain(), unix_now());
+                let _ = store.flush(&drain(recorder), unix_now());
                 if last {
                     break;
                 }

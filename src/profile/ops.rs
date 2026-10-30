@@ -114,6 +114,9 @@ op_enum! {
         Freshness => "freshness",
         /// Graph traversal inside the handler.
         GraphTraversal => "graph_traversal",
+        /// The tool handler itself, from dispatch to its result; what
+        /// `serve --timings` reports as `_meta.duration_us`.
+        Handler => "handler",
         /// Ranking and result processing.
         Ranking => "ranking",
         /// Serializing the response.
