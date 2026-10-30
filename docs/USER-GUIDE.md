@@ -1891,6 +1891,8 @@ confirming those changes. Structural findings include incompatible schema,
 invalid SHA-256 fingerprints, dangling edges/references/parents, orphan symbols
 and vectors, and dispatch records with missing endpoints. Branch metadata is
 checked for malformed JSON, missing default entries/databases and unsafe paths.
+A recorded default branch that no longer exists in Git produces a
+`BRANCH_DEFAULT_STALE` warning (fix it with `tokensave branch set-default`).
 An untracked current branch produces `BRANCH_FALLBACK` and stops verification
 rather than comparing another branch's database against the current source.
 

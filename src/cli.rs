@@ -655,6 +655,18 @@ pub enum BranchAction {
         #[arg(short, long)]
         path: Option<String>,
     },
+    /// Make a branch the default, keeping the data already indexed
+    ///
+    /// An untracked branch takes over the current default's entry and
+    /// database. A tracked branch becomes the default with its own
+    /// database; the previous default stays as an ordinary branch entry.
+    SetDefault {
+        /// Branch to make the default
+        name: String,
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+    },
     /// Remove all tracked branches (keeps only the default branch)
     Removeall {
         /// Project path (default: current directory)
