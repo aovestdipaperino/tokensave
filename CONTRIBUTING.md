@@ -281,6 +281,10 @@ cargo test --locked sync
 cargo test-lite
 ```
 
+### What CI runs
+
+CI (`.github/workflows/ci.yml`) runs each job only when a file that job depends on changed. A change limited to documentation, `scripts/` or `assets/` starts no Rust build. Format runs for `.rs` changes, MSRV for library and Cargo changes, and the test matrix and feature tiers for anything a build or test reads, including `tests/fixtures/`. If your change makes a build or test read a file that the filters in the `changes` job do not cover, add it to the matching filters. The `CI OK` job reports the combined result. A manual run (`workflow_dispatch`) executes every job.
+
 ### Test layout
 
 All `tests/*.rs` files are modules of one test binary, `tests/integration.rs`, because every test binary statically links all tree-sitter grammars and SQLite: 180 separate binaries took hundreds of gigabytes of `target/`. `Cargo.toml` sets `autotests = false`, so a new test file must be declared as a `mod` in `tests/integration.rs`, and helpers are shared through `crate::common`.
