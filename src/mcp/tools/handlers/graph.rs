@@ -435,7 +435,7 @@ async fn scan_literal_chunk(
     let query = query.to_string();
     let scanned = tokio::task::spawn_blocking(move || {
         cpu.run(|| {
-            use rayon::prelude::*;
+            use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
             paths
                 .par_iter()
                 .map(|path| scan_literal_file(&project_root, path, &query, budget))
