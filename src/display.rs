@@ -135,7 +135,10 @@ pub fn format_bounded_project_row(project_root: &Path, max_width: usize) -> Stri
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one argument per independent section of the `status` output"
+)]
 pub fn print_status_header(
     stats: &GraphStats,
     tokens_saved: u64,
@@ -174,7 +177,10 @@ pub fn print_status_header(
 }
 
 /// Prints the status output as a compact bordered table.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one argument per independent section of the `status` output"
+)]
 pub fn print_status_table(
     stats: &GraphStats,
     tokens_saved: u64,

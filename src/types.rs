@@ -93,7 +93,10 @@ pub enum NodeKind {
     Signal,
 }
 
-#[allow(clippy::should_implement_trait)]
+#[allow(
+    clippy::should_implement_trait,
+    reason = "returns `Option`, as every caller expects; `FromStr` would add an unused error type"
+)]
 impl NodeKind {
     /// Returns the string representation of this node kind.
     pub fn as_str(&self) -> &'static str {
@@ -276,7 +279,10 @@ pub enum EdgeKind {
     Reopens,
 }
 
-#[allow(clippy::should_implement_trait)]
+#[allow(
+    clippy::should_implement_trait,
+    reason = "returns `Option`, as every caller expects; `FromStr` would add an unused error type"
+)]
 impl EdgeKind {
     /// Returns the string representation of this edge kind.
     pub fn as_str(&self) -> &'static str {
@@ -338,7 +344,10 @@ impl Visibility {
         }
     }
 
-    #[allow(clippy::should_implement_trait)]
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "returns `Option`, as every caller expects; `FromStr` would add an unused error type"
+    )]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "public" | "pub" => Some(Self::Pub),

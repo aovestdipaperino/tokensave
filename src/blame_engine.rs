@@ -643,7 +643,6 @@ pub(crate) fn format_rfc3339(unix_secs: i64) -> String {
     format!("{yr:04}-{mo:02}-{dy:02}T{hr:02}:{mn:02}:{sc:02}Z")
 }
 
-#[allow(clippy::many_single_char_names)] // algorithm variables match the reference
 fn ymd_hms_from_unix(mut ts: i64) -> (i32, u32, u32, u32, u32, u32) {
     // Howard Hinnant's `civil_from_days`, simplified for UTC.
     let day_sec = ts.rem_euclid(86_400);
