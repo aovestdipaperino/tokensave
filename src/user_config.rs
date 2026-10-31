@@ -2370,7 +2370,7 @@ wildcard_permissions = true # managed in dotfiles\n";
         if let Some(parent) = config_p.parent() {
             std::fs::create_dir_all(parent).expect("create tokensave dir");
         }
-        let corrupt_bytes: &[u8] = &[b'w', b'p', b'=', 0xFF, 0xFE, b'x'];
+        let corrupt_bytes: &[u8] = &[b'w', b'p', b'=', 0xff, 0xfe, b'x'];
         std::fs::write(&config_p, corrupt_bytes).expect("seed invalid-UTF-8 config.toml");
 
         let loaded = UserConfig::load();
@@ -2432,7 +2432,7 @@ wildcard_permissions = true # managed in dotfiles\n";
         if let Some(parent) = state_p.parent() {
             std::fs::create_dir_all(parent).expect("create tokensave dir");
         }
-        let corrupt_bytes: &[u8] = &[b'p', b'u', b'=', 0xFF, 0xFE, b'x'];
+        let corrupt_bytes: &[u8] = &[b'p', b'u', b'=', 0xff, 0xfe, b'x'];
         std::fs::write(&state_p, corrupt_bytes).expect("seed invalid-UTF-8 state.toml");
 
         let loaded = UserConfig::load();

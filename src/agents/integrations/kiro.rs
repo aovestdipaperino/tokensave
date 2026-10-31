@@ -218,7 +218,7 @@ fn percent_encode_file_uri_path(path: &str) -> String {
             _ => {
                 encoded.push('%');
                 encoded.push(HEX[(byte >> 4) as usize] as char);
-                encoded.push(HEX[(byte & 0x0F) as usize] as char);
+                encoded.push(HEX[(byte & 0x0f) as usize] as char);
             }
         }
     }

@@ -23,6 +23,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 - Correct the multi-branch guide: the `post-checkout` hook tracks branches only when `auto_track` is enabled, which is off by default. Add a troubleshooting entry for untracked branches (Refs #877).
 
+### Changed
+
+- Align `unsafe` usage and hex literals with the adopted Google Rust Style Guide: document every `unsafe` block with a `// SAFETY:` comment, replace a hand-declared `getppid` FFI call in a test with `std::os::unix::process::parent_id()`, and lowercase hex literals. No behavior change (Refs #886).
+
 ### Documentation
 
 - Adopt Google's Rust Style Guide on master with project-specific precedence, exceptions, and contributor review guidance; defer the codebase audit and cleanup to follow-up work (Refs #845).
