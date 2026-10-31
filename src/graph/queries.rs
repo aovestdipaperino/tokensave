@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use crate::db::Database;
 use crate::errors::{Result, TokenSaveError};
 use crate::profile::DbOp;
-use crate::types::*;
+use crate::types::{EdgeKind, Node, NodeKind, Visibility};
 
 /// Godot virtual callbacks that the engine invokes on `Object`, `Node`,
 /// `CanvasItem`, `Control`, `Resource` and the physics bodies. A `.gd`
