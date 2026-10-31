@@ -9,6 +9,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- Add idle MCP database integrity checks, enabled by default once a day (`integrity_interval_secs`, `0` disables), and a bounded read-only `integrity-check` command with persisted diagnostics. `tokensave doctor` reports the interval and last result; checks deferred for request activity retry after 15 minutes and are not logged as findings. Checks never trigger automatic recovery (Refs #864).
 - Profiled database execution (#754): MCP read-path queries (node, edge and search lookups, dead-code and file-dependency queries) are measured per static operation, with rows returned and errors, plus write-lock wait and write-transaction duration. Inert unless profiling is enabled.
 - Profiled MCP tool calls (#754): with profiling enabled, `tokensave serve` records each `tools/call` as one invocation (end-to-end latency, attributed database time and operations, operations per call, response size, errors) per registered tool, plus project-resolution, freshness and handler phases, and flushes aggregates on exit. `serve --timings` now reads the handler measurement the profiler records.
 - Profiled indexing, sync and graph traversal (#754): full-index (`index.*`) and incremental-sync (`sync.*`) phases, whole runs bucketed by project file count (`run.*`), graph traversals with nodes and edges visited, and the bulk write paths (node, edge, file, unresolved-reference and FTS-document inserts, bulk-load end). `tokensave init` and `tokensave sync` start the profiler when it is enabled. Verbose output is unchanged.
@@ -22,9 +23,6 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ### Documentation
 
 - Correct the multi-branch guide: the `post-checkout` hook tracks branches only when `auto_track` is enabled, which is off by default. Add a troubleshooting entry for untracked branches (Refs #877).
-
-### Documentation
-
 - Adopt Google's Rust Style Guide on master with project-specific precedence, exceptions, and contributor review guidance; defer the codebase audit and cleanup to follow-up work (Refs #845).
 - Evaluate optional Graphify coexistence at a pinned revision, with a disposable CLI probe, recorded resource measurements, and explicit requirements and remaining work before any adapter (Refs #791).
 - Document the optional Graphify exporter workflow, limits and privacy scope in the user guide (Refs #791).

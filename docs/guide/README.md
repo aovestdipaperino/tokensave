@@ -35,8 +35,9 @@ These documents stay in the repository and are linked from the wiki:
 
 - [User Guide](../USER-GUIDE.md): a long-form walkthrough of everyday use
 - [Multi-Branch Indexing Guide](../BRANCHING-USER-GUIDE.md)
-- [Database compatibility](../DATABASE-COMPATIBILITY.md) and
-  [database recovery](../DATABASE-RECOVERY.md)
+- [Database compatibility](../DATABASE-COMPATIBILITY.md),
+  [database recovery](../DATABASE-RECOVERY.md) and
+  [periodic integrity checks](../DATABASE-INTEGRITY.md)
 - [Versioning policy](../../TOKENSAVE-VERSIONING.md)
 - [Changelog](../../CHANGELOG.md)
 

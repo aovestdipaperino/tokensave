@@ -84,6 +84,9 @@ pub fn resolve_report_savings(configured: bool) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenSaveConfig {
+    /// Seconds between idle MCP database checks; zero disables them.
+    #[serde(default = "default_integrity_interval_secs")]
+    pub integrity_interval_secs: u64,
     /// Opt-in fallback for files without a registered extension or manifest language.
     #[serde(default)]
     pub language_detection: crate::language_detection::DetectionConfig,
@@ -282,9 +285,14 @@ pub fn env_bool_override(var: &str, config_value: bool) -> bool {
     }
 }
 
+fn default_integrity_interval_secs() -> u64 {
+    crate::integrity::DEFAULT_INTERVAL_SECS
+}
+
 impl Default for TokenSaveConfig {
     fn default() -> Self {
         Self {
+            integrity_interval_secs: default_integrity_interval_secs(),
             language_detection: crate::language_detection::DetectionConfig::default(),
             cpu_usage: None,
             memory_usage: crate::memory::MemoryUsage::default(),

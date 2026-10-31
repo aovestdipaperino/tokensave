@@ -26,9 +26,9 @@ SQL in `tests/corruption_test.rs` remains outside the documented scope.
 
 ## Inventory summary
 
-- SQL-bearing source files: **38**.
-- SQL literal/template occurrences: **346**.
-- Functions retained for construction/binding context: **172**.
+- SQL-bearing source files: **39**.
+- SQL literal/template occurrences: **349**.
+- Functions retained for construction/binding context: **173**.
 
 ## Source file index
 
@@ -62,6 +62,7 @@ SQL in `tests/corruption_test.rs` remains outside the documented scope.
 | [src/graph/imports.rs](../src/graph/imports.rs) | 1 |
 | [src/graph/queries.rs](../src/graph/queries.rs) | 5 |
 | [src/hooks.rs](../src/hooks.rs) | 1 |
+| [src/integrity.rs](../src/integrity.rs) | 3 |
 | [src/mcp/tools/definitions.rs](../src/mcp/tools/definitions.rs) | 4 |
 | [src/mcp/tools/handlers/workflow.rs](../src/mcp/tools/handlers/workflow.rs) | 1 |
 | [src/quality_diff.rs](../src/quality_diff.rs) | 2 |
@@ -13020,3 +13021,39 @@ SELECT substr(e.source,1,4097), substr(e.target,1,4097), substr(e.kind,1,4097), 
 ?1 is the same file for both endpoints; ?2 is max_edges + 1, integer <=5001. Extra row refuses export. id breaks ties without collapsing multiplicity; line and nullable numeric resolver provenance are retained.
 
 Construction context: max_nodes is validated in 1..=1000 and max_edges in 1..=5000 before integer conversion. SQL templates are fixed; no user text is interpolated. Queries Q0385–Q0388 use one read transaction for a consistent DB snapshot. Output is published only after successful reads, budget checks, source/branch rechecks and capped serialization. No migrations or writes occur.
+
+
+## Periodic integrity additions (Refs #864)
+
+Source: [src/integrity.rs](../src/integrity.rs), `inspect`. Three new occurrences
+and one construction context, inspected 2026-10-30. No existing SQL changed.
+
+#### Q0389 — `inspect`: Read-only checker connection limits
+
+```sql
+PRAGMA query_only=1; PRAGMA busy_timeout=0; PRAGMA cache_size=-2048; PRAGMA mmap_size=0;
+```
+
+Fixed connection-local batch, no bindings. No write transaction or checkpoint.
+The connection uses SQLITE_OPEN_READ_ONLY; compatibility::check retains the
+existing Q0343–Q0349 policy queries with maximum schema u32::MAX because file
+integrity checking does not interpret application tables or migrate schemas.
+
+#### Q0390 — `inspect`: Full physical integrity
+
+```sql
+PRAGMA integrity_check(100)
+```
+
+#### Q0391 — `inspect`: Periodic/default physical integrity
+
+```sql
+PRAGMA quick_check(100)
+```
+
+Construction/binding context: a boolean `full` selects exactly one fixed pragma;
+there are no SQL parameters or interpolated inputs. SQLite supplies one read
+snapshot per statement. Stream rows, retain at most 100 diagnostics truncated to
+1,024 bytes each, require an `ok` row and no diagnostics for success. SQL errors
+produce incomplete checks. The owning process enforces a five-second lifetime;
+all results/connections are released on completion or process termination.
