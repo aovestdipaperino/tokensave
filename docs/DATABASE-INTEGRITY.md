@@ -1,9 +1,11 @@
 # Periodic database integrity checks
 
-Implementation for [the periodic-check comment on #864](https://github.com/aovestdipaperino/tokensave/issues/864#issuecomment-6507699473).
+Periodic checks implement [the periodic-check comment on #864](https://github.com/aovestdipaperino/tokensave/issues/864#issuecomment-6507699473).
 
-The MCP server checks its selected project database after at least 60 seconds
-without incoming requests, at most once per day by default. Set
+Periodic checks are **enabled by default**. The MCP server checks its selected
+project database after at least 60 seconds without incoming requests, at most
+once per day. `tokensave doctor` reports the effective interval and the last
+saved result. Set
 `integrity_interval_secs` in the project's channel-specific `.tokensave/config.json`
 (or `.tokensave/beta/config.json`) to another interval in seconds; `0` disables
 periodic checks. Restart the server after changing this setting. Due checks wait
@@ -39,12 +41,18 @@ messages of 1,024 bytes each. `--status` reads this record without checking the
 file. Exit codes are 0 for healthy, 1 for completed checks reporting corruption,
 and 2 for incomplete/error/interrupted checks. Lock, permission, incompatible
 creation channel and SQL errors are incomplete checks, not proof of corruption.
-A leftover `running` record after an abrupt crash is **not** a successful check.
-All attempts count toward the configured interval, including interruptions, so
-continuous activity or repeated failures cannot cause a retry storm. A manual
-check bypasses that interval, but respects the cross-process checker lock.
+A leftover `running` record after an abrupt crash is **not** a successful check;
+`--status` reports it as `interrupted` when no checker holds the lock.
 
-Failures are logged to server stderr. Preserve the database **and its WAL**
+A check that yields to an incoming request or server shutdown is recorded as
+`deferred` and retried after 15 minutes of further idle time (or the configured
+interval, if shorter). Every other attempt, including one that exceeds the
+five-second budget or fails, counts toward the full interval, so repeated
+failures cannot cause a retry storm. A manual check bypasses the interval, but
+respects the cross-process checker lock.
+
+Corrupt, error and interrupted results are logged to server stderr; deferrals
+are routine scheduling and are not logged. Preserve the database **and its WAL**
 before recovery; inspect the saved diagnostics and run the manual command.
 A healthy physical check alone does not justify deleting or rebuilding an index.
 Existing crash-recovery behavior outside this checker is unchanged. Optional
@@ -65,54 +73,31 @@ budget, also enforced by a native watchdog in the child so synchronous SQLite
 work and loss of the parent cannot leave an indefinitely running scan. Large
 checks may therefore remain incomplete; the tool never reports those as healthy.
 The watchdog's error exit leaves an incomplete record if the parent also died.
-An idle scheduler wakes once a minute and does not open a database while busy,
-disabled, or within the persisted interval. There is no accumulated task queue.
+An idle scheduler wakes once a minute and does not open a database or create
+the lockfile while busy, disabled, or within the persisted interval. There is no
+accumulated task queue. The `.integrity.json` and `.integrity.lock` sidecars sit
+next to the database; they are not removed when a branch database is removed.
 
-## Validation and status
-
-This work is an unmerged implementation on `periodic-database-integrity`,
-referencing #864. It builds on the existing `verify` logical checker and does
-not implement all crash-recovery work proposed in the issue. No release or
-cross-platform validation is implied by this document.
+## Validation
 
 Focused regressions: `cargo test --test integration integrity_test::`.
 The fixtures cover healthy quick/full checks, malformed and damaged files,
 concurrent WAL writes and rollback, preservation of database bytes, persisted
-interval/disable behavior, checker exclusion, repeated cancellation and handle
-release, and logical inconsistencies distinct from physical corruption.
+interval/disable behavior, the shorter retry after deferral, gating without
+lockfile creation, orphaned `running` records, checker exclusion, repeated
+cancellation and handle release, and logical inconsistencies distinct from
+physical corruption.
+
 Performance validation covers the no-work busy/disabled paths and bounded child
-lifetime; it is not a production throughput or long-running RSS benchmark.
-Representative large-repository latency/RSS measurements and Windows/macOS runs
-remain necessary before claiming no significant performance degradation.
+lifetime. It is not a production throughput or long-running RSS benchmark, and
+the five-second budget is a limit, not evidence that verification is cheap.
+Measurements of check duration, CPU, I/O and RSS on large repositories, and
+their effect on concurrent query and indexing latency, remain follow-up work.
 
-Validation recorded on Linux, 2026-10-30:
+## Known limitations
 
-- `TMPDIR=/var/tmp cargo test --workspace --locked --no-fail-fast`: passed,
-  including all 11 integrity regressions. The initial sandbox run hit two
-  existing discovery tests because its read-only `/tmp/.git` marker makes
-  non-repository fixtures appear nested in a repository; clean fixtures passed.
-- `TMPDIR=/var/tmp cargo test --locked --features test-transport --test integration serve_idle_timeout_test::`: all three idle/shutdown regressions passed.
-- `cargo clippy --workspace --all-targets --locked`: passed with existing warnings.
-- `cargo fmt --all -- --check` and `git diff --check`: passed.
-- 100 persisted interval gates took approximately 2.2 ms on the small fixture;
-  a nonexistent worker executable confirmed that skipped checks spawn no process.
-- A real CLI server on a disposable indexed project ran its idle check and
-  reported healthy, then exited after 65.09 seconds with a 65-second idle timeout.
-  The manual `integrity-check --status` command returned the saved healthy report.
-
-These timings are fixture observations, not portable performance thresholds.
-
-## Before merging
-
-Investigate verification overhead before merging this implementation. Measure
-actual quick/full check duration, CPU use, disk I/O, peak and sustained RSS,
-WAL/checkpoint effects, and query/indexing latency with checking enabled versus
-disabled on representative small and large databases. Include concurrent writes,
-cold and warm caches, and repeated cancellation. The five-second budget is a
-limit, not evidence that verification is cheap; the 65.09-second observation
-above measures server idle exit, not database verification duration.
-
-Also review the scheduling policy: this implementation counts interrupted and
-failed attempts toward the full interval and replaces the last result. Separate
-attempt/completion timestamps, preserving the last completed result, and bounded
-shorter retries are proposed follow-ups, not implemented behavior.
+- Interrupted, failed and completed attempts replace the last saved result;
+  the record does not keep the last completed result separately.
+- Databases too large to check within five seconds never complete a periodic
+  check. Use `integrity-check --full` manually for those.
+- Optional unclean-shutdown startup checks are not implemented.

@@ -23,6 +23,8 @@ tokensave sync --force [path]      # Force a full re-index
 tokensave sync --doctor [path]     # Sync and list added/modified/removed files
 tokensave verify [path]            # Read-only index integrity and source-stat checks
 tokensave verify [path] --deep --json # Full SQLite checks and bounded source hashing
+tokensave integrity-check <db> [--full]  # Bounded read-only SQLite file check of one database
+tokensave integrity-check <db> --status  # Show the last saved integrity result
 tokensave status [path]            # Show statistics + cost summary
 tokensave status [path] --json     # Show statistics (JSON output)
 tokensave status --details         # Include node-kind breakdown
@@ -148,3 +150,13 @@ See [Keeping state outside the repository](INDEXING.md#keeping-state-outside-the
 | `watcher_debounce` | `~/.tokensave/config.toml` | Quiet period before a burst of changes is applied: `"500ms"`, `"2s"` (default), `"1m"`. Clamped to 50 ms – 60 s. Read only when the watcher is on. |
 
 See [Opt-in filesystem watcher](INDEXING.md#opt-in-filesystem-watcher) for scope, bounds and platform limits.
+
+## Settings for periodic integrity checks
+
+| Setting | Where | Effect |
+|---|---|---|
+| `integrity_interval_secs` | `.tokensave/config.json` | Seconds between read-only database checks run by an idle MCP server. Default `86400` (daily, enabled). `0` disables them. Restart the server after changing it. |
+
+`tokensave doctor` shows the effective interval and the last result. See
+[periodic database integrity checks](../DATABASE-INTEGRITY.md) for scheduling,
+outcomes and resource limits.

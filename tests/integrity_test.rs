@@ -27,9 +27,12 @@ async fn finish(check: &mut Check) {
 /// A child forked concurrently by another test can briefly inherit the lock
 /// descriptor until it execs, so a just-released lock may still read as held.
 async fn start_after_release(path: &Path) -> Check {
+    start_after_release_with(path, false).await
+}
+async fn start_after_release_with(path: &Path, full: bool) -> Check {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if let Some(check) = Check::start(path, executable(), false, None).unwrap() {
+        if let Some(check) = Check::start(path, executable(), full, None).unwrap() {
             return check;
         }
         assert!(Instant::now() < deadline);
@@ -43,9 +46,7 @@ async fn healthy_checks_preserve_database_and_persist_results() {
     drop(db);
     let bytes = std::fs::read(&path).unwrap();
     for full in [false, true] {
-        let mut check = Check::start(&path, executable(), full, None)
-            .unwrap()
-            .unwrap();
+        let mut check = start_after_release_with(&path, full).await;
         finish(&mut check).await;
         let report = check.report().unwrap();
         assert_eq!(report.outcome, "healthy", "{report:?}");
@@ -101,12 +102,9 @@ async fn process_lock_and_cancellation_release_resources() {
         assert!(Check::start(&path, executable(), false, None)
             .unwrap()
             .is_none());
-        check.stop("test cancellation").await.unwrap();
+        check.stop("deferred", "test cancellation").await.unwrap();
         let outcome = check.report().unwrap().outcome;
-        assert!(
-            outcome == "interrupted" || outcome == "healthy",
-            "{outcome}"
-        );
+        assert!(outcome == "deferred" || outcome == "healthy", "{outcome}");
         drop(check);
     }
     let mut check = start_after_release(&path).await;
@@ -223,4 +221,70 @@ async fn saving_diagnostics_does_not_follow_a_sidecar_symlink() {
     finish(&mut check).await;
     assert_eq!(check.report().unwrap().outcome, "healthy");
     assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+fn sidecar(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut name = path.canonicalize().unwrap().into_os_string();
+    name.push(suffix);
+    name.into()
+}
+fn write_report(path: &Path, outcome: &str, age_secs: i64) {
+    let report = integrity::Report {
+        started_at: tokensave::tokensave::current_timestamp() - age_secs,
+        finished_at: None,
+        outcome: outcome.into(),
+        full: false,
+        diagnostics: Vec::new(),
+    };
+    std::fs::write(
+        sidecar(path, ".integrity.json"),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn deferred_attempts_retry_sooner_than_failed_ones() {
+    let (_dir, path, _db) = database().await;
+    let retry = i64::try_from(integrity::DEFERRED_RETRY_SECS).unwrap();
+    // Nonexistent executable: a gated attempt returns None, a due one fails to spawn.
+    let gated = |path: &Path| {
+        Check::start(path, Path::new("nonexistent-checker"), false, Some(86400))
+            .is_ok_and(|check| check.is_none())
+    };
+    write_report(&path, "deferred", retry - 60);
+    assert!(gated(&path));
+    write_report(&path, "interrupted", retry + 60);
+    assert!(gated(&path));
+    write_report(&path, "deferred", retry + 60);
+    assert!(!gated(&path));
+    // The retry delay never exceeds a shorter configured interval.
+    write_report(&path, "deferred", 120);
+    let mut check = Check::start(&path, executable(), false, Some(60))
+        .unwrap()
+        .unwrap();
+    finish(&mut check).await;
+    assert_eq!(check.report().unwrap().outcome, "healthy");
+}
+
+#[tokio::test]
+async fn gated_ticks_do_not_create_the_lockfile() {
+    let (_dir, path, _db) = database().await;
+    write_report(&path, "healthy", 0);
+    assert!(Check::start(&path, executable(), false, Some(86400))
+        .unwrap()
+        .is_none());
+    assert!(!sidecar(&path, ".integrity.lock").exists());
+}
+
+#[tokio::test]
+async fn status_reports_an_orphaned_running_record_as_interrupted() {
+    let (_dir, path, _db) = database().await;
+    write_report(&path, "running", 0);
+    let report = integrity::status(&path).unwrap();
+    assert_eq!(report.outcome, "interrupted");
+    assert_eq!(report.exit_code(), 2);
+    let mut check = start_after_release(&path).await;
+    assert_eq!(integrity::status(&path).unwrap().outcome, "running");
+    finish(&mut check).await;
 }
