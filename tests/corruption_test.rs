@@ -108,7 +108,7 @@ async fn quick_check_detects_page_level_corruption() {
         // Write garbage in the middle of the file (skip the header page)
         let offset = std::cmp::min(len / 2, 8192);
         file.seek(std::io::SeekFrom::Start(offset)).unwrap();
-        file.write_all(&[0xDE, 0xAD, 0xBE, 0xEF].repeat(64))
+        file.write_all(&[0xde, 0xad, 0xbe, 0xef].repeat(64))
             .unwrap();
         file.sync_all().unwrap();
     }
@@ -333,7 +333,7 @@ async fn corrupt_db_detected_and_repaired_on_reopen() {
         let len = file.metadata().unwrap().len();
         let offset = std::cmp::min(len / 2, 8192);
         file.seek(std::io::SeekFrom::Start(offset)).unwrap();
-        file.write_all(&[0xFF; 256]).unwrap();
+        file.write_all(&[0xff; 256]).unwrap();
         file.sync_all().unwrap();
     }
 

@@ -247,6 +247,11 @@ fn write_sample_inner(mmap_path: &Path, s: &Sample, now: u64) -> std::io::Result
         file.set_len(FILE_SIZE as u64)?;
     }
 
+    // SAFETY: `memmap2` requires that the file not be truncated or modified
+    // unexpectedly while mapped. tokensave only ever grows this file to
+    // `FILE_SIZE` and never shrinks it, and writers serialize on the
+    // exclusive lock held above. Readers in other processes copy bytes out
+    // and tolerate torn values, the accepted risk of mmap-based telemetry.
     let mut mmap = unsafe { memmap2::MmapMut::map_mut(&file)? };
 
     let version = read_u64(&mmap, OFF_VERSION);
@@ -390,6 +395,11 @@ impl SlotReader {
     pub fn open_at(dir: &Path) -> std::io::Result<Self> {
         let mmap_path = dir.join(MMAP_FILENAME);
         let file = std::fs::OpenOptions::new().read(true).open(&mmap_path)?;
+        // SAFETY: tokensave only ever grows this file to `FILE_SIZE` and never
+        // truncates it, so the mapping stays backed. Writers in other
+        // processes may update slots while it is mapped; every access is
+        // bounds-checked against `mmap.len()` and copies bytes out, so a
+        // concurrent write yields at most a torn slot.
         let mmap = unsafe { memmap2::Mmap::map(&file)? };
         Ok(Self { mmap })
     }
@@ -488,6 +498,11 @@ fn purge_dead_slots(dir: &Path, alive: &HashSet<u64>) -> std::io::Result<usize> 
         .write(true)
         .open(dir.join(MMAP_FILENAME))?;
     file.lock_exclusive()?;
+    // SAFETY: `memmap2` requires that the file not be truncated or modified
+    // unexpectedly while mapped. tokensave only ever grows this file to
+    // `FILE_SIZE` and never shrinks it, and writers serialize on the
+    // exclusive lock held above. Readers in other processes copy bytes out
+    // and tolerate torn values, the accepted risk of mmap-based telemetry.
     let mut mmap = unsafe { memmap2::MmapMut::map_mut(&file)? };
     let mut purged = 0;
     for i in 0..SLOT_COUNT {
