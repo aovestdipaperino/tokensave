@@ -26,6 +26,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ### Changed
 
 - Align `unsafe` usage and hex literals with the adopted Google Rust Style Guide: document every `unsafe` block with a `// SAFETY:` comment, replace a hand-declared `getppid` FFI call in a test with `std::os::unix::process::parent_id()`, and lowercase hex literals. No behavior change (Refs #886).
+- Resolve the pre-existing `clippy::pedantic` warnings outside the MCP server (`src/profile/`, branch GC, config docs, one integration test) as part of the Google Rust Style Guide audit; the one intentional `Option<Option<_>>` is kept with a documented `#[allow]`. No behavior change (Refs #886).
 
 ### Documentation
 

@@ -104,7 +104,7 @@ op_enum! {
         BatchIncomingCallCounts => "batch_incoming_call_counts",
         /// Dead-code candidate query.
         FindDeadCode => "find_dead_code",
-        /// Live GDScript override query.
+        /// Live `GDScript` override query.
         GdscriptLiveOverrides => "gdscript_live_overrides",
         /// Files a file depends on.
         GetFileDependencies => "get_file_dependencies",
