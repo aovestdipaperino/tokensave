@@ -37,6 +37,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - **The HLSL grammar now comes from the shared tier bundle.** `tokensave-large-treesitters` carries `tree-sitter-hlsl`, so the direct dependency and provider override are removed; the grammar is the same 0.2.0 release, so extraction output is unchanged.
 
 - Align `unsafe` usage and hex literals with the adopted Google Rust Style Guide: document every `unsafe` block with a `// SAFETY:` comment, replace a hand-declared `getppid` FFI call in a test with `std::os::unix::process::parent_id()`, and lowercase hex literals. No behavior change (Refs #886).
+- Replace glob imports with explicit ones in `src/agents/` (Refs #886).
 
 ### Documentation
 
