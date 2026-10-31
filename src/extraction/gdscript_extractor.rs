@@ -158,7 +158,10 @@ impl ExtractionState {
     }
 
     /// Build and store a node with sane defaults, returning its id.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is a separate field of the node being emitted"
+    )]
     fn add_node(
         &mut self,
         kind: NodeKind,

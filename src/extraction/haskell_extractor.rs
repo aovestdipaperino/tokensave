@@ -346,7 +346,10 @@ impl HaskellExtractor {
         None
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is a separate field of the node being emitted"
+    )]
     fn emit(
         state: &mut ExtractionState,
         id: String,
