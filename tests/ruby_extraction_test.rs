@@ -5,7 +5,7 @@ mod ruby_tests {
 
     use tokensave::extraction::LanguageExtractor;
     use tokensave::extraction::RubyExtractor;
-    use tokensave::types::*;
+    use tokensave::types::{EdgeKind, Node, NodeKind, Visibility};
 
     #[test]
     fn test_ruby_file_node() {

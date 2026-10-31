@@ -25,7 +25,7 @@
 //! producing the expected nodes, edges, and relationships.
 
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, NodeKind, Visibility};
 
 fn read_fixture(name: &str) -> String {
     let path = format!("tests/fixtures/{}", name);

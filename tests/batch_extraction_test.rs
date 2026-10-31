@@ -2,7 +2,7 @@
 
 use tokensave::extraction::BatchExtractor;
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, NodeKind};
 
 #[test]
 fn test_batch_extract_labels_as_functions() {

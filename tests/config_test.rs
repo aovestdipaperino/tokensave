@@ -1,5 +1,9 @@
 use tempfile::TempDir;
-use tokensave::config::*;
+use tokensave::config::{
+    add_to_git_info_exclude, add_to_gitignore, configured_cpu_usage, get_config_path,
+    get_tokensave_dir, is_excluded, is_in_gitignore, load_config, non_git_scan_warning,
+    resolve_path, save_config, TokenSaveConfig,
+};
 
 #[test]
 fn test_default_config_has_exclude_patterns() {

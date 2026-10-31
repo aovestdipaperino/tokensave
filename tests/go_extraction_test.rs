@@ -1,6 +1,6 @@
 use tokensave::extraction::GoExtractor;
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, NodeKind, Visibility};
 
 #[test]
 fn test_go_extract_package() {

@@ -20,7 +20,7 @@
 
 use tokensave::extraction::ElixirExtractor;
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, ExtractionResult, NodeKind};
 
 /// Names of everything the extraction reported as a `Calls` reference.
 fn call_targets(result: &ExtractionResult) -> Vec<String> {
