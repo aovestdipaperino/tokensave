@@ -314,7 +314,10 @@ pub fn apply_executable_intent_boost(candidates: &mut [SearchResult], query: &st
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp, clippy::uninlined_format_args)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact scores computed from constant weights"
+)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
@@ -323,10 +326,10 @@ mod tests {
     fn make_result(kind: NodeKind, vis: Visibility, path: &str, score: f64) -> SearchResult {
         SearchResult {
             node: Node {
-                id: format!("test:{}", path),
+                id: format!("test:{path}"),
                 kind,
                 name: "test_sym".to_string(),
-                qualified_name: format!("{}::test_sym", path),
+                qualified_name: format!("{path}::test_sym"),
                 file_path: path.to_string(),
                 start_line: 1,
                 attrs_start_line: 1,

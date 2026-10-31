@@ -684,7 +684,10 @@ fn go_file_in_package(file_path: &str, import_path: &str) -> bool {
 /// Caches are built once at construction time by loading all nodes from the
 /// database and indexing them by `name` and `qualified_name`.
 pub struct ReferenceResolver<'a> {
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "unread since resolution uses pre-loaded nodes; removing it changes the public `from_nodes` signature"
+    )]
     db: &'a Database,
     /// Nodes grouped by their short name.
     ///

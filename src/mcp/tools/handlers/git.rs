@@ -647,7 +647,6 @@ fn git_commit_log(
 /// that bucket is reserved for files that exist purely to host tests
 /// (the path-based check). A `src/foo.rs` with a `#[cfg(test)] mod tests`
 /// at the bottom still has role "source".
-#[allow(clippy::ptr_arg)]
 fn classify_file_role(
     path: &str,
     _files_with_inline_tests: &HashSet<String>,
@@ -944,12 +943,10 @@ pub(super) async fn handle_pr_context(cg: &TokenSave, args: Value) -> Result<Too
                 // Track impacted modules
                 for (caller, _) in &callers {
                     if !changed_files.contains(&caller.file_path) {
-                        #[allow(clippy::map_unwrap_or)]
                         let dir = caller
                             .file_path
                             .rfind('/')
-                            .map(|i| &caller.file_path[..i])
-                            .unwrap_or(&caller.file_path);
+                            .map_or(caller.file_path.as_str(), |i| &caller.file_path[..i]);
                         impacted_modules.insert(dir.to_string());
                     }
                 }

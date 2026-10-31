@@ -1920,7 +1920,10 @@ fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one argument per `RenameSite` field"
+)]
 fn make_site(
     text: &FileText,
     file: &str,

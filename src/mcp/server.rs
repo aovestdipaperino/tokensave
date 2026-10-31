@@ -2559,12 +2559,10 @@ impl McpServer {
                     std::collections::BTreeMap::new();
                 for f in &files {
                     let dir = f.path.rfind('/').map_or(".", |i| &f.path[..i]).to_string();
-                    #[allow(clippy::map_unwrap_or)]
                     let name = f
                         .path
                         .rfind('/')
-                        .map(|i| &f.path[i + 1..])
-                        .unwrap_or(&f.path);
+                        .map_or(f.path.as_str(), |i| &f.path[i + 1..]);
                     groups
                         .entry(dir)
                         .or_default()
