@@ -287,7 +287,7 @@ pub fn format_context_as_json(context: &TaskContext) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::types::*;
+    use crate::types::{CodeBlock, Node, NodeKind, RetrievalDiagnostics, Subgraph, Visibility};
 
     fn make_test_context() -> TaskContext {
         TaskContext {
