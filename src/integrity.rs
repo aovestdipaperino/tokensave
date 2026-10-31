@@ -11,6 +11,8 @@ use std::{
 };
 
 pub const DEFAULT_INTERVAL_SECS: u64 = 86_400;
+/// Retry delay after a check deferred for activity, capped by the interval.
+pub const DEFERRED_RETRY_SECS: u64 = 900;
 const BUDGET: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,6 +56,36 @@ pub fn load(path: &Path) -> Result<Report> {
         .take(1024 * 1024)
         .read_to_end(&mut bytes)?;
     Ok(serde_json::from_slice(&bytes)?)
+}
+/// Reads the saved report for `--status`. A `running` record whose checker
+/// lock is free is reported as interrupted: its worker died without a result.
+pub fn status(path: &Path) -> Result<Report> {
+    let mut report = load(path)?;
+    if report.outcome == "running" {
+        let held = File::open(sidecar(path, ".integrity.lock"))
+            .is_ok_and(|lock| lock.try_lock_exclusive().is_err());
+        if !held {
+            report.outcome = "interrupted".into();
+            report
+                .diagnostics
+                .push("no checker is running; the previous check ended without a result".into());
+        }
+    }
+    Ok(report)
+}
+/// Whether the persisted interval allows a new attempt. Checks deferred for
+/// activity retry sooner, so a busy machine still completes them eventually.
+fn due(path: &Path, interval: u64) -> bool {
+    let Ok(previous) = load(path) else {
+        return true;
+    };
+    let wait = if previous.outcome == "deferred" {
+        interval.min(DEFERRED_RETRY_SECS)
+    } else {
+        interval
+    };
+    let elapsed = crate::tokensave::current_timestamp().saturating_sub(previous.started_at);
+    elapsed < 0 || elapsed as u64 >= wait
 }
 fn save(path: &Path, report: &Report) -> Result<()> {
     use std::io::Write;
@@ -140,6 +172,11 @@ impl Check {
             return Ok(None);
         }
         let path = path.canonicalize()?;
+        // Gate before touching the lockfile so idle ticks within the interval do no I/O
+        // beyond reading the report; re-checked under the lock against a racing checker.
+        if interval.is_some_and(|interval| !due(&path, interval)) {
+            return Ok(None);
+        }
         let lock = File::options()
             .create(true)
             .truncate(false)
@@ -153,11 +190,8 @@ impl Check {
             }
             return Err(error.into());
         }
-        if let (Some(interval), Ok(previous)) = (interval, load(&path)) {
-            let elapsed = crate::tokensave::current_timestamp().saturating_sub(previous.started_at);
-            if elapsed >= 0 && (elapsed as u64) < interval {
-                return Ok(None);
-            }
+        if interval.is_some_and(|interval| !due(&path, interval)) {
+            return Ok(None);
         }
         let report = Report::new(full);
         save(&path, &report)?;
@@ -195,26 +229,29 @@ impl Check {
     pub async fn poll(&mut self) -> Result<bool> {
         if let Some(status) = self.child.try_wait()? {
             if !status.success() || load(&self.path)?.outcome == "running" {
-                self.finish_interrupted("checker exited without a completed result")?;
+                self.finish("interrupted", "checker exited without a completed result")?;
             }
             return Ok(true);
         }
         if self.started.elapsed() >= BUDGET {
-            self.stop("check exceeded the five-second budget").await?;
+            self.stop("interrupted", "check exceeded the five-second budget")
+                .await?;
             return Ok(true);
         }
         Ok(false)
     }
-    fn finish_interrupted(&mut self, reason: &str) -> Result<()> {
-        self.report.outcome = "interrupted".into();
+    fn finish(&mut self, outcome: &str, reason: &str) -> Result<()> {
+        self.report.outcome = outcome.into();
         self.report.finished_at = Some(crate::tokensave::current_timestamp());
         self.report.diagnostics = vec![reason.into()];
         save(&self.path, &self.report)
     }
-    pub async fn stop(&mut self, reason: &str) -> Result<()> {
+    /// Kills a running checker and records `outcome`: `interrupted` for a
+    /// failed attempt, `deferred` for one yielded to request activity.
+    pub async fn stop(&mut self, outcome: &str, reason: &str) -> Result<()> {
         if self.child.try_wait()?.is_none() {
             self.child.kill().await?; // Tokio kills and waits, reaping the child.
-            self.finish_interrupted(reason)?;
+            self.finish(outcome, reason)?;
         }
         Ok(())
     }
@@ -263,7 +300,10 @@ impl Scheduler {
     pub async fn stop(&mut self) -> Result<()> {
         if let Some(mut check) = self.check.take() {
             check
-                .stop("deferred for request activity or server shutdown")
+                .stop(
+                    "deferred",
+                    "deferred for request activity or server shutdown",
+                )
                 .await?;
             log_report(&check.report()?);
         }
@@ -272,7 +312,8 @@ impl Scheduler {
 }
 
 fn log_report(report: &Report) {
-    if report.outcome != "healthy" {
+    // A deferral is routine scheduling, not a finding worth a warning.
+    if report.outcome != "healthy" && report.outcome != "deferred" {
         eprintln!("[tokensave] database integrity {}: {:?}. Preserve the database and WAL before recovery; run integrity-check for diagnostics.", report.outcome, report.diagnostics);
     }
 }

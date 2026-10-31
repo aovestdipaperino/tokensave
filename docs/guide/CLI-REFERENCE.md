@@ -16,6 +16,8 @@ tokensave sync --force [path]      # Force a full re-index
 tokensave sync --doctor [path]     # Sync and list added/modified/removed files
 tokensave verify [path]            # Read-only index integrity and source-stat checks
 tokensave verify [path] --deep --json # Full SQLite checks and bounded source hashing
+tokensave integrity-check <db> [--full]  # Bounded read-only SQLite file check of one database
+tokensave integrity-check <db> --status  # Show the last saved integrity result
 tokensave status [path]            # Show statistics + cost summary
 tokensave status [path] --json     # Show statistics (JSON output)
 tokensave status --details         # Include node-kind breakdown
@@ -52,3 +54,13 @@ tokensave enable-upload-counter    # Re-enable worldwide counter uploads
 | `TOKENSAVE_AUTO_INIT` | environment | Overrides `auto_init` for one run. `0`, `false`, `no`, `off` or empty turn it off; any other value turns it on. |
 
 See [Automatic initialization](INDEXING.md#automatic-initialization) for the guards that apply.
+
+## Settings for periodic integrity checks
+
+| Setting | Where | Effect |
+|---|---|---|
+| `integrity_interval_secs` | `.tokensave/config.json` | Seconds between read-only database checks run by an idle MCP server. Default `86400` (daily, enabled). `0` disables them. Restart the server after changing it. |
+
+`tokensave doctor` shows the effective interval and the last result. See
+[periodic database integrity checks](../DATABASE-INTEGRITY.md) for scheduling,
+outcomes and resource limits.

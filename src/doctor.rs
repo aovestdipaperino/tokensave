@@ -87,6 +87,7 @@ async fn check_database(dc: &mut DoctorCounters, project_path: &Path) {
     };
 
     dc.pass(&format!("DB size: {}", format_bytes(size_before)));
+    check_integrity_schedule(dc, &ts);
 
     eprintln!("    Compacting database (VACUUM)…");
     match ts.optimize().await {
@@ -107,6 +108,37 @@ async fn check_database(dc: &mut DoctorCounters, project_path: &Path) {
         Err(e) => {
             dc.warn(&format!("VACUUM failed: {e}"));
         }
+    }
+}
+
+/// Report the periodic integrity-check interval and the last saved result, so
+/// the default-on idle check is discoverable without `integrity-check --status`.
+fn check_integrity_schedule(dc: &mut DoctorCounters, ts: &TokenSave) {
+    let interval = ts.get_config().integrity_interval_secs;
+    if interval == 0 {
+        dc.info("Periodic integrity checks: disabled (integrity_interval_secs = 0)");
+        return;
+    }
+    dc.info(&format!(
+        "Periodic integrity checks: every {interval} s while the MCP server is idle \
+         (set integrity_interval_secs = 0 to disable)"
+    ));
+    let db_path = ts.db_path();
+    match crate::integrity::status(&db_path) {
+        Ok(report) => match report.outcome.as_str() {
+            "healthy" | "deferred" | "running" => {
+                dc.info(&format!("Last integrity check: {}", report.outcome));
+            }
+            "corrupt" => dc.fail(&format!(
+                "Last integrity check reported corruption; run `tokensave integrity-check {} --status`",
+                db_path.display()
+            )),
+            outcome => dc.warn(&format!(
+                "Last integrity check incomplete ({outcome}): {:?}",
+                report.diagnostics
+            )),
+        },
+        Err(_) => dc.info("Last integrity check: none recorded"),
     }
 }
 

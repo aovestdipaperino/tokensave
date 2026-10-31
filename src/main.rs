@@ -189,7 +189,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             return tokensave::integrity::worker(database, *full).await;
         }
         let report = if *status {
-            tokensave::integrity::load(database)?
+            tokensave::integrity::status(database)?
         } else {
             let Some(mut check) = tokensave::integrity::Check::start(
                 database,
