@@ -10,7 +10,10 @@ use crate::db::Database;
 use crate::errors::Result;
 use crate::graph::GraphTraverser;
 use crate::text::{is_camel_case, split_compound};
-use crate::types::*;
+use crate::types::{
+    BuildContextOptions, CodeBlock, Edge, Node, NodeKind, RetrievalDiagnostics, SearchResult,
+    Subgraph, TaskContext, TraversalDirection, TraversalOptions, Visibility,
+};
 
 /// Builds AI-ready context by combining search, graph traversal, and source code extraction.
 pub struct ContextBuilder<'a> {
