@@ -4,7 +4,9 @@ use std::collections::{HashSet, VecDeque};
 use crate::db::Database;
 use crate::errors::Result;
 use crate::profile::McpPhase;
-use crate::types::*;
+use crate::types::{
+    Edge, EdgeKind, Node, NodeKind, Subgraph, TraversalDirection, TraversalOptions,
+};
 
 /// A path through the graph: a sequence of nodes, each paired with the
 /// optional edge used to reach it (the first node has `None`).

@@ -1,10 +1,13 @@
 // Rust guideline compliant 2025-10-17
 use std::collections::{HashMap, HashSet};
 
-use rayon::prelude::*;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::db::Database;
-use crate::types::*;
+use crate::types::{
+    AmbiguousCall, Edge, EdgeKind, Node, NodeKind, ResolutionResult, ResolvedBy, ResolvedRef,
+    UnresolvedRef, Visibility,
+};
 
 /// Names that are too common to resolve across files reliably.
 /// These are standard library types, trait methods, and ubiquitous constructors
