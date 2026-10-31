@@ -282,7 +282,7 @@ pub struct LanguageRegistry {
 impl LanguageRegistry {
     /// Creates a new registry with all built-in language extractors.
     pub fn new() -> Self {
-        #[allow(unused_mut)]
+        #[allow(unused_mut, reason = "feature-gated extractors are pushed below")]
         let mut extractors: Vec<Box<dyn LanguageExtractor>> = vec![
             // Lite — always available
             Box::new(RustExtractor),

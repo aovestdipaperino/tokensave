@@ -1776,7 +1776,10 @@ impl RubyExtractor {
     /// automatic bookkeeping below doesn't fire) can register it into
     /// `singleton_method_ids` itself, and clone the mirrored method's
     /// outgoing call references onto it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is a separate field of the node being emitted"
+    )]
     fn emit_synthetic_method(
         state: &mut ExtractionState,
         name: &str,

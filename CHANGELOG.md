@@ -26,6 +26,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ### Changed
 
 - Align `unsafe` usage and hex literals with the adopted Google Rust Style Guide: document every `unsafe` block with a `// SAFETY:` comment, replace a hand-declared `getppid` FFI call in a test with `std::os::unix::process::parent_id()`, and lowercase hex literals. No behavior change (Refs #886).
+- Give the language extractors' `#[allow]` attributes a stated `reason`, and remove a stale `dead_code` allow in the C++ extractor (Refs #886).
 
 ### Documentation
 
