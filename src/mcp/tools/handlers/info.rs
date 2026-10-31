@@ -38,21 +38,32 @@ pub(super) async fn handle_status(
     }
 
     // Branch info
+    let ts_dir = crate::config::get_tokensave_dir(cg.project_root());
+    let meta = crate::branch_meta::load_branch_meta(&ts_dir);
     if let Some(branch) = cg.active_branch() {
         output["active_branch"] = json!(branch);
-        let ts_dir = crate::config::get_tokensave_dir(cg.project_root());
-        if let Some(meta) = crate::branch_meta::load_branch_meta(&ts_dir) {
-            if let Some(entry) = meta.branches.get(branch) {
-                if let Some(ref parent) = entry.parent {
-                    output["parent_branch"] = json!(parent);
-                }
-            }
+        if let Some(parent) = meta
+            .as_ref()
+            .and_then(|meta| meta.branches.get(branch))
+            .and_then(|entry| entry.parent.as_ref())
+        {
+            output["parent_branch"] = json!(parent);
         }
+    }
+    if let Some(warning) = meta
+        .as_ref()
+        .and_then(|meta| crate::branch::default_branch_state(cg.project_root(), meta).warning())
+    {
+        output["default_branch_warning"] = json!(warning);
     }
     if cg.is_fallback() {
         output["branch_fallback"] = json!(true);
         if let Some(warning) = cg.fallback_warning() {
             output["branch_warning"] = json!(warning);
+        }
+        if let Some(hint) = cg.auto_track_hint() {
+            output["auto_track"] = json!(cg.auto_track_enabled());
+            output["auto_track_hint"] = json!(hint);
         }
     }
 

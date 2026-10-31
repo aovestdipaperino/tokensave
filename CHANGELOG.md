@@ -10,14 +10,26 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ### Added
 
 - Add configurable idle MCP database integrity checks and a bounded read-only `integrity-check` command with persisted diagnostics; checks never trigger automatic recovery (Refs #864).
+- Profiled database execution (#754): MCP read-path queries (node, edge and search lookups, dead-code and file-dependency queries) are measured per static operation, with rows returned and errors, plus write-lock wait and write-transaction duration. Inert unless profiling is enabled.
+- Profiled MCP tool calls (#754): with profiling enabled, `tokensave serve` records each `tools/call` as one invocation (end-to-end latency, attributed database time and operations, operations per call, response size, errors) per registered tool, plus project-resolution, freshness and handler phases, and flushes aggregates on exit. `serve --timings` now reads the handler measurement the profiler records.
+- Profiled indexing, sync and graph traversal (#754): full-index (`index.*`) and incremental-sync (`sync.*`) phases, whole runs bucketed by project file count (`run.*`), graph traversals with nodes and edges visited, and the bulk write paths (node, edge, file, unresolved-reference and FTS-document inserts, bulk-load end). `tokensave init` and `tokensave sync` start the profiler when it is enabled. Verbose output is unchanged.
+- `tokensave profile status|enable|disable|report|slow-queries|export|reset` (#754): ranked text and JSON reports (percentiles with sample counts, P95/P99 flagged below 100 samples, MCP database share, median DB operations per tool call), slow-operation counts, and a sanitized export that keeps only static operation and registered tool names. See `docs/PROFILING.md`.
+- `tokensave profile analyze` (#754): bottlenecks ranked by cumulative impact and classified (DB execution latency, excessive query count, connection/transaction overhead, graph traversal, freshness/sync, parsing/extraction, result processing), each with its measured evidence; suggestions are labelled as hypotheses. MCP calls now count database operations per op, so ops run 20 or more times in one call are reported per tool as N+1 candidates.
+- Opt-in performance profiling infrastructure (#754): a `[profiling]` table in `config.toml` (`mode = "off" | "light" | "detailed"`, slow threshold, retention, size limit, detailed-mode expiry) with a `TOKENSAVE_PROFILE` per-run override, a static operation registry, mergeable fixed-bucket latency histograms, sharded lock-free aggregation, spans with inclusive/exclusive time and per-invocation database attribution, and bounded hourly files under `~/.tokensave/profile/`. Off by default; with profiling off nothing is measured or written.
+
+- Explain untracked branches: `tokensave_status` reports the effective `auto_track` setting and an `auto_track_hint` saying why the branch was not tracked automatically (disabled, turned off by `TOKENSAVE_AUTO_TRACK`, failed, or a read-only view) and how to enable it; `tokensave status` prints the same hint, and a failed open-time auto-track now carries its reason on the branch warning (Refs #877).
+- Add `TOKENSAVE_HOOK_DEBUG=1`, which makes the `post-checkout` hook and `branch add --if-enabled` explain skipped actions on stderr and in a bounded `.tokensave/hook-debug.log`; hooks stay silent by default (Refs #877).
 
 ### Documentation
 
+- Correct the multi-branch guide: the `post-checkout` hook tracks branches only when `auto_track` is enabled, which is off by default. Add a troubleshooting entry for untracked branches (Refs #877).
+- Adopt Google's Rust Style Guide on master with project-specific precedence, exceptions, and contributor review guidance; defer the codebase audit and cleanup to follow-up work (Refs #845).
 - Evaluate optional Graphify coexistence at a pinned revision, with a disposable CLI probe, recorded resource measurements, and explicit requirements and remaining work before any adapter (Refs #791).
 - Document the optional Graphify exporter workflow, limits and privacy scope in the user guide (Refs #791).
 
 ### Added
 
+- **Repositories created with `git init` are indexed automatically (Refs #876).** A new user-level `auto_init` setting in `~/.tokensave/config.toml`, on by default, lets a pathless `tokensave sync` (what the `post-commit` and `post-merge` hooks run) and `tokensave serve` initialize the top level of a git repository that has no index, so hooks installed by earlier versions pick it up without being rewritten. Repositories under the system temp dir, your home directory itself, bare repositories, subdirectories, explicit `sync <path>`/`serve --path` targets and trees with more candidate files than `max_auto_sync_files` are skipped; the last prints a hint to run `tokensave init`. `TOKENSAVE_AUTO_INIT` overrides the setting for one run, and `tokensave doctor` reports the effective value.
 - Add a pinned Graphify CLI compatibility harness covering repeated exports, queries, visualization and conflicting dirty worktrees; publish fixture evidence and remaining measurement gates (Refs #791).
 
 ### Added
@@ -29,6 +41,12 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - Define the pinned, optional Graphify file-interchange evaluation contract and gated implementation scope (Refs #791).
 
 ### Fixed
+
+- Let the Python comparison benchmark reuse `TOKENSAVE_BENCH_REPOS_DIR` and standard temporary-directory selection, and report clone-storage failures with the destination and a relocation hint (Refs #767).
+
+- Keep the recorded default branch in step with the repository: opening a project renames a default entry whose branch no longer exists (for example after `git branch -m master main`) instead of serving the real default as an untracked branch or duplicating its database; `origin/HEAD` is used only while its branch exists, and `branch add` detects the default like `init` instead of assuming `main`. Add `tokensave branch set-default`, a `BRANCH_DEFAULT_STALE` warning in `tokensave verify`, and a `default_branch_warning` in `tokensave branch list`, `tokensave_status` and `tokensave_branch_list` (Refs #874).
+
+- Hold the writer lock throughout interrupted-index recovery and refuse rebuilding a borrowed branch database from another checkout (Refs #864).
 
 - Restore independent MCP selected-graph regression tests for simplify scans, redundancy branch refusal, and dead-code queries after an interleaved test insertion (Refs #854).
 

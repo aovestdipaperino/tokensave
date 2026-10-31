@@ -9,6 +9,7 @@ use tokensave::tokensave::TokenSave;
 mod cli;
 mod commands;
 mod global;
+mod profile_command;
 mod serve;
 mod tool_command;
 
@@ -512,8 +513,20 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // from inside indexing.rs) against this process.
             tokensave::memstats::init("index", &project_path);
             tokensave::memstats::record("start");
+            // Opt-in profiling (#754); a no-op unless enabled.
+            let profiler = tokensave::profile::Profiler::start_from_environment();
 
-            commands::init_and_index(&project_path, &skip_folders, false, cpu_usage).await?;
+            tokensave::profile::invocation(commands::init_and_index(
+                &project_path,
+                &skip_folders,
+                false,
+                cpu_usage,
+            ))
+            .await
+            .0?;
+            if let Some(profiler) = profiler {
+                profiler.shutdown();
+            }
 
             // Offer this repository's own git hooks (#455). Local rather than
             // global, because the global path claims `core.hooksPath` — one
@@ -566,14 +579,37 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // on a large tree; Ctrl-C must stop it at the next phase boundary
             // rather than at the end (#450).
             tokensave::cancel::install_signal_handlers();
+            let explicit_path = path.is_some();
             let project_path = tokensave::config::resolve_path_with_discovery(path);
+            // #876: the installed `post-commit` and `post-merge` hooks run a
+            // pathless `sync`, so a repository started with `git init` reaches
+            // here on its first commit. With `auto_init` on, initialize it
+            // instead of failing. The decision lives in the binary, so hooks
+            // written by earlier versions get it without being rewritten.
+            let mut auto_initialize = false;
             if !TokenSave::is_initialized(&project_path) {
-                eprintln!(
-                    "\x1b[31merror:\x1b[0m no TokenSave index found at '{}'.\n\
-                     Run \x1b[1mtokensave init\x1b[0m to create one first.",
-                    project_path.display()
-                );
-                std::process::exit(1);
+                match (!explicit_path).then(|| tokensave::auto_init::decide(&project_path)) {
+                    Some(tokensave::auto_init::Decision::Init(_)) => {
+                        eprintln!(
+                            "No TokenSave index at '{}'; initializing it (auto_init).",
+                            project_path.display()
+                        );
+                        auto_initialize = true;
+                    }
+                    decision => {
+                        if let Some(tokensave::auto_init::Decision::Skip(skip)) = &decision {
+                            if let Some(hint) = skip.hint(&project_path) {
+                                eprintln!("{hint}");
+                            }
+                        }
+                        eprintln!(
+                            "\x1b[31merror:\x1b[0m no TokenSave index found at '{}'.\n\
+                             Run \x1b[1mtokensave init\x1b[0m to create one first.",
+                            project_path.display()
+                        );
+                        std::process::exit(1);
+                    }
+                }
             }
             // Warn if legacy .codegraph directory exists
             if project_path.join(".codegraph").is_dir() {
@@ -591,46 +627,54 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // inside the indexing code itself.
             tokensave::memstats::init("sync", &project_path);
             tokensave::memstats::record("start");
+            // Opt-in profiling (#754); a no-op unless enabled.
+            let profiler = tokensave::profile::Profiler::start_from_environment();
 
-            if force {
-                commands::init_and_index(&project_path, &skip_folders, verbose, None).await?;
+            if force || auto_initialize {
+                tokensave::profile::invocation(commands::init_and_index(
+                    &project_path,
+                    &skip_folders,
+                    verbose,
+                    None,
+                ))
+                .await
+                .0?;
             } else {
                 let mut cg = TokenSave::open(&project_path).await?;
                 cg.add_skip_folders(&skip_folders);
                 let spinner = Spinner::new();
                 let sync_start = std::time::Instant::now();
-                let result = cg
-                    .sync_with_progress_verbose(
-                        |current, total, detail| {
-                            if current == 0 {
-                                // Phase message (scanning, hashing, detecting, resolving)
-                                spinner.set_message(detail);
-                            } else {
-                                // Per-file progress with ETA
-                                let elapsed = sync_start.elapsed().as_secs_f64();
-                                let eta = if current > 1 {
-                                    let per_file = elapsed / (current - 1) as f64;
-                                    let remaining = per_file * (total - current) as f64;
-                                    if remaining >= 1.0 {
-                                        format!(" (ETA: {remaining:.0}s)")
-                                    } else {
-                                        String::new()
-                                    }
+                let result = tokensave::profile::invocation(cg.sync_with_progress_verbose(
+                    |current, total, detail| {
+                        if current == 0 {
+                            // Phase message (scanning, hashing, detecting, resolving)
+                            spinner.set_message(detail);
+                        } else {
+                            // Per-file progress with ETA
+                            let elapsed = sync_start.elapsed().as_secs_f64();
+                            let eta = if current > 1 {
+                                let per_file = elapsed / (current - 1) as f64;
+                                let remaining = per_file * (total - current) as f64;
+                                if remaining >= 1.0 {
+                                    format!(" (ETA: {remaining:.0}s)")
                                 } else {
                                     String::new()
-                                };
-                                spinner.set_message(&format!(
-                                    "[{current}/{total}] syncing {detail}{eta}"
-                                ));
-                            }
-                        },
-                        |msg| {
-                            if verbose {
-                                eprintln!("  \x1b[2m[verbose]\x1b[0m {msg}");
-                            }
-                        },
-                    )
-                    .await?;
+                                }
+                            } else {
+                                String::new()
+                            };
+                            spinner
+                                .set_message(&format!("[{current}/{total}] syncing {detail}{eta}"));
+                        }
+                    },
+                    |msg| {
+                        if verbose {
+                            eprintln!("  \x1b[2m[verbose]\x1b[0m {msg}");
+                        }
+                    },
+                ))
+                .await
+                .0?;
                 let skipped_msg = if result.skipped_paths.is_empty() {
                     String::new()
                 } else {
@@ -663,6 +707,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     commands::print_skipped_extension_summary(&result.skipped_extensions);
                 }
                 global::update_global_db(&cg).await;
+            }
+            if let Some(profiler) = profiler {
+                profiler.shutdown();
             }
 
             // Print update notice from parallel check (suppressed for 15 min)
@@ -851,6 +898,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         Some(cg.project_root()),
                         details,
                     );
+                }
+
+                // #877: the table shows only a `[fallback]` marker; say why
+                // the branch is untracked and how to track it.
+                if let (Some(warning), Some(hint)) = (cg.fallback_warning(), cg.auto_track_hint()) {
+                    eprintln!("\n\x1b[33mWarning: {warning}\n{hint}\x1b[0m");
                 }
 
                 // Warn if .tokensave is not in .gitignore
@@ -1321,6 +1374,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 // The process exits cleanly so the host does not retry.
                 return Ok(());
             }
+            // Opt-in profiling (#754): off unless `[profiling]` or
+            // TOKENSAVE_PROFILE enables it, in which case aggregates are
+            // flushed to ~/.tokensave/profile/ until the server exits.
+            let profiler = tokensave::profile::Profiler::start_from_environment();
             let original_cwd = std::env::current_dir().ok();
             // An explicit --path is a deliberate choice of project root
             // (possibly a different repo than the CWD, #201); only
@@ -1337,7 +1394,20 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // discovery fails: every fallback below and a server with no
             // default project read the same list (#606).
             let mut registered: Option<Vec<serve::RegisteredProject>> = None;
-            let cg = match serve::ensure_initialized(&project_path).await {
+            // #876: a git repository with no index is initialized here when
+            // `auto_init` allows it, before any fallback can pick another
+            // project. Only for a CWD-discovered root: an explicit `--path`
+            // keeps its no-default-project behavior (#606).
+            let auto_initialized = if explicit_path || TokenSave::is_initialized(&project_path) {
+                None
+            } else {
+                serve::auto_initialize(&project_path).await
+            };
+            let opened = match auto_initialized {
+                Some(cg) => Ok(cg),
+                None => serve::ensure_initialized(&project_path).await,
+            };
+            let cg = match opened {
                 Ok(cg) => Some(cg),
                 // An explicit `--path` names the project to serve. A folder
                 // without an index gets no default project rather than
@@ -1398,7 +1468,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 watch_for_orphaning();
                 let server = tokensave::mcp::McpServer::new_without_project(registered).await;
                 run_mcp_server(&server, timings, peeked_line, idle_timeout_secs).await?;
-                exit_after_serve();
+                exit_after_serve(profiler);
             };
 
             // Set the shutdown flag the instant a signal arrives, rather than
@@ -1448,7 +1518,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // A hard kill skips this; that is what reaping on startup and on
             // read is for.
             tokensave::servers::unregister();
-            exit_after_serve();
+            exit_after_serve(profiler);
         }
         Commands::Servers { json } => {
             let entries = tokensave::servers::list();
@@ -1956,6 +2026,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             if let Err(e) = tokensave::memstats::run(clean) {
                 eprintln!("Memory report error: {e}");
             }
+        }
+        Commands::Profile { action } => {
+            profile_command::handle_profile_action(action)?;
         }
         Commands::QualityDiff { .. } => unreachable!("handled before startup"),
         Commands::Branch { action } => {
@@ -2600,8 +2673,13 @@ async fn run_mcp_server(
 /// Shutdown has already persisted counters and checkpointed the WAL, and is
 /// idempotent, so there is nothing left to unwind for. Stdout is flushed
 /// first: a response written just before a signal must still reach the client.
-fn exit_after_serve() -> ! {
+fn exit_after_serve(profiler: Option<tokensave::profile::Profiler>) -> ! {
     use std::io::Write;
+    // `process::exit` skips destructors, so the final profile flush runs
+    // here explicitly.
+    if let Some(profiler) = profiler {
+        profiler.shutdown();
+    }
     let _ = std::io::stdout().flush();
     std::process::exit(0);
 }

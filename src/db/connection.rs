@@ -9,6 +9,7 @@ use crate::errors::{Result, TokenSaveError};
 use crate::types::{Edge, Node};
 
 use super::migrations;
+use crate::profile::DbOp;
 
 pub(super) type CachedTraitDispatchCaller = (Node, Edge, String, bool);
 
@@ -512,6 +513,11 @@ impl Database {
     /// `CREATE UNIQUE INDEX idx_edges_unique` cannot fail on residual
     /// duplicates and leave the graph permanently un-indexed (#318).
     pub async fn end_bulk_load(&self) -> Result<()> {
+        crate::profile::measure_write(DbOp::EndBulkLoad, 0, self.end_bulk_load_unprofiled()).await
+    }
+
+    /// Unprofiled body of [`Self::end_bulk_load`].
+    async fn end_bulk_load_unprofiled(&self) -> Result<()> {
         self.conn.execute_batch(
             "DELETE FROM edges
              WHERE rowid NOT IN (

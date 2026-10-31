@@ -17,6 +17,7 @@
 
 pub mod accounting;
 pub mod agents;
+pub mod auto_init;
 pub mod bench;
 pub mod blame_engine;
 pub mod branch;
@@ -50,6 +51,7 @@ pub mod mcp;
 pub mod memory;
 pub mod memstats;
 pub mod monitor;
+pub mod profile;
 pub mod project_manifest;
 pub mod quality_diff;
 pub mod redundancy;

@@ -137,6 +137,15 @@ pub struct UserConfig {
     #[serde(default = "default_true")]
     pub claude_hooks: bool,
 
+    /// When true, a git repository with no index is initialized the first
+    /// time tokensave runs in it unasked: from the `post-commit`/`post-merge`
+    /// hooks' `sync`, or from `serve` (#876). Only a repository's top level
+    /// qualifies, never one under the system temp dir or `$HOME` itself, and
+    /// never one with more candidate files than `max_auto_sync_files`.
+    /// `TOKENSAVE_AUTO_INIT` overrides it per run.
+    #[serde(default = "default_true")]
+    pub auto_init: bool,
+
     /// Machine-wide CPU usage profile for projects whose
     /// `.tokensave/config.json` has no `cpu_usage` (#752). It takes
     /// precedence over the saved hardware benchmark; `TOKENSAVE_CPU_USAGE`
@@ -148,6 +157,11 @@ pub struct UserConfig {
     /// benchmark runs and is used (#752).
     #[serde(default, skip_serializing_if = "BenchmarkPreferences::is_default")]
     pub benchmark: BenchmarkPreferences,
+
+    /// The `[profiling]` table: opt-in latency profiling (#754). Off by
+    /// default; `TOKENSAVE_PROFILE` overrides the mode for one run.
+    #[serde(default, skip_serializing_if = "ProfilingPreferences::is_default")]
+    pub profiling: ProfilingPreferences,
 
     /// Snapshot of the config-owned fields (see `ConfigFile`) as last seen
     /// on disk by this instance -- either at `load()` time, or as of its own
@@ -226,6 +240,61 @@ impl BenchmarkPreferences {
     }
 }
 
+/// `[profiling]` in `config.toml`: the opt-in performance profiler (#754).
+/// Recorded aggregates live under `~/.tokensave/profile/`; see
+/// [`crate::profile`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfilingPreferences {
+    /// What is collected: `off` (the default), `light` or `detailed`.
+    #[serde(default)]
+    pub mode: crate::profile::Mode,
+    /// Operations at least this slow are counted as slow, per operation.
+    #[serde(default = "default_profiling_slow_query_ms")]
+    pub slow_query_ms: u64,
+    /// Aggregate files older than this many days are deleted at flush time.
+    #[serde(default = "default_profiling_retention_days")]
+    pub retention_days: u32,
+    /// Upper bound on the total size of `~/.tokensave/profile/`; the oldest
+    /// files are deleted first when a flush exceeds it.
+    #[serde(default = "default_profiling_max_bytes")]
+    pub max_bytes: u64,
+    /// UNIX timestamp after which `detailed` falls back to `light`, so a
+    /// temporary deep-dive cannot stay on indefinitely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detailed_expires_at: Option<i64>,
+}
+
+fn default_profiling_slow_query_ms() -> u64 {
+    50
+}
+
+fn default_profiling_retention_days() -> u32 {
+    14
+}
+
+fn default_profiling_max_bytes() -> u64 {
+    32 * 1024 * 1024
+}
+
+impl Default for ProfilingPreferences {
+    fn default() -> Self {
+        Self {
+            mode: crate::profile::Mode::Off,
+            slow_query_ms: default_profiling_slow_query_ms(),
+            retention_days: default_profiling_retention_days(),
+            max_bytes: default_profiling_max_bytes(),
+            detailed_expires_at: None,
+        }
+    }
+}
+
+impl ProfilingPreferences {
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes a reference
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// The global resource settings in `config.toml`, as read by
 /// [`resource_preferences`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -265,8 +334,10 @@ impl Default for UserConfig {
             wildcard_permissions: false,
             manage_rules: true,
             claude_hooks: true,
+            auto_init: true,
             cpu_usage: None,
             benchmark: BenchmarkPreferences::default(),
+            profiling: ProfilingPreferences::default(),
             loaded_config: Mutex::new(None),
             loaded_state: Mutex::new(None),
             loaded_legacy_state: AtomicBool::new(false),
@@ -290,11 +361,15 @@ pub(crate) struct ConfigFile {
     manage_rules: bool,
     #[serde(default = "default_true")]
     claude_hooks: bool,
+    #[serde(default = "default_true")]
+    auto_init: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cpu_usage: Option<crate::cpu::CpuUsage>,
     // Last: a TOML table has to follow the plain keys.
     #[serde(default, skip_serializing_if = "BenchmarkPreferences::is_default")]
     benchmark: BenchmarkPreferences,
+    #[serde(default, skip_serializing_if = "ProfilingPreferences::is_default")]
+    profiling: ProfilingPreferences,
 }
 
 impl ConfigFile {
@@ -307,8 +382,10 @@ impl ConfigFile {
             wildcard_permissions: c.wildcard_permissions,
             manage_rules: c.manage_rules,
             claude_hooks: c.claude_hooks,
+            auto_init: c.auto_init,
             cpu_usage: c.cpu_usage,
             benchmark: c.benchmark,
+            profiling: c.profiling,
         }
     }
 }
@@ -792,6 +869,33 @@ pub fn resource_preferences() -> ResourcePreferences {
     })
 }
 
+/// Returns the directory holding the profiler's aggregate files:
+/// `~/.tokensave/profile/` (#754).
+pub fn profile_dir() -> Option<PathBuf> {
+    tokensave_dir().map(|d| d.join("profile"))
+}
+
+/// Reads the `[profiling]` table straight from `config.toml`, with the same
+/// lock-free, read-only semantics as [`resource_preferences`]: a missing or
+/// unparseable file yields the defaults (profiling off).
+pub fn profiling_preferences() -> ProfilingPreferences {
+    config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|contents| toml::from_str::<ConfigFile>(&contents).ok())
+        .map(|file| file.profiling)
+        .unwrap_or_default()
+}
+
+/// The `auto_init` setting in `config.toml` (#876), read without the side
+/// effects of [`UserConfig::load`]. A missing or unparseable file means the
+/// default, `true`.
+pub fn auto_init_setting() -> bool {
+    config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|contents| toml::from_str::<ConfigFile>(&contents).ok())
+        .is_none_or(|file| file.auto_init)
+}
+
 /// Returns the path to the advisory lock guarding `config.toml`'s
 /// read-modify-write span in `save()` (see `merge_config_file`'s doc
 /// comment). A distinct sidecar path rather than locking `config.toml`
@@ -1119,8 +1223,10 @@ impl UserConfig {
             || self.wildcard_permissions != base.wildcard_permissions
             || self.manage_rules != base.manage_rules
             || self.claude_hooks != base.claude_hooks
+            || self.auto_init != base.auto_init
             || self.cpu_usage != base.cpu_usage
-            || self.benchmark != base.benchmark;
+            || self.benchmark != base.benchmark
+            || self.profiling != base.profiling;
         if !changed && !self.loaded_legacy_state.load(Ordering::Relaxed) {
             return Ok(None);
         }
@@ -1165,6 +1271,11 @@ impl UserConfig {
             } else {
                 self.claude_hooks
             },
+            auto_init: if self.auto_init == base.auto_init {
+                on_disk.auto_init
+            } else {
+                self.auto_init
+            },
             cpu_usage: if self.cpu_usage == base.cpu_usage {
                 on_disk.cpu_usage
             } else {
@@ -1174,6 +1285,11 @@ impl UserConfig {
                 on_disk.benchmark
             } else {
                 self.benchmark
+            },
+            profiling: if self.profiling == base.profiling {
+                on_disk.profiling
+            } else {
+                self.profiling
             },
         }))
     }
@@ -1300,11 +1416,13 @@ mod tests {
             wildcard_permissions: true,
             manage_rules: false,
             claude_hooks: false,
+            auto_init: false,
             cpu_usage: Some(crate::cpu::CpuUsage::Low),
             benchmark: BenchmarkPreferences {
                 enabled: true,
                 auto_run: false,
             },
+            profiling: ProfilingPreferences::default(),
             loaded_config: Mutex::new(None),
             loaded_state: Mutex::new(None),
             loaded_legacy_state: AtomicBool::new(false),
@@ -1334,6 +1452,19 @@ mod tests {
         let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
         assert!(text.contains("cpu_usage = \"low\""), "{text}");
         assert!(text.contains("[benchmark]"), "{text}");
+    }
+
+    #[test]
+    fn auto_init_defaults_on_and_round_trips() {
+        let _home = test_home();
+        assert!(auto_init_setting(), "no config.toml means the default");
+        assert!(UserConfig::default().auto_init);
+
+        assert!(sample_config().save());
+        assert!(!UserConfig::load().auto_init);
+        assert!(!auto_init_setting());
+        let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
+        assert!(text.contains("auto_init = false"), "{text}");
     }
 
     #[test]
@@ -1382,6 +1513,57 @@ mod tests {
         assert!(reloaded.wildcard_permissions);
         assert!(!reloaded.benchmark.auto_run);
         assert_eq!(reloaded.cpu_usage, Some(crate::cpu::CpuUsage::Performance));
+    }
+
+    #[test]
+    fn profiling_preferences_default_off_and_are_not_written() {
+        let _home = test_home();
+        assert_eq!(profiling_preferences(), ProfilingPreferences::default());
+        assert_eq!(profiling_preferences().mode, crate::profile::Mode::Off);
+        assert!(UserConfig::default().save());
+        let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
+        assert!(!text.contains("profiling"), "{text}");
+    }
+
+    #[test]
+    fn profiling_preferences_round_trip() {
+        let _home = test_home();
+        let mut config = UserConfig::default();
+        config.profiling.mode = crate::profile::Mode::Detailed;
+        config.profiling.slow_query_ms = 20;
+        config.profiling.detailed_expires_at = Some(1_700_000_000);
+        assert!(config.save());
+        let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
+        assert!(text.contains("[profiling]"), "{text}");
+        assert!(text.contains("mode = \"detailed\""), "{text}");
+        assert_eq!(UserConfig::load().profiling, config.profiling);
+        assert_eq!(profiling_preferences(), config.profiling);
+    }
+
+    #[test]
+    fn concurrent_profiling_change_survives_unrelated_save() {
+        let _home = test_home();
+        assert!(UserConfig::default().save());
+        let mut stale = UserConfig::load();
+
+        let mut other = UserConfig::load();
+        other.profiling.mode = crate::profile::Mode::Light;
+        assert!(other.save());
+
+        stale.wildcard_permissions = true;
+        assert!(stale.save());
+
+        let reloaded = UserConfig::load();
+        assert!(reloaded.wildcard_permissions);
+        assert_eq!(reloaded.profiling.mode, crate::profile::Mode::Light);
+    }
+
+    #[test]
+    fn profiling_consent_is_independent_of_counter_upload() {
+        let _home = test_home();
+        let config = UserConfig::default();
+        assert!(config.upload_enabled);
+        assert_eq!(config.profiling.mode, crate::profile::Mode::Off);
     }
 
     #[test]

@@ -14,6 +14,14 @@ origin constants and release-channel selection are in `compatibility.rs`.
 Existing connection, migration, global-open, branch-copy, hook, and verification
 contexts below include their compatibility checks and channel-aware paths.
 
+Recovery context (#864): on an abandoned dirty sentinel, `TokenSave::open_with`
+holds the writer lock across recovery and reindexing, and runs Q0029
+(`quick_check`), then Q0030 (`needs_bulk_load_finalization`) and,
+when needed, Q0034 (`end_bulk_load`) before a complete source reindex. Errors
+propagate; detected corruption refuses automatic deletion. The SQL templates
+and bindings are unchanged, so inventory counts remain unchanged. Regression
+SQL in `tests/corruption_test.rs` remains outside the documented scope.
+
 `?`, `?1`, and similar placeholders are bound by the caller. Rust format fields such as `{placeholders}`, `{where_clause}`, `{limit}`, and `{}` are preserved as templates; they are not executable SQL until constructed. Rust string escapes and backslash-newline continuations are decoded for readability. Dynamic SQL has potentially unlimited concrete instances, so the report includes its templates and complete builder functions in the construction appendix, including conditional clauses and parameter bindings. No SQL was executed to produce this report.
 
 ## Inventory summary
