@@ -35,7 +35,7 @@ pub const fn bucket_index(us: u64) -> usize {
     if v < LINEAR {
         return v as usize;
     }
-    let octave = 63 - v.leading_zeros();
+    let octave = v.ilog2();
     let shift = octave - SUB_BITS;
     let sub = (v >> shift) - SUB;
     (LINEAR + (octave - FIRST_OCTAVE) as u64 * SUB + sub) as usize
