@@ -503,22 +503,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             // Print update notice from parallel check (suppressed for 15 min)
             if let Ok(Some(latest)) = version_handle.join() {
-                let current_version = env!("CARGO_PKG_VERSION");
-                let now = current_unix_timestamp();
-                let mut config = tokensave::user_config::UserConfig::load();
-                config.cached_latest_version = latest.clone();
-                config.last_version_check_at = now;
-                config.save();
-                if tokensave::cloud::is_newer_version(current_version, &latest)
-                    && now - config.last_version_warning_at >= 900
-                {
-                    eprintln!(
-                        "\n\x1b[33mUpdate available: v{} → v{}\x1b[0m\n  Run: \x1b[1mtokensave upgrade\x1b[0m",
-                        current_version, latest
-                    );
-                    config.last_version_warning_at = now;
-                    config.save();
-                }
+                global::notify_fetched_update(&latest);
             }
         }
         Commands::Tune {
@@ -681,22 +666,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             // Print update notice from parallel check (suppressed for 15 min)
             if let Ok(Some(latest)) = version_handle.join() {
-                let current_version = env!("CARGO_PKG_VERSION");
-                let now = current_unix_timestamp();
-                let mut config = tokensave::user_config::UserConfig::load();
-                config.cached_latest_version = latest.clone();
-                config.last_version_check_at = now;
-                config.save();
-                if tokensave::cloud::is_newer_version(current_version, &latest)
-                    && now - config.last_version_warning_at >= 900
-                {
-                    eprintln!(
-                        "\n\x1b[33mUpdate available: v{} → v{}\x1b[0m\n  Run: \x1b[1mtokensave upgrade\x1b[0m",
-                        current_version, latest
-                    );
-                    config.last_version_warning_at = now;
-                    config.save();
-                }
+                global::notify_fetched_update(&latest);
             }
         }
         Commands::GraphifyExport { .. } => unreachable!("export dispatched before startup"),
