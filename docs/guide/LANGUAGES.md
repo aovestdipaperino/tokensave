@@ -79,7 +79,7 @@ Custom Slim shortcuts and embedded-language compilation are not supported. Local
 | OCaml | `.ml`, `.mli` | `lang-ocaml` |
 | Clojure | `.clj`, `.cljs`, `.cljc` | `lang-clojure` |
 | Erlang | `.erl`, `.hrl` | `lang-erlang` |
-| Elixir | `.ex`, `.exs` | `lang-elixir` |
+| Elixir | `.ex`, `.exs`, `.eex` | `lang-elixir` |
 | F# | `.fs`, `.fsi`, `.fsx` | `lang-fsharp` |
 | F* | `.fst`, `.fsti` | `lang-fstar` |
 | Quint | `.qnt` | `lang-quint` |
