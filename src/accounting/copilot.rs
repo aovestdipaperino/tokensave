@@ -58,7 +58,7 @@ struct LatestCheckpoint {
 
 struct ParsedEventFile {
     turn: Option<CostTurn>,
-    malformed_checkpoint: bool,
+    parse_error: bool,
 }
 
 /// Format a nano-AIU counter as a human-readable whole-AIU string, e.g. `1.1K`.
@@ -104,19 +104,20 @@ pub(crate) fn find_event_files(root: &Path) -> Vec<PathBuf> {
 }
 
 /// Scan one `events.jsonl` file for the checkpoint with the highest cumulative
-/// `totalNanoAiu`. Also reports whether any checkpoint record was malformed.
+/// `totalNanoAiu`. Also reports whether a line or checkpoint record was malformed.
 ///
 /// Non-checkpoint lines and non-object JSON are skipped, since both are common
 /// in `events.jsonl`.
 fn latest_checkpoint(contents: &str) -> (Option<LatestCheckpoint>, bool) {
     let mut best: Option<LatestCheckpoint> = None;
-    let mut malformed_checkpoint = false;
+    let mut parse_error = false;
     for line in contents.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
         let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            parse_error = true;
             continue;
         };
         if value.get("type").and_then(serde_json::Value::as_str) != Some("session.usage_checkpoint")
@@ -124,15 +125,19 @@ fn latest_checkpoint(contents: &str) -> (Option<LatestCheckpoint>, bool) {
             continue;
         }
         let Ok(ev) = serde_json::from_value::<EventEnvelope>(value) else {
-            malformed_checkpoint = true;
+            parse_error = true;
             continue;
         };
         let Some(data) = ev.data else {
-            malformed_checkpoint = true;
+            parse_error = true;
             continue;
         };
+        if data.total_nano_aiu < 0 {
+            parse_error = true;
+            continue;
+        }
         if data.total_nano_aiu > 0 && ev.timestamp.as_deref().and_then(parse_timestamp).is_none() {
-            malformed_checkpoint = true;
+            parse_error = true;
             continue;
         }
         let candidate = LatestCheckpoint {
@@ -145,7 +150,7 @@ fn latest_checkpoint(contents: &str) -> (Option<LatestCheckpoint>, bool) {
             _ => best = Some(candidate),
         }
     }
-    (best, malformed_checkpoint)
+    (best, parse_error)
 }
 
 /// Parse a single Copilot session `events.jsonl` file at `path`.
@@ -165,7 +170,7 @@ fn latest_checkpoint(contents: &str) -> (Option<LatestCheckpoint>, bool) {
 #[cfg(test)]
 pub(crate) fn parse_events_file(path: &Path) -> Result<Option<CostTurn>, ()> {
     parse_events_file_detailed(path).and_then(|parsed| {
-        if parsed.turn.is_none() && parsed.malformed_checkpoint {
+        if parsed.turn.is_none() && parsed.parse_error {
             Err(())
         } else {
             Ok(parsed.turn)
@@ -184,11 +189,11 @@ fn parse_events_file_detailed(path: &Path) -> Result<ParsedEventFile, ()> {
         .ok_or(())?
         .to_string();
 
-    let (latest, malformed_checkpoint) = latest_checkpoint(&contents);
+    let (latest, parse_error) = latest_checkpoint(&contents);
     let Some(cp) = latest else {
         return Ok(ParsedEventFile {
             turn: None,
-            malformed_checkpoint,
+            parse_error,
         });
     };
 
@@ -198,7 +203,7 @@ fn parse_events_file_detailed(path: &Path) -> Result<ParsedEventFile, ()> {
     if cp.nano_aiu <= 0 {
         return Ok(ParsedEventFile {
             turn: None,
-            malformed_checkpoint,
+            parse_error,
         });
     }
 
@@ -231,7 +236,7 @@ fn parse_events_file_detailed(path: &Path) -> Result<ParsedEventFile, ()> {
             agent: "copilot".to_string(),
             credits,
         }),
-        malformed_checkpoint,
+        parse_error,
     })
 }
 
@@ -276,7 +281,7 @@ pub(crate) async fn ingest_dir(
         match parse_events_file_detailed(file) {
             Err(()) => parse_errors += 1,
             Ok(parsed) => {
-                if parsed.malformed_checkpoint {
+                if parsed.parse_error {
                     parse_errors += 1;
                 }
                 if let Some(turn) = parsed.turn {
@@ -513,6 +518,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ingest_dir_negative_checkpoint_is_partial_without_dropping_valid_usage() {
+        let root_tmp = TempDir::new().unwrap();
+        let content = format!(
+            "{}\n{}",
+            checkpoint_line(900_000_000_000, 0, "gpt-5.4", "2026-07-31T09:00:00.000Z"),
+            r#"{"type":"session.usage_checkpoint","data":{"totalNanoAiu":-1,"modelCacheState":[]},"timestamp":"2026-07-31T10:00:00.000Z"}"#,
+        );
+        write_session(root_tmp.path(), "sess-negative-counter", &content);
+        let db_tmp = TempDir::new().unwrap();
+        let db_path = db_tmp.path().join(".tokensave").join("global.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let gdb = crate::global_db::GlobalDb::open_at(&db_path).await.unwrap();
+
+        let res = ingest_dir(&gdb, root_tmp.path()).await;
+
+        assert_eq!(res.coverage.state, CoverageState::Partial);
+        assert_eq!(res.coverage.sessions, 1);
+        assert_eq!(res.rows_changed, 1);
+        let rows = gdb.cost_by_agent_since(0).await;
+        let credits = rows
+            .iter()
+            .find(|summary| summary.agent == "copilot")
+            .and_then(|summary| summary.credits);
+        assert_eq!(credits, Some(900_000_000_000));
+    }
+
+    #[tokio::test]
     async fn ingest_dir_reingest_moves_checkpoint_to_later_range() {
         let root_tmp = TempDir::new().unwrap();
         let session_path = write_session(
@@ -562,6 +594,26 @@ mod tests {
 
         assert_eq!(res.coverage.state, CoverageState::Partial);
         assert_eq!(res.coverage.sessions, 0);
+    }
+
+    #[tokio::test]
+    async fn ingest_dir_invalid_json_line_is_partial() {
+        let root_tmp = TempDir::new().unwrap();
+        let content = format!(
+            "{}\nnot-json",
+            checkpoint_line(900_000_000_000, 0, "gpt-5.4", "2026-07-31T09:00:00.000Z"),
+        );
+        write_session(root_tmp.path(), "sess-invalid-json", &content);
+        let db_tmp = TempDir::new().unwrap();
+        let db_path = db_tmp.path().join(".tokensave").join("global.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let gdb = crate::global_db::GlobalDb::open_at(&db_path).await.unwrap();
+
+        let res = ingest_dir(&gdb, root_tmp.path()).await;
+
+        assert_eq!(res.coverage.state, CoverageState::Partial);
+        assert_eq!(res.coverage.sessions, 1);
+        assert_eq!(res.rows_changed, 1);
     }
 
     #[tokio::test]

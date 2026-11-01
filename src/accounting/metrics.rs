@@ -253,9 +253,9 @@ pub fn format_coverage(coverage: &[SourceCoverage], by_agent: &[AgentCostSummary
         state => match copilot_usage {
             Some(u) if u.credits.is_some_and(|c| c > 0) => {
                 let note = if state == CoverageState::Partial {
-                    "observed locally, partial source, session-start"
+                    "observed locally, partial source, checkpoint timestamp"
                 } else {
-                    "session-start"
+                    "checkpoint timestamp"
                 };
                 format!(
                     "Copilot {} AIU ({note})",
@@ -427,7 +427,7 @@ mod tests {
         // Copilot credits hold nano-AIU: 900_000_000_000 → 900 AIU.
         let by_agent = vec![make_agent("copilot", 0, 0, 0, 0, Some(900_000_000_000))];
         let got = format_coverage(&coverage, &by_agent);
-        let expected = "Coverage: Claude complete; Droid absent; Copilot 900 AIU (session-start); Augment not imported";
+        let expected = "Coverage: Claude complete; Droid absent; Copilot 900 AIU (checkpoint timestamp); Augment not imported";
         assert_eq!(got, expected);
     }
 

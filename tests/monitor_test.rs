@@ -223,7 +223,9 @@ fn copilot_aiu_appends_segment_to_coverage_line() {
         copilot_state: CoverageState::Complete,
         ..base_cache()
     };
-    let line2 = &cost_panel_lines(&cache)[1];
+    let lines = cost_panel_lines(&cache);
+    assert_eq!(lines.len(), 3);
+    let line2 = &lines[1];
     assert!(line2.contains("Copilot: 900 AIU today"), "got: {line2}");
     assert!(line2.contains("1.5k 7d"), "got: {line2}");
     assert!(
@@ -249,22 +251,44 @@ fn copilot_segment_appends_when_droid_absent() {
         "got: {line2}"
     );
     assert!(
-        line2.contains("Copilot: 0 AIU today | 900 7d (partial source, session-start)"),
+        line2.contains("Copilot: 0 AIU today | 900 7d (partial source, checkpoint timestamp)"),
         "got: {line2}"
     );
 }
 
-/// No Copilot AIU activity means the line is byte-identical to the Droid-only layout.
+/// A missing Copilot source does not alter a Droid coverage line.
 #[test]
-fn no_copilot_activity_leaves_coverage_line_unchanged() {
+fn copilot_absence_leaves_droid_coverage_line_unchanged() {
     let cache = CostCache {
+        today_credits: Some(100),
+        week_credits: Some(500),
         week_aiu: None,
-        droid_state: CoverageState::Absent,
+        droid_state: CoverageState::Complete,
         ..base_cache()
     };
-    assert_eq!(
-        &cost_panel_lines(&cache)[1],
-        "  Coverage: Claude local; Droid absent"
+    let droid_line = &cost_panel_lines(&cache)[1];
+    assert!(droid_line.starts_with("  Droid:"), "{droid_line}");
+    assert!(!droid_line.contains("Copilot"), "{droid_line}");
+}
+
+#[test]
+fn droid_monitor_preserves_existing_cost_labels() {
+    let cache = CostCache {
+        today_cost: 1.0,
+        droid_state: CoverageState::Complete,
+        ..base_cache()
+    };
+    let lines = cost_panel_lines(&cache);
+
+    assert!(
+        lines[0].starts_with("  USD spent: "),
+        "Droid-present cost label changed: {}",
+        lines[0]
+    );
+    assert!(
+        lines[2].contains("Top priced model:"),
+        "Droid-present model label changed: {}",
+        lines[2]
     );
 }
 
@@ -310,10 +334,13 @@ fn absent_copilot_source_does_not_render_stale_cached_aiu() {
         !cache.has_activity(),
         "stale Copilot usage must not show panel"
     );
+    let lines = cost_panel_lines(&cache);
     assert_eq!(
-        &cost_panel_lines(&cache)[1],
-        "  Coverage: Claude local; Droid absent"
+        lines.len(),
+        2,
+        "stale Copilot data must not add a panel line"
     );
+    assert!(lines.iter().all(|line| !line.contains("Copilot")));
 }
 
 /// Droid credits and raw tokens render as lowercase compact notation (2.9k, 24.6k).
@@ -477,8 +504,8 @@ fn complete_droid_source_without_week_usage_is_not_partial() {
     };
     let lines = cost_panel_lines(&cache);
     let droid_line = &lines[1];
-    assert!(droid_line.contains("credits n/a"), "{droid_line}");
-    assert!(droid_line.contains("0 raw tokens"), "{droid_line}");
+    assert!(droid_line.contains("no usage in 7d"), "{droid_line}");
+    assert!(!droid_line.contains("partial"), "{droid_line}");
 }
 
 #[test]
@@ -492,6 +519,7 @@ fn complete_droid_source_with_tokens_and_no_credits_is_not_partial() {
     let droid_line = &lines[1];
     assert!(droid_line.contains("credits n/a"), "{droid_line}");
     assert!(droid_line.contains("2.0k raw tokens"), "{droid_line}");
+    assert!(!droid_line.contains("partial"), "{droid_line}");
 }
 
 /// Without a Droid source, preserve the pre-Droid monitor exactly.
@@ -507,15 +535,11 @@ fn droid_absent_preserves_legacy_monitor_lines() {
         ..base_cache()
     };
     let lines = cost_panel_lines(&cache);
-    assert_eq!(lines.len(), 3, "got: {lines:?}");
+    assert_eq!(lines.len(), 2, "got: {lines:?}");
+    assert_eq!(lines[0], "  Spent: $1.23 today | $5.67 7d    Saved: 100.0k");
     assert_eq!(
-        lines[0],
-        "  USD spent: $1.23 today | $5.67 7d    Saved: 100.0k"
-    );
-    assert_eq!(lines[1], "  Coverage: Claude local; Droid absent");
-    assert_eq!(
-        lines[2],
-        "  Efficiency: 25%    Top priced model: claude-opus-4 ($1.11)"
+        lines[1],
+        "  Efficiency: 25%    Top model: claude-opus-4 ($1.11)"
     );
 }
 
