@@ -71,7 +71,7 @@ jobs:
       matrix:
         include:
           - name: aarch64-macos
-            runner: macos-14
+            runner: macos-latest
             target: aarch64-apple-darwin
             bottle_tag: arm64_sonoma
             archive: tar.gz
