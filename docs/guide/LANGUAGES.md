@@ -79,7 +79,7 @@ Custom Slim shortcuts and embedded-language compilation are not supported. Local
 | OCaml | `.ml`, `.mli` | `lang-ocaml` |
 | Clojure | `.clj`, `.cljs`, `.cljc` | `lang-clojure` |
 | Erlang | `.erl`, `.hrl` | `lang-erlang` |
-| Elixir | `.ex`, `.exs` | `lang-elixir` |
+| Elixir | `.ex`, `.exs`, `.eex` | `lang-elixir` |
 | F# | `.fs`, `.fsi`, `.fsx` | `lang-fsharp` |
 | F* | `.fst`, `.fsti` | `lang-fstar` |
 | Quint | `.qnt` | `lang-quint` |
@@ -93,6 +93,10 @@ Custom Slim shortcuts and embedded-language compilation are not supported. Local
 | Common Lisp | `.lisp`, `.lsp`, `.cl`, `.asd` | `lang-commonlisp` |
 | Scheme | `.scm`, `.ss` | `lang-scheme` |
 | FlatBuffers | `.fbs` | `lang-flatbuffers` |
+
+Elixir's EEx support extracts code and output tags from `.eex` files, ignoring
+markup, comments, and escaped tags while preserving original source locations.
+HEEx (`.heex`) is not supported.
 
 Individual languages can also be cherry-picked without a full tier:
 
