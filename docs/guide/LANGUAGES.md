@@ -94,10 +94,6 @@ Custom Slim shortcuts and embedded-language compilation are not supported. Local
 | Scheme | `.scm`, `.ss` | `lang-scheme` |
 | FlatBuffers | `.fbs` | `lang-flatbuffers` |
 
-Elixir's EEx support extracts code and output tags from `.eex` files, ignoring
-markup, comments, and escaped tags while preserving original source locations.
-HEEx (`.heex`) is not supported.
-
 Individual languages can also be cherry-picked without a full tier:
 
 ```bash
