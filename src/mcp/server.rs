@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use crate::cloud::UpdateNoticeScope;
 use crate::errors::{Result, TokenSaveError};
 use crate::global_db::GlobalDb;
 use crate::profile::McpPhase;
@@ -1692,14 +1693,12 @@ impl McpServer {
             if let Some(checked_at) = cache.checked_at {
                 if checked_at.elapsed() < VERSION_CHECK_INTERVAL {
                     let latest = cache.latest.as_deref()?;
-                    return if crate::cloud::is_newer_minor_version(current, latest) {
-                        Some(format!(
-                            "⚠️ tokensave v{current} is installed, but v{latest} is available. \
-                             Run `tokensave upgrade` to update."
-                        ))
-                    } else {
-                        None
-                    };
+                    return crate::cloud::available_update(
+                        current,
+                        latest,
+                        UpdateNoticeScope::MinorOrMajor,
+                    )
+                    .map(|update| update.agent_notice());
                 }
             }
         }
@@ -1717,14 +1716,8 @@ impl McpServer {
         }
 
         let latest = latest?;
-        if crate::cloud::is_newer_minor_version(current, &latest) {
-            Some(format!(
-                "⚠️ tokensave v{current} is installed, but v{latest} is available. \
-                 Run `tokensave upgrade` to update."
-            ))
-        } else {
-            None
-        }
+        crate::cloud::available_update(current, &latest, UpdateNoticeScope::MinorOrMajor)
+            .map(|update| update.agent_notice())
     }
 
     /// Process a single raw JSON-RPC line and write the response.
