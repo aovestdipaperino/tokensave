@@ -115,11 +115,14 @@ impl Drop for Spinner {
 
 /// Build the JSON object for one `by_agent` row.
 ///
-/// `cost_usd` is `null` for Droid (a credits-only agent with no USD pricing);
-/// it is a numeric value for all other agents.
-/// All token fields and `credits` are always present.
+/// `cost_usd` is `null` for the credits-only agents (Droid, Copilot) that have
+/// no USD pricing; it is a numeric value for all other agents.
+/// All token fields and `credits` are always present. `credits` is emitted in
+/// each agent's native unit at machine precision: Droid Factory credits, and
+/// Copilot raw nano-AIU (divide by 1e9 for whole AIU). The human table renders
+/// Copilot as whole AIU; the structured JSON and CSV keep the exact nano value.
 fn agent_row_json(a: &tokensave::global_db::AgentCostSummary) -> serde_json::Value {
-    let cost_usd: serde_json::Value = if a.agent == "droid" {
+    let cost_usd: serde_json::Value = if a.agent == "droid" || a.agent == "copilot" {
         serde_json::Value::Null
     } else {
         serde_json::json!(a.cost_usd)
@@ -148,11 +151,14 @@ fn format_agent_row(a: &tokensave::global_db::AgentCostSummary) -> String {
         .saturating_add(a.cache_write_tokens)
         .saturating_add(a.cache_read_tokens);
     let raw_str = tokensave::display::format_token_count(raw);
-    let credits_str = match a.credits {
-        Some(c) => tokensave::display::format_token_count(c),
-        None => "n/a".to_string(),
+    // Copilot's credit column holds nano-AIU; render it as whole AIU. Other
+    // credit-carrying agents (Droid) use raw compact counts.
+    let credits_str = match (a.agent.as_str(), a.credits) {
+        ("copilot", Some(c)) => format!("{} AIU", tokensave::accounting::copilot_format_aiu(c)),
+        (_, Some(c)) => tokensave::display::format_token_count(c),
+        (_, None) => "n/a".to_string(),
     };
-    let usd_str = if a.agent == "droid" {
+    let usd_str = if a.agent == "droid" || a.agent == "copilot" {
         "n/a".to_string()
     } else {
         format!("${:.2}", a.cost_usd)
@@ -1709,10 +1715,15 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 coverage.agent == "droid"
                     && coverage.state != tokensave::accounting::CoverageState::Absent
             });
-            let summary = tokensave::accounting::metrics::cost_summary_with_droid_presence(
+            let copilot_present = ingest_stats.coverage.iter().any(|coverage| {
+                coverage.agent == "copilot"
+                    && coverage.state != tokensave::accounting::CoverageState::Absent
+            });
+            let summary = tokensave::accounting::metrics::cost_summary_with_source_presence(
                 &gdb,
                 since,
                 droid_present,
+                copilot_present,
             )
             .await;
 
@@ -1745,7 +1756,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                             "by_model": s.by_model.iter().map(|(m, c, t)| serde_json::json!({"model": m, "cost": c, "tokens": t})).collect::<Vec<_>>(),
                             "by_category": s.by_category.iter().map(|(cat, c, n)| serde_json::json!({"category": cat, "cost": c, "turns": n})).collect::<Vec<_>>(),
                         });
-                        if droid_present {
+                        if droid_present || copilot_present {
                             obj["by_agent"] = serde_json::json!(s
                                 .by_agent
                                 .iter()
@@ -1759,7 +1770,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         if by_agent {
                             println!("agent,cost_usd,credits,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,turns");
                             for a in &s.by_agent {
-                                let cost_cell = if a.agent == "droid" {
+                                let cost_cell = if a.agent == "droid" || a.agent == "copilot" {
                                     String::new()
                                 } else {
                                     format!("{:.4}", a.cost_usd)

@@ -20,6 +20,7 @@ tokensave status [path]            # Show statistics + cost summary
 tokensave status [path] --json     # Show statistics (JSON output)
 tokensave status --details         # Include node-kind breakdown
 tokensave cost [range]             # Token cost summary (default: 7d)
+tokensave cost --by-agent          # Cost grouped by supported agent
 tokensave cost --by-model          # Cost grouped by model
 tokensave cost --by-task           # Cost grouped by task category
 tokensave cost --export json|csv   # Export cost data

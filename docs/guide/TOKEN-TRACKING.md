@@ -30,13 +30,14 @@ Dollar estimates use the existing pricing module (Sonnet input pricing, refreshe
 ```bash
 tokensave cost                     # 7-day cost summary (default)
 tokensave cost today               # today only
+tokensave cost --by-agent          # breakdown by supported agent
 tokensave cost --by-model          # breakdown by Claude model
 tokensave cost --by-task           # breakdown by task category (coding, debugging, exploration, ...)
 tokensave cost --export json       # JSON export to stdout
 tokensave cost --export csv        # CSV export to stdout
 ```
 
-Parses Claude Code session transcripts (`~/.claude/projects/**/*.jsonl`) and prices each API turn with model pricing, reads Pi sessions (`~/.pi/agent/sessions/**/*.jsonl`) using the cost Pi already reports per message, and ingests Factory Droid session settings in credits. Every turn is classified into one of 13 task categories and stored in `~/.tokensave/global.db` for fast aggregate queries. Pricing is refreshed from [LiteLLM](https://github.com/BerriAI/litellm) every 24 hours and falls back to an embedded table when offline.
+Parses Claude Code session transcripts (`~/.claude/projects/**/*.jsonl`) and prices each API turn with model pricing, reads Pi sessions (`~/.pi/agent/sessions/**/*.jsonl`) using the cost Pi already reports per message, and ingests Factory Droid session settings in credits. It also reads local GitHub Copilot CLI checkpoints from `~/.copilot/session-state/**/events.jsonl`; those checkpoints provide cumulative AIU, not token counts, a USD price, or turn-level data. In `cost --by-agent`, Copilot's human-readable credits are shown as whole AIU, while JSON and CSV keep the exact nano-AIU value. Copilot's date bucket uses the selected checkpoint timestamp, so a later cumulative checkpoint can move the usage into a later range. Malformed JSONL lines or checkpoint records make Copilot coverage partial; valid non-checkpoint events are ignored. Copilot token fields are currently zero; its USD value is `n/a` in the table, `null` in JSON, and blank in CSV. Usage is stored in `~/.tokensave/global.db` for fast aggregate queries. Available turn-level session data is classified into one of 13 task categories. Pricing is refreshed from [LiteLLM](https://github.com/BerriAI/litellm) every 24 hours and falls back to an embedded table when offline.
 
 The `tokensave status` header includes a cost row showing today's spend, 7-day total, and efficiency ratio (tokens saved / total tokens). The `tokensave monitor` TUI shows a live cost panel alongside the savings feed. At the end of each Claude Code session, the `hook_stop` handler prints a one-line receipt to the terminal; in Pi, the installed extension does the same through its `agent_settled` handler.
 
@@ -48,7 +49,7 @@ Task classification categories: Coding, Debugging, Feature Dev, Refactoring, Tes
 tokensave monitor
 ```
 
-A global TUI that shows MCP tool calls from all projects in real time, via a shared memory-mapped ring buffer at `~/.tokensave/monitor.mmap`. Each entry shows the project name, tool name, and token delta. A cost panel at the top shows today's spend, savings, efficiency, and top model (refreshed every 30 seconds).
+A global TUI that shows MCP tool calls from all projects in real time, via a shared memory-mapped ring buffer at `~/.tokensave/monitor.mmap`. Each entry shows the project name, tool name, and token delta. A cost panel at the top shows today's USD spend, savings, efficiency, and top model (refreshed every 30 seconds). When the panel is active, it also shows available local source coverage; Copilot AIU gets its own line when Droid usage is also shown, so the amount remains visible, and is never combined with USD totals.
 
 <p align="center">
   <img src="../../src/resources/monitor-screenshot.png" alt="tokensave monitor TUI" width="800">

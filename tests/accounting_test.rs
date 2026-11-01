@@ -55,6 +55,25 @@ fn droid_turn(id: &str, input: u64, output: u64, credits: Option<u64>) -> CostTu
     }
 }
 
+fn copilot_turn(id: &str, timestamp: u64, nano_aiu: u64) -> CostTurn {
+    CostTurn {
+        message_id: id.to_string(),
+        project_hash: "unknown".to_string(),
+        session_id: "copilot-session".to_string(),
+        model: "gpt-5.4".to_string(),
+        timestamp,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
+        cost_usd: 0.0,
+        category: "unclassified".to_string(),
+        tool_names: String::new(),
+        agent: "copilot".to_string(),
+        credits: Some(nano_aiu),
+    }
+}
+
 /// A legacy DB (no agent/credits columns) is upgraded transparently.
 /// The existing row must have agent="claude" and credits=None after migration.
 #[tokio::test]
@@ -416,6 +435,46 @@ async fn upsert_droid_turn_accepts_larger_snapshot() {
     let droid = summaries.iter().find(|s| s.agent == "droid").unwrap();
     assert_eq!(droid.input_tokens, 200, "stored tokens should be larger");
     assert_eq!(droid.credits, Some(600), "stored credits should be larger");
+}
+
+#[tokio::test]
+async fn copilot_larger_checkpoint_moves_the_range_timestamp() {
+    let tmp = TempDir::new().unwrap();
+    let db = open_isolated_db(&tmp).await;
+    let start = copilot_turn("copilot:session", 1_000_000, 900_000_000_000);
+    let later = copilot_turn("copilot:session", 2_000_000, 1_500_000_000_000);
+
+    assert!(db.upsert_copilot_turn(&start).await);
+    assert!(db.upsert_copilot_turn(&later).await);
+
+    let rows = db.cost_by_agent_since(2_000_000).await;
+    let copilot = rows
+        .iter()
+        .find(|summary| summary.agent == "copilot")
+        .expect("later Copilot checkpoint must be in the later range");
+    assert_eq!(copilot.credits, Some(1_500_000_000_000));
+}
+
+#[tokio::test]
+async fn droid_larger_snapshot_keeps_session_start_bucket() {
+    let tmp = TempDir::new().unwrap();
+    let db = open_isolated_db(&tmp).await;
+    let initial = droid_turn("droid:session", 100, 20, Some(500));
+    assert!(db.upsert_droid_turn(&initial).await);
+
+    let mut later = initial.clone();
+    later.timestamp = 2_000_000;
+    later.input_tokens = 200;
+    later.credits = Some(600);
+    assert!(db.upsert_droid_turn(&later).await);
+
+    assert!(
+        db.cost_by_agent_since(2_000_000)
+            .await
+            .iter()
+            .all(|summary| summary.agent != "droid"),
+        "Droid snapshots must remain bucketed at session start"
+    );
 }
 
 /// Upsert with smaller counters returns false; stored totals remain the larger values.
