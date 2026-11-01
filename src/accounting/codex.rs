@@ -71,11 +71,11 @@ fn parse_usage(obj: &serde_json::Value) -> Option<Usage> {
     (usage.cached_input <= usage.input
         && usage.reasoning_output <= usage.output
         && usage.input.checked_add(usage.output) == Some(usage.total)
-        && usage.total <= i64::MAX as u64
+        && i64::try_from(usage.total).is_ok()
         && usage
             .output
             .checked_add(usage.reasoning_output)
-            .is_some_and(|n| n <= i64::MAX as u64))
+            .is_some_and(|n| i64::try_from(n).is_ok()))
     .then_some(usage)
 }
 
