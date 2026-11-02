@@ -1,5 +1,6 @@
 pub mod compatibility;
 mod connection;
+pub mod debug_sql;
 pub mod migrations;
 mod profiled;
 mod queries;

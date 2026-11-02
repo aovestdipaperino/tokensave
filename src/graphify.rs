@@ -234,7 +234,7 @@ pub async fn export_file(
     }
     let data = json!({"directed":true,"multigraph":true,"graph":{
         "schema_version":1,"tokensave_interchange_version":1,"producer":"tokensave",
-        "producer_version":env!("CARGO_PKG_VERSION"),"target_graphify_commit":TARGET_COMMIT,
+        "producer_version":env!("TOKENSAVE_BUILD_VERSION"),"target_graphify_commit":TARGET_COMMIT,
         "tokensave_schema_version":version,"generation":generation,"source_hash":before,
         "branch":branch_before,"commit":commit_before,"scope":"single_file_internal_edges","source_file":file,
         "omissions":["cross_file_edges","documents","source_bodies","signatures","docstrings"],

@@ -19,7 +19,7 @@ pub(crate) fn write_dirty_sentinel(project_root: &Path) {
             "pid={}\ntime={}\nversion={}",
             std::process::id(),
             current_timestamp(),
-            env!("CARGO_PKG_VERSION"),
+            env!("TOKENSAVE_BUILD_VERSION"),
         ),
     );
 }

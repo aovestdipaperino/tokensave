@@ -243,7 +243,7 @@ pub fn register_at(
         project_path: project_path.to_string_lossy().into_owned(),
         argv_path: argv_path.map(str::to_string),
         db_path: db_path.to_string_lossy().into_owned(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: env!("TOKENSAVE_BUILD_VERSION").to_string(),
     };
     let Ok(json) = serde_json::to_string_pretty(&entry) else {
         return;
@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(alive.len(), 1, "got {alive:?}");
         assert_eq!(alive[0].pid, own);
         assert_eq!(alive[0].project_path, "/proj/live");
-        assert_eq!(alive[0].version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(alive[0].version, env!("TOKENSAVE_BUILD_VERSION"));
     }
 
     /// Registering twice for the same PID replaces the row rather than

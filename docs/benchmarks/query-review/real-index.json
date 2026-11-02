@@ -1,0 +1,191 @@
+{
+  "sqlite": "3.46.1",
+  "repetitions": 31,
+  "warmups": 2,
+  "limit": 20,
+  "timing_order": "alternating old/new",
+  "scope": "native SQLite, not bundled libSQL",
+  "nodes": 24163,
+  "fts": {
+    "search_nodes_bounded_fts:\"common\"*": {
+      "old": {
+        "median_ms": 0.286,
+        "p95_ms": 0.411
+      },
+      "new": {
+        "median_ms": 0.274,
+        "p95_ms": 0.313
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_bounded_fts:\"engine\"*": {
+      "old": {
+        "median_ms": 0.24,
+        "p95_ms": 0.598
+      },
+      "new": {
+        "median_ms": 0.25,
+        "p95_ms": 0.456
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_bounded_fts:\"search\"*": {
+      "old": {
+        "median_ms": 0.79,
+        "p95_ms": 1.091
+      },
+      "new": {
+        "median_ms": 0.462,
+        "p95_ms": 0.804
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_bounded_fts:\"node\"*": {
+      "old": {
+        "median_ms": 3.69,
+        "p95_ms": 4.486
+      },
+      "new": {
+        "median_ms": 2.765,
+        "p95_ms": 4.393
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_bounded_fts:\"common engine\"": {
+      "old": {
+        "median_ms": 0.023,
+        "p95_ms": 0.064
+      },
+      "new": {
+        "median_ms": 0.036,
+        "p95_ms": 0.136
+      },
+      "rows": 0,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_bounded_fts:\"search\"* OR \"node\"*": {
+      "old": {
+        "median_ms": 4.096,
+        "p95_ms": 4.849
+      },
+      "new": {
+        "median_ms": 3.141,
+        "p95_ms": 3.616
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_fts:\"common\"*": {
+      "old": {
+        "median_ms": 0.297,
+        "p95_ms": 0.327
+      },
+      "new": {
+        "median_ms": 0.293,
+        "p95_ms": 0.323
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_fts:\"engine\"*": {
+      "old": {
+        "median_ms": 0.225,
+        "p95_ms": 0.263
+      },
+      "new": {
+        "median_ms": 0.248,
+        "p95_ms": 0.383
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_fts:\"search\"*": {
+      "old": {
+        "median_ms": 0.77,
+        "p95_ms": 1.403
+      },
+      "new": {
+        "median_ms": 0.494,
+        "p95_ms": 0.763
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_fts:\"node\"*": {
+      "old": {
+        "median_ms": 3.579,
+        "p95_ms": 4.756
+      },
+      "new": {
+        "median_ms": 3.016,
+        "p95_ms": 3.991
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_fts:\"common engine\"": {
+      "old": {
+        "median_ms": 0.021,
+        "p95_ms": 0.047
+      },
+      "new": {
+        "median_ms": 0.038,
+        "p95_ms": 0.06
+      },
+      "rows": 0,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_fts:\"search\"* OR \"node\"*": {
+      "old": {
+        "median_ms": 4.497,
+        "p95_ms": 6.309
+      },
+      "new": {
+        "median_ms": 3.504,
+        "p95_ms": 5.368
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    }
+  }
+}

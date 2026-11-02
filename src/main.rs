@@ -6,6 +6,7 @@ use std::process;
 
 use tokensave::tokensave::TokenSave;
 
+mod app_identity;
 mod cli;
 mod commands;
 mod global;
@@ -172,8 +173,12 @@ fn format_agent_row(a: &tokensave::global_db::AgentCostSummary) -> String {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    #[cfg(windows)]
+    let _console_identity = app_identity::ConsoleIdentity::enter();
     if let Err(e) = run(cli).await {
         eprintln!("Error: {}", e);
+        #[cfg(windows)]
+        drop(_console_identity);
         process::exit(1);
     }
 }
@@ -339,7 +344,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     //   (b) Fallback for external upgrades (`brew upgrade`, `cargo install`):
     //       the running version is newer than `last_installed_version`.
     if !skip_agent_install_maintenance {
-        let running = env!("CARGO_PKG_VERSION");
+        let running = env!("TOKENSAVE_BUILD_VERSION");
         let paths = (
             tokensave::agents::home_dir(),
             tokensave::agents::which_tokensave(),
@@ -526,6 +531,27 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     json,
                 },
         } => commands::run_config_benchmark(force, show, reset, json),
+        Commands::Config {
+            action: cli::ConfigAction::DebugSql { enabled, explain },
+        } => {
+            let mut config = tokensave::user_config::UserConfig::load();
+            if let Some(enabled) = enabled {
+                config.debug_sql = enabled;
+            }
+            if let Some(explain) = explain {
+                config.debug_sql_explain = explain;
+            }
+            if (enabled.is_some() || explain.is_some()) && !config.save() {
+                return Err(tokensave::errors::TokenSaveError::Config {
+                    message: "failed to save global SQL debug settings".to_string(),
+                });
+            }
+            println!("debug_sql = {}", config.debug_sql);
+            println!("debug_sql_explain = {}", config.debug_sql_explain);
+            if config.debug_sql_explain && !config.debug_sql {
+                eprintln!("EXPLAIN is inactive until debug_sql is enabled.");
+            }
+        }
         Commands::Sync {
             path,
             force,
@@ -1035,7 +1061,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             // Skip global user-config writes for a project-scoped install.
             if !local {
-                user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
+                user_cfg.last_installed_version = env!("TOKENSAVE_BUILD_VERSION").to_string();
                 user_cfg.save();
                 if let Some(warning) = tokensave::agents::cargo_build_binary_warning(&tokensave_bin)
                 {
@@ -1142,7 +1168,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         failed.join(", ")
                     );
                 }
-                user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
+                user_cfg.last_installed_version = env!("TOKENSAVE_BUILD_VERSION").to_string();
                 user_cfg.save();
                 if let Some(warning) = tokensave::agents::cargo_build_binary_warning(&tokensave_bin)
                 {

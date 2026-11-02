@@ -1,0 +1,439 @@
+{
+  "sqlite": "3.46.1",
+  "repetitions": 15,
+  "warmups": 2,
+  "limit": 20,
+  "timing_order": "alternating old/new",
+  "scope": "native SQLite, not bundled libSQL",
+  "nodes": 12000,
+  "edges": 96000,
+  "analyzed": true,
+  "analytical": {
+    "Q0119_0_bytes_each_global": {
+      "old": {
+        "median_ms": 1.352,
+        "p95_ms": 2.04
+      },
+      "new": {
+        "median_ms": 1.826,
+        "p95_ms": 1.98
+      },
+      "rows": 20,
+      "new_plan": [
+        "MATERIALIZE ranked",
+        "SEARCH nodes USING INDEX idx_nodes_kind (kind=?)",
+        "USE TEMP B-TREE FOR ORDER BY",
+        "SCAN r",
+        "SEARCH n USING INDEX sqlite_autoindex_nodes_1 (id=?)",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "Q0119_0_bytes_each_scoped": {
+      "old": {
+        "median_ms": 1.41,
+        "p95_ms": 1.561
+      },
+      "new": {
+        "median_ms": 1.429,
+        "p95_ms": 1.651
+      },
+      "rows": 20,
+      "new_plan": [
+        "MATERIALIZE ranked",
+        "SEARCH nodes USING INDEX idx_nodes_kind (kind=?)",
+        "USE TEMP B-TREE FOR ORDER BY",
+        "SCAN r",
+        "SEARCH n USING INDEX sqlite_autoindex_nodes_1 (id=?)",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "Q0119_2048_bytes_each_global": {
+      "old": {
+        "median_ms": 4.713,
+        "p95_ms": 6.686
+      },
+      "new": {
+        "median_ms": 3.109,
+        "p95_ms": 4.172
+      },
+      "rows": 20,
+      "new_plan": [
+        "MATERIALIZE ranked",
+        "SEARCH nodes USING INDEX idx_nodes_kind (kind=?)",
+        "USE TEMP B-TREE FOR ORDER BY",
+        "SCAN r",
+        "SEARCH n USING INDEX sqlite_autoindex_nodes_1 (id=?)",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "Q0119_2048_bytes_each_scoped": {
+      "old": {
+        "median_ms": 2.439,
+        "p95_ms": 3.747
+      },
+      "new": {
+        "median_ms": 2.366,
+        "p95_ms": 3.136
+      },
+      "rows": 20,
+      "new_plan": [
+        "MATERIALIZE ranked",
+        "SEARCH nodes USING INDEX idx_nodes_kind (kind=?)",
+        "USE TEMP B-TREE FOR ORDER BY",
+        "SCAN r",
+        "SEARCH n USING INDEX sqlite_autoindex_nodes_1 (id=?)",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "Q0120_96_files_out_global": {
+      "old": {
+        "median_ms": 134.123,
+        "p95_ms": 575.992
+      },
+      "new": {
+        "median_ms": 184.341,
+        "p95_ms": 303.457
+      },
+      "rows": 20,
+      "new_plan": [
+        "CO-ROUTINE pairs",
+        "SCAN n_src USING INDEX idx_nodes_file_path",
+        "SEARCH e USING INDEX idx_edges_source_kind (source=? AND kind=?)",
+        "SEARCH n_tgt USING INDEX sqlite_autoindex_nodes_1 (id=?)",
+        "USE TEMP B-TREE FOR DISTINCT",
+        "SCAN pairs",
+        "USE TEMP B-TREE FOR GROUP BY",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "Q0120_96_files_out_scoped": {
+      "old": {
+        "median_ms": 2.288,
+        "p95_ms": 9.14
+      },
+      "new": {
+        "median_ms": 2.325,
+        "p95_ms": 4.482
+      },
+      "rows": 1,
+      "new_plan": [
+        "CO-ROUTINE pairs",
+        "SCAN n_src USING INDEX idx_nodes_file_path",
+        "SEARCH e USING INDEX idx_edges_source_kind (source=? AND kind=?)",
+        "SEARCH n_tgt USING INDEX sqlite_autoindex_nodes_1 (id=?)",
+        "USE TEMP B-TREE FOR DISTINCT",
+        "SCAN pairs",
+        "USE TEMP B-TREE FOR GROUP BY",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "Q0120_96_files_in_global": {
+      "old": {
+        "median_ms": 147.008,
+        "p95_ms": 169.544
+      },
+      "new": {
+        "median_ms": 145.983,
+        "p95_ms": 187.333
+      },
+      "rows": 20,
+      "new_plan": [
+        "CO-ROUTINE pairs",
+        "SCAN n_tgt USING INDEX idx_nodes_file_path",
+        "SEARCH e USING INDEX idx_edges_target_kind (target=? AND kind=?)",
+        "SEARCH n_src USING INDEX sqlite_autoindex_nodes_1 (id=?)",
+        "USE TEMP B-TREE FOR DISTINCT",
+        "SCAN pairs",
+        "USE TEMP B-TREE FOR GROUP BY",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "Q0120_96_files_in_scoped": {
+      "old": {
+        "median_ms": 2.015,
+        "p95_ms": 2.065
+      },
+      "new": {
+        "median_ms": 2.032,
+        "p95_ms": 2.186
+      },
+      "rows": 1,
+      "new_plan": [
+        "CO-ROUTINE pairs",
+        "SCAN n_tgt USING INDEX idx_nodes_file_path",
+        "SEARCH e USING INDEX idx_edges_target_kind (target=? AND kind=?)",
+        "SEARCH n_src USING INDEX sqlite_autoindex_nodes_1 (id=?)",
+        "USE TEMP B-TREE FOR DISTINCT",
+        "SCAN pairs",
+        "USE TEMP B-TREE FOR GROUP BY",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "Q0120_12000_files_out_global": {
+      "old": {
+        "median_ms": 94.141,
+        "p95_ms": 188.417
+      },
+      "new": {
+        "median_ms": 132.826,
+        "p95_ms": 202.635
+      },
+      "rows": 20,
+      "new_plan": [
+        "CO-ROUTINE pairs",
+        "SCAN n_src USING INDEX idx_nodes_file_path",
+        "SEARCH e USING INDEX idx_edges_source_kind (source=? AND kind=?)",
+        "SEARCH n_tgt USING INDEX sqlite_autoindex_nodes_1 (id=?)",
+        "USE TEMP B-TREE FOR DISTINCT",
+        "SCAN pairs",
+        "USE TEMP B-TREE FOR GROUP BY",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "Q0120_12000_files_out_scoped": {
+      "old": {
+        "median_ms": 0.989,
+        "p95_ms": 1.032
+      },
+      "new": {
+        "median_ms": 0.982,
+        "p95_ms": 1.018
+      },
+      "rows": 1,
+      "new_plan": [
+        "CO-ROUTINE pairs",
+        "SCAN n_src USING INDEX idx_nodes_file_path",
+        "SEARCH e USING INDEX idx_edges_source_kind (source=? AND kind=?)",
+        "SEARCH n_tgt USING INDEX sqlite_autoindex_nodes_1 (id=?)",
+        "USE TEMP B-TREE FOR DISTINCT",
+        "SCAN pairs",
+        "USE TEMP B-TREE FOR GROUP BY",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "Q0120_12000_files_in_global": {
+      "old": {
+        "median_ms": 186.442,
+        "p95_ms": 380.651
+      },
+      "new": {
+        "median_ms": 197.472,
+        "p95_ms": 383.299
+      },
+      "rows": 20,
+      "new_plan": [
+        "CO-ROUTINE pairs",
+        "SCAN n_tgt USING INDEX idx_nodes_file_path",
+        "SEARCH e USING INDEX idx_edges_target_kind (target=? AND kind=?)",
+        "SEARCH n_src USING INDEX sqlite_autoindex_nodes_1 (id=?)",
+        "USE TEMP B-TREE FOR DISTINCT",
+        "SCAN pairs",
+        "USE TEMP B-TREE FOR GROUP BY",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    },
+    "Q0120_12000_files_in_scoped": {
+      "old": {
+        "median_ms": 1.485,
+        "p95_ms": 2.685
+      },
+      "new": {
+        "median_ms": 1.274,
+        "p95_ms": 1.668
+      },
+      "rows": 1,
+      "new_plan": [
+        "CO-ROUTINE pairs",
+        "SCAN n_tgt USING INDEX idx_nodes_file_path",
+        "SEARCH e USING INDEX idx_edges_target_kind (target=? AND kind=?)",
+        "SEARCH n_src USING INDEX sqlite_autoindex_nodes_1 (id=?)",
+        "USE TEMP B-TREE FOR DISTINCT",
+        "SCAN pairs",
+        "USE TEMP B-TREE FOR GROUP BY",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    }
+  },
+  "fts": {
+    "search_nodes_bounded_fts:\"common\"*": {
+      "old": {
+        "median_ms": 12.859,
+        "p95_ms": 19.817
+      },
+      "new": {
+        "median_ms": 14.79,
+        "p95_ms": 26.241
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_bounded_fts:\"engine\"*": {
+      "old": {
+        "median_ms": 13.806,
+        "p95_ms": 20.982
+      },
+      "new": {
+        "median_ms": 16.762,
+        "p95_ms": 26.717
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_bounded_fts:\"search\"*": {
+      "old": {
+        "median_ms": 0.137,
+        "p95_ms": 0.163
+      },
+      "new": {
+        "median_ms": 0.151,
+        "p95_ms": 0.19
+      },
+      "rows": 0,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_bounded_fts:\"node\"*": {
+      "old": {
+        "median_ms": 0.171,
+        "p95_ms": 0.481
+      },
+      "new": {
+        "median_ms": 0.181,
+        "p95_ms": 0.34
+      },
+      "rows": 0,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_bounded_fts:\"common engine\"": {
+      "old": {
+        "median_ms": 15.074,
+        "p95_ms": 16.007
+      },
+      "new": {
+        "median_ms": 17.246,
+        "p95_ms": 18.931
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_bounded_fts:\"search\"* OR \"node\"*": {
+      "old": {
+        "median_ms": 0.303,
+        "p95_ms": 0.47
+      },
+      "new": {
+        "median_ms": 0.313,
+        "p95_ms": 0.495
+      },
+      "rows": 0,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_fts:\"common\"*": {
+      "old": {
+        "median_ms": 11.845,
+        "p95_ms": 14.632
+      },
+      "new": {
+        "median_ms": 14.091,
+        "p95_ms": 22.477
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_fts:\"engine\"*": {
+      "old": {
+        "median_ms": 13.562,
+        "p95_ms": 19.556
+      },
+      "new": {
+        "median_ms": 15.658,
+        "p95_ms": 18.179
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_fts:\"search\"*": {
+      "old": {
+        "median_ms": 0.206,
+        "p95_ms": 0.267
+      },
+      "new": {
+        "median_ms": 0.25,
+        "p95_ms": 0.308
+      },
+      "rows": 0,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_fts:\"node\"*": {
+      "old": {
+        "median_ms": 0.165,
+        "p95_ms": 0.341
+      },
+      "new": {
+        "median_ms": 0.201,
+        "p95_ms": 0.335
+      },
+      "rows": 0,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_fts:\"common engine\"": {
+      "old": {
+        "median_ms": 18.555,
+        "p95_ms": 22.514
+      },
+      "new": {
+        "median_ms": 20.564,
+        "p95_ms": 35.585
+      },
+      "rows": 20,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    },
+    "search_nodes_fts:\"search\"* OR \"node\"*": {
+      "old": {
+        "median_ms": 0.419,
+        "p95_ms": 1.192
+      },
+      "new": {
+        "median_ms": 0.422,
+        "p95_ms": 0.711
+      },
+      "rows": 0,
+      "new_plan": [
+        "SCAN nodes_fts VIRTUAL TABLE INDEX 32:rM5",
+        "SEARCH n USING INTEGER PRIMARY KEY (rowid=?)"
+      ]
+    }
+  }
+}

@@ -13,14 +13,14 @@ use crate::tokensave::TokenSave;
 /// Runs a comprehensive health check of the tokensave installation.
 pub async fn run_doctor(agent_filter: Option<&str>) {
     debug_assert!(
-        !env!("CARGO_PKG_VERSION").is_empty(),
-        "CARGO_PKG_VERSION must not be empty"
+        !env!("TOKENSAVE_BUILD_VERSION").is_empty(),
+        "TOKENSAVE_BUILD_VERSION must not be empty"
     );
     let mut dc = DoctorCounters::new();
 
     eprintln!(
         "\n\x1b[1mtokensave doctor v{}\x1b[0m\n",
-        env!("CARGO_PKG_VERSION")
+        env!("TOKENSAVE_BUILD_VERSION")
     );
 
     check_binary(&mut dc);
@@ -118,7 +118,7 @@ fn check_binary(dc: &mut DoctorCounters) {
     } else {
         dc.fail("Could not determine binary path");
     }
-    dc.pass(&format!("Version: {}", env!("CARGO_PKG_VERSION")));
+    dc.pass(&format!("Version: {}", env!("TOKENSAVE_BUILD_VERSION")));
 }
 
 /// Check global database exists.

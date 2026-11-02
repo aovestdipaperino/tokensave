@@ -153,6 +153,14 @@ pub struct UserConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_usage: Option<crate::cpu::CpuUsage>,
 
+    /// Stream SQL diagnostics to stderr for newly opened connections.
+    #[serde(default)]
+    pub debug_sql: bool,
+
+    /// Include query plans when `debug_sql` is enabled.
+    #[serde(default)]
+    pub debug_sql_explain: bool,
+
     /// The `[benchmark]` table: whether and when the global hardware
     /// benchmark runs and is used (#752).
     #[serde(default, skip_serializing_if = "BenchmarkPreferences::is_default")]
@@ -335,6 +343,8 @@ impl Default for UserConfig {
             claude_hooks: true,
             auto_init: true,
             cpu_usage: None,
+            debug_sql: false,
+            debug_sql_explain: false,
             benchmark: BenchmarkPreferences::default(),
             profiling: ProfilingPreferences::default(),
             loaded_config: Mutex::new(None),
@@ -364,6 +374,10 @@ pub(crate) struct ConfigFile {
     auto_init: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cpu_usage: Option<crate::cpu::CpuUsage>,
+    #[serde(default)]
+    debug_sql: bool,
+    #[serde(default)]
+    debug_sql_explain: bool,
     // Last: a TOML table has to follow the plain keys.
     #[serde(default, skip_serializing_if = "BenchmarkPreferences::is_default")]
     benchmark: BenchmarkPreferences,
@@ -383,6 +397,8 @@ impl ConfigFile {
             claude_hooks: c.claude_hooks,
             auto_init: c.auto_init,
             cpu_usage: c.cpu_usage,
+            debug_sql: c.debug_sql,
+            debug_sql_explain: c.debug_sql_explain,
             benchmark: c.benchmark,
             profiling: c.profiling,
         }
@@ -895,6 +911,16 @@ pub fn auto_init_setting() -> bool {
         .is_none_or(|file| file.auto_init)
 }
 
+/// Read-only SQL debug settings. Sampled once per connection; no state writes.
+pub fn sql_debug_preferences() -> (bool, bool) {
+    config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|contents| toml::from_str::<ConfigFile>(&contents).ok())
+        .map_or((false, false), |file| {
+            (file.debug_sql, file.debug_sql_explain)
+        })
+}
+
 /// Returns the path to the advisory lock guarding `config.toml`'s
 /// read-modify-write span in `save()` (see `merge_config_file`'s doc
 /// comment). A distinct sidecar path rather than locking `config.toml`
@@ -1225,7 +1251,9 @@ impl UserConfig {
             || self.auto_init != base.auto_init
             || self.cpu_usage != base.cpu_usage
             || self.benchmark != base.benchmark
-            || self.profiling != base.profiling;
+            || self.profiling != base.profiling
+            || self.debug_sql != base.debug_sql
+            || self.debug_sql_explain != base.debug_sql_explain;
         if !changed && !self.loaded_legacy_state.load(Ordering::Relaxed) {
             return Ok(None);
         }
@@ -1279,6 +1307,16 @@ impl UserConfig {
                 on_disk.cpu_usage
             } else {
                 self.cpu_usage
+            },
+            debug_sql: if self.debug_sql == base.debug_sql {
+                on_disk.debug_sql
+            } else {
+                self.debug_sql
+            },
+            debug_sql_explain: if self.debug_sql_explain == base.debug_sql_explain {
+                on_disk.debug_sql_explain
+            } else {
+                self.debug_sql_explain
             },
             benchmark: if self.benchmark == base.benchmark {
                 on_disk.benchmark
@@ -1416,6 +1454,8 @@ mod tests {
             manage_rules: false,
             claude_hooks: false,
             auto_init: false,
+            debug_sql: false,
+            debug_sql_explain: false,
             cpu_usage: Some(crate::cpu::CpuUsage::Low),
             benchmark: BenchmarkPreferences {
                 enabled: true,
@@ -1426,6 +1466,40 @@ mod tests {
             loaded_state: Mutex::new(None),
             loaded_legacy_state: AtomicBool::new(false),
         }
+    }
+
+    #[test]
+    fn sql_debug_settings_round_trip_and_concurrent_save() {
+        let _home = test_home();
+        assert_eq!(sql_debug_preferences(), (false, false));
+        assert!(UserConfig::default().save());
+        let mut stale = UserConfig::load();
+        let mut other = UserConfig::load();
+        other.debug_sql = true;
+        other.debug_sql_explain = true;
+        assert!(other.save());
+        stale.upload_enabled = false;
+        assert!(stale.save());
+        assert_eq!(sql_debug_preferences(), (true, true));
+        let mut loaded = UserConfig::load();
+        assert!(loaded.debug_sql && loaded.debug_sql_explain);
+        assert!(!loaded.upload_enabled);
+        let state = std::fs::read_to_string(state_path().unwrap()).unwrap();
+        assert!(!state.contains("debug_sql"));
+        loaded.debug_sql_explain = false;
+        assert!(loaded.save());
+        assert!(stale.save());
+        assert_eq!(sql_debug_preferences(), (true, false));
+    }
+
+    #[test]
+    fn sql_debug_accessor_does_not_repair_invalid_settings() {
+        let _home = test_home();
+        let path = config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "debug_sql = 123\n").unwrap();
+        assert_eq!(sql_debug_preferences(), (false, false));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "debug_sql = 123\n");
     }
 
     #[test]

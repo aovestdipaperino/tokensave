@@ -45,8 +45,8 @@ pub(crate) fn to_fts_phrase_query(query: &str) -> Option<String> {
 }
 
 impl Database {
-    /// Replaces executable-body FTS documents in one prepared-statement
-    /// transaction. Callers delete stale documents by file before supplying
+    /// Inserts executable-body documents in one transaction using bounded
+    /// batches. Callers delete stale documents by file before supplying
     /// replacements for incremental indexing; full indexing starts from an
     /// empty table.
     pub async fn insert_executable_body_documents(
@@ -69,43 +69,65 @@ impl Database {
         if documents.is_empty() {
             return Ok(());
         }
-        self.conn()
-            .execute("BEGIN", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to begin executable body insert: {e}"),
-                operation: "insert_executable_body_documents".to_string(),
-            })?;
-        let stmt = self
-            .conn()
-            .prepare(
-                "INSERT INTO executable_body_fts (node_id, file_path, body) VALUES (?1, ?2, ?3)",
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to prepare executable body insert: {e}"),
-                operation: "insert_executable_body_documents".to_string(),
-            })?;
-        for document in documents {
-            stmt.execute(params![
-                document.node_id.as_str(),
-                document.file_path.as_str(),
-                document.body.as_str(),
-            ])
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to insert executable body: {e}"),
-                operation: "insert_executable_body_documents".to_string(),
-            })?;
-            stmt.reset();
+        let _write_guard = self.write_lock.lock().await;
+        let err = |e: libsql::Error| TokenSaveError::Database {
+            message: format!("failed to insert executable bodies: {e}"),
+            operation: "insert_executable_body_documents".to_string(),
+        };
+        let tx = self.conn().transaction().await.map_err(err)?;
+        let result: Result<()> = async {
+            // One outer INSERT per bounded batch avoids flushing FTS pending
+            // terms after every trigger invocation. Bound both bind count and
+            // copied parameter bytes; an oversized document runs on its own.
+            const MAX_ROWS: usize = 128;
+            const MAX_BYTES: usize = 256 * 1024;
+            let document_bytes = |doc: &ExecutableBodyDocument| {
+                doc.node_id
+                    .len()
+                    .saturating_add(doc.file_path.len())
+                    .saturating_add(doc.body.len())
+            };
+            let mut start = 0;
+            while start < documents.len() {
+                let mut end = start + 1;
+                let mut bytes = document_bytes(&documents[start]);
+                while end < documents.len() && end - start < MAX_ROWS {
+                    let next_bytes = bytes.saturating_add(document_bytes(&documents[end]));
+                    if next_bytes > MAX_BYTES {
+                        break;
+                    }
+                    bytes = next_bytes;
+                    end += 1;
+                }
+                let placeholders = std::iter::repeat_n("(?, ?, ?)", end - start)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!(
+                    "INSERT INTO executable_bodies (node_id, file_path, body) VALUES {placeholders}"
+                );
+                let values: Vec<libsql::Value> = documents[start..end]
+                    .iter()
+                    .flat_map(|doc| {
+                        [
+                            libsql::Value::Text(doc.node_id.clone()),
+                            libsql::Value::Text(doc.file_path.clone()),
+                            libsql::Value::Text(doc.body.clone()),
+                        ]
+                    })
+                    .collect();
+                tx.execute(&sql, libsql::params_from_iter(values))
+                    .await
+                    .map_err(err)?;
+                start = end;
+            }
+            Ok(())
         }
-        self.conn()
-            .execute("COMMIT", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to commit executable body insert: {e}"),
-                operation: "insert_executable_body_documents".to_string(),
-            })?;
+        .await;
+        if let Err(error) = result {
+            tx.rollback().await.map_err(err)?;
+            return Err(error);
+        }
+        tx.commit().await.map_err(err)?;
         Ok(())
     }
 
@@ -361,12 +383,13 @@ impl Database {
                 "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0) AS rank
+                    nodes_fts.rank AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
+                   AND nodes_fts.rank MATCH 'bm25(10.0, 5.0, 1.0, 2.0, 3.0)'
                    AND n.kind NOT IN ('file', 'doc')
-                 ORDER BY rank
+                 ORDER BY nodes_fts.rank
                  LIMIT ?2",
                 params![fts_query, limit as i64],
             )
@@ -395,6 +418,10 @@ impl Database {
     }
 
     /// Executes the FTS5 query and returns ranked results.
+    ///
+    /// Configure the hidden rank column per query so FTS5 can supply rank
+    /// order directly. The weights and negated result scores match BM25;
+    /// no arbitrary candidate cap is applied before ranking or kind filtering.
     pub(crate) async fn search_nodes_fts(
         &self,
         fts_query: &str,
@@ -404,11 +431,12 @@ impl Database {
                 "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0) AS rank
+                    nodes_fts.rank AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
-                 ORDER BY bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0)
+                   AND nodes_fts.rank MATCH 'bm25(10.0, 5.0, 1.0, 2.0, 3.0)'
+                 ORDER BY nodes_fts.rank
                  LIMIT ?2",
                 params![fts_query, limit as i64],
             )

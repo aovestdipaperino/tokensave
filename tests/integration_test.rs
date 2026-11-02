@@ -150,7 +150,7 @@ async fn test_full_index_records_build_version() {
     let stats = cg.get_stats().await.unwrap();
     assert_eq!(
         stats.last_full_index_version,
-        env!("CARGO_PKG_VERSION"),
+        tokensave::identity::VERSION,
         "a full index must record the running version as the graph builder"
     );
 }

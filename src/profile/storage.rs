@@ -118,7 +118,7 @@ impl Store {
 
         let file = WindowFile {
             schema: FILE_SCHEMA,
-            tokensave_version: env!("CARGO_PKG_VERSION").to_string(),
+            tokensave_version: env!("TOKENSAVE_BUILD_VERSION").to_string(),
             engine: ENGINE.to_string(),
             hour,
             series: std::mem::take(&mut self.current),

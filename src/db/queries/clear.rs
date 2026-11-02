@@ -11,7 +11,8 @@ impl Database {
         self.conn()
             .execute_batch(
                 "DELETE FROM vectors;
-                 DELETE FROM executable_body_fts;
+                 DELETE FROM executable_bodies;
+                 DELETE FROM ambiguous_calls;
                  DELETE FROM trait_dispatch_callers;
                  DELETE FROM unresolved_refs;
                  DELETE FROM edges;

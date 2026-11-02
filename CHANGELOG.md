@@ -7,6 +7,54 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+
+- Return MCP invalid-parameter errors for selected graphs rejected by database compatibility checks, preserving internal errors for database failures (Refs #835).
+
+- Preserve database creation origin and reject incompatible opens; isolate beta project/global state under `.tokensave/beta` and retain legacy data for explicit transition (Refs #835).
+
+### Fixed
+
+- Resolve temporary test roots before comparing canonical build outputs, avoiding macOS symlink and Windows short-name CI failures (Refs #836).
+
+- Use the canonical tokensave executable filename for stable and beta builds, archives, Homebrew and Scoop; preserve embedded beta branding and legacy archive upgrade support. Reuse the beta CI test executable for identity checks instead of rebuilding a lite variant (Refs #836).
+
+### Documentation
+
+- Use a wide beta README logo matching the stable logo's dimensions and wordmark layout, with a beta badge, and preserve this intentional branch-specific branding difference (Refs #801).
+
+- Require agents to verify linked PR states before closing an issue and summarize merged improvements with the actual destination branch, validation, and remaining work; synchronize this rule across master and beta (Refs #803).
+
+- Add a linked table of contents near the top of the README.
+
+- List all supported agents and their `--agent` identifiers beside the README setup command.
+
+- Simplify README installation and agent setup, keeping advanced options in expandable sections and correcting the medium-tier Cargo command.
+
+- Convert the README architecture diagram to Mermaid and require Mermaid for all documentation graphs and diagrams in `AGENTS.md`.
+
+- Require upstream-master comparison and maintenance of shared agent guidance on master and beta as repository workflows change.
+
+- Require agents to keep the README beta announcement aligned with beta release features on master and beta.
+
+### CI
+
+- Validate pushes and pull requests targeting the beta integration branch with the existing CI matrix (Refs #786).
+
+### Performance
+
+- Restrict scoped inheritance-depth traversal to matching starting nodes while preserving ancestors across file boundaries, cycle detection, and the depth cap (Refs #782).
+
+- Rank edge-count and god-class candidates using IDs and counts before loading full node data for the selected results, with deterministic ordering for equal counts (Refs #784).
+
+- Index executable-body cleanup by file using external-content FTS and maintain exact ambiguous-call candidate lookups in a relational index. Schema v20 preserves existing documents and candidate records and uses the existing full-reindex-on-migration behavior (Refs #778).
+
+- Scope complexity call counts to ranked candidates, hydrate only top results, and index project/time savings lookups on new and existing ledgers (Refs #777).
+
+- Batch file-scoped graph cleanup into five data statements, make executable-body FTS cleanup transactional, and index dispatch-cache deletion lookups. Schema v19 adds the index and uses the existing full-reindex-on-migration behavior (Refs #775).
+
+- Use weighted FTS5 rank-ordered cursors for bounded and general node search while preserving relevance scores and symbol filtering (Refs #751).
+
 ### Added
 
 - **Elixir EEx templates are indexed with the `lang-elixir` feature (#907).** Code and output tags in `.eex` files contribute calls and declarations with their original locations; markup, comments, and escaped tags are ignored.
@@ -125,6 +173,19 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - Add Pi real-session regression coverage for per-run retrieval guidance, compaction replay, and native reads after simulated retrieval failures.
 
 - Prefer indexed code exploration through Pi's structured per-run prompt sections, with explicit native-tool fallbacks for unavailable or stale indexes, unindexed files, documentation, configuration, and current-source verification. Existing search interception is unchanged.
+
+- Add an opt-in beta executable identity with `TokenSave-Beta.exe`/`tokensave-beta` packaging, a badged Windows icon, prerelease version resources, and centralized channel configuration while preserving stable defaults (Refs #801).
+
+- Add global opt-in SQL diagnostics and `EXPLAIN QUERY PLAN` output on stderr, configured with `tokensave config debug-sql`; keep application stdout unchanged and bound diagnostic records (Refs #789).
+
+- Add a consolidated SQL optimization summary and reproducible query benchmarks, and require agents to maintain summaries across related implementations (Refs #786).
+
+
+- Add a SQL query inventory in `docs/QUERY-REPORT.md` with source links and dynamic construction context, and require agents to keep it synchronized with query changes (Refs #773).
+
+### Fixed
+
+- Label beta source installations as `7.16.0-beta.1`, activating beta CLI, MCP, and update-channel identity without requiring `--features beta` (Refs #810).
 
 - Update the locked `der` dependency from yanked 0.8.0 to compatible 0.8.3, used by the ONNX Runtime build dependency chain (Refs #805).
 

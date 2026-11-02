@@ -105,7 +105,7 @@ fn warn_if_update_available(
     skip_suppression: bool,
 ) {
     let Some(update) = tokensave::cloud::available_update(
-        env!("CARGO_PKG_VERSION"),
+        env!("TOKENSAVE_BUILD_VERSION"),
         latest,
         tokensave::cloud::UpdateNoticeScope::AnyRelease,
     ) else {

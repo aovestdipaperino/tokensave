@@ -75,7 +75,7 @@ pub fn sanitized(
         .collect();
     Export {
         schema: EXPORT_SCHEMA.to_string(),
-        tokensave_version: env!("CARGO_PKG_VERSION").to_string(),
+        tokensave_version: env!("TOKENSAVE_BUILD_VERSION").to_string(),
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
         cpu_count: std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),

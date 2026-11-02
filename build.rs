@@ -1,6 +1,10 @@
 use std::{fs, path::Path};
 
+#[path = "build/identity.rs"]
+mod identity;
+
 fn main() {
+    identity::configure();
     let out_path = Path::new("src/resources/logo.ansi");
     let logo_bytes = include_bytes!("src/resources/logo.png");
     let ansi = logo_art::image_to_ansi(logo_bytes, 90);

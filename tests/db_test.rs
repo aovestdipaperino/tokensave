@@ -791,3 +791,480 @@ async fn test_search_nodes_bounded_excludes_file_and_doc_nodes() {
         "file/doc nodes must not consume symbol-fetch slots: {ids:?}"
     );
 }
+
+/// Set-based deletion must clean both edge directions and every dependent,
+/// including with foreign keys disabled during indexing.
+#[tokio::test]
+async fn test_delete_nodes_by_file_cleans_dependents_and_preserves_other_files() {
+    for foreign_keys in [true, false] {
+        let (_dir, db) = setup_db().await;
+        let nodes: Vec<_> = (0..400)
+            .map(|i| sample_node(&format!("del-{i}"), "deleted", "src/deleted.rs"))
+            .chain([
+                sample_node("keep-a", "kept", "src/keep.rs"),
+                sample_node("keep-b", "kept", "src/keep.rs"),
+            ])
+            .collect();
+        db.insert_nodes(&nodes).await.unwrap();
+        db.conn().execute_batch(
+            "INSERT INTO edges(source, target, kind, line) VALUES
+                ('del-0', 'keep-a', 'calls', NULL),
+                ('keep-a', 'del-1', 'calls', 2),
+                ('del-2', 'del-3', 'calls', 3),
+                ('keep-a', 'keep-b', 'calls', 4);
+             INSERT INTO unresolved_refs(from_node_id, reference_name, reference_kind, line, col, file_path)
+                VALUES ('del-0', 'missing', 'calls', 1, 0, 'src/deleted.rs'),
+                       ('keep-a', 'missing', 'calls', 1, 0, 'src/keep.rs');
+             INSERT INTO vectors(node_id, embedding, model, created_at)
+                VALUES ('del-0', X'00', 'test', 1), ('keep-a', X'00', 'test', 1);
+             INSERT INTO executable_bodies(node_id, file_path, body)
+                VALUES ('del-0', 'src/deleted.rs', 'deleted body'),
+                       ('keep-a', 'src/keep.rs', 'kept body');
+             INSERT INTO trait_dispatch_callers(concrete_method_id, trait_method_id, caller_id, line)
+                VALUES ('keep-b', 'keep-a', 'del-0', -1),
+                       ('keep-b', 'del-1', 'keep-a', 2),
+                       ('keep-b', 'keep-b', 'keep-a', 4);",
+        ).await.unwrap();
+        db.conn()
+            .execute_batch(if foreign_keys {
+                "PRAGMA foreign_keys = ON"
+            } else {
+                "PRAGMA foreign_keys = OFF"
+            })
+            .await
+            .unwrap();
+
+        db.delete_nodes_by_file("src/deleted.rs").await.unwrap();
+        // Repeated and absent-file deletions must remain harmless.
+        db.delete_nodes_by_file("src/deleted.rs").await.unwrap();
+        db.delete_nodes_by_file("src/absent.rs").await.unwrap();
+        for (sql, expected) in [
+            ("SELECT COUNT(*) FROM nodes", 2),
+            ("SELECT COUNT(*) FROM nodes_fts WHERE nodes_fts MATCH 'deleted'", 0),
+            ("SELECT COUNT(*) FROM edges WHERE source='keep-a' AND target='keep-b'", 1),
+            ("SELECT COUNT(*) FROM edges", 1),
+            ("SELECT COUNT(*) FROM unresolved_refs WHERE from_node_id='keep-a'", 1),
+            ("SELECT COUNT(*) FROM unresolved_refs", 1),
+            ("SELECT COUNT(*) FROM vectors WHERE node_id='keep-a'", 1),
+            ("SELECT COUNT(*) FROM vectors", 1),
+            ("SELECT COUNT(*) FROM executable_body_fts WHERE file_path='src/keep.rs'", 1),
+            ("SELECT COUNT(*) FROM executable_body_fts", 1),
+            ("SELECT COUNT(*) FROM trait_dispatch_callers WHERE caller_id='keep-a' AND trait_method_id='keep-b'", 1),
+            ("SELECT COUNT(*) FROM trait_dispatch_callers", 1),
+        ] {
+            let mut rows = db.conn().query(sql, ()).await.unwrap();
+            let actual = rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap();
+            assert_eq!(actual, expected, "foreign_keys={foreign_keys}: {sql}");
+        }
+        // FTS cleanup must also run when no graph node remains for a file.
+        db.conn().execute("INSERT INTO executable_bodies(node_id, file_path, body) VALUES ('orphan', 'src/absent.rs', 'orphan')", ()).await.unwrap();
+        db.delete_nodes_by_file("src/absent.rs").await.unwrap();
+        let mut rows = db
+            .conn()
+            .query("SELECT COUNT(*) FROM executable_body_fts", ())
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_delete_nodes_by_file_rolls_back_fts_and_dependents_on_error() {
+    let (_dir, db) = setup_db().await;
+    db.insert_nodes(&[
+        sample_node("a", "alpha", "src/a.rs"),
+        sample_node("b", "beta", "src/b.rs"),
+    ])
+    .await
+    .unwrap();
+    db.conn()
+        .execute_batch(
+            "INSERT INTO edges(source, target, kind) VALUES ('a', 'b', 'calls');
+         INSERT INTO vectors(node_id, embedding, model, created_at) VALUES ('a', X'00', 'test', 1);
+         INSERT INTO executable_bodies(node_id, file_path, body) VALUES ('a', 'src/a.rs', 'alpha');
+         CREATE TRIGGER prevent_vector_delete BEFORE DELETE ON vectors BEGIN
+             SELECT RAISE(ABORT, 'injected failure');
+         END;",
+        )
+        .await
+        .unwrap();
+    assert!(db.delete_nodes_by_file("src/a.rs").await.is_err());
+    for table in ["nodes", "edges", "vectors", "executable_body_fts"] {
+        let mut rows = db
+            .conn()
+            .query(&format!("SELECT COUNT(*) FROM {table}"), ())
+            .await
+            .unwrap();
+        let expected = if table == "nodes" { 2 } else { 1 };
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            expected,
+            "{table}"
+        );
+    }
+    db.conn()
+        .execute_batch("DROP TRIGGER prevent_vector_delete")
+        .await
+        .unwrap();
+    db.delete_nodes_by_file("src/a.rs").await.unwrap();
+}
+
+#[tokio::test]
+async fn indexed_body_storage_preserves_match_update_delete_and_insert_rollback() {
+    let (_dir, db) = setup_db().await;
+    for (id, file) in [("a", "src/a.rs"), ("b", "src/b.rs")] {
+        db.insert_node(&sample_node(id, id, file)).await.unwrap();
+    }
+    let document = |id: &str, file: &str, body: &str| ExecutableBodyDocument {
+        node_id: id.into(),
+        file_path: file.into(),
+        body: body.into(),
+    };
+    db.insert_executable_body_documents(&[
+        document("a", "src/a.rs", "alpha beta"),
+        document("b", "src/b.rs", "alpha beta"),
+    ])
+    .await
+    .unwrap();
+    let terms = vec!["alpha".into(), "beta".into()];
+    assert_eq!(
+        db.search_executable_bodies(&terms, 10).await.unwrap().len(),
+        2
+    );
+    db.conn()
+        .execute(
+            "UPDATE executable_bodies SET body='gamma delta' WHERE node_id='a'",
+            (),
+        )
+        .await
+        .unwrap();
+    let hits = db.search_executable_bodies(&terms, 10).await.unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].0.id, "b");
+    db.delete_nodes_by_file("src/a.rs").await.unwrap();
+    assert!(db
+        .search_executable_bodies(&["gamma".into(), "delta".into()], 10)
+        .await
+        .unwrap()
+        .is_empty());
+    let mut plan = db
+        .conn()
+        .query(
+            "EXPLAIN QUERY PLAN DELETE FROM executable_bodies WHERE file_path='src/a.rs'",
+            (),
+        )
+        .await
+        .unwrap();
+    assert!(plan
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get::<String>(3)
+        .unwrap()
+        .contains("idx_executable_bodies_file"));
+    drop(plan);
+    db.conn().execute_batch("CREATE TRIGGER fail_body_insert BEFORE INSERT ON executable_bodies WHEN NEW.node_id='fail' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").await.unwrap();
+    assert!(db
+        .insert_executable_body_documents(&[
+            document("b", "src/b.rs", "epsilon zeta"),
+            document("fail", "src/f.rs", "epsilon zeta"),
+        ])
+        .await
+        .is_err());
+    assert!(db
+        .search_executable_bodies(&["epsilon".into(), "zeta".into()], 10)
+        .await
+        .unwrap()
+        .is_empty());
+    db.conn()
+        .execute_batch("DROP TRIGGER fail_body_insert")
+        .await
+        .unwrap();
+    db.insert_executable_body_documents(&[document("b", "src/b.rs", "epsilon zeta")])
+        .await
+        .unwrap();
+    assert_eq!(
+        db.search_executable_bodies(&["epsilon".into(), "zeta".into()], 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    db.clear().await.unwrap();
+    assert!(db
+        .search_executable_bodies(&terms, 10)
+        .await
+        .unwrap()
+        .is_empty());
+    db.conn().execute("INSERT INTO executable_body_fts(executable_body_fts, rank) VALUES('integrity-check', 1)", ()).await.unwrap();
+}
+
+#[tokio::test]
+async fn ambiguity_membership_tracks_replacement_updates_deletion_and_exact_ids() {
+    let (_dir, db) = setup_db().await;
+    db.conn()
+        .execute_batch("PRAGMA foreign_keys=OFF")
+        .await
+        .unwrap();
+    let special = "id_%\\\"é";
+    let mut call = AmbiguousCall {
+        from_node_id: "caller".into(),
+        reference_name: "target".into(),
+        file_path: "src/a.rs".into(),
+        line: 7,
+        column: 0,
+        candidate_node_ids: vec![special.into(), special.into(), "other".into()],
+    };
+    db.replace_ambiguous_calls(&[], &[call.clone()])
+        .await
+        .unwrap();
+    assert_eq!(
+        db.get_ambiguous_calls_naming(special).await.unwrap().len(),
+        1
+    );
+    for absent in ["id", "ID_%\\\"é", "other-extra", ""] {
+        assert!(db
+            .get_ambiguous_calls_naming(absent)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+    call.candidate_node_ids = vec!["replacement".into()];
+    db.replace_ambiguous_calls(&[], &[call.clone()])
+        .await
+        .unwrap();
+    assert!(db
+        .get_ambiguous_calls_naming(special)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        db.get_ambiguous_calls_naming("replacement")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    db.conn()
+        .execute(
+            "UPDATE ambiguous_calls SET line=8, candidate_node_ids='[\"updated\"]'",
+            (),
+        )
+        .await
+        .unwrap();
+    assert!(db
+        .get_ambiguous_calls_naming("replacement")
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        db.get_ambiguous_calls_naming("updated").await.unwrap()[0].line,
+        8
+    );
+    let key = tokensave::resolution::AmbiguityRefKey {
+        from_node_id: "caller".into(),
+        reference_name: "target".into(),
+        file_path: "src/a.rs".into(),
+        line: 8,
+    };
+    db.replace_ambiguous_calls_for_refs(&[key], &[])
+        .await
+        .unwrap();
+    assert!(db
+        .get_ambiguous_calls_naming("updated")
+        .await
+        .unwrap()
+        .is_empty());
+    db.replace_ambiguous_calls(&[], &[call.clone()])
+        .await
+        .unwrap();
+    db.replace_ambiguous_calls(&["src/a.rs".into()], &[])
+        .await
+        .unwrap();
+    assert!(db
+        .get_ambiguous_calls_naming("replacement")
+        .await
+        .unwrap()
+        .is_empty());
+    db.replace_ambiguous_calls(&[], &[call]).await.unwrap();
+    db.clear().await.unwrap();
+    assert!(db
+        .get_ambiguous_calls_naming("replacement")
+        .await
+        .unwrap()
+        .is_empty());
+    let mut rows = db
+        .conn()
+        .query("SELECT COUNT(*) FROM ambiguous_call_candidates", ())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+        0
+    );
+    drop(rows);
+    let mut plan = db.conn().query("EXPLAIN QUERY PLAN SELECT from_node_id FROM ambiguous_call_candidates WHERE candidate_node_id='updated'", ()).await.unwrap();
+    assert!(plan
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get::<String>(3)
+        .unwrap()
+        .contains("idx_ambiguous_candidates_node"));
+}
+
+#[tokio::test]
+async fn body_batches_bound_large_documents_and_roll_back_earlier_batches() {
+    let (_dir, db) = setup_db().await;
+    let mut documents = vec![ExecutableBodyDocument {
+        node_id: "large".into(),
+        file_path: "src/large.rs".into(),
+        body: "largeword ".repeat(30_000),
+    }];
+    documents.extend((0..260).map(|i| ExecutableBodyDocument {
+        node_id: format!("small-{i}"),
+        file_path: "src/small.rs".into(),
+        body: "smallword document".into(),
+    }));
+    documents.push(ExecutableBodyDocument {
+        node_id: "fail".into(),
+        file_path: "src/fail.rs".into(),
+        body: "failure".into(),
+    });
+    db.conn().execute_batch("CREATE TRIGGER fail_body_batch BEFORE INSERT ON executable_bodies WHEN NEW.node_id='fail' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").await.unwrap();
+    assert!(db
+        .insert_executable_body_documents(&documents)
+        .await
+        .is_err());
+    let mut rows = db
+        .conn()
+        .query("SELECT COUNT(*) FROM executable_bodies", ())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+        0
+    );
+    drop(rows);
+    db.conn()
+        .execute_batch("DROP TRIGGER fail_body_batch")
+        .await
+        .unwrap();
+    db.insert_executable_body_documents(&documents)
+        .await
+        .unwrap();
+    for (term, expected) in [("largeword", 1), ("smallword", 260), ("failure", 1)] {
+        let mut rows = db
+            .conn()
+            .query(
+                "SELECT COUNT(*) FROM executable_body_fts WHERE executable_body_fts MATCH ?1",
+                libsql::params![term],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            expected
+        );
+    }
+    db.conn()
+        .execute(
+            "INSERT INTO executable_body_fts(executable_body_fts,rank) VALUES('integrity-check',1)",
+            (),
+        )
+        .await
+        .unwrap();
+}
+
+/// The optimized rank column must retain explicit weighted BM25 scores, even
+/// when the table's persistent rank default is configured differently.
+#[tokio::test]
+async fn fts_rank_column_matches_weighted_bm25_and_filters_before_limit() {
+    let (_dir, db) = setup_db().await;
+    let mut nodes = Vec::new();
+    for i in 0..45 {
+        let id = format!("rank-{i:02}");
+        let name = if i % 3 == 0 {
+            "ranking_engine"
+        } else {
+            "helper"
+        };
+        let mut node = sample_node(&id, name, "src/ranking.rs");
+        node.docstring = Some(format!("{} éclair", "ranking engine ".repeat(i + 1)));
+        node.signature = Some(format!("fn helper_{}()", "ranking ".repeat(i % 5)));
+        if i < 12 {
+            node.kind = if i % 2 == 0 {
+                NodeKind::File
+            } else {
+                NodeKind::Doc
+            };
+        }
+        nodes.push(node);
+    }
+    db.insert_nodes(&nodes).await.unwrap();
+    db.conn().execute("INSERT INTO nodes_fts(nodes_fts, rank) VALUES ('rank', 'bm25(0.0, 0.0, 10.0, 0.0, 0.0)')", ()).await.unwrap();
+
+    for (raw, fts, phrase) in [
+        ("rank", "\"rank\"*", false),
+        ("engine", "\"engine\"*", false),
+        ("éclair", "\"éclair\"*", false),
+        ("missing", "\"missing\"*", false),
+        ("ranking engine", "\"ranking engine\"", true),
+    ] {
+        for bounded in [false, true] {
+            if bounded && phrase {
+                continue;
+            }
+            let kind_filter = if bounded {
+                "AND n.kind NOT IN ('file', 'doc')"
+            } else {
+                ""
+            };
+            let sql = format!("SELECT n.id, bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0) AS score FROM nodes_fts JOIN nodes n ON n.rowid = nodes_fts.rowid WHERE nodes_fts MATCH ?1 {kind_filter} ORDER BY score");
+            let mut rows = db.conn().query(&sql, libsql::params![fts]).await.unwrap();
+            let mut expected = Vec::new();
+            while let Some(row) = rows.next().await.unwrap() {
+                expected.push((row.get::<String>(0).unwrap(), -row.get::<f64>(1).unwrap()));
+            }
+            drop(rows);
+            for limit in [1, 3, 20, 100] {
+                let actual = if bounded {
+                    db.search_nodes_bounded(raw, limit).await.unwrap()
+                } else if phrase {
+                    db.search_nodes_phrase(raw, limit).await.unwrap()
+                } else {
+                    db.search_nodes(raw, limit).await.unwrap()
+                };
+                assert_eq!(actual.len(), expected.len().min(limit));
+                for (result, (_, score)) in actual.iter().zip(&expected) {
+                    assert!((result.score - score).abs() < 1e-12);
+                    let reference = expected
+                        .iter()
+                        .find(|(id, _)| id == &result.node.id)
+                        .unwrap();
+                    assert!((result.score - reference.1).abs() < 1e-12);
+                    let original = nodes.iter().find(|n| n.id == result.node.id).unwrap();
+                    assert_eq!(
+                        serde_json::to_value(&result.node).unwrap(),
+                        serde_json::to_value(original).unwrap()
+                    );
+                    if bounded {
+                        assert!(!matches!(result.node.kind, NodeKind::File | NodeKind::Doc));
+                    }
+                }
+            }
+        }
+    }
+    // General OR candidates and exact-phrase promotion remain separate channels.
+    let phrase = db.search_nodes_phrase("ranking engine", 3).await.unwrap();
+    let general = db.search_nodes("ranking engine", 3).await.unwrap();
+    assert_eq!(
+        phrase.iter().map(|r| &r.node.id).collect::<Vec<_>>(),
+        general.iter().map(|r| &r.node.id).collect::<Vec<_>>()
+    );
+}

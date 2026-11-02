@@ -7,7 +7,9 @@
 
 use std::path::{Path, PathBuf};
 
-use libsql::{params, Builder, Connection, Database as LibsqlDatabase};
+use libsql::{params, Builder, Database as LibsqlDatabase};
+
+use crate::db::debug_sql::Connection;
 
 /// Total savings + call count for a project (or all projects when `project` is None).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -217,7 +219,7 @@ impl GlobalDb {
             return None;
         }
         let db = Builder::new_local(db_path).build().await.ok()?;
-        let conn = db.connect().ok()?;
+        let conn = Connection::new(db.connect().ok()?, "global");
         if let Err(error) = crate::db::compatibility::check(&conn, 0).await {
             eprintln!("[tokensave] global database unavailable: {error}");
             return None;
@@ -276,7 +278,8 @@ impl GlobalDb {
                 after_tokens INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_savings_ledger_ts ON savings_ledger(ts);
-            CREATE INDEX IF NOT EXISTS idx_savings_ledger_project ON savings_ledger(project_path)",
+            CREATE INDEX IF NOT EXISTS idx_savings_ledger_project ON savings_ledger(project_path);
+            CREATE INDEX IF NOT EXISTS idx_savings_ledger_project_ts ON savings_ledger(project_path, ts)",
         )
         .await
         .ok()?;

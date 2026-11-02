@@ -35,6 +35,29 @@ Keep shared rules synchronized between `master` and `beta`, and verify the
 instructions against the affected branch's files before committing. Report any
 remaining differences and why they are needed in the handoff.
 
+## Keep beta executable identity on beta
+
+The executable-identity changes in [PR #802](https://github.com/aovestdipaperino/tokensave/pull/802)
+(Refs #801) MUST remain exclusively on `beta`. Merge that PR only into `beta`;
+do not backport, cherry-pick, or otherwise propagate these changes to `master`
+or any other branch.
+
+This restriction includes the beta executable names, icons, application and
+version metadata, operating-system identity, build/packaging configuration,
+associated CI changes, and their agent/build guidance. When merging or
+synchronizing branches later, explicitly exclude these changes from every
+destination other than `beta`.
+
+This policy and the beta-identity build guidance are intentional beta-only
+exceptions to the shared-guidance synchronization rule above. Do not copy them
+to other branches while synchronizing shared instructions.
+
+The `beta` README header uses `src/resources/logo-beta.png` with
+`TokenSave Beta` alt text; `master` retains its original logo. This header
+difference is an intentional exception to the README consistency rule below.
+Preserve it when synchronizing branches; do not port the beta logo header to
+other branches.
+
 ## Graphs and diagrams
 
 Every graph and diagram created or updated for repository documentation MUST
@@ -179,82 +202,29 @@ coverage changes, update the report's scope and limitations. Before finishing,
 review the source diff for SQL changes and verify that each is reflected in the
 report. Git history records the changes; the report describes the current source.
 
-## Rust style guide (master only)
+## Keep beta query debugging available
 
-TokenSave has adopted [Google's Rust Style Guide](https://google.github.io/styleguide/rustguide.html)
-for Rust code on `master` (#845). It applies to every new or modified Rust
-file in `src/`, `tests/`, `benches/`, `examples/` and `build.rs`. `vendor/`,
-the `codegraph/` submodule and generated or vendored grammar sources are
-excluded. This section is an intentional difference between the branches. Do
-not copy it, the matching CONTRIBUTING.md section or the style cleanup to
-`beta` unless a later decision extends the adoption.
+All beta builds MUST keep the supported query debugging and testing methods
+available on demand: CLI tool replay (`tokensave tool`), SQL tracing and
+`EXPLAIN QUERY PLAN` through the global `debug_sql` / `debug_sql_explain`
+settings (`tokensave config debug-sql`), MCP handler timings
+(`tokensave serve --timings`), and sync diagnostics (`tokensave sync --doctor`
+and `--verbose`). Do not remove these methods, compile them out of beta builds,
+or require a custom binary to use them. Keep SQL debugging off by default and
+preserve runtime activation through global settings; restart existing MCP
+servers after changing those settings.
 
-This change integrates the rules only. The repository-wide audit and any
-cleanup of existing code remain follow-up work tracked by #845; adoption does
-not imply that the current codebase has been audited or is fully compliant.
-
-Precedence, highest first:
-
-1. TokenSave's explicitly documented rules: this file, CONTRIBUTING.md
-   (including path construction and memory/resource management), the crate
-   lint configuration in `src/lib.rs`, and the exceptions listed below.
-2. Google's Rust Style Guide.
-3. The official [Rust Style Guide](https://doc.rust-lang.org/style-guide/) and
-   [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/), as the
-   Google guide directs.
-4. Default `rustfmt` output from the pinned toolchain.
-
-Guide sections marked `[chrome]`, Chromium, Android or Fuchsia do not apply.
-These include small crates, flat file layout, `chromium::import!`, the bans on
-`async` and standard-library threads, and the gtest/Fuchsia test frameworks.
-TokenSave is application code (a CLI and MCP server), so, following the
-guide's "Apply API design rules in context" section, its API-design rules are
-strong recommendations rather than binding requirements.
-
-Project-specific exceptions:
-
-- **No `unwrap`/`expect` in library code.** `src/lib.rs` denies
-  `clippy::unwrap_used` and `clippy::expect_used`. This overrides the guide's
-  "Prefer `expect` over `unwrap`". Use pattern matching, `?`, `let ... else` or
-  a typed error instead. Inline library tests inherit these crate lints unless
-  explicitly overridden. In separate test crates and the binary entry point,
-  where permitted by their lint configuration, prefer `expect` with a message
-  that states the invariant.
-- **Errors instead of panics.** Library code reports broken invariants through
-  `Result` or `Option`, using the guide's option to avoid panics entirely.
-- **`catch_unwind` as defense in depth.** `safe_extract` in
-  `src/tokensave/extract.rs` catches extractor panics so that one bad file is
-  skipped. Subprocess isolation remains the primary defense. This falls under
-  the guide's defense-in-depth exception. Add no other `catch_unwind` use
-  unless it has the same justification and is approved in review.
-- **Async, threads and `Arc`.** Tokio, `async`/`.await` and worker threads are
-  part of the architecture. `Arc` is acceptable for state shared across tasks
-  or threads. Justify any other `Rc`/`Arc` use as the guide requires.
-- **No `rustfmt.toml`.** The guide's `imports_granularity = Module`,
-  `hex_literal_case = Lower` and `format_macro_matchers` options are not
-  available on the pinned stable toolchain, and the guide allows them to be
-  omitted. `max_width = 100` is already the default. Apply one-module-per-`use`
-  and lowercase hex literals by hand in new code.
-- **Glob imports (tracked deviation).** `src/lib.rs` allows
-  `clippy::wildcard_imports`, and existing code contains glob imports. New
-  code must not add glob imports outside the guide's permitted cases: `use
-  super::*` in inline modules (such as `mod tests`), `use Enum::*` in code
-  focused on that enum, and `pub use submodule::*` re-exports. Existing glob
-  imports are handled by the #845 audit, not in unrelated changes.
-
-Exceptions and upstream revisions:
-
-- Every deviation must either be listed above or be justified where it occurs,
-  with `#[allow(lint, reason = "...")]` or a nearby comment, and be accepted in
-  PR review. Do not deviate silently.
-- When Google revises the guide, update this section and CONTRIBUTING.md in a
-  dedicated docs PR that names the revision reviewed and any rules that change.
-- Keep style-only cleanup behavior-preserving and in separate, reviewable PRs,
-  split by module. Do not mix it with functional changes or reformat unrelated
-  code in a feature PR.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md#rust-coding-style) for which rules tooling
-enforces and which need manual review.
+Keep the regression tests and documented reproduction commands usable as beta
+evolves. Changes to these paths MUST preserve parameter redaction, bounded
+diagnostic output, unchanged CLI/MCP stdout, and application results when
+diagnostics fail. Run the relevant SQL wrapper, settings, and CLI/MCP tests
+(`cargo test --lib db::debug_sql::tests`,
+`cargo test --lib user_config::tests::sql_debug_`, and
+`cargo test --test integration sql_debug_cli_test::`). For real-project
+init/sync checks, use a disposable snapshot and private home so the user's
+index and global settings are preserved. Maintain the coverage and timing
+limitations in [the SQL debugging guide](docs/USER-GUIDE.md#sql-debugging-beta).
+Refs #789; the initial implementation is PR #790, targeting beta only.
 
 ## Build, lint, and test
 
@@ -270,6 +240,19 @@ portable string formats, and documented path-syntax test fixtures.
 - `cargo fmt --all -- --check`.
 - Pi extension prompt/relay tests: `node --experimental-strip-types --test tests/pi_extension_test.mjs` (Node 22.6+ with TypeScript stripping support; separate from Cargo tests; run by the `Pi extension` CI job).
 - Documentation checks: `python3 scripts/wiki/sync_wiki.py check` (links, anchors, wiki sidebar) and `python3 -m unittest discover -s scripts/wiki`; preview the wiki with `python3 scripts/wiki/sync_wiki.py build --out /tmp/tokensave-wiki`. Run by `.github/workflows/wiki.yml`, separate from Cargo tests.
+- Keep the beta package version prerelease-labeled (`<base>-beta.N`) in both
+  `Cargo.toml` and `Cargo.lock`, so plain `cargo install --branch beta` selects
+  beta identity without extra feature flags. This rule is beta-only. CI checks
+  the plain Cargo binary against the package version and expected channel.
+- Executable identity is centralized in `build/identity.json`. Stable Cargo builds
+  retain their identity; `--features beta` or a prerelease package version selects
+  beta metadata. Both channels use only tokensave.exe on Windows and tokensave
+  on Unix; no post-build executable copy or rename is allowed. Build with
+  `python3 scripts/build-app.py --channel beta` (or `stable`); beta releases pass
+  `--version <base>-beta.N`. See `docs/BUILD-IDENTITY.md` for output paths,
+  compatibility, and platform validation. Run `python3 scripts/test-build-app.py`
+  for compiler-free build-output regression checks. CI reuses the full test beta
+  executable for identity checks. The beta release workflow remains disabled.
 - `src/lib.rs` denies `clippy::all`, `clippy::unwrap_used`, and `clippy::expect_used`, and warns on `clippy::pedantic` — avoid `unwrap()`/`expect()` in library code.
 - Language-specific tests: `cargo test --test integration rust_extraction_test::`; single test: `cargo test test_find_stale_files`; filter: `cargo test sync`. Lite-only local loop: `cargo test-lite`.
 - Integration tests live in `tests/` (one file per module/language) but compile into a single binary, `tests/integration.rs` (`autotests = false`): a new test file must be added there as a `mod`. Files that mutate env vars or the `cancel` flag are separate `[[test]]` targets in `Cargo.toml` instead. Helpers are shared via `crate::common` (`tests/common/mod.rs`); fixtures are in `tests/fixtures/`. See CONTRIBUTING.md "Test layout".

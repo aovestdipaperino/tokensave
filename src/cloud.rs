@@ -490,7 +490,7 @@ fn unreachable(error: impl std::fmt::Display) -> VersionCheckError {
 
 /// Returns true if the current build is a beta/prerelease version.
 pub fn is_beta() -> bool {
-    env!("CARGO_PKG_VERSION").contains('-')
+    crate::identity::is_beta()
 }
 
 /// Parses a version string into `(major, minor, patch, pre-release)`.

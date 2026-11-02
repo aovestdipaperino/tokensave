@@ -383,7 +383,7 @@ pub(crate) fn display_language_for_path(path: &str) -> &'static str {
 /// Executes a `SELECT label, COUNT(*) ... GROUP BY` query and returns
 /// the results as a `HashMap<String, u64>`.
 pub(crate) async fn query_kind_counts(
-    conn: &libsql::Connection,
+    conn: &super::debug_sql::Connection,
     sql: &str,
 ) -> Result<HashMap<String, u64>> {
     let mut map = HashMap::new();
@@ -422,7 +422,7 @@ pub(crate) async fn query_kind_counts(
 
 /// Executes a scalar query returning a single `i64` value.
 pub(crate) async fn query_scalar_i64(
-    conn: &libsql::Connection,
+    conn: &super::debug_sql::Connection,
     sql: &str,
     operation: &str,
 ) -> Result<i64> {
@@ -506,7 +506,7 @@ mod tests {
             .build()
             .await
             .expect("build in-memory db");
-        let conn = db.connect().expect("connect");
+        let conn = crate::db::debug_sql::Connection::new(db.connect().expect("connect"), "test");
         // No NOT NULL constraint here, mirroring an older-schema attached DB.
         conn.execute("CREATE TABLE t (kind TEXT)", ())
             .await

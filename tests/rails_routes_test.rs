@@ -1044,7 +1044,7 @@ async fn rails_route_reference_backfill_preserves_the_existing_schema() {
             .unwrap()
             .get::<i64>(0)
             .unwrap(),
-        18
+        i64::from(tokensave::db::migrations::latest_version())
     );
     let mut tables = graph.db().conn().query("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table','trigger') AND name LIKE 'rails_%'", ()).await.unwrap();
     assert_eq!(

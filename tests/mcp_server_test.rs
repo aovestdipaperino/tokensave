@@ -2751,7 +2751,7 @@ async fn first_selected_call_does_not_consume_local_version_reindex_gate() {
         tokensave::config::load_config(local_dir.path())
             .unwrap()
             .last_indexed_version,
-        env!("CARGO_PKG_VERSION")
+        tokensave::identity::VERSION
     );
 }
 
@@ -4390,7 +4390,7 @@ async fn test_first_tool_call_backfills_last_indexed_version() {
     let after = tokensave::config::load_config(project).unwrap();
     assert_eq!(
         after.last_indexed_version,
-        env!("CARGO_PKG_VERSION"),
+        tokensave::identity::VERSION,
         "marker should advance to the running version after reindex"
     );
 }
@@ -4412,7 +4412,7 @@ async fn test_first_tool_call_keeps_current_marker() {
 
     // Pre-seed the marker to the running version so no reindex is needed.
     let mut config = tokensave::config::load_config(project).unwrap();
-    config.last_indexed_version = env!("CARGO_PKG_VERSION").to_string();
+    config.last_indexed_version = tokensave::identity::VERSION.to_string();
     tokensave::config::save_config(project, &config).unwrap();
 
     let server = McpServer::new(cg, None).await;
@@ -4436,7 +4436,7 @@ async fn test_first_tool_call_keeps_current_marker() {
     assert!(completed, "version reindex gate did not settle in time");
 
     let after = tokensave::config::load_config(project).unwrap();
-    assert_eq!(after.last_indexed_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(after.last_indexed_version, tokensave::identity::VERSION);
 }
 
 /// A full index records the version that produced it, so a CLI-indexed project
@@ -4458,7 +4458,7 @@ async fn test_index_all_records_running_version() {
     let config = tokensave::config::load_config(project).unwrap();
     assert_eq!(
         config.last_indexed_version,
-        env!("CARGO_PKG_VERSION"),
+        tokensave::identity::VERSION,
         "a full index must record the version that produced it"
     );
 }
@@ -4500,7 +4500,7 @@ async fn test_cli_indexed_project_needs_no_forced_reindex() {
     assert!(completed, "version reindex gate did not settle in time");
 
     let after = tokensave::config::load_config(project).unwrap();
-    assert_eq!(after.last_indexed_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(after.last_indexed_version, tokensave::identity::VERSION);
 }
 
 /// `tokensave_status` accepts a graph selector — #500.

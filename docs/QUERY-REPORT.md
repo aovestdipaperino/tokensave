@@ -1,6 +1,6 @@
 # tokensave SQL query inventory
 
-Snapshot: existing branch inventory with #835 compatibility changes inspected on 2026-10-27. Unaffected entries retain their prior coverage.
+Snapshot: beta inventory merged with master on 2026-11-02 (master → beta sync). Files whose merged source matches master use master's entries; beta's query optimizations and SQL tracing keep beta's entries and IDs. Master's compatibility entries Q0343–Q0349 correspond to Q0377–Q0383 here. Unaffected entries retain their prior coverage.
 
 ## Scope and reading guide
 
@@ -8,7 +8,7 @@ This report interprets “queries” as SQL used by tokensave’s own Rust appli
 
 Entries are grouped by source file and retain separate occurrences, even when SQL is repeated. Each entry identifies its source line and enclosing function when available. Module-level constants and documentation/example strings are labelled as such; inline test functions are retained, so this is a source inventory rather than a runtime execution trace. A fenced block may contain an entire SQL batch or trigger definition.
 
-Compatibility construction: Q0343–Q0349 run through `scalar` (one integer row,
+Compatibility construction: Q0377–Q0383 run through `scalar` (one integer row,
 no bound parameters) or an integer-only `PRAGMA application_id` template. The
 origin constants and release-channel selection are in `compatibility.rs`.
 Existing connection, migration, global-open, branch-copy, hook, and verification
@@ -29,13 +29,13 @@ accepted monotonic update moves the timestamp (Copilot) or preserves the
 session-start bucket (Droid). No SQL occurrence or construction-function count
 is added, and the query ID remains stable.
 
-`?`, `?1`, and similar placeholders are bound by the caller. Rust format fields such as `{placeholders}`, `{where_clause}`, `{limit}`, and `{}` are preserved as templates; they are not executable SQL until constructed. Rust string escapes and backslash-newline continuations are decoded for readability. Dynamic SQL has potentially unlimited concrete instances, so the report includes its templates and complete builder functions in the construction appendix, including conditional clauses and parameter bindings. No SQL was executed to produce this report.
+`?`, `?1`, and similar placeholders are bound by the caller. Rust format fields such as `{placeholders}`, `{where_clause}`, `{limit}`, and `{}` are preserved as templates; they are not executable SQL until constructed. Rust string escapes and backslash-newline continuations are decoded for readability. Dynamic SQL has potentially unlimited concrete instances, so the report includes its templates and complete builder functions in the construction appendix, including conditional clauses and parameter bindings. No SQL was executed to enumerate the inventory; separate benchmark evidence is linked below.
 
 ## Inventory summary
 
-- SQL-bearing source files: **38**.
-- SQL literal/template occurrences: **346**.
-- Functions retained for construction/binding context: **172**.
+- SQL-bearing source files: **40**.
+- SQL literal/template occurrences: **377**.
+- Functions retained for construction/binding context: **183**.
 
 ## Source file index
 
@@ -47,16 +47,18 @@ is added, and the query ID remains stable.
 | [src/branch.rs](../src/branch.rs) | 2 |
 | [src/db/compatibility.rs](../src/db/compatibility.rs) | 7 |
 | [src/db/connection.rs](../src/db/connection.rs) | 11 |
-| [src/db/migrations.rs](../src/db/migrations.rs) | 53 |
+| [src/db/debug_sql.rs](../src/db/debug_sql.rs) | 7 |
+| [src/db/debug_sql/tests.rs](../src/db/debug_sql/tests.rs) | 16 |
+| [src/db/migrations.rs](../src/db/migrations.rs) | 60 |
 | [src/db/queries/clear.rs](../src/db/queries/clear.rs) | 1 |
-| [src/db/queries/edges.rs](../src/db/queries/edges.rs) | 51 |
+| [src/db/queries/edges.rs](../src/db/queries/edges.rs) | 55 |
 | [src/db/queries/files.rs](../src/db/queries/files.rs) | 8 |
 | [src/db/queries/fingerprints.rs](../src/db/queries/fingerprints.rs) | 3 |
 | [src/db/queries/metadata.rs](../src/db/queries/metadata.rs) | 5 |
 | [src/db/queries/mod.rs](../src/db/queries/mod.rs) | 3 |
-| [src/db/queries/nodes.rs](../src/db/queries/nodes.rs) | 37 |
+| [src/db/queries/nodes.rs](../src/db/queries/nodes.rs) | 36 |
 | [src/db/queries/routes.rs](../src/db/queries/routes.rs) | 18 |
-| [src/db/queries/search.rs](../src/db/queries/search.rs) | 9 |
+| [src/db/queries/search.rs](../src/db/queries/search.rs) | 7 |
 | [src/db/queries/stats.rs](../src/db/queries/stats.rs) | 5 |
 | [src/db/queries/unresolved.rs](../src/db/queries/unresolved.rs) | 10 |
 | [src/doctor.rs](../src/doctor.rs) | 1 |
@@ -64,10 +66,10 @@ is added, and the query ID remains stable.
 | [src/extraction/fstar_extractor.rs](../src/extraction/fstar_extractor.rs) | 2 |
 | [src/extraction/ruby_extractor.rs](../src/extraction/ruby_extractor.rs) | 1 |
 | [src/extraction/ruby_template_extractor.rs](../src/extraction/ruby_template_extractor.rs) | 1 |
-| [src/graphify.rs](../src/graphify.rs) | 5 |
 | [src/global_db.rs](../src/global_db.rs) | 41 |
 | [src/graph/imports.rs](../src/graph/imports.rs) | 1 |
 | [src/graph/queries.rs](../src/graph/queries.rs) | 5 |
+| [src/graphify.rs](../src/graphify.rs) | 5 |
 | [src/hooks.rs](../src/hooks.rs) | 1 |
 | [src/mcp/tools/definitions.rs](../src/mcp/tools/definitions.rs) | 4 |
 | [src/mcp/tools/handlers/workflow.rs](../src/mcp/tools/handlers/workflow.rs) | 1 |
@@ -278,7 +280,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 
 #### Q0024 — `try_open_read_only`
 
-Source: [src/db/connection.rs:235](../src/db/connection.rs#L235).
+Source: [src/db/connection.rs:237](../src/db/connection.rs#L237).
 
 ```sql
 PRAGMA query_only = 1; PRAGMA busy_timeout = 120000;
@@ -286,7 +288,7 @@ PRAGMA query_only = 1; PRAGMA busy_timeout = 120000;
 
 #### Q0025 — `try_open_read_only`
 
-Source: [src/db/connection.rs:243](../src/db/connection.rs#L243).
+Source: [src/db/connection.rs:245](../src/db/connection.rs#L245).
 
 ```sql
 PRAGMA user_version
@@ -294,7 +296,7 @@ PRAGMA user_version
 
 #### Q0026 — `checkpoint`
 
-Source: [src/db/connection.rs:310](../src/db/connection.rs#L310).
+Source: [src/db/connection.rs:312](../src/db/connection.rs#L312).
 
 ```sql
 PRAGMA wal_checkpoint(TRUNCATE);
@@ -302,7 +304,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 
 #### Q0027 — `optimize`
 
-Source: [src/db/connection.rs:322](../src/db/connection.rs#L322).
+Source: [src/db/connection.rs:324](../src/db/connection.rs#L324).
 
 ```sql
 VACUUM; ANALYZE;
@@ -310,7 +312,7 @@ VACUUM; ANALYZE;
 
 #### Q0028 — `size`
 
-Source: [src/db/connection.rs:336](../src/db/connection.rs#L336).
+Source: [src/db/connection.rs:338](../src/db/connection.rs#L338).
 
 ```sql
 SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()
@@ -318,7 +320,7 @@ SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()
 
 #### Q0029 — `quick_check`
 
-Source: [src/db/connection.rs:372](../src/db/connection.rs#L372).
+Source: [src/db/connection.rs:374](../src/db/connection.rs#L374).
 
 ```sql
 PRAGMA quick_check
@@ -326,7 +328,7 @@ PRAGMA quick_check
 
 #### Q0030 — `needs_bulk_load_finalization`
 
-Source: [src/db/connection.rs:403](../src/db/connection.rs#L403).
+Source: [src/db/connection.rs:405](../src/db/connection.rs#L405).
 
 ```sql
 SELECT name FROM sqlite_master WHERE type IN ('table', 'index')
@@ -334,7 +336,7 @@ SELECT name FROM sqlite_master WHERE type IN ('table', 'index')
 
 #### Q0031 — `rebuild_fts`
 
-Source: [src/db/connection.rs:432](../src/db/connection.rs#L432).
+Source: [src/db/connection.rs:434](../src/db/connection.rs#L434).
 
 ```sql
 INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')
@@ -342,7 +344,7 @@ INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')
 
 #### Q0032 — `apply_pragmas`
 
-Source: [src/db/connection.rs:449](../src/db/connection.rs#L449).
+Source: [src/db/connection.rs:451](../src/db/connection.rs#L451).
 
 ```sql
 PRAGMA page_size = 8192;
@@ -357,7 +359,7 @@ PRAGMA page_size = 8192;
 
 #### Q0033 — `begin_bulk_load`
 
-Source: [src/db/connection.rs:473](../src/db/connection.rs#L473).
+Source: [src/db/connection.rs:475](../src/db/connection.rs#L475).
 
 ```sql
 PRAGMA foreign_keys = OFF;
@@ -387,7 +389,7 @@ PRAGMA foreign_keys = OFF;
 
 #### Q0034 — `end_bulk_load`
 
-Source: [src/db/connection.rs:516](../src/db/connection.rs#L516).
+Source: [src/db/connection.rs:518](../src/db/connection.rs#L518).
 
 ```sql
 DELETE FROM edges
@@ -501,7 +503,7 @@ END;
 
 #### Q0037 — `get_version`
 
-Source: [src/db/migrations.rs:100](../src/db/migrations.rs#L100).
+Source: [src/db/migrations.rs:162](../src/db/migrations.rs#L162).
 
 ```sql
 PRAGMA user_version
@@ -509,7 +511,7 @@ PRAGMA user_version
 
 #### Q0038 — `set_version`
 
-Source: [src/db/migrations.rs:127](../src/db/migrations.rs#L127).
+Source: [src/db/migrations.rs:189](../src/db/migrations.rs#L189).
 
 ```sql
 PRAGMA user_version = {version}
@@ -517,7 +519,7 @@ PRAGMA user_version = {version}
 
 #### Q0039 — `create_schema`
 
-Source: [src/db/migrations.rs:147](../src/db/migrations.rs#L147).
+Source: [src/db/migrations.rs:209](../src/db/migrations.rs#L209).
 
 ```sql
 CREATE TABLE IF NOT EXISTS nodes (
@@ -601,13 +603,6 @@ CREATE TABLE IF NOT EXISTS nodes (
             name, qualified_name, docstring, signature, search_terms,
             content='nodes', content_rowid='rowid',
             tokenize='porter unicode61'
-        );
-
-        CREATE VIRTUAL TABLE IF NOT EXISTS executable_body_fts USING fts5(
-            node_id UNINDEXED,
-            file_path UNINDEXED,
-            body,
-            tokenize='unicode61'
         );
 
         CREATE TABLE IF NOT EXISTS trait_dispatch_callers (
@@ -736,7 +731,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 
 #### Q0040 — `migrate`
 
-Source: [src/db/migrations.rs:405](../src/db/migrations.rs#L405).
+Source: [src/db/migrations.rs:462](../src/db/migrations.rs#L462).
 
 ```sql
 BEGIN EXCLUSIVE
@@ -744,7 +739,7 @@ BEGIN EXCLUSIVE
 
 #### Q0041 — `migrate`
 
-Source: [src/db/migrations.rs:431](../src/db/migrations.rs#L431).
+Source: [src/db/migrations.rs:488](../src/db/migrations.rs#L488).
 
 ```sql
 COMMIT
@@ -752,7 +747,7 @@ COMMIT
 
 #### Q0042 — `migrate`
 
-Source: [src/db/migrations.rs:440](../src/db/migrations.rs#L440).
+Source: [src/db/migrations.rs:497](../src/db/migrations.rs#L497).
 
 ```sql
 ROLLBACK
@@ -760,7 +755,7 @@ ROLLBACK
 
 #### Q0043 — `migrate_v1`
 
-Source: [src/db/migrations.rs:555](../src/db/migrations.rs#L555).
+Source: [src/db/migrations.rs:614](../src/db/migrations.rs#L614).
 
 ```sql
 CREATE TABLE IF NOT EXISTS nodes (
@@ -822,7 +817,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 
 #### Q0044 — `migrate_v1`
 
-Source: [src/db/migrations.rs:619](../src/db/migrations.rs#L619).
+Source: [src/db/migrations.rs:678](../src/db/migrations.rs#L678).
 
 ```sql
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
@@ -854,7 +849,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
 
 #### Q0045 — `migrate_v1`
 
-Source: [src/db/migrations.rs:653](../src/db/migrations.rs#L653).
+Source: [src/db/migrations.rs:712](../src/db/migrations.rs#L712).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
@@ -876,7 +871,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
 
 #### Q0046 — `migrate_v2`
 
-Source: [src/db/migrations.rs:685](../src/db/migrations.rs#L685).
+Source: [src/db/migrations.rs:744](../src/db/migrations.rs#L744).
 
 ```sql
 CREATE TABLE IF NOT EXISTS metadata (
@@ -887,7 +882,7 @@ CREATE TABLE IF NOT EXISTS metadata (
 
 #### Q0047 — `migrate_v2`
 
-Source: [src/db/migrations.rs:698](../src/db/migrations.rs#L698).
+Source: [src/db/migrations.rs:757](../src/db/migrations.rs#L757).
 
 ```sql
 DROP TABLE IF EXISTS schema_versions
@@ -895,7 +890,7 @@ DROP TABLE IF EXISTS schema_versions
 
 #### Q0048 — `migrate_v3`
 
-Source: [src/db/migrations.rs:715](../src/db/migrations.rs#L715).
+Source: [src/db/migrations.rs:774](../src/db/migrations.rs#L774).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN branches INTEGER NOT NULL DEFAULT 0;
@@ -906,7 +901,7 @@ ALTER TABLE nodes ADD COLUMN branches INTEGER NOT NULL DEFAULT 0;
 
 #### Q0049 — `migrate_v4`
 
-Source: [src/db/migrations.rs:736](../src/db/migrations.rs#L736).
+Source: [src/db/migrations.rs:795](../src/db/migrations.rs#L795).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN unsafe_blocks INTEGER NOT NULL DEFAULT 0;
@@ -916,7 +911,7 @@ ALTER TABLE nodes ADD COLUMN unsafe_blocks INTEGER NOT NULL DEFAULT 0;
 
 #### Q0050 — `migrate_v5`
 
-Source: [src/db/migrations.rs:761](../src/db/migrations.rs#L761).
+Source: [src/db/migrations.rs:820](../src/db/migrations.rs#L820).
 
 ```sql
 CREATE TABLE edges_dedup (
@@ -946,7 +941,7 @@ CREATE TABLE edges_dedup (
 
 #### Q0051 — `migrate_v6`
 
-Source: [src/db/migrations.rs:802](../src/db/migrations.rs#L802).
+Source: [src/db/migrations.rs:861](../src/db/migrations.rs#L861).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name))
@@ -954,7 +949,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name))
 
 #### Q0052 — `migrate_v7`
 
-Source: [src/db/migrations.rs:827](../src/db/migrations.rs#L827).
+Source: [src/db/migrations.rs:886](../src/db/migrations.rs#L886).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN attrs_start_line INTEGER NOT NULL DEFAULT 0
@@ -962,7 +957,7 @@ ALTER TABLE nodes ADD COLUMN attrs_start_line INTEGER NOT NULL DEFAULT 0
 
 #### Q0053 — `migrate_v7`
 
-Source: [src/db/migrations.rs:837](../src/db/migrations.rs#L837).
+Source: [src/db/migrations.rs:896](../src/db/migrations.rs#L896).
 
 ```sql
 UPDATE nodes SET attrs_start_line = start_line WHERE attrs_start_line = 0
@@ -970,7 +965,7 @@ UPDATE nodes SET attrs_start_line = start_line WHERE attrs_start_line = 0
 
 #### Q0054 — `migrate_v8`
 
-Source: [src/db/migrations.rs:860](../src/db/migrations.rs#L860).
+Source: [src/db/migrations.rs:919](../src/db/migrations.rs#L919).
 
 ```sql
 CREATE TABLE IF NOT EXISTS memory_decisions (
@@ -1023,7 +1018,7 @@ CREATE TABLE IF NOT EXISTS memory_decisions (
 
 #### Q0055 — `migrate_v9`
 
-Source: [src/db/migrations.rs:931](../src/db/migrations.rs#L931).
+Source: [src/db/migrations.rs:990](../src/db/migrations.rs#L990).
 
 ```sql
 CREATE TABLE IF NOT EXISTS read_cache (
@@ -1046,7 +1041,7 @@ CREATE TABLE IF NOT EXISTS read_cache (
 
 #### Q0056 — `migrate_v9`
 
-Source: [src/db/migrations.rs:960](../src/db/migrations.rs#L960).
+Source: [src/db/migrations.rs:1019](../src/db/migrations.rs#L1019).
 
 ```sql
 PRAGMA table_info(nodes)
@@ -1054,7 +1049,7 @@ PRAGMA table_info(nodes)
 
 #### Q0057 — `migrate_v9`
 
-Source: [src/db/migrations.rs:982](../src/db/migrations.rs#L982).
+Source: [src/db/migrations.rs:1041](../src/db/migrations.rs#L1041).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN parent_id TEXT
@@ -1062,7 +1057,7 @@ ALTER TABLE nodes ADD COLUMN parent_id TEXT
 
 #### Q0058 — `migrate_v9`
 
-Source: [src/db/migrations.rs:996](../src/db/migrations.rs#L996).
+Source: [src/db/migrations.rs:1055](../src/db/migrations.rs#L1055).
 
 ```sql
 SELECT 1 FROM sqlite_master WHERE type='table' AND name='edges'
@@ -1070,7 +1065,7 @@ SELECT 1 FROM sqlite_master WHERE type='table' AND name='edges'
 
 #### Q0059 — `migrate_v9`
 
-Source: [src/db/migrations.rs:1018](../src/db/migrations.rs#L1018).
+Source: [src/db/migrations.rs:1077](../src/db/migrations.rs#L1077).
 
 ```sql
 UPDATE nodes SET parent_id = (
@@ -1082,7 +1077,7 @@ UPDATE nodes SET parent_id = (
 
 #### Q0060 — `migrate_v9`
 
-Source: [src/db/migrations.rs:1031](../src/db/migrations.rs#L1031).
+Source: [src/db/migrations.rs:1090](../src/db/migrations.rs#L1090).
 
 ```sql
 DELETE FROM edges WHERE kind = 'contains'
@@ -1090,7 +1085,7 @@ DELETE FROM edges WHERE kind = 'contains'
 
 #### Q0061 — `migrate_v9`
 
-Source: [src/db/migrations.rs:1040](../src/db/migrations.rs#L1040).
+Source: [src/db/migrations.rs:1099](../src/db/migrations.rs#L1099).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)
@@ -1098,7 +1093,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)
 
 #### Q0062 — `migrate_v10`
 
-Source: [src/db/migrations.rs:1062](../src/db/migrations.rs#L1062).
+Source: [src/db/migrations.rs:1121](../src/db/migrations.rs#L1121).
 
 ```sql
 CREATE TABLE IF NOT EXISTS node_fingerprints (
@@ -1118,7 +1113,7 @@ CREATE TABLE IF NOT EXISTS node_fingerprints (
 
 #### Q0063 — `migrate_v11`
 
-Source: [src/db/migrations.rs:1115](../src/db/migrations.rs#L1115).
+Source: [src/db/migrations.rs:1174](../src/db/migrations.rs#L1174).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0
@@ -1126,7 +1121,7 @@ ALTER TABLE nodes ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0
 
 #### Q0064 — `migrate_v12`
 
-Source: [src/db/migrations.rs:1138](../src/db/migrations.rs#L1138).
+Source: [src/db/migrations.rs:1197](../src/db/migrations.rs#L1197).
 
 ```sql
 CREATE VIRTUAL TABLE IF NOT EXISTS executable_body_fts USING fts5(
@@ -1148,7 +1143,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS executable_body_fts USING fts5(
 
 #### Q0065 — `migrate_v12`
 
-Source: [src/db/migrations.rs:1161](../src/db/migrations.rs#L1161).
+Source: [src/db/migrations.rs:1220](../src/db/migrations.rs#L1220).
 
 ```sql
 SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
@@ -1156,7 +1151,7 @@ SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
 
 #### Q0066 — `migrate_v13`
 
-Source: [src/db/migrations.rs:1198](../src/db/migrations.rs#L1198).
+Source: [src/db/migrations.rs:1257](../src/db/migrations.rs#L1257).
 
 ```sql
 CREATE TABLE IF NOT EXISTS trait_dispatch_callers (
@@ -1172,7 +1167,7 @@ CREATE TABLE IF NOT EXISTS trait_dispatch_callers (
 
 #### Q0067 — `migrate_v13`
 
-Source: [src/db/migrations.rs:1216](../src/db/migrations.rs#L1216).
+Source: [src/db/migrations.rs:1275](../src/db/migrations.rs#L1275).
 
 ```sql
 SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
@@ -1180,7 +1175,7 @@ SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
 
 #### Q0068 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1292](../src/db/migrations.rs#L1292).
+Source: [src/db/migrations.rs:1351](../src/db/migrations.rs#L1351).
 
 ```sql
 SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
@@ -1188,7 +1183,7 @@ SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'
 
 #### Q0069 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1312](../src/db/migrations.rs#L1312).
+Source: [src/db/migrations.rs:1371](../src/db/migrations.rs#L1371).
 
 ```sql
 DELETE FROM edges
@@ -1200,7 +1195,7 @@ DELETE FROM edges
 
 #### Q0070 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1329](../src/db/migrations.rs#L1329).
+Source: [src/db/migrations.rs:1388](../src/db/migrations.rs#L1388).
 
 ```sql
 ALTER TABLE nodes ADD COLUMN search_terms TEXT NOT NULL DEFAULT ''
@@ -1208,7 +1203,7 @@ ALTER TABLE nodes ADD COLUMN search_terms TEXT NOT NULL DEFAULT ''
 
 #### Q0071 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1341](../src/db/migrations.rs#L1341).
+Source: [src/db/migrations.rs:1400](../src/db/migrations.rs#L1400).
 
 ```sql
 DROP TRIGGER IF EXISTS nodes_fts_insert;
@@ -1219,7 +1214,7 @@ DROP TRIGGER IF EXISTS nodes_fts_insert;
 
 #### Q0072 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1356](../src/db/migrations.rs#L1356).
+Source: [src/db/migrations.rs:1415](../src/db/migrations.rs#L1415).
 
 ```sql
 SELECT rowid, name, qualified_name FROM nodes
@@ -1227,7 +1222,7 @@ SELECT rowid, name, qualified_name FROM nodes
 
 #### Q0073 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1387](../src/db/migrations.rs#L1387).
+Source: [src/db/migrations.rs:1446](../src/db/migrations.rs#L1446).
 
 ```sql
 UPDATE nodes SET search_terms = ?1 WHERE rowid = ?2
@@ -1235,7 +1230,7 @@ UPDATE nodes SET search_terms = ?1 WHERE rowid = ?2
 
 #### Q0074 — `migrate_v14`
 
-Source: [src/db/migrations.rs:1400](../src/db/migrations.rs#L1400).
+Source: [src/db/migrations.rs:1459](../src/db/migrations.rs#L1459).
 
 ```sql
 CREATE VIRTUAL TABLE nodes_fts USING fts5(
@@ -1266,7 +1261,7 @@ CREATE VIRTUAL TABLE nodes_fts USING fts5(
 
 #### Q0075 — `table_exists`
 
-Source: [src/db/migrations.rs:1459](../src/db/migrations.rs#L1459).
+Source: [src/db/migrations.rs:1518](../src/db/migrations.rs#L1518).
 
 ```sql
 SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
@@ -1274,7 +1269,7 @@ SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
 
 #### Q0076 — `migrate_v15`
 
-Source: [src/db/migrations.rs:1497](../src/db/migrations.rs#L1497).
+Source: [src/db/migrations.rs:1556](../src/db/migrations.rs#L1556).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
@@ -1286,7 +1281,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
 
 #### Q0077 — `migrate_v15`
 
-Source: [src/db/migrations.rs:1513](../src/db/migrations.rs#L1513).
+Source: [src/db/migrations.rs:1572](../src/db/migrations.rs#L1572).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source, kind);
@@ -1298,7 +1293,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source, kind);
 
 #### Q0078 — `migrate_v15`
 
-Source: [src/db/migrations.rs:1529](../src/db/migrations.rs#L1529).
+Source: [src/db/migrations.rs:1588](../src/db/migrations.rs#L1588).
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_unresolved_refs_from_node_id ON unresolved_refs(from_node_id);
@@ -1308,7 +1303,7 @@ CREATE INDEX IF NOT EXISTS idx_unresolved_refs_from_node_id ON unresolved_refs(f
 
 #### Q0079 — `migrate_v15`
 
-Source: [src/db/migrations.rs:1548](../src/db/migrations.rs#L1548).
+Source: [src/db/migrations.rs:1607](../src/db/migrations.rs#L1607).
 
 ```sql
 DROP TRIGGER IF EXISTS nodes_fts_insert;
@@ -1335,7 +1330,7 @@ DROP TRIGGER IF EXISTS nodes_fts_insert;
 
 #### Q0080 — `node_columns`
 
-Source: [src/db/migrations.rs:1593](../src/db/migrations.rs#L1593).
+Source: [src/db/migrations.rs:1652](../src/db/migrations.rs#L1652).
 
 ```sql
 PRAGMA table_info(nodes)
@@ -1343,7 +1338,7 @@ PRAGMA table_info(nodes)
 
 #### Q0081 — `migrate_v16`
 
-Source: [src/db/migrations.rs:1640](../src/db/migrations.rs#L1640).
+Source: [src/db/migrations.rs:1699](../src/db/migrations.rs#L1699).
 
 ```sql
 ALTER TABLE files ADD COLUMN kind TEXT NOT NULL DEFAULT 'code';
@@ -1351,7 +1346,7 @@ ALTER TABLE files ADD COLUMN kind TEXT NOT NULL DEFAULT 'code';
 
 #### Q0082 — `indexes_naming`
 
-Source: [src/db/migrations.rs:1677](../src/db/migrations.rs#L1677).
+Source: [src/db/migrations.rs:1736](../src/db/migrations.rs#L1736).
 
 ```sql
 SELECT name FROM sqlite_master
@@ -1360,7 +1355,7 @@ SELECT name FROM sqlite_master
 
 #### Q0083 — `table_columns`
 
-Source: [src/db/migrations.rs:1701](../src/db/migrations.rs#L1701).
+Source: [src/db/migrations.rs:1760](../src/db/migrations.rs#L1760).
 
 ```sql
 PRAGMA table_info({table})
@@ -1368,7 +1363,7 @@ PRAGMA table_info({table})
 
 #### Q0084 — `migrate_v18`
 
-Source: [src/db/migrations.rs:1751](../src/db/migrations.rs#L1751).
+Source: [src/db/migrations.rs:1810](../src/db/migrations.rs#L1810).
 
 ```sql
 PRAGMA table_info(edges)
@@ -1376,7 +1371,7 @@ PRAGMA table_info(edges)
 
 #### Q0085 — `migrate_v18`
 
-Source: [src/db/migrations.rs:1780](../src/db/migrations.rs#L1780).
+Source: [src/db/migrations.rs:1839](../src/db/migrations.rs#L1839).
 
 ```sql
 DROP INDEX IF EXISTS "{index}";
@@ -1384,7 +1379,7 @@ DROP INDEX IF EXISTS "{index}";
 
 #### Q0086 — `migrate_v18`
 
-Source: [src/db/migrations.rs:1787](../src/db/migrations.rs#L1787).
+Source: [src/db/migrations.rs:1846](../src/db/migrations.rs#L1846).
 
 ```sql
 ALTER TABLE edges DROP COLUMN resolved_by;
@@ -1392,10 +1387,127 @@ ALTER TABLE edges DROP COLUMN resolved_by;
 
 #### Q0087 — `migrate_v18`
 
-Source: [src/db/migrations.rs:1794](../src/db/migrations.rs#L1794).
+Source: [src/db/migrations.rs:1853](../src/db/migrations.rs#L1853).
 
 ```sql
 ALTER TABLE edges ADD COLUMN resolved_by INTEGER;
+```
+
+#### Q0343 — `migrate_v19`
+
+Source: [src/db/migrations.rs:1869](../src/db/migrations.rs#L1869).
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_trait_dispatch_callers_call
+         ON trait_dispatch_callers(caller_id, trait_method_id, line)
+```
+
+#### Q0347 — `module constant / top-level string`
+
+Source: [src/db/migrations.rs:84](../src/db/migrations.rs#L84).
+
+```sql
+CREATE TABLE IF NOT EXISTS executable_bodies (
+    id INTEGER PRIMARY KEY,
+    node_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_executable_bodies_file ON executable_bodies(file_path);
+```
+
+#### Q0348 — `module constant / top-level string`
+
+Source: [src/db/migrations.rs:92](../src/db/migrations.rs#L92).
+
+```sql
+CREATE VIRTUAL TABLE IF NOT EXISTS executable_body_fts USING fts5(
+    node_id UNINDEXED, file_path UNINDEXED, body,
+    content='executable_bodies', content_rowid='id', tokenize='unicode61'
+);
+CREATE TRIGGER IF NOT EXISTS executable_bodies_insert AFTER INSERT ON executable_bodies BEGIN
+    INSERT INTO executable_body_fts(rowid, node_id, file_path, body)
+    VALUES (NEW.id, NEW.node_id, NEW.file_path, NEW.body);
+END;
+CREATE TRIGGER IF NOT EXISTS executable_bodies_delete AFTER DELETE ON executable_bodies BEGIN
+    INSERT INTO executable_body_fts(executable_body_fts, rowid, node_id, file_path, body)
+    VALUES ('delete', OLD.id, OLD.node_id, OLD.file_path, OLD.body);
+END;
+CREATE TRIGGER IF NOT EXISTS executable_bodies_update AFTER UPDATE ON executable_bodies BEGIN
+    INSERT INTO executable_body_fts(executable_body_fts, rowid, node_id, file_path, body)
+    VALUES ('delete', OLD.id, OLD.node_id, OLD.file_path, OLD.body);
+    INSERT INTO executable_body_fts(rowid, node_id, file_path, body)
+    VALUES (NEW.id, NEW.node_id, NEW.file_path, NEW.body);
+END;
+```
+
+#### Q0349 — `module constant / top-level string`
+
+Source: [src/db/migrations.rs:112](../src/db/migrations.rs#L112).
+
+```sql
+CREATE TABLE IF NOT EXISTS ambiguous_call_candidates (
+    from_node_id TEXT NOT NULL,
+    reference_name TEXT NOT NULL,
+    line INTEGER NOT NULL,
+    candidate_node_id TEXT NOT NULL,
+    PRIMARY KEY (from_node_id, reference_name, line, candidate_node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ambiguous_candidates_node
+    ON ambiguous_call_candidates(candidate_node_id, from_node_id, reference_name, line);
+CREATE TRIGGER IF NOT EXISTS ambiguous_candidates_insert AFTER INSERT ON ambiguous_calls BEGIN
+    -- REPLACE does not necessarily fire DELETE triggers: clear the key here too.
+    DELETE FROM ambiguous_call_candidates
+    WHERE from_node_id = NEW.from_node_id AND reference_name = NEW.reference_name AND line = NEW.line;
+    INSERT OR IGNORE INTO ambiguous_call_candidates
+        (from_node_id, reference_name, line, candidate_node_id)
+    SELECT NEW.from_node_id, NEW.reference_name, NEW.line, value
+    FROM json_each(CASE WHEN json_valid(NEW.candidate_node_ids) THEN CASE WHEN json_type(NEW.candidate_node_ids) = 'array' THEN NEW.candidate_node_ids ELSE '[]' END ELSE '[]' END)
+    WHERE type = 'text';
+END;
+CREATE TRIGGER IF NOT EXISTS ambiguous_candidates_delete AFTER DELETE ON ambiguous_calls BEGIN
+    DELETE FROM ambiguous_call_candidates
+    WHERE from_node_id = OLD.from_node_id AND reference_name = OLD.reference_name AND line = OLD.line;
+END;
+CREATE TRIGGER IF NOT EXISTS ambiguous_candidates_update AFTER UPDATE ON ambiguous_calls BEGIN
+    DELETE FROM ambiguous_call_candidates
+    WHERE from_node_id = OLD.from_node_id AND reference_name = OLD.reference_name AND line = OLD.line;
+    INSERT OR IGNORE INTO ambiguous_call_candidates
+        (from_node_id, reference_name, line, candidate_node_id)
+    SELECT NEW.from_node_id, NEW.reference_name, NEW.line, value
+    FROM json_each(CASE WHEN json_valid(NEW.candidate_node_ids) THEN CASE WHEN json_type(NEW.candidate_node_ids) = 'array' THEN NEW.candidate_node_ids ELSE '[]' END ELSE '[]' END)
+    WHERE type = 'text';
+END;
+```
+
+#### Q0350 — `migrate_v20`
+
+Source: [src/db/migrations.rs:1895](../src/db/migrations.rs#L1895).
+
+```sql
+INSERT INTO executable_bodies(id, node_id, file_path, body)
+             SELECT rowid, node_id, file_path, body FROM executable_body_fts;
+             DROP TABLE executable_body_fts;
+```
+
+#### Q0351 — `migrate_v20`
+
+Source: [src/db/migrations.rs:1906](../src/db/migrations.rs#L1906).
+
+```sql
+INSERT INTO executable_body_fts(executable_body_fts) VALUES('rebuild')
+```
+
+#### Q0352 — `migrate_v20`
+
+Source: [src/db/migrations.rs:1916](../src/db/migrations.rs#L1916).
+
+```sql
+INSERT OR IGNORE INTO ambiguous_call_candidates
+                (from_node_id, reference_name, line, candidate_node_id)
+             SELECT a.from_node_id, a.reference_name, a.line, j.value
+             FROM ambiguous_calls a, json_each(CASE WHEN json_valid(a.candidate_node_ids) THEN CASE WHEN json_type(a.candidate_node_ids) = 'array' THEN a.candidate_node_ids ELSE '[]' END ELSE '[]' END) j
+             WHERE j.type = 'text';
 ```
 
 ### src/db/queries/clear.rs
@@ -1406,7 +1518,8 @@ Source: [src/db/queries/clear.rs:13](../src/db/queries/clear.rs#L13).
 
 ```sql
 DELETE FROM vectors;
-                 DELETE FROM executable_body_fts;
+                 DELETE FROM executable_bodies;
+                 DELETE FROM ambiguous_calls;
                  DELETE FROM trait_dispatch_callers;
                  DELETE FROM unresolved_refs;
                  DELETE FROM edges;
@@ -1724,24 +1837,30 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0118 — `get_ranked_nodes_by_edge_kind`
 
-Source: [src/db/queries/edges.rs:882](../src/db/queries/edges.rs#L882).
+Source: [src/db/queries/edges.rs:884](../src/db/queries/edges.rs#L884).
 
 ```sql
-SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+WITH ranked AS MATERIALIZED (
+                 SELECT {group_col} AS id, COUNT(*) AS cnt
+                 FROM edges e
+                 JOIN nodes n ON {join_col} = n.id
+                 WHERE {where_clause}
+                 GROUP BY {group_col}
+                 ORDER BY cnt DESC, {group_col}
+                 LIMIT ?{param_idx}
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    COUNT(*) AS cnt
-             FROM edges e
-             JOIN nodes n ON {join_col} = n.id
-             WHERE {where_clause}
-             GROUP BY {group_col}
-             ORDER BY cnt DESC
-             LIMIT ?{param_idx}
+                    r.cnt
+             FROM ranked r
+             JOIN nodes n ON n.id = r.id
+             ORDER BY r.cnt DESC, r.id
 ```
 
 #### Q0119 — `get_largest_nodes`
 
-Source: [src/db/queries/edges.rs:954](../src/db/queries/edges.rs#L954).
+Source: [src/db/queries/edges.rs:962](../src/db/queries/edges.rs#L962).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -1756,7 +1875,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0120 — `get_file_coupling`
 
-Source: [src/db/queries/edges.rs:1021](../src/db/queries/edges.rs#L1021).
+Source: [src/db/queries/edges.rs:1029](../src/db/queries/edges.rs#L1029).
 
 ```sql
 SELECT {group_alias}.file_path, COUNT(DISTINCT {count_alias}.file_path) AS coupling
@@ -1773,14 +1892,15 @@ SELECT {group_alias}.file_path, COUNT(DISTINCT {count_alias}.file_path) AS coupl
 
 #### Q0121 — `get_inheritance_depth`
 
-Source: [src/db/queries/edges.rs:1096](../src/db/queries/edges.rs#L1096).
+Source: [src/db/queries/edges.rs:1105](../src/db/queries/edges.rs#L1105).
 
 ```sql
 WITH RECURSIVE hierarchy(leaf_id, current_id, depth, path) AS (
                  SELECT e.source, e.target, 1,
                         ',' || e.source || ',' || e.target || ','
-                 FROM edges e
+                 FROM edges e {seed_join}
                  WHERE e.kind = 'extends'
+                   {path_filter}
                  UNION ALL
                  SELECT h.leaf_id, e.target, h.depth + 1,
                         h.path || e.target || ','
@@ -1800,14 +1920,26 @@ WITH RECURSIVE hierarchy(leaf_id, current_id, depth, path) AS (
                     ld.max_depth
              FROM leaf_depths ld
              JOIN nodes n ON ld.leaf_id = n.id
-             {path_filter}
              ORDER BY ld.max_depth DESC
              LIMIT ?1
 ```
 
+#### Q0353 — `get_inheritance_depth` scoped seed fragment
+
+Source: [src/db/queries/edges.rs:1084](../src/db/queries/edges.rs#L1084).
+
+```sql
+JOIN nodes seed ON seed.id = e.source
+```
+
+Q0121 inserts this join only in its non-recursive seed. The builder appends
+`AND` and the shared exact-or-prefix predicate for `seed.file_path`, including
+SQL quoting and LIKE escaping, to the seed WHERE clause. `None` supplies empty
+join/filter fragments. The only bound parameter remains `?1 = limit`.
+
 #### Q0122 — `get_node_distribution`
 
-Source: [src/db/queries/edges.rs:1162](../src/db/queries/edges.rs#L1162).
+Source: [src/db/queries/edges.rs:1171](../src/db/queries/edges.rs#L1171).
 
 ```sql
 SELECT file_path, kind, COUNT(*) AS cnt FROM nodes
@@ -1815,7 +1947,7 @@ SELECT file_path, kind, COUNT(*) AS cnt FROM nodes
 
 #### Q0123 — `get_call_edges`
 
-Source: [src/db/queries/edges.rs:1210](../src/db/queries/edges.rs#L1210).
+Source: [src/db/queries/edges.rs:1219](../src/db/queries/edges.rs#L1219).
 
 ```sql
 SELECT e.source, e.target FROM edges e
@@ -1825,7 +1957,7 @@ SELECT e.source, e.target FROM edges e
 
 #### Q0124 — `get_call_edges`
 
-Source: [src/db/queries/edges.rs:1218](../src/db/queries/edges.rs#L1218).
+Source: [src/db/queries/edges.rs:1227](../src/db/queries/edges.rs#L1227).
 
 ```sql
 SELECT source, target FROM edges WHERE kind = 'calls'
@@ -1833,7 +1965,7 @@ SELECT source, target FROM edges WHERE kind = 'calls'
 
 #### Q0125 — `get_call_edges_with_lines`
 
-Source: [src/db/queries/edges.rs:1261](../src/db/queries/edges.rs#L1261).
+Source: [src/db/queries/edges.rs:1270](../src/db/queries/edges.rs#L1270).
 
 ```sql
 SELECT e.source, e.target, e.line FROM edges e
@@ -1843,7 +1975,7 @@ SELECT e.source, e.target, e.line FROM edges e
 
 #### Q0126 — `get_call_edges_with_lines`
 
-Source: [src/db/queries/edges.rs:1269](../src/db/queries/edges.rs#L1269).
+Source: [src/db/queries/edges.rs:1278](../src/db/queries/edges.rs#L1278).
 
 ```sql
 SELECT source, target, line FROM edges WHERE kind = 'calls'
@@ -1851,27 +1983,29 @@ SELECT source, target, line FROM edges WHERE kind = 'calls'
 
 #### Q0127 — `get_complexity_ranked`
 
-Source: [src/db/queries/edges.rs:1336](../src/db/queries/edges.rs#L1336).
+Source: [src/db/queries/edges.rs:1364](../src/db/queries/edges.rs#L1364).
 
 ```sql
-SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+WITH scores AS MATERIALIZED (
+                 SELECT n.id, (n.end_line - n.start_line + 1) AS lines,
+                        {fan_out} AS fan_out, {fan_in} AS fan_in
+                 FROM nodes n {joins}
+                 WHERE {where_clause}
+             ), top_scores AS (
+                 SELECT *, (lines + fan_out * 3 + fan_in) AS score
+                 FROM scores ORDER BY score DESC, id LIMIT ?{param_idx}
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    (n.end_line - n.start_line + 1) AS lines,
-                    COALESCE(out_calls.cnt, 0) AS fan_out,
-                    COALESCE(in_calls.cnt, 0) AS fan_in,
-                    ((n.end_line - n.start_line + 1) + COALESCE(out_calls.cnt, 0) * 3 + COALESCE(in_calls.cnt, 0)) AS score
-             FROM nodes n
-             LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
-             LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id
-             WHERE {where_clause}
-             ORDER BY score DESC
-             LIMIT ?{param_idx}
+                    t.lines, t.fan_out, t.fan_in, t.score
+             FROM top_scores t JOIN nodes n ON n.id = t.id
+             ORDER BY t.score DESC, t.id
 ```
 
 #### Q0128 — `get_undocumented_public_symbols`
 
-Source: [src/db/queries/edges.rs:1420](../src/db/queries/edges.rs#L1420).
+Source: [src/db/queries/edges.rs:1450](../src/db/queries/edges.rs#L1450).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -1888,7 +2022,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0129 — `get_undocumented_public_symbols`
 
-Source: [src/db/queries/edges.rs:1435](../src/db/queries/edges.rs#L1435).
+Source: [src/db/queries/edges.rs:1465](../src/db/queries/edges.rs#L1465).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -1904,27 +2038,34 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0130 — `get_god_classes`
 
-Source: [src/db/queries/edges.rs:1482](../src/db/queries/edges.rs#L1482).
+Source: [src/db/queries/edges.rs:1514](../src/db/queries/edges.rs#L1514).
 
 ```sql
-SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+WITH ranked AS MATERIALIZED (
+                 SELECT n.id,
+                        SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
+                        SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
+                        COUNT(*) AS total
+                 FROM nodes n
+                 JOIN nodes c ON c.parent_id = n.id
+                 WHERE n.kind IN ('class', 'struct', 'inner_class', 'object')
+                   {path_filter}
+                 GROUP BY n.id
+                 ORDER BY total DESC, n.id
+                 LIMIT ?1
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
-                    SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
-                    COUNT(*) AS total
-             FROM nodes n
-             JOIN nodes c ON c.parent_id = n.id
-             WHERE n.kind IN ('class', 'struct', 'inner_class', 'object')
-               {path_filter}
-             GROUP BY n.id
-             ORDER BY total DESC
-             LIMIT ?1
+                    r.methods, r.fields, r.total
+             FROM ranked r
+             JOIN nodes n ON n.id = r.id
+             ORDER BY r.total DESC, r.id
 ```
 
 #### Q0131 — `get_all_edges`
 
-Source: [src/db/queries/edges.rs:1539](../src/db/queries/edges.rs#L1539).
+Source: [src/db/queries/edges.rs:1578](../src/db/queries/edges.rs#L1578).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges
@@ -1932,7 +2073,7 @@ SELECT source, target, kind, line, resolved_by FROM edges
 
 #### Q0132 — `get_edges_by_kind`
 
-Source: [src/db/queries/edges.rs:1560](../src/db/queries/edges.rs#L1560).
+Source: [src/db/queries/edges.rs:1599](../src/db/queries/edges.rs#L1599).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = ?1
@@ -1940,7 +2081,7 @@ SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = ?1
 
 #### Q0133 — `get_edges_by_kinds`
 
-Source: [src/db/queries/edges.rs:1583](../src/db/queries/edges.rs#L1583).
+Source: [src/db/queries/edges.rs:1622](../src/db/queries/edges.rs#L1622).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges WHERE kind IN ({})
@@ -1948,7 +2089,7 @@ SELECT source, target, kind, line, resolved_by FROM edges WHERE kind IN ({})
 
 #### Q0134 — `variant_group_candidates`
 
-Source: [src/db/queries/edges.rs:1635](../src/db/queries/edges.rs#L1635).
+Source: [src/db/queries/edges.rs:1674](../src/db/queries/edges.rs#L1674).
 
 ```sql
 SELECT 'rs' || char(1) || n.qualified_name, n.id FROM nodes n JOIN edges e ON e.target = n.id AND e.kind = 'annotates' JOIN nodes a ON a.id = e.source WHERE a.kind = 'annotation_usage' AND a.name IN ('cfg', 'cfg_attr') AND lower(n.file_path) LIKE '%.rs' AND n.kind IN ({kinds})
@@ -1956,7 +2097,7 @@ SELECT 'rs' || char(1) || n.qualified_name, n.id FROM nodes n JOIN edges e ON e.
 
 #### Q0135 — `go_variant_candidates`
 
-Source: [src/db/queries/edges.rs:1667](../src/db/queries/edges.rs#L1667).
+Source: [src/db/queries/edges.rs:1706](../src/db/queries/edges.rs#L1706).
 
 ```sql
 SELECT file_path, name, id FROM nodes                    WHERE kind = 'function' AND lower(file_path) LIKE '%.go'                      AND name IN (                        SELECT name FROM nodes                        WHERE kind = 'function' AND lower(file_path) LIKE '%.go'                        GROUP BY name HAVING COUNT(*) >= 2                      )
@@ -1964,7 +2105,7 @@ SELECT file_path, name, id FROM nodes                    WHERE kind = 'function'
 
 #### Q0136 — `calls_edges_into`
 
-Source: [src/db/queries/edges.rs:1700](../src/db/queries/edges.rs#L1700).
+Source: [src/db/queries/edges.rs:1739](../src/db/queries/edges.rs#L1739).
 
 ```sql
 SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = 'calls' AND target IN ({})
@@ -1972,7 +2113,7 @@ SELECT source, target, kind, line, resolved_by FROM edges WHERE kind = 'calls' A
 
 #### Q0137 — `get_top_degree_nodes`
 
-Source: [src/db/queries/edges.rs:1740](../src/db/queries/edges.rs#L1740).
+Source: [src/db/queries/edges.rs:1779](../src/db/queries/edges.rs#L1779).
 
 ```sql
 SELECT id, SUM(inc) AS in_degree, SUM(outg) AS out_degree FROM ( SELECT target AS id, 1 AS inc, 0 AS outg FROM edges WHERE source <> target UNION ALL SELECT source AS id, 0 AS inc, 1 AS outg FROM edges WHERE source <> target ) GROUP BY id ORDER BY (in_degree + out_degree) DESC, id ASC LIMIT ?1
@@ -1980,7 +2121,7 @@ SELECT id, SUM(inc) AS in_degree, SUM(outg) AS out_degree FROM ( SELECT target A
 
 #### Q0138 — `delete_edges_by_source`
 
-Source: [src/db/queries/edges.rs:1787](../src/db/queries/edges.rs#L1787).
+Source: [src/db/queries/edges.rs:1826](../src/db/queries/edges.rs#L1826).
 
 ```sql
 DELETE FROM edges WHERE source = ?1
@@ -1988,12 +2129,37 @@ DELETE FROM edges WHERE source = ?1
 
 #### Q0139 — `delete_call_edges_at_sites`
 
-Source: [src/db/queries/edges.rs:1806](../src/db/queries/edges.rs#L1806).
+Source: [src/db/queries/edges.rs:1845](../src/db/queries/edges.rs#L1845).
 
 ```sql
 DELETE FROM edges
                      WHERE kind = 'calls' AND source = ?1 AND line = ?2
                        AND target IN (SELECT id FROM nodes WHERE name = ?3)
+```
+
+#### Q0344 — `get_complexity_ranked`
+
+Source: [src/db/queries/edges.rs:1349](../src/db/queries/edges.rs#L1349).
+
+```sql
+(SELECT COUNT(*) FROM edges WHERE source = n.id AND kind = 'calls')
+```
+
+#### Q0345 — `get_complexity_ranked`
+
+Source: [src/db/queries/edges.rs:1350](../src/db/queries/edges.rs#L1350).
+
+```sql
+(SELECT COUNT(*) FROM edges WHERE target = n.id AND kind = 'calls')
+```
+
+#### Q0346 — `get_complexity_ranked`
+
+Source: [src/db/queries/edges.rs:1357](../src/db/queries/edges.rs#L1357).
+
+```sql
+LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
+                 LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id
 ```
 
 ### src/db/queries/files.rs
@@ -2437,18 +2603,20 @@ SELECT candidate_node_ids FROM ambiguous_calls
 
 #### Q0193 — `get_ambiguous_calls_naming`
 
-Source: [src/db/queries/nodes.rs:905](../src/db/queries/nodes.rs#L905).
+Source: [src/db/queries/nodes.rs:898](../src/db/queries/nodes.rs#L898).
 
 ```sql
-SELECT from_node_id, reference_name, file_path, line, candidate_node_ids
-                 FROM ambiguous_calls
-                 WHERE candidate_node_ids LIKE ?1 ESCAPE '\'
-                 ORDER BY file_path, line
+SELECT a.from_node_id, a.reference_name, a.file_path, a.line, a.candidate_node_ids
+                 FROM ambiguous_call_candidates c
+                 JOIN ambiguous_calls a ON a.from_node_id = c.from_node_id
+                    AND a.reference_name = c.reference_name AND a.line = c.line
+                 WHERE c.candidate_node_id = ?1
+                 ORDER BY a.file_path, a.line
 ```
 
 #### Q0194 — `get_node_paths`
 
-Source: [src/db/queries/nodes.rs:954](../src/db/queries/nodes.rs#L954).
+Source: [src/db/queries/nodes.rs:949](../src/db/queries/nodes.rs#L949).
 
 ```sql
 SELECT id, file_path FROM nodes
@@ -2456,7 +2624,7 @@ SELECT id, file_path FROM nodes
 
 #### Q0195 — `get_nodes_filtered`
 
-Source: [src/db/queries/nodes.rs:994](../src/db/queries/nodes.rs#L994).
+Source: [src/db/queries/nodes.rs:989](../src/db/queries/nodes.rs#L989).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -2467,7 +2635,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0196 — `get_all_nodes_for_resolution`
 
-Source: [src/db/queries/nodes.rs:1045](../src/db/queries/nodes.rs#L1045).
+Source: [src/db/queries/nodes.rs:1040](../src/db/queries/nodes.rs#L1040).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -2486,7 +2654,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0197 — `touched_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1080](../src/db/queries/nodes.rs#L1080).
+Source: [src/db/queries/nodes.rs:1075](../src/db/queries/nodes.rs#L1075).
 
 ```sql
 SELECT kind, name, qualified_name FROM nodes WHERE file_path = ?1
@@ -2494,47 +2662,43 @@ SELECT kind, name, qualified_name FROM nodes WHERE file_path = ?1
 
 #### Q0198 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1120](../src/db/queries/nodes.rs#L1120).
+Source: [src/db/queries/nodes.rs:1128](../src/db/queries/nodes.rs#L1128).
 
 ```sql
-DELETE FROM executable_body_fts WHERE file_path = ?1
-```
-
-#### Q0199 — `delete_nodes_by_file`
-
-Source: [src/db/queries/nodes.rs:1134](../src/db/queries/nodes.rs#L1134).
-
-```sql
-SELECT id FROM nodes WHERE file_path = ?1
+DELETE FROM executable_bodies WHERE file_path = ?1
 ```
 
 #### Q0200 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1171](../src/db/queries/nodes.rs#L1171).
+Source: [src/db/queries/nodes.rs:1129](../src/db/queries/nodes.rs#L1129).
 
 ```sql
-DELETE FROM edges WHERE source = ?1 OR target = ?1
+DELETE FROM edges
+                 WHERE source IN (SELECT id FROM nodes WHERE file_path = ?1)
+                    OR target IN (SELECT id FROM nodes WHERE file_path = ?1)
 ```
 
 #### Q0201 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1181](../src/db/queries/nodes.rs#L1181).
+Source: [src/db/queries/nodes.rs:1132](../src/db/queries/nodes.rs#L1132).
 
 ```sql
-DELETE FROM unresolved_refs WHERE from_node_id = ?1
+DELETE FROM unresolved_refs
+                 WHERE from_node_id IN (SELECT id FROM nodes WHERE file_path = ?1)
 ```
 
 #### Q0202 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1191](../src/db/queries/nodes.rs#L1191).
+Source: [src/db/queries/nodes.rs:1134](../src/db/queries/nodes.rs#L1134).
 
 ```sql
-DELETE FROM vectors WHERE node_id = ?1
+DELETE FROM vectors
+                 WHERE node_id IN (SELECT id FROM nodes WHERE file_path = ?1)
 ```
 
 #### Q0203 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1201](../src/db/queries/nodes.rs#L1201).
+Source: [src/db/queries/nodes.rs:1145](../src/db/queries/nodes.rs#L1145).
 
 ```sql
 DELETE FROM nodes WHERE file_path = ?1
@@ -2699,33 +2863,17 @@ ROLLBACK
 
 ### src/db/queries/search.rs
 
-#### Q0222 — `insert_executable_body_documents`
-
-Source: [src/db/queries/search.rs:59](../src/db/queries/search.rs#L59).
-
-```sql
-BEGIN
-```
-
 #### Q0223 — `insert_executable_body_documents`
 
-Source: [src/db/queries/search.rs:68](../src/db/queries/search.rs#L68).
+Source: [src/db/queries/search.rs:92](../src/db/queries/search.rs#L92).
 
 ```sql
-INSERT INTO executable_body_fts (node_id, file_path, body) VALUES (?1, ?2, ?3)
-```
-
-#### Q0224 — `insert_executable_body_documents`
-
-Source: [src/db/queries/search.rs:89](../src/db/queries/search.rs#L89).
-
-```sql
-COMMIT
+INSERT INTO executable_bodies (node_id, file_path, body) VALUES {placeholders}
 ```
 
 #### Q0225 — `search_executable_bodies`
 
-Source: [src/db/queries/search.rs:143](../src/db/queries/search.rs#L143).
+Source: [src/db/queries/search.rs:165](../src/db/queries/search.rs#L165).
 
 ```sql
 SELECT node_id, body FROM executable_body_fts
@@ -2735,7 +2883,7 @@ SELECT node_id, body FROM executable_body_fts
 
 #### Q0226 — `search_nodes`
 
-Source: [src/db/queries/search.rs:273](../src/db/queries/search.rs#L273).
+Source: [src/db/queries/search.rs:295](../src/db/queries/search.rs#L295).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -2748,40 +2896,42 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0227 — `search_nodes_bounded_fts`
 
-Source: [src/db/queries/search.rs:351](../src/db/queries/search.rs#L351).
+Source: [src/db/queries/search.rs:373](../src/db/queries/search.rs#L373).
 
 ```sql
 SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0) AS rank
+                    nodes_fts.rank AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
+                   AND nodes_fts.rank MATCH 'bm25(10.0, 5.0, 1.0, 2.0, 3.0)'
                    AND n.kind NOT IN ('file', 'doc')
-                 ORDER BY rank
+                 ORDER BY nodes_fts.rank
                  LIMIT ?2
 ```
 
 #### Q0228 — `search_nodes_fts`
 
-Source: [src/db/queries/search.rs:396](../src/db/queries/search.rs#L396).
+Source: [src/db/queries/search.rs:423](../src/db/queries/search.rs#L423).
 
 ```sql
 SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0) AS rank
+                    nodes_fts.rank AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
-                 ORDER BY bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0)
+                   AND nodes_fts.rank MATCH 'bm25(10.0, 5.0, 1.0, 2.0, 3.0)'
+                 ORDER BY nodes_fts.rank
                  LIMIT ?2
 ```
 
 #### Q0229 — `batch_incoming_call_counts`
 
-Source: [src/db/queries/search.rs:443](../src/db/queries/search.rs#L443).
+Source: [src/db/queries/search.rs:471](../src/db/queries/search.rs#L471).
 
 ```sql
 SELECT target, COUNT(*) AS cnt FROM edges WHERE target IN ({placeholders}) AND kind = 'calls' GROUP BY target
@@ -2789,7 +2939,7 @@ SELECT target, COUNT(*) AS cnt FROM edges WHERE target IN ({placeholders}) AND k
 
 #### Q0230 — `search_nodes_by_exact_name`
 
-Source: [src/db/queries/search.rs:481](../src/db/queries/search.rs#L481).
+Source: [src/db/queries/search.rs:509](../src/db/queries/search.rs#L509).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -3024,7 +3174,7 @@ begin
 
 #### Q0255 — `open_at`
 
-Source: [src/global_db.rs:228](../src/global_db.rs#L228).
+Source: [src/global_db.rs:230](../src/global_db.rs#L230).
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -3034,7 +3184,7 @@ PRAGMA journal_mode = WAL;
 
 #### Q0256 — `open_at`
 
-Source: [src/global_db.rs:236](../src/global_db.rs#L236).
+Source: [src/global_db.rs:238](../src/global_db.rs#L238).
 
 ```sql
 CREATE TABLE IF NOT EXISTS projects (
@@ -3045,7 +3195,7 @@ CREATE TABLE IF NOT EXISTS projects (
 
 #### Q0257 — `open_at`
 
-Source: [src/global_db.rs:245](../src/global_db.rs#L245).
+Source: [src/global_db.rs:247](../src/global_db.rs#L247).
 
 ```sql
 CREATE TABLE IF NOT EXISTS turns (
@@ -3082,12 +3232,13 @@ CREATE TABLE IF NOT EXISTS turns (
                 after_tokens INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_savings_ledger_ts ON savings_ledger(ts);
-            CREATE INDEX IF NOT EXISTS idx_savings_ledger_project ON savings_ledger(project_path)
+            CREATE INDEX IF NOT EXISTS idx_savings_ledger_project ON savings_ledger(project_path);
+            CREATE INDEX IF NOT EXISTS idx_savings_ledger_project_ts ON savings_ledger(project_path, ts)
 ```
 
 #### Q0258 — `open_at`
 
-Source: [src/global_db.rs:285](../src/global_db.rs#L285).
+Source: [src/global_db.rs:288](../src/global_db.rs#L288).
 
 ```sql
 CREATE TABLE IF NOT EXISTS meta (
@@ -3098,7 +3249,7 @@ CREATE TABLE IF NOT EXISTS meta (
 
 #### Q0259 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:311](../src/global_db.rs#L311).
+Source: [src/global_db.rs:314](../src/global_db.rs#L314).
 
 ```sql
 PRAGMA table_info(turns)
@@ -3106,7 +3257,7 @@ PRAGMA table_info(turns)
 
 #### Q0260 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:330](../src/global_db.rs#L330).
+Source: [src/global_db.rs:333](../src/global_db.rs#L333).
 
 ```sql
 ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'
@@ -3114,7 +3265,7 @@ ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'
 
 #### Q0261 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:337](../src/global_db.rs#L337).
+Source: [src/global_db.rs:340](../src/global_db.rs#L340).
 
 ```sql
 ALTER TABLE turns ADD COLUMN credits INTEGER
@@ -3122,7 +3273,7 @@ ALTER TABLE turns ADD COLUMN credits INTEGER
 
 #### Q0262 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:347](../src/global_db.rs#L347).
+Source: [src/global_db.rs:350](../src/global_db.rs#L350).
 
 ```sql
 ALTER TABLE turns ADD COLUMN tool_result_tokens INTEGER NOT NULL DEFAULT 0
@@ -3130,7 +3281,7 @@ ALTER TABLE turns ADD COLUMN tool_result_tokens INTEGER NOT NULL DEFAULT 0
 
 #### Q0263 — `migrate_project_paths`
 
-Source: [src/global_db.rs:366](../src/global_db.rs#L366).
+Source: [src/global_db.rs:369](../src/global_db.rs#L369).
 
 ```sql
 SELECT 1 FROM meta WHERE key = 'projects_path_normalized'
@@ -3138,7 +3289,7 @@ SELECT 1 FROM meta WHERE key = 'projects_path_normalized'
 
 #### Q0264 — `migrate_project_paths`
 
-Source: [src/global_db.rs:377](../src/global_db.rs#L377).
+Source: [src/global_db.rs:380](../src/global_db.rs#L380).
 
 ```sql
 SELECT path, tokens_saved FROM projects
@@ -3146,7 +3297,7 @@ SELECT path, tokens_saved FROM projects
 
 #### Q0265 — `migrate_project_paths`
 
-Source: [src/global_db.rs:406](../src/global_db.rs#L406).
+Source: [src/global_db.rs:409](../src/global_db.rs#L409).
 
 ```sql
 DELETE FROM projects
@@ -3154,7 +3305,7 @@ DELETE FROM projects
 
 #### Q0266 — `migrate_project_paths`
 
-Source: [src/global_db.rs:412](../src/global_db.rs#L412).
+Source: [src/global_db.rs:415](../src/global_db.rs#L415).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3162,7 +3313,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0267 — `migrate_project_paths`
 
-Source: [src/global_db.rs:422](../src/global_db.rs#L422).
+Source: [src/global_db.rs:425](../src/global_db.rs#L425).
 
 ```sql
 UPDATE savings_ledger SET project_path = ?1 WHERE project_path = ?2
@@ -3170,7 +3321,7 @@ UPDATE savings_ledger SET project_path = ?1 WHERE project_path = ?2
 
 #### Q0268 — `migrate_project_paths`
 
-Source: [src/global_db.rs:431](../src/global_db.rs#L431).
+Source: [src/global_db.rs:434](../src/global_db.rs#L434).
 
 ```sql
 INSERT OR REPLACE INTO meta (key, value) VALUES ('projects_path_normalized', '1')
@@ -3178,7 +3329,7 @@ INSERT OR REPLACE INTO meta (key, value) VALUES ('projects_path_normalized', '1'
 
 #### Q0269 — `upsert`
 
-Source: [src/global_db.rs:446](../src/global_db.rs#L446).
+Source: [src/global_db.rs:449](../src/global_db.rs#L449).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3187,7 +3338,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0270 — `get_project_tokens`
 
-Source: [src/global_db.rs:459](../src/global_db.rs#L459).
+Source: [src/global_db.rs:462](../src/global_db.rs#L462).
 
 ```sql
 SELECT tokens_saved FROM projects WHERE path = ?1
@@ -3195,7 +3346,7 @@ SELECT tokens_saved FROM projects WHERE path = ?1
 
 #### Q0271 — `global_tokens_saved`
 
-Source: [src/global_db.rs:476](../src/global_db.rs#L476).
+Source: [src/global_db.rs:479](../src/global_db.rs#L479).
 
 ```sql
 SELECT COALESCE(SUM(tokens_saved), 0) FROM projects
@@ -3203,7 +3354,7 @@ SELECT COALESCE(SUM(tokens_saved), 0) FROM projects
 
 #### Q0272 — `record_savings`
 
-Source: [src/global_db.rs:498](../src/global_db.rs#L498).
+Source: [src/global_db.rs:501](../src/global_db.rs#L501).
 
 ```sql
 INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_tokens) VALUES (?1, ?2, ?3, ?4, ?5)
@@ -3211,7 +3362,7 @@ INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_to
 
 #### Q0273 — `sum_savings`
 
-Source: [src/global_db.rs:512](../src/global_db.rs#L512).
+Source: [src/global_db.rs:515](../src/global_db.rs#L515).
 
 ```sql
 SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE project_path = ?1 AND ts >= ?2
@@ -3219,7 +3370,7 @@ SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - 
 
 #### Q0274 — `sum_savings`
 
-Source: [src/global_db.rs:515](../src/global_db.rs#L515).
+Source: [src/global_db.rs:518](../src/global_db.rs#L518).
 
 ```sql
 SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE ts >= ?1
@@ -3227,7 +3378,7 @@ SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - 
 
 #### Q0275 — `savings_history`
 
-Source: [src/global_db.rs:543](../src/global_db.rs#L543).
+Source: [src/global_db.rs:546](../src/global_db.rs#L546).
 
 ```sql
 SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE project_path = ?1 AND ts >= ?2 GROUP BY day ORDER BY day DESC
@@ -3235,7 +3386,7 @@ SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tok
 
 #### Q0276 — `savings_history`
 
-Source: [src/global_db.rs:549](../src/global_db.rs#L549).
+Source: [src/global_db.rs:552](../src/global_db.rs#L552).
 
 ```sql
 SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE ts >= ?1 GROUP BY day ORDER BY day DESC
@@ -3243,7 +3394,7 @@ SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tok
 
 #### Q0277 — `delete_project`
 
-Source: [src/global_db.rs:578](../src/global_db.rs#L578).
+Source: [src/global_db.rs:581](../src/global_db.rs#L581).
 
 ```sql
 DELETE FROM projects WHERE path = ?1
@@ -3251,7 +3402,7 @@ DELETE FROM projects WHERE path = ?1
 
 #### Q0278 — `delete_projects`
 
-Source: [src/global_db.rs:597](../src/global_db.rs#L597).
+Source: [src/global_db.rs:600](../src/global_db.rs#L600).
 
 ```sql
 DELETE FROM projects WHERE path IN ({})
@@ -3259,7 +3410,7 @@ DELETE FROM projects WHERE path IN ({})
 
 #### Q0279 — `list_project_paths`
 
-Source: [src/global_db.rs:613](../src/global_db.rs#L613).
+Source: [src/global_db.rs:616](../src/global_db.rs#L616).
 
 ```sql
 SELECT path FROM projects
@@ -3267,7 +3418,7 @@ SELECT path FROM projects
 
 #### Q0280 — `insert_turn`
 
-Source: [src/global_db.rs:631](../src/global_db.rs#L631).
+Source: [src/global_db.rs:634](../src/global_db.rs#L634).
 
 ```sql
 INSERT OR IGNORE INTO turns
@@ -3279,7 +3430,7 @@ INSERT OR IGNORE INTO turns
 
 #### Q0281 — `add_tool_result_tokens`
 
-Source: [src/global_db.rs:675](../src/global_db.rs#L675).
+Source: [src/global_db.rs:678](../src/global_db.rs#L678).
 
 ```sql
 UPDATE turns SET tool_result_tokens = tool_result_tokens + ?2 WHERE message_id = ?1
@@ -3330,7 +3481,7 @@ INSERT INTO turns
 
 #### Q0283 — `total_cost_since`
 
-Source: [src/global_db.rs:755](../src/global_db.rs#L755).
+Source: [src/global_db.rs:758](../src/global_db.rs#L758).
 
 ```sql
 SELECT COALESCE(SUM(cost_usd), 0.0) FROM turns WHERE timestamp >= ?1
@@ -3338,7 +3489,7 @@ SELECT COALESCE(SUM(cost_usd), 0.0) FROM turns WHERE timestamp >= ?1
 
 #### Q0284 — `total_tokens_since`
 
-Source: [src/global_db.rs:769](../src/global_db.rs#L769).
+Source: [src/global_db.rs:772](../src/global_db.rs#L772).
 
 ```sql
 SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM turns WHERE timestamp >= ?1
@@ -3346,7 +3497,7 @@ SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM turns WHERE timestamp
 
 #### Q0285 — `token_breakdown_since`
 
-Source: [src/global_db.rs:784](../src/global_db.rs#L784).
+Source: [src/global_db.rs:787](../src/global_db.rs#L787).
 
 ```sql
 SELECT COALESCE(SUM(input_tokens), 0),
@@ -3358,7 +3509,7 @@ SELECT COALESCE(SUM(input_tokens), 0),
 
 #### Q0286 — `cost_by_model_since`
 
-Source: [src/global_db.rs:814](../src/global_db.rs#L814).
+Source: [src/global_db.rs:817](../src/global_db.rs#L817).
 
 ```sql
 SELECT model, SUM(cost_usd),
@@ -3369,7 +3520,7 @@ SELECT model, SUM(cost_usd),
 
 #### Q0287 — `cost_by_category_since`
 
-Source: [src/global_db.rs:840](../src/global_db.rs#L840).
+Source: [src/global_db.rs:843](../src/global_db.rs#L843).
 
 ```sql
 SELECT category, SUM(cost_usd), COUNT(*)
@@ -3379,7 +3530,7 @@ SELECT category, SUM(cost_usd), COUNT(*)
 
 #### Q0288 — `nav_turns_since`
 
-Source: [src/global_db.rs:877](../src/global_db.rs#L877).
+Source: [src/global_db.rs:880](../src/global_db.rs#L880).
 
 ```sql
 SELECT tool_names, tool_result_tokens FROM turns WHERE timestamp >= ?1 AND agent = 'claude'
@@ -3387,7 +3538,7 @@ SELECT tool_names, tool_result_tokens FROM turns WHERE timestamp >= ?1 AND agent
 
 #### Q0289 — `cost_by_agent_since`
 
-Source: [src/global_db.rs:901](../src/global_db.rs#L901).
+Source: [src/global_db.rs:904](../src/global_db.rs#L904).
 
 ```sql
 SELECT agent,
@@ -3404,7 +3555,7 @@ SELECT agent,
 
 #### Q0290 — `get_parse_offset`
 
-Source: [src/global_db.rs:949](../src/global_db.rs#L949).
+Source: [src/global_db.rs:952](../src/global_db.rs#L952).
 
 ```sql
 SELECT byte_offset, mtime FROM parse_offsets WHERE file_path = ?1
@@ -3412,7 +3563,7 @@ SELECT byte_offset, mtime FROM parse_offsets WHERE file_path = ?1
 
 #### Q0291 — `set_parse_offset`
 
-Source: [src/global_db.rs:965](../src/global_db.rs#L965).
+Source: [src/global_db.rs:968](../src/global_db.rs#L968).
 
 ```sql
 INSERT INTO parse_offsets (file_path, byte_offset, mtime) VALUES (?1, ?2, ?3)
@@ -3421,7 +3572,7 @@ INSERT INTO parse_offsets (file_path, byte_offset, mtime) VALUES (?1, ?2, ?3)
 
 #### Q0292 — `checkpoint`
 
-Source: [src/global_db.rs:976](../src/global_db.rs#L976).
+Source: [src/global_db.rs:979](../src/global_db.rs#L979).
 
 ```sql
 PRAGMA wal_checkpoint(TRUNCATE);
@@ -3429,7 +3580,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 
 #### Q0293 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1076](../src/global_db.rs#L1076).
+Source: [src/global_db.rs:1079](../src/global_db.rs#L1079).
 
 ```sql
 DELETE FROM meta WHERE key = 'projects_path_normalized';
@@ -3438,7 +3589,7 @@ DELETE FROM meta WHERE key = 'projects_path_normalized';
 
 #### Q0294 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1088](../src/global_db.rs#L1088).
+Source: [src/global_db.rs:1091](../src/global_db.rs#L1091).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3446,7 +3597,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0295 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1097](../src/global_db.rs#L1097).
+Source: [src/global_db.rs:1100](../src/global_db.rs#L1100).
 
 ```sql
 INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_tokens) VALUES (42, ?1, 'tokensave_context', 1000, 100)
@@ -3905,9 +4056,197 @@ Source: [src/worktree.rs:273](../src/worktree.rs#L273).
 commit
 ```
 
+### src/db/debug_sql.rs
+
+#### Q0354 — `plan`
+
+Source: [src/db/debug_sql.rs:90](../src/db/debug_sql.rs#L90).
+
+```sql
+EXPLAIN QUERY PLAN {sql}
+```
+
+#### Q0355 — `transaction_with_behavior`
+
+Source: [src/db/debug_sql.rs:212](../src/db/debug_sql.rs#L212).
+
+```sql
+BEGIN DEFERRED
+```
+
+#### Q0356 — `transaction_with_behavior`
+
+Source: [src/db/debug_sql.rs:213](../src/db/debug_sql.rs#L213).
+
+```sql
+BEGIN IMMEDIATE
+```
+
+#### Q0357 — `transaction_with_behavior`
+
+Source: [src/db/debug_sql.rs:214](../src/db/debug_sql.rs#L214).
+
+```sql
+BEGIN EXCLUSIVE
+```
+
+#### Q0358 — `transaction_with_behavior`
+
+Source: [src/db/debug_sql.rs:215](../src/db/debug_sql.rs#L215).
+
+```sql
+BEGIN READONLY
+```
+
+#### Q0359 — `commit`
+
+Source: [src/db/debug_sql.rs:321](../src/db/debug_sql.rs#L321).
+
+```sql
+COMMIT
+```
+
+#### Q0360 — `rollback`
+
+Source: [src/db/debug_sql.rs:331](../src/db/debug_sql.rs#L331).
+
+```sql
+ROLLBACK
+```
+
+### src/db/debug_sql/tests.rs
+
+#### Q0361 — `fixture`
+
+Source: [src/db/debug_sql/tests.rs:14](../src/db/debug_sql/tests.rs#L14).
+
+```sql
+CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); CREATE INDEX item_name ON items(name);
+```
+
+#### Q0362 — `count`
+
+Source: [src/db/debug_sql/tests.rs:34](../src/db/debug_sql/tests.rs#L34).
+
+```sql
+SELECT count(*) FROM items
+```
+
+#### Q0363 — `disabled_delegates_without_records_or_statement_context`
+
+Source: [src/db/debug_sql/tests.rs:50](../src/db/debug_sql/tests.rs#L50).
+
+```sql
+INSERT INTO items(name) VALUES (?)
+```
+
+#### Q0364 — `trace_redacts_bindings_and_reports_errors_without_plans`
+
+Source: [src/db/debug_sql/tests.rs:63](../src/db/debug_sql/tests.rs#L63).
+
+```sql
+INSERT INTO items(name) VALUES (:name)
+```
+
+#### Q0365 — `trace_redacts_bindings_and_reports_errors_without_plans`
+
+Source: [src/db/debug_sql/tests.rs:68](../src/db/debug_sql/tests.rs#L68).
+
+```sql
+SELECT missing FROM items
+```
+
+#### Q0366 — `explains_index_with_real_bindings_and_never_replays_writes`
+
+Source: [src/db/debug_sql/tests.rs:84](../src/db/debug_sql/tests.rs#L84).
+
+```sql
+INSERT INTO items(name) VALUES (?)
+```
+
+#### Q0367 — `explains_index_with_real_bindings_and_never_replays_writes`
+
+Source: [src/db/debug_sql/tests.rs:89](../src/db/debug_sql/tests.rs#L89).
+
+```sql
+SELECT id FROM items WHERE name = ?
+```
+
+#### Q0368 — `diagnostic_failure_does_not_fail_valid_sql_or_recurse`
+
+Source: [src/db/debug_sql/tests.rs:115](../src/db/debug_sql/tests.rs#L115).
+
+```sql
+EXPLAIN QUERY PLAN SELECT * FROM items
+```
+
+#### Q0369 — `prepared_statements_transactions_and_batches_keep_behavior`
+
+Source: [src/db/debug_sql/tests.rs:130](../src/db/debug_sql/tests.rs#L130).
+
+```sql
+INSERT INTO items(name) VALUES (?)
+```
+
+#### Q0370 — `prepared_statements_transactions_and_batches_keep_behavior`
+
+Source: [src/db/debug_sql/tests.rs:139](../src/db/debug_sql/tests.rs#L139).
+
+```sql
+INSERT INTO items(name) VALUES (?)
+```
+
+#### Q0371 — `prepared_statements_transactions_and_batches_keep_behavior`
+
+Source: [src/db/debug_sql/tests.rs:144](../src/db/debug_sql/tests.rs#L144).
+
+```sql
+INSERT INTO items(name) VALUES ('batch'); INSERT INTO items(name) VALUES ('batch2');
+```
+
+#### Q0372 — `prepared_statements_transactions_and_batches_keep_behavior`
+
+Source: [src/db/debug_sql/tests.rs:148](../src/db/debug_sql/tests.rs#L148).
+
+```sql
+SELECT count(*) FROM items
+```
+
+#### Q0373 — `records_and_plans_are_bounded_during_repeated_use`
+
+Source: [src/db/debug_sql/tests.rs:174](../src/db/debug_sql/tests.rs#L174).
+
+```sql
+SELECT id FROM items WHERE name = ?
+```
+
+#### Q0374 — `records_and_plans_are_bounded_during_repeated_use`
+
+Source: [src/db/debug_sql/tests.rs:184](../src/db/debug_sql/tests.rs#L184).
+
+```sql
+SELECT 1 /*{}*/
+```
+
+#### Q0375 — `records_and_plans_are_bounded_during_repeated_use`
+
+Source: [src/db/debug_sql/tests.rs:189](../src/db/debug_sql/tests.rs#L189).
+
+```sql
+SELECT id FROM items
+```
+
+#### Q0376 — `dropping_transaction_still_rolls_back`
+
+Source: [src/db/debug_sql/tests.rs:205](../src/db/debug_sql/tests.rs#L205).
+
+```sql
+INSERT INTO items(name) VALUES (?)
+```
+
 ### `src/db/compatibility.rs`
 
-#### Q0343 — `check_channel`
+#### Q0377 — `check_channel`
 
 Source: [src/db/compatibility.rs:42](../src/db/compatibility.rs#L42).
 
@@ -3915,7 +4254,7 @@ Source: [src/db/compatibility.rs:42](../src/db/compatibility.rs#L42).
 PRAGMA application_id
 ```
 
-#### Q0344 — `check_channel`
+#### Q0378 — `check_channel`
 
 Source: [src/db/compatibility.rs:54](../src/db/compatibility.rs#L54).
 
@@ -3923,7 +4262,7 @@ Source: [src/db/compatibility.rs:54](../src/db/compatibility.rs#L54).
 PRAGMA user_version
 ```
 
-#### Q0345 — `mark_empty`
+#### Q0379 — `mark_empty`
 
 Source: [src/db/compatibility.rs:91](../src/db/compatibility.rs#L91).
 
@@ -3931,7 +4270,7 @@ Source: [src/db/compatibility.rs:91](../src/db/compatibility.rs#L91).
 SELECT count(*) FROM sqlite_schema
 ```
 
-#### Q0346 — `mark_empty`
+#### Q0380 — `mark_empty`
 
 Source: [src/db/compatibility.rs:92](../src/db/compatibility.rs#L92).
 
@@ -3939,7 +4278,7 @@ Source: [src/db/compatibility.rs:92](../src/db/compatibility.rs#L92).
 PRAGMA application_id
 ```
 
-#### Q0347 — `mark_empty`
+#### Q0381 — `mark_empty`
 
 Source: [src/db/compatibility.rs:99](../src/db/compatibility.rs#L99).
 
@@ -3947,7 +4286,7 @@ Source: [src/db/compatibility.rs:99](../src/db/compatibility.rs#L99).
 PRAGMA application_id = {origin}
 ```
 
-#### Q0348 — `channel_policy_preserves_origin`
+#### Q0382 — `channel_policy_preserves_origin`
 
 Source: [src/db/compatibility.rs:120](../src/db/compatibility.rs#L120).
 
@@ -3955,7 +4294,7 @@ Source: [src/db/compatibility.rs:120](../src/db/compatibility.rs#L120).
 PRAGMA application_id = {origin}
 ```
 
-#### Q0349 — `channel_policy_preserves_origin`
+#### Q0383 — `channel_policy_preserves_origin`
 
 Source: [src/db/compatibility.rs:126](../src/db/compatibility.rs#L126).
 
@@ -4388,9 +4727,9 @@ pub async fn copy_branch_db(parent_db: &Path, new_db_path: &Path) -> crate::erro
 }
 ```
 
-### `try_open_read_only` — src/db/connection.rs:220
+### `try_open_read_only` — src/db/connection.rs:222
 
-Source: [src/db/connection.rs:220](../src/db/connection.rs#L220).
+Source: [src/db/connection.rs:222](../src/db/connection.rs#L222).
 
 ```rust
     async fn try_open_read_only(db_path: &Path) -> Result<Self> {
@@ -4452,7 +4791,7 @@ Source: [src/db/connection.rs:220](../src/db/connection.rs#L220).
         }
 
         let database = Self {
-            conn,
+            conn: Connection::new(conn, "project"),
             _db: db,
             read_only: true,
             trait_dispatch_callers: RwLock::new(HashMap::new()),
@@ -4463,9 +4802,9 @@ Source: [src/db/connection.rs:220](../src/db/connection.rs#L220).
     }
 ```
 
-### `checkpoint` — src/db/connection.rs:308
+### `checkpoint` — src/db/connection.rs:310
 
-Source: [src/db/connection.rs:308](../src/db/connection.rs#L308).
+Source: [src/db/connection.rs:310](../src/db/connection.rs#L310).
 
 ```rust
     pub async fn checkpoint(&self) -> Result<()> {
@@ -4480,9 +4819,9 @@ Source: [src/db/connection.rs:308](../src/db/connection.rs#L308).
     }
 ```
 
-### `optimize` — src/db/connection.rs:320
+### `optimize` — src/db/connection.rs:322
 
-Source: [src/db/connection.rs:320](../src/db/connection.rs#L320).
+Source: [src/db/connection.rs:322](../src/db/connection.rs#L322).
 
 ```rust
     pub async fn optimize(&self) -> Result<()> {
@@ -4497,9 +4836,9 @@ Source: [src/db/connection.rs:320](../src/db/connection.rs#L320).
     }
 ```
 
-### `size` — src/db/connection.rs:332
+### `size` — src/db/connection.rs:334
 
-Source: [src/db/connection.rs:332](../src/db/connection.rs#L332).
+Source: [src/db/connection.rs:334](../src/db/connection.rs#L334).
 
 ```rust
     pub async fn size(&self) -> Result<u64> {
@@ -4536,9 +4875,9 @@ Source: [src/db/connection.rs:332](../src/db/connection.rs#L332).
     }
 ```
 
-### `quick_check` — src/db/connection.rs:369
+### `quick_check` — src/db/connection.rs:371
 
-Source: [src/db/connection.rs:369](../src/db/connection.rs#L369).
+Source: [src/db/connection.rs:371](../src/db/connection.rs#L371).
 
 ```rust
     pub async fn quick_check(&self) -> Result<bool> {
@@ -4563,9 +4902,9 @@ Source: [src/db/connection.rs:369](../src/db/connection.rs#L369).
     }
 ```
 
-### `needs_bulk_load_finalization` — src/db/connection.rs:399
+### `needs_bulk_load_finalization` — src/db/connection.rs:401
 
-Source: [src/db/connection.rs:399](../src/db/connection.rs#L399).
+Source: [src/db/connection.rs:401](../src/db/connection.rs#L401).
 
 ```rust
     pub async fn needs_bulk_load_finalization(&self) -> Result<bool> {
@@ -4596,9 +4935,9 @@ Source: [src/db/connection.rs:399](../src/db/connection.rs#L399).
     }
 ```
 
-### `rebuild_fts` — src/db/connection.rs:430
+### `rebuild_fts` — src/db/connection.rs:432
 
-Source: [src/db/connection.rs:430](../src/db/connection.rs#L430).
+Source: [src/db/connection.rs:432](../src/db/connection.rs#L432).
 
 ```rust
     pub async fn rebuild_fts(&self) -> Result<()> {
@@ -4613,12 +4952,12 @@ Source: [src/db/connection.rs:430](../src/db/connection.rs#L430).
     }
 ```
 
-### `apply_pragmas` — src/db/connection.rs:445
+### `apply_pragmas` — src/db/connection.rs:447
 
-Source: [src/db/connection.rs:445](../src/db/connection.rs#L445).
+Source: [src/db/connection.rs:447](../src/db/connection.rs#L447).
 
 ```rust
-    async fn apply_pragmas(conn: &Connection, db_file_size: u64) -> Result<()> {
+    async fn apply_pragmas(conn: &RawConnection, db_file_size: u64) -> Result<()> {
         let (cache_kb, mmap) = adaptive_cache_sizes(db_file_size);
         let busy_ms = busy_timeout_ms();
         conn.execute_batch(&format!(
@@ -4640,9 +4979,9 @@ Source: [src/db/connection.rs:445](../src/db/connection.rs#L445).
     }
 ```
 
-### `begin_bulk_load` — src/db/connection.rs:470
+### `begin_bulk_load` — src/db/connection.rs:472
 
-Source: [src/db/connection.rs:470](../src/db/connection.rs#L470).
+Source: [src/db/connection.rs:472](../src/db/connection.rs#L472).
 
 ```rust
     pub async fn begin_bulk_load(&self) -> Result<()> {
@@ -4681,9 +5020,9 @@ Source: [src/db/connection.rs:470](../src/db/connection.rs#L470).
     }
 ```
 
-### `end_bulk_load` — src/db/connection.rs:514
+### `end_bulk_load` — src/db/connection.rs:516
 
-Source: [src/db/connection.rs:514](../src/db/connection.rs#L514).
+Source: [src/db/connection.rs:516](../src/db/connection.rs#L516).
 
 ```rust
     pub async fn end_bulk_load(&self) -> Result<()> {
@@ -4737,9 +5076,358 @@ Source: [src/db/connection.rs:514](../src/db/connection.rs#L514).
     }
 ```
 
-### `get_version` — src/db/migrations.rs:98
+### `plan` — src/db/debug_sql.rs:83
 
-Source: [src/db/migrations.rs:98](../src/db/migrations.rs#L98).
+Source: [src/db/debug_sql.rs:83](../src/db/debug_sql.rs#L83).
+
+```rust
+    async fn plan(&self, sql: &str, params: &Params) -> Option<Value> {
+        let debug = self.debug.as_ref()?;
+        if !debug.explain {
+            return None;
+        }
+        // Only compile the plan, never execute the original statement here.
+        // Use the raw connection so diagnostics cannot recurse into themselves.
+        let plan_sql = format!("EXPLAIN QUERY PLAN {sql}");
+        let result: libsql::Result<Value> = async {
+            let mut rows = self.inner.query(&plan_sql, params.clone()).await?;
+            let mut plan = Vec::new();
+            while let Some(row) = rows.next().await? {
+                if plan.len() == MAX_PLAN_ROWS {
+                    return Ok(json!({"rows": plan, "truncated": true}));
+                }
+                let detail: String = row.get(3)?;
+                plan.push(json!({
+                    "id": row.get::<i64>(0)?,
+                    "parent": row.get::<i64>(1)?,
+                    "detail": bounded(&detail, MAX_DETAIL_BYTES),
+                    "detail_truncated": detail.len() > MAX_DETAIL_BYTES,
+                }));
+            }
+            Ok(json!({"rows": plan, "truncated": false}))
+        }
+        .await;
+        // Error text can contain values or user data. Keep the application
+        // error unchanged, but record only a diagnostic failure indicator.
+        Some(result.unwrap_or_else(|_| json!({"error": true})))
+    }
+```
+
+### `transaction_with_behavior` — src/db/debug_sql.rs:207
+
+Source: [src/db/debug_sql.rs:207](../src/db/debug_sql.rs#L207).
+
+```rust
+    pub async fn transaction_with_behavior(
+        &self,
+        behavior: libsql::TransactionBehavior,
+    ) -> libsql::Result<Transaction> {
+        let sql = match behavior {
+            libsql::TransactionBehavior::Deferred => "BEGIN DEFERRED",
+            libsql::TransactionBehavior::Immediate => "BEGIN IMMEDIATE",
+            libsql::TransactionBehavior::Exclusive => "BEGIN EXCLUSIVE",
+            libsql::TransactionBehavior::ReadOnly => "BEGIN READONLY",
+        };
+        let start = self.debug.as_ref().map(|_| Instant::now());
+        let result = self.inner.transaction_with_behavior(behavior).await;
+        if let Some(start) = start {
+            self.record("begin", sql, 0, start, result.is_ok(), None);
+        }
+        let inner = result?;
+        let connection = Self {
+            inner: (*inner).clone(),
+            debug: self.debug.clone(),
+        };
+        Ok(Transaction { inner, connection })
+    }
+```
+
+### `commit` — src/db/debug_sql.rs:316
+
+Source: [src/db/debug_sql.rs:316](../src/db/debug_sql.rs#L316).
+
+```rust
+    pub async fn commit(self) -> libsql::Result<()> {
+        let start = self.connection.debug.as_ref().map(|_| Instant::now());
+        let result = self.inner.commit().await;
+        if let Some(start) = start {
+            self.connection
+                .record("commit", "COMMIT", 0, start, result.is_ok(), None);
+        }
+        result
+    }
+```
+
+### `rollback` — src/db/debug_sql.rs:326
+
+Source: [src/db/debug_sql.rs:326](../src/db/debug_sql.rs#L326).
+
+```rust
+    pub async fn rollback(self) -> libsql::Result<()> {
+        let start = self.connection.debug.as_ref().map(|_| Instant::now());
+        let result = self.inner.rollback().await;
+        if let Some(start) = start {
+            self.connection
+                .record("rollback", "ROLLBACK", 0, start, result.is_ok(), None);
+        }
+        result
+    }
+```
+
+### `fixture` — src/db/debug_sql/tests.rs:8
+
+Source: [src/db/debug_sql/tests.rs:8](../src/db/debug_sql/tests.rs#L8).
+
+```rust
+async fn fixture(enabled: bool, explain: bool) -> (libsql::Database, Connection, Records) {
+    let db = libsql::Builder::new_local(":memory:")
+        .build()
+        .await
+        .unwrap();
+    let inner = db.connect().unwrap();
+    inner.execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); CREATE INDEX item_name ON items(name);")
+        .await.unwrap();
+    let records: Records = Arc::default();
+    let sink = records.clone();
+    let conn = Connection {
+        inner,
+        debug: enabled.then(|| {
+            Arc::new(DebugState {
+                database: "test",
+                connection_id: 0,
+                explain,
+                sequence: AtomicU64::new(0),
+                sink: Box::new(move |record| sink.lock().unwrap().push(record.clone())),
+            })
+        }),
+    };
+    (db, conn, records)
+}
+```
+
+### `count` — src/db/debug_sql/tests.rs:33
+
+Source: [src/db/debug_sql/tests.rs:33](../src/db/debug_sql/tests.rs#L33).
+
+```rust
+async fn count(conn: &Connection) -> i64 {
+    conn.query("SELECT count(*) FROM items", ())
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap()
+}
+```
+
+### `disabled_delegates_without_records_or_statement_context` — src/db/debug_sql/tests.rs:46
+
+Source: [src/db/debug_sql/tests.rs:46](../src/db/debug_sql/tests.rs#L46).
+
+```rust
+async fn disabled_delegates_without_records_or_statement_context() {
+    // Explain=true alone cannot activate debug mode.
+    let (_db, conn, records) = fixture(false, true).await;
+    let stmt = conn
+        .prepare("INSERT INTO items(name) VALUES (?)")
+        .await
+        .unwrap();
+    assert!(stmt.context.is_none());
+    assert_eq!(stmt.execute(["private"]).await.unwrap(), 1);
+    assert_eq!(count(&conn).await, 1);
+    assert!(records.lock().unwrap().is_empty());
+}
+```
+
+### `trace_redacts_bindings_and_reports_errors_without_plans` — src/db/debug_sql/tests.rs:60
+
+Source: [src/db/debug_sql/tests.rs:60](../src/db/debug_sql/tests.rs#L60).
+
+```rust
+async fn trace_redacts_bindings_and_reports_errors_without_plans() {
+    let (_db, conn, records) = fixture(true, false).await;
+    conn.execute(
+        "INSERT INTO items(name) VALUES (:name)",
+        libsql::named_params! {":name": "SECRET_BOUND_VALUE"},
+    )
+    .await
+    .unwrap();
+    assert!(conn.query("SELECT missing FROM items", ()).await.is_err());
+    let records = records.lock().unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["parameter_count"], 1);
+    assert_eq!(records[0]["ok"], true);
+    assert_eq!(records[1]["ok"], false);
+    assert_eq!(records[1]["sequence"], 1);
+    assert!(records.iter().all(|r| r["plan"].is_null()));
+    assert!(!serde_json::to_string(&*records)
+        .unwrap()
+        .contains("SECRET_BOUND_VALUE"));
+}
+```
+
+### `explains_index_with_real_bindings_and_never_replays_writes` — src/db/debug_sql/tests.rs:82
+
+Source: [src/db/debug_sql/tests.rs:82](../src/db/debug_sql/tests.rs#L82).
+
+```rust
+async fn explains_index_with_real_bindings_and_never_replays_writes() {
+    let (_db, conn, records) = fixture(true, true).await;
+    conn.execute("INSERT INTO items(name) VALUES (?)", ["SECRET_BOUND_VALUE"])
+        .await
+        .unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT id FROM items WHERE name = ?",
+            ["SECRET_BOUND_VALUE"],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+        1
+    );
+    assert_eq!(count(&conn).await, 1);
+    let records = records.lock().unwrap();
+    assert!(records[1]["plan"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["detail"].as_str().unwrap().contains("item_name")));
+    assert!(!serde_json::to_string(&*records)
+        .unwrap()
+        .contains("SECRET_BOUND_VALUE"));
+}
+```
+
+### `diagnostic_failure_does_not_fail_valid_sql_or_recurse` — src/db/debug_sql/tests.rs:111
+
+Source: [src/db/debug_sql/tests.rs:111](../src/db/debug_sql/tests.rs#L111).
+
+```rust
+async fn diagnostic_failure_does_not_fail_valid_sql_or_recurse() {
+    let (_db, conn, records) = fixture(true, true).await;
+    // Prefixing EXPLAIN again is invalid, but the original query is valid.
+    let mut rows = conn
+        .query("EXPLAIN QUERY PLAN SELECT * FROM items", ())
+        .await
+        .unwrap();
+    assert!(rows.next().await.unwrap().is_some());
+    let records = records.lock().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["ok"], true);
+    assert_eq!(records[0]["plan"]["error"], true);
+}
+```
+
+### `prepared_statements_transactions_and_batches_keep_behavior` — src/db/debug_sql/tests.rs:126
+
+Source: [src/db/debug_sql/tests.rs:126](../src/db/debug_sql/tests.rs#L126).
+
+```rust
+async fn prepared_statements_transactions_and_batches_keep_behavior() {
+    let (_db, conn, records) = fixture(true, true).await;
+    let tx = conn.transaction().await.unwrap();
+    let stmt = tx
+        .prepare("INSERT INTO items(name) VALUES (?)")
+        .await
+        .unwrap();
+    stmt.execute(["private"]).await.unwrap();
+    stmt.execute(["private2"]).await.unwrap();
+    drop(stmt);
+    tx.rollback().await.unwrap();
+    assert_eq!(count(&conn).await, 0);
+    let tx = conn.transaction().await.unwrap();
+    tx.execute("INSERT INTO items(name) VALUES (?)", ["committed"])
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    conn.execute_transactional_batch(
+        "INSERT INTO items(name) VALUES ('batch'); INSERT INTO items(name) VALUES ('batch2');",
+    )
+    .await
+    .unwrap();
+    let mut stmt = conn.prepare("SELECT count(*) FROM items").await.unwrap();
+    assert_eq!(stmt.query_row(()).await.unwrap().get::<i64>(0).unwrap(), 3);
+    stmt.finalize();
+    let records = records.lock().unwrap();
+    for op in [
+        "begin",
+        "prepare",
+        "statement_execute",
+        "statement_query",
+        "rollback",
+        "commit",
+        "transactional_batch",
+    ] {
+        assert!(records.iter().any(|r| r["operation"] == op), "missing {op}");
+    }
+    assert!(records
+        .iter()
+        .filter(|r| r["operation"] == "transactional_batch")
+        .all(|r| r["plan"].is_null()));
+}
+```
+
+### `records_and_plans_are_bounded_during_repeated_use` — src/db/debug_sql/tests.rs:170
+
+Source: [src/db/debug_sql/tests.rs:170](../src/db/debug_sql/tests.rs#L170).
+
+```rust
+async fn records_and_plans_are_bounded_during_repeated_use() {
+    let (_db, conn, records) = fixture(true, true).await;
+    for _ in 0..100 {
+        let mut rows = conn
+            .query("SELECT id FROM items WHERE name = ?", ["private"])
+            .await
+            .unwrap();
+        assert!(rows.next().await.unwrap().is_none());
+        // No production history: the test sink drains each record.
+        let mut records = records.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(serde_json::to_vec(&records[0]).unwrap().len() < 4096);
+        records.clear();
+    }
+    let sql = format!("SELECT 1 /*{}*/", "é".repeat(MAX_SQL_BYTES));
+    conn.query(&sql, ()).await.unwrap();
+    let record = records.lock().unwrap().pop().unwrap();
+    assert_eq!(record["sql_truncated"], true);
+    assert!(record["sql"].as_str().unwrap().len() <= MAX_SQL_BYTES);
+    let sql = std::iter::repeat_n("SELECT id FROM items", MAX_PLAN_ROWS + 5)
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ");
+    conn.query(&sql, ()).await.unwrap();
+    let record = records.lock().unwrap().pop().unwrap();
+    assert_eq!(record["plan"]["truncated"], true);
+    assert_eq!(
+        record["plan"]["rows"].as_array().unwrap().len(),
+        MAX_PLAN_ROWS
+    );
+}
+```
+
+### `dropping_transaction_still_rolls_back` — src/db/debug_sql/tests.rs:202
+
+Source: [src/db/debug_sql/tests.rs:202](../src/db/debug_sql/tests.rs#L202).
+
+```rust
+async fn dropping_transaction_still_rolls_back() {
+    let (_db, conn, _records) = fixture(true, true).await;
+    let tx = conn.transaction().await.unwrap();
+    tx.execute("INSERT INTO items(name) VALUES (?)", ["private"])
+        .await
+        .unwrap();
+    drop(tx);
+    assert_eq!(count(&conn).await, 0);
+}
+```
+
+### `get_version` — src/db/migrations.rs:160
+
+Source: [src/db/migrations.rs:160](../src/db/migrations.rs#L160).
 
 ```rust
 async fn get_version(conn: &Connection) -> Result<u32> {
@@ -4767,9 +5455,9 @@ async fn get_version(conn: &Connection) -> Result<u32> {
 }
 ```
 
-### `set_version` — src/db/migrations.rs:126
+### `set_version` — src/db/migrations.rs:188
 
-Source: [src/db/migrations.rs:126](../src/db/migrations.rs#L126).
+Source: [src/db/migrations.rs:188](../src/db/migrations.rs#L188).
 
 ```rust
 async fn set_version(conn: &Connection, version: u32) -> Result<()> {
@@ -4783,9 +5471,9 @@ async fn set_version(conn: &Connection, version: u32) -> Result<()> {
 }
 ```
 
-### `create_schema` — src/db/migrations.rs:138
+### `create_schema` — src/db/migrations.rs:200
 
-Source: [src/db/migrations.rs:138](../src/db/migrations.rs#L138).
+Source: [src/db/migrations.rs:200](../src/db/migrations.rs#L200).
 
 ```rust
 pub async fn create_schema(conn: &Connection) -> Result<()> {
@@ -4878,13 +5566,6 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
             name, qualified_name, docstring, signature, search_terms,
             content='nodes', content_rowid='rowid',
             tokenize='porter unicode61'
-        );
-
-        CREATE VIRTUAL TABLE IF NOT EXISTS executable_body_fts USING fts5(
-            node_id UNINDEXED,
-            file_path UNINDEXED,
-            body,
-            tokenize='unicode61'
         );
 
         CREATE TABLE IF NOT EXISTS trait_dispatch_callers (
@@ -5033,14 +5714,16 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
             operation: "create_schema".to_string(),
         })?;
 
+    migrate_v19(conn).await?;
+    migrate_v20(conn).await?;
     set_version(conn, LATEST_VERSION).await?;
     Ok(())
 }
 ```
 
-### `migrate` — src/db/migrations.rs:393
+### `migrate` — src/db/migrations.rs:450
 
-Source: [src/db/migrations.rs:393](../src/db/migrations.rs#L393).
+Source: [src/db/migrations.rs:450](../src/db/migrations.rs#L450).
 
 ```rust
 pub async fn migrate(conn: &Connection) -> Result<bool> {
@@ -5122,9 +5805,9 @@ pub async fn migrate(conn: &Connection) -> Result<bool> {
 }
 ```
 
-### `migrate_v1` — src/db/migrations.rs:552
+### `migrate_v1` — src/db/migrations.rs:611
 
-Source: [src/db/migrations.rs:552](../src/db/migrations.rs#L552).
+Source: [src/db/migrations.rs:611](../src/db/migrations.rs#L611).
 
 ```rust
 async fn migrate_v1(conn: &Connection) -> Result<()> {
@@ -5254,9 +5937,9 @@ async fn migrate_v1(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v2` — src/db/migrations.rs:683
+### `migrate_v2` — src/db/migrations.rs:742
 
-Source: [src/db/migrations.rs:683](../src/db/migrations.rs#L683).
+Source: [src/db/migrations.rs:742](../src/db/migrations.rs#L742).
 
 ```rust
 async fn migrate_v2(conn: &Connection) -> Result<()> {
@@ -5285,9 +5968,9 @@ async fn migrate_v2(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v3` — src/db/migrations.rs:713
+### `migrate_v3` — src/db/migrations.rs:772
 
-Source: [src/db/migrations.rs:713](../src/db/migrations.rs#L713).
+Source: [src/db/migrations.rs:772](../src/db/migrations.rs#L772).
 
 ```rust
 async fn migrate_v3(conn: &Connection) -> Result<()> {
@@ -5307,9 +5990,9 @@ async fn migrate_v3(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v4` — src/db/migrations.rs:734
+### `migrate_v4` — src/db/migrations.rs:793
 
-Source: [src/db/migrations.rs:734](../src/db/migrations.rs#L734).
+Source: [src/db/migrations.rs:793](../src/db/migrations.rs#L793).
 
 ```rust
 async fn migrate_v4(conn: &Connection) -> Result<()> {
@@ -5328,9 +6011,9 @@ async fn migrate_v4(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v5` — src/db/migrations.rs:756
+### `migrate_v5` — src/db/migrations.rs:815
 
-Source: [src/db/migrations.rs:756](../src/db/migrations.rs#L756).
+Source: [src/db/migrations.rs:815](../src/db/migrations.rs#L815).
 
 ```rust
 async fn migrate_v5(conn: &Connection) -> Result<()> {
@@ -5372,9 +6055,9 @@ async fn migrate_v5(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v6` — src/db/migrations.rs:800
+### `migrate_v6` — src/db/migrations.rs:859
 
-Source: [src/db/migrations.rs:800](../src/db/migrations.rs#L800).
+Source: [src/db/migrations.rs:859](../src/db/migrations.rs#L859).
 
 ```rust
 async fn migrate_v6(conn: &Connection) -> Result<()> {
@@ -5392,9 +6075,9 @@ async fn migrate_v6(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v7` — src/db/migrations.rs:825
+### `migrate_v7` — src/db/migrations.rs:884
 
-Source: [src/db/migrations.rs:825](../src/db/migrations.rs#L825).
+Source: [src/db/migrations.rs:884](../src/db/migrations.rs#L884).
 
 ```rust
 async fn migrate_v7(conn: &Connection) -> Result<()> {
@@ -5422,9 +6105,9 @@ async fn migrate_v7(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v8` — src/db/migrations.rs:858
+### `migrate_v8` — src/db/migrations.rs:917
 
-Source: [src/db/migrations.rs:858](../src/db/migrations.rs#L858).
+Source: [src/db/migrations.rs:917](../src/db/migrations.rs#L917).
 
 ```rust
 async fn migrate_v8(conn: &Connection) -> Result<()> {
@@ -5486,9 +6169,9 @@ async fn migrate_v8(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v9` — src/db/migrations.rs:929
+### `migrate_v9` — src/db/migrations.rs:988
 
-Source: [src/db/migrations.rs:929](../src/db/migrations.rs#L929).
+Source: [src/db/migrations.rs:988](../src/db/migrations.rs#L988).
 
 ```rust
 async fn migrate_v9(conn: &Connection) -> Result<()> {
@@ -5615,9 +6298,9 @@ async fn migrate_v9(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v10` — src/db/migrations.rs:1060
+### `migrate_v10` — src/db/migrations.rs:1119
 
-Source: [src/db/migrations.rs:1060](../src/db/migrations.rs#L1060).
+Source: [src/db/migrations.rs:1119](../src/db/migrations.rs#L1119).
 
 ```rust
 async fn migrate_v10(conn: &Connection) -> Result<()> {
@@ -5646,9 +6329,9 @@ async fn migrate_v10(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v11` — src/db/migrations.rs:1102
+### `migrate_v11` — src/db/migrations.rs:1161
 
-Source: [src/db/migrations.rs:1102](../src/db/migrations.rs#L1102).
+Source: [src/db/migrations.rs:1161](../src/db/migrations.rs#L1161).
 
 ```rust
 async fn migrate_v11(conn: &Connection) -> Result<()> {
@@ -5678,9 +6361,9 @@ async fn migrate_v11(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v12` — src/db/migrations.rs:1136
+### `migrate_v12` — src/db/migrations.rs:1195
 
-Source: [src/db/migrations.rs:1136](../src/db/migrations.rs#L1136).
+Source: [src/db/migrations.rs:1195](../src/db/migrations.rs#L1195).
 
 ```rust
 async fn migrate_v12(conn: &Connection) -> Result<()> {
@@ -5737,9 +6420,9 @@ async fn migrate_v12(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v13` — src/db/migrations.rs:1196
+### `migrate_v13` — src/db/migrations.rs:1255
 
-Source: [src/db/migrations.rs:1196](../src/db/migrations.rs#L1196).
+Source: [src/db/migrations.rs:1255](../src/db/migrations.rs#L1255).
 
 ```rust
 async fn migrate_v13(conn: &Connection) -> Result<()> {
@@ -5791,9 +6474,9 @@ async fn migrate_v13(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `migrate_v14` — src/db/migrations.rs:1288
+### `migrate_v14` — src/db/migrations.rs:1347
 
-Source: [src/db/migrations.rs:1288](../src/db/migrations.rs#L1288).
+Source: [src/db/migrations.rs:1347](../src/db/migrations.rs#L1347).
 
 ```rust
 async fn migrate_v14(conn: &Connection) -> Result<()> {
@@ -5943,9 +6626,9 @@ async fn migrate_v14(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `table_exists` — src/db/migrations.rs:1456
+### `table_exists` — src/db/migrations.rs:1515
 
-Source: [src/db/migrations.rs:1456](../src/db/migrations.rs#L1456).
+Source: [src/db/migrations.rs:1515](../src/db/migrations.rs#L1515).
 
 ```rust
 async fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
@@ -5971,9 +6654,9 @@ async fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
 }
 ```
 
-### `migrate_v15` — src/db/migrations.rs:1488
+### `migrate_v15` — src/db/migrations.rs:1547
 
-Source: [src/db/migrations.rs:1488](../src/db/migrations.rs#L1488).
+Source: [src/db/migrations.rs:1547](../src/db/migrations.rs#L1547).
 
 ```rust
 async fn migrate_v15(conn: &Connection) -> Result<()> {
@@ -6079,9 +6762,9 @@ async fn migrate_v15(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `node_columns` — src/db/migrations.rs:1591
+### `node_columns` — src/db/migrations.rs:1650
 
-Source: [src/db/migrations.rs:1591](../src/db/migrations.rs#L1591).
+Source: [src/db/migrations.rs:1650](../src/db/migrations.rs#L1650).
 
 ```rust
 async fn node_columns(conn: &Connection) -> Result<Vec<String>> {
@@ -6108,9 +6791,9 @@ async fn node_columns(conn: &Connection) -> Result<Vec<String>> {
 }
 ```
 
-### `migrate_v16` — src/db/migrations.rs:1628
+### `migrate_v16` — src/db/migrations.rs:1687
 
-Source: [src/db/migrations.rs:1628](../src/db/migrations.rs#L1628).
+Source: [src/db/migrations.rs:1687](../src/db/migrations.rs#L1687).
 
 ```rust
 async fn migrate_v16(conn: &Connection) -> Result<()> {
@@ -6135,9 +6818,9 @@ async fn migrate_v16(conn: &Connection) -> Result<()> {
 }
 ```
 
-### `indexes_naming` — src/db/migrations.rs:1673
+### `indexes_naming` — src/db/migrations.rs:1732
 
-Source: [src/db/migrations.rs:1673](../src/db/migrations.rs#L1673).
+Source: [src/db/migrations.rs:1732](../src/db/migrations.rs#L1732).
 
 ```rust
 async fn indexes_naming(conn: &Connection, table: &str, column: &str) -> Result<Vec<String>> {
@@ -6164,9 +6847,9 @@ async fn indexes_naming(conn: &Connection, table: &str, column: &str) -> Result<
 }
 ```
 
-### `table_columns` — src/db/migrations.rs:1697
+### `table_columns` — src/db/migrations.rs:1756
 
-Source: [src/db/migrations.rs:1697](../src/db/migrations.rs#L1697).
+Source: [src/db/migrations.rs:1756](../src/db/migrations.rs#L1756).
 
 ```rust
 async fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
@@ -6195,9 +6878,9 @@ async fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
 }
 ```
 
-### `migrate_v18` — src/db/migrations.rs:1744
+### `migrate_v18` — src/db/migrations.rs:1803
 
-Source: [src/db/migrations.rs:1744](../src/db/migrations.rs#L1744).
+Source: [src/db/migrations.rs:1803](../src/db/migrations.rs#L1803).
 
 ```rust
 async fn migrate_v18(conn: &Connection) -> Result<()> {
@@ -6260,6 +6943,78 @@ async fn migrate_v18(conn: &Connection) -> Result<()> {
 }
 ```
 
+### `migrate_v19` — src/db/migrations.rs:1864
+
+Source: [src/db/migrations.rs:1864](../src/db/migrations.rs#L1864).
+
+```rust
+async fn migrate_v19(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "trait_dispatch_callers").await? {
+        return Ok(());
+    }
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trait_dispatch_callers_call
+         ON trait_dispatch_callers(caller_id, trait_method_id, line)",
+        (),
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("v19: failed to index dispatch call deletion: {e}"),
+        operation: "migrate_v19".to_string(),
+    })?;
+    Ok(())
+}
+```
+
+### `migrate_v20` — src/db/migrations.rs:1883
+
+Source: [src/db/migrations.rs:1883](../src/db/migrations.rs#L1883).
+
+```rust
+async fn migrate_v20(conn: &Connection) -> Result<()> {
+    let err = |e: libsql::Error| TokenSaveError::Database {
+        message: format!("v20: failed to index body/candidate storage: {e}"),
+        operation: "migrate_v20".to_string(),
+    };
+    let had_bodies = table_exists(conn, "executable_bodies").await?;
+    conn.execute_batch(EXECUTABLE_BODIES_SQL)
+        .await
+        .map_err(err)?;
+    if !had_bodies && table_exists(conn, "executable_body_fts").await? {
+        // Preserve rowids so MATCH+LIMIT visits the same document ordering.
+        conn.execute_batch(
+            "INSERT INTO executable_bodies(id, node_id, file_path, body)
+             SELECT rowid, node_id, file_path, body FROM executable_body_fts;
+             DROP TABLE executable_body_fts;",
+        )
+        .await
+        .map_err(err)?;
+    }
+    conn.execute_batch(EXECUTABLE_BODY_FTS_SQL)
+        .await
+        .map_err(err)?;
+    conn.execute(
+        "INSERT INTO executable_body_fts(executable_body_fts) VALUES('rebuild')",
+        (),
+    )
+    .await
+    .map_err(err)?;
+    if table_exists(conn, "ambiguous_calls").await? {
+        conn.execute_batch(AMBIGUOUS_CANDIDATES_SQL)
+            .await
+            .map_err(err)?;
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO ambiguous_call_candidates
+                (from_node_id, reference_name, line, candidate_node_id)
+             SELECT a.from_node_id, a.reference_name, a.line, j.value
+             FROM ambiguous_calls a, json_each(CASE WHEN json_valid(a.candidate_node_ids) THEN CASE WHEN json_type(a.candidate_node_ids) = 'array' THEN a.candidate_node_ids ELSE '[]' END ELSE '[]' END) j
+             WHERE j.type = 'text';",
+        ).await.map_err(err)?;
+    }
+    Ok(())
+}
+```
+
 ### `clear` — src/db/queries/clear.rs:10
 
 Source: [src/db/queries/clear.rs:10](../src/db/queries/clear.rs#L10).
@@ -6269,7 +7024,8 @@ Source: [src/db/queries/clear.rs:10](../src/db/queries/clear.rs#L10).
         self.conn()
             .execute_batch(
                 "DELETE FROM vectors;
-                 DELETE FROM executable_body_fts;
+                 DELETE FROM executable_bodies;
+                 DELETE FROM ambiguous_calls;
                  DELETE FROM trait_dispatch_callers;
                  DELETE FROM unresolved_refs;
                  DELETE FROM edges;
@@ -7162,17 +7918,25 @@ Source: [src/db/queries/edges.rs:842](../src/db/queries/edges.rs#L842).
         }
 
         let where_clause = conditions.join(" AND ");
+        // Keep signatures/docstrings out of aggregation and sorting; only
+        // hydrate the bounded winners after applying all candidate filters.
         let sql = format!(
-            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+            "WITH ranked AS MATERIALIZED (
+                 SELECT {group_col} AS id, COUNT(*) AS cnt
+                 FROM edges e
+                 JOIN nodes n ON {join_col} = n.id
+                 WHERE {where_clause}
+                 GROUP BY {group_col}
+                 ORDER BY cnt DESC, {group_col}
+                 LIMIT ?{param_idx}
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    COUNT(*) AS cnt
-             FROM edges e
-             JOIN nodes n ON {join_col} = n.id
-             WHERE {where_clause}
-             GROUP BY {group_col}
-             ORDER BY cnt DESC
-             LIMIT ?{param_idx}"
+                    r.cnt
+             FROM ranked r
+             JOIN nodes n ON n.id = r.id
+             ORDER BY r.cnt DESC, r.id"
         );
         param_values.push(libsql::Value::Integer(limit as i64));
 
@@ -7206,9 +7970,9 @@ Source: [src/db/queries/edges.rs:842](../src/db/queries/edges.rs#L842).
     }
 ```
 
-### `get_largest_nodes` — src/db/queries/edges.rs:926
+### `get_largest_nodes` — src/db/queries/edges.rs:934
 
-Source: [src/db/queries/edges.rs:926](../src/db/queries/edges.rs#L926).
+Source: [src/db/queries/edges.rs:934](../src/db/queries/edges.rs#L934).
 
 ```rust
     pub async fn get_largest_nodes(
@@ -7280,9 +8044,9 @@ Source: [src/db/queries/edges.rs:926](../src/db/queries/edges.rs#L926).
     }
 ```
 
-### `get_file_coupling` — src/db/queries/edges.rs:999
+### `get_file_coupling` — src/db/queries/edges.rs:1007
 
-Source: [src/db/queries/edges.rs:999](../src/db/queries/edges.rs#L999).
+Source: [src/db/queries/edges.rs:1007](../src/db/queries/edges.rs#L1007).
 
 ```rust
     pub async fn get_file_coupling(
@@ -7349,9 +8113,9 @@ Source: [src/db/queries/edges.rs:999](../src/db/queries/edges.rs#L999).
     }
 ```
 
-### `get_inheritance_depth` — src/db/queries/edges.rs:1067
+### `get_inheritance_depth` — src/db/queries/edges.rs:1075
 
-Source: [src/db/queries/edges.rs:1067](../src/db/queries/edges.rs#L1067).
+Source: [src/db/queries/edges.rs:1075](../src/db/queries/edges.rs#L1075).
 
 ```rust
     pub async fn get_inheritance_depth(
@@ -7359,13 +8123,13 @@ Source: [src/db/queries/edges.rs:1067](../src/db/queries/edges.rs#L1067).
         path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(Node, u64)>> {
-        let path_filter = match path_prefix {
+        let (seed_join, path_filter) = match path_prefix {
             Some(prefix) => {
-                let mut f = String::from("WHERE ");
-                push_path_prefix_filter(&mut f, "n.", prefix);
-                f
+                let mut f = String::from("AND ");
+                push_path_prefix_filter(&mut f, "seed.", prefix);
+                ("JOIN nodes seed ON seed.id = e.source", f)
             }
-            None => String::new(),
+            None => ("", String::new()),
         };
 
         // Track visited node IDs in `path` to avoid blowing up on cycles in the
@@ -7378,16 +8142,18 @@ Source: [src/db/queries/edges.rs:1067](../src/db/queries/edges.rs#L1067).
         // Note the predicate order in the recursive step: `h.depth < 50` is a
         // cheap integer compare and is evaluated before the path `instr`
         // string-scan, so cycles still under the depth bound short-circuit
-        // without paying for the substring search. Reducing the hierarchy to
-        // `(leaf_id, max_depth)` in an inner subquery before joining `nodes`
-        // means the `LIKE` path filter only runs against distinct leaves,
-        // not against the (potentially huge) full hierarchy table.
+        // without paying for the substring search. Scope only the starting
+        // nodes: ancestors outside the requested path still contribute to the
+        // maximum depth. The seed join allows the planner to start from the
+        // extends edges on sparse graphs, avoiding a scan of unrelated nodes.
+        // Unscoped requests retain the original seed without a nodes lookup.
         let sql = format!(
             "WITH RECURSIVE hierarchy(leaf_id, current_id, depth, path) AS (
                  SELECT e.source, e.target, 1,
                         ',' || e.source || ',' || e.target || ','
-                 FROM edges e
+                 FROM edges e {seed_join}
                  WHERE e.kind = 'extends'
+                   {path_filter}
                  UNION ALL
                  SELECT h.leaf_id, e.target, h.depth + 1,
                         h.path || e.target || ','
@@ -7407,7 +8173,6 @@ Source: [src/db/queries/edges.rs:1067](../src/db/queries/edges.rs#L1067).
                     ld.max_depth
              FROM leaf_depths ld
              JOIN nodes n ON ld.leaf_id = n.id
-             {path_filter}
              ORDER BY ld.max_depth DESC
              LIMIT ?1"
         );
@@ -7442,9 +8207,9 @@ Source: [src/db/queries/edges.rs:1067](../src/db/queries/edges.rs#L1067).
     }
 ```
 
-### `get_node_distribution` — src/db/queries/edges.rs:1158
+### `get_node_distribution` — src/db/queries/edges.rs:1167
 
-Source: [src/db/queries/edges.rs:1158](../src/db/queries/edges.rs#L1158).
+Source: [src/db/queries/edges.rs:1167](../src/db/queries/edges.rs#L1167).
 
 ```rust
     pub async fn get_node_distribution(
@@ -7492,9 +8257,9 @@ Source: [src/db/queries/edges.rs:1158](../src/db/queries/edges.rs#L1158).
     }
 ```
 
-### `get_call_edges` — src/db/queries/edges.rs:1205
+### `get_call_edges` — src/db/queries/edges.rs:1214
 
-Source: [src/db/queries/edges.rs:1205](../src/db/queries/edges.rs#L1205).
+Source: [src/db/queries/edges.rs:1214](../src/db/queries/edges.rs#L1214).
 
 ```rust
     pub async fn get_call_edges(&self, path_prefix: Option<&str>) -> Result<Vec<(String, String)>> {
@@ -7543,9 +8308,9 @@ Source: [src/db/queries/edges.rs:1205](../src/db/queries/edges.rs#L1205).
     }
 ```
 
-### `get_call_edges_with_lines` — src/db/queries/edges.rs:1253
+### `get_call_edges_with_lines` — src/db/queries/edges.rs:1262
 
-Source: [src/db/queries/edges.rs:1253](../src/db/queries/edges.rs#L1253).
+Source: [src/db/queries/edges.rs:1262](../src/db/queries/edges.rs#L1262).
 
 ```rust
     pub async fn get_call_edges_with_lines(
@@ -7598,9 +8363,9 @@ Source: [src/db/queries/edges.rs:1253](../src/db/queries/edges.rs#L1253).
     }
 ```
 
-### `get_complexity_ranked` — src/db/queries/edges.rs:1307
+### `get_complexity_ranked` — src/db/queries/edges.rs:1316
 
-Source: [src/db/queries/edges.rs:1307](../src/db/queries/edges.rs#L1307).
+Source: [src/db/queries/edges.rs:1316](../src/db/queries/edges.rs#L1316).
 
 ```rust
     pub async fn get_complexity_ranked(
@@ -7631,20 +8396,41 @@ Source: [src/db/queries/edges.rs:1307](../src/db/queries/edges.rs#L1307).
         }
 
         let where_clause = conditions.join(" AND ");
+        // Scoped rankings count only candidates' incident edges, including
+        // calls across the path boundary. Whole-project rankings retain the
+        // grouped strategy rather than probing twice for every graph node.
+        let (fan_out, fan_in, joins) = if path_prefix.is_some() {
+            (
+                "(SELECT COUNT(*) FROM edges WHERE source = n.id AND kind = 'calls')",
+                "(SELECT COUNT(*) FROM edges WHERE target = n.id AND kind = 'calls')",
+                "",
+            )
+        } else {
+            (
+                "COALESCE(out_calls.cnt, 0)",
+                "COALESCE(in_calls.cnt, 0)",
+                "LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
+                 LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id",
+            )
+        };
+        // Materialize only scores; fetch large signatures/docstrings after
+        // LIMIT has selected the winners. The candidate set is request-scoped.
         let sql = format!(
-            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+            "WITH scores AS MATERIALIZED (
+                 SELECT n.id, (n.end_line - n.start_line + 1) AS lines,
+                        {fan_out} AS fan_out, {fan_in} AS fan_in
+                 FROM nodes n {joins}
+                 WHERE {where_clause}
+             ), top_scores AS (
+                 SELECT *, (lines + fan_out * 3 + fan_in) AS score
+                 FROM scores ORDER BY score DESC, id LIMIT ?{param_idx}
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    (n.end_line - n.start_line + 1) AS lines,
-                    COALESCE(out_calls.cnt, 0) AS fan_out,
-                    COALESCE(in_calls.cnt, 0) AS fan_in,
-                    ((n.end_line - n.start_line + 1) + COALESCE(out_calls.cnt, 0) * 3 + COALESCE(in_calls.cnt, 0)) AS score
-             FROM nodes n
-             LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
-             LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id
-             WHERE {where_clause}
-             ORDER BY score DESC
-             LIMIT ?{param_idx}"
+                    t.lines, t.fan_out, t.fan_in, t.score
+             FROM top_scores t JOIN nodes n ON n.id = t.id
+             ORDER BY t.score DESC, t.id"
         );
         param_values.push(libsql::Value::Integer(limit as i64));
 
@@ -7690,9 +8476,9 @@ Source: [src/db/queries/edges.rs:1307](../src/db/queries/edges.rs#L1307).
     }
 ```
 
-### `get_undocumented_public_symbols` — src/db/queries/edges.rs:1400
+### `get_undocumented_public_symbols` — src/db/queries/edges.rs:1430
 
-Source: [src/db/queries/edges.rs:1400](../src/db/queries/edges.rs#L1400).
+Source: [src/db/queries/edges.rs:1430](../src/db/queries/edges.rs#L1430).
 
 ```rust
     pub async fn get_undocumented_public_symbols(
@@ -7758,9 +8544,9 @@ Source: [src/db/queries/edges.rs:1400](../src/db/queries/edges.rs#L1400).
     }
 ```
 
-### `get_god_classes` — src/db/queries/edges.rs:1465
+### `get_god_classes` — src/db/queries/edges.rs:1495
 
-Source: [src/db/queries/edges.rs:1465](../src/db/queries/edges.rs#L1465).
+Source: [src/db/queries/edges.rs:1495](../src/db/queries/edges.rs#L1495).
 
 ```rust
     pub async fn get_god_classes(
@@ -7779,20 +8565,29 @@ Source: [src/db/queries/edges.rs:1465](../src/db/queries/edges.rs#L1465).
 
         // After v9, containment is `nodes.parent_id`, not Contains edges.
         // Join each candidate container directly to its children via parent_id.
+        // Materialize only IDs and member counts for the selected containers.
+        // Full node text is loaded after the ranking limit, not per child row.
         let sql = format!(
-            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+            "WITH ranked AS MATERIALIZED (
+                 SELECT n.id,
+                        SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
+                        SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
+                        COUNT(*) AS total
+                 FROM nodes n
+                 JOIN nodes c ON c.parent_id = n.id
+                 WHERE n.kind IN ('class', 'struct', 'inner_class', 'object')
+                   {path_filter}
+                 GROUP BY n.id
+                 ORDER BY total DESC, n.id
+                 LIMIT ?1
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
-                    SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
-                    COUNT(*) AS total
-             FROM nodes n
-             JOIN nodes c ON c.parent_id = n.id
-             WHERE n.kind IN ('class', 'struct', 'inner_class', 'object')
-               {path_filter}
-             GROUP BY n.id
-             ORDER BY total DESC
-             LIMIT ?1"
+                    r.methods, r.fields, r.total
+             FROM ranked r
+             JOIN nodes n ON n.id = r.id
+             ORDER BY r.total DESC, r.id"
         );
 
         let op = "get_god_classes";
@@ -7833,9 +8628,9 @@ Source: [src/db/queries/edges.rs:1465](../src/db/queries/edges.rs#L1465).
     }
 ```
 
-### `get_all_edges` — src/db/queries/edges.rs:1535
+### `get_all_edges` — src/db/queries/edges.rs:1574
 
-Source: [src/db/queries/edges.rs:1535](../src/db/queries/edges.rs#L1535).
+Source: [src/db/queries/edges.rs:1574](../src/db/queries/edges.rs#L1574).
 
 ```rust
     pub async fn get_all_edges(&self) -> Result<Vec<Edge>> {
@@ -7855,9 +8650,9 @@ Source: [src/db/queries/edges.rs:1535](../src/db/queries/edges.rs#L1535).
     }
 ```
 
-### `get_edges_by_kind` — src/db/queries/edges.rs:1556
+### `get_edges_by_kind` — src/db/queries/edges.rs:1595
 
-Source: [src/db/queries/edges.rs:1556](../src/db/queries/edges.rs#L1556).
+Source: [src/db/queries/edges.rs:1595](../src/db/queries/edges.rs#L1595).
 
 ```rust
     pub async fn get_edges_by_kind(&self, kind: EdgeKind) -> Result<Vec<Edge>> {
@@ -7877,9 +8672,9 @@ Source: [src/db/queries/edges.rs:1556](../src/db/queries/edges.rs#L1556).
     }
 ```
 
-### `get_edges_by_kinds` — src/db/queries/edges.rs:1577
+### `get_edges_by_kinds` — src/db/queries/edges.rs:1616
 
-Source: [src/db/queries/edges.rs:1577](../src/db/queries/edges.rs#L1577).
+Source: [src/db/queries/edges.rs:1616](../src/db/queries/edges.rs#L1616).
 
 ```rust
     pub async fn get_edges_by_kinds(&self, kinds: &[EdgeKind]) -> Result<Vec<Edge>> {
@@ -7908,9 +8703,9 @@ Source: [src/db/queries/edges.rs:1577](../src/db/queries/edges.rs#L1577).
     }
 ```
 
-### `variant_group_candidates` — src/db/queries/edges.rs:1628
+### `variant_group_candidates` — src/db/queries/edges.rs:1667
 
-Source: [src/db/queries/edges.rs:1628](../src/db/queries/edges.rs#L1628).
+Source: [src/db/queries/edges.rs:1667](../src/db/queries/edges.rs#L1667).
 
 ```rust
     pub async fn variant_group_candidates(&self) -> Result<Vec<(String, String)>> {
@@ -7946,9 +8741,9 @@ Source: [src/db/queries/edges.rs:1628](../src/db/queries/edges.rs#L1628).
     }
 ```
 
-### `go_variant_candidates` — src/db/queries/edges.rs:1666
+### `go_variant_candidates` — src/db/queries/edges.rs:1705
 
-Source: [src/db/queries/edges.rs:1666](../src/db/queries/edges.rs#L1666).
+Source: [src/db/queries/edges.rs:1705](../src/db/queries/edges.rs#L1705).
 
 ```rust
     pub async fn go_variant_candidates(&self) -> Result<Vec<(String, String, String)>> {
@@ -7975,9 +8770,9 @@ Source: [src/db/queries/edges.rs:1666](../src/db/queries/edges.rs#L1666).
     }
 ```
 
-### `calls_edges_into` — src/db/queries/edges.rs:1693
+### `calls_edges_into` — src/db/queries/edges.rs:1732
 
-Source: [src/db/queries/edges.rs:1693](../src/db/queries/edges.rs#L1693).
+Source: [src/db/queries/edges.rs:1732](../src/db/queries/edges.rs#L1732).
 
 ```rust
     pub async fn calls_edges_into(&self, targets: &[String]) -> Result<Vec<Edge>> {
@@ -8009,9 +8804,9 @@ Source: [src/db/queries/edges.rs:1693](../src/db/queries/edges.rs#L1693).
     }
 ```
 
-### `get_top_degree_nodes` — src/db/queries/edges.rs:1739
+### `get_top_degree_nodes` — src/db/queries/edges.rs:1778
 
-Source: [src/db/queries/edges.rs:1739](../src/db/queries/edges.rs#L1739).
+Source: [src/db/queries/edges.rs:1778](../src/db/queries/edges.rs#L1778).
 
 ```rust
     pub async fn get_top_degree_nodes(&self, limit: usize) -> Result<Vec<(String, u32, u32)>> {
@@ -8060,9 +8855,9 @@ Source: [src/db/queries/edges.rs:1739](../src/db/queries/edges.rs#L1739).
     }
 ```
 
-### `delete_edges_by_source` — src/db/queries/edges.rs:1785
+### `delete_edges_by_source` — src/db/queries/edges.rs:1824
 
-Source: [src/db/queries/edges.rs:1785](../src/db/queries/edges.rs#L1785).
+Source: [src/db/queries/edges.rs:1824](../src/db/queries/edges.rs#L1824).
 
 ```rust
     pub async fn delete_edges_by_source(&self, source_id: &str) -> Result<()> {
@@ -8077,9 +8872,9 @@ Source: [src/db/queries/edges.rs:1785](../src/db/queries/edges.rs#L1785).
     }
 ```
 
-### `delete_call_edges_at_sites` — src/db/queries/edges.rs:1799
+### `delete_call_edges_at_sites` — src/db/queries/edges.rs:1838
 
-Source: [src/db/queries/edges.rs:1799](../src/db/queries/edges.rs#L1799).
+Source: [src/db/queries/edges.rs:1838](../src/db/queries/edges.rs#L1838).
 
 ```rust
     pub async fn delete_call_edges_at_sites(&self, sites: &[(String, u32, String)]) -> Result<()> {
@@ -8574,6 +9369,62 @@ Source: [src/db/queries/metadata.rs:165](../src/db/queries/metadata.rs#L165).
         }
         Ok(ids)
     }
+```
+
+### `build_qmark_placeholders` — src/db/queries/mod.rs:31
+
+Source: [src/db/queries/mod.rs:31](../src/db/queries/mod.rs#L31).
+
+```rust
+pub(crate) fn build_qmark_placeholders(n: usize) -> String {
+    debug_assert!(n > 0, "build_qmark_placeholders called with n == 0");
+    // Each "?, " occupies 3 bytes; the last one drops the trailing ", ".
+    let mut s = String::with_capacity(n * 3);
+    for i in 0..n {
+        if i > 0 {
+            s.push_str(", ");
+        }
+        s.push('?');
+    }
+    s
+}
+```
+
+### `push_quoted` — src/db/queries/mod.rs:218
+
+Source: [src/db/queries/mod.rs:218](../src/db/queries/mod.rs#L218).
+
+```rust
+pub(crate) fn push_quoted(buf: &mut String, s: &str) {
+    buf.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            buf.push_str("''");
+        } else {
+            buf.push(ch);
+        }
+    }
+    buf.push('\'');
+}
+```
+
+### `push_path_prefix_filter` — src/db/queries/mod.rs:250
+
+Source: [src/db/queries/mod.rs:250](../src/db/queries/mod.rs#L250).
+
+```rust
+pub(crate) fn push_path_prefix_filter(buf: &mut String, alias: &str, prefix: &str) {
+    let exact = prefix.trim_end_matches('/');
+    buf.push('(');
+    buf.push_str(alias);
+    buf.push_str("file_path = ");
+    push_quoted(buf, exact);
+    buf.push_str(" OR ");
+    buf.push_str(alias);
+    buf.push_str("file_path LIKE ");
+    push_quoted(buf, &format!("{}/%", escape_like(exact)));
+    buf.push_str(" ESCAPE '\\')");
+}
 ```
 
 ### `insert_node` — src/db/queries/nodes.rs:138
@@ -9378,21 +10229,16 @@ Source: [src/db/queries/nodes.rs:894](../src/db/queries/nodes.rs#L894).
 
 ```rust
     pub async fn get_ambiguous_calls_naming(&self, node_id: &str) -> Result<Vec<AmbiguousCall>> {
-        let pattern = format!(
-            "%\"{}\"%",
-            node_id
-                .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_")
-        );
         let mut rows = self
             .conn()
             .query(
-                "SELECT from_node_id, reference_name, file_path, line, candidate_node_ids
-                 FROM ambiguous_calls
-                 WHERE candidate_node_ids LIKE ?1 ESCAPE '\\'
-                 ORDER BY file_path, line",
-                params![pattern],
+                "SELECT a.from_node_id, a.reference_name, a.file_path, a.line, a.candidate_node_ids
+                 FROM ambiguous_call_candidates c
+                 JOIN ambiguous_calls a ON a.from_node_id = c.from_node_id
+                    AND a.reference_name = c.reference_name AND a.line = c.line
+                 WHERE c.candidate_node_id = ?1
+                 ORDER BY a.file_path, a.line",
+                params![node_id],
             )
             .await
             .map_err(|e| TokenSaveError::Database {
@@ -9423,9 +10269,9 @@ Source: [src/db/queries/nodes.rs:894](../src/db/queries/nodes.rs#L894).
     }
 ```
 
-### `get_node_paths` — src/db/queries/nodes.rs:951
+### `get_node_paths` — src/db/queries/nodes.rs:946
 
-Source: [src/db/queries/nodes.rs:951](../src/db/queries/nodes.rs#L951).
+Source: [src/db/queries/nodes.rs:946](../src/db/queries/nodes.rs#L946).
 
 ```rust
     pub async fn get_node_paths(&self) -> Result<HashMap<String, String>> {
@@ -9457,9 +10303,9 @@ Source: [src/db/queries/nodes.rs:951](../src/db/queries/nodes.rs#L951).
     }
 ```
 
-### `get_nodes_filtered` — src/db/queries/nodes.rs:992
+### `get_nodes_filtered` — src/db/queries/nodes.rs:987
 
-Source: [src/db/queries/nodes.rs:992](../src/db/queries/nodes.rs#L992).
+Source: [src/db/queries/nodes.rs:987](../src/db/queries/nodes.rs#L987).
 
 ```rust
     pub async fn get_nodes_filtered(&self, filter: &NodeFilter) -> Result<Vec<Node>> {
@@ -9483,9 +10329,9 @@ Source: [src/db/queries/nodes.rs:992](../src/db/queries/nodes.rs#L992).
     }
 ```
 
-### `get_all_nodes_for_resolution` — src/db/queries/nodes.rs:1041
+### `get_all_nodes_for_resolution` — src/db/queries/nodes.rs:1036
 
-Source: [src/db/queries/nodes.rs:1041](../src/db/queries/nodes.rs#L1041).
+Source: [src/db/queries/nodes.rs:1036](../src/db/queries/nodes.rs#L1036).
 
 ```rust
     pub async fn get_all_nodes_for_resolution(&self) -> Result<Vec<Node>> {
@@ -9516,9 +10362,9 @@ Source: [src/db/queries/nodes.rs:1041](../src/db/queries/nodes.rs#L1041).
     }
 ```
 
-### `touched_nodes_by_file` — src/db/queries/nodes.rs:1076
+### `touched_nodes_by_file` — src/db/queries/nodes.rs:1071
 
-Source: [src/db/queries/nodes.rs:1076](../src/db/queries/nodes.rs#L1076).
+Source: [src/db/queries/nodes.rs:1071](../src/db/queries/nodes.rs#L1071).
 
 ```rust
     pub async fn touched_nodes_by_file(&self, file_path: &str) -> Result<Vec<TouchedNode>> {
@@ -9548,9 +10394,9 @@ Source: [src/db/queries/nodes.rs:1076](../src/db/queries/nodes.rs#L1076).
     }
 ```
 
-### `delete_nodes_by_file` — src/db/queries/nodes.rs:1103
+### `delete_nodes_by_file` — src/db/queries/nodes.rs:1098
 
-Source: [src/db/queries/nodes.rs:1103](../src/db/queries/nodes.rs#L1103).
+Source: [src/db/queries/nodes.rs:1098](../src/db/queries/nodes.rs#L1098).
 
 ```rust
     pub async fn delete_nodes_by_file(&self, file_path: &str) -> Result<()> {
@@ -9568,48 +10414,6 @@ Source: [src/db/queries/nodes.rs:1103](../src/db/queries/nodes.rs#L1103).
         // SQLite rejects as "cannot start a transaction within a transaction"
         // (#563).
         let _write_guard = self.write_lock.lock().await;
-        self.conn()
-            .execute(
-                "DELETE FROM executable_body_fts WHERE file_path = ?1",
-                params![file_path],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to delete executable body documents: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })?;
-
-        // Gather node IDs for the file first.
-        let node_ids: Vec<String> = {
-            let mut rows = self
-                .conn()
-                .query(
-                    "SELECT id FROM nodes WHERE file_path = ?1",
-                    params![file_path],
-                )
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to query node ids: {e}"),
-                    operation: "delete_nodes_by_file".to_string(),
-                })?;
-
-            let mut ids = Vec::new();
-            while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-                message: format!("failed to read node id: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })? {
-                ids.push(row.get::<String>(0).map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to read node id value: {e}"),
-                    operation: "delete_nodes_by_file".to_string(),
-                })?);
-            }
-            ids
-        };
-
-        if node_ids.is_empty() {
-            return Ok(());
-        }
-
         let tx = self
             .conn()
             .transaction()
@@ -9619,49 +10423,116 @@ Source: [src/db/queries/nodes.rs:1103](../src/db/queries/nodes.rs#L1103).
                 operation: "delete_nodes_by_file".to_string(),
             })?;
 
-        for id in &node_ids {
-            tx.execute(
-                "DELETE FROM edges WHERE source = ?1 OR target = ?1",
-                params![id.as_str()],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to delete edges: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })?;
+        let result: Result<()> = async {
+            // Delete dependents while the nodes still exist, so dispatch triggers
+            // can resolve their parents. Subqueries avoid collecting IDs in Rust
+            // or issuing three statements for every node in the file. Explicit
+            // deletes also preserve cleanup when foreign keys are disabled.
+            for sql in [
+                "DELETE FROM executable_bodies WHERE file_path = ?1",
+                "DELETE FROM edges
+                 WHERE source IN (SELECT id FROM nodes WHERE file_path = ?1)
+                    OR target IN (SELECT id FROM nodes WHERE file_path = ?1)",
+                "DELETE FROM unresolved_refs
+                 WHERE from_node_id IN (SELECT id FROM nodes WHERE file_path = ?1)",
+                "DELETE FROM vectors
+                 WHERE node_id IN (SELECT id FROM nodes WHERE file_path = ?1)",
+            ] {
+                tx.execute(sql, params![file_path]).await.map_err(|e| {
+                    TokenSaveError::Database {
+                        message: format!("failed to delete file dependents: {e}"),
+                        operation: "delete_nodes_by_file".to_string(),
+                    }
+                })?;
+            }
 
-            tx.execute(
-                "DELETE FROM unresolved_refs WHERE from_node_id = ?1",
-                params![id.as_str()],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to delete unresolved refs: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })?;
+            tx.execute("DELETE FROM nodes WHERE file_path = ?1", params![file_path])
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to delete nodes: {e}"),
+                    operation: "delete_nodes_by_file".to_string(),
+                })?;
 
-            tx.execute(
-                "DELETE FROM vectors WHERE node_id = ?1",
-                params![id.as_str()],
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to delete vectors: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })?;
+            Ok(())
         }
-
-        tx.execute("DELETE FROM nodes WHERE file_path = ?1", params![file_path])
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to delete nodes: {e}"),
-                operation: "delete_nodes_by_file".to_string(),
-            })?;
+        .await;
+        if let Err(error) = result {
+            tx.rollback()
+                .await
+                .map_err(|rollback_error| TokenSaveError::Database {
+                    message: format!("{error}; rollback failed: {rollback_error}"),
+                    operation: "delete_nodes_by_file".to_string(),
+                })?;
+            return Err(error);
+        }
 
         tx.commit().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to commit transaction: {e}"),
             operation: "delete_nodes_by_file".to_string(),
         })
+    }
+```
+
+### `where_clause` — src/db/queries/nodes.rs:78
+
+Source: [src/db/queries/nodes.rs:78](../src/db/queries/nodes.rs#L78).
+
+```rust
+    fn where_clause(&self) -> String {
+        let mut clauses: Vec<String> = Vec::new();
+
+        if let Some(prefix) = &self.path_prefix {
+            let mut sql = String::new();
+            push_path_prefix_filter(&mut sql, "", prefix);
+            clauses.push(sql);
+        }
+
+        if let Some(kinds) = &self.kinds {
+            if kinds.is_empty() {
+                // An explicit empty set matches nothing; without this the
+                // `IN ()` below would be a syntax error.
+                return " WHERE 0".to_string();
+            }
+            let mut sql = String::from("kind IN (");
+            for (i, kind) in kinds.iter().enumerate() {
+                if i > 0 {
+                    sql.push(',');
+                }
+                push_quoted(&mut sql, kind);
+            }
+            sql.push(')');
+            clauses.push(sql);
+        }
+
+        if self.public_only {
+            let mut sql = String::from("visibility = ");
+            push_quoted(&mut sql, Visibility::Pub.as_str());
+            clauses.push(sql);
+        }
+
+        if let Some(lines) = self.min_lines {
+            // `end_line - start_line + 1`, matching the handler. Written with
+            // the subtraction on the right so a node whose end precedes its
+            // start cannot underflow into a huge span the way saturating
+            // integer arithmetic would.
+            clauses.push(format!("(end_line + 1 - start_line) >= {lines}"));
+        }
+
+        if let Some(needle) = &self.name_contains {
+            let pattern = format!("%{}%", escape_like(needle));
+            let mut sql = String::from("(LOWER(name) LIKE ");
+            push_quoted(&mut sql, &pattern);
+            sql.push_str(" ESCAPE '\\' OR LOWER(qualified_name) LIKE ");
+            push_quoted(&mut sql, &pattern);
+            sql.push_str(" ESCAPE '\\')");
+            clauses.push(sql);
+        }
+
+        if clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", clauses.join(" AND "))
+        }
     }
 ```
 
@@ -10010,50 +10881,72 @@ Source: [src/db/queries/search.rs:51](../src/db/queries/search.rs#L51).
         if documents.is_empty() {
             return Ok(());
         }
-        self.conn()
-            .execute("BEGIN", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to begin executable body insert: {e}"),
-                operation: "insert_executable_body_documents".to_string(),
-            })?;
-        let stmt = self
-            .conn()
-            .prepare(
-                "INSERT INTO executable_body_fts (node_id, file_path, body) VALUES (?1, ?2, ?3)",
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to prepare executable body insert: {e}"),
-                operation: "insert_executable_body_documents".to_string(),
-            })?;
-        for document in documents {
-            stmt.execute(params![
-                document.node_id.as_str(),
-                document.file_path.as_str(),
-                document.body.as_str(),
-            ])
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to insert executable body: {e}"),
-                operation: "insert_executable_body_documents".to_string(),
-            })?;
-            stmt.reset();
+        let _write_guard = self.write_lock.lock().await;
+        let err = |e: libsql::Error| TokenSaveError::Database {
+            message: format!("failed to insert executable bodies: {e}"),
+            operation: "insert_executable_body_documents".to_string(),
+        };
+        let tx = self.conn().transaction().await.map_err(err)?;
+        let result: Result<()> = async {
+            // One outer INSERT per bounded batch avoids flushing FTS pending
+            // terms after every trigger invocation. Bound both bind count and
+            // copied parameter bytes; an oversized document runs on its own.
+            const MAX_ROWS: usize = 128;
+            const MAX_BYTES: usize = 256 * 1024;
+            let document_bytes = |doc: &ExecutableBodyDocument| {
+                doc.node_id
+                    .len()
+                    .saturating_add(doc.file_path.len())
+                    .saturating_add(doc.body.len())
+            };
+            let mut start = 0;
+            while start < documents.len() {
+                let mut end = start + 1;
+                let mut bytes = document_bytes(&documents[start]);
+                while end < documents.len() && end - start < MAX_ROWS {
+                    let next_bytes = bytes.saturating_add(document_bytes(&documents[end]));
+                    if next_bytes > MAX_BYTES {
+                        break;
+                    }
+                    bytes = next_bytes;
+                    end += 1;
+                }
+                let placeholders = std::iter::repeat_n("(?, ?, ?)", end - start)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!(
+                    "INSERT INTO executable_bodies (node_id, file_path, body) VALUES {placeholders}"
+                );
+                let values: Vec<libsql::Value> = documents[start..end]
+                    .iter()
+                    .flat_map(|doc| {
+                        [
+                            libsql::Value::Text(doc.node_id.clone()),
+                            libsql::Value::Text(doc.file_path.clone()),
+                            libsql::Value::Text(doc.body.clone()),
+                        ]
+                    })
+                    .collect();
+                tx.execute(&sql, libsql::params_from_iter(values))
+                    .await
+                    .map_err(err)?;
+                start = end;
+            }
+            Ok(())
         }
-        self.conn()
-            .execute("COMMIT", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to commit executable body insert: {e}"),
-                operation: "insert_executable_body_documents".to_string(),
-            })?;
+        .await;
+        if let Err(error) = result {
+            tx.rollback().await.map_err(err)?;
+            return Err(error);
+        }
+        tx.commit().await.map_err(err)?;
         Ok(())
     }
 ```
 
-### `search_executable_bodies` — src/db/queries/search.rs:102
+### `search_executable_bodies` — src/db/queries/search.rs:124
 
-Source: [src/db/queries/search.rs:102](../src/db/queries/search.rs#L102).
+Source: [src/db/queries/search.rs:124](../src/db/queries/search.rs#L124).
 
 ```rust
     pub async fn search_executable_bodies(
@@ -10151,9 +11044,9 @@ Source: [src/db/queries/search.rs:102](../src/db/queries/search.rs#L102).
     }
 ```
 
-### `search_nodes` — src/db/queries/search.rs:220
+### `search_nodes` — src/db/queries/search.rs:242
 
-Source: [src/db/queries/search.rs:220](../src/db/queries/search.rs#L220).
+Source: [src/db/queries/search.rs:242](../src/db/queries/search.rs#L242).
 
 ```rust
     pub async fn search_nodes(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
@@ -10238,9 +11131,9 @@ Source: [src/db/queries/search.rs:220](../src/db/queries/search.rs#L220).
     }
 ```
 
-### `search_nodes_bounded_fts` — src/db/queries/search.rs:343
+### `search_nodes_bounded_fts` — src/db/queries/search.rs:365
 
-Source: [src/db/queries/search.rs:343](../src/db/queries/search.rs#L343).
+Source: [src/db/queries/search.rs:365](../src/db/queries/search.rs#L365).
 
 ```rust
     async fn search_nodes_bounded_fts(
@@ -10254,12 +11147,13 @@ Source: [src/db/queries/search.rs:343](../src/db/queries/search.rs#L343).
                 "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0) AS rank
+                    nodes_fts.rank AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
+                   AND nodes_fts.rank MATCH 'bm25(10.0, 5.0, 1.0, 2.0, 3.0)'
                    AND n.kind NOT IN ('file', 'doc')
-                 ORDER BY rank
+                 ORDER BY nodes_fts.rank
                  LIMIT ?2",
                 params![fts_query, limit as i64],
             )
@@ -10288,9 +11182,9 @@ Source: [src/db/queries/search.rs:343](../src/db/queries/search.rs#L343).
     }
 ```
 
-### `search_nodes_fts` — src/db/queries/search.rs:388
+### `search_nodes_fts` — src/db/queries/search.rs:415
 
-Source: [src/db/queries/search.rs:388](../src/db/queries/search.rs#L388).
+Source: [src/db/queries/search.rs:415](../src/db/queries/search.rs#L415).
 
 ```rust
     pub(crate) async fn search_nodes_fts(
@@ -10304,11 +11198,12 @@ Source: [src/db/queries/search.rs:388](../src/db/queries/search.rs#L388).
                 "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0) AS rank
+                    nodes_fts.rank AS rank
                  FROM nodes_fts
                  JOIN nodes n ON nodes_fts.rowid = n.rowid
                  WHERE nodes_fts MATCH ?1
-                 ORDER BY bm25(nodes_fts, 10.0, 5.0, 1.0, 2.0, 3.0)
+                   AND nodes_fts.rank MATCH 'bm25(10.0, 5.0, 1.0, 2.0, 3.0)'
+                 ORDER BY nodes_fts.rank
                  LIMIT ?2",
                 params![fts_query, limit as i64],
             )
@@ -10337,9 +11232,9 @@ Source: [src/db/queries/search.rs:388](../src/db/queries/search.rs#L388).
     }
 ```
 
-### `batch_incoming_call_counts` — src/db/queries/search.rs:433
+### `batch_incoming_call_counts` — src/db/queries/search.rs:461
 
-Source: [src/db/queries/search.rs:433](../src/db/queries/search.rs#L433).
+Source: [src/db/queries/search.rs:461](../src/db/queries/search.rs#L461).
 
 ```rust
     pub async fn batch_incoming_call_counts(
@@ -10378,9 +11273,9 @@ Source: [src/db/queries/search.rs:433](../src/db/queries/search.rs#L433).
     }
 ```
 
-### `search_nodes_by_exact_name` — src/db/queries/search.rs:471
+### `search_nodes_by_exact_name` — src/db/queries/search.rs:499
 
-Source: [src/db/queries/search.rs:471](../src/db/queries/search.rs#L471).
+Source: [src/db/queries/search.rs:499](../src/db/queries/search.rs#L499).
 
 ```rust
     pub async fn search_nodes_by_exact_name(
@@ -11017,9 +11912,9 @@ pub async fn audit(db: &Database, limit: usize) -> Result<EdgeAudit> {
 }
 ```
 
-### `delete_projects` — src/global_db.rs:588
+### `delete_projects` — src/global_db.rs:591
 
-Source: [src/global_db.rs:588](../src/global_db.rs#L588).
+Source: [src/global_db.rs:591](../src/global_db.rs#L591).
 
 ```rust
     pub async fn delete_projects(&self, project_paths: &[String]) -> usize {
@@ -11046,9 +11941,9 @@ Source: [src/global_db.rs:588](../src/global_db.rs#L588).
     }
 ```
 
-### `migration_merges_duplicates_and_drops_relative_rows` — src/global_db.rs:1063
+### `migration_merges_duplicates_and_drops_relative_rows` — src/global_db.rs:1066
 
-Source: [src/global_db.rs:1063](../src/global_db.rs#L1063).
+Source: [src/global_db.rs:1066](../src/global_db.rs#L1066).
 
 ```rust
     async fn migration_merges_duplicates_and_drops_relative_rows() {
@@ -11099,6 +11994,95 @@ Source: [src/global_db.rs:1063](../src/global_db.rs#L1063).
         assert_eq!(db.get_project_tokens(&project).await, 26_000);
         // The ledger row written under the old spelling still answers for the project.
         assert_eq!(db.sum_savings(Some(&canonical), 0).await.calls, 1);
+    }
+```
+
+### `upsert` — src/global_db.rs:444
+
+Source: [src/global_db.rs:444](../src/global_db.rs#L444).
+
+```rust
+    pub async fn upsert(&self, project_path: &Path, tokens_saved: u64) {
+        let path_str = normalize_project_key(project_path);
+        let _ = self
+            .conn
+            .execute(
+                "INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
+                 ON CONFLICT(path) DO UPDATE SET tokens_saved = ?2",
+                params![path_str, tokens_saved as i64],
+            )
+            .await;
+    }
+```
+
+### `upsert_monotonic_turn` — src/global_db.rs:702
+
+Source: [src/global_db.rs:702](../src/global_db.rs#L702).
+
+```rust
+    async fn upsert_monotonic_turn(
+        &self,
+        turn: &crate::types::CostTurn,
+        update_timestamp: bool,
+    ) -> bool {
+        self.conn
+            .execute(
+                "INSERT INTO turns
+                 (message_id, project_hash, session_id, model, timestamp,
+                  input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
+                  cost_usd, category, tool_names, agent, credits)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                 ON CONFLICT(message_id) DO UPDATE SET
+                     project_hash        = excluded.project_hash,
+                     session_id          = excluded.session_id,
+                     model               = excluded.model,
+                     timestamp           = CASE WHEN ?15 THEN excluded.timestamp ELSE turns.timestamp END,
+                     input_tokens        = MAX(excluded.input_tokens,        turns.input_tokens),
+                     output_tokens       = MAX(excluded.output_tokens,       turns.output_tokens),
+                     cache_write_tokens  = MAX(excluded.cache_write_tokens,  turns.cache_write_tokens),
+                     cache_read_tokens   = MAX(excluded.cache_read_tokens,   turns.cache_read_tokens),
+                     cost_usd            = excluded.cost_usd,
+                     category            = excluded.category,
+                     tool_names          = excluded.tool_names,
+                     agent               = excluded.agent,
+                     credits             = COALESCE(excluded.credits, turns.credits)
+                 WHERE
+                     excluded.input_tokens        >= turns.input_tokens
+                     AND excluded.output_tokens       >= turns.output_tokens
+                     AND excluded.cache_write_tokens  >= turns.cache_write_tokens
+                     AND excluded.cache_read_tokens   >= turns.cache_read_tokens
+                     AND (excluded.credits IS NULL
+                          OR turns.credits IS NULL
+                          OR excluded.credits >= turns.credits)
+                     AND (
+                         excluded.input_tokens        > turns.input_tokens
+                         OR excluded.output_tokens       > turns.output_tokens
+                         OR excluded.cache_write_tokens  > turns.cache_write_tokens
+                         OR excluded.cache_read_tokens   > turns.cache_read_tokens
+                         OR (excluded.credits IS NOT NULL
+                             AND (turns.credits IS NULL
+                                  OR excluded.credits > turns.credits))
+                     )",
+                params![
+                    turn.message_id.clone(),
+                    turn.project_hash.clone(),
+                    turn.session_id.clone(),
+                    turn.model.clone(),
+                    turn.timestamp as i64,
+                    turn.input_tokens as i64,
+                    turn.output_tokens as i64,
+                    turn.cache_write_tokens as i64,
+                    turn.cache_read_tokens as i64,
+                    turn.cost_usd,
+                    turn.category.clone(),
+                    turn.tool_names.clone(),
+                    turn.agent.clone(),
+                    turn.credits.map(|c| c as i64),
+                    i64::from(update_timestamp),
+                ],
+            )
+            .await
+            .is_ok_and(|n| n > 0)
     }
 ```
 
@@ -12677,213 +13661,219 @@ Source: [src/worktree.rs:260](../src/worktree.rs#L260).
     }
 ```
 
-### `build_qmark_placeholders` — src/db/queries/mod.rs:31
+## File deletion and dispatch-index context
 
-Source: [src/db/queries/mod.rs:31](../src/db/queries/mod.rs#L31).
+Q0198 and Q0200–Q0203 now run in one transaction under the existing write
+lock. Each binds `?1` to the file path; the dependent deletes use indexed
+node-ID subqueries rather than an application-side ID vector and per-node
+statements. Q0199 was removed. Edge deletion precedes node deletion so dispatch
+triggers can still inspect parent nodes. The transaction also covers FTS
+cleanup, including files with stale FTS documents but no remaining nodes.
 
-```rust
-pub(crate) fn build_qmark_placeholders(n: usize) -> String {
-    debug_assert!(n > 0, "build_qmark_placeholders called with n == 0");
-    // Each "?, " occupies 3 bytes; the last one drops the trailing ", ".
-    let mut s = String::with_capacity(n * 3);
-    for i in 0..n {
-        if i > 0 {
-            s.push_str(", ");
-        }
-        s.push('?');
-    }
-    s
-}
-```
+Q0343 creates `(caller_id, trait_method_id, line)` for the call-deletion trigger
+in Q0036. It runs for fresh databases and migration v19, with the existing
+`table_exists` check for partial schemas. Bulk loading does not drop this
+index. The current application forces a full reindex after a schema migration.
 
-### `push_quoted` — src/db/queries/mod.rs:218
+## Resource review for file-deletion optimization
 
-Source: [src/db/queries/mod.rs:218](../src/db/queries/mod.rs#L218).
+- For a file with N > 0 nodes, application-issued data statements decrease
+  from `3N + 3` to five, excluding transaction control and trigger/cascade work.
+- The Rust node-ID vector is removed. SQLite may materialize input-proportional
+  ID sets for the subqueries; these are statement-scoped. The new dispatch
+  index consumes storage proportional to dispatch-cache rows and adds index
+  maintenance to dispatch writes.
+- The existing write lock remains held through commit or explicit rollback.
+  No background work, queues, caches, or new connections are introduced.
+  Cancellation retains the local transaction's rollback-on-drop behavior.
+- Regression fixtures cover 400-node deletion with foreign keys on and off,
+  repeated/absent-file deletion, cross-file edge and dispatch cleanup, and
+  an injected write failure followed by a successful retry. Migration checks
+  cover fresh creation, upgrade, preserved cache rows, and index selection.
+- The original executable-body FTS file-path scan is replaced by the indexed content-table deletion described below. No production
+  timing or long-running RSS measurement is claimed by this change.
 
-```rust
-pub(crate) fn push_quoted(buf: &mut String, s: &str) {
-    buf.push('\'');
-    for ch in s.chars() {
-        if ch == '\'' {
-            buf.push_str("''");
-        } else {
-            buf.push(ch);
-        }
-    }
-    buf.push('\'');
-}
-```
+## Validation of the query optimization (2026-10-24)
 
-### `push_path_prefix_filter` — src/db/queries/mod.rs:250
+- Targeted lite runs: 111 database-related tests, 48 graph tests, and 37
+  migration tests passed. The four file-deletion tests include the new cleanup
+  and rollback regressions.
+- Full-feature integration run: 3,110 passed, three failed in unchanged
+  discovery/hook tests expecting no project under `/tmp`, and one server
+  registration test excluded after an earlier failure. The database, graph,
+  migration, and Rails tests passed, including the schema-v19 checks. Workspace
+  runs also encountered discovery/global-project assertions affected by the
+  surrounding `/tmp` Git/project state. A fully green workspace run is not
+  claimed for this environment.
+- `cargo clippy --workspace --all-targets --locked`, formatting, and diff
+  whitespace checks passed. Clippy reports warnings in unchanged code.
+- SQL inventory review verified 342 unique entries, the changed statement
+  source locations, and the updated construction bodies against source.
+- The configured origin `atontini/tokensave` has issues disabled. The changes
+  are tracked upstream in [issue #775](https://github.com/aovestdipaperino/tokensave/issues/775);
+  issue closure is left to the maintainer.
 
-Source: [src/db/queries/mod.rs:250](../src/db/queries/mod.rs#L250).
+## Scoped ranking and savings (Refs #777)
 
-```rust
-pub(crate) fn push_path_prefix_filter(buf: &mut String, alias: &str, prefix: &str) {
-    let exact = prefix.trim_end_matches('/');
-    buf.push('(');
-    buf.push_str(alias);
-    buf.push_str("file_path = ");
-    push_quoted(buf, exact);
-    buf.push_str(" OR ");
-    buf.push_str(alias);
-    buf.push_str("file_path LIKE ");
-    push_quoted(buf, &format!("{}/%", escape_like(exact)));
-    buf.push_str(" ESCAPE '\\')");
-}
-```
+Q0127 interpolates Q0344/Q0345 correlated counts when a path prefix is
+supplied, and Q0346 grouped joins otherwise. All incident calls count,
+including calls across the selected path boundary and recursive calls.
+Only IDs, line counts, and degrees are materialized for eligible candidates;
+full node text is hydrated after LIMIT. Equal scores are ordered by ID.
+Kind and limit bindings retain their numbered parameter positions; the path
+filter retains the shared SQL-quoting and LIKE-escaping implementation.
 
-### `where_clause` — src/db/queries/nodes.rs:78
+Q0257 creates `(project_path, ts)` on every global DB open with IF NOT EXISTS,
+so existing ledgers gain the index. Q0273/Q0275 can constrain both fields;
+the timestamp-only index remains for unscoped queries. No project schema
+version changes in this batch.
 
-Source: [src/db/queries/nodes.rs:78](../src/db/queries/nodes.rs#L78).
+A synthetic SQLite 3.46.1 check with 20,000 nodes, 80,000 call edges, 100
+scoped candidates, 512-byte signatures, LIMIT 20, and five timed repetitions
+verified identical outputs. Using the actual shared exact-or-LIKE-prefix predicate, median query times
+were 29.707 → 3.786 ms for the narrow scope and 75.587 → 64.441 ms for
+the whole graph. This is a local
+algorithm comparison, not a bundled-libSQL or production latency guarantee.
 
-```rust
-    fn where_clause(&self) -> String {
-        let mut clauses: Vec<String> = Vec::new();
+Resource review: score materialization is proportional to eligible nodes and
+released at statement completion; full node hydration is limited to winners.
+The ledger index grows with ledger rows and adds write/index-build cost.
+No background work, caches, queues, or extra retained connections are added.
+No long-running RSS or production-throughput measurement is claimed.
 
-        if let Some(prefix) = &self.path_prefix {
-            let mut sql = String::new();
-            push_path_prefix_filter(&mut sql, "", prefix);
-            clauses.push(sql);
-        }
+## Indexed bodies and candidate membership (Refs #778)
 
-        if let Some(kinds) = &self.kinds {
-            if kinds.is_empty() {
-                // An explicit empty set matches nothing; without this the
-                // `IN ()` below would be a syntax error.
-                return " WHERE 0".to_string();
-            }
-            let mut sql = String::from("kind IN (");
-            for (i, kind) in kinds.iter().enumerate() {
-                if i > 0 {
-                    sql.push(',');
-                }
-                push_quoted(&mut sql, kind);
-            }
-            sql.push(')');
-            clauses.push(sql);
-        }
+Schema v20 adds Q0347–Q0349 and runs Q0350–Q0352 for conversion/backfill.
+Fresh schema creation shares the same migration helper. Legacy body rowids
+and text are copied before replacing the internal-content FTS table with an
+external-content index over `executable_bodies`; its insert/update/delete
+triggers maintain postings. Only body text is full-text indexed. Q0198 now
+uses the ordinary file-path index, and Q0223 writes the content table under
+the shared write lock and an explicitly rolled-back transaction. Its VALUES
+builder binds node ID, file path, and body for each document in that order.
+Batches stop at 128 rows or 256 KiB of parameter text; one oversized document
+runs alone. This bounds copied parameter storage and avoids per-document FTS
+pending-term flushes under the content-table triggers. The prior
+manual BEGIN/COMMIT literals Q0222/Q0224 are removed in favor of the transaction
+API. Q0088 clears body content and ambiguity records, invoking derived-index
+cleanup triggers.
 
-        if self.public_only {
-            let mut sql = String::from("visibility = ");
-            push_quoted(&mut sql, Visibility::Pub.as_str());
-            clauses.push(sql);
-        }
+Candidate memberships retain the parent record's identity `(from_node_id,
+reference_name, line)` and deduplicate repeated candidate IDs. The candidate-
+first covering index supports Q0193; its input is the bound node ID rather
+than a JSON LIKE pattern. The original JSON remains the public result shape,
+with Rust decoding/exact validation retained. Trigger replacement clears the
+new key even when SQLite REPLACE omits delete triggers; updates clear the old
+key, and deletes remove memberships without depending on foreign-key settings.
+Malformed/non-array JSON yields no memberships; string elements are indexed,
+and malformed mixed arrays are still rejected by the existing Rust result
+validation. Backfill uses the same guarded JSON extraction.
 
-        if let Some(lines) = self.min_lines {
-            // `end_line - start_line + 1`, matching the handler. Written with
-            // the subtraction on the right so a node whose end precedes its
-            // start cannot underflow into a huge span the way saturating
-            // integer arithmetic would.
-            clauses.push(format!("(end_line + 1 - start_line) >= {lines}"));
-        }
+Resource review: bodies retain one content copy rather than duplicating body
+text in FTS. Index and membership storage scales with bodies/candidate IDs;
+triggers add write work. Migration is transaction-owned and streams legacy rows
+through SQL rather than retaining a Rust corpus, but temporarily needs space
+for old/new storage and WAL. Scores/content and membership statements retain no
+new process-lifetime caches or tasks. Existing project-open behavior forces a
+full reindex after the schema migration. No production throughput or long-run
+RSS guarantee is claimed. Validation: the complete workspace suite passed
+4,412 tests (zero failed, four ignored, none filtered) with isolated `/var/tmp`
+storage. Clippy completed with existing warnings only; formatting and diff
+checks passed. Migration/body/candidate fixtures also verify the new indexes
+with bundled libSQL query plans. An additional fixture checks oversized
+body documents and rollback across multiple completed batches. A single
+SQLite 3.46.1 write-path check with 5,000 documents measured 0.027 s for legacy
+direct FTS writes, 0.179 s for per-row content triggers, and 0.055 s for
+128-row trigger batches. Thus batching mitigates the trigger overhead but
+there is still a write/index-maintenance tradeoff; these are not production
+or bundled-libSQL throughput guarantees.
 
-        if let Some(needle) = &self.name_contains {
-            let pattern = format!("%{}%", escape_like(needle));
-            let mut sql = String::from("(LOWER(name) LIKE ");
-            push_quoted(&mut sql, &pattern);
-            sql.push_str(" ESCAPE '\\' OR LOWER(qualified_name) LIKE ");
-            push_quoted(&mut sql, &pattern);
-            sql.push_str(" ESCAPE '\\')");
-            clauses.push(sql);
-        }
+## Scoped inheritance traversal (Refs #782)
 
-        if clauses.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {}", clauses.join(" AND "))
-        }
-    }
-```
+Q0121 uses Q0353 and its path predicate in the recursive seed, restricting
+starting nodes before expansion. The recursive step still follows ancestors
+across path boundaries;
+maximum-depth aggregation, cycle detection, the 50-hop bound, ordering, row
+shape, and limit binding remain unchanged. Unscoped requests retain the original
+seed without the nodes join. No schema or index change is required.
 
-### `upsert` — src/global_db.rs:441
+The scoped seed join lets the planner start from inheritance edges on sparse
+graphs instead of materializing candidates from all nodes. Recursive state scales
+with reachable inheritance paths from matching starting nodes; the existing
+depth cap does not bound branching width. No retained cache, task,
+connection, or Rust-side graph collection is added. Regression fixtures compare
+scoped results with filtered global results across escaped paths, branching,
+cycles, self loops, external ancestors, missing scopes, limits and the depth cap.
 
-Source: [src/global_db.rs:441](../src/global_db.rs#L441).
+A synthetic SQLite 3.46.1 fixture with ANALYZE statistics compared identical
+results on 16,000 nodes in 800 chains, 15,200 extends edges, and eight selected
+starting nodes. After two warmups, seven alternating old/new runs with LIMIT 20
+had narrow-scope medians of 419.158 → 8.731 ms and generated 152,000 → 152
+recursive rows. Broad-scope medians were 441.083 → 453.042 ms; unscoped medians
+were 417.660 → 439.030 ms with identical recursive row counts and SQL apart
+from whitespace. Broad scopes can add seed-join overhead without saving much
+traversal. A sparse fixture with 116,000 nodes and three extends edges measured
+0.025 → 0.021 ms; its plan started from edges and looked up source nodes by ID.
+These local measurements depend on planner statistics and are not production
+or bundled-libSQL latency guarantees. Long-running RSS was not measured.
 
-```rust
-    pub async fn upsert(&self, project_path: &Path, tokens_saved: u64) {
-        let path_str = normalize_project_key(project_path);
-        let _ = self
-            .conn
-            .execute(
-                "INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
-                 ON CONFLICT(path) DO UPDATE SET tokens_saved = ?2",
-                params![path_str, tokens_saved as i64],
-            )
-            .await;
-    }
-```
+## Ranked node hydration (Refs #784)
 
-### `upsert_monotonic_turn` — src/global_db.rs:702
+Q0118 and Q0130 aggregate IDs and counts into a `ranked AS MATERIALIZED` CTE,
+order and limit that narrow result, then hydrate all 28 node columns through the
+primary key. Both inner and outer orders use descending count and ascending
+node ID, making tied selection deterministic. Q0118 still binds edge kind at
+`?1`, optional node kind next, and limit last; direction and escaped path filters
+apply before grouping. Q0130 retains direct `parent_id` child counting, its four
+container kinds, method/field buckets, all-kind total, and exclusion of empty
+containers. Its path predicate applies to the container, not the children, and
+`?1` remains the limit. No schema or index change is required.
 
-Source: [src/global_db.rs:702](../src/global_db.rs#L702).
+The materialized result holds at most LIMIT ID/count rows, bounded further by
+eligible candidates, and is owned by one statement. Grouping/sorting still
+scales with eligible nodes and edges/children, but full text is hydrated only
+for selected IDs. No retained cache, extra connection, task, or Rust-side graph
+copy is added. Independent fixture counts in Rust verify filtering, edge
+direction/kind, multiple call sites, self calls, tied limits, direct children,
+external child paths, and complete hydrated payloads. No production-throughput
+or long-running RSS guarantee is claimed.
 
-```rust
-    async fn upsert_monotonic_turn(
-        &self,
-        turn: &crate::types::CostTurn,
-        update_timestamp: bool,
-    ) -> bool {
-        self.conn
-            .execute(
-                "INSERT INTO turns
-                 (message_id, project_hash, session_id, model, timestamp,
-                  input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
-                  cost_usd, category, tool_names, agent, credits)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
-                 ON CONFLICT(message_id) DO UPDATE SET
-                     project_hash        = excluded.project_hash,
-                     session_id          = excluded.session_id,
-                     model               = excluded.model,
-                     timestamp           = CASE WHEN ?15 THEN excluded.timestamp ELSE turns.timestamp END,
-                     input_tokens        = MAX(excluded.input_tokens,        turns.input_tokens),
-                     output_tokens       = MAX(excluded.output_tokens,       turns.output_tokens),
-                     cache_write_tokens  = MAX(excluded.cache_write_tokens,  turns.cache_write_tokens),
-                     cache_read_tokens   = MAX(excluded.cache_read_tokens,   turns.cache_read_tokens),
-                     cost_usd            = excluded.cost_usd,
-                     category            = excluded.category,
-                     tool_names          = excluded.tool_names,
-                     agent               = excluded.agent,
-                     credits             = COALESCE(excluded.credits, turns.credits)
-                 WHERE
-                     excluded.input_tokens        >= turns.input_tokens
-                     AND excluded.output_tokens       >= turns.output_tokens
-                     AND excluded.cache_write_tokens  >= turns.cache_write_tokens
-                     AND excluded.cache_read_tokens   >= turns.cache_read_tokens
-                     AND (excluded.credits IS NULL
-                          OR turns.credits IS NULL
-                          OR excluded.credits >= turns.credits)
-                     AND (
-                         excluded.input_tokens        > turns.input_tokens
-                         OR excluded.output_tokens       > turns.output_tokens
-                         OR excluded.cache_write_tokens  > turns.cache_write_tokens
-                         OR excluded.cache_read_tokens   > turns.cache_read_tokens
-                         OR (excluded.credits IS NOT NULL
-                             AND (turns.credits IS NULL
-                                  OR excluded.credits > turns.credits))
-                     )",
-                params![
-                    turn.message_id.clone(),
-                    turn.project_hash.clone(),
-                    turn.session_id.clone(),
-                    turn.model.clone(),
-                    turn.timestamp as i64,
-                    turn.input_tokens as i64,
-                    turn.output_tokens as i64,
-                    turn.cache_write_tokens as i64,
-                    turn.cache_read_tokens as i64,
-                    turn.cost_usd,
-                    turn.category.clone(),
-                    turn.tool_names.clone(),
-                    turn.agent.clone(),
-                    turn.credits.map(|c| c as i64),
-                    i64::from(update_timestamp),
-                ],
-            )
-            .await
-            .is_ok_and(|n| n > 0)
-    }
-```
+Synthetic SQLite 3.46.1 comparisons used ANALYZE statistics, 7,800 nodes,
+32,000 call edges, 400 containers, LIMIT 20, two warmups, and seven alternating
+old/new runs. Full candidate results matched. With 2,048 bytes each in signatures
+and docstrings for functions/containers, median milliseconds were outgoing
+edge ranking 13.630 → 10.201, incoming 12.878 → 7.830, scoped incoming/kind
+0.955 → 0.665, god classes 20.019 → 2.939, and scoped god classes
+1.776 → 1.694. Empty-text workloads were also compared. Sparse queries with
+eight remaining call edges and one nonempty container measured edge ranking
+0.017 → 0.019 ms and god classes 0.434 → 0.373 ms: materialization and hydration
+can add constant overhead for tiny rankings. These are local algorithm checks,
+not bundled-libSQL or production latency guarantees.
+
+## FTS ranking (Refs #751)
+
+Q0227/Q0228 read and order by `nodes_fts.rank`, configured per query with
+`rank MATCH 'bm25(10.0, 5.0, 1.0, 2.0, 3.0)'`. This lets the FTS5 cursor supply
+rank order without an outer SQL sort. Weights, score negation, the full matching
+candidate set, and bindings (`?1` MATCH expression, `?2` limit) stay unchanged.
+Q0227 excludes file/doc nodes before LIMIT. Phrase promotion, corruption retry,
+and LIKE fallback behavior are unchanged. No persistent rank configuration,
+cache, candidate truncation, schema change, or extra retained resource is added.
+Rank scoring/sorting and cursor-local temporary state can still scale with the
+full matching set; LIMIT bounds returned rows, not all ranking work.
+
+[SQLite documents the rank-column optimization](https://www.sqlite.org/fts5.html#sorting_by_auxiliary_function_results).
+The libSQL regression fixture compares weighted BM25 scores and complete node
+payloads across prefix, Unicode, missing-term and phrase requests, multiple
+limits and kind exclusion, including an intentionally different table-level
+rank default. The override is cursor-local; state is released with each query.
+
+Native SQLite measurements of a real 24,163-node project index show gains on
+several frequent-prefix queries, while synthetic all-hit and some rare/empty
+cases regress. The benchmark review and consolidated implementation summary are
+tracked separately in [issue #786](https://github.com/aovestdipaperino/tokensave/issues/786).
+These are not bundled-libSQL latency or production p99 guarantees; broader
+investigation in #751 remains open.
 
 ### `scalar` — src/db/compatibility.rs:26
 
@@ -12981,15 +13971,41 @@ Source: [src/db/compatibility.rs:111](../src/db/compatibility.rs#L111).
 
 Coverage was checked against SQL-bearing string literals and database execution entry points (`query`, `execute`, `prepare`, and `execute_batch`) in the current `src/` tree. SQL passed through variables or constants is represented by the defining template and, for constructed SQL, its builder context. This static inventory does not enumerate concrete values supplied by users or runtime-generated batches. It includes historical migrations and inline tests; their presence does not imply that every statement runs on every invocation. Source line links apply to the recorded snapshot and may move after edits.
 
-The tokensave graph tools were consulted first, but reported a stale index and a different served checkout. The inventory therefore uses the current working-tree source rather than relying on graph contents. This documentation-only change does not modify application behavior; no database statements or application tests were run.
+The tokensave graph tools were consulted first, but reported a stale index and a different served checkout. The inventory therefore uses the current working-tree source rather than relying on graph contents. The inventory describes the current source, including the file-deletion and dispatch-index changes. Validation results for those changes are recorded separately; this inventory is not a performance benchmark.
 
+## SQL debugging construction and coverage (Refs #789)
+
+Q0354 and later retain new debug-only templates and inline test statements.
+`Connection::plan` prefixes the complete original statement with `EXPLAIN QUERY
+PLAN` and binds a temporary clone of its positional or named parameters. It uses
+the raw connection to avoid recursive instrumentation. Parameters are never
+rendered into SQL or records. EXPLAIN errors are represented by a boolean; they
+do not replace the original result. The BEGIN/COMMIT/ROLLBACK strings in the
+wrapper are diagnostic labels for libsql transaction APIs rather than additional
+SQL executions. Existing SQL bodies and bindings remain unchanged.
+
+Direct runtime helpers in `src/db/queries/mod.rs` now accept the debug connection
+so aggregates participate. `Database::conn()` returns that wrapper (which derefs
+to libsql for compatibility); explicit raw coercions bypass diagnostics. Project
+startup pragmas and migrations still receive the raw connection. Global database
+opening installs the wrapper before setup. Independent raw connections, SQLite
+trigger internals and row iteration are outside this runtime tracing surface.
+The static inventory continues to cover those application SQL statements.
+
+Each emitted record bounds SQL to 8 KiB, plans to 64 rows and details to 1 KiB per
+row. There is no retained production history or background work. Statement SQL,
+plan SQL and temporary binding clones are input-proportional and released with
+the statement/operation. Disabled operations allocate no diagnostic records, read
+no clocks and run no EXPLAIN. Enabled writes to stderr are synchronous and can
+apply backpressure. See the user guide's SQL debugging section for settings,
+logging and timing boundaries; issue #789 records validation and PR status.
 
 ## Graphify export additions (Refs #791)
 
 Source: [src/graphify.rs](../src/graphify.rs), `export_file`. This section adds
 five occurrences and one construction/binding context to the existing inventory.
 No existing query was changed, moved or removed. Snapshot inspected 2026-10-28.
-The dedicated read-only connection uses master's libsql API. The transaction API owns BEGIN,
+The dedicated read-only connection uses the raw libsql API, outside the beta SQL-debugging wrapper. The transaction API owns BEGIN,
 COMMIT and rollback on drop; those driver-generated statements introduce no new
 application SQL literals.
 

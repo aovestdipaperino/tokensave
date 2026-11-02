@@ -860,7 +860,7 @@ impl Database {
     /// by outgoing edge count (e.g. "class that implements the most interfaces").
     ///
     /// The query is performed entirely in SQL for efficiency — no need to load
-    /// all edges into memory. Results are ordered by count descending.
+    /// all edges into memory. Results are ordered by count descending, then node ID.
     pub async fn get_ranked_nodes_by_edge_kind(
         &self,
         edge_kind: &EdgeKind,
@@ -900,17 +900,25 @@ impl Database {
         }
 
         let where_clause = conditions.join(" AND ");
+        // Keep signatures/docstrings out of aggregation and sorting; only
+        // hydrate the bounded winners after applying all candidate filters.
         let sql = format!(
-            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+            "WITH ranked AS MATERIALIZED (
+                 SELECT {group_col} AS id, COUNT(*) AS cnt
+                 FROM edges e
+                 JOIN nodes n ON {join_col} = n.id
+                 WHERE {where_clause}
+                 GROUP BY {group_col}
+                 ORDER BY cnt DESC, {group_col}
+                 LIMIT ?{param_idx}
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    COUNT(*) AS cnt
-             FROM edges e
-             JOIN nodes n ON {join_col} = n.id
-             WHERE {where_clause}
-             GROUP BY {group_col}
-             ORDER BY cnt DESC
-             LIMIT ?{param_idx}"
+                    r.cnt
+             FROM ranked r
+             JOIN nodes n ON n.id = r.id
+             ORDER BY r.cnt DESC, r.id"
         );
         param_values.push(libsql::Value::Integer(limit as i64));
 
@@ -1091,13 +1099,13 @@ impl Database {
         path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(Node, u64)>> {
-        let path_filter = match path_prefix {
+        let (seed_join, path_filter) = match path_prefix {
             Some(prefix) => {
-                let mut f = String::from("WHERE ");
-                push_path_prefix_filter(&mut f, "n.", prefix);
-                f
+                let mut f = String::from("AND ");
+                push_path_prefix_filter(&mut f, "seed.", prefix);
+                ("JOIN nodes seed ON seed.id = e.source", f)
             }
-            None => String::new(),
+            None => ("", String::new()),
         };
 
         // Track visited node IDs in `path` to avoid blowing up on cycles in the
@@ -1110,16 +1118,18 @@ impl Database {
         // Note the predicate order in the recursive step: `h.depth < 50` is a
         // cheap integer compare and is evaluated before the path `instr`
         // string-scan, so cycles still under the depth bound short-circuit
-        // without paying for the substring search. Reducing the hierarchy to
-        // `(leaf_id, max_depth)` in an inner subquery before joining `nodes`
-        // means the `LIKE` path filter only runs against distinct leaves,
-        // not against the (potentially huge) full hierarchy table.
+        // without paying for the substring search. Scope only the starting
+        // nodes: ancestors outside the requested path still contribute to the
+        // maximum depth. The seed join allows the planner to start from the
+        // extends edges on sparse graphs, avoiding a scan of unrelated nodes.
+        // Unscoped requests retain the original seed without a nodes lookup.
         let sql = format!(
             "WITH RECURSIVE hierarchy(leaf_id, current_id, depth, path) AS (
                  SELECT e.source, e.target, 1,
                         ',' || e.source || ',' || e.target || ','
-                 FROM edges e
+                 FROM edges e {seed_join}
                  WHERE e.kind = 'extends'
+                   {path_filter}
                  UNION ALL
                  SELECT h.leaf_id, e.target, h.depth + 1,
                         h.path || e.target || ','
@@ -1139,7 +1149,6 @@ impl Database {
                     ld.max_depth
              FROM leaf_depths ld
              JOIN nodes n ON ld.leaf_id = n.id
-             {path_filter}
              ORDER BY ld.max_depth DESC
              LIMIT ?1"
         );
@@ -1357,20 +1366,41 @@ impl Database {
         }
 
         let where_clause = conditions.join(" AND ");
+        // Scoped rankings count only candidates' incident edges, including
+        // calls across the path boundary. Whole-project rankings retain the
+        // grouped strategy rather than probing twice for every graph node.
+        let (fan_out, fan_in, joins) = if path_prefix.is_some() {
+            (
+                "(SELECT COUNT(*) FROM edges WHERE source = n.id AND kind = 'calls')",
+                "(SELECT COUNT(*) FROM edges WHERE target = n.id AND kind = 'calls')",
+                "",
+            )
+        } else {
+            (
+                "COALESCE(out_calls.cnt, 0)",
+                "COALESCE(in_calls.cnt, 0)",
+                "LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
+                 LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id",
+            )
+        };
+        // Materialize only scores; fetch large signatures/docstrings after
+        // LIMIT has selected the winners. The candidate set is request-scoped.
         let sql = format!(
-            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+            "WITH scores AS MATERIALIZED (
+                 SELECT n.id, (n.end_line - n.start_line + 1) AS lines,
+                        {fan_out} AS fan_out, {fan_in} AS fan_in
+                 FROM nodes n {joins}
+                 WHERE {where_clause}
+             ), top_scores AS (
+                 SELECT *, (lines + fan_out * 3 + fan_in) AS score
+                 FROM scores ORDER BY score DESC, id LIMIT ?{param_idx}
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    (n.end_line - n.start_line + 1) AS lines,
-                    COALESCE(out_calls.cnt, 0) AS fan_out,
-                    COALESCE(in_calls.cnt, 0) AS fan_in,
-                    ((n.end_line - n.start_line + 1) + COALESCE(out_calls.cnt, 0) * 3 + COALESCE(in_calls.cnt, 0)) AS score
-             FROM nodes n
-             LEFT JOIN (SELECT source, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY source) out_calls ON out_calls.source = n.id
-             LEFT JOIN (SELECT target, COUNT(*) AS cnt FROM edges WHERE kind = 'calls' GROUP BY target) in_calls ON in_calls.target = n.id
-             WHERE {where_clause}
-             ORDER BY score DESC
-             LIMIT ?{param_idx}"
+                    t.lines, t.fan_out, t.fan_in, t.score
+             FROM top_scores t JOIN nodes n ON n.id = t.id
+             ORDER BY t.score DESC, t.id"
         );
         param_values.push(libsql::Value::Integer(limit as i64));
 
@@ -1503,20 +1533,29 @@ impl Database {
 
         // After v9, containment is `nodes.parent_id`, not Contains edges.
         // Join each candidate container directly to its children via parent_id.
+        // Materialize only IDs and member counts for the selected containers.
+        // Full node text is loaded after the ranking limit, not per child row.
         let sql = format!(
-            "SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
+            "WITH ranked AS MATERIALIZED (
+                 SELECT n.id,
+                        SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
+                        SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
+                        COUNT(*) AS total
+                 FROM nodes n
+                 JOIN nodes c ON c.parent_id = n.id
+                 WHERE n.kind IN ('class', 'struct', 'inner_class', 'object')
+                   {path_filter}
+                 GROUP BY n.id
+                 ORDER BY total DESC, n.id
+                 LIMIT ?1
+             )
+             SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
-                    SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
-                    SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
-                    COUNT(*) AS total
-             FROM nodes n
-             JOIN nodes c ON c.parent_id = n.id
-             WHERE n.kind IN ('class', 'struct', 'inner_class', 'object')
-               {path_filter}
-             GROUP BY n.id
-             ORDER BY total DESC
-             LIMIT ?1"
+                    r.methods, r.fields, r.total
+             FROM ranked r
+             JOIN nodes n ON n.id = r.id
+             ORDER BY r.total DESC, r.id"
         );
 
         let op = "get_god_classes";

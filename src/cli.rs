@@ -14,9 +14,10 @@ pub use tokensave::agents::GitHookMode;
 /// Code intelligence for Rust codebases.
 #[derive(Parser)]
 #[command(
-    name = "tokensave",
+    name = tokensave::identity::CLI_NAME,
     about = "Code intelligence for 34 languages — semantic graph queries instead of file reads",
-    version
+    version = tokensave::identity::VERSION,
+    long_version = env!("TOKENSAVE_LONG_VERSION")
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -671,6 +672,15 @@ pub enum ProfileAction {
 
 #[derive(Subcommand)]
 pub enum ConfigAction {
+    /// Show or change global SQL debugging (restart MCP servers after changing)
+    DebugSql {
+        /// Enable or disable SQL diagnostics on stderr
+        #[arg(long, action = ArgAction::Set)]
+        enabled: Option<bool>,
+        /// Include EXPLAIN QUERY PLAN (requires enabled=true)
+        #[arg(long, action = ArgAction::Set)]
+        explain: Option<bool>,
+    },
     /// Show, run, or reset the machine-level hardware benchmark
     ///
     /// The benchmark measures CPUs, memory and parallel speedup once per
