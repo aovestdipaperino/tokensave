@@ -71,7 +71,10 @@ impl VhdlExtractor {
             .ok_or_else(|| "tree-sitter parse returned None".to_string())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is a separate field of the node being emitted"
+    )]
     fn make_node(
         id: String,
         kind: NodeKind,
