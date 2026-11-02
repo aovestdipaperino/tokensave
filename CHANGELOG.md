@@ -37,6 +37,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - **The HLSL grammar now comes from the shared tier bundle.** `tokensave-large-treesitters` carries `tree-sitter-hlsl`, so the direct dependency and provider override are removed; the grammar is the same 0.2.0 release, so extraction output is unchanged.
 
 - Align `unsafe` usage and hex literals with the adopted Google Rust Style Guide: document every `unsafe` block with a `// SAFETY:` comment, replace a hand-declared `getppid` FFI call in a test with `std::os::unix::process::parent_id()`, and lowercase hex literals. No behavior change (Refs #886).
+- Replace glob imports with explicit ones in `src/graph/`, `src/db/` and `src/resolution/` (Refs #886).
 - Give the language extractors' `#[allow]` attributes a stated `reason`, and remove a stale `dead_code` allow in the C++ extractor (Refs #886).
 - Review `#[allow]` attributes outside the language extractors: remove 7 that no longer suppress anything, replace 4 with the code fix the lint asks for, and give the remaining unexplained ones a `reason` (Refs #886).
 - Resolve the pre-existing `clippy::pedantic` warnings in the MCP server: box the ~56 KiB `tools/call` handler future once instead of inlining it into every caller (including the serve loop), and simplify the serve loop's control flow with `let ... else` and `if let` (Refs #886).
