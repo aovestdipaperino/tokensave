@@ -12,6 +12,7 @@ mod clear;
 mod edges;
 mod files;
 mod fingerprints;
+mod graph;
 mod metadata;
 mod nodes;
 mod routes;
