@@ -435,7 +435,7 @@ async fn scan_literal_chunk(
     let query = query.to_string();
     let scanned = tokio::task::spawn_blocking(move || {
         cpu.run(|| {
-            use rayon::prelude::*;
+            use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
             paths
                 .par_iter()
                 .map(|path| scan_literal_file(&project_root, path, &query, budget))
@@ -463,7 +463,10 @@ async fn scan_literal_chunk(
 /// scan early. Either way the response says whether the total is exact
 /// (`total_exact`) rather than passing a partial count off as the whole
 /// project.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one argument per `tokensave_search` option, already parsed by the caller"
+)]
 async fn handle_literal_search(
     cg: &TokenSave,
     query: &str,

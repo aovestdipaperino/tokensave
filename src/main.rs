@@ -13,7 +13,7 @@ mod profile_command;
 mod serve;
 mod tool_command;
 
-use cli::*;
+use cli::{Cli, Commands};
 
 /// Alias for the shared timestamp utility.
 pub(crate) fn current_unix_timestamp() -> i64 {

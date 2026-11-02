@@ -81,7 +81,6 @@ fn database_path(root: &Path) -> Result<PathBuf> {
 ///
 /// The caller selects a new output path. Existing files are never overwritten.
 /// No automatic indexing, migration, Graphify process, or network call occurs.
-#[allow(clippy::too_many_lines)]
 pub async fn export_file(
     root: &Path,
     file: &str,
