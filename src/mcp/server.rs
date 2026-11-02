@@ -3720,6 +3720,67 @@ mod startup_metadata_tests {
 }
 
 #[cfg(test)]
+mod default_footprint_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// Bytes of the default `tools/list` result plus the `initialize`
+    /// instructions, as measured in `docs/MCP-FOOTPRINT-BASELINE.md` (#917).
+    ///
+    /// A client sends the listed schemas on every turn and the instructions
+    /// once per session, so this is the fixed context cost of a default
+    /// install. Raise it only with a reason stated in the pull request, and
+    /// update the report.
+    const DEFAULT_FOOTPRINT_BYTES: usize = 24_056;
+
+    /// The default footprint: the core toolset with no area revealed, and the
+    /// instructions with savings reporting off and no sibling projects. The
+    /// project-dependent parts (sibling paths, the no-default-project list)
+    /// and the version in `serverInfo` are left out so the count is the same
+    /// on every host.
+    fn default_footprint_bytes() -> usize {
+        let toolset = crate::config::Toolset::default();
+        let tools = get_listed_tool_definitions(toolset, &BTreeSet::new());
+        let tools_list = json!({ "tools": tools }).to_string();
+        let initialize = McpServer::handle_initialize(
+            json!(1),
+            None,
+            crate::config::TokenSaveConfig::default().report_savings,
+            ServedProjects::Default { siblings: &[] },
+            toolset,
+        );
+        let instructions = initialize
+            .result
+            .as_ref()
+            .and_then(|result| result.get("instructions"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(!instructions.is_empty(), "initialize sent no instructions");
+        tools_list.len() + instructions.len()
+    }
+
+    /// #917: the per-description cap does not bound the total, which grows
+    /// with every tool, parameter and sentence added to the default list.
+    /// The core list does not include `tokensave_ast_grep_rewrite`, so the
+    /// count does not depend on `ast-grep` being on `PATH`, and no definition
+    /// depends on a language feature.
+    #[test]
+    fn the_default_tools_list_and_instructions_stay_within_their_byte_budget() {
+        assert_eq!(
+            crate::config::Toolset::default(),
+            crate::config::Toolset::Core
+        );
+        let bytes = default_footprint_bytes();
+        assert!(
+            bytes <= DEFAULT_FOOTPRINT_BYTES,
+            "the default tools/list and initialize instructions are {bytes} bytes, \
+             over the recorded {DEFAULT_FOOTPRINT_BYTES}; state the reason in the PR \
+             and update DEFAULT_FOOTPRINT_BYTES and docs/MCP-FOOTPRINT-BASELINE.md"
+        );
+    }
+}
+
+#[cfg(test)]
 #[allow(clippy::expect_used)]
 mod redundancy_checkout_refusal_tests {
     use super::selected_redundancy_checkout_refusal;
