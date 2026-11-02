@@ -7,6 +7,7 @@
 //! for fast aggregate queries.
 
 pub mod classifier;
+mod copilot;
 pub mod discover;
 mod droid;
 pub mod metrics;
@@ -15,6 +16,7 @@ mod pi;
 pub mod pricing;
 
 pub use classifier::TaskCategory;
+pub use copilot::format_aiu as copilot_format_aiu;
 pub use discover::{analyze, DiscoverReport};
 pub use metrics::{format_coverage, quick_cost_summary, CostSummary};
 pub use parser::{

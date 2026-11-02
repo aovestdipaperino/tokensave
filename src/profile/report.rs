@@ -285,9 +285,9 @@ mod tests {
 
     #[test]
     fn parses_windows() {
-        assert_eq!(parse_window("30m"), Some(Duration::from_secs(1800)));
-        assert_eq!(parse_window("24h"), Some(Duration::from_secs(86_400)));
-        assert_eq!(parse_window("7d"), Some(Duration::from_secs(604_800)));
+        assert_eq!(parse_window("30m"), Some(Duration::from_mins(30)));
+        assert_eq!(parse_window("24h"), Some(Duration::from_hours(24)));
+        assert_eq!(parse_window("7d"), Some(Duration::from_hours(168)));
         assert_eq!(parse_window("7"), None);
         assert_eq!(parse_window("h"), None);
         assert_eq!(parse_window("3w"), None);
