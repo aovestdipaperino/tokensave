@@ -31,7 +31,6 @@ struct ExtractionState {
     /// Tracks class nesting depth (for inner classes).
     class_depth: usize,
     /// True if currently inside a `class` (default private), false if inside a `struct` (default public).
-    #[allow(dead_code)]
     in_class_default_private: bool,
 }
 
