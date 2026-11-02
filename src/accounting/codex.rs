@@ -30,8 +30,8 @@ use crate::types::CostTurn;
 /// One line of a Codex rollout file: `{"timestamp","type","payload"}`.
 ///
 /// The payload shape depends on `type`, so it is kept as an untyped value and
-/// the relevant fields are pulled out per event. Lines that are not JSON objects
-/// fail to deserialize and are skipped without failing the whole file.
+/// the relevant fields are pulled out per event. A malformed non-empty line
+/// marks the rollout incomplete without discarding other valid events.
 #[derive(Debug, Deserialize)]
 struct Line {
     #[serde(rename = "type")]
@@ -55,7 +55,7 @@ struct SessionScan {
     start_timestamp: Option<String>,
     model: Option<String>,
     usage: Option<Usage>,
-    invalid_usage: bool,
+    incomplete: bool,
 }
 
 fn parse_usage(obj: &serde_json::Value) -> Option<Usage> {
@@ -91,7 +91,7 @@ fn scan_session(contents: &str) -> SessionScan {
     let mut start_timestamp: Option<String> = None;
     let mut model: Option<String> = None;
     let mut best: Option<Usage> = None;
-    let mut invalid_usage = false;
+    let mut incomplete = false;
 
     for line in contents.lines() {
         let trimmed = line.trim();
@@ -99,6 +99,7 @@ fn scan_session(contents: &str) -> SessionScan {
             continue;
         }
         let Ok(ev) = serde_json::from_str::<Line>(trimmed) else {
+            incomplete = true;
             continue;
         };
         let Some(payload) = ev.payload else {
@@ -131,10 +132,11 @@ fn scan_session(contents: &str) -> SessionScan {
                 }
                 let Some(total) = payload.get("info").and_then(|i| i.get("total_token_usage"))
                 else {
+                    incomplete = true;
                     continue;
                 };
                 let Some(candidate) = parse_usage(total) else {
-                    invalid_usage = true;
+                    incomplete = true;
                     continue;
                 };
                 match &best {
@@ -151,7 +153,7 @@ fn scan_session(contents: &str) -> SessionScan {
         start_timestamp,
         model,
         usage: best,
-        invalid_usage,
+        incomplete,
     }
 }
 
@@ -195,6 +197,7 @@ pub(crate) struct ParsedSession {
     pub turn: CostTurn,
     pub priced: bool,
     legacy_output_tokens: u64,
+    partial: bool,
 }
 
 /// Parse a single Codex rollout file at `path`.
@@ -203,25 +206,24 @@ pub(crate) struct ParsedSession {
 ///
 /// | Condition | Result |
 /// |-----------|--------|
-/// | File unreadable | `Err(())` |
-/// | No `token_count` usage, or no positive total tokens, or missing session id | `Ok(None)` |
-/// | Usage present; start `timestamp` absent or unparseable | `Err(())` |
-/// | Usage present; start `timestamp` present and parseable | `Ok(Some(parsed))` |
+/// | File unreadable, malformed data without valid usage, missing session id, or invalid timestamp | `Err(())` |
+/// | No positive usage and no parse issues | `Ok(None)` |
+/// | Positive usage and valid timestamp | `Ok(Some(parsed))`; `parsed.partial` may be true |
 ///
 /// `credits` is always `None` (Codex is USD-metered). `cost_usd` is the priced
 /// estimate, or `0.0` when the model is unpriced (`parsed.priced == false`).
 pub(crate) fn parse_rollout_file(path: &Path) -> Result<Option<ParsedSession>, ()> {
     let contents = std::fs::read_to_string(path).map_err(|_| ())?;
     let scan = scan_session(&contents);
-    if scan.invalid_usage {
-        return Err(());
-    }
 
     let Some(usage) = scan.usage else {
-        return Ok(None);
+        return if scan.incomplete { Err(()) } else { Ok(None) };
     };
-    if usage.total == 0 || scan.session_id.is_empty() {
-        return Ok(None);
+    if usage.total == 0 {
+        return if scan.incomplete { Err(()) } else { Ok(None) };
+    }
+    if scan.session_id.is_empty() {
+        return Err(());
     }
 
     let timestamp = scan
@@ -261,6 +263,7 @@ pub(crate) fn parse_rollout_file(path: &Path) -> Result<Option<ParsedSession>, (
         },
         priced,
         legacy_output_tokens: usage.output + usage.reasoning_output,
+        partial: scan.incomplete,
     }))
 }
 
@@ -277,9 +280,9 @@ pub(crate) struct CodexIngestResult {
 ///
 /// Coverage rules:
 /// - [`CoverageState::Absent`]: no files found and no walk errors.
-/// - [`CoverageState::Partial`]: any parse/read/walk failure, or any priced
-///   session whose model is unknown to the pricing table (cost is unpriced, not
-///   free).
+/// - [`CoverageState::Partial`]: any parse/read/walk failure, any incomplete
+///   rollout, or any session whose model is unknown to the pricing table (cost
+///   is unpriced, not free).
 /// - [`CoverageState::Complete`]: all files parse and every session's model is
 ///   priced.
 pub(crate) async fn ingest_dir(gdb: &crate::global_db::GlobalDb, root: &Path) -> CodexIngestResult {
@@ -294,6 +297,9 @@ pub(crate) async fn ingest_dir(gdb: &crate::global_db::GlobalDb, root: &Path) ->
             Err(()) => parse_errors += 1,
             Ok(None) => {}
             Ok(Some(parsed)) => {
+                if parsed.partial {
+                    parse_errors += 1;
+                }
                 if !parsed.priced {
                     unpriced += 1;
                 }
@@ -504,6 +510,44 @@ mod tests {
     }
 
     #[test]
+    fn malformed_trailing_line_keeps_valid_snapshot() {
+        let tmp = TempDir::new().unwrap();
+        let content = format!(
+            "{}\n{}\n{}\nnot-json\n",
+            meta_line("sess-partial", "2026-06-30T05:59:02.805Z"),
+            turn_context_line("claude-opus-4"),
+            token_count_line(100, 25, 50, 0, 150),
+        );
+        let path = write_rollout(tmp.path(), "partial", &content);
+        let parsed = parse_rollout_file(&path).unwrap().unwrap();
+
+        assert_eq!(parsed.turn.input_tokens, 75);
+        assert_eq!(parsed.turn.cache_read_tokens, 25);
+        assert_eq!(parsed.turn.output_tokens, 50);
+    }
+
+    #[test]
+    fn usage_without_session_id_is_a_parse_error() {
+        let tmp = TempDir::new().unwrap();
+        let content = format!(
+            "{}\n{}\n",
+            r#"{"type":"session_meta","payload":{"timestamp":"2026-06-30T05:59:02.805Z"}}"#,
+            token_count_line(100, 25, 50, 0, 150),
+        );
+        let path = write_rollout(tmp.path(), "missing-id", &content);
+
+        assert!(parse_rollout_file(&path).is_err());
+    }
+
+    #[test]
+    fn malformed_only_rollout_is_a_parse_error() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_rollout(tmp.path(), "malformed-only", "not-json\n");
+
+        assert!(parse_rollout_file(&path).is_err());
+    }
+
+    #[test]
     fn model_defaults_to_unknown_when_no_turn_context() {
         let tmp = TempDir::new().unwrap();
         let content = format!(
@@ -602,8 +646,55 @@ mod tests {
         assert_eq!(res.coverage.sessions, 2);
     }
 
+    #[tokio::test]
+    async fn ingest_dir_keeps_valid_snapshot_and_marks_malformed_rollout_partial() {
+        let root_tmp = TempDir::new().unwrap();
+        let content = format!(
+            "{}\n{}\n{}\nnot-json\n",
+            meta_line("sess-partial", "2026-06-30T05:59:02.805Z"),
+            turn_context_line("claude-opus-4"),
+            token_count_line(100, 25, 50, 0, 150),
+        );
+        write_rollout(root_tmp.path(), "partial", &content);
+        let db_tmp = TempDir::new().unwrap();
+        let db_path = db_tmp.path().join(".tokensave").join("global.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let gdb = crate::global_db::GlobalDb::open_at(&db_path).await.unwrap();
+
+        let res = ingest_dir(&gdb, root_tmp.path()).await;
+
+        assert_eq!(res.coverage.state, CoverageState::Partial);
+        assert_eq!(res.coverage.sessions, 1);
+        assert_eq!(res.rows_changed, 1);
+        assert_eq!(stored_usage(&gdb).await, (75, 50, 25, 0));
+    }
+
+    #[tokio::test]
+    async fn ingest_dir_keeps_valid_snapshot_before_invalid_usage() {
+        let root_tmp = TempDir::new().unwrap();
+        let content = format!(
+            "{}\n{}\n{}\n{}\n",
+            meta_line("sess-invalid-usage", "2026-06-30T05:59:02.805Z"),
+            turn_context_line("claude-opus-4"),
+            token_count_line(100, 25, 50, 0, 150),
+            token_count_line(120, 20, 40, 0, 999),
+        );
+        write_rollout(root_tmp.path(), "invalid-usage", &content);
+        let db_tmp = TempDir::new().unwrap();
+        let db_path = db_tmp.path().join(".tokensave").join("global.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let gdb = crate::global_db::GlobalDb::open_at(&db_path).await.unwrap();
+
+        let res = ingest_dir(&gdb, root_tmp.path()).await;
+
+        assert_eq!(res.coverage.state, CoverageState::Partial);
+        assert_eq!(res.coverage.sessions, 1);
+        assert_eq!(res.rows_changed, 1);
+        assert_eq!(stored_usage(&gdb).await, (75, 50, 25, 0));
+    }
+
     #[test]
-    fn inconsistent_native_checkpoints_are_not_authoritative() {
+    fn invalid_later_checkpoints_preserve_best_usage_and_mark_partial() {
         let tmp = TempDir::new().unwrap();
         let valid = real_shape_session("invalid", "claude-opus-4");
         for contents in [
@@ -615,7 +706,11 @@ mod tests {
             valid.replace("\"input_tokens\":5000", "\"input_tokens\":\"5000\""),
         ] {
             let path = write_rollout(tmp.path(), "invalid", &contents);
-            assert!(parse_rollout_file(&path).is_err(), "{contents}");
+            let parsed = parse_rollout_file(&path).unwrap().unwrap();
+            assert!(parsed.partial, "{contents}");
+            assert_eq!(parsed.turn.input_tokens, 600, "{contents}");
+            assert_eq!(parsed.turn.cache_read_tokens, 400, "{contents}");
+            assert_eq!(parsed.turn.output_tokens, 200, "{contents}");
         }
     }
 
