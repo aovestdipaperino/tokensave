@@ -942,7 +942,7 @@ fn test_healthcheck_index_presence_is_metadata_only() {
     let mut missing = DoctorCounters::new();
     PiIntegration.healthcheck(&mut missing, &hctx);
     let index_dir = tokensave::config::get_tokensave_dir(&project);
-    std::fs::create_dir(&index_dir).unwrap();
+    std::fs::create_dir_all(&index_dir).unwrap();
     std::fs::write(index_dir.join("config.json"), "{}").unwrap();
     let mut incomplete = DoctorCounters::new();
     PiIntegration.healthcheck(&mut incomplete, &hctx);
