@@ -25,12 +25,14 @@ SQL in `tests/corruption_test.rs` remains outside the documented scope.
 Local accounting context (2026-10-30): Q0282 is the atomic, revision-aware
 snapshot UPSERT. Binding `?15` chooses Copilot checkpoint timestamps; `?16`
 is the usage revision; `?17` is validated native output plus reasoning for
-legacy Codex dominance checks. Revision repair replaces corrected counters,
-equal-revision updates remain monotonic and downgrades are rejected. Q0390–Q0392
-cover schema readiness and remaining legacy rows; Q0393–Q0397 are isolated
-failure/concurrency fixtures. Snapshot migration fails closed and verifies
-actual schema after an ALTER race. The original turn field list remains
-compatible; only the new Codex writer supplies revision 1.
+legacy Codex dominance checks. Same-revision Codex rows with unchanged token
+counters can be repriced only from zero to a positive estimate; the exception
+adds no binding and cannot lower a positive estimate. Revision repair replaces
+corrected counters, equal-revision updates remain monotonic, and downgrades are
+rejected. Q0390–Q0392 cover schema readiness and remaining legacy rows;
+Q0393–Q0397 are isolated failure/concurrency fixtures. Snapshot migration
+fails closed and verifies actual schema after an ALTER race. The original turn
+field list remains compatible; only the new Codex writer supplies revision 1.
 
 `?`, `?1`, and similar placeholders are bound by the caller. Rust format fields such as `{placeholders}`, `{where_clause}`, `{limit}`, and `{}` are preserved as templates; they are not executable SQL until constructed. Rust string escapes and backslash-newline continuations are decoded for readability. Dynamic SQL has potentially unlimited concrete instances, so the report includes its templates and complete builder functions in the construction appendix, including conditional clauses and parameter bindings. No SQL was executed to produce this report.
 
@@ -3292,7 +3294,7 @@ UPDATE turns SET tool_result_tokens = tool_result_tokens + ?2 WHERE message_id =
 
 #### Q0282 — `upsert_monotonic_turn`
 
-Source: [src/global_db.rs:765](../src/global_db.rs#L765).
+Source: [src/global_db.rs:752](../src/global_db.rs#L752).
 
 ```sql
 INSERT INTO turns
@@ -3332,7 +3334,14 @@ INSERT INTO turns
                                OR excluded.cache_read_tokens   > turns.cache_read_tokens
                                OR (excluded.credits IS NOT NULL
                                    AND (turns.credits IS NULL
-                                        OR excluded.credits > turns.credits))))
+                                        OR excluded.credits > turns.credits))
+                               OR (excluded.agent = 'codex'
+                                   AND turns.cost_usd = 0.0
+                                   AND excluded.cost_usd > 0.0
+                                   AND excluded.input_tokens = turns.input_tokens
+                                   AND excluded.output_tokens = turns.output_tokens
+                                   AND excluded.cache_write_tokens = turns.cache_write_tokens
+                                   AND excluded.cache_read_tokens = turns.cache_read_tokens)))
                          OR (excluded.agent = 'codex'
                              AND turns.usage_revision = 0 AND excluded.usage_revision = 1
                              AND ?17 >= turns.output_tokens)

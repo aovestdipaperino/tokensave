@@ -799,7 +799,14 @@ impl GlobalDb {
                                OR excluded.cache_read_tokens   > turns.cache_read_tokens
                                OR (excluded.credits IS NOT NULL
                                    AND (turns.credits IS NULL
-                                        OR excluded.credits > turns.credits))))
+                                        OR excluded.credits > turns.credits))
+                               OR (excluded.agent = 'codex'
+                                   AND turns.cost_usd = 0.0
+                                   AND excluded.cost_usd > 0.0
+                                   AND excluded.input_tokens = turns.input_tokens
+                                   AND excluded.output_tokens = turns.output_tokens
+                                   AND excluded.cache_write_tokens = turns.cache_write_tokens
+                                   AND excluded.cache_read_tokens = turns.cache_read_tokens)))
                          OR (excluded.agent = 'codex'
                              AND turns.usage_revision = 0 AND excluded.usage_revision = 1
                              AND ?17 >= turns.output_tokens)
@@ -1068,6 +1075,47 @@ impl GlobalDb {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn codex_zero_cost_snapshot_reprices_without_usage_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = GlobalDb::open_at(&temp.path().join("global.db"))
+            .await
+            .unwrap();
+        let mut turn = crate::types::CostTurn {
+            message_id: "codex:reprice".to_string(),
+            project_hash: "test".to_string(),
+            session_id: "session-a".to_string(),
+            model: "claude-opus-4".to_string(),
+            timestamp: 1,
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_write_tokens: 0,
+            cache_read_tokens: 25,
+            cost_usd: 0.0,
+            category: "unclassified".to_string(),
+            tool_names: String::new(),
+            agent: "codex".to_string(),
+            credits: None,
+        };
+        let kind = SnapshotKind::Codex {
+            legacy_output_tokens: 50,
+        };
+
+        assert!(db.upsert_monotonic_turn(&turn, kind).await.unwrap());
+        turn.cost_usd = 0.02;
+        assert!(db.upsert_monotonic_turn(&turn, kind).await.unwrap());
+        turn.cost_usd = 0.01;
+        assert!(!db.upsert_monotonic_turn(&turn, kind).await.unwrap());
+
+        let row = db
+            .cost_by_agent_since(0)
+            .await
+            .into_iter()
+            .find(|row| row.agent == "codex")
+            .unwrap();
+        assert!((row.cost_usd - 0.02).abs() < 1e-12);
+    }
 
     #[tokio::test]
     async fn snapshot_migration_fails_closed_then_retries_when_writable() {
