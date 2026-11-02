@@ -540,6 +540,18 @@ pub fn print_gain_history<F: Fn(u64) -> f64>(rows: &[crate::global_db::SavingsDa
     }
 }
 
+pub fn print_gain_by_tool(rows: &[crate::global_db::SavingsTool]) {
+    println!("  {:<32} {:>8} {:>10}", "Tool", "Calls", "Tokens");
+    for r in rows {
+        println!(
+            "  {:<32} {:>8} {:>10}",
+            r.tool,
+            r.calls,
+            format_token_count(r.saved_tokens)
+        );
+    }
+}
+
 /// Convert "days since 1970-01-01 UTC" into "YYYY-MM-DD" without external deps
 /// (Howard Hinnant's civil-from-days algorithm).
 fn format_yyyy_mm_dd(z: i64) -> String {

@@ -24,6 +24,14 @@ pub struct SavingsDay {
     pub calls: u64,
 }
 
+/// Savings + call count for one tool name, returned by `savings_by_tool`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SavingsTool {
+    pub tool: String,
+    pub calls: u64,
+    pub saved_tokens: u64,
+}
+
 /// Per-agent cost summary returned by `cost_by_agent_since`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AgentCostSummary {
@@ -565,6 +573,38 @@ impl GlobalDb {
                 day: row.get::<i64>(0).unwrap_or(0),
                 saved_tokens: row.get::<i64>(1).unwrap_or(0).max(0) as u64,
                 calls: row.get::<i64>(2).unwrap_or(0).max(0) as u64,
+            });
+        }
+        out
+    }
+
+    /// Group ledger entries by tool name (#918). Most-called first, ties by
+    /// name. Returns an empty list on any DB error.
+    pub async fn savings_by_tool(&self, project: Option<&str>, since: i64) -> Vec<SavingsTool> {
+        let sql_with_project =
+            "SELECT tool_name, COUNT(*), \
+                    COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0) \
+             FROM savings_ledger WHERE project_path = ?1 AND ts >= ?2 \
+             GROUP BY tool_name ORDER BY COUNT(*) DESC, tool_name ASC";
+        let sql_all =
+            "SELECT tool_name, COUNT(*), \
+                    COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0) \
+             FROM savings_ledger WHERE ts >= ?1 \
+             GROUP BY tool_name ORDER BY COUNT(*) DESC, tool_name ASC";
+
+        let rows = match project.map(normalize_project_key) {
+            Some(p) => self.conn.query(sql_with_project, params![p, since]).await,
+            None => self.conn.query(sql_all, params![since]).await,
+        };
+        let Ok(mut rows) = rows else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            out.push(SavingsTool {
+                tool: row.get::<String>(0).unwrap_or_default(),
+                calls: row.get::<i64>(1).unwrap_or(0).max(0) as u64,
+                saved_tokens: row.get::<i64>(2).unwrap_or(0).max(0) as u64,
             });
         }
         out

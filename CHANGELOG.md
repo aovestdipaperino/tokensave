@@ -9,6 +9,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- **`tokensave gain --by-tool` shows calls and tokens saved per tool (Refs #918).** It reads the existing savings ledger, so nothing new is recorded; with `--json` it prints one `{tool, calls, saved_tokens}` object per tool, most-called first. Existing `gain` and `gain --history` output is unchanged. The token-tracking guide now states which MCP calls write a ledger row, and `gain` is listed in the CLI reference.
 - **Elixir EEx templates are indexed with the `lang-elixir` feature (#907).** Code and output tags in `.eex` files contribute calls and declarations with their original locations; markup, comments, and escaped tags are ignored.
 - **AWK is now an indexed language (`lang-awk` feature, in `full`).** A new tree-sitter extractor covers `function` definitions, `BEGIN`/`END` blocks and pattern-action rules (each a function node named for its pattern), plus call edges and branch/loop/return complexity. The `tree-sitter-awk` grammar (Beaglefoot, v0.7.2) is vendored in `tokensave-large-treesitters`. Handles `.awk`.
 - **Wolfram Language is now an indexed language (`lang-wolfram` feature, in `full`).** A new tree-sitter extractor records `Set`/`SetDelayed` definitions (`f[x_] := …`) as functions, plain assignments as constants, call edges, and doc comments. The `tree-sitter-wolfram` grammar (WolframResearch) is vendored in `tokensave-large-treesitters`. Handles `.wl`, `.wls` and `.wlt`.
