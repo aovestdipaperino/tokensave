@@ -2,7 +2,7 @@
 
 use tokensave::extraction::AwkExtractor;
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, ExtractionResult, NodeKind};
 
 use crate::common::names_of;
 
