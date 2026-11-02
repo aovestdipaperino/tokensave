@@ -1,6 +1,6 @@
 use tokensave::extraction::CSharpExtractor;
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, ExtractionResult, NodeKind, Visibility};
 
 #[test]
 fn test_cs_file_node_is_root() {

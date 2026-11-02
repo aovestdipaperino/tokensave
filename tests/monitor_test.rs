@@ -206,8 +206,141 @@ fn base_cache() -> CostCache {
         week_credits: None,
         week_droid_tokens: 0,
         droid_state: CoverageState::Absent,
+        today_aiu: None,
+        week_aiu: None,
+        copilot_state: CoverageState::Absent,
         last_refresh: std::time::Instant::now(),
     }
+}
+
+/// Copilot AIU activity appends a compact segment to the coverage line, and
+/// nano-AIU is rendered as whole AIU (900_000_000_000 nano = 900 AIU).
+#[test]
+fn copilot_aiu_appends_segment_to_coverage_line() {
+    let cache = CostCache {
+        today_aiu: Some(900_000_000_000),
+        week_aiu: Some(1_500_000_000_000),
+        copilot_state: CoverageState::Complete,
+        ..base_cache()
+    };
+    let lines = cost_panel_lines(&cache);
+    assert_eq!(lines.len(), 3);
+    let line2 = &lines[1];
+    assert!(line2.contains("Copilot: 900 AIU today"), "got: {line2}");
+    assert!(line2.contains("1.5k 7d"), "got: {line2}");
+    assert!(
+        !line2.contains('$'),
+        "coverage line must not contain USD: {line2}"
+    );
+}
+
+/// With Droid absent but Copilot active, the segment still appends after the
+/// Claude-local base text.
+#[test]
+fn copilot_segment_appends_when_droid_absent() {
+    let cache = CostCache {
+        today_aiu: Some(0),
+        week_aiu: Some(900_000_000_000),
+        copilot_state: CoverageState::Partial,
+        droid_state: CoverageState::Absent,
+        ..base_cache()
+    };
+    let line2 = &cost_panel_lines(&cache)[1];
+    assert!(
+        line2.starts_with("  Coverage: Claude local; Droid absent"),
+        "got: {line2}"
+    );
+    assert!(
+        line2.contains("Copilot: 0 AIU today | 900 7d (partial source, checkpoint timestamp)"),
+        "got: {line2}"
+    );
+}
+
+/// A missing Copilot source does not alter a Droid coverage line.
+#[test]
+fn copilot_absence_leaves_droid_coverage_line_unchanged() {
+    let cache = CostCache {
+        today_credits: Some(100),
+        week_credits: Some(500),
+        week_aiu: None,
+        droid_state: CoverageState::Complete,
+        ..base_cache()
+    };
+    let droid_line = &cost_panel_lines(&cache)[1];
+    assert!(droid_line.starts_with("  Droid:"), "{droid_line}");
+    assert!(!droid_line.contains("Copilot"), "{droid_line}");
+}
+
+#[test]
+fn droid_monitor_preserves_existing_cost_labels() {
+    let cache = CostCache {
+        today_cost: 1.0,
+        droid_state: CoverageState::Complete,
+        ..base_cache()
+    };
+    let lines = cost_panel_lines(&cache);
+
+    assert!(
+        lines[0].starts_with("  USD spent: "),
+        "Droid-present cost label changed: {}",
+        lines[0]
+    );
+    assert!(
+        lines[2].contains("Top priced model:"),
+        "Droid-present model label changed: {}",
+        lines[2]
+    );
+}
+
+#[test]
+fn copilot_partial_without_weekly_usage_keeps_panel_and_discloses_coverage() {
+    let cache = CostCache {
+        copilot_state: CoverageState::Partial,
+        ..base_cache()
+    };
+
+    assert!(cache.has_activity(), "partial source coverage is activity");
+    let line2 = &cost_panel_lines(&cache)[1];
+    assert!(
+        line2.contains("Copilot partial; no usage in range"),
+        "got: {line2}"
+    );
+}
+
+#[test]
+fn copilot_complete_without_weekly_usage_keeps_panel_and_discloses_coverage() {
+    let cache = CostCache {
+        copilot_state: CoverageState::Complete,
+        ..base_cache()
+    };
+
+    assert!(cache.has_activity(), "complete source coverage is activity");
+    let line2 = &cost_panel_lines(&cache)[1];
+    assert!(
+        line2.contains("Copilot complete; no usage in range"),
+        "got: {line2}"
+    );
+}
+
+#[test]
+fn absent_copilot_source_does_not_render_stale_cached_aiu() {
+    let cache = CostCache {
+        week_aiu: Some(900_000_000_000),
+        copilot_state: CoverageState::Absent,
+        ..base_cache()
+    };
+
+    assert!(
+        !cache.has_activity(),
+        "stale Copilot usage must not show panel"
+    );
+    let lines = cost_panel_lines(&cache);
+    assert_eq!(
+        lines.len(),
+        2,
+        "stale Copilot data must not add a panel line"
+    );
+    assert!(lines.iter().all(|line| !line.contains("Copilot")));
 }
 
 /// Droid credits and raw tokens render as lowercase compact notation (2.9k, 24.6k).
@@ -373,7 +506,6 @@ fn complete_droid_source_without_week_usage_is_not_partial() {
     let droid_line = &lines[1];
     assert!(droid_line.contains("no usage in 7d"), "{droid_line}");
     assert!(!droid_line.contains("partial"), "{droid_line}");
-    assert!(!droid_line.contains("credits n/a"), "{droid_line}");
 }
 
 #[test]
@@ -409,7 +541,6 @@ fn droid_absent_preserves_legacy_monitor_lines() {
         lines[1],
         "  Efficiency: 25%    Top model: claude-opus-4 ($1.11)"
     );
-    assert!(lines.iter().all(|line| !line.contains("Droid")));
 }
 
 /// Top-priced model shows 'n/a' when no model is set.

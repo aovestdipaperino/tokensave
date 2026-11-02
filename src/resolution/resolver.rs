@@ -1,10 +1,13 @@
 // Rust guideline compliant 2025-10-17
 use std::collections::{HashMap, HashSet};
 
-use rayon::prelude::*;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::db::Database;
-use crate::types::*;
+use crate::types::{
+    AmbiguousCall, Edge, EdgeKind, Node, NodeKind, ResolutionResult, ResolvedBy, ResolvedRef,
+    UnresolvedRef, Visibility,
+};
 
 /// Names that are too common to resolve across files reliably.
 /// These are standard library types, trait methods, and ubiquitous constructors
@@ -684,7 +687,10 @@ fn go_file_in_package(file_path: &str, import_path: &str) -> bool {
 /// Caches are built once at construction time by loading all nodes from the
 /// database and indexing them by `name` and `qualified_name`.
 pub struct ReferenceResolver<'a> {
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "unread since resolution uses pre-loaded nodes; removing it changes the public `from_nodes` signature"
+    )]
     db: &'a Database,
     /// Nodes grouped by their short name.
     ///
@@ -2295,7 +2301,7 @@ fn kind_compatible(uref: &UnresolvedRef, target_kind: &NodeKind) -> bool {
         // attachment of an annotation/decorator usage to the item it
         // decorates (`get_annotation_sites`, `get_test_annotated_node_ids`,
         // `get_files_with_test_annotations`,
-        // `populate_test_annotated_targets_temp_table`). Extractors already
+        // `find_dead_code`). Extractors already
         // emit that edge directly at the usage site — this resolver has no
         // second, distinct relation to express under the same edge kind.
         //

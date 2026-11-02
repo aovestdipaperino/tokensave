@@ -1,6 +1,6 @@
 # tokensave SQL query inventory
 
-Snapshot: existing branch inventory with #835 compatibility changes inspected on 2026-10-27. Unaffected entries retain their prior coverage.
+Snapshot: beta inventory merged with master on 2026-11-02 (master → beta sync). Files whose merged source matches master use master's entries; beta's query optimizations and SQL tracing keep beta's entries and IDs. Master's compatibility entries Q0343–Q0349 correspond to Q0377–Q0383 here. Unaffected entries retain their prior coverage.
 
 ## Scope and reading guide
 
@@ -14,13 +14,28 @@ origin constants and release-channel selection are in `compatibility.rs`.
 Existing connection, migration, global-open, branch-copy, hook, and verification
 contexts below include their compatibility checks and channel-aware paths.
 
+Recovery context (#864): on an abandoned dirty sentinel, `TokenSave::open_with`
+holds the writer lock across recovery and reindexing, and runs Q0029
+(`quick_check`), then Q0030 (`needs_bulk_load_finalization`) and,
+when needed, Q0034 (`end_bulk_load`) before a complete source reindex. Errors
+propagate; detected corruption refuses automatic deletion. The SQL templates
+and bindings are unchanged, so inventory counts remain unchanged. Regression
+SQL in `tests/corruption_test.rs` remains outside the documented scope.
+
+Local accounting context (2026-10-30): Q0282 is shared by
+`upsert_droid_turn` and `upsert_copilot_turn` through `upsert_monotonic_turn`.
+The existing 14 turn fields are unchanged; binding `?15` selects whether an
+accepted monotonic update moves the timestamp (Copilot) or preserves the
+session-start bucket (Droid). No SQL occurrence or construction-function count
+is added, and the query ID remains stable.
+
 `?`, `?1`, and similar placeholders are bound by the caller. Rust format fields such as `{placeholders}`, `{where_clause}`, `{limit}`, and `{}` are preserved as templates; they are not executable SQL until constructed. Rust string escapes and backslash-newline continuations are decoded for readability. Dynamic SQL has potentially unlimited concrete instances, so the report includes its templates and complete builder functions in the construction appendix, including conditional clauses and parameter bindings. No SQL was executed to enumerate the inventory; separate benchmark evidence is linked below.
 
 ## Inventory summary
 
-- SQL-bearing source files: **39**.
-- SQL literal/template occurrences: **380**.
-- Functions retained for construction/binding context: **190**.
+- SQL-bearing source files: **40**.
+- SQL literal/template occurrences: **377**.
+- Functions retained for construction/binding context: **183**.
 
 ## Source file index
 
@@ -39,7 +54,7 @@ contexts below include their compatibility checks and channel-aware paths.
 | [src/db/queries/edges.rs](../src/db/queries/edges.rs) | 55 |
 | [src/db/queries/files.rs](../src/db/queries/files.rs) | 8 |
 | [src/db/queries/fingerprints.rs](../src/db/queries/fingerprints.rs) | 3 |
-| [src/db/queries/metadata.rs](../src/db/queries/metadata.rs) | 13 |
+| [src/db/queries/metadata.rs](../src/db/queries/metadata.rs) | 5 |
 | [src/db/queries/mod.rs](../src/db/queries/mod.rs) | 3 |
 | [src/db/queries/nodes.rs](../src/db/queries/nodes.rs) | 36 |
 | [src/db/queries/routes.rs](../src/db/queries/routes.rs) | 18 |
@@ -54,6 +69,7 @@ contexts below include their compatibility checks and channel-aware paths.
 | [src/global_db.rs](../src/global_db.rs) | 41 |
 | [src/graph/imports.rs](../src/graph/imports.rs) | 1 |
 | [src/graph/queries.rs](../src/graph/queries.rs) | 5 |
+| [src/graphify.rs](../src/graphify.rs) | 5 |
 | [src/hooks.rs](../src/hooks.rs) | 1 |
 | [src/mcp/tools/definitions.rs](../src/mcp/tools/definitions.rs) | 4 |
 | [src/mcp/tools/handlers/workflow.rs](../src/mcp/tools/handlers/workflow.rs) | 1 |
@@ -2289,7 +2305,7 @@ SELECT source, target, kind, line, resolved_by FROM edges WHERE source IN ({})
 
 #### Q0155 — `collect_test_marker_ids`
 
-Source: [src/db/queries/metadata.rs:166](../src/db/queries/metadata.rs#L166).
+Source: [src/db/queries/metadata.rs:167](../src/db/queries/metadata.rs#L167).
 
 ```sql
 SELECT id FROM nodes
@@ -2300,73 +2316,6 @@ SELECT id FROM nodes
                          OR name = 'wasm_bindgen_test'
                          OR name LIKE '%::wasm_bindgen_test'
                      )
-```
-
-#### Q0156 — `populate_test_marker_temp_table`
-
-Source: [src/db/queries/metadata.rs:215](../src/db/queries/metadata.rs#L215).
-
-```sql
-DROP TABLE IF EXISTS temp.test_markers
-```
-
-#### Q0157 — `populate_test_marker_temp_table`
-
-Source: [src/db/queries/metadata.rs:221](../src/db/queries/metadata.rs#L221).
-
-```sql
-CREATE TEMP TABLE test_markers (id TEXT PRIMARY KEY)
-```
-
-#### Q0158 — `populate_test_marker_temp_table`
-
-Source: [src/db/queries/metadata.rs:233](../src/db/queries/metadata.rs#L233).
-
-```sql
-INSERT INTO temp.test_markers (id) VALUES
-```
-
-#### Q0159 — `drop_test_marker_temp_table`
-
-Source: [src/db/queries/metadata.rs:261](../src/db/queries/metadata.rs#L261).
-
-```sql
-DROP TABLE IF EXISTS temp.test_markers
-```
-
-#### Q0160 — `populate_test_annotated_targets_temp_table`
-
-Source: [src/db/queries/metadata.rs:297](../src/db/queries/metadata.rs#L297).
-
-```sql
-DROP TABLE IF EXISTS temp.test_annotated_targets
-```
-
-#### Q0161 — `populate_test_annotated_targets_temp_table`
-
-Source: [src/db/queries/metadata.rs:304](../src/db/queries/metadata.rs#L304).
-
-```sql
-CREATE TEMP TABLE test_annotated_targets (target TEXT PRIMARY KEY)
-```
-
-#### Q0162 — `populate_test_annotated_targets_temp_table`
-
-Source: [src/db/queries/metadata.rs:317](../src/db/queries/metadata.rs#L317).
-
-```sql
-INSERT OR IGNORE INTO temp.test_annotated_targets (target)
-             SELECT e.target FROM edges e
-             WHERE e.kind = 'annotates'
-               AND e.source IN (SELECT id FROM temp.test_markers)
-```
-
-#### Q0163 — `drop_test_annotated_targets_temp_table`
-
-Source: [src/db/queries/metadata.rs:335](../src/db/queries/metadata.rs#L335).
-
-```sql
-DROP TABLE IF EXISTS temp.test_annotated_targets
 ```
 
 ### src/db/queries/mod.rs
@@ -3487,9 +3436,9 @@ Source: [src/global_db.rs:678](../src/global_db.rs#L678).
 UPDATE turns SET tool_result_tokens = tool_result_tokens + ?2 WHERE message_id = ?1
 ```
 
-#### Q0282 — `upsert_droid_turn`
+#### Q0282 — `upsert_monotonic_turn`
 
-Source: [src/global_db.rs:697](../src/global_db.rs#L697).
+Source: [src/global_db.rs:709](../src/global_db.rs#L709).
 
 ```sql
 INSERT INTO turns
@@ -3501,6 +3450,7 @@ INSERT INTO turns
                      project_hash        = excluded.project_hash,
                      session_id          = excluded.session_id,
                      model               = excluded.model,
+                     timestamp           = CASE WHEN ?15 THEN excluded.timestamp ELSE turns.timestamp END,
                      input_tokens        = MAX(excluded.input_tokens,        turns.input_tokens),
                      output_tokens       = MAX(excluded.output_tokens,       turns.output_tokens),
                      cache_write_tokens  = MAX(excluded.cache_write_tokens,  turns.cache_write_tokens),
@@ -3665,9 +3615,9 @@ SELECT DISTINCT n1.file_path, n1.start_line, n1.name, n1.signature, n2.file_path
 
 ### src/graph/queries.rs
 
-#### Q0297 — `find_dead_code_inner`
+#### Q0297 — `find_dead_code`
 
-Source: [src/graph/queries.rs:305](../src/graph/queries.rs#L305).
+Source: [src/graph/queries.rs:306](../src/graph/queries.rs#L306).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
@@ -3697,12 +3647,16 @@ SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
                  WHERE target = nodes.id
                  AND kind IN ('calls', 'implements', 'extends', 'type_of', 'returns', 'receives', 'uses')
              )
-             AND id NOT IN (SELECT target FROM temp.test_annotated_targets)
+             AND id NOT IN (
+                 SELECT target FROM edges
+                 WHERE kind = 'annotates'
+                 AND source IN (SELECT value FROM json_each(?1))
+             )
 ```
 
 #### Q0298 — `gdscript_live_overrides`
 
-Source: [src/graph/queries.rs:380](../src/graph/queries.rs#L380).
+Source: [src/graph/queries.rs:385](../src/graph/queries.rs#L385).
 
 ```sql
 WITH RECURSIVE ancestry(cls, base) AS (
@@ -3725,7 +3679,7 @@ WITH RECURSIVE ancestry(cls, base) AS (
 
 #### Q0299 — `get_file_dependencies`
 
-Source: [src/graph/queries.rs:463](../src/graph/queries.rs#L463).
+Source: [src/graph/queries.rs:468](../src/graph/queries.rs#L468).
 
 ```sql
 SELECT DISTINCT e.target FROM edges e WHERE e.source IN ({}) AND e.kind IN {kind_filter}
@@ -3733,7 +3687,7 @@ SELECT DISTINCT e.target FROM edges e WHERE e.source IN ({}) AND e.kind IN {kind
 
 #### Q0300 — `get_file_dependents`
 
-Source: [src/graph/queries.rs:525](../src/graph/queries.rs#L525).
+Source: [src/graph/queries.rs:530](../src/graph/queries.rs#L530).
 
 ```sql
 SELECT DISTINCT e.source FROM edges e WHERE e.target IN ({}) AND e.kind IN {kind_filter}
@@ -3741,7 +3695,7 @@ SELECT DISTINCT e.source FROM edges e WHERE e.target IN ({}) AND e.kind IN {kind
 
 #### Q0301 — `build_file_adjacency`
 
-Source: [src/graph/queries.rs:618](../src/graph/queries.rs#L618).
+Source: [src/graph/queries.rs:623](../src/graph/queries.rs#L623).
 
 ```sql
 SELECT DISTINCT n1.file_path AS src_file, n2.file_path AS tgt_file FROM edges e JOIN nodes n1 ON e.source = n1.id JOIN nodes n2 ON e.target = n2.id WHERE e.kind IN ('calls', 'uses') AND n1.file_path != n2.file_path
@@ -5120,6 +5074,355 @@ Source: [src/db/connection.rs:516](../src/db/connection.rs#L516).
             })?;
         Ok(())
     }
+```
+
+### `plan` — src/db/debug_sql.rs:83
+
+Source: [src/db/debug_sql.rs:83](../src/db/debug_sql.rs#L83).
+
+```rust
+    async fn plan(&self, sql: &str, params: &Params) -> Option<Value> {
+        let debug = self.debug.as_ref()?;
+        if !debug.explain {
+            return None;
+        }
+        // Only compile the plan, never execute the original statement here.
+        // Use the raw connection so diagnostics cannot recurse into themselves.
+        let plan_sql = format!("EXPLAIN QUERY PLAN {sql}");
+        let result: libsql::Result<Value> = async {
+            let mut rows = self.inner.query(&plan_sql, params.clone()).await?;
+            let mut plan = Vec::new();
+            while let Some(row) = rows.next().await? {
+                if plan.len() == MAX_PLAN_ROWS {
+                    return Ok(json!({"rows": plan, "truncated": true}));
+                }
+                let detail: String = row.get(3)?;
+                plan.push(json!({
+                    "id": row.get::<i64>(0)?,
+                    "parent": row.get::<i64>(1)?,
+                    "detail": bounded(&detail, MAX_DETAIL_BYTES),
+                    "detail_truncated": detail.len() > MAX_DETAIL_BYTES,
+                }));
+            }
+            Ok(json!({"rows": plan, "truncated": false}))
+        }
+        .await;
+        // Error text can contain values or user data. Keep the application
+        // error unchanged, but record only a diagnostic failure indicator.
+        Some(result.unwrap_or_else(|_| json!({"error": true})))
+    }
+```
+
+### `transaction_with_behavior` — src/db/debug_sql.rs:207
+
+Source: [src/db/debug_sql.rs:207](../src/db/debug_sql.rs#L207).
+
+```rust
+    pub async fn transaction_with_behavior(
+        &self,
+        behavior: libsql::TransactionBehavior,
+    ) -> libsql::Result<Transaction> {
+        let sql = match behavior {
+            libsql::TransactionBehavior::Deferred => "BEGIN DEFERRED",
+            libsql::TransactionBehavior::Immediate => "BEGIN IMMEDIATE",
+            libsql::TransactionBehavior::Exclusive => "BEGIN EXCLUSIVE",
+            libsql::TransactionBehavior::ReadOnly => "BEGIN READONLY",
+        };
+        let start = self.debug.as_ref().map(|_| Instant::now());
+        let result = self.inner.transaction_with_behavior(behavior).await;
+        if let Some(start) = start {
+            self.record("begin", sql, 0, start, result.is_ok(), None);
+        }
+        let inner = result?;
+        let connection = Self {
+            inner: (*inner).clone(),
+            debug: self.debug.clone(),
+        };
+        Ok(Transaction { inner, connection })
+    }
+```
+
+### `commit` — src/db/debug_sql.rs:316
+
+Source: [src/db/debug_sql.rs:316](../src/db/debug_sql.rs#L316).
+
+```rust
+    pub async fn commit(self) -> libsql::Result<()> {
+        let start = self.connection.debug.as_ref().map(|_| Instant::now());
+        let result = self.inner.commit().await;
+        if let Some(start) = start {
+            self.connection
+                .record("commit", "COMMIT", 0, start, result.is_ok(), None);
+        }
+        result
+    }
+```
+
+### `rollback` — src/db/debug_sql.rs:326
+
+Source: [src/db/debug_sql.rs:326](../src/db/debug_sql.rs#L326).
+
+```rust
+    pub async fn rollback(self) -> libsql::Result<()> {
+        let start = self.connection.debug.as_ref().map(|_| Instant::now());
+        let result = self.inner.rollback().await;
+        if let Some(start) = start {
+            self.connection
+                .record("rollback", "ROLLBACK", 0, start, result.is_ok(), None);
+        }
+        result
+    }
+```
+
+### `fixture` — src/db/debug_sql/tests.rs:8
+
+Source: [src/db/debug_sql/tests.rs:8](../src/db/debug_sql/tests.rs#L8).
+
+```rust
+async fn fixture(enabled: bool, explain: bool) -> (libsql::Database, Connection, Records) {
+    let db = libsql::Builder::new_local(":memory:")
+        .build()
+        .await
+        .unwrap();
+    let inner = db.connect().unwrap();
+    inner.execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); CREATE INDEX item_name ON items(name);")
+        .await.unwrap();
+    let records: Records = Arc::default();
+    let sink = records.clone();
+    let conn = Connection {
+        inner,
+        debug: enabled.then(|| {
+            Arc::new(DebugState {
+                database: "test",
+                connection_id: 0,
+                explain,
+                sequence: AtomicU64::new(0),
+                sink: Box::new(move |record| sink.lock().unwrap().push(record.clone())),
+            })
+        }),
+    };
+    (db, conn, records)
+}
+```
+
+### `count` — src/db/debug_sql/tests.rs:33
+
+Source: [src/db/debug_sql/tests.rs:33](../src/db/debug_sql/tests.rs#L33).
+
+```rust
+async fn count(conn: &Connection) -> i64 {
+    conn.query("SELECT count(*) FROM items", ())
+        .await
+        .unwrap()
+        .next()
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap()
+}
+```
+
+### `disabled_delegates_without_records_or_statement_context` — src/db/debug_sql/tests.rs:46
+
+Source: [src/db/debug_sql/tests.rs:46](../src/db/debug_sql/tests.rs#L46).
+
+```rust
+async fn disabled_delegates_without_records_or_statement_context() {
+    // Explain=true alone cannot activate debug mode.
+    let (_db, conn, records) = fixture(false, true).await;
+    let stmt = conn
+        .prepare("INSERT INTO items(name) VALUES (?)")
+        .await
+        .unwrap();
+    assert!(stmt.context.is_none());
+    assert_eq!(stmt.execute(["private"]).await.unwrap(), 1);
+    assert_eq!(count(&conn).await, 1);
+    assert!(records.lock().unwrap().is_empty());
+}
+```
+
+### `trace_redacts_bindings_and_reports_errors_without_plans` — src/db/debug_sql/tests.rs:60
+
+Source: [src/db/debug_sql/tests.rs:60](../src/db/debug_sql/tests.rs#L60).
+
+```rust
+async fn trace_redacts_bindings_and_reports_errors_without_plans() {
+    let (_db, conn, records) = fixture(true, false).await;
+    conn.execute(
+        "INSERT INTO items(name) VALUES (:name)",
+        libsql::named_params! {":name": "SECRET_BOUND_VALUE"},
+    )
+    .await
+    .unwrap();
+    assert!(conn.query("SELECT missing FROM items", ()).await.is_err());
+    let records = records.lock().unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["parameter_count"], 1);
+    assert_eq!(records[0]["ok"], true);
+    assert_eq!(records[1]["ok"], false);
+    assert_eq!(records[1]["sequence"], 1);
+    assert!(records.iter().all(|r| r["plan"].is_null()));
+    assert!(!serde_json::to_string(&*records)
+        .unwrap()
+        .contains("SECRET_BOUND_VALUE"));
+}
+```
+
+### `explains_index_with_real_bindings_and_never_replays_writes` — src/db/debug_sql/tests.rs:82
+
+Source: [src/db/debug_sql/tests.rs:82](../src/db/debug_sql/tests.rs#L82).
+
+```rust
+async fn explains_index_with_real_bindings_and_never_replays_writes() {
+    let (_db, conn, records) = fixture(true, true).await;
+    conn.execute("INSERT INTO items(name) VALUES (?)", ["SECRET_BOUND_VALUE"])
+        .await
+        .unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT id FROM items WHERE name = ?",
+            ["SECRET_BOUND_VALUE"],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+        1
+    );
+    assert_eq!(count(&conn).await, 1);
+    let records = records.lock().unwrap();
+    assert!(records[1]["plan"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["detail"].as_str().unwrap().contains("item_name")));
+    assert!(!serde_json::to_string(&*records)
+        .unwrap()
+        .contains("SECRET_BOUND_VALUE"));
+}
+```
+
+### `diagnostic_failure_does_not_fail_valid_sql_or_recurse` — src/db/debug_sql/tests.rs:111
+
+Source: [src/db/debug_sql/tests.rs:111](../src/db/debug_sql/tests.rs#L111).
+
+```rust
+async fn diagnostic_failure_does_not_fail_valid_sql_or_recurse() {
+    let (_db, conn, records) = fixture(true, true).await;
+    // Prefixing EXPLAIN again is invalid, but the original query is valid.
+    let mut rows = conn
+        .query("EXPLAIN QUERY PLAN SELECT * FROM items", ())
+        .await
+        .unwrap();
+    assert!(rows.next().await.unwrap().is_some());
+    let records = records.lock().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["ok"], true);
+    assert_eq!(records[0]["plan"]["error"], true);
+}
+```
+
+### `prepared_statements_transactions_and_batches_keep_behavior` — src/db/debug_sql/tests.rs:126
+
+Source: [src/db/debug_sql/tests.rs:126](../src/db/debug_sql/tests.rs#L126).
+
+```rust
+async fn prepared_statements_transactions_and_batches_keep_behavior() {
+    let (_db, conn, records) = fixture(true, true).await;
+    let tx = conn.transaction().await.unwrap();
+    let stmt = tx
+        .prepare("INSERT INTO items(name) VALUES (?)")
+        .await
+        .unwrap();
+    stmt.execute(["private"]).await.unwrap();
+    stmt.execute(["private2"]).await.unwrap();
+    drop(stmt);
+    tx.rollback().await.unwrap();
+    assert_eq!(count(&conn).await, 0);
+    let tx = conn.transaction().await.unwrap();
+    tx.execute("INSERT INTO items(name) VALUES (?)", ["committed"])
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    conn.execute_transactional_batch(
+        "INSERT INTO items(name) VALUES ('batch'); INSERT INTO items(name) VALUES ('batch2');",
+    )
+    .await
+    .unwrap();
+    let mut stmt = conn.prepare("SELECT count(*) FROM items").await.unwrap();
+    assert_eq!(stmt.query_row(()).await.unwrap().get::<i64>(0).unwrap(), 3);
+    stmt.finalize();
+    let records = records.lock().unwrap();
+    for op in [
+        "begin",
+        "prepare",
+        "statement_execute",
+        "statement_query",
+        "rollback",
+        "commit",
+        "transactional_batch",
+    ] {
+        assert!(records.iter().any(|r| r["operation"] == op), "missing {op}");
+    }
+    assert!(records
+        .iter()
+        .filter(|r| r["operation"] == "transactional_batch")
+        .all(|r| r["plan"].is_null()));
+}
+```
+
+### `records_and_plans_are_bounded_during_repeated_use` — src/db/debug_sql/tests.rs:170
+
+Source: [src/db/debug_sql/tests.rs:170](../src/db/debug_sql/tests.rs#L170).
+
+```rust
+async fn records_and_plans_are_bounded_during_repeated_use() {
+    let (_db, conn, records) = fixture(true, true).await;
+    for _ in 0..100 {
+        let mut rows = conn
+            .query("SELECT id FROM items WHERE name = ?", ["private"])
+            .await
+            .unwrap();
+        assert!(rows.next().await.unwrap().is_none());
+        // No production history: the test sink drains each record.
+        let mut records = records.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(serde_json::to_vec(&records[0]).unwrap().len() < 4096);
+        records.clear();
+    }
+    let sql = format!("SELECT 1 /*{}*/", "é".repeat(MAX_SQL_BYTES));
+    conn.query(&sql, ()).await.unwrap();
+    let record = records.lock().unwrap().pop().unwrap();
+    assert_eq!(record["sql_truncated"], true);
+    assert!(record["sql"].as_str().unwrap().len() <= MAX_SQL_BYTES);
+    let sql = std::iter::repeat_n("SELECT id FROM items", MAX_PLAN_ROWS + 5)
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ");
+    conn.query(&sql, ()).await.unwrap();
+    let record = records.lock().unwrap().pop().unwrap();
+    assert_eq!(record["plan"]["truncated"], true);
+    assert_eq!(
+        record["plan"]["rows"].as_array().unwrap().len(),
+        MAX_PLAN_ROWS
+    );
+}
+```
+
+### `dropping_transaction_still_rolls_back` — src/db/debug_sql/tests.rs:202
+
+Source: [src/db/debug_sql/tests.rs:202](../src/db/debug_sql/tests.rs#L202).
+
+```rust
+async fn dropping_transaction_still_rolls_back() {
+    let (_db, conn, _records) = fixture(true, true).await;
+    let tx = conn.transaction().await.unwrap();
+    tx.execute("INSERT INTO items(name) VALUES (?)", ["private"])
+        .await
+        .unwrap();
+    drop(tx);
+    assert_eq!(count(&conn).await, 0);
+}
 ```
 
 ### `get_version` — src/db/migrations.rs:160
@@ -9030,9 +9333,9 @@ Source: [src/db/queries/metadata.rs:97](../src/db/queries/metadata.rs#L97).
     }
 ```
 
-### `collect_test_marker_ids` — src/db/queries/metadata.rs:164
+### `collect_test_marker_ids` — src/db/queries/metadata.rs:165
 
-Source: [src/db/queries/metadata.rs:164](../src/db/queries/metadata.rs#L164).
+Source: [src/db/queries/metadata.rs:165](../src/db/queries/metadata.rs#L165).
 
 ```rust
     pub async fn collect_test_marker_ids(&self) -> Result<Vec<String>> {
@@ -9068,137 +9371,60 @@ Source: [src/db/queries/metadata.rs:164](../src/db/queries/metadata.rs#L164).
     }
 ```
 
-### `populate_test_marker_temp_table` — src/db/queries/metadata.rs:207
+### `build_qmark_placeholders` — src/db/queries/mod.rs:31
 
-Source: [src/db/queries/metadata.rs:207](../src/db/queries/metadata.rs#L207).
+Source: [src/db/queries/mod.rs:31](../src/db/queries/mod.rs#L31).
 
 ```rust
-    pub async fn populate_test_marker_temp_table(&self, ids: &[String]) -> Result<()> {
-        // `SQLite`'s default parameter limit is 999. Chunk well under that.
-        const CHUNK_SIZE: usize = 500;
-
-        let op = "populate_test_marker_temp_table";
-        let conn = self.conn();
-
-        // Drop + recreate so we always start from an empty table.
-        conn.execute("DROP TABLE IF EXISTS temp.test_markers", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to drop temp.test_markers: {e}"),
-                operation: op.to_string(),
-            })?;
-        conn.execute("CREATE TEMP TABLE test_markers (id TEXT PRIMARY KEY)", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to create temp.test_markers: {e}"),
-                operation: op.to_string(),
-            })?;
-
-        if ids.is_empty() {
-            return Ok(());
+pub(crate) fn build_qmark_placeholders(n: usize) -> String {
+    debug_assert!(n > 0, "build_qmark_placeholders called with n == 0");
+    // Each "?, " occupies 3 bytes; the last one drops the trailing ", ".
+    let mut s = String::with_capacity(n * 3);
+    for i in 0..n {
+        if i > 0 {
+            s.push_str(", ");
         }
+        s.push('?');
+    }
+    s
+}
+```
 
-        for chunk in ids.chunks(CHUNK_SIZE) {
-            let mut sql = String::from("INSERT INTO temp.test_markers (id) VALUES ");
-            for i in 0..chunk.len() {
-                if i > 0 {
-                    sql.push_str(", ");
-                }
-                sql.push_str("(?)");
-            }
-            let params: Vec<libsql::Value> = chunk
-                .iter()
-                .map(|id| libsql::Value::Text(id.clone()))
-                .collect();
-            conn.execute(&sql, libsql::params_from_iter(params))
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to bulk-insert test markers: {e}"),
-                    operation: op.to_string(),
-                })?;
+### `push_quoted` — src/db/queries/mod.rs:218
+
+Source: [src/db/queries/mod.rs:218](../src/db/queries/mod.rs#L218).
+
+```rust
+pub(crate) fn push_quoted(buf: &mut String, s: &str) {
+    buf.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            buf.push_str("''");
+        } else {
+            buf.push(ch);
         }
-        Ok(())
     }
+    buf.push('\'');
+}
 ```
 
-### `drop_test_marker_temp_table` — src/db/queries/metadata.rs:259
+### `push_path_prefix_filter` — src/db/queries/mod.rs:250
 
-Source: [src/db/queries/metadata.rs:259](../src/db/queries/metadata.rs#L259).
-
-```rust
-    pub async fn drop_test_marker_temp_table(&self) -> Result<()> {
-        self.conn()
-            .execute("DROP TABLE IF EXISTS temp.test_markers", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to drop temp.test_markers: {e}"),
-                operation: "drop_test_marker_temp_table".to_string(),
-            })?;
-        Ok(())
-    }
-```
-
-### `populate_test_annotated_targets_temp_table` — src/db/queries/metadata.rs:291
-
-Source: [src/db/queries/metadata.rs:291](../src/db/queries/metadata.rs#L291).
+Source: [src/db/queries/mod.rs:250](../src/db/queries/mod.rs#L250).
 
 ```rust
-    pub async fn populate_test_annotated_targets_temp_table(&self) -> Result<()> {
-        let op = "populate_test_annotated_targets_temp_table";
-        let conn = self.conn();
-
-        // Drop + recreate so we always start from an empty table — same
-        // hygiene as the test_markers temp table.
-        conn.execute("DROP TABLE IF EXISTS temp.test_annotated_targets", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to drop temp.test_annotated_targets: {e}"),
-                operation: op.to_string(),
-            })?;
-        conn.execute(
-            "CREATE TEMP TABLE test_annotated_targets (target TEXT PRIMARY KEY)",
-            (),
-        )
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("failed to create temp.test_annotated_targets: {e}"),
-            operation: op.to_string(),
-        })?;
-
-        // `INSERT OR IGNORE` because a single function can have multiple
-        // test markers (e.g. `#[test] #[cfg(target_os = "linux")]`) — one
-        // row per target, not per (target, marker) pair.
-        conn.execute(
-            "INSERT OR IGNORE INTO temp.test_annotated_targets (target)
-             SELECT e.target FROM edges e
-             WHERE e.kind = 'annotates'
-               AND e.source IN (SELECT id FROM temp.test_markers)",
-            (),
-        )
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("failed to populate temp.test_annotated_targets: {e}"),
-            operation: op.to_string(),
-        })?;
-        Ok(())
-    }
-```
-
-### `drop_test_annotated_targets_temp_table` — src/db/queries/metadata.rs:333
-
-Source: [src/db/queries/metadata.rs:333](../src/db/queries/metadata.rs#L333).
-
-```rust
-    pub async fn drop_test_annotated_targets_temp_table(&self) -> Result<()> {
-        self.conn()
-            .execute("DROP TABLE IF EXISTS temp.test_annotated_targets", ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to drop temp.test_annotated_targets: {e}"),
-                operation: "drop_test_annotated_targets_temp_table".to_string(),
-            })?;
-        Ok(())
-    }
+pub(crate) fn push_path_prefix_filter(buf: &mut String, alias: &str, prefix: &str) {
+    let exact = prefix.trim_end_matches('/');
+    buf.push('(');
+    buf.push_str(alias);
+    buf.push_str("file_path = ");
+    push_quoted(buf, exact);
+    buf.push_str(" OR ");
+    buf.push_str(alias);
+    buf.push_str("file_path LIKE ");
+    push_quoted(buf, &format!("{}/%", escape_like(exact)));
+    buf.push_str(" ESCAPE '\\')");
+}
 ```
 
 ### `insert_node` — src/db/queries/nodes.rs:138
@@ -10244,6 +10470,69 @@ Source: [src/db/queries/nodes.rs:1098](../src/db/queries/nodes.rs#L1098).
             message: format!("failed to commit transaction: {e}"),
             operation: "delete_nodes_by_file".to_string(),
         })
+    }
+```
+
+### `where_clause` — src/db/queries/nodes.rs:78
+
+Source: [src/db/queries/nodes.rs:78](../src/db/queries/nodes.rs#L78).
+
+```rust
+    fn where_clause(&self) -> String {
+        let mut clauses: Vec<String> = Vec::new();
+
+        if let Some(prefix) = &self.path_prefix {
+            let mut sql = String::new();
+            push_path_prefix_filter(&mut sql, "", prefix);
+            clauses.push(sql);
+        }
+
+        if let Some(kinds) = &self.kinds {
+            if kinds.is_empty() {
+                // An explicit empty set matches nothing; without this the
+                // `IN ()` below would be a syntax error.
+                return " WHERE 0".to_string();
+            }
+            let mut sql = String::from("kind IN (");
+            for (i, kind) in kinds.iter().enumerate() {
+                if i > 0 {
+                    sql.push(',');
+                }
+                push_quoted(&mut sql, kind);
+            }
+            sql.push(')');
+            clauses.push(sql);
+        }
+
+        if self.public_only {
+            let mut sql = String::from("visibility = ");
+            push_quoted(&mut sql, Visibility::Pub.as_str());
+            clauses.push(sql);
+        }
+
+        if let Some(lines) = self.min_lines {
+            // `end_line - start_line + 1`, matching the handler. Written with
+            // the subtraction on the right so a node whose end precedes its
+            // start cannot underflow into a huge span the way saturating
+            // integer arithmetic would.
+            clauses.push(format!("(end_line + 1 - start_line) >= {lines}"));
+        }
+
+        if let Some(needle) = &self.name_contains {
+            let pattern = format!("%{}%", escape_like(needle));
+            let mut sql = String::from("(LOWER(name) LIKE ");
+            push_quoted(&mut sql, &pattern);
+            sql.push_str(" ESCAPE '\\' OR LOWER(qualified_name) LIKE ");
+            push_quoted(&mut sql, &pattern);
+            sql.push_str(" ESCAPE '\\')");
+            clauses.push(sql);
+        }
+
+        if clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", clauses.join(" AND "))
+        }
     }
 ```
 
@@ -11708,6 +11997,95 @@ Source: [src/global_db.rs:1066](../src/global_db.rs#L1066).
     }
 ```
 
+### `upsert` — src/global_db.rs:444
+
+Source: [src/global_db.rs:444](../src/global_db.rs#L444).
+
+```rust
+    pub async fn upsert(&self, project_path: &Path, tokens_saved: u64) {
+        let path_str = normalize_project_key(project_path);
+        let _ = self
+            .conn
+            .execute(
+                "INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
+                 ON CONFLICT(path) DO UPDATE SET tokens_saved = ?2",
+                params![path_str, tokens_saved as i64],
+            )
+            .await;
+    }
+```
+
+### `upsert_monotonic_turn` — src/global_db.rs:702
+
+Source: [src/global_db.rs:702](../src/global_db.rs#L702).
+
+```rust
+    async fn upsert_monotonic_turn(
+        &self,
+        turn: &crate::types::CostTurn,
+        update_timestamp: bool,
+    ) -> bool {
+        self.conn
+            .execute(
+                "INSERT INTO turns
+                 (message_id, project_hash, session_id, model, timestamp,
+                  input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
+                  cost_usd, category, tool_names, agent, credits)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                 ON CONFLICT(message_id) DO UPDATE SET
+                     project_hash        = excluded.project_hash,
+                     session_id          = excluded.session_id,
+                     model               = excluded.model,
+                     timestamp           = CASE WHEN ?15 THEN excluded.timestamp ELSE turns.timestamp END,
+                     input_tokens        = MAX(excluded.input_tokens,        turns.input_tokens),
+                     output_tokens       = MAX(excluded.output_tokens,       turns.output_tokens),
+                     cache_write_tokens  = MAX(excluded.cache_write_tokens,  turns.cache_write_tokens),
+                     cache_read_tokens   = MAX(excluded.cache_read_tokens,   turns.cache_read_tokens),
+                     cost_usd            = excluded.cost_usd,
+                     category            = excluded.category,
+                     tool_names          = excluded.tool_names,
+                     agent               = excluded.agent,
+                     credits             = COALESCE(excluded.credits, turns.credits)
+                 WHERE
+                     excluded.input_tokens        >= turns.input_tokens
+                     AND excluded.output_tokens       >= turns.output_tokens
+                     AND excluded.cache_write_tokens  >= turns.cache_write_tokens
+                     AND excluded.cache_read_tokens   >= turns.cache_read_tokens
+                     AND (excluded.credits IS NULL
+                          OR turns.credits IS NULL
+                          OR excluded.credits >= turns.credits)
+                     AND (
+                         excluded.input_tokens        > turns.input_tokens
+                         OR excluded.output_tokens       > turns.output_tokens
+                         OR excluded.cache_write_tokens  > turns.cache_write_tokens
+                         OR excluded.cache_read_tokens   > turns.cache_read_tokens
+                         OR (excluded.credits IS NOT NULL
+                             AND (turns.credits IS NULL
+                                  OR excluded.credits > turns.credits))
+                     )",
+                params![
+                    turn.message_id.clone(),
+                    turn.project_hash.clone(),
+                    turn.session_id.clone(),
+                    turn.model.clone(),
+                    turn.timestamp as i64,
+                    turn.input_tokens as i64,
+                    turn.output_tokens as i64,
+                    turn.cache_write_tokens as i64,
+                    turn.cache_read_tokens as i64,
+                    turn.cost_usd,
+                    turn.category.clone(),
+                    turn.tool_names.clone(),
+                    turn.agent.clone(),
+                    turn.credits.map(|c| c as i64),
+                    i64::from(update_timestamp),
+                ],
+            )
+            .await
+            .is_ok_and(|n| n > 0)
+    }
+```
+
 ### `build_module_import_graph` — src/graph/imports.rs:183
 
 Source: [src/graph/imports.rs:183](../src/graph/imports.rs#L183).
@@ -11776,20 +12154,141 @@ Source: [src/graph/imports.rs:183](../src/graph/imports.rs#L183).
     }
 ```
 
-### `find_dead_code_inner` — src/graph/queries.rs:289
+### `find_dead_code` — src/graph/queries.rs:170
 
-Source: [src/graph/queries.rs:289](../src/graph/queries.rs#L289).
+Source: [src/graph/queries.rs:170](../src/graph/queries.rs#L170).
 
 ```rust
-    async fn find_dead_code_inner(
+    pub async fn find_dead_code(
         &self,
-        visibility_filter: &str,
-        kind_filter: &str,
-        trait_impl_filter: &str,
+        kinds: &[NodeKind],
+        include_public: bool,
+        include_trait_impls: bool,
     ) -> Result<Vec<Node>> {
+        let kind_filter = if kinds.is_empty() {
+            String::new()
+        } else {
+            let kind_strs: Vec<String> =
+                kinds.iter().map(|k| format!("'{}'", k.as_str())).collect();
+            format!(" AND kind IN ({})", kind_strs.join(", "))
+        };
+        let visibility_filter = if include_public {
+            ""
+        } else {
+            " AND visibility != 'public'"
+        };
+
+        // Trait-impl methods (Rust `impl Trait for Type` blocks) are reached
+        // implicitly by the compiler — `Display::fmt` via `{}`, `Deref::deref`
+        // via auto-deref, `Drop::drop` via drop glue, `From::from` via `?`/
+        // `.into()` — so they carry no explicit incoming `calls` edge. They
+        // also can't be written `pub` in Rust, so they're stored as `private`
+        // and the visibility filter above never excludes them. The result is
+        // a flood of false positives (issue #137). Exclude any method whose
+        // parent is an `Impl`-kind node that is a *trait* impl (vs an inherent
+        // `impl Type` block, whose un-called methods are genuine dead code).
+        //
+        // We detect a trait impl two ways, OR'd together:
+        //   1) the impl node's signature contains ` for ` — i.e. the header is
+        //      `impl <Trait> for <Type>`. This is the PRIMARY signal and the
+        //      only one that works for the common case, because…
+        //   2) …the impl node bears an outgoing `implements` edge. This edge
+        //      only materializes when the trait resolves to an indexed node,
+        //      which it does NOT for stdlib/external traits (`Display`, `Drop`,
+        //      `Deref`, `From`, `AsRef`, …) — precisely the traits in the bug
+        //      report. So the edge alone misses almost every real case (mex has
+        //      zero `implements` edges); the signature scan is what carries the
+        //      fix. The edge is kept as a fallback for multi-line impl headers
+        //      where `extract_first_line` truncates before the ` for `.
+        //
+        // Inherent-impl signatures (`impl Type`) and ObjC `@implementation Foo`
+        // blocks contain no ` for `, so they are untouched — inherent dead
+        // methods are still reported. Class-based languages attach `implements`
+        // to the `Class` node (not an `impl`) and store interface methods
+        // `public`, so the visibility filter already covers them. The guarding
+        // `parent_id IS NULL OR` is required: `NULL NOT IN (...)` is NULL, not
+        // true, which would silently drop every top-level function.
+        let trait_impl_filter = if include_trait_impls {
+            ""
+        } else {
+            " AND (parent_id IS NULL OR parent_id NOT IN (
+                 SELECT p.id FROM nodes p
+                 WHERE p.kind = 'impl'
+                   AND (p.signature LIKE '% for %'
+                        OR p.id IN (SELECT source FROM edges WHERE kind = 'implements'))
+             ))"
+        };
+
+        // Only true "use sites" count as evidence that a symbol is alive:
+        // `calls`, `implements`, `extends`, `type_of`, `returns`, `receives`,
+        // `uses`. Bookkeeping edges (`contains`, `annotates`, `derives_macro`)
+        // are emitted by the extractor even for unused code — every Rust
+        // function tagged `#[inline]`, every `#[derive(Debug)]` on an unused
+        // struct, every annotation_usage adds an incoming edge that is NOT a
+        // real reference. Previously we excluded only `contains`, so any
+        // attribute on an otherwise-unused function masked it from
+        // dead-code detection — which is why the sonium run reported zero
+        // dead functions across 5,715. The narrower allowlist below restores
+        // the intended semantics: "no real caller / referencer = dead".
+        // Test-marker exclusion uses a two-step "resolve + filter in SQL":
+        //   1) `collect_test_marker_ids` runs the leading-wildcard `LIKE`
+        //      scan exactly once over `kind = 'annotation_usage'`.
+        //   2) The marker ids go to the dead-code SELECT as ONE bound
+        //      parameter, a JSON array built with `serde_json`, and the
+        //      SELECT drops test-annotated candidates with
+        //      `id NOT IN (SELECT target FROM edges WHERE kind = 'annotates'
+        //      AND source IN (SELECT value FROM json_each(?)))`.
+        //      The subquery is uncorrelated, so SQLite plans it as a
+        //      `LIST SUBQUERY`: it walks the JSON array once, probes
+        //      `idx_edges_source_kind` per marker, and builds a transient
+        //      in-memory index of the targets that each candidate probes.
+        //      That is the same shape as the old two-temp-table form,
+        //      without writing anything: selected graphs are opened with
+        //      `PRAGMA query_only = 1`, and the transient index is not a
+        //      database write. A single parameter also avoids SQLite's
+        //      bound-parameter limit, so there is no chunking.
+        //
+        // History — DO NOT regress this:
+        // - The pre-4.14.8 form joined `nodes a ON a.id = e2.source` inside
+        //   the correlated `NOT EXISTS` and ran the `a.name LIKE '%::test'`
+        //   chain per matching edge. Fast on scirs (0.1 s, 76 K
+        //   annotation_usage) but timed out on chromium at the 25 s probe
+        //   ceiling, cascade-poisoning every subsequent MCP tool call.
+        // - 4.14.8's `WITH test_marker_ids AS (...)` CTE attempt was even
+        //   worse: SQLite inlined the single-reference CTE, turning every
+        //   dead-candidate row into a full annotation_usage scan. Regressed
+        //   scirs from 0.1 s to >60 s, reverted in 4.14.9.
+        // - 4.14.12's first attempt (single temp table + correlated
+        //   `IN (SELECT id FROM temp.test_markers)` inside `NOT EXISTS`)
+        //   also failed on chromium: SQLite picked `idx_edges_unique
+        //   (source, target, kind)` for the subquery and iterated every
+        //   marker as the outer driver for every candidate
+        //   (~13K markers × ~134K candidates ≈ 1.7B probes). Timed out.
+        // - The next pre-join form (two temp tables, indexed `NOT IN`)
+        //   measured 0.75 s on chromium and 0.6 s on scirs. The
+        //   wildcard scan ran exactly once per call; the per-row
+        //   probe was against a ~15K-row indexed lookup table, not a
+        //   correlated subquery the optimiser can re-shape.
+        // - The two-temp-table form above wrote `temp.test_markers` and
+        //   `temp.test_annotated_targets`, which fails on selected graphs
+        //   (opened with `PRAGMA query_only = 1`) and let concurrent
+        //   read-only calls on the shared connection drop or refill each
+        //   other's tables.
+        // - The next form collected the targets into an in-memory `HashSet`
+        //   (chunked SELECTs of 500 marker ids) and skipped matching rows
+        //   while reading the main query. It was read-only safe but ~11%
+        //   slower per call: rows SQL used to filter out (~2,200 of ~2,970
+        //   candidates on a 24 K-node project) were read and decoded, then
+        //   discarded. Filtering in SQL with `json_each` restores that.
         let marker_ids = self.db.collect_test_marker_ids().await?;
-        self.db.populate_test_marker_temp_table(&marker_ids).await?;
-        self.db.populate_test_annotated_targets_temp_table().await?;
+        // Always bind the array, even when empty: `NOT IN` over an empty
+        // set is true, so every candidate is kept.
+        let marker_ids_json =
+            serde_json::to_string(&marker_ids).map_err(|e| TokenSaveError::Database {
+                message: format!("failed to encode test marker ids: {e}"),
+                operation: "find_dead_code".to_string(),
+            })?;
+        drop(marker_ids);
         let godot_virtuals = GODOT_ENGINE_VIRTUALS
             .iter()
             .map(|n| format!("'{n}'"))
@@ -11824,26 +12323,29 @@ Source: [src/graph/queries.rs:289](../src/graph/queries.rs#L289).
                  WHERE target = nodes.id
                  AND kind IN ('calls', 'implements', 'extends', 'type_of', 'returns', 'receives', 'uses')
              )
-             AND id NOT IN (SELECT target FROM temp.test_annotated_targets)"
+             AND id NOT IN (
+                 SELECT target FROM edges
+                 WHERE kind = 'annotates'
+                 AND source IN (SELECT value FROM json_each(?1))
+             )"
         );
 
-        let mut rows =
-            self.db
-                .conn()
-                .query(&sql, ())
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to find dead code: {e}"),
-                    operation: "find_dead_code".to_string(),
-                })?;
+        let mut rows = self
+            .db
+            .conn()
+            .query(&sql, libsql::params![marker_ids_json])
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to find dead code: {e}"),
+                operation: "find_dead_code".to_string(),
+            })?;
 
         let mut dead = Vec::new();
         while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to read row: {e}"),
             operation: "find_dead_code".to_string(),
         })? {
-            let node = row_to_node_dead_code(&row)?;
-            dead.push(node);
+            dead.push(row_to_node_dead_code(&row)?);
         }
 
         if dead
@@ -11861,9 +12363,9 @@ Source: [src/graph/queries.rs:289](../src/graph/queries.rs#L289).
     }
 ```
 
-### `gdscript_live_overrides` — src/graph/queries.rs:379
+### `gdscript_live_overrides` — src/graph/queries.rs:384
 
-Source: [src/graph/queries.rs:379](../src/graph/queries.rs#L379).
+Source: [src/graph/queries.rs:384](../src/graph/queries.rs#L384).
 
 ```rust
     async fn gdscript_live_overrides(&self) -> Result<HashSet<String>> {
@@ -11906,9 +12408,9 @@ Source: [src/graph/queries.rs:379](../src/graph/queries.rs#L379).
     }
 ```
 
-### `get_file_dependencies` — src/graph/queries.rs:452
+### `get_file_dependencies` — src/graph/queries.rs:457
 
-Source: [src/graph/queries.rs:452](../src/graph/queries.rs#L452).
+Source: [src/graph/queries.rs:457](../src/graph/queries.rs#L457).
 
 ```rust
     pub async fn get_file_dependencies(&self, file_path: &str) -> Result<Vec<String>> {
@@ -11969,9 +12471,9 @@ Source: [src/graph/queries.rs:452](../src/graph/queries.rs#L452).
     }
 ```
 
-### `get_file_dependents` — src/graph/queries.rs:514
+### `get_file_dependents` — src/graph/queries.rs:519
 
-Source: [src/graph/queries.rs:514](../src/graph/queries.rs#L514).
+Source: [src/graph/queries.rs:519](../src/graph/queries.rs#L519).
 
 ```rust
     pub async fn get_file_dependents(&self, file_path: &str) -> Result<Vec<String>> {
@@ -12032,9 +12534,9 @@ Source: [src/graph/queries.rs:514](../src/graph/queries.rs#L514).
     }
 ```
 
-### `build_file_adjacency` — src/graph/queries.rs:614
+### `build_file_adjacency` — src/graph/queries.rs:619
 
-Source: [src/graph/queries.rs:614](../src/graph/queries.rs#L614).
+Source: [src/graph/queries.rs:619](../src/graph/queries.rs#L619).
 
 ```rust
     pub async fn build_file_adjacency(
@@ -13159,557 +13661,6 @@ Source: [src/worktree.rs:260](../src/worktree.rs#L260).
     }
 ```
 
-### `build_qmark_placeholders` — src/db/queries/mod.rs:31
-
-Source: [src/db/queries/mod.rs:31](../src/db/queries/mod.rs#L31).
-
-```rust
-pub(crate) fn build_qmark_placeholders(n: usize) -> String {
-    debug_assert!(n > 0, "build_qmark_placeholders called with n == 0");
-    // Each "?, " occupies 3 bytes; the last one drops the trailing ", ".
-    let mut s = String::with_capacity(n * 3);
-    for i in 0..n {
-        if i > 0 {
-            s.push_str(", ");
-        }
-        s.push('?');
-    }
-    s
-}
-```
-
-### `push_quoted` — src/db/queries/mod.rs:218
-
-Source: [src/db/queries/mod.rs:218](../src/db/queries/mod.rs#L218).
-
-```rust
-pub(crate) fn push_quoted(buf: &mut String, s: &str) {
-    buf.push('\'');
-    for ch in s.chars() {
-        if ch == '\'' {
-            buf.push_str("''");
-        } else {
-            buf.push(ch);
-        }
-    }
-    buf.push('\'');
-}
-```
-
-### `push_path_prefix_filter` — src/db/queries/mod.rs:250
-
-Source: [src/db/queries/mod.rs:250](../src/db/queries/mod.rs#L250).
-
-```rust
-pub(crate) fn push_path_prefix_filter(buf: &mut String, alias: &str, prefix: &str) {
-    let exact = prefix.trim_end_matches('/');
-    buf.push('(');
-    buf.push_str(alias);
-    buf.push_str("file_path = ");
-    push_quoted(buf, exact);
-    buf.push_str(" OR ");
-    buf.push_str(alias);
-    buf.push_str("file_path LIKE ");
-    push_quoted(buf, &format!("{}/%", escape_like(exact)));
-    buf.push_str(" ESCAPE '\\')");
-}
-```
-
-### `where_clause` — src/db/queries/nodes.rs:78
-
-Source: [src/db/queries/nodes.rs:78](../src/db/queries/nodes.rs#L78).
-
-```rust
-    fn where_clause(&self) -> String {
-        let mut clauses: Vec<String> = Vec::new();
-
-        if let Some(prefix) = &self.path_prefix {
-            let mut sql = String::new();
-            push_path_prefix_filter(&mut sql, "", prefix);
-            clauses.push(sql);
-        }
-
-        if let Some(kinds) = &self.kinds {
-            if kinds.is_empty() {
-                // An explicit empty set matches nothing; without this the
-                // `IN ()` below would be a syntax error.
-                return " WHERE 0".to_string();
-            }
-            let mut sql = String::from("kind IN (");
-            for (i, kind) in kinds.iter().enumerate() {
-                if i > 0 {
-                    sql.push(',');
-                }
-                push_quoted(&mut sql, kind);
-            }
-            sql.push(')');
-            clauses.push(sql);
-        }
-
-        if self.public_only {
-            let mut sql = String::from("visibility = ");
-            push_quoted(&mut sql, Visibility::Pub.as_str());
-            clauses.push(sql);
-        }
-
-        if let Some(lines) = self.min_lines {
-            // `end_line - start_line + 1`, matching the handler. Written with
-            // the subtraction on the right so a node whose end precedes its
-            // start cannot underflow into a huge span the way saturating
-            // integer arithmetic would.
-            clauses.push(format!("(end_line + 1 - start_line) >= {lines}"));
-        }
-
-        if let Some(needle) = &self.name_contains {
-            let pattern = format!("%{}%", escape_like(needle));
-            let mut sql = String::from("(LOWER(name) LIKE ");
-            push_quoted(&mut sql, &pattern);
-            sql.push_str(" ESCAPE '\\' OR LOWER(qualified_name) LIKE ");
-            push_quoted(&mut sql, &pattern);
-            sql.push_str(" ESCAPE '\\')");
-            clauses.push(sql);
-        }
-
-        if clauses.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {}", clauses.join(" AND "))
-        }
-    }
-```
-
-### `upsert` — src/global_db.rs:444
-
-Source: [src/global_db.rs:444](../src/global_db.rs#L444).
-
-```rust
-    pub async fn upsert(&self, project_path: &Path, tokens_saved: u64) {
-        let path_str = normalize_project_key(project_path);
-        let _ = self
-            .conn
-            .execute(
-                "INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
-                 ON CONFLICT(path) DO UPDATE SET tokens_saved = ?2",
-                params![path_str, tokens_saved as i64],
-            )
-            .await;
-    }
-```
-
-### `upsert_droid_turn` — src/global_db.rs:694
-
-Source: [src/global_db.rs:694](../src/global_db.rs#L694).
-
-```rust
-    pub async fn upsert_droid_turn(&self, turn: &crate::types::CostTurn) -> bool {
-        self.conn
-            .execute(
-                "INSERT INTO turns
-                 (message_id, project_hash, session_id, model, timestamp,
-                  input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
-                  cost_usd, category, tool_names, agent, credits)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
-                 ON CONFLICT(message_id) DO UPDATE SET
-                     project_hash        = excluded.project_hash,
-                     session_id          = excluded.session_id,
-                     model               = excluded.model,
-                     input_tokens        = MAX(excluded.input_tokens,        turns.input_tokens),
-                     output_tokens       = MAX(excluded.output_tokens,       turns.output_tokens),
-                     cache_write_tokens  = MAX(excluded.cache_write_tokens,  turns.cache_write_tokens),
-                     cache_read_tokens   = MAX(excluded.cache_read_tokens,   turns.cache_read_tokens),
-                     cost_usd            = excluded.cost_usd,
-                     category            = excluded.category,
-                     tool_names          = excluded.tool_names,
-                     agent               = excluded.agent,
-                     credits             = COALESCE(excluded.credits, turns.credits)
-                 WHERE
-                     excluded.input_tokens        >= turns.input_tokens
-                     AND excluded.output_tokens       >= turns.output_tokens
-                     AND excluded.cache_write_tokens  >= turns.cache_write_tokens
-                     AND excluded.cache_read_tokens   >= turns.cache_read_tokens
-                     AND (excluded.credits IS NULL
-                          OR turns.credits IS NULL
-                          OR excluded.credits >= turns.credits)
-                     AND (
-                         excluded.input_tokens        > turns.input_tokens
-                         OR excluded.output_tokens       > turns.output_tokens
-                         OR excluded.cache_write_tokens  > turns.cache_write_tokens
-                         OR excluded.cache_read_tokens   > turns.cache_read_tokens
-                         OR (excluded.credits IS NOT NULL
-                             AND (turns.credits IS NULL
-                                  OR excluded.credits > turns.credits))
-                     )",
-                params![
-                    turn.message_id.clone(),
-                    turn.project_hash.clone(),
-                    turn.session_id.clone(),
-                    turn.model.clone(),
-                    turn.timestamp as i64,
-                    turn.input_tokens as i64,
-                    turn.output_tokens as i64,
-                    turn.cache_write_tokens as i64,
-                    turn.cache_read_tokens as i64,
-                    turn.cost_usd,
-                    turn.category.clone(),
-                    turn.tool_names.clone(),
-                    turn.agent.clone(),
-                    turn.credits.map(|c| c as i64),
-                ],
-            )
-            .await
-            .is_ok_and(|n| n > 0)
-    }
-```
-
-### `plan` — src/db/debug_sql.rs:83
-
-Source: [src/db/debug_sql.rs:83](../src/db/debug_sql.rs#L83).
-
-```rust
-    async fn plan(&self, sql: &str, params: &Params) -> Option<Value> {
-        let debug = self.debug.as_ref()?;
-        if !debug.explain {
-            return None;
-        }
-        // Only compile the plan, never execute the original statement here.
-        // Use the raw connection so diagnostics cannot recurse into themselves.
-        let plan_sql = format!("EXPLAIN QUERY PLAN {sql}");
-        let result: libsql::Result<Value> = async {
-            let mut rows = self.inner.query(&plan_sql, params.clone()).await?;
-            let mut plan = Vec::new();
-            while let Some(row) = rows.next().await? {
-                if plan.len() == MAX_PLAN_ROWS {
-                    return Ok(json!({"rows": plan, "truncated": true}));
-                }
-                let detail: String = row.get(3)?;
-                plan.push(json!({
-                    "id": row.get::<i64>(0)?,
-                    "parent": row.get::<i64>(1)?,
-                    "detail": bounded(&detail, MAX_DETAIL_BYTES),
-                    "detail_truncated": detail.len() > MAX_DETAIL_BYTES,
-                }));
-            }
-            Ok(json!({"rows": plan, "truncated": false}))
-        }
-        .await;
-        // Error text can contain values or user data. Keep the application
-        // error unchanged, but record only a diagnostic failure indicator.
-        Some(result.unwrap_or_else(|_| json!({"error": true})))
-    }
-```
-
-### `transaction_with_behavior` — src/db/debug_sql.rs:207
-
-Source: [src/db/debug_sql.rs:207](../src/db/debug_sql.rs#L207).
-
-```rust
-    pub async fn transaction_with_behavior(
-        &self,
-        behavior: libsql::TransactionBehavior,
-    ) -> libsql::Result<Transaction> {
-        let sql = match behavior {
-            libsql::TransactionBehavior::Deferred => "BEGIN DEFERRED",
-            libsql::TransactionBehavior::Immediate => "BEGIN IMMEDIATE",
-            libsql::TransactionBehavior::Exclusive => "BEGIN EXCLUSIVE",
-            libsql::TransactionBehavior::ReadOnly => "BEGIN READONLY",
-        };
-        let start = self.debug.as_ref().map(|_| Instant::now());
-        let result = self.inner.transaction_with_behavior(behavior).await;
-        if let Some(start) = start {
-            self.record("begin", sql, 0, start, result.is_ok(), None);
-        }
-        let inner = result?;
-        let connection = Self {
-            inner: (*inner).clone(),
-            debug: self.debug.clone(),
-        };
-        Ok(Transaction { inner, connection })
-    }
-```
-
-### `commit` — src/db/debug_sql.rs:316
-
-Source: [src/db/debug_sql.rs:316](../src/db/debug_sql.rs#L316).
-
-```rust
-    pub async fn commit(self) -> libsql::Result<()> {
-        let start = self.connection.debug.as_ref().map(|_| Instant::now());
-        let result = self.inner.commit().await;
-        if let Some(start) = start {
-            self.connection
-                .record("commit", "COMMIT", 0, start, result.is_ok(), None);
-        }
-        result
-    }
-```
-
-### `rollback` — src/db/debug_sql.rs:326
-
-Source: [src/db/debug_sql.rs:326](../src/db/debug_sql.rs#L326).
-
-```rust
-    pub async fn rollback(self) -> libsql::Result<()> {
-        let start = self.connection.debug.as_ref().map(|_| Instant::now());
-        let result = self.inner.rollback().await;
-        if let Some(start) = start {
-            self.connection
-                .record("rollback", "ROLLBACK", 0, start, result.is_ok(), None);
-        }
-        result
-    }
-```
-
-### `fixture` — src/db/debug_sql/tests.rs:8
-
-Source: [src/db/debug_sql/tests.rs:8](../src/db/debug_sql/tests.rs#L8).
-
-```rust
-async fn fixture(enabled: bool, explain: bool) -> (libsql::Database, Connection, Records) {
-    let db = libsql::Builder::new_local(":memory:")
-        .build()
-        .await
-        .unwrap();
-    let inner = db.connect().unwrap();
-    inner.execute_batch("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); CREATE INDEX item_name ON items(name);")
-        .await.unwrap();
-    let records: Records = Arc::default();
-    let sink = records.clone();
-    let conn = Connection {
-        inner,
-        debug: enabled.then(|| {
-            Arc::new(DebugState {
-                database: "test",
-                connection_id: 0,
-                explain,
-                sequence: AtomicU64::new(0),
-                sink: Box::new(move |record| sink.lock().unwrap().push(record.clone())),
-            })
-        }),
-    };
-    (db, conn, records)
-}
-```
-
-### `count` — src/db/debug_sql/tests.rs:33
-
-Source: [src/db/debug_sql/tests.rs:33](../src/db/debug_sql/tests.rs#L33).
-
-```rust
-async fn count(conn: &Connection) -> i64 {
-    conn.query("SELECT count(*) FROM items", ())
-        .await
-        .unwrap()
-        .next()
-        .await
-        .unwrap()
-        .unwrap()
-        .get(0)
-        .unwrap()
-}
-```
-
-### `disabled_delegates_without_records_or_statement_context` — src/db/debug_sql/tests.rs:46
-
-Source: [src/db/debug_sql/tests.rs:46](../src/db/debug_sql/tests.rs#L46).
-
-```rust
-async fn disabled_delegates_without_records_or_statement_context() {
-    // Explain=true alone cannot activate debug mode.
-    let (_db, conn, records) = fixture(false, true).await;
-    let stmt = conn
-        .prepare("INSERT INTO items(name) VALUES (?)")
-        .await
-        .unwrap();
-    assert!(stmt.context.is_none());
-    assert_eq!(stmt.execute(["private"]).await.unwrap(), 1);
-    assert_eq!(count(&conn).await, 1);
-    assert!(records.lock().unwrap().is_empty());
-}
-```
-
-### `trace_redacts_bindings_and_reports_errors_without_plans` — src/db/debug_sql/tests.rs:60
-
-Source: [src/db/debug_sql/tests.rs:60](../src/db/debug_sql/tests.rs#L60).
-
-```rust
-async fn trace_redacts_bindings_and_reports_errors_without_plans() {
-    let (_db, conn, records) = fixture(true, false).await;
-    conn.execute(
-        "INSERT INTO items(name) VALUES (:name)",
-        libsql::named_params! {":name": "SECRET_BOUND_VALUE"},
-    )
-    .await
-    .unwrap();
-    assert!(conn.query("SELECT missing FROM items", ()).await.is_err());
-    let records = records.lock().unwrap();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0]["parameter_count"], 1);
-    assert_eq!(records[0]["ok"], true);
-    assert_eq!(records[1]["ok"], false);
-    assert_eq!(records[1]["sequence"], 1);
-    assert!(records.iter().all(|r| r["plan"].is_null()));
-    assert!(!serde_json::to_string(&*records)
-        .unwrap()
-        .contains("SECRET_BOUND_VALUE"));
-}
-```
-
-### `explains_index_with_real_bindings_and_never_replays_writes` — src/db/debug_sql/tests.rs:82
-
-Source: [src/db/debug_sql/tests.rs:82](../src/db/debug_sql/tests.rs#L82).
-
-```rust
-async fn explains_index_with_real_bindings_and_never_replays_writes() {
-    let (_db, conn, records) = fixture(true, true).await;
-    conn.execute("INSERT INTO items(name) VALUES (?)", ["SECRET_BOUND_VALUE"])
-        .await
-        .unwrap();
-    let mut rows = conn
-        .query(
-            "SELECT id FROM items WHERE name = ?",
-            ["SECRET_BOUND_VALUE"],
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
-        1
-    );
-    assert_eq!(count(&conn).await, 1);
-    let records = records.lock().unwrap();
-    assert!(records[1]["plan"]["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|r| r["detail"].as_str().unwrap().contains("item_name")));
-    assert!(!serde_json::to_string(&*records)
-        .unwrap()
-        .contains("SECRET_BOUND_VALUE"));
-}
-```
-
-### `diagnostic_failure_does_not_fail_valid_sql_or_recurse` — src/db/debug_sql/tests.rs:111
-
-Source: [src/db/debug_sql/tests.rs:111](../src/db/debug_sql/tests.rs#L111).
-
-```rust
-async fn diagnostic_failure_does_not_fail_valid_sql_or_recurse() {
-    let (_db, conn, records) = fixture(true, true).await;
-    // Prefixing EXPLAIN again is invalid, but the original query is valid.
-    let mut rows = conn
-        .query("EXPLAIN QUERY PLAN SELECT * FROM items", ())
-        .await
-        .unwrap();
-    assert!(rows.next().await.unwrap().is_some());
-    let records = records.lock().unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["ok"], true);
-    assert_eq!(records[0]["plan"]["error"], true);
-}
-```
-
-### `prepared_statements_transactions_and_batches_keep_behavior` — src/db/debug_sql/tests.rs:126
-
-Source: [src/db/debug_sql/tests.rs:126](../src/db/debug_sql/tests.rs#L126).
-
-```rust
-async fn prepared_statements_transactions_and_batches_keep_behavior() {
-    let (_db, conn, records) = fixture(true, true).await;
-    let tx = conn.transaction().await.unwrap();
-    let stmt = tx
-        .prepare("INSERT INTO items(name) VALUES (?)")
-        .await
-        .unwrap();
-    stmt.execute(["private"]).await.unwrap();
-    stmt.execute(["private2"]).await.unwrap();
-    drop(stmt);
-    tx.rollback().await.unwrap();
-    assert_eq!(count(&conn).await, 0);
-    let tx = conn.transaction().await.unwrap();
-    tx.execute("INSERT INTO items(name) VALUES (?)", ["committed"])
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-    conn.execute_transactional_batch(
-        "INSERT INTO items(name) VALUES ('batch'); INSERT INTO items(name) VALUES ('batch2');",
-    )
-    .await
-    .unwrap();
-    let mut stmt = conn.prepare("SELECT count(*) FROM items").await.unwrap();
-    assert_eq!(stmt.query_row(()).await.unwrap().get::<i64>(0).unwrap(), 3);
-    stmt.finalize();
-    let records = records.lock().unwrap();
-    for op in [
-        "begin",
-        "prepare",
-        "statement_execute",
-        "statement_query",
-        "rollback",
-        "commit",
-        "transactional_batch",
-    ] {
-        assert!(records.iter().any(|r| r["operation"] == op), "missing {op}");
-    }
-    assert!(records
-        .iter()
-        .filter(|r| r["operation"] == "transactional_batch")
-        .all(|r| r["plan"].is_null()));
-}
-```
-
-### `records_and_plans_are_bounded_during_repeated_use` — src/db/debug_sql/tests.rs:170
-
-Source: [src/db/debug_sql/tests.rs:170](../src/db/debug_sql/tests.rs#L170).
-
-```rust
-async fn records_and_plans_are_bounded_during_repeated_use() {
-    let (_db, conn, records) = fixture(true, true).await;
-    for _ in 0..100 {
-        let mut rows = conn
-            .query("SELECT id FROM items WHERE name = ?", ["private"])
-            .await
-            .unwrap();
-        assert!(rows.next().await.unwrap().is_none());
-        // No production history: the test sink drains each record.
-        let mut records = records.lock().unwrap();
-        assert_eq!(records.len(), 1);
-        assert!(serde_json::to_vec(&records[0]).unwrap().len() < 4096);
-        records.clear();
-    }
-    let sql = format!("SELECT 1 /*{}*/", "é".repeat(MAX_SQL_BYTES));
-    conn.query(&sql, ()).await.unwrap();
-    let record = records.lock().unwrap().pop().unwrap();
-    assert_eq!(record["sql_truncated"], true);
-    assert!(record["sql"].as_str().unwrap().len() <= MAX_SQL_BYTES);
-    let sql = std::iter::repeat_n("SELECT id FROM items", MAX_PLAN_ROWS + 5)
-        .collect::<Vec<_>>()
-        .join(" UNION ALL ");
-    conn.query(&sql, ()).await.unwrap();
-    let record = records.lock().unwrap().pop().unwrap();
-    assert_eq!(record["plan"]["truncated"], true);
-    assert_eq!(
-        record["plan"]["rows"].as_array().unwrap().len(),
-        MAX_PLAN_ROWS
-    );
-}
-```
-
-### `dropping_transaction_still_rolls_back` — src/db/debug_sql/tests.rs:202
-
-Source: [src/db/debug_sql/tests.rs:202](../src/db/debug_sql/tests.rs#L202).
-
-```rust
-async fn dropping_transaction_still_rolls_back() {
-    let (_db, conn, _records) = fixture(true, true).await;
-    let tx = conn.transaction().await.unwrap();
-    tx.execute("INSERT INTO items(name) VALUES (?)", ["private"])
-        .await
-        .unwrap();
-    drop(tx);
-    assert_eq!(count(&conn).await, 0);
-}
-```
-
 ## File deletion and dispatch-index context
 
 Q0198 and Q0200–Q0203 now run in one transaction under the existing write
@@ -14048,3 +13999,54 @@ the statement/operation. Disabled operations allocate no diagnostic records, rea
 no clocks and run no EXPLAIN. Enabled writes to stderr are synchronous and can
 apply backpressure. See the user guide's SQL debugging section for settings,
 logging and timing boundaries; issue #789 records validation and PR status.
+
+## Graphify export additions (Refs #791)
+
+Source: [src/graphify.rs](../src/graphify.rs), `export_file`. This section adds
+five occurrences and one construction/binding context to the existing inventory.
+No existing query was changed, moved or removed. Snapshot inspected 2026-10-28.
+The dedicated read-only connection uses the raw libsql API, outside the beta SQL-debugging wrapper. The transaction API owns BEGIN,
+COMMIT and rollback on drop; those driver-generated statements introduce no new
+application SQL literals.
+
+#### Q0384 — `export_file`: Read-only connection limits
+
+```sql
+PRAGMA query_only=1; PRAGMA busy_timeout=1000; PRAGMA cache_size=-2048;
+```
+
+Fixed batch, no parameters; executes before the read transaction.
+
+#### Q0385 — `export_file`: Current-schema check
+
+```sql
+PRAGMA user_version
+```
+
+No bindings; exactly one scalar row. Refuse versions unequal to latest_version().
+
+#### Q0386 — `export_file`: Selected-file freshness
+
+```sql
+SELECT substr(content_hash,1,65) FROM files WHERE path=?1 AND kind='code'
+```
+
+?1 is the validated repository-relative file path. At most one row; compare with the bounded UTF-8 source SHA-256.
+
+#### Q0387 — `export_file`: Bounded node projection
+
+```sql
+SELECT substr(id,1,4097), substr(qualified_name,1,4097), substr(kind,1,4097), start_line, end_line FROM nodes WHERE file_path=?1 ORDER BY id LIMIT ?2
+```
+
+?1 is the selected file; ?2 is max_nodes + 1, integer <=1001. Extra row or text >4096 characters refuses export. No source body/signature/docstring projected.
+
+#### Q0388 — `export_file`: Bounded internal edges
+
+```sql
+SELECT substr(e.source,1,4097), substr(e.target,1,4097), substr(e.kind,1,4097), e.line, e.resolved_by FROM edges e JOIN nodes s ON s.id=e.source JOIN nodes t ON t.id=e.target WHERE s.file_path=?1 AND t.file_path=?1 ORDER BY e.source,e.target,e.kind,e.line,e.id LIMIT ?2
+```
+
+?1 is the same file for both endpoints; ?2 is max_edges + 1, integer <=5001. Extra row refuses export. id breaks ties without collapsing multiplicity; line and nullable numeric resolver provenance are retained.
+
+Construction context: max_nodes is validated in 1..=1000 and max_edges in 1..=5000 before integer conversion. SQL templates are fixed; no user text is interpolated. Queries Q0385–Q0388 use one read transaction for a consistent DB snapshot. Output is published only after successful reads, budget checks, source/branch rechecks and capped serialization. No migrations or writes occur.

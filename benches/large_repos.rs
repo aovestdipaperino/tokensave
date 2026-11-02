@@ -18,8 +18,8 @@
 //!     iteration via `iter_batched`.
 //!  5. Runs every (repo × tool × query) combination through criterion with
 //!     `sample_size = 10` and `measurement_time = 30s`.
-//!  6. When all benches finish, runs `git stash --include-untracked` inside
-//!     each prepared repo so mutations made by the write benches are reverted.
+//!  6. Removes only the scratch directory reserved by this run. Existing
+//!     scratch directories are refused; unrelated repository changes are kept.
 //!
 //! Environment variables:
 //!   TOKENSAVE_BENCH_REPOS_DIR   required — root directory for cloned repos
@@ -29,7 +29,6 @@
 mod queries;
 mod repos;
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
@@ -40,18 +39,21 @@ use tokensave::mcp::handle_tool_call;
 use tokensave::tokensave::TokenSave;
 
 use queries::{build_context, build_queries, Query, QueryKind, ToolGroup, SCRATCH_DIR};
-use repos::{ensure_cloned, repos_root, restore_repo, selected_repos, Repo};
+use repos::{ensure_cloned, repos_root, selected_repos, Repo, ScratchDir};
 
 /// Per-repo state we hand to criterion: indexed graph + frozen query catalog.
 struct RepoBench {
     cg: TokenSave,
-    dir: PathBuf,
     name: &'static str,
     groups: Vec<ToolGroup>,
+    _scratch: ScratchDir,
 }
 
 async fn prepare_repo(rt_root: &std::path::Path, repo: Repo) -> Result<RepoBench, String> {
     let dir = ensure_cloned(rt_root, repo)?;
+    // Reserve before opening/indexing, and keep ownership until after `cg`
+    // drops. Refuse a pre-existing path rather than deleting unknown files.
+    let scratch = ScratchDir::create(&dir, SCRATCH_DIR)?;
 
     let cg = if TokenSave::is_initialized(&dir) {
         TokenSave::open(&dir)
@@ -78,9 +80,9 @@ async fn prepare_repo(rt_root: &std::path::Path, repo: Repo) -> Result<RepoBench
     let groups = build_queries(&ctx);
     Ok(RepoBench {
         cg,
-        dir,
         name: repo.name,
         groups,
+        _scratch: scratch,
     })
 }
 
@@ -175,19 +177,8 @@ fn bench_all(c: &mut Criterion) {
         }
     }
 
-    // Revert all scratch-file churn (and any other accidental edits) in each
-    // repo we touched. `git stash --include-untracked` puts everything aside;
-    // we then drop the stash so the working tree matches the pinned ref again.
-    for rb in &prepared {
-        eprintln!(
-            "[bench] reverting changes in {} (git stash + drop)...",
-            rb.name
-        );
-        let _ = std::fs::remove_dir_all(rb.dir.join(SCRATCH_DIR));
-        if let Err(e) = restore_repo(&rb.dir) {
-            eprintln!("[bench] WARNING: revert failed for {}: {e}", rb.name);
-        }
-    }
+    // RepoBench drops the graph before its owned scratch directory, including
+    // during error unwinding. Never stash/drop unrelated repository changes.
 }
 
 fn criterion_config() -> Criterion {

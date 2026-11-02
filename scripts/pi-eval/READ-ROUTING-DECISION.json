@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "issue": 834,
+  "decision": "defer",
+  "reasons": [
+    "Independent named review is required",
+    "Reviewer must attest that the corpus contains real-model evaluation, not faux-provider tests",
+    "Comparable runs must pin the same provider/model/source/binary/interface",
+    "At least two complete matched repeats across all eight scenarios are required",
+    "Repeated independently reviewed unnecessary reads across matched repeats are absent"
+  ],
+  "candidates": [],
+  "excluded": [],
+  "enforcement_enabled": false,
+  "remaining": "Even eligible evidence requires a scoped implementation and real-session correctness/tool-impact comparison; this report never enables interception."
+}

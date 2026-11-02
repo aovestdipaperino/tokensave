@@ -1,6 +1,6 @@
 use tokensave::extraction::AstroExtractor;
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{NodeKind, Visibility};
 
 #[test]
 fn test_astro_file_node() {

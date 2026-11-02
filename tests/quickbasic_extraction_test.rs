@@ -5,7 +5,7 @@ mod quickbasic_tests {
 
     use tokensave::extraction::LanguageExtractor;
     use tokensave::extraction::QuickBasicExtractor;
-    use tokensave::types::*;
+    use tokensave::types::{EdgeKind, ExtractionResult, NodeKind};
 
     fn extract_fixture() -> ExtractionResult {
         let source = std::fs::read_to_string("tests/fixtures/sample.bi").unwrap();

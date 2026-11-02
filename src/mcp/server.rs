@@ -15,8 +15,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use crate::cloud::UpdateNoticeScope;
 use crate::errors::{Result, TokenSaveError};
 use crate::global_db::GlobalDb;
+use crate::profile::McpPhase;
 use crate::tokensave::TokenSave;
 
 use super::graph_scope::{
@@ -250,6 +252,64 @@ fn format_selected_fallback_guidance(root: &str, branch: Option<&str>) -> String
         },
     );
     format!("WARNING: Selected graph at {root} is using a fallback index. {guidance}")
+}
+
+/// Why `tokensave_redundancy` must refuse a selected graph, or `None` when it
+/// may run.
+///
+/// Redundancy re-reads function bodies from the selected root's working tree
+/// and slices them with the graph's stored line/column ranges. Those ranges
+/// only fit the files of the branch the graph indexed, so the graph's served
+/// branch must be the one checked out in `root`, with no ancestor fallback.
+/// A project without branch tracking (`serving` is `None` and no fallback)
+/// has a single index of its one working tree and runs as before.
+fn selected_redundancy_checkout_refusal(
+    root: &str,
+    serving: Option<&str>,
+    checked_out: Option<&str>,
+    is_fallback: bool,
+) -> Option<String> {
+    let Some(served) = serving else {
+        if !is_fallback {
+            return None;
+        }
+        return Some(format!(
+            "tokensave_redundancy cannot run on the selected graph at {}: it is using a \
+             fallback index of unknown branch, and redundancy reads function bodies from that \
+             project's working tree. Track and sync the checked-out branch there, then call again.",
+            quote_inert_value(root)
+        ));
+    };
+    let root = quote_inert_value(root);
+    let served_quoted = quote_inert_value(served);
+    let preamble = "tokensave_redundancy reads function bodies from the selected project's \
+                    working tree, so the selected graph must be the index of the branch \
+                    checked out there.";
+    match checked_out {
+        None => Some(format!(
+            "{preamble} The working tree at {root} has a detached HEAD (no branch checked out), \
+             so it cannot be matched to the selected graph's branch {served_quoted}. Check out \
+             branch {served_quoted} in that project, then call again."
+        )),
+        Some(current) if current == served && !is_fallback => None,
+        Some(current) if is_fallback => {
+            let current = quote_inert_value(current);
+            Some(format!(
+                "{preamble} The working tree at {root} has branch {current} checked out, which \
+                 is not tracked, so the graph fell back to branch {served_quoted}'s index. Run \
+                 `tokensave branch add {current}` in that project, or check out branch \
+                 {served_quoted} there, then call again."
+            ))
+        }
+        Some(current) => {
+            let current = quote_inert_value(current);
+            Some(format!(
+                "{preamble} The selected graph is branch {served_quoted}, but the working tree \
+                 at {root} has branch {current} checked out. Check out branch {served_quoted} \
+                 in that project, or pass graph_branch {current}, then call again."
+            ))
+        }
+    }
 }
 
 fn format_selected_fallback_warning(selected: &super::graph_scope::SelectedGraph) -> String {
@@ -705,6 +765,11 @@ impl McpServer {
         // or deferred to the first request.
         let (graph_scoped_tools, selectorless_local_graph_tools, read_only_tools, schema_overhead) = {
             let mut definitions = get_tool_definitions();
+            crate::profile::tools::register(
+                definitions
+                    .iter()
+                    .map(|definition| definition.name.as_str()),
+            );
             let graph_scoped_tools = definitions
                 .iter()
                 .filter(|definition| is_graph_scoped_tool(definition))
@@ -1628,14 +1693,12 @@ impl McpServer {
             if let Some(checked_at) = cache.checked_at {
                 if checked_at.elapsed() < VERSION_CHECK_INTERVAL {
                     let latest = cache.latest.as_deref()?;
-                    return if crate::cloud::is_newer_minor_version(current, latest) {
-                        Some(format!(
-                            "⚠️ tokensave v{current} is installed, but v{latest} is available. \
-                             Run `tokensave upgrade` to update."
-                        ))
-                    } else {
-                        None
-                    };
+                    return crate::cloud::available_update(
+                        current,
+                        latest,
+                        UpdateNoticeScope::MinorOrMajor,
+                    )
+                    .map(|update| update.agent_notice());
                 }
             }
         }
@@ -1653,14 +1716,8 @@ impl McpServer {
         }
 
         let latest = latest?;
-        if crate::cloud::is_newer_minor_version(current, &latest) {
-            Some(format!(
-                "⚠️ tokensave v{current} is installed, but v{latest} is available. \
-                 Run `tokensave upgrade` to update."
-            ))
-        } else {
-            None
-        }
+        crate::cloud::available_update(current, &latest, UpdateNoticeScope::MinorOrMajor)
+            .map(|update| update.agent_notice())
     }
 
     /// Process a single raw JSON-RPC line and write the response.
@@ -1838,22 +1895,17 @@ impl McpServer {
                                 line_rx.recv().await
                             }
                         } => {
-                            match line {
-                                Some(line) => break 'wait line,
-                                // The client closed the connection. The
-                                // requests already in flight are still
-                                // answered, and the server leaves once they
-                                // are.
-                                None => {
-                                    input_closed.store(true, Ordering::Release);
-                                    // Dropping the loop's sender lets the
-                                    // response channel close once the
-                                    // requests in flight have answered, which
-                                    // is what ends the loop.
-                                    response_tx = None;
-                                    continue 'wait;
-                                }
+                            if let Some(line) = line {
+                                break 'wait line;
                             }
+                            // The client closed the connection. The requests
+                            // already in flight are still answered, and the
+                            // server leaves once they are.
+                            input_closed.store(true, Ordering::Release);
+                            // Dropping the loop's sender lets the response
+                            // channel close once the requests in flight have
+                            // answered, which is what ends the loop.
+                            response_tx = None;
                         }
                         response = response_rx.recv() => {
                             match response {
@@ -1960,14 +2012,13 @@ impl McpServer {
             // — an edit, a rename, a sync — still runs alone, in order.
             if self.can_run_concurrently(&request) {
                 let server = Arc::clone(self);
-                let Some(response_tx) = response_tx.as_ref().cloned() else {
+                let Some(response_tx) = response_tx.clone() else {
                     break 'serve;
                 };
                 let concurrency = Arc::clone(&concurrency);
                 let in_flight = Arc::clone(&in_flight);
-                let permit = match concurrency.acquire_owned().await {
-                    Ok(permit) => permit,
-                    Err(_) => break 'serve,
+                let Ok(permit) = concurrency.acquire_owned().await else {
+                    break 'serve;
                 };
                 in_flight.fetch_add(1, Ordering::AcqRel);
                 tasks.push(tokio::spawn(async move {
@@ -2185,7 +2236,7 @@ impl McpServer {
                 None
             }
             "tools/list" => Some(self.handle_tools_list(id)),
-            "tools/call" => Some(self.handle_tools_call(id, request.params.as_ref()).await),
+            "tools/call" => Some(self.profiled_tools_call(id, request.params.as_ref()).await),
             "resources/list" => Some(Self::handle_resources_list(id)),
             "resources/read" => Some(
                 self.handle_resources_read(id, request.params.as_ref())
@@ -2495,12 +2546,10 @@ impl McpServer {
                     std::collections::BTreeMap::new();
                 for f in &files {
                     let dir = f.path.rfind('/').map_or(".", |i| &f.path[..i]).to_string();
-                    #[allow(clippy::map_unwrap_or)]
                     let name = f
                         .path
                         .rfind('/')
-                        .map(|i| &f.path[i + 1..])
-                        .unwrap_or(&f.path);
+                        .map_or(f.path.as_str(), |i| &f.path[i + 1..]);
                     groups
                         .entry(dir)
                         .or_default()
@@ -2630,6 +2679,43 @@ impl McpServer {
     }
 
     /// Handles the `tools/call` method, dispatching to the appropriate tool handler.
+    /// [`Self::handle_tools_call`] as one profiled invocation (#754): records
+    /// end-to-end latency, attributed database time and operations, and
+    /// response size for the tool. A direct call when profiling is off.
+    async fn profiled_tools_call(
+        self: &Arc<Self>,
+        id: Value,
+        params: Option<&Value>,
+    ) -> JsonRpcResponse {
+        // `handle_tools_call` builds a future of about 56 KiB. Boxing it here
+        // keeps that state on the heap for the length of one tool call instead
+        // of inlining it into every caller's future, including the serve loop.
+        if !crate::profile::enabled() {
+            return Box::pin(self.handle_tools_call(id, params)).await;
+        }
+        let tool = params
+            .and_then(|p| p.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or(crate::profile::tools::OTHER);
+        let ((response, elapsed_us), invocation) = crate::profile::invocation(async {
+            let total = crate::profile::span(McpPhase::Total);
+            let response = Box::pin(self.handle_tools_call(id, params)).await;
+            let elapsed_us = total.end(tool_call_succeeded(&response));
+            (response, elapsed_us)
+        })
+        .await;
+        crate::profile::tools::record(
+            tool,
+            crate::profile::tools::ToolCall {
+                elapsed_us: elapsed_us.unwrap_or(0),
+                ok: tool_call_succeeded(&response),
+                invocation,
+                response_bytes: response_text_bytes(&response),
+            },
+        );
+        response
+    }
+
     async fn handle_tools_call(
         self: &Arc<Self>,
         id: Value,
@@ -2736,6 +2822,9 @@ impl McpServer {
             }
         }
 
+        // Graph selection and the branch lease (#754). Dropped by an early
+        // return, which records the call's resolution as failed.
+        let resolution = crate::profile::span(McpPhase::ProjectResolution);
         let selected = if let Some(selection) = selection {
             let selector = selection
                 .selectors()
@@ -2772,6 +2861,19 @@ impl McpServer {
                     ErrorCode::InvalidParams,
                     format!("invalid selected graph arguments: {error}"),
                 );
+            }
+            // Fail closed before any work: redundancy slices the selected
+            // root's working tree with the graph's stored ranges.
+            if tool_name == "tokensave_redundancy" {
+                let checked_out = crate::branch::current_branch(selected.cg.project_root());
+                if let Some(reason) = selected_redundancy_checkout_refusal(
+                    &selected.provenance_root,
+                    selected.cg.serving_branch(),
+                    checked_out.as_deref(),
+                    selected.cg.is_fallback(),
+                ) {
+                    return JsonRpcResponse::error(id, ErrorCode::InvalidParams, reason);
+                }
             }
             Some(selected)
         } else {
@@ -2810,6 +2912,7 @@ impl McpServer {
             .as_ref()
             .and_then(|lease| lease.as_deref())
             .or(self.cg.as_ref());
+        resolution.finish();
 
         if selected.is_none() {
             // #606: with no default project, only `graph_root` can answer —
@@ -2842,6 +2945,7 @@ impl McpServer {
             // graphs are read-only snapshots and never run local repair.
             let quality_comparison = tool_name == "tokensave_branch_diff"
                 && arguments.get("quality").and_then(Value::as_bool) == Some(true);
+            let freshness = crate::profile::span(McpPhase::Freshness);
             if !quality_comparison && runtime_lease.as_ref().is_some_and(|lease| lease.is_none()) {
                 self.maybe_sync_if_stale().await;
             }
@@ -2852,6 +2956,7 @@ impl McpServer {
             if !quality_comparison && runtime_lease.as_ref().is_some_and(|lease| lease.is_none()) {
                 self.maybe_reindex_on_version_bump();
             }
+            freshness.finish();
         }
 
         eprintln!("[tokensave] dispatch: {tool_name}");
@@ -2863,11 +2968,11 @@ impl McpServer {
         };
 
         let timings_enabled = self.timings_enabled();
-        let handler_start = if timings_enabled {
-            Some(std::time::Instant::now())
-        } else {
-            None
-        };
+        // `--timings` and the profiler read one measurement: the handler span
+        // when profiling is on, else a local clock (#754).
+        let handler_span = crate::profile::span(McpPhase::Handler);
+        let handler_start =
+            (timings_enabled && !handler_span.is_active()).then(std::time::Instant::now);
         let (dispatch_graph, scope_prefix) = match (selected.as_ref(), local_graph) {
             (Some(selected), _) => (&selected.cg, None),
             (None, Some(cg)) => (cg, self.scope_prefix()),
@@ -2891,7 +2996,12 @@ impl McpServer {
             Some(&self.session_state),
         )
         .await;
-        let handler_elapsed_us = handler_start.map(|t| t.elapsed().as_micros() as u64);
+        let profiled_us = handler_span.end(dispatch_outcome.is_ok());
+        let handler_elapsed_us = if timings_enabled {
+            profiled_us.or_else(|| handler_start.map(|t| t.elapsed().as_micros() as u64))
+        } else {
+            None
+        };
         match dispatch_outcome {
             Ok(mut result) => {
                 if let Some(us) = handler_elapsed_us {
@@ -3416,6 +3526,59 @@ impl McpServer {
     }
 }
 
+/// Whether a `tools/call` response is a success: no JSON-RPC error and no
+/// `isError` tool result.
+fn tool_call_succeeded(response: &JsonRpcResponse) -> bool {
+    response.error.is_none()
+        && response
+            .result
+            .as_ref()
+            .and_then(|r| r.get("isError"))
+            .and_then(Value::as_bool)
+            != Some(true)
+}
+
+/// Bytes of text content in a `tools/call` result: the response size the
+/// agent receives, measured without serializing the response again.
+fn response_text_bytes(response: &JsonRpcResponse) -> u64 {
+    response
+        .result
+        .as_ref()
+        .and_then(|r| r.get("content"))
+        .and_then(Value::as_array)
+        .map_or(0, |items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("text").and_then(Value::as_str))
+                .map(|text| text.len() as u64)
+                .sum()
+        })
+}
+
+#[cfg(test)]
+mod profile_helper_tests {
+    use super::*;
+
+    #[test]
+    fn tool_call_success_and_response_size() {
+        let ok = JsonRpcResponse::success(
+            json!(1),
+            json!({"content": [{"type": "text", "text": "abcd"}, {"type": "text", "text": "ef"}]}),
+        );
+        assert!(tool_call_succeeded(&ok));
+        assert_eq!(response_text_bytes(&ok), 6);
+
+        let tool_error =
+            JsonRpcResponse::success(json!(1), json!({"isError": true, "content": []}));
+        assert!(!tool_call_succeeded(&tool_error));
+
+        let rpc_error =
+            JsonRpcResponse::error(json!(1), ErrorCode::InvalidParams, "bad".to_string());
+        assert!(!tool_call_succeeded(&rpc_error));
+        assert_eq!(response_text_bytes(&rpc_error), 0);
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod staleness_banner_tests {
@@ -3553,5 +3716,37 @@ mod startup_metadata_tests {
         assert_eq!(server.selectorless_local_graph_tools, selectorless);
         assert_eq!(server.schema_overhead_tokens, cost);
         server.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod redundancy_checkout_refusal_tests {
+    use super::selected_redundancy_checkout_refusal;
+
+    #[test]
+    fn detached_head_refuses_and_says_so() {
+        // Catches: a detached HEAD in the selected root (no branch name)
+        // being treated as a match, so redundancy slices an arbitrary commit's
+        // files with the served branch's stored ranges.
+        let reason = selected_redundancy_checkout_refusal("/repo", Some("main"), None, false)
+            .expect("detached HEAD must refuse");
+        assert!(reason.contains("detached HEAD"), "{reason}");
+        assert!(reason.contains("\"main\""), "{reason}");
+    }
+
+    #[test]
+    fn untracked_project_and_matching_branch_run() {
+        // Catches: the gate refusing a project with no branch tracking (one
+        // index of its one working tree), or refusing a selected branch that
+        // is the one checked out.
+        assert_eq!(
+            selected_redundancy_checkout_refusal("/repo", None, None, false),
+            None
+        );
+        assert_eq!(
+            selected_redundancy_checkout_refusal("/repo", Some("main"), Some("main"), false),
+            None
+        );
     }
 }

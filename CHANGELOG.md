@@ -57,6 +57,123 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- **Elixir EEx templates are indexed with the `lang-elixir` feature (#907).** Code and output tags in `.eex` files contribute calls and declarations with their original locations; markup, comments, and escaped tags are ignored.
+- **AWK is now an indexed language (`lang-awk` feature, in `full`).** A new tree-sitter extractor covers `function` definitions, `BEGIN`/`END` blocks and pattern-action rules (each a function node named for its pattern), plus call edges and branch/loop/return complexity. The `tree-sitter-awk` grammar (Beaglefoot, v0.7.2) is vendored in `tokensave-large-treesitters`. Handles `.awk`.
+- **Wolfram Language is now an indexed language (`lang-wolfram` feature, in `full`).** A new tree-sitter extractor records `Set`/`SetDelayed` definitions (`f[x_] := …`) as functions, plain assignments as constants, call edges, and doc comments. The `tree-sitter-wolfram` grammar (WolframResearch) is vendored in `tokensave-large-treesitters`. Handles `.wl`, `.wls` and `.wlt`.
+- **Common Lisp is now an indexed language (`lang-commonlisp` feature, in `full`).** A new tree-sitter extractor covers `defun`/`defmacro`/`defgeneric` (functions), `defmethod` (methods), `defvar`/`defparameter` (statics), `defconstant` (constants), `defclass`/`defstruct` (classes) and `defpackage` (modules), plus call edges. Grammar `tree-sitter-commonlisp` 0.4.1 via `tokensave-large-treesitters`. Handles `.lisp`, `.lsp`, `.cl` and `.asd`.
+- **Scheme is now an indexed language (`lang-scheme` feature, in `full`).** A new tree-sitter extractor covers `define` in function, variable and macro (`define-syntax`) form, `define-library`/`library` (modules), and call edges, skipping quoted forms and comments. Grammar `tree-sitter-scheme` 0.25.0 via `tokensave-large-treesitters`. Handles `.scm` and `.ss`.
+- **FlatBuffers schemas are now an indexed language (`lang-flatbuffers` feature, in `full`).** A new tree-sitter extractor covers `namespace` (modules), `include` (uses), `table`/`struct` (structs with typed fields), `enum` (with variants), `union`, and `rpc_service` (interfaces with methods), plus doc comments. Grammar `tree-sitter-flatbuffers` 0.1.8 via `tokensave-large-treesitters`. Handles `.fbs`.
+
+- Profiled database execution (#754): MCP read-path queries (node, edge and search lookups, dead-code and file-dependency queries) are measured per static operation, with rows returned and errors, plus write-lock wait and write-transaction duration. Inert unless profiling is enabled.
+- Profiled MCP tool calls (#754): with profiling enabled, `tokensave serve` records each `tools/call` as one invocation (end-to-end latency, attributed database time and operations, operations per call, response size, errors) per registered tool, plus project-resolution, freshness and handler phases, and flushes aggregates on exit. `serve --timings` now reads the handler measurement the profiler records.
+- Profiled indexing, sync and graph traversal (#754): full-index (`index.*`) and incremental-sync (`sync.*`) phases, whole runs bucketed by project file count (`run.*`), graph traversals with nodes and edges visited, and the bulk write paths (node, edge, file, unresolved-reference and FTS-document inserts, bulk-load end). `tokensave init` and `tokensave sync` start the profiler when it is enabled. Verbose output is unchanged.
+- `tokensave profile status|enable|disable|report|slow-queries|export|reset` (#754): ranked text and JSON reports (percentiles with sample counts, P95/P99 flagged below 100 samples, MCP database share, median DB operations per tool call), slow-operation counts, and a sanitized export that keeps only static operation and registered tool names. See `docs/PROFILING.md`.
+- `tokensave profile analyze` (#754): bottlenecks ranked by cumulative impact and classified (DB execution latency, excessive query count, connection/transaction overhead, graph traversal, freshness/sync, parsing/extraction, result processing), each with its measured evidence; suggestions are labelled as hypotheses. MCP calls now count database operations per op, so ops run 20 or more times in one call are reported per tool as N+1 candidates.
+- Opt-in performance profiling infrastructure (#754): a `[profiling]` table in `config.toml` (`mode = "off" | "light" | "detailed"`, slow threshold, retention, size limit, detailed-mode expiry) with a `TOKENSAVE_PROFILE` per-run override, a static operation registry, mergeable fixed-bucket latency histograms, sharded lock-free aggregation, spans with inclusive/exclusive time and per-invocation database attribution, and bounded hourly files under `~/.tokensave/profile/`. Off by default; with profiling off nothing is measured or written.
+
+- Explain untracked branches: `tokensave_status` reports the effective `auto_track` setting and an `auto_track_hint` saying why the branch was not tracked automatically (disabled, turned off by `TOKENSAVE_AUTO_TRACK`, failed, or a read-only view) and how to enable it; `tokensave status` prints the same hint, and a failed open-time auto-track now carries its reason on the branch warning (Refs #877).
+- Add `TOKENSAVE_HOOK_DEBUG=1`, which makes the `post-checkout` hook and `branch add --if-enabled` explain skipped actions on stderr and in a bounded `.tokensave/hook-debug.log`; hooks stay silent by default (Refs #877).
+
+### Documentation
+
+- Correct the multi-branch guide: the `post-checkout` hook tracks branches only when `auto_track` is enabled, which is off by default. Add a troubleshooting entry for untracked branches (Refs #877).
+
+### Changed
+
+- Route every update notice (`init`, `sync`, `status` and the MCP server) through one method, `cloud::available_update`, which decides whether a newer release should be announced and formats the terminal and agent-facing notices. The CLI still announces every newer release, MCP only minor or major bumps; suppression windows and `TOKENSAVE_UPDATE_CHECK` are unchanged. No behavior change (Refs #902).
+- **CUDA parses with its dedicated grammar instead of C++ with launch blanking.** The CUDA extractor used to blank every `<<<grid, block>>>` span to spaces because the C++ grammar dropped the enclosing function; it now parses `.cu`/`.cuh` with `tree-sitter-cuda` (a C++ superset, via `tokensave-large-treesitters`) through the shared C++ extraction logic, so launches and `__global__`/`__device__`/`__host__` specifiers parse natively. All existing CUDA expectations are unchanged. `.cu`/`.cuh` files also now resolve in rename/path lookups and blame fingerprints, and count as CUDA instead of `Other` in `status` language stats.
+- **The HLSL grammar now comes from the shared tier bundle.** `tokensave-large-treesitters` carries `tree-sitter-hlsl`, so the direct dependency and provider override are removed; the grammar is the same 0.2.0 release, so extraction output is unchanged.
+
+- Align `unsafe` usage and hex literals with the adopted Google Rust Style Guide: document every `unsafe` block with a `// SAFETY:` comment, replace a hand-declared `getppid` FFI call in a test with `std::os::unix::process::parent_id()`, and lowercase hex literals. No behavior change (Refs #886).
+- Replace glob imports with explicit ones in the integration tests under `tests/` (Refs #886).
+- Replace glob imports with explicit ones in `src/main.rs`, `src/cpu.rs` and `src/mcp/tools/handlers/graph.rs` (Refs #886).
+- Replace glob imports with explicit ones in `src/agents/` (Refs #886).
+- Replace glob imports with explicit ones in `src/context/` and `src/tokensave/` (Refs #886).
+- Replace glob imports with explicit ones in `src/graph/`, `src/db/` and `src/resolution/` (Refs #886).
+- Give the language extractors' `#[allow]` attributes a stated `reason`, and remove a stale `dead_code` allow in the C++ extractor (Refs #886).
+- Review `#[allow]` attributes outside the language extractors: remove 7 that no longer suppress anything, replace 4 with the code fix the lint asks for, and give the remaining unexplained ones a `reason` (Refs #886).
+- Resolve the pre-existing `clippy::pedantic` warnings in the MCP server: box the ~56 KiB `tools/call` handler future once instead of inlining it into every caller (including the serve loop), and simplify the serve loop's control flow with `let ... else` and `if let` (Refs #886).
+- Resolve the pre-existing `clippy::pedantic` warnings outside the MCP server (`src/profile/`, branch GC, config docs, one integration test) as part of the Google Rust Style Guide audit; the one intentional `Option<Option<_>>` is kept with a documented `#[allow]`. No behavior change (Refs #886).
+
+### Documentation
+
+- Adopt Google's Rust Style Guide on master with project-specific precedence, exceptions, and contributor review guidance; defer the codebase audit and cleanup to follow-up work (Refs #845).
+- Evaluate optional Graphify coexistence at a pinned revision, with a disposable CLI probe, recorded resource measurements, and explicit requirements and remaining work before any adapter (Refs #791).
+- Document the optional Graphify exporter workflow, limits and privacy scope in the user guide (Refs #791).
+
+### Added
+
+- **Repositories created with `git init` are indexed automatically (Refs #876).** A new user-level `auto_init` setting in `~/.tokensave/config.toml`, on by default, lets a pathless `tokensave sync` (what the `post-commit` and `post-merge` hooks run) and `tokensave serve` initialize the top level of a git repository that has no index, so hooks installed by earlier versions pick it up without being rewritten. Repositories under the system temp dir, your home directory itself, bare repositories, subdirectories, explicit `sync <path>`/`serve --path` targets and trees with more candidate files than `max_auto_sync_files` are skipped; the last prints a hint to run `tokensave init`. `TOKENSAVE_AUTO_INIT` overrides the setting for one run, and `tokensave doctor` reports the effective value.
+- **`tokensave cost`/`monitor` now accounts for GitHub Copilot CLI local `~/.copilot/session-state/<id>/events.jsonl` sessions.** The cumulative `session.usage_checkpoint` record is read (highest `totalNanoAiu` wins), and Copilot's native metering unit, nano-AIU, is imported and exposed via `cost --by-agent` and the monitor as whole AIU. Copilot gets a separate monitor line when Droid usage is also shown, so a long Droid coverage line does not hide its value. Copilot-only JSON includes the agent and coverage breakdown; cached Copilot rows are hidden when the local source is absent. The selected checkpoint timestamp sets Copilot's date bucket, while Droid retains its session-start bucket. AIU is reported as its own unit and never converted to USD or added to Droid credits; Copilot checkpoints carry no stable token counts, so raw tokens stay zero. Malformed JSONL lines and checkpoint records produce partial coverage. `totalPremiumRequests` is intentionally out of scope for this change (a separate quota unit whose storage would need a schema column).
+- Add a pinned Graphify CLI compatibility harness covering repeated exports, queries, visualization and conflicting dirty worktrees; publish fixture evidence and remaining measurement gates (Refs #791).
+
+### Added
+
+- Add experimental `graphify-export` for bounded, read-only single-file snapshots with resolver provenance, freshness checks and no-clobber publication (Refs #791).
+
+### Documentation
+
+- Define the pinned, optional Graphify file-interchange evaluation contract and gated implementation scope (Refs #791).
+
+### Fixed
+
+- Let the Python comparison benchmark reuse `TOKENSAVE_BENCH_REPOS_DIR` and standard temporary-directory selection, and report clone-storage failures with the destination and a relocation hint (Refs #767).
+
+- Keep the recorded default branch in step with the repository: opening a project renames a default entry whose branch no longer exists (for example after `git branch -m master main`) instead of serving the real default as an untracked branch or duplicating its database; `origin/HEAD` is used only while its branch exists, and `branch add` detects the default like `init` instead of assuming `main`. Add `tokensave branch set-default`, a `BRANCH_DEFAULT_STALE` warning in `tokensave verify`, and a `default_branch_warning` in `tokensave branch list`, `tokensave_status` and `tokensave_branch_list` (Refs #874).
+
+- Hold the writer lock throughout interrupted-index recovery and refuse rebuilding a borrowed branch database from another checkout (Refs #864).
+
+- Restore independent MCP selected-graph regression tests for simplify scans, redundancy branch refusal, and dead-code queries after an interleaved test insertion (Refs #854).
+
+- Bound comparison-benchmark MCP initialization and request I/O, reap owned process groups, and defer shutdown interruptions until cleanup completes (Refs #847).
+
+- Return MCP invalid-parameter errors for selected graphs rejected by database compatibility checks, preserving internal errors for database failures (Refs #835).
+
+- Preserve database creation channel, reject beta-origin and newer-schema databases before writes or recovery, and isolate beta project/global indexes under `.tokensave/beta` without relabeling legacy databases (Refs #835).
+
+### Changed
+
+- `tokensave_redundancy` and `tokensave_simplify_scan` accept `graph_root` and `graph_branch`, so both run against another initialized project. On a selected graph, `tokensave_redundancy` refuses with InvalidParams when the selected branch is not the one checked out in that project (a different branch, a detached HEAD, or a fallback to a parent branch's index), because it reads function bodies from the working tree; it also skips writing its fingerprint cache to the read-only selected database.
+
+- Pi doctor distinguishes static configuration from unverified runtime state, reports possible instruction overrides and missing indexes without writes, and rejects unknown direct-tool exposure settings (Refs #833).
+
+### Added
+
+- Add a read-only assessment of independently reviewed Pi native-read traces, preserving verification/recovery and deferring enforcement without real-model evidence (Refs #834).
+
+### Documentation
+
+- Require agents to verify linked PR states before closing an issue and summarize merged improvements with the actual destination branch, validation, and remaining work; synchronize this rule across master and beta (Refs #803).
+
+- Add a linked table of contents near the top of the README.
+
+- List all supported agents and their `--agent` identifiers beside the README setup command.
+
+- Simplify README installation and agent setup, keeping advanced options in expandable sections and correcting the medium-tier Cargo command.
+
+- Convert the README architecture diagram to Mermaid and require Mermaid for all documentation graphs and diagrams in `AGENTS.md`.
+
+- Require upstream-master comparison and maintenance of shared agent guidance on master and beta as repository workflows change.
+
+- Require agents to keep the README beta announcement aligned with beta release features on master and beta.
+- Announce the beta with improved queries in the README, with beta links and a source installation command.
+
+### Added
+
+- Add a SQL query inventory in `docs/QUERY-REPORT.md` with source links and dynamic construction context, and require agents to keep it synchronized with query changes (Refs #773).
+
+- **Pi reaches tokensave's tools, and gets the guardrail and the receipt Claude Code has.** Pi defaults an MCP server to `exposure: "codemode"`, which declares none of the server's tools to the model, so an installed tokensave answered nothing and the agent fell back to grep. `tokensave install --agent pi` now registers the server with `"exposure": "direct"` (which `pi-mcp-adapter` maps to `directTools`) and a one-line description, writes a Pi rules overlay naming the tools as Pi declares them (`mcp__tokensave__<tool>`) and forbidding research-subagent fan-out for code exploration, and installs a managed TypeScript extension in `<agent-dir>/extensions` (project: `.pi/extensions`) because Pi has no shell hooks. That extension relays Pi's `grep`/`find`/`bash` calls to a new `hook-pi-pre-tool-use` subcommand that normalizes them for the existing classifier, resets the per-turn savings counter, and prints the session receipt from a new `hook-pi-stop` subcommand. `tokensave doctor` now fails when the exposure hides the tools or the extension is missing or stale.
+
+- **Pi sessions are part of token accounting.** `tokensave cost`, `tokensave report` and the status cost row parsed only Claude Code transcripts and Factory Droid settings, so a Pi user saw no cost for their own work. Pi's `~/.pi/agent/sessions/**/*.jsonl` is now ingested incrementally (same byte-offset tracking as Claude), using the cost Pi reports per message rather than a pricing lookup, with reasoning tokens folded into output and the coverage line naming Pi when the source is present. The missed-opportunity analyzer stays Claude-only, since Pi's tool-result sizes are not recorded.
+
+### Fixed
+
+- **`tokensave_dead_code` works with `graph_root` on a selected graph.** The test-marker exclusion wrote two TEMP tables (`temp.test_markers`, `temp.test_annotated_targets`), which a selected graph opened with `PRAGMA query_only = 1` rejects ("attempt to write a readonly database"). Concurrent read-only calls on the shared connection could also drop or refill each other's tables. `find_dead_code` now passes the test-marker ids to the dead-code query as one bound JSON array and filters in SQL with `id NOT IN (SELECT target FROM edges WHERE kind = 'annotates' AND source IN (SELECT value FROM json_each(?)))`, with no writes. The wildcard marker scan still runs once per call, and local results are unchanged. `Database::populate_test_marker_temp_table`, `drop_test_marker_temp_table`, `populate_test_annotated_targets_temp_table` and `drop_test_annotated_targets_temp_table` are removed.
+
+- Add Pi real-session regression coverage for per-run retrieval guidance, compaction replay, and native reads after simulated retrieval failures.
+
+- Prefer indexed code exploration through Pi's structured per-run prompt sections, with explicit native-tool fallbacks for unavailable or stale indexes, unindexed files, documentation, configuration, and current-source verification. Existing search interception is unchanged.
+
 - Add an opt-in beta executable identity with `TokenSave-Beta.exe`/`tokensave-beta` packaging, a badged Windows icon, prerelease version resources, and centralized channel configuration while preserving stable defaults (Refs #801).
 
 - Add global opt-in SQL diagnostics and `EXPLAIN QUERY PLAN` output on stderr, configured with `tokensave config debug-sql`; keep application stdout unchanged and bound diagnostic records (Refs #789).
@@ -73,6 +190,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - Update the locked `der` dependency from yanked 0.8.0 to compatible 0.8.3, used by the ONNX Runtime build dependency chain (Refs #805).
 
 - Replace the deprecated atomic session-debt update with `try_update`, preserving memory orderings and return behavior (Refs #804).
+
+- Limit large-repository benchmark cleanup to an exclusively reserved scratch directory, preserve unrelated repository changes, and release scratch data during error unwinding.
 
 - Resolve the project that owns the current directory the same way in every command run without an explicit path: `init`, `tool`, `doctor`, `verify`, `quality-diff`, `branch`, `gitignore`, the counters, a bare `tokensave`, and the prompt-submit and stop hooks. `sync`, `status`, `serve`, and the MCP roots fallback already did. `init` in a subdirectory of an existing project now reports that project and exits 0 instead of creating a nested index. In an uninitialized git repository, `init` initializes the repository root. Git repository roots isolate nested independent repositories (nested clones and submodules) from an outer repository's index, and a partial `.tokensave/` is no longer skipped in favor of an outer project (#749).
 
@@ -113,6 +232,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - **`tokensave_implementations` returns locations and signatures instead of bodies by default (#674).** Both forms used to inline the full source of every method, so asking which types implement an interface could cost more than reading the files. Each implementing type now comes with its file, `line` and `end_line`, plus each of its methods' signature, `line` and `end_line`; the `method` form returns each implementation's file, range and signature. Fetch the bodies you need with `tokensave_body` or `tokensave_read`, or pass the new `bodies: true` to get the bodies inline as before. `tokensave_context`'s `include_code`, `tokensave_body` and `tokensave_read` are unchanged. Requested by @xorets.
 - **The "Searching code" rules text no longer teaches one form per construct, and the subagent brief no longer forbids what it recommends (#667).** The examples from #653 (`.Name(`, `Name(`, `: IName`) each covered one syntax: `: IOrders` misses `class OrdersController : ControllerBase, IOrders`, and TypeScript writes `implements IOrders`. The section now says that `literal: true` finds exact text and that, for who calls or implements a name, the agent should search the text that construct takes in the file's language, in every form the language allows. "Grep for a file type the index skips" became "grep for a regex, or for the files a literal search reports as `unscanned`", since files are also skipped by path. Claude's Explore-agent brief dropped "ONLY" and "Do not call Read, glob, grep", which inside the subagent blocked literal search and reading; it now carries the same search guidance. The hook-denial section and the MCP `initialize` instructions say the same, while the hook's per-symbol copyable calls from #654 stay. The `unscanned` remedy now names `include[]` for files skipped by path, and the compact repeat-search hint no longer points at a `tokensave_files --unscanned` option that does not exist. Correction to the 7.15.0 entry for #653: the reporter's A/B test measured their whole add-on, so the share of the two "Searching code" lines in the 25% fewer tool calls is unknown. Existing installs pick the text up on the next `install`, `reinstall` or upgrade resync. Reported by @xorets.
 - **`Path::join` call sites use native path separators.** A path built as `dir.join("a/b")` stored the literal slashes, so on Windows the resulting `PathBuf` mixed `\` and `/` even though every filesystem call still succeeded. Each multi-segment path is now built with one `join` per segment (`dir.join("a").join("b")`), so the stored string matches the OS's separator. Six `Vec::join("/")` call sites in `src/config.rs`, `src/db/queries/routes.rs`, `src/extraction/rails_routes.rs`, `src/extraction/mcfunction_extractor.rs`, `src/graph/imports.rs` and `src/resolution/js_specifier.rs` are deliberately unchanged because they join string segments, not paths; the `a/b/c/../c/tokensave` fixture in `src/upgrade.rs` is also left intact to keep the dotdot resolution intent visible. Refs #737.
+
 ### Fixed
 
 - Preserve line breaks in the Claude Explore-agent brief so installed rules render a blockquote without stray inline `>` markers (#765).
@@ -426,7 +546,6 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - **An entry point's signature is bounded to one line of at most 200 characters.** The extractor stores a value binding's entire initializer as its signature, so surfacing a localization catalog or a generated lookup table printed tens of kilobytes into the context response — on the #362 fixture, a single entry point rendered 15 KB, more than the source file it came from, which is a poor trade in a tool whose purpose is spending fewer tokens. The first line still identifies the symbol and the code block below it carries content under its own existing limits; truncation is marked with an ellipsis and happens on a character boundary. The same fixture now renders 3.2 KB.
 - **`report_savings` turns off the savings narration that costs output tokens (#356).** tokensave exists to cut *input* tokens, but it asks the agent to tell the user what it saved — via the `tokensave_metrics:` line appended to every accounted tool result and a sentence in the MCP `instructions` pointing at that line. The agent obliges on nearly every turn, and those are *output* tokens, the more expensive kind, spent on a message that wouldn't otherwise exist; as the report puts it, that "largely offsets the benefits". The new per-project `report_savings` config field (default `true`, so nothing changes for anyone who doesn't ask) removes both when set to `false`: no metrics line, and the `instructions` stop asking for the report. `TOKENSAVE_REPORT_SAVINGS` overrides it per-run using the same falsey spellings as `TOKENSAVE_AUTO_TRACK` (`0`, `false`, `no`, `off`, empty), whose ad-hoc match is now the shared `config::env_bool_override` both settings call. `tokensave install` also stops writing the reporting rule into the Vibe prompt file; that runs at global scope with no project config in reach, so it reads the env var and bakes the choice into the file it regenerates. Measurement is deliberately outside the gate: the per-call ledger row, the persisted counter, and the monitor entry are all still written, so `tokensave gain`, `list`, `status` and `monitor` report exactly what they did before — the setting governs what the *model* is shown and asked to say, not what tokensave knows.
 - **`tokensave init` on an already-initialized project is covered by regression tests (#372 §1).** The report described observing exit 0 with a silent-looking message in an interactive session, which cost real debugging time when a caller trusted `init`'s exit code as proof a rebuild had happened. That could not be reproduced: the already-initialized branch calls `exit(1)` with no TTY-dependent path, and the binary was confirmed to exit 1 both with stdin closed and under a pty, so the reported behaviour was a version difference rather than a live defect. No behaviour changed; `tests/init_already_initialized_test.rs` now pins it down through the real binary across the explicit-path, argument-less, and relative-`.` invocations, and asserts the refusal still names `sync --force`, so the guarantee cannot drift back.
-
 ### Changed
 - **The model pricing table now covers the OpenAI model families (`gpt-*`, `o1`/`o3`/`o4`, `codex`) in addition to Anthropic Claude, and exposes whether a model is priced instead of making unknown cost look like `$0.00`.** `parse_litellm_json` previously discarded everything but `claude`, so any non-Claude harness had no USD figure at all; the filter is now an allowlist of the families tokensave meters (`is_metered_model`), still skipping Bedrock/Vertex/Azure provider-prefixed duplicates so the longest-prefix matcher in `lookup` stays unambiguous. A new `pricing::is_priced` predicate gives downstream accounting and output work the distinction between "unknown model, cost unknown" and "known model, genuinely free", because `cost_of_turn` collapses an unknown model to `0.0`. This is the foundation for pricing the Codex CLI's OpenAI usage.
 - **The structural call-graph tools `tokensave_impact` and `tokensave_callees` are now `anthropic/alwaysLoad` (#333).** Their schemas load into the model context up front instead of sitting behind a `ToolSearch` round-trip. Measured usage across 26 days and five repositories showed the three previously-eager tools (`context`/`search`/`status`) taking 96.7% of calls while the call-graph tools — the ones with the clearest advantage over grep-and-read for "who calls this?" / "what breaks if I change this?" — went essentially unused, because a tool the model has to already suspect exists is a tool it rarely goes looking for. The always-loaded set grows from three tools to five; the schemas are small and the prompt prefix is cached, so the up-front cost is negligible. `callers` and `affected` are deliberately left deferred for now, pending a measured usage shift.
@@ -2204,3 +2323,4 @@ tokensave sync --force           # re-index to pick up new language extractors
 [7.14.1]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.14.1
 [7.15.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.15.0
 [7.16.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.16.0
+[7.17.0]: https://github.com/aovestdipaperino/tokensave/releases/tag/v7.17.0

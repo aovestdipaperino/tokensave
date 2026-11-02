@@ -7,6 +7,9 @@
 >
 > Published, reader-facing versions of these comparisons — including Serena, Graphify, LeanCTX and token-savior,
 > which are not covered in this document — live at **<https://tokensave.dev/vs>**.
+
+For the pinned Graphify interoperability investigation, measured coexistence
+costs, and remaining adapter requirements, see [the Graphify evaluation](GRAPHIFY-EVALUATION.md).
 >
 > **Correction, September 2026:** earlier revisions of this document described CodeGraph as requiring Node.js 18+
 > with ~80 MB of `node_modules` and WASM. That is no longer true — CodeGraph now ships a Rust kernel and bundles its

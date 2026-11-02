@@ -100,6 +100,41 @@ impl BranchMeta {
     pub fn is_tracked(&self, name: &str) -> bool {
         self.branches.contains_key(name)
     }
+
+    /// Renames the entry `from` to `to`, keeping its `db_file`. Follows the
+    /// default branch and every `parent` that named `from`. Returns `false`
+    /// (and changes nothing) when `from` is untracked or `to` already is.
+    pub fn rename_branch(&mut self, from: &str, to: &str) -> bool {
+        if from == to || self.branches.contains_key(to) {
+            return false;
+        }
+        let Some(entry) = self.branches.remove(from) else {
+            return false;
+        };
+        self.branches.insert(to.to_string(), entry);
+        if self.default_branch == from {
+            self.default_branch = to.to_string();
+        }
+        for entry in self.branches.values_mut() {
+            if entry.parent.as_deref() == Some(from) {
+                entry.parent = Some(to.to_string());
+            }
+        }
+        true
+    }
+
+    /// Makes the tracked branch `name` the default. The previous default
+    /// keeps its entry and database as an ordinary branch, which
+    /// `remove_branch` can then drop. Returns `false` when `name` is untracked.
+    pub fn set_default(&mut self, name: &str) -> bool {
+        let Some(entry) = self.branches.get_mut(name) else {
+            return false;
+        };
+        // The default branch is the root of the parent chain.
+        entry.parent = None;
+        self.default_branch = name.to_string();
+        true
+    }
 }
 
 /// Loads branch metadata from `.tokensave/branch-meta.json`.
@@ -247,6 +282,39 @@ mod tests {
     fn cannot_remove_default_branch() {
         let mut meta = BranchMeta::new("main");
         assert!(meta.remove_branch("main").is_none());
+    }
+
+    #[test]
+    fn rename_branch_keeps_db_file_and_rewrites_parents() {
+        let mut meta = BranchMeta::new("master");
+        meta.add_branch("feature", "branches/feature.db", "master");
+        assert!(meta.rename_branch("master", "main"));
+        assert_eq!(meta.default_branch, "main");
+        assert!(!meta.is_tracked("master"));
+        assert_eq!(meta.branches["main"].db_file, "tokensave.db");
+        assert_eq!(meta.branches["feature"].parent.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn rename_branch_refuses_to_overwrite_a_tracked_branch() {
+        let mut meta = BranchMeta::new("master");
+        meta.add_branch("main", "branches/main.db", "master");
+        assert!(!meta.rename_branch("master", "main"));
+        assert!(!meta.rename_branch("gone", "other"));
+        assert_eq!(meta.default_branch, "master");
+        assert_eq!(meta.branches["main"].db_file, "branches/main.db");
+    }
+
+    #[test]
+    fn set_default_demotes_the_previous_default() {
+        let mut meta = BranchMeta::new("master");
+        meta.add_branch("main", "branches/main.db", "master");
+        assert!(meta.set_default("main"));
+        assert_eq!(meta.default_branch, "main");
+        assert!(meta.branches["main"].parent.is_none());
+        // The old default is now an ordinary, removable entry.
+        assert!(meta.remove_branch("master").is_some());
+        assert!(!meta.set_default("gone"));
     }
 
     #[test]

@@ -687,11 +687,26 @@ impl GlobalDb {
     ///
     /// On conflict, the row is updated only when **every** token counter in the
     /// candidate is ≥ the stored value, credits do not regress, and **at least
-    /// one** counter or credit strictly increases.  `timestamp` is never
-    /// updated (it is the stable session-start bucket).
+    /// one** counter or credit strictly increases. Droid keeps its original
+    /// session-start timestamp; Copilot moves to the timestamp of the larger
+    /// cumulative checkpoint.
     ///
     /// Returns `true` if a row was inserted or updated, `false` otherwise.
     pub async fn upsert_droid_turn(&self, turn: &crate::types::CostTurn) -> bool {
+        self.upsert_monotonic_turn(turn, false).await
+    }
+
+    /// Upsert a Copilot cumulative checkpoint, moving its timestamp when the
+    /// stored AIU total increases.
+    pub async fn upsert_copilot_turn(&self, turn: &crate::types::CostTurn) -> bool {
+        self.upsert_monotonic_turn(turn, true).await
+    }
+
+    async fn upsert_monotonic_turn(
+        &self,
+        turn: &crate::types::CostTurn,
+        update_timestamp: bool,
+    ) -> bool {
         self.conn
             .execute(
                 "INSERT INTO turns
@@ -703,6 +718,7 @@ impl GlobalDb {
                      project_hash        = excluded.project_hash,
                      session_id          = excluded.session_id,
                      model               = excluded.model,
+                     timestamp           = CASE WHEN ?15 THEN excluded.timestamp ELSE turns.timestamp END,
                      input_tokens        = MAX(excluded.input_tokens,        turns.input_tokens),
                      output_tokens       = MAX(excluded.output_tokens,       turns.output_tokens),
                      cache_write_tokens  = MAX(excluded.cache_write_tokens,  turns.cache_write_tokens),
@@ -744,6 +760,7 @@ impl GlobalDb {
                     turn.tool_names.clone(),
                     turn.agent.clone(),
                     turn.credits.map(|c| c as i64),
+                    i64::from(update_timestamp),
                 ],
             )
             .await

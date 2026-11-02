@@ -5,7 +5,7 @@ mod php_tests {
 
     use tokensave::extraction::LanguageExtractor;
     use tokensave::extraction::PhpExtractor;
-    use tokensave::types::*;
+    use tokensave::types::{EdgeKind, NodeKind, Visibility};
 
     #[test]
     fn test_php_file_node() {

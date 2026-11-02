@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tokensave::db::migrations::latest_version;
 use tokensave::db::Database;
-use tokensave::types::*;
+use tokensave::types::{Edge, EdgeKind, FileRecord, Node, NodeKind, UnresolvedRef, Visibility};
 
 /// Helper: create an in-memory-style temp database and return (TempDir, Database).
 ///

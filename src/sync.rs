@@ -16,7 +16,7 @@ pub fn read_source_file(path: &Path) -> std::io::Result<String> {
 /// reads alike; callers own the input read and its bounds.
 pub(crate) fn decode_source_bytes(bytes: &[u8]) -> std::io::Result<String> {
     // UTF-16 LE BOM: FF FE
-    if bytes.starts_with(&[0xFF, 0xFE]) {
+    if bytes.starts_with(&[0xff, 0xfe]) {
         let (pairs, _) = bytes[2..].as_chunks::<2>();
         let u16s: Vec<u16> = pairs.iter().copied().map(u16::from_le_bytes).collect();
         return String::from_utf16(&u16s)
@@ -24,7 +24,7 @@ pub(crate) fn decode_source_bytes(bytes: &[u8]) -> std::io::Result<String> {
     }
 
     // UTF-16 BE BOM: FE FF
-    if bytes.starts_with(&[0xFE, 0xFF]) {
+    if bytes.starts_with(&[0xfe, 0xff]) {
         let (pairs, _) = bytes[2..].as_chunks::<2>();
         let u16s: Vec<u16> = pairs.iter().copied().map(u16::from_be_bytes).collect();
         return String::from_utf16(&u16s)
@@ -32,7 +32,7 @@ pub(crate) fn decode_source_bytes(bytes: &[u8]) -> std::io::Result<String> {
     }
 
     // Strip UTF-8 BOM if present, then validate
-    let start = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+    let start = if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
         3
     } else {
         0

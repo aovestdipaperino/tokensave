@@ -1,6 +1,6 @@
 use serde_json::json;
-use tokensave::mcp::tools::*;
-use tokensave::mcp::transport::*;
+use tokensave::mcp::tools::{get_tool_definitions, ToolDefinition};
+use tokensave::mcp::transport::{ErrorCode, JsonRpcRequest, JsonRpcResponse};
 
 #[test]
 fn test_parse_jsonrpc_request() {

@@ -1951,7 +1951,9 @@ fn insert_gitconfig_value(contents: &str, section: &str, key: &str, value: &str)
 #[allow(clippy::unwrap_used)]
 mod git_hook_tests {
     use super::*;
-    use crate::agents::*;
+    use crate::agents::{
+        command_resolves_to_tokensave_in, preserve_mcp_command, preserve_mcp_command_str,
+    };
     use std::path::Path;
     use std::process::Command;
 

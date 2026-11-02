@@ -1,6 +1,6 @@
 use tokensave::extraction::JavaExtractor;
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, NodeKind, Visibility};
 
 #[test]
 fn test_java_empty_javadoc_no_panic() {

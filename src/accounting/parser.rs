@@ -316,7 +316,7 @@ fn is_leap(y: i64) -> bool {
 pub struct IngestStats {
     /// Number of new Claude turns inserted (receipt-only; does not count historical Droid scans).
     pub turns_inserted: u64,
-    /// Number of Droid turns inserted or updated.
+    /// Number of Droid and Copilot turns inserted or updated.
     pub turns_updated: u64,
     /// Total cost of newly-inserted Claude turns.
     pub cost_usd: f64,
@@ -472,8 +472,7 @@ async fn ingest_claude_from_home(gdb: &GlobalDb, home: &Path) -> IngestStats {
     }
 }
 
-/// Ingest Claude sessions from `home` and Droid sessions from
-/// `home/.factory/sessions`.  Returns combined [`IngestStats`].
+/// Ingest Claude, Droid, Copilot and Pi sessions from `home`.
 pub(crate) async fn ingest_from_home(gdb: &GlobalDb, home: &Path) -> IngestStats {
     let mut stats = ingest_claude_from_home(gdb, home).await;
 
@@ -484,7 +483,35 @@ pub(crate) async fn ingest_from_home(gdb: &GlobalDb, home: &Path) -> IngestStats
     stats.turns_updated = droid.rows_changed;
     stats.coverage.push(droid.coverage);
 
+    let pi = ingest_pi_from_home(gdb, home).await;
+    stats.turns_inserted += pi.turns_inserted;
+    stats.cost_usd += pi.cost_usd;
+    stats.tokens_consumed += pi.tokens_consumed;
+    stats.coverage.extend(pi.coverage);
+    // Copilot CLI ingestion from ~/.copilot/session-state
+    let copilot_root = home.join(".copilot").join("session-state");
+    let copilot = crate::accounting::copilot::ingest_dir(gdb, &copilot_root).await;
+
+    stats.turns_updated = stats.turns_updated.saturating_add(copilot.rows_changed);
+    stats.coverage.push(copilot.coverage);
+
     stats
+}
+
+/// Ingest Pi sessions from `home/.pi/agent/sessions`.
+///
+/// Pi stores one JSONL file per session and prices every message itself, so
+/// this source contributes its own cost rather than a computed one.
+async fn ingest_pi_from_home(gdb: &GlobalDb, home: &Path) -> IngestStats {
+    let sessions = home.join(".pi").join("agent").join("sessions");
+    let pi = crate::accounting::pi::ingest_dir(gdb, &sessions).await;
+    IngestStats {
+        turns_inserted: pi.turns_inserted,
+        turns_updated: 0,
+        cost_usd: pi.cost_usd,
+        tokens_consumed: pi.tokens_consumed,
+        coverage: vec![pi.coverage],
+    }
 }
 
 /// Ingest only Claude Code session files, skipping any Droid scan.
@@ -499,7 +526,18 @@ pub async fn ingest_claude_only(gdb: &GlobalDb) -> IngestStats {
     ingest_claude_from_home(gdb, &home).await
 }
 
-/// Ingest all Claude Code session files into the global DB.
+/// Ingest only Pi session files, skipping the Claude and Droid scans.
+///
+/// Use this from the Pi `agent_settled` hook, which runs once per session end
+/// and must not pay for the other sources' filesystem work.
+pub async fn ingest_pi_only(gdb: &GlobalDb) -> IngestStats {
+    let Some(home) = crate::agents::home_dir() else {
+        return IngestStats::empty();
+    };
+    ingest_pi_from_home(gdb, &home).await
+}
+
+/// Ingest all session files from every supported agent into the global DB.
 /// Uses offset tracking to only parse new lines since the last run.
 pub async fn ingest(gdb: &GlobalDb) -> IngestStats {
     let Some(home) = crate::agents::home_dir() else {
