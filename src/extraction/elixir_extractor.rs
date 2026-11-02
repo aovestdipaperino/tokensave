@@ -23,6 +23,15 @@ const EXUNIT_BLOCK_MACROS: &[&str] = &["test", "describe", "setup", "setup_all"]
 
 impl ElixirExtractor {
     pub fn extract_elixir(file_path: &str, source: &str) -> ExtractionResult {
+        Self::extract_source(file_path, source, false)
+    }
+
+    fn extract_eex(file_path: &str, source: &str) -> ExtractionResult {
+        let projected_source = mask_eex(source);
+        Self::extract_source(file_path, &projected_source, true)
+    }
+
+    fn extract_source(file_path: &str, source: &str, is_template: bool) -> ExtractionResult {
         let start = Instant::now();
         let mut state = ExtractionState::new(file_path, source);
 
@@ -66,10 +75,15 @@ impl ElixirExtractor {
         };
         let file_node_id = file_node.id.clone();
         state.nodes.push(file_node);
-        state.node_stack.push((file_path.to_string(), file_node_id));
+        state
+            .node_stack
+            .push((file_path.to_string(), file_node_id.clone()));
 
         let root = tree.root_node();
         Self::visit_children(&mut state, root);
+        if is_template {
+            Self::extract_template_calls(&mut state, root, &file_node_id);
+        }
 
         state.node_stack.pop();
         state.build_result(start)
@@ -91,6 +105,50 @@ impl ElixirExtractor {
         if cursor.goto_first_child() {
             loop {
                 Self::visit_node(state, cursor.node());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn extract_template_calls(state: &mut ExtractionState, node: TsNode<'_>, owner: &str) {
+        // Template expressions outside declarations belong to the file node.
+        if node.kind() == "call" {
+            let head = Self::call_head(state, node);
+            if matches!(
+                head.as_deref(),
+                Some(
+                    "def"
+                        | "defp"
+                        | "defmacro"
+                        | "defmacrop"
+                        | "defmodule"
+                        | "defstruct"
+                        | "import"
+                        | "require"
+                        | "use"
+                        | "alias"
+                )
+            ) {
+                return;
+            }
+            if let Some(name) = head {
+                state.unresolved_refs.push(UnresolvedRef {
+                    from_node_id: owner.to_string(),
+                    reference_name: name,
+                    reference_kind: EdgeKind::Calls,
+                    line: node.start_position().row as u32,
+                    column: node.start_position().column as u32,
+                    file_path: state.file_path.clone(),
+                });
+            }
+        }
+
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                Self::extract_template_calls(state, cursor.node(), owner);
                 if !cursor.goto_next_sibling() {
                     break;
                 }
@@ -565,9 +623,80 @@ impl ElixirExtractor {
     }
 }
 
+/// Masks markup and `EEx` delimiters without changing parser byte offsets.
+fn mask_eex(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut code = vec![0; bytes.len()];
+    let mut cursor = 0;
+
+    while let Some(relative) = source[cursor..].find("<%") {
+        let open = cursor + relative;
+        let mut body_start = open + 2;
+
+        if source[open..].starts_with("<%!--") {
+            let comment_start = open + "<%!--".len();
+            let Some(relative_close) = source[comment_start..].find("--%>") else {
+                break;
+            };
+            cursor = comment_start + relative_close + "--%>".len();
+            continue;
+        }
+
+        if bytes.get(body_start) == Some(&b'%') {
+            cursor = body_start + 1;
+            continue;
+        }
+
+        if bytes.get(body_start) == Some(&b'#') {
+            let Some(close) = eex_tag_end(source, body_start + 1) else {
+                break;
+            };
+            cursor = close + 2;
+            continue;
+        }
+
+        if bytes.get(body_start) == Some(&b'-') {
+            body_start += 1;
+        }
+        while bytes.get(body_start) == Some(&b'=') {
+            body_start += 1;
+        }
+
+        let Some(close) = eex_tag_end(source, body_start) else {
+            break;
+        };
+        let code_end = if close > body_start && bytes[close - 1] == b'-' {
+            close - 1
+        } else {
+            close
+        };
+        code[body_start..code_end].fill(1);
+        cursor = close + 2;
+    }
+
+    let mut projected = String::with_capacity(source.len());
+    for (offset, character) in source.char_indices() {
+        if code[offset] == 1 || matches!(character, '\r' | '\n') {
+            projected.push(character);
+        } else {
+            for _ in 0..character.len_utf8() {
+                projected.push(' ');
+            }
+        }
+    }
+    projected
+}
+
+fn eex_tag_end(source: &str, cursor: usize) -> Option<usize> {
+    source
+        .get(cursor..)?
+        .find("%>")
+        .map(|relative| cursor + relative)
+}
+
 impl crate::extraction::LanguageExtractor for ElixirExtractor {
     fn extensions(&self) -> &[&str] {
-        &["ex", "exs"]
+        &["ex", "exs", "eex"]
     }
 
     fn language_name(&self) -> &'static str {
@@ -575,6 +704,10 @@ impl crate::extraction::LanguageExtractor for ElixirExtractor {
     }
 
     fn extract(&self, file_path: &str, source: &str) -> ExtractionResult {
-        Self::extract_elixir(file_path, source)
+        if file_path.rsplit('.').next() == Some("eex") {
+            Self::extract_eex(file_path, source)
+        } else {
+            Self::extract_elixir(file_path, source)
+        }
     }
 }

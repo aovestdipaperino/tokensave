@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+use crate::cloud::UpdateNoticeScope;
 use crate::errors::{Result, TokenSaveError};
 use crate::global_db::GlobalDb;
 use crate::profile::McpPhase;
@@ -1692,14 +1693,12 @@ impl McpServer {
             if let Some(checked_at) = cache.checked_at {
                 if checked_at.elapsed() < VERSION_CHECK_INTERVAL {
                     let latest = cache.latest.as_deref()?;
-                    return if crate::cloud::is_newer_minor_version(current, latest) {
-                        Some(format!(
-                            "⚠️ tokensave v{current} is installed, but v{latest} is available. \
-                             Run `tokensave upgrade` to update."
-                        ))
-                    } else {
-                        None
-                    };
+                    return crate::cloud::available_update(
+                        current,
+                        latest,
+                        UpdateNoticeScope::MinorOrMajor,
+                    )
+                    .map(|update| update.agent_notice());
                 }
             }
         }
@@ -1717,14 +1716,8 @@ impl McpServer {
         }
 
         let latest = latest?;
-        if crate::cloud::is_newer_minor_version(current, &latest) {
-            Some(format!(
-                "⚠️ tokensave v{current} is installed, but v{latest} is available. \
-                 Run `tokensave upgrade` to update."
-            ))
-        } else {
-            None
-        }
+        crate::cloud::available_update(current, &latest, UpdateNoticeScope::MinorOrMajor)
+            .map(|update| update.agent_notice())
     }
 
     /// Process a single raw JSON-RPC line and write the response.
@@ -1902,22 +1895,17 @@ impl McpServer {
                                 line_rx.recv().await
                             }
                         } => {
-                            match line {
-                                Some(line) => break 'wait line,
-                                // The client closed the connection. The
-                                // requests already in flight are still
-                                // answered, and the server leaves once they
-                                // are.
-                                None => {
-                                    input_closed.store(true, Ordering::Release);
-                                    // Dropping the loop's sender lets the
-                                    // response channel close once the
-                                    // requests in flight have answered, which
-                                    // is what ends the loop.
-                                    response_tx = None;
-                                    continue 'wait;
-                                }
+                            if let Some(line) = line {
+                                break 'wait line;
                             }
+                            // The client closed the connection. The requests
+                            // already in flight are still answered, and the
+                            // server leaves once they are.
+                            input_closed.store(true, Ordering::Release);
+                            // Dropping the loop's sender lets the response
+                            // channel close once the requests in flight have
+                            // answered, which is what ends the loop.
+                            response_tx = None;
                         }
                         response = response_rx.recv() => {
                             match response {
@@ -2024,14 +2012,13 @@ impl McpServer {
             // — an edit, a rename, a sync — still runs alone, in order.
             if self.can_run_concurrently(&request) {
                 let server = Arc::clone(self);
-                let Some(response_tx) = response_tx.as_ref().cloned() else {
+                let Some(response_tx) = response_tx.clone() else {
                     break 'serve;
                 };
                 let concurrency = Arc::clone(&concurrency);
                 let in_flight = Arc::clone(&in_flight);
-                let permit = match concurrency.acquire_owned().await {
-                    Ok(permit) => permit,
-                    Err(_) => break 'serve,
+                let Ok(permit) = concurrency.acquire_owned().await else {
+                    break 'serve;
                 };
                 in_flight.fetch_add(1, Ordering::AcqRel);
                 tasks.push(tokio::spawn(async move {
@@ -2559,12 +2546,10 @@ impl McpServer {
                     std::collections::BTreeMap::new();
                 for f in &files {
                     let dir = f.path.rfind('/').map_or(".", |i| &f.path[..i]).to_string();
-                    #[allow(clippy::map_unwrap_or)]
                     let name = f
                         .path
                         .rfind('/')
-                        .map(|i| &f.path[i + 1..])
-                        .unwrap_or(&f.path);
+                        .map_or(f.path.as_str(), |i| &f.path[i + 1..]);
                     groups
                         .entry(dir)
                         .or_default()
@@ -2702,8 +2687,11 @@ impl McpServer {
         id: Value,
         params: Option<&Value>,
     ) -> JsonRpcResponse {
+        // `handle_tools_call` builds a future of about 56 KiB. Boxing it here
+        // keeps that state on the heap for the length of one tool call instead
+        // of inlining it into every caller's future, including the serve loop.
         if !crate::profile::enabled() {
-            return self.handle_tools_call(id, params).await;
+            return Box::pin(self.handle_tools_call(id, params)).await;
         }
         let tool = params
             .and_then(|p| p.get("name"))
@@ -2711,7 +2699,7 @@ impl McpServer {
             .unwrap_or(crate::profile::tools::OTHER);
         let ((response, elapsed_us), invocation) = crate::profile::invocation(async {
             let total = crate::profile::span(McpPhase::Total);
-            let response = self.handle_tools_call(id, params).await;
+            let response = Box::pin(self.handle_tools_call(id, params)).await;
             let elapsed_us = total.end(tool_call_succeeded(&response));
             (response, elapsed_us)
         })

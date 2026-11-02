@@ -71,9 +71,9 @@ jobs:
       matrix:
         include:
           - name: aarch64-macos
-            runner: macos-14
+            runner: macos-latest
             target: aarch64-apple-darwin
-            bottle_tag: arm64_sonoma
+            bottle_tag: arm64_sequoia
             archive: tar.gz
           - name: x86_64-linux
             runner: ubuntu-22.04
@@ -397,12 +397,12 @@ jobs:
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
           SOURCE_SHA: ${{ steps.hashes.outputs.source_sha }}
-          ARM64_SONOMA_SHA: ${{ steps.hashes.outputs.arm64_sonoma_sha }}
+          ARM64_SEQUOIA_SHA: ${{ steps.hashes.outputs.arm64_sequoia_sha }}
           X86_64_LINUX_SHA: ${{ steps.hashes.outputs.x86_64_linux_sha }}
         run: |
           # A bottle filename the sed above fails to match yields an empty
           # hash; never publish a formula Homebrew cannot verify (v7.12.0).
-          for var in SOURCE_SHA ARM64_SONOMA_SHA X86_64_LINUX_SHA; do
+          for var in SOURCE_SHA ARM64_SEQUOIA_SHA X86_64_LINUX_SHA; do
             if [ -z "${!var}" ]; then
               echo "::error::${var} is empty — aborting Homebrew tap update"
               exit 1
@@ -421,7 +421,7 @@ jobs:
 
             bottle do
               root_url "https://github.com/aovestdipaperino/tokensave/releases/download/v${VERSION}"
-              sha256 cellar: :any_skip_relocation, arm64_sonoma: "${ARM64_SONOMA_SHA}"
+              sha256 cellar: :any_skip_relocation, arm64_sequoia: "${ARM64_SEQUOIA_SHA}"
               sha256 cellar: :any_skip_relocation, x86_64_linux: "${X86_64_LINUX_SHA}"
             end
 

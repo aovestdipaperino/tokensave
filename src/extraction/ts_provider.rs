@@ -75,9 +75,6 @@ static LANGUAGES: LazyLock<HashMap<&'static str, Language>> = LazyLock::new(|| {
     #[cfg(feature = "lang-gdscript")]
     map.insert("gdscript", gdscript_grammar::LANGUAGE.into());
 
-    // HLSL uses the newer LanguageFn API.
-    #[cfg(feature = "lang-hlsl")]
-    map.insert("hlsl", tree_sitter_hlsl::LANGUAGE_HLSL.into());
     #[cfg(feature = "lang-systemverilog")]
     map.insert("systemverilog", tree_sitter_systemverilog::LANGUAGE.into());
     #[cfg(feature = "lang-html")]
@@ -126,6 +123,7 @@ pub fn language_for_path(path: &str) -> Option<Language> {
         "py" | "pyi" => "python",
         "c" | "h" => "c",
         "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" | "inl" | "ipp" | "tcc" => "cpp",
+        "cu" | "cuh" => "cuda",
         "cs" => "c_sharp",
         "kt" | "kts" => "kotlin",
         "swift" => "swift",
@@ -150,6 +148,11 @@ pub fn language_for_path(path: &str) -> Option<Language> {
         "clj" | "cljs" | "cljc" => "clojure",
         "gd" => "gdscript",
         "as" => "actionscript",
+        "awk" => "awk",
+        "wl" | "wls" | "wlt" => "wolfram",
+        "lisp" | "lsp" | "cl" | "asd" => "commonlisp",
+        "scm" | "ss" => "scheme",
+        "fbs" => "flatbuffers",
         _ => return None,
     };
     LANGUAGES.get(key).cloned()
@@ -172,12 +175,13 @@ mod tests {
     fn all_extractor_keys_are_registered() {
         #[rustfmt::skip]
         let keys = [
-            "bash", "batch", "c", "c_sharp", "clojure", "cobol", "cpp", "dart",
-            "dockerfile", "elixir", "erlang", "fortran", "fsharp", "glsl", "go",
-            "gwbasic", "haskell", "java", "javascript", "julia", "kotlin", "lean", "lua",
-            "msbasic2", "nix", "objc", "ocaml", "pascal", "perl", "php", "powershell",
-            "protobuf", "python", "qbasic", "quint", "r", "ruby", "rust", "scala", "sql",
-            "swift", "toml", "tsx", "typescript", "vbnet", "zig",
+            "awk", "bash", "batch", "c", "c_sharp", "clojure", "cobol", "commonlisp",
+            "cpp", "cuda", "dart", "dockerfile", "elixir", "erlang", "flatbuffers", "fortran",
+            "fsharp", "glsl", "go", "gwbasic", "haskell", "hlsl", "java", "javascript", "julia",
+            "kotlin", "lean", "lua", "msbasic2", "nix", "objc", "ocaml", "pascal", "perl",
+            "php", "powershell", "protobuf", "python", "qbasic", "quint", "r", "ruby",
+            "rust", "scala", "scheme", "sql", "swift", "toml", "tsx", "typescript",
+            "vbnet", "wolfram", "zig",
         ];
         // Keys provided by optional direct deps — checked separately so the test
         // is skipped when the feature is not enabled.
@@ -185,11 +189,6 @@ mod tests {
         assert!(
             super::LANGUAGES.get("wgsl").is_some(),
             "wgsl grammar missing"
-        );
-        #[cfg(feature = "lang-hlsl")]
-        assert!(
-            super::LANGUAGES.get("hlsl").is_some(),
-            "hlsl grammar missing"
         );
         #[cfg(feature = "lang-actionscript")]
         assert!(

@@ -68,6 +68,42 @@ pub async fn cost_summary(gdb: &GlobalDb, since: u64) -> Option<CostSummary> {
     cost_summary_with_droid_presence(gdb, since, true).await
 }
 
+#[allow(dead_code)]
+async fn cost_summary_original(
+    gdb: &GlobalDb,
+    since: u64,
+    tokens_saved: u64,
+) -> Option<CostSummary> {
+    let total_cost = gdb.total_cost_since(since).await?;
+    let (total_input, total_output, total_cache_read, total_cache_write) = gdb
+        .token_breakdown_since(since)
+        .await
+        .unwrap_or((0, 0, 0, 0));
+    let by_model = gdb.cost_by_model_since(since).await;
+    let by_category = gdb.cost_by_category_since(since).await;
+    let by_agent = gdb.cost_by_agent_since(since).await;
+
+    let all_consumed = gdb.total_tokens_since(since).await.unwrap_or(0);
+    let efficiency_ratio = if tokens_saved + all_consumed > 0 {
+        tokens_saved as f64 / (tokens_saved + all_consumed) as f64
+    } else {
+        0.0
+    };
+
+    Some(CostSummary {
+        total_cost,
+        total_input_tokens: total_input,
+        total_output_tokens: total_output,
+        total_cache_read_tokens: total_cache_read,
+        total_cache_write_tokens: total_cache_write,
+        by_model,
+        by_category,
+        tokens_saved,
+        efficiency_ratio,
+        by_agent,
+    })
+}
+
 /// Build a full summary while excluding stale Droid rows when no Droid source exists.
 ///
 /// `tokens_saved` is read from the savings ledger for the same `since` the rest
@@ -84,6 +120,16 @@ pub async fn cost_summary_with_droid_presence(
     since: u64,
     droid_present: bool,
 ) -> Option<CostSummary> {
+    cost_summary_with_source_presence(gdb, since, droid_present, true).await
+}
+
+/// Build a full summary while excluding stale rows for absent local sources.
+pub async fn cost_summary_with_source_presence(
+    gdb: &GlobalDb,
+    since: u64,
+    droid_present: bool,
+    copilot_present: bool,
+) -> Option<CostSummary> {
     let tokens_saved = gdb.sum_savings(None, since as i64).await.saved_tokens;
     let total_cost = gdb.total_cost_since(since).await?;
     let (total_input, total_output, total_cache_read, total_cache_write) = gdb
@@ -95,6 +141,9 @@ pub async fn cost_summary_with_droid_presence(
     let mut by_agent = gdb.cost_by_agent_since(since).await;
     if !droid_present {
         by_agent.retain(|summary| summary.agent != "droid");
+    }
+    if !copilot_present {
+        by_agent.retain(|summary| summary.agent != "copilot");
     }
 
     let all_consumed = consumed_tokens(&by_agent, droid_present);
@@ -138,11 +187,7 @@ fn coverage_word(state: CoverageState) -> &'static str {
     }
 }
 
-/// Format a human-readable coverage string.
-///
-/// The Claude clause is always reported. A source is named only when it is
-/// present, so a Claude-only machine keeps its one-line output and a Pi or
-/// Droid install gains its own clause instead of losing the whole line.
+/// Format coverage for the local accounting sources, including Pi when present.
 pub fn format_coverage(coverage: &[SourceCoverage], by_agent: &[AgentCostSummary]) -> String {
     let state_of = |agent: &str| {
         coverage
@@ -154,11 +199,7 @@ pub fn format_coverage(coverage: &[SourceCoverage], by_agent: &[AgentCostSummary
     let claude_state = state_of("claude");
     let droid_state = state_of("droid");
     let pi_state = state_of("pi");
-    if droid_state == CoverageState::Absent && pi_state == CoverageState::Absent {
-        return String::new();
-    }
-
-    let claude_text = format!("Claude {}", coverage_word(claude_state));
+    let mut parts = vec![format!("Claude {}", coverage_word(claude_state))];
     let usage = by_agent.iter().find(|a| a.agent == "droid");
     let raw = usage.map(|u| {
         u.input_tokens
@@ -166,12 +207,8 @@ pub fn format_coverage(coverage: &[SourceCoverage], by_agent: &[AgentCostSummary
             .saturating_add(u.cache_write_tokens)
             .saturating_add(u.cache_read_tokens)
     });
-    if droid_state == CoverageState::Absent {
-        return format!("Coverage: {claude_text}; Pi {}", coverage_word(pi_state));
-    }
-
     let droid_text = match droid_state {
-        CoverageState::Absent => unreachable!("handled above"),
+        CoverageState::Absent => "Droid absent".to_string(),
         CoverageState::Partial => match (usage, raw) {
             (Some(u), Some(r)) if r > 0 => match u.credits {
                 Some(credits) => format!(
@@ -201,14 +238,40 @@ pub fn format_coverage(coverage: &[SourceCoverage], by_agent: &[AgentCostSummary
             _ => "Droid complete; no usage in range".to_string(),
         },
     };
-    if pi_state == CoverageState::Absent {
-        format!("Coverage: {claude_text}; {droid_text}")
-    } else {
-        format!(
-            "Coverage: {claude_text}; {droid_text}; Pi {}",
-            coverage_word(pi_state)
-        )
+    parts.push(droid_text);
+    if pi_state != CoverageState::Absent {
+        parts.push(format!("Pi {}", coverage_word(pi_state)));
     }
+
+    let copilot_state = coverage
+        .iter()
+        .find(|c| c.agent == "copilot")
+        .map_or(CoverageState::Absent, |c| c.state);
+    let copilot_usage = by_agent.iter().find(|a| a.agent == "copilot");
+    let copilot_text = match copilot_state {
+        CoverageState::Absent => "Copilot absent".to_string(),
+        state => match copilot_usage {
+            Some(u) if u.credits.is_some_and(|c| c > 0) => {
+                let note = if state == CoverageState::Partial {
+                    "observed locally, partial source, checkpoint timestamp"
+                } else {
+                    "checkpoint timestamp"
+                };
+                format!(
+                    "Copilot {} AIU ({note})",
+                    crate::accounting::copilot::format_aiu(u.credits.unwrap_or(0))
+                )
+            }
+            _ if state == CoverageState::Partial => {
+                "Copilot partial; no usage in range".to_string()
+            }
+            _ => "Copilot complete; no usage in range".to_string(),
+        },
+    };
+    parts.push(copilot_text);
+
+    parts.push("Augment not imported".to_string());
+    format!("Coverage: {}", parts.join("; "))
 }
 
 /// Parse a range string into a unix timestamp for "since".
@@ -245,7 +308,63 @@ fn month_start_epoch(now: u64) -> u64 {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::global_db::AgentCostSummary;
+    use crate::global_db::{AgentCostSummary, GlobalDb};
+    use crate::types::CostTurn;
+
+    #[test]
+    fn format_coverage_preserves_pi_alongside_copilot() {
+        let coverage = [
+            SourceCoverage {
+                agent: "claude",
+                state: CoverageState::Complete,
+                sessions: 1,
+            },
+            SourceCoverage {
+                agent: "pi",
+                state: CoverageState::Partial,
+                sessions: 2,
+            },
+            SourceCoverage {
+                agent: "copilot",
+                state: CoverageState::Complete,
+                sessions: 1,
+            },
+        ];
+
+        let got = format_coverage(&coverage, &[]);
+
+        assert!(got.contains("Pi partial"), "{got}");
+        assert!(got.contains("Copilot"), "{got}");
+    }
+
+    #[tokio::test]
+    async fn legacy_summary_includes_cache_write_tokens() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = GlobalDb::open_at(&temp.path().join("global.db"))
+            .await
+            .unwrap();
+        let turn = CostTurn {
+            message_id: "legacy-summary-cache-write".to_string(),
+            project_hash: "test".to_string(),
+            session_id: "test-session".to_string(),
+            model: "claude-3".to_string(),
+            timestamp: 1,
+            input_tokens: 100,
+            output_tokens: 200,
+            cache_write_tokens: 300,
+            cache_read_tokens: 400,
+            cost_usd: 0.5,
+            category: "other".to_string(),
+            tool_names: String::new(),
+            agent: "claude".to_string(),
+            credits: None,
+        };
+        assert!(db.insert_turn(&turn).await);
+
+        let summary = cost_summary_original(&db, 0, 0).await.unwrap();
+
+        assert_eq!(summary.total_cache_write_tokens, 300);
+    }
 
     fn make_agent(
         agent: &str,
@@ -287,7 +406,28 @@ mod tests {
             make_agent("droid", 20000, 3000, 1000, 600, Some(2900)),
         ];
         let got = format_coverage(&coverage, &by_agent);
-        let expected = "Coverage: Claude complete; Droid 2.9k credits, 24.6k raw tokens (observed locally, session-start buckets)";
+        let expected = "Coverage: Claude complete; Droid 2.9k credits, 24.6k raw tokens (observed locally, session-start buckets); Copilot absent; Augment not imported";
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn format_coverage_renders_copilot_aiu_when_complete_with_usage() {
+        let coverage = vec![
+            SourceCoverage {
+                agent: "claude",
+                state: CoverageState::Complete,
+                sessions: 5,
+            },
+            SourceCoverage {
+                agent: "copilot",
+                state: CoverageState::Complete,
+                sessions: 2,
+            },
+        ];
+        // Copilot credits hold nano-AIU: 900_000_000_000 → 900 AIU.
+        let by_agent = vec![make_agent("copilot", 0, 0, 0, 0, Some(900_000_000_000))];
+        let got = format_coverage(&coverage, &by_agent);
+        let expected = "Coverage: Claude complete; Droid absent; Copilot 900 AIU (checkpoint timestamp); Augment not imported";
         assert_eq!(got, expected);
     }
 
@@ -309,7 +449,7 @@ mod tests {
         // raw = 20000 + 3000 + 1000 + 600 = 24600 → "24.6k"; credits = None
         let by_agent = vec![make_agent("droid", 20000, 3000, 1000, 600, None)];
         let got = format_coverage(&coverage, &by_agent);
-        let expected = "Coverage: Claude complete; Droid credits n/a, 24.6k raw tokens (observed locally, session-start buckets)";
+        let expected = "Coverage: Claude complete; Droid credits n/a, 24.6k raw tokens (observed locally, session-start buckets); Copilot absent; Augment not imported";
         assert_eq!(got, expected);
     }
 
@@ -330,7 +470,7 @@ mod tests {
         // raw = 400 + 50 + 10 + 20 = 480
         let by_agent = vec![make_agent("droid", 400, 50, 10, 20, None)];
         let got = format_coverage(&coverage, &by_agent);
-        let expected = "Coverage: Claude partial; Droid credits n/a, 480 raw tokens (partial, session-start buckets)";
+        let expected = "Coverage: Claude partial; Droid credits n/a, 480 raw tokens (partial, session-start buckets); Copilot absent; Augment not imported";
         assert_eq!(got, expected);
     }
 
@@ -354,7 +494,7 @@ mod tests {
 
         assert_eq!(
             got,
-            "Coverage: Claude complete; Droid 2.9k credits, 24.6k raw tokens (partial, session-start buckets)"
+            "Coverage: Claude complete; Droid 2.9k credits, 24.6k raw tokens (partial, session-start buckets); Copilot absent; Augment not imported"
         );
     }
 
@@ -374,7 +514,7 @@ mod tests {
             },
         ];
         let got = format_coverage(&coverage, &[]);
-        let expected = "Coverage: Claude partial; Droid partial; no usage in range";
+        let expected = "Coverage: Claude partial; Droid partial; no usage in range; Copilot absent; Augment not imported";
         assert_eq!(got, expected);
     }
 
@@ -393,7 +533,10 @@ mod tests {
             },
         ];
         let got = format_coverage(&coverage, &[]);
-        assert!(got.is_empty(), "{got}");
+        assert_eq!(
+            got,
+            "Coverage: Claude complete; Droid absent; Copilot absent; Augment not imported"
+        );
     }
 
     #[test]
@@ -413,7 +556,7 @@ mod tests {
         let got = format_coverage(&coverage, &[]);
         assert_eq!(
             got,
-            "Coverage: Claude complete; Droid complete; no usage in range"
+            "Coverage: Claude complete; Droid complete; no usage in range; Copilot absent; Augment not imported"
         );
     }
 
@@ -439,11 +582,12 @@ mod tests {
             },
         ];
         let got = format_coverage(&coverage, &[]);
-        assert_eq!(got, "Coverage: Claude complete; Pi partial");
+        assert!(got.contains("Claude complete"), "{got}");
+        assert!(got.contains("Pi partial"), "{got}");
     }
 
     #[test]
-    fn format_coverage_stays_empty_when_only_claude_is_present() {
+    fn format_coverage_omits_an_absent_pi_source() {
         let coverage = vec![
             SourceCoverage {
                 agent: "claude",
@@ -457,7 +601,8 @@ mod tests {
             },
         ];
         let got = format_coverage(&coverage, &[]);
-        assert!(got.is_empty(), "{got}");
+        assert!(got.contains("Claude complete"), "{got}");
+        assert!(!got.contains("Pi"), "{got}");
     }
 
     #[test]

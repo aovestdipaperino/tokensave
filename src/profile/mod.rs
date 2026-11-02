@@ -467,7 +467,7 @@ mod tests {
         // A long interval: only the shutdown flush can write the file.
         let profiler = Profiler::start(&settings, dir.clone(), Duration::from_secs(3600)).unwrap();
         assert_eq!(mode(), Mode::Light);
-        let (_, summary) = invocation_sync(|| {
+        let ((), summary) = invocation_sync(|| {
             let mut s = span(DbOp::Transaction);
             s.add_rows(0, 4);
             s.finish();

@@ -215,6 +215,10 @@ struct Active {
     start: Instant,
     /// `None` when no context was active at start; otherwise the frame slot
     /// (`Some(None)` past `MAX_DEPTH`).
+    #[allow(
+        clippy::option_option,
+        reason = "the outer level is the context presence, the inner one is the `Context::pop` argument"
+    )]
     slot: Option<Option<usize>>,
     rows_returned: u64,
     rows_affected: u64,
@@ -320,7 +324,7 @@ mod tests {
     #[test]
     fn exclusive_time_excludes_children() {
         let r = recorder();
-        let (_, summary) = scoped_sync(|| {
+        let ((), summary) = scoped_sync(|| {
             let outer = Span::start(r, Op::Mcp(McpPhase::Total));
             spin(Duration::from_millis(2));
             let inner = Span::start(r, Op::Db(DbOp::Transaction));
@@ -342,7 +346,7 @@ mod tests {
     #[test]
     fn nested_db_spans_are_not_double_counted() {
         let r = recorder();
-        let (_, summary) = scoped_sync(|| {
+        let ((), summary) = scoped_sync(|| {
             let tx = Span::start(r, Op::Db(DbOp::Transaction));
             let lock = Span::start(r, Op::Db(DbOp::WriteLockWait));
             spin(Duration::from_millis(1));

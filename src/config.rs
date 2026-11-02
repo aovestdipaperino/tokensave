@@ -160,7 +160,7 @@ pub struct TokenSaveConfig {
     #[serde(default)]
     pub auto_track: bool,
     /// Automatically collect indexes for deleted Git branches on open and
-    /// MCP freshness checks. Opt-in; TOKENSAVE_AUTO_GC overrides per run.
+    /// MCP freshness checks. Opt-in; `TOKENSAVE_AUTO_GC` overrides per run.
     #[serde(default)]
     pub auto_gc: bool,
     /// Refuse `tokensave_*` MCP calls when the index describes a different

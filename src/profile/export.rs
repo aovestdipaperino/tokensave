@@ -94,6 +94,7 @@ pub fn to_json(export: &Export) -> String {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::profile::recorder::Repeat;
     use crate::profile::recorder::SeriesSnapshot;
 
     #[test]
@@ -110,9 +111,9 @@ mod tests {
         snap.insert("db.get_node_by_id".into(), s.clone());
         let mut tool = s.clone();
         tool.repeated
-            .insert("db.get_outgoing_edges".into(), Default::default());
+            .insert("db.get_outgoing_edges".into(), Repeat::default());
         tool.repeated
-            .insert("SELECT * FROM secret".into(), Default::default());
+            .insert("SELECT * FROM secret".into(), Repeat::default());
         snap.insert("tool.tokensave_search".into(), tool);
         snap.insert(secret_path.into(), s.clone());
         snap.insert("tool.charge_customer_card".into(), s.clone());
