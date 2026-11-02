@@ -756,6 +756,7 @@ pub async fn handle_tool_call_with_session(
         "tokensave_insert_at" => edit::handle_insert_at(cg, args).await,
         "tokensave_delete_symbol" => edit::handle_delete_symbol(cg, args).await,
         "tokensave_replace_lines" => edit::handle_replace_lines(cg, args).await,
+        "tokensave_create_file" => edit::handle_create_file(cg, args).await,
         "tokensave_ast_grep_rewrite" => edit::handle_ast_grep_rewrite(cg, args).await,
         "tokensave_gini" => health::handle_gini(cg, args, scope_prefix).await,
         "tokensave_dependency_depth" => {
@@ -1065,6 +1066,7 @@ mod tests {
             "tokensave_delete_symbol",
             "tokensave_replace_lines",
             "tokensave_rename",
+            "tokensave_create_file",
         ];
         for tool in &tools {
             let ann = tool
