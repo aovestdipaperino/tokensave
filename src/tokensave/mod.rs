@@ -312,8 +312,9 @@ impl TokenSave {
         // Transparent auto-track: when branch metadata exists and the active
         // branch is untracked, copy the ancestor DB so queries + get_stats serve
         // a real per-branch DB instead of silently falling back. Best-effort —
-        // never fail open() on this. Gated by config.auto_track, overridable
-        // per-run via TOKENSAVE_AUTO_TRACK (git-hook path is separate).
+        // never fail open() on this. Gated by config.auto_track (on by default,
+        // #922), overridable per-run via TOKENSAVE_AUTO_TRACK; the
+        // post-checkout hook applies the same gate.
         let auto_track =
             crate::config::env_bool_override("TOKENSAVE_AUTO_TRACK", config.auto_track);
         let mut auto_track_error = None;

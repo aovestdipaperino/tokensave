@@ -355,6 +355,7 @@ async fn untracked_branch_hint_explains_disabled_auto_track() {
         "{hint}"
     );
     assert!(hint.contains("`tokensave branch add 'work'`"), "{hint}");
+    assert!(hint.contains("\"auto_track\": false"), "{hint}");
     assert!(hint.contains("\"auto_track\": true"), "{hint}");
     assert!(hint.contains("TOKENSAVE_AUTO_TRACK=1"), "{hint}");
     assert!(hint.contains("config.json"), "{hint}");

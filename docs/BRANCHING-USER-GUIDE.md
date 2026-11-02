@@ -158,8 +158,8 @@ This means queries still work, but results may be stale for files that differ be
 branches.
 
 `tokensave_status` adds `auto_track` and `auto_track_hint` to explain why the branch was not
-tracked automatically — usually because `auto_track` is disabled, which is the default — and how
-to enable it. See [Automatic branch tracking](guide/MULTI-BRANCH.md#automatic-branch-tracking-v730).
+tracked automatically — usually because `auto_track` is disabled in the project's config — and
+how to enable it. See [Automatic branch tracking](guide/MULTI-BRANCH.md#automatic-branch-tracking-v730).
 
 Note that the fallback is also chosen at startup. If you check out an untracked branch under a
 running server, files you change land in whichever database that server opened with — the
