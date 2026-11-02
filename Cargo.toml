@@ -57,7 +57,7 @@ default = ["full"]
 lite = []
 
 medium = ["lang-dart", "lang-pascal", "lang-php", "lang-ruby", "lang-bash", "lang-protobuf", "lang-powershell", "lang-nix", "lang-vbnet"]
-full = ["medium", "lang-actionscript", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic", "lang-dockerfile", "lang-glsl", "lang-wgsl", "lang-hlsl", "lang-metal", "lang-cuda", "lang-markdown", "lang-r", "lang-sql", "lang-julia", "lang-haskell", "lang-ocaml", "lang-clojure", "lang-erlang", "lang-elixir", "lang-fsharp", "lang-fstar", "lang-quint", "lang-toml", "lang-terraform", "lang-lean", "lang-gdscript", "lang-xaml", "lang-mcfunction", "lang-systemverilog", "lang-canvas", "lang-html", "lang-css", "lang-vhdl"]
+full = ["medium", "lang-actionscript", "lang-lua", "lang-zig", "lang-objc", "lang-perl", "lang-batch", "lang-fortran", "lang-cobol", "lang-msbasic2", "lang-gwbasic", "lang-qbasic", "lang-dockerfile", "lang-glsl", "lang-wgsl", "lang-hlsl", "lang-metal", "lang-cuda", "lang-markdown", "lang-r", "lang-sql", "lang-julia", "lang-haskell", "lang-ocaml", "lang-clojure", "lang-erlang", "lang-elixir", "lang-fsharp", "lang-fstar", "lang-quint", "lang-toml", "lang-terraform", "lang-lean", "lang-gdscript", "lang-xaml", "lang-mcfunction", "lang-systemverilog", "lang-canvas", "lang-html", "lang-css", "lang-vhdl", "lang-awk", "lang-wolfram", "lang-commonlisp", "lang-scheme", "lang-flatbuffers"]
 
 # Language features (grammars come from tokensave-large-treesitters unless noted).
 # ActionScript is vendored; Terraform uses the direct tree-sitter-hcl dependency.
@@ -84,7 +84,7 @@ lang-qbasic = []
 lang-dockerfile = []
 lang-glsl = []
 lang-wgsl = []
-lang-hlsl = ["dep:tree-sitter-hlsl"]
+lang-hlsl = []
 lang-systemverilog = ["dep:tree-sitter-systemverilog"]
 lang-vhdl = ["dep:tree-sitter-vhdl"]
 lang-metal = []
@@ -111,6 +111,11 @@ lang-lean = []
 lang-gdscript = []
 lang-xaml = []
 lang-mcfunction = []
+lang-awk = []
+lang-wolfram = []
+lang-commonlisp = []
+lang-scheme = []
+lang-flatbuffers = []
 test-transport = []
 
 [lib]
@@ -124,7 +129,7 @@ path = "src/main.rs"
 libsql = "0.9.30"
 tree-sitter = "0.26"
 tree-sitter-language = "0.1"
-tokensave-large-treesitters = { version = "0.5.0", git = "https://github.com/aovestdipaperino/tokensave-large-treesitters" }
+tokensave-large-treesitters = { version = "0.9.0", git = "https://github.com/aovestdipaperino/tokensave-large-treesitters" }
 # Force tree-sitter-dart 0.2 — 0.1 fails to wrap top-level declarations
 # in `top_level_variable_declaration` / `function_declaration` nodes,
 # breaking the dart extractor and most dart_extraction_test cases.
@@ -164,7 +169,6 @@ memmap2 = "0.9"
 crossterm = "0.28"
 fs2 = "0.4"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }
-tree-sitter-hlsl = { version = "0.2.0", optional = true }
 tree-sitter-systemverilog = { version = "0.4", optional = true }
 tree-sitter-hcl = { version = "1.1", optional = true }
 tree-sitter-html = { version = "0.23", optional = true }

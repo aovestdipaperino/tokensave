@@ -79,7 +79,7 @@ Custom Slim shortcuts and embedded-language compilation are not supported. Local
 | OCaml | `.ml`, `.mli` | `lang-ocaml` |
 | Clojure | `.clj`, `.cljs`, `.cljc` | `lang-clojure` |
 | Erlang | `.erl`, `.hrl` | `lang-erlang` |
-| Elixir | `.ex`, `.exs` | `lang-elixir` |
+| Elixir | `.ex`, `.exs`, `.eex` | `lang-elixir` |
 | F# | `.fs`, `.fsi`, `.fsx` | `lang-fsharp` |
 | F* | `.fst`, `.fsti` | `lang-fstar` |
 | Quint | `.qnt` | `lang-quint` |
@@ -88,6 +88,11 @@ Custom Slim shortcuts and embedded-language compilation are not supported. Local
 | Lean | `.lean` | `lang-lean` |
 | HTML | `.html`, `.htm` | `lang-html` |
 | CSS | `.css` | `lang-css` |
+| AWK | `.awk` | `lang-awk` |
+| Wolfram | `.wl`, `.wls`, `.wlt` | `lang-wolfram` |
+| Common Lisp | `.lisp`, `.lsp`, `.cl`, `.asd` | `lang-commonlisp` |
+| Scheme | `.scm`, `.ss` | `lang-scheme` |
+| FlatBuffers | `.fbs` | `lang-flatbuffers` |
 
 Individual languages can also be cherry-picked without a full tier:
 

@@ -750,17 +750,21 @@ pub fn compute_target_fingerprint(
 fn lang_key_is_known(key: &str) -> bool {
     matches!(
         key,
-        "bash"
+        "awk"
+            | "bash"
             | "batch"
             | "c"
             | "c_sharp"
             | "clojure"
             | "cobol"
+            | "commonlisp"
             | "cpp"
+            | "cuda"
             | "dart"
             | "dockerfile"
             | "elixir"
             | "erlang"
+            | "flatbuffers"
             | "fortran"
             | "fsharp"
             | "glsl"
@@ -789,12 +793,14 @@ fn lang_key_is_known(key: &str) -> bool {
             | "ruby"
             | "rust"
             | "scala"
+            | "scheme"
             | "sql"
             | "swift"
             | "toml"
             | "tsx"
             | "typescript"
             | "vbnet"
+            | "wolfram"
             | "zig"
     ) || (cfg!(feature = "lang-wgsl") && key == "wgsl")
         || (cfg!(feature = "lang-hlsl") && key == "hlsl")

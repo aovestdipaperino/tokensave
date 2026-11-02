@@ -59,7 +59,6 @@ pub(crate) fn check_for_update(
     if !tokensave::cloud::update_check_enabled() {
         return;
     }
-    let current_version = env!("CARGO_PKG_VERSION");
     let now = current_unix_timestamp();
 
     let latest = if !skip_cache && now - config.last_version_check_at < 300 {
@@ -69,31 +68,56 @@ pub(crate) fn check_for_update(
         }
         config.cached_latest_version.clone()
     } else if let Some(v) = tokensave::cloud::fetch_latest_version() {
-        config.cached_latest_version = v.clone();
-        config.last_version_check_at = now;
-        config.save();
+        record_latest_version(config, &v, now);
         v
     } else {
         return;
     };
 
-    // The status page (skip_suppression=true) warns on any newer version;
-    // the CLI only warns on minor+ bumps to avoid nagging on patch releases.
-    let dominated = if skip_suppression {
-        tokensave::cloud::is_newer_version(current_version, &latest)
-    } else {
-        tokensave::cloud::is_newer_minor_version(current_version, &latest)
-    };
+    warn_if_update_available(config, &latest, now, skip_suppression);
+}
 
-    if dominated && (skip_suppression || now - config.last_version_warning_at >= 900) {
-        eprintln!(
-            "\n\x1b[33mUpdate available: v{} → v{}\x1b[0m\n  Run: \x1b[1mtokensave upgrade\x1b[0m",
-            current_version, latest
-        );
-        if !skip_suppression {
-            config.last_version_warning_at = now;
-            config.save();
-        }
+/// Caches a version fetched by a parallel check (`init`, `sync`) and warns
+/// the user if it is newer than the running binary. The warning is
+/// suppressed for 15 minutes after it was last shown.
+pub(crate) fn notify_fetched_update(latest: &str) {
+    let now = current_unix_timestamp();
+    let mut config = tokensave::user_config::UserConfig::load();
+    record_latest_version(&mut config, latest, now);
+    warn_if_update_available(&mut config, latest, now, false);
+}
+
+/// Stores a freshly fetched latest version in the user config cache.
+fn record_latest_version(config: &mut tokensave::user_config::UserConfig, latest: &str, now: i64) {
+    config.cached_latest_version = latest.to_string();
+    config.last_version_check_at = now;
+    config.save();
+}
+
+/// Prints the update notice on stderr when `latest` is a newer release than
+/// the running binary. The CLI announces every newer release, patch bumps
+/// included. Unless `skip_suppression` is true, the notice is shown at most
+/// once every 15 minutes.
+fn warn_if_update_available(
+    config: &mut tokensave::user_config::UserConfig,
+    latest: &str,
+    now: i64,
+    skip_suppression: bool,
+) {
+    let Some(update) = tokensave::cloud::available_update(
+        env!("CARGO_PKG_VERSION"),
+        latest,
+        tokensave::cloud::UpdateNoticeScope::AnyRelease,
+    ) else {
+        return;
+    };
+    if !skip_suppression && now - config.last_version_warning_at < 900 {
+        return;
+    }
+    eprintln!("\n{}", update.terminal_notice());
+    if !skip_suppression {
+        config.last_version_warning_at = now;
+        config.save();
     }
 }
 

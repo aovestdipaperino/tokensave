@@ -22,6 +22,13 @@ propagate; detected corruption refuses automatic deletion. The SQL templates
 and bindings are unchanged, so inventory counts remain unchanged. Regression
 SQL in `tests/corruption_test.rs` remains outside the documented scope.
 
+Local accounting context (2026-10-30): Q0282 is shared by
+`upsert_droid_turn` and `upsert_copilot_turn` through `upsert_monotonic_turn`.
+The existing 14 turn fields are unchanged; binding `?15` selects whether an
+accepted monotonic update moves the timestamp (Copilot) or preserves the
+session-start bucket (Droid). No SQL occurrence or construction-function count
+is added, and the query ID remains stable.
+
 `?`, `?1`, and similar placeholders are bound by the caller. Rust format fields such as `{placeholders}`, `{where_clause}`, `{limit}`, and `{}` are preserved as templates; they are not executable SQL until constructed. Rust string escapes and backslash-newline continuations are decoded for readability. Dynamic SQL has potentially unlimited concrete instances, so the report includes its templates and complete builder functions in the construction appendix, including conditional clauses and parameter bindings. No SQL was executed to produce this report.
 
 ## Inventory summary
@@ -3278,9 +3285,9 @@ Source: [src/global_db.rs:675](../src/global_db.rs#L675).
 UPDATE turns SET tool_result_tokens = tool_result_tokens + ?2 WHERE message_id = ?1
 ```
 
-#### Q0282 — `upsert_droid_turn`
+#### Q0282 — `upsert_monotonic_turn`
 
-Source: [src/global_db.rs:694](../src/global_db.rs#L694).
+Source: [src/global_db.rs:709](../src/global_db.rs#L709).
 
 ```sql
 INSERT INTO turns
@@ -3292,6 +3299,7 @@ INSERT INTO turns
                      project_hash        = excluded.project_hash,
                      session_id          = excluded.session_id,
                      model               = excluded.model,
+                     timestamp           = CASE WHEN ?15 THEN excluded.timestamp ELSE turns.timestamp END,
                      input_tokens        = MAX(excluded.input_tokens,        turns.input_tokens),
                      output_tokens       = MAX(excluded.output_tokens,       turns.output_tokens),
                      cache_write_tokens  = MAX(excluded.cache_write_tokens,  turns.cache_write_tokens),
@@ -12806,12 +12814,16 @@ Source: [src/global_db.rs:441](../src/global_db.rs#L441).
     }
 ```
 
-### `upsert_droid_turn` — src/global_db.rs:691
+### `upsert_monotonic_turn` — src/global_db.rs:702
 
-Source: [src/global_db.rs:691](../src/global_db.rs#L691).
+Source: [src/global_db.rs:702](../src/global_db.rs#L702).
 
 ```rust
-    pub async fn upsert_droid_turn(&self, turn: &crate::types::CostTurn) -> bool {
+    async fn upsert_monotonic_turn(
+        &self,
+        turn: &crate::types::CostTurn,
+        update_timestamp: bool,
+    ) -> bool {
         self.conn
             .execute(
                 "INSERT INTO turns
@@ -12823,6 +12835,7 @@ Source: [src/global_db.rs:691](../src/global_db.rs#L691).
                      project_hash        = excluded.project_hash,
                      session_id          = excluded.session_id,
                      model               = excluded.model,
+                     timestamp           = CASE WHEN ?15 THEN excluded.timestamp ELSE turns.timestamp END,
                      input_tokens        = MAX(excluded.input_tokens,        turns.input_tokens),
                      output_tokens       = MAX(excluded.output_tokens,       turns.output_tokens),
                      cache_write_tokens  = MAX(excluded.cache_write_tokens,  turns.cache_write_tokens),
@@ -12864,6 +12877,7 @@ Source: [src/global_db.rs:691](../src/global_db.rs#L691).
                     turn.tool_names.clone(),
                     turn.agent.clone(),
                     turn.credits.map(|c| c as i64),
+                    i64::from(update_timestamp),
                 ],
             )
             .await
