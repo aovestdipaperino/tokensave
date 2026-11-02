@@ -19,6 +19,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 - Use the canonical tokensave executable filename for stable and beta builds, archives, Homebrew and Scoop; preserve embedded beta branding and legacy archive upgrade support. Reuse the beta CI test executable for identity checks instead of rebuilding a lite variant (Refs #836).
 
+### Changed
+
+- Confine project-index SQL to the `db` module as groundwork for a storage-backend trait: graph analysis, session memory, the edge audit, runtime telemetry, the quality diff and the grep hook now go through `Database` methods instead of issuing SQL themselves. SQL text is unchanged; only a failed read-snapshot `BEGIN` in the quality diff now reports a database error instead of a config error (Refs #904).
+
 ### Documentation
 
 - Use a wide beta README logo matching the stable logo's dimensions and wordmark layout, with a beta badge, and preserve this intentional branch-specific branding difference (Refs #801).
