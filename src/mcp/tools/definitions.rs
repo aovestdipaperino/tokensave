@@ -3224,7 +3224,7 @@ fn def_diff() -> ToolDefinition {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreadable_literal)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     /// The drift gate's refused set, derived from the registry the same way

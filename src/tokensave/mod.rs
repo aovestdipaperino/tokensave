@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use rayon::prelude::*;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use walkdir::WalkDir;
 
 use crate::branch;
@@ -19,7 +19,12 @@ use crate::extraction::LanguageRegistry;
 use crate::graph::{GraphQueryManager, GraphTraverser};
 use crate::resolution::{AmbiguityRefKey, ReferenceResolver, TouchedNode, TouchedSet};
 use crate::sync;
-use crate::types::*;
+use crate::types::{
+    AmbiguousCall, AstGrepResult, BuildContextOptions, Edge, EdgeKind, EditResult,
+    ExecutableBodyDocument, ExtractionResult, FileKind, FileRecord, GraphStats, InsertResult,
+    LineReplaceResult, MultiEditResult, Node, NodeKind, ResolvedRef, SearchResult, Subgraph,
+    TaskContext, UnresolvedRef,
+};
 
 mod extract;
 mod guard;

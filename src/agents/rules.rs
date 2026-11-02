@@ -17,7 +17,7 @@
 // markers. The markers also carry a content hash so `tokensave doctor` can
 // report drift clearly and so a second unchanged install can skip writing.
 
-use crate::agents::fs::*;
+use crate::agents::fs::{backup_config_file, resolve_symlink_target, safe_write_text_file};
 use crate::agents::traits::DoctorCounters;
 use crate::errors::{Result, TokenSaveError};
 use std::path::Path;
