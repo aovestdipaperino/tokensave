@@ -1340,10 +1340,9 @@ mod tests {
     fn a_new_config_records_auto_track_on() {
         let tmp = TempDir::new().unwrap();
         save_config(tmp.path(), &TokenSaveConfig::default()).unwrap();
-        let written: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(get_config_path(tmp.path())).unwrap(),
-        )
-        .unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(get_config_path(tmp.path())).unwrap())
+                .unwrap();
         assert_eq!(written["auto_track"], serde_json::Value::Bool(true));
     }
 

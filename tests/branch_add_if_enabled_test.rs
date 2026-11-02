@@ -461,7 +461,14 @@ fn a_new_worktree_tracks_its_branch_by_default() {
     let wt = wt_parent.path().join("wt");
     git(
         root,
-        &["worktree", "add", "-q", "-b", "wt-feature", wt.to_str().unwrap()],
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt-feature",
+            wt.to_str().unwrap(),
+        ],
     );
     let head = Command::new("git")
         .args(["rev-parse", "HEAD"])
