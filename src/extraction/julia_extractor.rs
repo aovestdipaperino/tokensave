@@ -300,7 +300,10 @@ impl JuliaExtractor {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is a separate field or complexity metric of the node being emitted"
+    )]
     fn push_node(
         state: &mut ExtractionState,
         id: String,

@@ -1461,7 +1461,11 @@ fn with_body_handle(body: &str, node_id: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::float_cmp,
+    reason = "tests assert exact scores computed from constant weights"
+)]
 mod tests {
     use super::*;
 
