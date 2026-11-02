@@ -293,6 +293,29 @@ impl Database {
         &self.conn
     }
 
+    /// Returns whether the stored schema is older than this build's latest,
+    /// meaning a forced reindex is needed. `false` when it cannot be read.
+    pub async fn needs_schema_upgrade(&self) -> bool {
+        migrations::read_schema_version(&self.conn)
+            .await
+            .is_ok_and(|v| v < migrations::latest_version())
+    }
+
+    /// Opens a deferred transaction so that every following read on this
+    /// connection sees one consistent snapshot, even while another process
+    /// syncs the same index. The transaction is never committed; it ends when
+    /// the handle is dropped.
+    pub async fn begin_read_snapshot(&self) -> Result<()> {
+        self.conn
+            .execute_batch("BEGIN")
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to begin read snapshot: {e}"),
+                operation: "begin_read_snapshot".to_string(),
+            })?;
+        Ok(())
+    }
+
     /// Returns whether this handle was explicitly opened in read-only mode.
     pub fn is_read_only(&self) -> bool {
         self.read_only

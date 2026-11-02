@@ -408,21 +408,7 @@ fn any_symbol_indexed(env: &HookEnv, symbols: &[String]) -> bool {
         return true;
     }
     let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
-    let placeholders = vec!["?"; symbols.len()].join(",");
-    let sql = format!("SELECT 1 FROM nodes WHERE LOWER(name) IN ({placeholders}) LIMIT 1");
-    let params: Vec<libsql::Value> = symbols
-        .iter()
-        .map(|s| libsql::Value::Text(s.to_lowercase()))
-        .collect();
-    let probe = async move {
-        let db = libsql::Builder::new_local(&db_path)
-            .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .build()
-            .await?;
-        let conn = db.connect()?;
-        let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
-        Ok::<bool, libsql::Error>(rows.next().await?.is_some())
-    };
+    let probe = crate::db::probe::any_node_named(&db_path, symbols);
     // The hook runs inside `#[tokio::main]`'s multi-thread runtime (main.rs),
     // where block_in_place + the ambient handle is the house pattern
     // (monitor.rs); outside a runtime (sync tests) use a throwaway

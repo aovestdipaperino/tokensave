@@ -242,9 +242,7 @@ impl TokenSave {
     /// added columns) signals that a forced reindex is needed to backfill the
     /// new schema. Falls back to `false` when the version cannot be read.
     pub async fn needs_schema_upgrade(&self) -> bool {
-        crate::db::migrations::read_schema_version(self.db.conn())
-            .await
-            .is_ok_and(|v| v < crate::db::migrations::latest_version())
+        self.db.needs_schema_upgrade().await
     }
 
     /// Opens an existing `TokenSave` project at the given root.

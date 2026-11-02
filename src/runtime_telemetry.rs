@@ -18,7 +18,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 
-use crate::errors::{Result, TokenSaveError};
+use crate::errors::Result;
 
 /// Window over which `cpu_percent` is sampled.
 const CPU_SAMPLE_WINDOW: Duration = Duration::from_millis(200);
@@ -209,9 +209,9 @@ async fn sample_database(cg: &crate::tokensave::TokenSave) -> Result<DatabaseSna
     let db_size_bytes = file_size(&db_path);
     let wal_size_bytes = file_size(&with_suffix(&db_path, "-wal"));
     let shm_size_bytes = file_size(&with_suffix(&db_path, "-shm"));
-    let journal_mode = read_journal_mode(cg).await.ok();
-    let source_total_bytes = read_source_total_bytes(cg).await.unwrap_or(0);
-    let (node_count, edge_count) = read_graph_counts(cg).await.unwrap_or((0, 0));
+    let journal_mode = cg.db().read_journal_mode().await.ok();
+    let source_total_bytes = cg.db().read_source_total_bytes().await.unwrap_or(0);
+    let (node_count, edge_count) = cg.db().read_graph_counts().await.unwrap_or((0, 0));
     Ok(DatabaseSnapshot {
         project_root,
         db_path,
@@ -233,95 +233,6 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut s: std::ffi::OsString = path.as_os_str().to_owned();
     s.push(suffix);
     PathBuf::from(s)
-}
-
-async fn read_journal_mode(cg: &crate::tokensave::TokenSave) -> Result<String> {
-    let mut rows = cg
-        .db()
-        .conn()
-        .query("PRAGMA journal_mode", ())
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read journal_mode: {e}"),
-            operation: "read_journal_mode".to_string(),
-        })?;
-    let row = rows
-        .next()
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read journal_mode row: {e}"),
-            operation: "read_journal_mode".to_string(),
-        })?
-        .ok_or_else(|| TokenSaveError::Database {
-            message: "no journal_mode row returned".to_string(),
-            operation: "read_journal_mode".to_string(),
-        })?;
-    row.get::<String>(0).map_err(|e| TokenSaveError::Database {
-        message: format!("failed to decode journal_mode: {e}"),
-        operation: "read_journal_mode".to_string(),
-    })
-}
-
-async fn read_source_total_bytes(cg: &crate::tokensave::TokenSave) -> Result<u64> {
-    let mut rows = cg
-        .db()
-        .conn()
-        .query("SELECT COALESCE(SUM(size), 0) FROM files", ())
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("failed to sum source bytes: {e}"),
-            operation: "read_source_total_bytes".to_string(),
-        })?;
-    let row = rows
-        .next()
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read source-sum row: {e}"),
-            operation: "read_source_total_bytes".to_string(),
-        })?
-        .ok_or_else(|| TokenSaveError::Database {
-            message: "no source-sum row returned".to_string(),
-            operation: "read_source_total_bytes".to_string(),
-        })?;
-    let v: i64 = row.get(0).map_err(|e| TokenSaveError::Database {
-        message: format!("failed to decode source-sum: {e}"),
-        operation: "read_source_total_bytes".to_string(),
-    })?;
-    Ok(u64::try_from(v).unwrap_or(0))
-}
-
-async fn read_graph_counts(cg: &crate::tokensave::TokenSave) -> Result<(u64, u64)> {
-    let nodes = scalar_count(cg, "SELECT COUNT(*) FROM nodes").await?;
-    let edges = scalar_count(cg, "SELECT COUNT(*) FROM edges").await?;
-    Ok((nodes, edges))
-}
-
-async fn scalar_count(cg: &crate::tokensave::TokenSave, sql: &str) -> Result<u64> {
-    let mut rows = cg
-        .db()
-        .conn()
-        .query(sql, ())
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("scalar query failed: {e}"),
-            operation: "scalar_count".to_string(),
-        })?;
-    let row = rows
-        .next()
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("scalar row read failed: {e}"),
-            operation: "scalar_count".to_string(),
-        })?
-        .ok_or_else(|| TokenSaveError::Database {
-            message: "no scalar row".to_string(),
-            operation: "scalar_count".to_string(),
-        })?;
-    let v: i64 = row.get(0).map_err(|e| TokenSaveError::Database {
-        message: format!("scalar decode failed: {e}"),
-        operation: "scalar_count".to_string(),
-    })?;
-    Ok(u64::try_from(v).unwrap_or(0))
 }
 
 // ---------------------------------------------------------------------------

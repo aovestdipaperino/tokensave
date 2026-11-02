@@ -550,12 +550,7 @@ pub async fn compare(
         }
     }
     let base_cg = TokenSave::open_read_only(root, Some(&base_name)).await?;
-    base_cg
-        .db()
-        .conn()
-        .execute_batch("BEGIN")
-        .await
-        .map_err(|e| error(e.to_string()))?;
+    base_cg.db().begin_read_snapshot().await?;
     let mut stale = verify(&base_cg, &base_commit).await?;
     if !stale.is_empty() && !options.allow_stale {
         return Err(error(format!(
@@ -580,12 +575,7 @@ pub async fn compare(
         base_snapshot.clone()
     } else {
         let target_cg = TokenSave::open_read_only(root, Some(&target_name)).await?;
-        target_cg
-            .db()
-            .conn()
-            .execute_batch("BEGIN")
-            .await
-            .map_err(|e| error(e.to_string()))?;
+        target_cg.db().begin_read_snapshot().await?;
         let target_stale = verify(&target_cg, &target_commit).await?;
         if !target_stale.is_empty() && !options.allow_stale {
             return Err(error(format!(

@@ -8,11 +8,14 @@ use crate::errors::{Result, TokenSaveError};
 use crate::resolution::{AmbiguityRefKey, TouchedNode};
 use crate::types::*;
 
+mod audit;
+pub(crate) use audit::EdgeAuditRow;
 mod clear;
 mod edges;
 mod files;
 mod fingerprints;
 mod graph;
+mod memory;
 mod metadata;
 mod nodes;
 mod routes;
@@ -20,6 +23,7 @@ pub use nodes::NodeFilter;
 mod search;
 pub(crate) use search::to_fts_match_query;
 mod stats;
+mod telemetry;
 mod unresolved;
 
 // ---------------------------------------------------------------------------

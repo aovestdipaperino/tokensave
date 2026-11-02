@@ -84,29 +84,10 @@ impl TokenSave {
         tags: &[String],
     ) -> crate::errors::Result<i64> {
         debug_assert!(!text.is_empty(), "decision text must not be empty");
-        let files_json =
-            serde_json::to_string(files).map_err(|e| crate::errors::TokenSaveError::Database {
-                message: format!("record_decision files serialization failed: {e}"),
-                operation: "record_decision".to_string(),
-            })?;
-        let tags_json =
-            serde_json::to_string(tags).map_err(|e| crate::errors::TokenSaveError::Database {
-                message: format!("record_decision tags serialization failed: {e}"),
-                operation: "record_decision".to_string(),
-            })?;
         let now = current_timestamp();
-        let conn = self.db.conn();
-        conn.execute(
-            "INSERT INTO memory_decisions (text, reason, created_at, files, tags) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            libsql::params![text, reason, now, files_json, tags_json],
-        )
-        .await
-        .map_err(|e| crate::errors::TokenSaveError::Database {
-            message: format!("record_decision insert failed: {e}"),
-            operation: "record_decision".to_string(),
-        })?;
-        Ok(conn.last_insert_rowid())
+        self.db
+            .insert_memory_decision(text, reason, now, files, tags)
+            .await
     }
 
     /// Recall decisions. With `query`, runs FTS5 MATCH against text+reason
@@ -120,12 +101,6 @@ impl TokenSave {
         limit: usize,
     ) -> crate::errors::Result<Vec<DecisionRecord>> {
         let limit = limit.clamp(1, MAX_RECALL_LIMIT) as i64;
-        let conn = self.db.conn();
-
-        let db_err = |e: libsql::Error| crate::errors::TokenSaveError::Database {
-            message: format!("session_recall query failed: {e}"),
-            operation: "session_recall".to_string(),
-        };
 
         // FTS5 parses the bound MATCH string as a query expression even
         // through a bound parameter, so raw terms containing `-`, `.`, `/`
@@ -134,72 +109,12 @@ impl TokenSave {
         // to the unfiltered recency-ordered arms.
         let fts_query = query.and_then(crate::db::to_fts_match_query);
 
-        let mut rows = match (fts_query.as_deref(), since) {
-            (Some(q), Some(ts)) => conn
-                .query(
-                    "SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags \
-                     FROM memory_decisions d \
-                     JOIN memory_decisions_fts f ON f.rowid = d.id \
-                     WHERE memory_decisions_fts MATCH ?1 AND d.created_at >= ?2 \
-                     ORDER BY d.created_at DESC LIMIT ?3",
-                    libsql::params![q, ts, limit],
-                )
-                .await
-                .map_err(db_err)?,
-            (Some(q), None) => conn
-                .query(
-                    "SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags \
-                     FROM memory_decisions d \
-                     JOIN memory_decisions_fts f ON f.rowid = d.id \
-                     WHERE memory_decisions_fts MATCH ?1 \
-                     ORDER BY d.created_at DESC LIMIT ?2",
-                    libsql::params![q, limit],
-                )
-                .await
-                .map_err(db_err)?,
-            (None, Some(ts)) => conn
-                .query(
-                    "SELECT id, text, reason, created_at, files, tags \
-                     FROM memory_decisions WHERE created_at >= ?1 \
-                     ORDER BY created_at DESC LIMIT ?2",
-                    libsql::params![ts, limit],
-                )
-                .await
-                .map_err(db_err)?,
-            (None, None) => conn
-                .query(
-                    "SELECT id, text, reason, created_at, files, tags \
-                     FROM memory_decisions ORDER BY created_at DESC LIMIT ?1",
-                    libsql::params![limit],
-                )
-                .await
-                .map_err(db_err)?,
-        };
+        let mut out = self
+            .db
+            .query_memory_decisions(fts_query.as_deref(), since, limit)
+            .await?;
 
-        let row_err = |e: libsql::Error| crate::errors::TokenSaveError::Database {
-            message: format!("session_recall row read failed: {e}"),
-            operation: "session_recall".to_string(),
-        };
-        let json_err = |e: serde_json::Error| crate::errors::TokenSaveError::Database {
-            message: format!("session_recall JSON parse failed: {e}"),
-            operation: "session_recall".to_string(),
-        };
-
-        let mut out = Vec::new();
-        while let Some(row) = rows.next().await.map_err(row_err)? {
-            let files_json: String = row.get(4).map_err(row_err)?;
-            let tags_json: String = row.get(5).map_err(row_err)?;
-            out.push(DecisionRecord {
-                id: row.get(0).map_err(row_err)?,
-                text: row.get(1).map_err(row_err)?,
-                reason: row.get::<Option<String>>(2).map_err(row_err)?,
-                created_at: row.get(3).map_err(row_err)?,
-                files: serde_json::from_str(&files_json).map_err(json_err)?,
-                tags: serde_json::from_str(&tags_json).map_err(json_err)?,
-            });
-        }
-
-        // Recency-decay ranking for the no-explicit-query path. The SQL above
+        // Recency-decay ranking for the no-explicit-query path. The query above
         // already LIMITed to the newest N rows (which, because the decay is
         // monotonic in `created_at`, are exactly the N highest-weighted rows),
         // so we only need to (re)order the selected set by decay weight here.
@@ -269,22 +184,9 @@ impl TokenSave {
     ) -> crate::errors::Result<()> {
         debug_assert!(!path.is_empty(), "code area path must not be empty");
         let now = current_timestamp();
-        let conn = self.db.conn();
-        conn.execute(
-            "INSERT INTO memory_code_areas (path, description, last_touched_at, touch_count) \
-             VALUES (?1, ?2, ?3, 1) \
-             ON CONFLICT(path) DO UPDATE SET \
-                description = COALESCE(excluded.description, memory_code_areas.description), \
-                last_touched_at = excluded.last_touched_at, \
-                touch_count = memory_code_areas.touch_count + 1",
-            libsql::params![path, description, now],
-        )
-        .await
-        .map_err(|e| crate::errors::TokenSaveError::Database {
-            message: format!("record_code_area upsert failed: {e}"),
-            operation: "record_code_area".to_string(),
-        })?;
-        Ok(())
+        self.db
+            .upsert_memory_code_area(path, description, now)
+            .await
     }
 
     /// List code areas, most-recently-touched first.
@@ -293,33 +195,6 @@ impl TokenSave {
         limit: usize,
     ) -> crate::errors::Result<Vec<CodeAreaRecord>> {
         let limit = limit.clamp(1, MAX_CODE_AREAS_LIMIT) as i64;
-        let conn = self.db.conn();
-        let mut rows = conn
-            .query(
-                "SELECT id, path, description, last_touched_at, touch_count \
-                 FROM memory_code_areas ORDER BY last_touched_at DESC LIMIT ?1",
-                libsql::params![limit],
-            )
-            .await
-            .map_err(|e| crate::errors::TokenSaveError::Database {
-                message: format!("list_code_areas query failed: {e}"),
-                operation: "list_code_areas".to_string(),
-            })?;
-        let row_err = |e: libsql::Error| crate::errors::TokenSaveError::Database {
-            message: format!("list_code_areas row read failed: {e}"),
-            operation: "list_code_areas".to_string(),
-        };
-
-        let mut out = Vec::new();
-        while let Some(row) = rows.next().await.map_err(row_err)? {
-            out.push(CodeAreaRecord {
-                id: row.get(0).map_err(row_err)?,
-                path: row.get(1).map_err(row_err)?,
-                description: row.get::<Option<String>>(2).map_err(row_err)?,
-                last_touched_at: row.get(3).map_err(row_err)?,
-                touch_count: row.get::<i64>(4).map_err(row_err)? as u32,
-            });
-        }
-        Ok(out)
+        self.db.list_memory_code_areas(limit).await
     }
 }
