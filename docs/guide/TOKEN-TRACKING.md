@@ -39,6 +39,23 @@ tokensave cost --export csv        # CSV export to stdout
 
 Parses Claude Code session transcripts (`~/.claude/projects/**/*.jsonl`) and prices each API turn with model pricing, reads Pi sessions (`~/.pi/agent/sessions/**/*.jsonl`) using the cost Pi already reports per message, and ingests Factory Droid session settings in credits. It also reads local GitHub Copilot CLI checkpoints from `~/.copilot/session-state/**/events.jsonl`; those checkpoints provide cumulative AIU, not token counts, a USD price, or turn-level data. In `cost --by-agent`, Copilot's human-readable credits are shown as whole AIU, while JSON and CSV keep the exact nano-AIU value. Copilot's date bucket uses the selected checkpoint timestamp, so a later cumulative checkpoint can move the usage into a later range. Malformed JSONL lines or checkpoint records make Copilot coverage partial; valid non-checkpoint events are ignored. Copilot token fields are currently zero; its USD value is `n/a` in the table, `null` in JSON, and blank in CSV. Usage is stored in `~/.tokensave/global.db` for fast aggregate queries. Available turn-level session data is classified into one of 13 task categories. Pricing is refreshed from [LiteLLM](https://github.com/BerriAI/litellm) every 24 hours and falls back to an embedded table when offline.
 
+Codex local rollouts (`~/.codex/sessions/**/rollout-*.jsonl`) provide cumulative
+native token totals. Cached input is billed at the cache-read rate; native output
+already includes reasoning, so reasoning is not added a second time. USD is an
+API-equivalent estimate, not the Codex subscription bill.
+
+Legacy Codex snapshots may contain overcounts. A per-row usage revision allows
+validated source replay to correct them once, without guessing missing reasoning
+counts or deleting history. Older or inconsistent source checkpoints cannot
+replace a newer cached snapshot. Missing logs leave the old estimates intact and
+coverage partial; those estimates may be overstated, not a known minimum.
+
+Before the first live repair, back up `~/.tokensave/global.db` and quiesce old
+`cost`, `status` and `monitor` writers. Ensure normal launchers select the updated
+runtime. Do not resume an older accounting writer or roll back the runtime
+against the repaired database: restore a matching database backup as part of any
+old-runtime rollback. Unrelated graph-only MCP clients need not be terminated.
+
 The `tokensave status` header includes a cost row showing today's spend, 7-day total, and efficiency ratio (tokens saved / total tokens). The `tokensave monitor` TUI shows a live cost panel alongside the savings feed. At the end of each Claude Code session, the `hook_stop` handler prints a one-line receipt to the terminal; in Pi, the installed extension does the same through its `agent_settled` handler.
 
 Task classification categories: Coding, Debugging, Feature Dev, Refactoring, Testing, Exploration, Planning, Delegation, Git Ops, Build/Deploy, Brainstorming, Conversation, General. Classification is deterministic (pattern matching on tool names and Bash commands), requires no LLM calls, and is adapted from [AgentSeal/codeburn](https://github.com/AgentSeal/codeburn).

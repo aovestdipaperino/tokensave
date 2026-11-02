@@ -122,7 +122,7 @@ impl Drop for Spinner {
 /// Copilot raw nano-AIU (divide by 1e9 for whole AIU). The human table renders
 /// Copilot as whole AIU; the structured JSON and CSV keep the exact nano value.
 fn agent_row_json(a: &tokensave::global_db::AgentCostSummary) -> serde_json::Value {
-    let cost_usd: serde_json::Value = if a.agent == "droid" || a.agent == "copilot" {
+    let cost_usd: serde_json::Value = if tokensave::accounting::is_credits_only(&a.agent) {
         serde_json::Value::Null
     } else {
         serde_json::json!(a.cost_usd)
@@ -158,7 +158,7 @@ fn format_agent_row(a: &tokensave::global_db::AgentCostSummary) -> String {
         (_, Some(c)) => tokensave::display::format_token_count(c),
         (_, None) => "n/a".to_string(),
     };
-    let usd_str = if a.agent == "droid" || a.agent == "copilot" {
+    let usd_str = if tokensave::accounting::is_credits_only(&a.agent) {
         "n/a".to_string()
     } else {
         format!("${:.2}", a.cost_usd)
@@ -1770,7 +1770,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         if by_agent {
                             println!("agent,cost_usd,credits,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,turns");
                             for a in &s.by_agent {
-                                let cost_cell = if a.agent == "droid" || a.agent == "copilot" {
+                                let cost_cell = if tokensave::accounting::is_credits_only(&a.agent)
+                                {
                                     String::new()
                                 } else {
                                     format!("{:.4}", a.cost_usd)

@@ -67,7 +67,7 @@ fn cost_without_droid_preserves_existing_output() {
     assert!(stdout.contains("1.0k"), "{stdout}");
     assert!(
         stdout.contains(
-            "Coverage: Claude complete; Droid absent; Copilot absent; Augment not imported"
+            "Coverage: Claude complete; Droid absent; Copilot absent; Codex absent; Augment not imported"
         ),
         "{stdout}"
     );
@@ -196,7 +196,7 @@ fn removed_droid_source_does_not_surface_stale_rows() {
     assert!(!stdout.contains("droid"), "{stdout}");
     assert!(
         stdout.contains(
-            "Coverage: Claude complete; Droid absent; Copilot absent; Augment not imported"
+            "Coverage: Claude complete; Droid absent; Copilot absent; Codex absent; Augment not imported"
         ),
         "{stdout}"
     );

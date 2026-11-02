@@ -22,25 +22,31 @@ propagate; detected corruption refuses automatic deletion. The SQL templates
 and bindings are unchanged, so inventory counts remain unchanged. Regression
 SQL in `tests/corruption_test.rs` remains outside the documented scope.
 
-Local accounting context (2026-10-30): Q0282 is shared by
-`upsert_droid_turn` and `upsert_copilot_turn` through `upsert_monotonic_turn`.
-The existing 14 turn fields are unchanged; binding `?15` selects whether an
-accepted monotonic update moves the timestamp (Copilot) or preserves the
-session-start bucket (Droid). No SQL occurrence or construction-function count
-is added, and the query ID remains stable.
+Local accounting context (2026-10-30): Q0282 is the atomic, revision-aware
+snapshot UPSERT. Binding `?15` chooses Copilot checkpoint timestamps; `?16`
+is the usage revision; `?17` is validated native output plus reasoning for
+legacy Codex dominance checks. Same-revision Codex rows with unchanged token
+counters can be repriced only from zero to a positive estimate; the exception
+adds no binding and cannot lower a positive estimate. Revision repair replaces
+corrected counters, equal-revision updates remain monotonic, and downgrades are
+rejected. Q0390–Q0392 cover schema readiness and remaining legacy rows;
+Q0393–Q0397 are isolated failure/concurrency fixtures. Snapshot migration
+fails closed and verifies actual schema after an ALTER race. The original turn
+field list remains compatible; only the new Codex writer supplies revision 1.
 
 `?`, `?1`, and similar placeholders are bound by the caller. Rust format fields such as `{placeholders}`, `{where_clause}`, `{limit}`, and `{}` are preserved as templates; they are not executable SQL until constructed. Rust string escapes and backslash-newline continuations are decoded for readability. Dynamic SQL has potentially unlimited concrete instances, so the report includes its templates and complete builder functions in the construction appendix, including conditional clauses and parameter bindings. No SQL was executed to produce this report.
 
 ## Inventory summary
 
-- SQL-bearing source files: **38**.
-- SQL literal/template occurrences: **346**.
-- Functions retained for construction/binding context: **172**.
+- SQL-bearing source files: **39**.
+- SQL literal/template occurrences: **354**.
+- Functions retained for construction/binding context: **178**.
 
 ## Source file index
 
 | Source file | SQL occurrences |
 | --- | ---: |
+| [src/accounting/codex.rs](../src/accounting/codex.rs) | 1 |
 | [src/agents/hooks.rs](../src/agents/hooks.rs) | 4 |
 | [src/agents/mod.rs](../src/agents/mod.rs) | 1 |
 | [src/blame_engine.rs](../src/blame_engine.rs) | 16 |
@@ -65,7 +71,7 @@ is added, and the query ID remains stable.
 | [src/extraction/ruby_extractor.rs](../src/extraction/ruby_extractor.rs) | 1 |
 | [src/extraction/ruby_template_extractor.rs](../src/extraction/ruby_template_extractor.rs) | 1 |
 | [src/graphify.rs](../src/graphify.rs) | 5 |
-| [src/global_db.rs](../src/global_db.rs) | 41 |
+| [src/global_db.rs](../src/global_db.rs) | 48 |
 | [src/graph/imports.rs](../src/graph/imports.rs) | 1 |
 | [src/graph/queries.rs](../src/graph/queries.rs) | 5 |
 | [src/hooks.rs](../src/hooks.rs) | 1 |
@@ -3045,7 +3051,7 @@ CREATE TABLE IF NOT EXISTS projects (
 
 #### Q0257 — `open_at`
 
-Source: [src/global_db.rs:245](../src/global_db.rs#L245).
+Source: [src/global_db.rs:251](../src/global_db.rs#L251).
 
 ```sql
 CREATE TABLE IF NOT EXISTS turns (
@@ -3063,7 +3069,8 @@ CREATE TABLE IF NOT EXISTS turns (
                 tool_names TEXT NOT NULL DEFAULT '',
                 agent TEXT NOT NULL DEFAULT 'claude',
                 credits INTEGER,
-                tool_result_tokens INTEGER NOT NULL DEFAULT 0
+                tool_result_tokens INTEGER NOT NULL DEFAULT 0,
+                usage_revision INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp);
             CREATE INDEX IF NOT EXISTS idx_turns_project ON turns(project_hash);
@@ -3096,9 +3103,9 @@ CREATE TABLE IF NOT EXISTS meta (
             )
 ```
 
-#### Q0259 — `migrate_turns_columns`
+#### Q0259 — `turns_columns`
 
-Source: [src/global_db.rs:311](../src/global_db.rs#L311).
+Source: [src/global_db.rs:319](../src/global_db.rs#L319).
 
 ```sql
 PRAGMA table_info(turns)
@@ -3106,7 +3113,7 @@ PRAGMA table_info(turns)
 
 #### Q0260 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:330](../src/global_db.rs#L330).
+Source: [src/global_db.rs:333](../src/global_db.rs#L333).
 
 ```sql
 ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'
@@ -3114,7 +3121,7 @@ ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'
 
 #### Q0261 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:337](../src/global_db.rs#L337).
+Source: [src/global_db.rs:335](../src/global_db.rs#L335).
 
 ```sql
 ALTER TABLE turns ADD COLUMN credits INTEGER
@@ -3122,7 +3129,7 @@ ALTER TABLE turns ADD COLUMN credits INTEGER
 
 #### Q0262 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:347](../src/global_db.rs#L347).
+Source: [src/global_db.rs:338](../src/global_db.rs#L338).
 
 ```sql
 ALTER TABLE turns ADD COLUMN tool_result_tokens INTEGER NOT NULL DEFAULT 0
@@ -3287,44 +3294,57 @@ UPDATE turns SET tool_result_tokens = tool_result_tokens + ?2 WHERE message_id =
 
 #### Q0282 — `upsert_monotonic_turn`
 
-Source: [src/global_db.rs:709](../src/global_db.rs#L709).
+Source: [src/global_db.rs:752](../src/global_db.rs#L752).
 
 ```sql
 INSERT INTO turns
                  (message_id, project_hash, session_id, model, timestamp,
                   input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
-                  cost_usd, category, tool_names, agent, credits)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                  cost_usd, category, tool_names, agent, credits, usage_revision)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?16)
                  ON CONFLICT(message_id) DO UPDATE SET
                      project_hash        = excluded.project_hash,
                      session_id          = excluded.session_id,
                      model               = excluded.model,
                      timestamp           = CASE WHEN ?15 THEN excluded.timestamp ELSE turns.timestamp END,
-                     input_tokens        = MAX(excluded.input_tokens,        turns.input_tokens),
-                     output_tokens       = MAX(excluded.output_tokens,       turns.output_tokens),
-                     cache_write_tokens  = MAX(excluded.cache_write_tokens,  turns.cache_write_tokens),
-                     cache_read_tokens   = MAX(excluded.cache_read_tokens,   turns.cache_read_tokens),
+                     input_tokens        = excluded.input_tokens,
+                     output_tokens       = excluded.output_tokens,
+                     cache_write_tokens  = excluded.cache_write_tokens,
+                     cache_read_tokens   = excluded.cache_read_tokens,
                      cost_usd            = excluded.cost_usd,
                      category            = excluded.category,
                      tool_names          = excluded.tool_names,
                      agent               = excluded.agent,
-                     credits             = COALESCE(excluded.credits, turns.credits)
+                     credits             = COALESCE(excluded.credits, turns.credits),
+                     usage_revision      = excluded.usage_revision
                  WHERE
-                     excluded.input_tokens        >= turns.input_tokens
-                     AND excluded.output_tokens       >= turns.output_tokens
+                     excluded.agent = turns.agent
+                     AND excluded.input_tokens        >= turns.input_tokens
                      AND excluded.cache_write_tokens  >= turns.cache_write_tokens
                      AND excluded.cache_read_tokens   >= turns.cache_read_tokens
                      AND (excluded.credits IS NULL
                           OR turns.credits IS NULL
                           OR excluded.credits >= turns.credits)
                      AND (
-                         excluded.input_tokens        > turns.input_tokens
-                         OR excluded.output_tokens       > turns.output_tokens
-                         OR excluded.cache_write_tokens  > turns.cache_write_tokens
-                         OR excluded.cache_read_tokens   > turns.cache_read_tokens
-                         OR (excluded.credits IS NOT NULL
-                             AND (turns.credits IS NULL
-                                  OR excluded.credits > turns.credits))
+                         (excluded.usage_revision = turns.usage_revision
+                          AND excluded.output_tokens >= turns.output_tokens
+                          AND (excluded.input_tokens        > turns.input_tokens
+                               OR excluded.output_tokens       > turns.output_tokens
+                               OR excluded.cache_write_tokens  > turns.cache_write_tokens
+                               OR excluded.cache_read_tokens   > turns.cache_read_tokens
+                               OR (excluded.credits IS NOT NULL
+                                   AND (turns.credits IS NULL
+                                        OR excluded.credits > turns.credits))
+                               OR (excluded.agent = 'codex'
+                                   AND turns.cost_usd = 0.0
+                                   AND excluded.cost_usd > 0.0
+                                   AND excluded.input_tokens = turns.input_tokens
+                                   AND excluded.output_tokens = turns.output_tokens
+                                   AND excluded.cache_write_tokens = turns.cache_write_tokens
+                                   AND excluded.cache_read_tokens = turns.cache_read_tokens)))
+                         OR (excluded.agent = 'codex'
+                             AND turns.usage_revision = 0 AND excluded.usage_revision = 1
+                             AND ?17 >= turns.output_tokens)
                      )
 ```
 
@@ -12814,53 +12834,65 @@ Source: [src/global_db.rs:441](../src/global_db.rs#L441).
     }
 ```
 
-### `upsert_monotonic_turn` — src/global_db.rs:702
+### `upsert_monotonic_turn` — src/global_db.rs:752
 
-Source: [src/global_db.rs:702](../src/global_db.rs#L702).
+Source: [src/global_db.rs:752](../src/global_db.rs#L752).
 
 ```rust
     async fn upsert_monotonic_turn(
         &self,
         turn: &crate::types::CostTurn,
-        update_timestamp: bool,
-    ) -> bool {
-        self.conn
+        kind: SnapshotKind,
+    ) -> crate::errors::Result<bool> {
+        let (revision, legacy_output_tokens) = match kind {
+            SnapshotKind::Codex {
+                legacy_output_tokens,
+            } => (1, Some(legacy_output_tokens as i64)),
+            _ => (0, None),
+        };
+        let changed = self.conn
             .execute(
                 "INSERT INTO turns
                  (message_id, project_hash, session_id, model, timestamp,
                   input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
-                  cost_usd, category, tool_names, agent, credits)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                  cost_usd, category, tool_names, agent, credits, usage_revision)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?16)
                  ON CONFLICT(message_id) DO UPDATE SET
                      project_hash        = excluded.project_hash,
                      session_id          = excluded.session_id,
                      model               = excluded.model,
                      timestamp           = CASE WHEN ?15 THEN excluded.timestamp ELSE turns.timestamp END,
-                     input_tokens        = MAX(excluded.input_tokens,        turns.input_tokens),
-                     output_tokens       = MAX(excluded.output_tokens,       turns.output_tokens),
-                     cache_write_tokens  = MAX(excluded.cache_write_tokens,  turns.cache_write_tokens),
-                     cache_read_tokens   = MAX(excluded.cache_read_tokens,   turns.cache_read_tokens),
+                     input_tokens        = excluded.input_tokens,
+                     output_tokens       = excluded.output_tokens,
+                     cache_write_tokens  = excluded.cache_write_tokens,
+                     cache_read_tokens   = excluded.cache_read_tokens,
                      cost_usd            = excluded.cost_usd,
                      category            = excluded.category,
                      tool_names          = excluded.tool_names,
                      agent               = excluded.agent,
-                     credits             = COALESCE(excluded.credits, turns.credits)
+                     credits             = COALESCE(excluded.credits, turns.credits),
+                     usage_revision      = excluded.usage_revision
                  WHERE
-                     excluded.input_tokens        >= turns.input_tokens
-                     AND excluded.output_tokens       >= turns.output_tokens
+                     excluded.agent = turns.agent
+                     AND excluded.input_tokens        >= turns.input_tokens
                      AND excluded.cache_write_tokens  >= turns.cache_write_tokens
                      AND excluded.cache_read_tokens   >= turns.cache_read_tokens
                      AND (excluded.credits IS NULL
                           OR turns.credits IS NULL
                           OR excluded.credits >= turns.credits)
                      AND (
-                         excluded.input_tokens        > turns.input_tokens
-                         OR excluded.output_tokens       > turns.output_tokens
-                         OR excluded.cache_write_tokens  > turns.cache_write_tokens
-                         OR excluded.cache_read_tokens   > turns.cache_read_tokens
-                         OR (excluded.credits IS NOT NULL
-                             AND (turns.credits IS NULL
-                                  OR excluded.credits > turns.credits))
+                         (excluded.usage_revision = turns.usage_revision
+                          AND excluded.output_tokens >= turns.output_tokens
+                          AND (excluded.input_tokens        > turns.input_tokens
+                               OR excluded.output_tokens       > turns.output_tokens
+                               OR excluded.cache_write_tokens  > turns.cache_write_tokens
+                               OR excluded.cache_read_tokens   > turns.cache_read_tokens
+                               OR (excluded.credits IS NOT NULL
+                                   AND (turns.credits IS NULL
+                                        OR excluded.credits > turns.credits))))
+                         OR (excluded.agent = 'codex'
+                             AND turns.usage_revision = 0 AND excluded.usage_revision = 1
+                             AND ?17 >= turns.output_tokens)
                      )",
                 params![
                     turn.message_id.clone(),
@@ -12877,11 +12909,13 @@ Source: [src/global_db.rs:702](../src/global_db.rs#L702).
                     turn.tool_names.clone(),
                     turn.agent.clone(),
                     turn.credits.map(|c| c as i64),
-                    i64::from(update_timestamp),
+                    i64::from(matches!(kind, SnapshotKind::Copilot)),
+                    revision,
+                    legacy_output_tokens,
                 ],
             )
-            .await
-            .is_ok_and(|n| n > 0)
+            .await?;
+        Ok(changed > 0)
     }
 ```
 
@@ -13034,3 +13068,248 @@ SELECT substr(e.source,1,4097), substr(e.target,1,4097), substr(e.kind,1,4097), 
 ?1 is the same file for both endpoints; ?2 is max_edges + 1, integer <=5001. Extra row refuses export. id breaks ties without collapsing multiplicity; line and nullable numeric resolver provenance are retained.
 
 Construction context: max_nodes is validated in 1..=1000 and max_edges in 1..=5000 before integer conversion. SQL templates are fixed; no user text is interpolated. Queries Q0385–Q0388 use one read transaction for a consistent DB snapshot. Output is published only after successful reads, budget checks, source/branch rechecks and capped serialization. No migrations or writes occur.
+
+
+#### Q0390 — `migrate_turns_columns`
+
+Source: [src/global_db.rs:342](../src/global_db.rs#L342).
+
+```sql
+ALTER TABLE turns ADD COLUMN usage_revision INTEGER NOT NULL DEFAULT 0
+```
+
+
+#### Q0391 — `migrate_turns_columns`
+
+Source: [src/global_db.rs:354](../src/global_db.rs#L354).
+
+```sql
+SELECT agent, credits, tool_result_tokens, usage_revision FROM turns LIMIT 0
+```
+
+
+#### Q0392 — `legacy_codex_rows`
+
+Source: [src/global_db.rs:738](../src/global_db.rs#L738).
+
+```sql
+SELECT COUNT(*) FROM turns WHERE agent = 'codex' AND usage_revision = 0
+```
+
+
+#### Q0393 — `failed_repair_count_is_unknown_not_absent`
+
+Source: [src/accounting/codex.rs:717](../src/accounting/codex.rs#L717).
+
+```sql
+DROP TABLE turns
+```
+
+
+#### Q0394 — `snapshot_migration_fails_closed_then_retries_when_writable`
+
+Source: [src/global_db.rs:1077](../src/global_db.rs#L1077).
+
+```sql
+CREATE TABLE turns (agent TEXT, credits INTEGER, tool_result_tokens INTEGER);
+             PRAGMA query_only = ON;
+```
+
+
+#### Q0395 — `snapshot_migration_fails_closed_then_retries_when_writable`
+
+Source: [src/global_db.rs:1083](../src/global_db.rs#L1083).
+
+```sql
+PRAGMA query_only = OFF;
+```
+
+
+#### Q0396 — `concurrent_snapshot_migrations_recheck_actual_schema`
+
+Source: [src/global_db.rs:1105](../src/global_db.rs#L1105).
+
+```sql
+PRAGMA journal_mode = WAL;
+             PRAGMA busy_timeout = 5000;
+             CREATE TABLE turns (agent TEXT, credits INTEGER, tool_result_tokens INTEGER);
+```
+
+
+#### Q0397 — `concurrent_snapshot_migrations_recheck_actual_schema`
+
+Source: [src/global_db.rs:1112](../src/global_db.rs#L1112).
+
+```sql
+PRAGMA busy_timeout = 5000;
+```
+
+
+### `turns_columns` — src/global_db.rs:316
+
+Source: [src/global_db.rs:316](../src/global_db.rs#L316).
+
+```rust
+    async fn turns_columns(
+        conn: &Connection,
+    ) -> crate::errors::Result<std::collections::HashSet<String>> {
+        let mut rows = conn.query("PRAGMA table_info(turns)", ()).await?;
+        let mut columns = std::collections::HashSet::new();
+        while let Some(row) = rows.next().await? {
+            columns.insert(row.get::<String>(1)?);
+        }
+        Ok(columns)
+    }
+```
+
+
+### `migrate_turns_columns` — src/global_db.rs:328
+
+Source: [src/global_db.rs:328](../src/global_db.rs#L328).
+
+```rust
+    async fn migrate_turns_columns(conn: &Connection) -> crate::errors::Result<()> {
+        let columns = Self::turns_columns(conn).await?;
+        for (column, statement) in [
+            (
+                "agent",
+                "ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
+            ),
+            ("credits", "ALTER TABLE turns ADD COLUMN credits INTEGER"),
+            (
+                "tool_result_tokens",
+                "ALTER TABLE turns ADD COLUMN tool_result_tokens INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "usage_revision",
+                "ALTER TABLE turns ADD COLUMN usage_revision INTEGER NOT NULL DEFAULT 0",
+            ),
+        ] {
+            if !columns.contains(column) {
+                if let Err(error) = conn.execute(statement, ()).await {
+                    if !Self::turns_columns(conn).await?.contains(column) {
+                        return Err(error.into());
+                    }
+                }
+            }
+        }
+        conn.prepare(
+            "SELECT agent, credits, tool_result_tokens, usage_revision FROM turns LIMIT 0",
+        )
+        .await?;
+        Ok(())
+    }
+```
+
+
+### `legacy_codex_rows` — src/global_db.rs:734
+
+Source: [src/global_db.rs:734](../src/global_db.rs#L734).
+
+```rust
+    pub async fn legacy_codex_rows(&self) -> crate::errors::Result<u64> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT COUNT(*) FROM turns WHERE agent = 'codex' AND usage_revision = 0",
+                (),
+            )
+            .await?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| crate::errors::TokenSaveError::Database {
+                message: "missing legacy snapshot count".to_string(),
+                operation: "count legacy Codex snapshots".to_string(),
+            })?;
+        Ok(row.get::<i64>(0)? as u64)
+    }
+```
+
+
+### `snapshot_migration_fails_closed_then_retries_when_writable` — src/global_db.rs:1073
+
+Source: [src/global_db.rs:1073](../src/global_db.rs#L1073).
+
+```rust
+    async fn snapshot_migration_fails_closed_then_retries_when_writable() {
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE turns (agent TEXT, credits INTEGER, tool_result_tokens INTEGER);
+             PRAGMA query_only = ON;",
+        )
+        .await
+        .unwrap();
+        assert!(GlobalDb::migrate_turns_columns(&conn).await.is_err());
+        conn.execute_batch("PRAGMA query_only = OFF;")
+            .await
+            .unwrap();
+        GlobalDb::migrate_turns_columns(&conn).await.unwrap();
+        GlobalDb::migrate_turns_columns(&conn).await.unwrap();
+        assert!(GlobalDb::turns_columns(&conn)
+            .await
+            .unwrap()
+            .contains("usage_revision"));
+    }
+```
+
+
+### `concurrent_snapshot_migrations_recheck_actual_schema` — src/global_db.rs:1095
+
+Source: [src/global_db.rs:1095](../src/global_db.rs#L1095).
+
+```rust
+    async fn concurrent_snapshot_migrations_recheck_actual_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Builder::new_local(dir.path().join("legacy.db"))
+            .build()
+            .await
+            .unwrap();
+        let first = db.connect().unwrap();
+        let second = db.connect().unwrap();
+        first
+            .execute_batch(
+                "PRAGMA journal_mode = WAL;
+             PRAGMA busy_timeout = 5000;
+             CREATE TABLE turns (agent TEXT, credits INTEGER, tool_result_tokens INTEGER);",
+            )
+            .await
+            .unwrap();
+        second
+            .execute_batch("PRAGMA busy_timeout = 5000;")
+            .await
+            .unwrap();
+        let (a, b) = tokio::join!(
+            GlobalDb::migrate_turns_columns(&first),
+            GlobalDb::migrate_turns_columns(&second)
+        );
+        a.unwrap();
+        b.unwrap();
+        assert!(GlobalDb::turns_columns(&first)
+            .await
+            .unwrap()
+            .contains("usage_revision"));
+    }
+```
+
+
+### `failed_repair_count_is_unknown_not_absent` — src/accounting/codex.rs:710
+
+Source: [src/accounting/codex.rs:710](../src/accounting/codex.rs#L710).
+
+```rust
+    async fn failed_repair_count_is_unknown_not_absent() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("global.db");
+        let gdb = crate::global_db::GlobalDb::open_at(&db_path).await.unwrap();
+        let db = libsql::Builder::new_local(&db_path).build().await.unwrap();
+        db.connect()
+            .unwrap()
+            .execute("DROP TABLE turns", ())
+            .await
+            .unwrap();
+        let result = ingest_dir(&gdb, &tmp.path().join("absent")).await;
+        assert_eq!(result.coverage.state, CoverageState::Partial);
+    }
+```
