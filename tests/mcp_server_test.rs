@@ -1610,7 +1610,7 @@ async fn setup_two_branch_project_on_main() -> TempDir {
     run_git(project, &["add", "src/lib.rs"]);
     run_git(project, &["commit", "-m", "other"]);
 
-    let tokensave_dir = project.join(".tokensave");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(project);
     fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
     fs::copy(
         tokensave_dir.join("tokensave.db"),
