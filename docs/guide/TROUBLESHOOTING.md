@@ -10,17 +10,21 @@ Run a comprehensive health check of your tokensave installation:
 tokensave doctor
 ```
 
-Checks: binary location, project index, global DB, user config, agent integration (MCP server, hooks, permissions, prompt rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave install`. Use `--agent` to check a specific agent only.
+Checks: binary location, project index, global DB, user config, where project state lives, agent integration (MCP server, hooks, permissions, prompt rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave install`. Use `--agent` to check a specific agent only.
 
 Doctor also validates that each installed hook uses the correct tokensave subcommand and auto-repairs broken hooks.
 
 ## "tokensave not initialized"
 
-The `.tokensave/` directory doesn't exist in your project.
+The `.tokensave/` directory doesn't exist in your project, or, with a base state directory set, the project has no state there yet.
 
 ```bash
 tokensave init
 ```
+
+## State is not where `state_dir` says
+
+`tokensave doctor` warns that a project's state "is not at" the configured location when the project already had state before you set or changed `TOKENSAVE_STATE_DIR` or `state_dir`. tokensave keeps using the existing state, so nothing is lost. To follow the setting, stop the project's MCP servers and move the directory doctor names to the location it gives. Doctor also lists relocated state whose project directory was deleted; `tokensave state prune --dry-run` shows what `tokensave state prune` would delete. See [Keeping state outside the repository](INDEXING.md#keeping-state-outside-the-repository).
 
 ## MCP server not connecting
 

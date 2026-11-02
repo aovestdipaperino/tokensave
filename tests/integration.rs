@@ -188,6 +188,7 @@ mod sibling_projects_test;
 mod skipped_summary_cli_test;
 mod sql_extraction_test;
 mod staleness_out_of_root_test;
+mod state_dir_test;
 mod strict_tree_mismatch_test;
 mod svelte_extraction_test;
 mod swift_extraction_test;

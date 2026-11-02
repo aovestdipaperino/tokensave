@@ -335,15 +335,66 @@ impl Default for TokenSaveConfig {
     }
 }
 
-/// Returns channel-specific project state: `.tokensave` or `.tokensave/beta`.
+/// Returns channel-specific project state: `.tokensave` or `.tokensave/beta`
+/// under the project root, or the same layout under a configured base state
+/// directory (#919, see [`crate::state_dir`]).
 pub fn get_tokensave_dir(project_root: &Path) -> PathBuf {
-    channel_dir(project_root, crate::cloud::is_beta())
+    locate_project_state(project_root).into_dir()
+}
+
+/// Where `project_root` keeps its state, and whether that is under the root.
+pub fn locate_project_state(project_root: &Path) -> crate::state_dir::Location {
+    let beta = crate::cloud::is_beta();
+    crate::state_dir::locate(project_root, channel_dir(project_root, beta), |dir| {
+        channel_subdir(dir, beta)
+    })
+}
+
+/// The channel-independent project state root: the directory holding the
+/// stable state and the `beta` subdirectory. `<root>/.tokensave` by default.
+pub fn project_state_root(project_root: &Path) -> PathBuf {
+    match locate_project_state(project_root) {
+        crate::state_dir::Location::InRepo(_) => project_root.join(TOKENSAVE_DIR),
+        crate::state_dir::Location::Relocated { base, .. } => {
+            crate::state_dir::relocated_root(&base, project_root)
+        }
+    }
+}
+
+/// Where the current setting puts `project_root`'s state, whether or not any
+/// exists there. Differs from [`get_tokensave_dir`] when existing state is
+/// kept at its old location after the setting changed.
+pub fn configured_project_state_dir(project_root: &Path) -> PathBuf {
+    let beta = crate::cloud::is_beta();
+    match crate::state_dir::configured_base() {
+        Some(base) => channel_subdir(crate::state_dir::relocated_root(&base, project_root), beta),
+        None => channel_dir(project_root, beta),
+    }
+}
+
+/// Whether `project_root` keeps its state under itself, so `init` should keep
+/// `.tokensave/` out of Git. False when the state is relocated.
+pub fn project_state_is_in_repo(project_root: &Path) -> bool {
+    matches!(
+        locate_project_state(project_root),
+        crate::state_dir::Location::InRepo(_)
+    )
+}
+
+/// Returns the channel-specific global state directory under `home`:
+/// `~/.tokensave` or `~/.tokensave/beta`. Never relocated: the base state
+/// directory setting moves project state only.
+pub fn get_global_tokensave_dir(home: &Path) -> PathBuf {
+    channel_dir(home, crate::cloud::is_beta())
 }
 
 /// Separate beta project state (including config, locks, and branch indexes)
 /// from stable without changing stable paths or shared user settings.
 fn channel_dir(root: &Path, beta: bool) -> PathBuf {
-    let directory = root.join(TOKENSAVE_DIR);
+    channel_subdir(root.join(TOKENSAVE_DIR), beta)
+}
+
+fn channel_subdir(directory: PathBuf, beta: bool) -> PathBuf {
     if beta {
         directory.join("beta")
     } else {
@@ -439,7 +490,8 @@ fn migrate_config(config: &mut TokenSaveConfig) {
 /// Writes to a temporary file first and then renames it to the final location,
 /// ensuring that a partial write never corrupts the configuration.
 pub fn save_config(project_root: &Path, config: &TokenSaveConfig) -> Result<()> {
-    let tokensave_dir = get_tokensave_dir(project_root);
+    let location = locate_project_state(project_root);
+    let tokensave_dir = location.dir().to_path_buf();
     fs::create_dir_all(&tokensave_dir).map_err(|e| TokenSaveError::Config {
         message: format!(
             "failed to create tokensave directory '{}': {}",
@@ -447,6 +499,9 @@ pub fn save_config(project_root: &Path, config: &TokenSaveConfig) -> Result<()> 
             e
         ),
     })?;
+    if let crate::state_dir::Location::Relocated { base, .. } = &location {
+        crate::state_dir::record(base, project_root);
+    }
 
     let config_path = get_config_path(project_root);
     let tmp_path = config_path.with_extension("tmp");
@@ -1469,7 +1524,7 @@ mod discovery_tests {
     fn global_state_directory_in_home_is_not_a_project() {
         let tmp = TempDir::new().unwrap();
         let home = tmp.path().to_path_buf();
-        let global_dir = get_tokensave_dir(&home);
+        let global_dir = super::get_global_tokensave_dir(&home);
         fs::create_dir_all(&global_dir).unwrap();
         fs::write(global_dir.join("config.json"), "{}").unwrap();
         let start = mkdirs(&home, &["scratch"]);

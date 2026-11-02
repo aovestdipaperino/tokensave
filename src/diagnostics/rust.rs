@@ -114,9 +114,10 @@ impl Driver for CargoDriver {
 
 /// `.tokensave/target/` is our private cargo target dir — set so we don't
 /// race with the user's IDE or interactive `cargo check`. Created lazily
-/// by cargo on first run.
+/// by cargo on first run, in the relocated state root when there is one
+/// (#919).
 fn target_dir_for(project_root: &Path) -> PathBuf {
-    project_root.join(".tokensave").join("target")
+    crate::config::project_state_root(project_root).join("target")
 }
 
 /// Convert cargo's reported `file_name` (project-relative or absolute) into

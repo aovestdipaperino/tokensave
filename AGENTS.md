@@ -336,6 +336,7 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - `TOKENSAVE_AUTO_TRACK` — per-run override of the `auto_track` config field (truthy values enable; `0`/`false`/`no`/`off`/empty disable).
 - `TOKENSAVE_HOOK_DEBUG` — makes the `post-checkout` hook and `branch add --if-enabled` explain skipped actions on stderr and in `.tokensave/hook-debug.log` (initialized projects only; restarts at 256 KiB). Off by default so hooks stay quiet.
 - `TOKENSAVE_AUTO_INIT` — per-run override of the user-level `auto_init` setting in `~/.tokensave/config.toml` (same parsing as `TOKENSAVE_AUTO_TRACK`).
+- `TOKENSAVE_STATE_DIR` — base directory for project state (#919), overriding `state_dir` in `~/.tokensave/config.toml`; empty selects the in-repo `.tokensave/` default. Resolution lives in `src/state_dir.rs` behind `config::get_tokensave_dir`; home-directory (global) state must use `config::get_global_tokensave_dir`, which is never relocated. `.cargo/config.toml` sets it empty (`force = false`) so tests ignore a developer's `state_dir`.
 - Bench vars: `TOKENSAVE_BENCH_REPOS_DIR` (required), `TOKENSAVE_BENCH_REPOS`, `TOKENSAVE_BENCH_SKIP_CLONE`; probe: `TOKENSAVE_PROBE_REPOS`.
 
 ## Gotchas and workflow quirks

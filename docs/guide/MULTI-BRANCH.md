@@ -8,6 +8,8 @@ tokensave can optionally maintain a separate code graph per git branch. When ena
 
 When you track a branch, tokensave copies the nearest ancestor DB and syncs only the files that differ. This means tracking a feature branch off `main` is nearly instant -- it only parses the files you've changed.
 
+Branch databases and `branch-meta.json` live in the project's state directory: `.tokensave/` by default, or the relocated directory when a base state directory is set (see [Keeping state outside the repository](INDEXING.md#keeping-state-outside-the-repository)). Paths below that name `.tokensave/` mean that directory.
+
 ## CLI commands
 
 ```bash

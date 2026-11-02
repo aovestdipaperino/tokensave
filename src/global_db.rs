@@ -46,7 +46,7 @@ pub struct GlobalDb {
 
 /// Returns the global database in the active channel directory.
 pub fn global_db_path() -> Option<PathBuf> {
-    crate::agents::home_dir().map(|h| crate::config::get_tokensave_dir(&h).join("global.db"))
+    crate::agents::home_dir().map(|h| crate::config::get_global_tokensave_dir(&h).join("global.db"))
 }
 
 /// Resolves a project directory to the canonical string used as its global-DB key.

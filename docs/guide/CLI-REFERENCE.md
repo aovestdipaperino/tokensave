@@ -43,6 +43,8 @@ tokensave current-counter          # Show per-project token counter
 tokensave reset-counter            # Reset per-project token counter
 tokensave disable-upload-counter   # Opt out of worldwide counter uploads
 tokensave enable-upload-counter    # Re-enable worldwide counter uploads
+tokensave state list               # List relocated project state and the project of each
+tokensave state prune [--dry-run]  # Delete relocated state whose project directory is gone
 ```
 
 ## Settings for automatic initialization
@@ -53,3 +55,12 @@ tokensave enable-upload-counter    # Re-enable worldwide counter uploads
 | `TOKENSAVE_AUTO_INIT` | environment | Overrides `auto_init` for one run. `0`, `false`, `no`, `off` or empty turn it off; any other value turns it on. |
 
 See [Automatic initialization](INDEXING.md#automatic-initialization) for the guards that apply.
+
+## Settings for the state location
+
+| Setting | Where | Effect |
+|---|---|---|
+| `state_dir` | `~/.tokensave/config.toml` | Unset (default): each project keeps its state in `.tokensave/` at its root. An absolute path, or one starting with `~`: state lives in `<state_dir>/projects/<name>-<hash>/` and nothing is written inside the repository. Read when a tokensave process starts. |
+| `TOKENSAVE_STATE_DIR` | environment | Overrides `state_dir`. Empty selects the default layout. |
+
+See [Keeping state outside the repository](INDEXING.md#keeping-state-outside-the-repository) for how existing state is kept and how orphans are reported.
