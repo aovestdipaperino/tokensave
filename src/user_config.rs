@@ -289,7 +289,6 @@ impl Default for ProfilingPreferences {
 }
 
 impl ProfilingPreferences {
-    #[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes a reference
     fn is_default(&self) -> bool {
         *self == Self::default()
     }
