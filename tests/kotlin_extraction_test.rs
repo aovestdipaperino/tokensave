@@ -1,6 +1,6 @@
 use tokensave::extraction::KotlinExtractor;
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, ExtractionResult, NodeKind, Visibility};
 
 fn extract(source: &str) -> ExtractionResult {
     let extractor = KotlinExtractor;

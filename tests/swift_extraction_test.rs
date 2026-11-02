@@ -1,6 +1,6 @@
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::SwiftExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, NodeKind, Visibility};
 
 #[test]
 fn test_swift_extract_imports() {

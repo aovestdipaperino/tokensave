@@ -2,7 +2,7 @@
 
 use tokensave::extraction::DartExtractor;
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, ExtractionResult, NodeKind, Visibility};
 
 fn extract(source: &str) -> ExtractionResult {
     DartExtractor::extract_dart("test.dart", source)

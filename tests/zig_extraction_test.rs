@@ -2,7 +2,7 @@
 
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::ZigExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, NodeKind, Visibility};
 
 #[test]
 fn test_zig_extract_imports() {

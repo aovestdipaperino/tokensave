@@ -2,7 +2,7 @@
 
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::NixExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, ExtractionResult, NodeKind, Visibility};
 
 fn extract_sample() -> ExtractionResult {
     let source =

@@ -3,7 +3,7 @@
 
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::XamlExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, ExtractionResult, NodeKind};
 
 const AVALONIA_VIEW: &str = r#"<UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"

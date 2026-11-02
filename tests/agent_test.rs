@@ -1,7 +1,17 @@
 use std::path::Path;
 
 use tempfile::TempDir;
-use tokensave::agents::*;
+use tokensave::agents::{
+    all_integrations, available_integrations, backup_config_file, expected_tool_perms,
+    get_integration, home_dir, load_json_file, load_json_file_strict, load_jsonc_file,
+    load_jsonc_file_strict, load_toml_file, migrate_installed_agents, parse_jsonc,
+    pick_integrations_interactive, read_only_tool_names, restore_config_backup,
+    safe_write_json_file, tool_names, which_tokensave, write_json_file, write_toml_file,
+    AgentIntegration, AntigravityIntegration, ClaudeIntegration, ClineIntegration,
+    CodexIntegration, CopilotIntegration, CursorIntegration, DoctorCounters, GeminiIntegration,
+    HealthcheckContext, InstallContext, KiloIntegration, KimiIntegration, KiroIntegration,
+    OpenCodeIntegration, QwenIntegration, RooCodeIntegration, VibeIntegration, ZedIntegration,
+};
 
 use crate::common::{make_install_ctx, make_install_ctx_with_real_bin};
 

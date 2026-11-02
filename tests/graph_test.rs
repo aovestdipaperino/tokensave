@@ -6,7 +6,9 @@ use tokensave::graph::git::file_churn;
 use tokensave::graph::queries::GraphQueryManager;
 use tokensave::graph::traversal::GraphTraverser;
 use tokensave::tokensave::TokenSave;
-use tokensave::types::*;
+use tokensave::types::{
+    Edge, EdgeKind, Node, NodeKind, TraversalDirection, TraversalOptions, Visibility,
+};
 
 /// Helper: create a temp database and return (TempDir, Database).
 ///

@@ -11,7 +11,7 @@
 use std::io::{Seek, Write};
 use tempfile::TempDir;
 use tokensave::db::Database;
-use tokensave::types::*;
+use tokensave::types::{Node, NodeKind, Visibility};
 
 /// Helper: create a temp database and return (TempDir, Database, db_path).
 ///
