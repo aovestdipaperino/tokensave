@@ -2,6 +2,7 @@ use std::fs;
 use std::process::Command;
 
 use tempfile::TempDir;
+use tokensave::tokensave::TokenSave;
 
 fn tokensave_command(home: &TempDir) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_tokensave"));
@@ -51,12 +52,16 @@ fn write_copilot_session(home: &TempDir) {
 }
 
 fn write_augment_session(home: &TempDir, cost_usd: &str) {
+    write_augment_session_at(home, cost_usd, "2026-07-31T12:00:00.000Z");
+}
+
+fn write_augment_session_at(home: &TempDir, cost_usd: &str, created: &str) {
     let session_dir = home.path().join(".augment").join("sessions");
     fs::create_dir_all(&session_dir).expect("Augment session dir");
     fs::write(
         session_dir.join("session.json"),
         format!(
-            r#"{{"sessionId":"augment-session","created":"2026-07-31T12:00:00.000Z","subAgentCostUsd":{cost_usd},"agentState":{{"modelId":"butler_a"}}}}"#
+            r#"{{"sessionId":"augment-session","created":"{created}","subAgentCostUsd":{cost_usd},"agentState":{{"modelId":"butler_a"}}}}"#
         ),
     )
     .expect("Augment session");
@@ -201,6 +206,82 @@ fn removed_augment_source_excludes_cached_usd_from_cost_summary() {
     let stdout = String::from_utf8_lossy(&table.stdout);
     assert!(!stdout.contains("augment"), "{stdout}");
     assert!(stdout.contains("Augment absent"), "{stdout}");
+}
+
+#[test]
+fn removed_augment_source_is_excluded_from_default_today_row() {
+    let home = isolated_home_with_claude_session();
+    write_augment_session_at(&home, "1.25", "2099-12-31T12:00:00.000Z");
+
+    let first = tokensave_command(&home)
+        .args(["cost", "all", "--export", "json"])
+        .output()
+        .expect("ingest Augment source");
+    assert!(first.status.success());
+
+    fs::remove_dir_all(home.path().join(".augment")).expect("remove Augment source");
+
+    let output = tokensave_command(&home)
+        .args(["cost", "all"])
+        .output()
+        .expect("query default cost summary");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let today = stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with("Today"))
+        .expect("Today row");
+    assert!(today.contains("$0.00"), "{today}");
+}
+
+#[tokio::test]
+async fn status_omits_augment_cost_after_source_is_removed() {
+    let home = isolated_home();
+    fs::write(
+        home.path().join(".tokensave").join("config.toml"),
+        "last_worldwide_fetch_at = 4102444800\nlast_worldwide_total = 1\nlast_flags_fetch_at = 4102444800\n",
+    )
+    .expect("cache status network values");
+    let project = TempDir::new().expect("project");
+    fs::write(project.path().join("base.rs"), "fn base() {}\n").expect("project source");
+    drop(
+        TokenSave::init(project.path())
+            .await
+            .expect("initialize project"),
+    );
+    write_augment_session_at(&home, "1.25", "2099-12-31T12:00:00.000Z");
+
+    let first = tokensave_command(&home)
+        .args(["status", "--short"])
+        .current_dir(project.path())
+        .output()
+        .expect("status with Augment source");
+    assert!(
+        first.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&first.stdout).contains("Today $1.25"),
+        "{}",
+        String::from_utf8_lossy(&first.stdout)
+    );
+
+    fs::remove_dir_all(home.path().join(".augment")).expect("remove Augment source");
+
+    let second = tokensave_command(&home)
+        .args(["status", "--short"])
+        .current_dir(project.path())
+        .output()
+        .expect("status after Augment source removal");
+    assert!(
+        second.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(!stdout.contains("Today $1.25"), "{stdout}");
+    assert!(!stdout.contains("7d $1.25"), "{stdout}");
 }
 
 #[test]

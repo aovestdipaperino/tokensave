@@ -35,13 +35,36 @@ pub async fn quick_cost_summary_with_droid_presence(
     global_tokens_saved: u64,
     droid_present: bool,
 ) -> Option<CostRow> {
+    quick_cost_summary_with_source_presence(
+        gdb,
+        tokens_saved,
+        global_tokens_saved,
+        droid_present,
+        true,
+    )
+    .await
+}
+
+/// Build a quick summary while excluding stale rows for absent local sources.
+pub async fn quick_cost_summary_with_source_presence(
+    gdb: &GlobalDb,
+    tokens_saved: u64,
+    global_tokens_saved: u64,
+    droid_present: bool,
+    augment_present: bool,
+) -> Option<CostRow> {
     let now = now_epoch();
     let today_start = today_start_epoch(now);
     let week_start = now.saturating_sub(7 * 86400);
 
-    let today_cost = gdb.total_cost_since(today_start).await?;
-    let week_cost = gdb.total_cost_since(week_start).await?;
-    let by_agent = gdb.cost_by_agent_since(week_start).await;
+    let today_cost =
+        total_cost_since_with_augment_presence(gdb, today_start, augment_present).await?;
+    let total_week_cost = gdb.total_cost_since(week_start).await?;
+    let mut by_agent = gdb.cost_by_agent_since(week_start).await;
+    let week_cost = exclude_absent_augment_cost(total_week_cost, &by_agent, augment_present);
+    if !augment_present {
+        by_agent.retain(|summary| summary.agent != "augment");
+    }
     let week_consumed = consumed_tokens(&by_agent, droid_present);
 
     // Don't show the row if there's no meaningful data
@@ -61,6 +84,35 @@ pub async fn quick_cost_summary_with_droid_presence(
         week_cost,
         efficiency_pct,
     })
+}
+
+/// Return cost for a range without cached Augment rows when its source is absent.
+pub async fn total_cost_since_with_augment_presence(
+    gdb: &GlobalDb,
+    since: u64,
+    augment_present: bool,
+) -> Option<f64> {
+    let total_cost = gdb.total_cost_since(since).await?;
+    if augment_present {
+        return Some(total_cost);
+    }
+    let by_agent = gdb.cost_by_agent_since(since).await;
+    Some(exclude_absent_augment_cost(total_cost, &by_agent, false))
+}
+
+fn exclude_absent_augment_cost(
+    total_cost: f64,
+    by_agent: &[AgentCostSummary],
+    augment_present: bool,
+) -> f64 {
+    if augment_present {
+        return total_cost;
+    }
+    total_cost
+        - by_agent
+            .iter()
+            .find(|summary| summary.agent == "augment")
+            .map_or(0.0, |summary| summary.cost_usd)
 }
 
 /// Build a full cost summary for a given time range.
@@ -132,7 +184,7 @@ pub async fn cost_summary_with_source_presence(
     augment_present: bool,
 ) -> Option<CostSummary> {
     let tokens_saved = gdb.sum_savings(None, since as i64).await.saved_tokens;
-    let mut total_cost = gdb.total_cost_since(since).await?;
+    let total_cost = gdb.total_cost_since(since).await?;
     let (total_input, total_output, total_cache_read, total_cache_write) = gdb
         .token_breakdown_since(since)
         .await
@@ -146,11 +198,8 @@ pub async fn cost_summary_with_source_presence(
     if !copilot_present {
         by_agent.retain(|summary| summary.agent != "copilot");
     }
+    let total_cost = exclude_absent_augment_cost(total_cost, &by_agent, augment_present);
     if !augment_present {
-        total_cost -= by_agent
-            .iter()
-            .find(|summary| summary.agent == "augment")
-            .map_or(0.0, |summary| summary.cost_usd);
         by_agent.retain(|summary| summary.agent != "augment");
     }
 

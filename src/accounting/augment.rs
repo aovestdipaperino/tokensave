@@ -158,10 +158,8 @@ pub(crate) struct AugmentIngestResult {
 /// Ingest `AugmentCode` session files from `root` (`~/.augment/sessions`).
 ///
 /// Coverage rules (Augment is never `Complete`, by design):
-/// - [`CoverageState::Absent`]: no files, no walk errors, or no session carries
-///   observed subagent spend.
-/// - [`CoverageState::Partial`]: at least one session carries observed subagent
-///   USD (which is always a subagent-only subset of true spend), or any
+/// - [`CoverageState::Absent`]: no readable sessions and no errors.
+/// - [`CoverageState::Partial`]: at least one readable session or any
 ///   parse/read/walk failure.
 pub(crate) async fn ingest_dir(
     gdb: &crate::global_db::GlobalDb,
@@ -181,22 +179,25 @@ pub(crate) async fn ingest_dir(
     }
 
     let mut parse_errors: u64 = 0;
+    let mut readable_sessions: u64 = 0;
     let mut turns: Vec<CostTurn> = Vec::new();
 
     for file in &files {
         match parse_session_file(file) {
             Err(()) => parse_errors += 1,
-            Ok(None) => {}
-            Ok(Some(turn)) => turns.push(turn),
+            Ok(None) => readable_sessions += 1,
+            Ok(Some(turn)) => {
+                readable_sessions += 1;
+                turns.push(turn);
+            }
         }
     }
 
     let sessions = turns.len() as u64;
 
-    // Observed subagent spend is always a subset of true session spend, so any
-    // usage keeps Augment Partial rather than Complete. Absence of any usage (and
-    // no errors) is Absent, not a misleading Partial.
-    let state = if sessions > 0 || parse_errors > 0 || walk_errors > 0 {
+    // Readable sessions keep cached snapshots attributable even when their
+    // current cost field is empty; observed subagent spend is never Complete.
+    let state = if readable_sessions > 0 || parse_errors > 0 || walk_errors > 0 {
         CoverageState::Partial
     } else {
         CoverageState::Absent
@@ -442,19 +443,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ingest_dir_absent_when_no_spend() {
+    async fn readable_zero_or_missing_snapshot_preserves_cached_spend() {
         let root_tmp = TempDir::new().unwrap();
+        let session_path = root_tmp.path().join("s1.json");
         write_session(
             root_tmp.path(),
             "s1.json",
-            &session_json("sess-1", "0", "2026-05-09T12:56:30.050Z", "butler_a"),
+            &session_json("sess-1", "1.25", "2026-05-09T12:56:30.050Z", "butler_a"),
         );
         let db_tmp = TempDir::new().unwrap();
         let db_path = db_tmp.path().join(".tokensave").join("global.db");
         fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         let gdb = crate::global_db::GlobalDb::open_at(&db_path).await.unwrap();
-        let res = ingest_dir(&gdb, root_tmp.path()).await;
-        assert_eq!(res.coverage.state, CoverageState::Absent);
-        assert_eq!(res.coverage.sessions, 0);
+
+        assert_eq!(
+            ingest_dir(&gdb, root_tmp.path()).await.coverage.state,
+            CoverageState::Partial
+        );
+
+        for snapshot in [
+            session_json("sess-1", "0", "2026-05-09T12:56:30.050Z", "butler_a"),
+            r#"{"sessionId":"sess-1","created":"2026-05-09T12:56:30.050Z","agentState":{"modelId":"butler_a"}}"#.to_string(),
+        ] {
+            fs::write(&session_path, snapshot).unwrap();
+            let result = ingest_dir(&gdb, root_tmp.path()).await;
+            assert_eq!(result.coverage.state, CoverageState::Partial);
+
+            let summary = crate::accounting::metrics::cost_summary_with_source_presence(
+                &gdb,
+                0,
+                false,
+                false,
+                result.coverage.state != CoverageState::Absent,
+            )
+            .await
+            .unwrap();
+            assert!((summary.total_cost - 1.25).abs() < 1e-12);
+        }
     }
 }

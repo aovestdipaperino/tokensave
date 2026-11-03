@@ -793,23 +793,27 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     }
                 });
                 // Ingest new session data so cost info is up-to-date.
-                let droid_present = if let Some(ref db) = gdb {
+                let (droid_present, augment_present) = if let Some(ref db) = gdb {
                     let stats = tokensave::accounting::parser::ingest(db).await;
-                    stats.coverage.iter().any(|coverage| {
-                        coverage.agent == "droid"
-                            && coverage.state != tokensave::accounting::CoverageState::Absent
-                    })
+                    let source_present = |agent| {
+                        stats.coverage.iter().any(|coverage| {
+                            coverage.agent == agent
+                                && coverage.state != tokensave::accounting::CoverageState::Absent
+                        })
+                    };
+                    (source_present("droid"), source_present("augment"))
                 } else {
-                    false
+                    (false, false)
                 };
                 // Best-effort cost summary for the status header.
                 let cost_info = match &gdb {
                     Some(db) => {
-                        tokensave::accounting::metrics::quick_cost_summary_with_droid_presence(
+                        tokensave::accounting::metrics::quick_cost_summary_with_source_presence(
                             db,
                             tokens_saved,
                             global_tokens_saved.unwrap_or(0),
                             droid_present,
+                            augment_present,
                         )
                         .await
                     }
@@ -1859,7 +1863,14 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             } else {
                 // Default summary
                 let today_since = tokensave::accounting::metrics::parse_range("today");
-                let today_cost = gdb.total_cost_since(today_since).await.unwrap_or(0.0);
+                let today_cost =
+                    tokensave::accounting::metrics::total_cost_since_with_augment_presence(
+                        &gdb,
+                        today_since,
+                        augment_present,
+                    )
+                    .await
+                    .unwrap_or(0.0);
                 let today_breakdown = gdb
                     .token_breakdown_since(today_since)
                     .await
