@@ -3,7 +3,11 @@ use std::collections::{HashMap, HashSet};
 
 use libsql::params;
 
-use super::connection::{CachedTraitDispatchCaller, Database};
+use super::connection::Database;
+use super::model::CachedTraitDispatchCaller;
+pub(crate) use super::model::{
+    AuditEdgeRow, EdgeEndpoint, ImportEdgeRow, NodeFilter, StoredFingerprint,
+};
 use crate::errors::{Result, TokenSaveError};
 use crate::resolution::{AmbiguityRefKey, TouchedNode};
 use crate::types::{
@@ -12,18 +16,15 @@ use crate::types::{
 };
 
 mod audit;
-pub use audit::AuditEdgeRow;
 mod clear;
 mod edges;
 mod files;
 mod fingerprints;
 mod graph;
-pub use graph::{EdgeEndpoint, ImportEdgeRow};
 mod memory;
 mod metadata;
 mod nodes;
 mod routes;
-pub use nodes::NodeFilter;
 mod search;
 pub(crate) use search::to_fts_match_query;
 mod stats;

@@ -101,16 +101,7 @@ impl TokenSave {
     ) -> crate::errors::Result<Vec<DecisionRecord>> {
         let limit = limit.clamp(1, MAX_RECALL_LIMIT) as i64;
 
-        // FTS5 parses the bound MATCH string as a query expression even
-        // through a bound parameter, so raw terms containing `-`, `.`, `/`
-        // etc. (`data-api`) are syntax errors (#218). Escape into quoted
-        // prefix terms first; a query with no tokenizable content degrades
-        // to the unfiltered recency-ordered arms.
-        let fts_query = query.and_then(crate::db::to_fts_match_query);
-        let mut out = self
-            .db
-            .get_decisions(fts_query.as_deref(), since, limit)
-            .await?;
+        let mut out = self.db.get_decisions(query, since, limit).await?;
 
         // Recency-decay ranking for the no-explicit-query path. The SQL above
         // already LIMITed to the newest N rows (which, because the decay is

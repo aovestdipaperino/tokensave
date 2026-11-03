@@ -6,14 +6,12 @@ use std::sync::RwLock;
 use libsql::{Builder, Connection as RawConnection, Database as LibsqlDatabase};
 
 use super::debug_sql::Connection;
+use super::model::CachedTraitDispatchCaller;
 
 use crate::errors::{Result, TokenSaveError};
-use crate::types::{Edge, Node};
 
 use super::migrations;
 use crate::profile::DbOp;
-
-pub(super) type CachedTraitDispatchCaller = (Node, Edge, String, bool);
 
 /// Computes adaptive `(cache_size_kb, mmap_size)` based on the DB file size.
 ///
