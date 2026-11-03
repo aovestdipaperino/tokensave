@@ -47,9 +47,10 @@ API-equivalent estimate, not the Codex subscription bill.
 AugmentCode sessions (`~/.augment/sessions/<uuid>.json`) provide cumulative
 `subAgentCostUsd`. This is real USD for subagents only, not the full session
 cost; main-agent usage is not sourceable, so Augment coverage is always partial.
-Augment spend appears in `cost --by-agent`, JSON, and the monitor, but is not
-assigned to a model or used to infer token counts. Cached Augment rows are hidden
-from summaries when the local session source is absent.
+Augment spend appears in `cost --by-agent`, JSON, the monitor, and status/default
+cost summaries when in range, but is not assigned to a model or used to infer
+token counts. Cached Augment rows are hidden from status and summaries when the
+local session source is absent.
 
 Legacy Codex snapshots may contain overcounts. A per-row usage revision allows
 validated source replay to correct them once, without guessing missing reasoning
