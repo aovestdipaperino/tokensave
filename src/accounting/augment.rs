@@ -48,8 +48,12 @@ struct AgentState {
 /// `WalkDir` errors. Returns `(files, walk_errors)`, sorted for determinism.
 /// Symlinks are not followed.
 fn collect_sessions(root: &Path) -> (Vec<PathBuf>, u64) {
-    if !root.exists() {
-        return (Vec::new(), 0);
+    match std::fs::metadata(root) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (Vec::new(), 0);
+        }
+        Err(_) => return (Vec::new(), 1),
     }
     let mut files: Vec<PathBuf> = Vec::new();
     let mut walk_errors: u64 = 0;
@@ -93,8 +97,9 @@ pub(crate) fn find_session_files(root: &Path) -> Vec<PathBuf> {
 /// not sourced). `model` is the session's `agentState.modelId` label, or the
 /// session id's routing state is unknown so it falls back to `"routed"`.
 pub(crate) fn parse_session_file(path: &Path) -> Result<Option<CostTurn>, ()> {
-    let contents = std::fs::read_to_string(path).map_err(|_| ())?;
-    let session: Session = serde_json::from_str(&contents).map_err(|_| ())?;
+    let file = std::fs::File::open(path).map_err(|_| ())?;
+    let session: Session =
+        serde_json::from_reader(std::io::BufReader::new(file)).map_err(|_| ())?;
 
     // No observed subagent spend: not accountable, and counting a $0 row would
     // be a phantom. This mirrors how Copilot drops a no-AIU checkpoint.
@@ -199,8 +204,12 @@ pub(crate) async fn ingest_dir(
 
     let mut rows_changed: u64 = 0;
     for turn in &turns {
-        if gdb.upsert_droid_turn(turn).await {
-            rows_changed += 1;
+        match gdb.upsert_augment_turn(turn).await {
+            Ok(true) => rows_changed += 1,
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("[tokensave] Augment accounting snapshot failed: {error}");
+            }
         }
     }
 
@@ -331,6 +340,30 @@ mod tests {
         assert_eq!(errors, 0);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn inaccessible_parent_reports_partial_coverage() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root_tmp = TempDir::new().unwrap();
+        let parent = root_tmp.path().join("inaccessible");
+        let root = parent.join("sessions");
+        fs::create_dir_all(&root).unwrap();
+
+        let db_tmp = TempDir::new().unwrap();
+        let db_path = db_tmp.path().join(".tokensave").join("global.db");
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let gdb = crate::global_db::GlobalDb::open_at(&db_path).await.unwrap();
+
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o0)).unwrap();
+        let result = ingest_dir(&gdb, &root).await;
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert_eq!(result.coverage.state, CoverageState::Partial);
+        assert_eq!(result.coverage.sessions, 0);
+        assert_eq!(result.rows_changed, 0);
+    }
+
     #[tokio::test]
     async fn ingest_dir_absent_when_root_missing() {
         let db_tmp = TempDir::new().unwrap();
@@ -341,6 +374,41 @@ mod tests {
         assert_eq!(res.coverage.state, CoverageState::Absent);
         assert_eq!(res.coverage.sessions, 0);
         assert_eq!(res.rows_changed, 0);
+    }
+
+    #[tokio::test]
+    async fn usd_snapshots_grow_without_replay_regression_or_bucket_movement() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("sessions");
+        let gdb = crate::global_db::GlobalDb::open_at(&tmp.path().join("global.db"))
+            .await
+            .unwrap();
+        for (index, (cost, changed, expected)) in [
+            ("12.34", 1, 12.34),
+            ("20.00", 1, 20.00),
+            ("20.00", 0, 20.00),
+            ("9.00", 0, 20.00),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let created = if index == 0 {
+                "2026-05-09T12:56:30.050Z"
+            } else {
+                "2026-05-10T12:56:30.050Z"
+            };
+            write_session(
+                &root,
+                "growing.json",
+                &session_json("growing", cost, created, "butler_a"),
+            );
+            let result = ingest_dir(&gdb, &root).await;
+            assert_eq!(result.rows_changed, changed);
+            assert_eq!(result.coverage.state, CoverageState::Partial);
+            assert!((gdb.total_cost_since(0).await.unwrap() - expected).abs() < 1e-12);
+            let next_day = parse_timestamp("2026-05-10T00:00:00Z").unwrap();
+            assert!(gdb.total_cost_since(next_day).await.unwrap().abs() < 1e-12);
+        }
     }
 
     #[tokio::test]

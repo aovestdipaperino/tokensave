@@ -50,6 +50,18 @@ fn write_copilot_session(home: &TempDir) {
     .expect("Copilot checkpoint");
 }
 
+fn write_augment_session(home: &TempDir, cost_usd: &str) {
+    let session_dir = home.path().join(".augment").join("sessions");
+    fs::create_dir_all(&session_dir).expect("Augment session dir");
+    fs::write(
+        session_dir.join("session.json"),
+        format!(
+            r#"{{"sessionId":"augment-session","created":"2026-07-31T12:00:00.000Z","subAgentCostUsd":{cost_usd},"agentState":{{"modelId":"butler_a"}}}}"#
+        ),
+    )
+    .expect("Augment session");
+}
+
 #[test]
 fn cost_without_droid_preserves_existing_output() {
     let home = isolated_home_with_claude_session();
@@ -67,7 +79,7 @@ fn cost_without_droid_preserves_existing_output() {
     assert!(stdout.contains("1.0k"), "{stdout}");
     assert!(
         stdout.contains(
-            "Coverage: Claude complete; Droid absent; Copilot absent; Codex absent; Augment not imported"
+            "Coverage: Claude complete; Droid absent; Copilot absent; Codex absent; Augment absent"
         ),
         "{stdout}"
     );
@@ -118,6 +130,77 @@ fn cost_json_includes_copilot_by_agent_and_coverage_without_droid() {
             .any(|coverage| coverage["agent"] == "copilot"),
         "coverage must include Copilot: {value}"
     );
+}
+
+#[test]
+fn cost_json_includes_augment_by_agent_and_coverage_without_other_agents() {
+    let home = isolated_home();
+    write_augment_session(&home, "1.25");
+
+    let output = tokensave_command(&home)
+        .args(["cost", "all", "--export", "json"])
+        .output()
+        .expect("run tokensave cost json");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid json");
+    let agents = value["by_agent"].as_array().expect("by_agent array");
+    let augment = agents
+        .iter()
+        .find(|agent| agent["agent"] == "augment")
+        .expect("Augment row");
+    assert_eq!(augment["cost_usd"], 1.25);
+    assert!(
+        value["coverage"]
+            .as_array()
+            .expect("coverage array")
+            .iter()
+            .any(|coverage| { coverage["agent"] == "augment" && coverage["state"] == "partial" }),
+        "coverage must include partial Augment: {value}"
+    );
+}
+
+#[test]
+fn removed_augment_source_excludes_cached_usd_from_cost_summary() {
+    let home = isolated_home_with_claude_session();
+    write_augment_session(&home, "1.25");
+
+    let first = tokensave_command(&home)
+        .args(["cost", "all", "--export", "json"])
+        .output()
+        .expect("ingest Augment source");
+    assert!(first.status.success());
+    let first: serde_json::Value = serde_json::from_slice(&first.stdout).expect("valid json");
+
+    fs::remove_dir_all(home.path().join(".augment")).expect("remove Augment source");
+
+    let second = tokensave_command(&home)
+        .args(["cost", "all", "--export", "json"])
+        .output()
+        .expect("query after Augment removal");
+    assert!(second.status.success());
+    let second: serde_json::Value = serde_json::from_slice(&second.stdout).expect("valid json");
+    let first_cost = first["total_cost_usd"].as_f64().expect("first total cost");
+    let second_cost = second["total_cost_usd"]
+        .as_f64()
+        .expect("second total cost");
+
+    assert!(
+        ((first_cost - second_cost) - 1.25).abs() < 1e-9,
+        "removed Augment spend should not remain in total_cost_usd: first={first}, second={second}"
+    );
+
+    let table = tokensave_command(&home)
+        .args(["cost", "all", "--by-agent"])
+        .output()
+        .expect("query agent table after Augment removal");
+    assert!(table.status.success());
+    let stdout = String::from_utf8_lossy(&table.stdout);
+    assert!(!stdout.contains("augment"), "{stdout}");
+    assert!(stdout.contains("Augment absent"), "{stdout}");
 }
 
 #[test]
@@ -196,7 +279,7 @@ fn removed_droid_source_does_not_surface_stale_rows() {
     assert!(!stdout.contains("droid"), "{stdout}");
     assert!(
         stdout.contains(
-            "Coverage: Claude complete; Droid absent; Copilot absent; Codex absent; Augment not imported"
+            "Coverage: Claude complete; Droid absent; Copilot absent; Codex absent; Augment absent"
         ),
         "{stdout}"
     );

@@ -1719,11 +1719,16 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 coverage.agent == "copilot"
                     && coverage.state != tokensave::accounting::CoverageState::Absent
             });
+            let augment_present = ingest_stats.coverage.iter().any(|coverage| {
+                coverage.agent == "augment"
+                    && coverage.state != tokensave::accounting::CoverageState::Absent
+            });
             let summary = tokensave::accounting::metrics::cost_summary_with_source_presence(
                 &gdb,
                 since,
                 droid_present,
                 copilot_present,
+                augment_present,
             )
             .await;
 
@@ -1756,7 +1761,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                             "by_model": s.by_model.iter().map(|(m, c, t)| serde_json::json!({"model": m, "cost": c, "tokens": t})).collect::<Vec<_>>(),
                             "by_category": s.by_category.iter().map(|(cat, c, n)| serde_json::json!({"category": cat, "cost": c, "turns": n})).collect::<Vec<_>>(),
                         });
-                        if droid_present || copilot_present {
+                        if droid_present || copilot_present || augment_present {
                             obj["by_agent"] = serde_json::json!(s
                                 .by_agent
                                 .iter()
