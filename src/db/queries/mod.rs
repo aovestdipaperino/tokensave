@@ -11,10 +11,15 @@ use crate::types::{
     ResolvedBy, SearchResult, UnresolvedRef, Visibility, EDGE_UPSERT_CLAUSE,
 };
 
+mod audit;
+pub use audit::AuditEdgeRow;
 mod clear;
 mod edges;
 mod files;
 mod fingerprints;
+mod graph;
+pub use graph::{EdgeEndpoint, ImportEdgeRow};
+mod memory;
 mod metadata;
 mod nodes;
 mod routes;
@@ -22,6 +27,7 @@ pub use nodes::NodeFilter;
 mod search;
 pub(crate) use search::to_fts_match_query;
 mod stats;
+mod telemetry;
 mod unresolved;
 
 // ---------------------------------------------------------------------------
