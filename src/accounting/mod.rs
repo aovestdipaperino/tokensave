@@ -6,6 +6,7 @@
 //! settings, classifies each turn, and stores results in the global database
 //! for fast aggregate queries.
 
+mod augment;
 pub mod classifier;
 mod codex;
 mod copilot;

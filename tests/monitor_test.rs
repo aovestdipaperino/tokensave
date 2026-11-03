@@ -209,6 +209,9 @@ fn base_cache() -> CostCache {
         today_aiu: None,
         week_aiu: None,
         copilot_state: CoverageState::Absent,
+        today_augment_cost: 0.0,
+        week_augment_cost: 0.0,
+        augment_state: CoverageState::Absent,
         last_refresh: std::time::Instant::now(),
     }
 }

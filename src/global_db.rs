@@ -48,6 +48,7 @@ enum SnapshotKind {
     Droid,
     Copilot,
     Codex { legacy_output_tokens: u64 },
+    Augment,
 }
 
 /// Returns the global database in the active channel directory.
@@ -730,6 +731,15 @@ impl GlobalDb {
         .await
     }
 
+    /// Augment reports cumulative subagent USD without token or credit counters.
+    pub(crate) async fn upsert_augment_turn(
+        &self,
+        turn: &crate::types::CostTurn,
+    ) -> crate::errors::Result<bool> {
+        self.upsert_monotonic_turn(turn, SnapshotKind::Augment)
+            .await
+    }
+
     /// Cached Codex rows still requiring authoritative native-source replay.
     pub async fn legacy_codex_rows(&self) -> crate::errors::Result<u64> {
         let mut rows = self
@@ -800,6 +810,7 @@ impl GlobalDb {
                                OR (excluded.credits IS NOT NULL
                                    AND (turns.credits IS NULL
                                         OR excluded.credits > turns.credits))
+                               OR (?18 AND excluded.cost_usd > turns.cost_usd)
                                OR (excluded.agent = 'codex'
                                    AND turns.cost_usd = 0.0
                                    AND excluded.cost_usd > 0.0
@@ -829,6 +840,7 @@ impl GlobalDb {
                     i64::from(matches!(kind, SnapshotKind::Copilot)),
                     revision,
                     legacy_output_tokens,
+                    i64::from(matches!(kind, SnapshotKind::Augment)),
                 ],
             )
             .await?;
