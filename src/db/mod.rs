@@ -14,6 +14,7 @@ pub mod compatibility;
 mod connection;
 pub mod debug_sql;
 pub mod migrations;
+pub mod model;
 pub mod probe;
 mod profiled;
 mod queries;
@@ -24,5 +25,5 @@ pub use connection::Database;
 /// Name of the storage engine this build uses. Profiling records are kept
 /// per engine, so measurements of different backends never merge.
 pub const ENGINE: &str = "libsql";
+pub use model::{AuditEdgeRow, EdgeEndpoint, ImportEdgeRow, NodeFilter, StoredFingerprint};
 pub(crate) use profiled::RowSource;
-pub use queries::{AuditEdgeRow, EdgeEndpoint, ImportEdgeRow, NodeFilter};

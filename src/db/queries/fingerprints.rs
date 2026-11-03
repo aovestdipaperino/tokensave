@@ -5,18 +5,6 @@ use super::*;
 // Node fingerprints (issue #83 — tokensave_redundancy)
 // ---------------------------------------------------------------------------
 
-/// A stored fingerprint row, paired with its node id.
-#[derive(Debug, Clone)]
-pub struct StoredFingerprint {
-    pub node_id: String,
-    pub ast_hash: String,
-    pub cfg_hash: String,
-    pub call_seq_hash: String,
-    pub shingles: Vec<u32>,
-    pub body_tokens: u32,
-    pub source_hash: String,
-}
-
 impl Database {
     /// Upsert a fingerprint for a node. Replaces any existing row.
     pub async fn upsert_fingerprint(
