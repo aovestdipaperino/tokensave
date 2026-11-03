@@ -25,7 +25,7 @@ use super::recorder::{merge_snapshot, Snapshot};
 pub const FILE_SCHEMA: u32 = 1;
 
 /// Database engine every series in this build is measured against.
-pub const ENGINE: &str = "libsql";
+pub const ENGINE: &str = crate::db::ENGINE;
 
 const SECS_PER_HOUR: u64 = 3600;
 
