@@ -20,8 +20,8 @@
 //! way #533 was measured. A resolution change that removes phantoms shows up
 //! as a drop here whether the phantom crossed into `tests/` or not.
 
-use crate::db::Database;
-use crate::errors::{Result, TokenSaveError};
+use crate::db::{AuditEdgeRow, Database};
+use crate::errors::Result;
 use std::collections::{HashMap, HashSet};
 
 /// Languages where a bare name alone is not evidence of a binding, mirroring
@@ -79,27 +79,6 @@ pub struct EdgeAudit {
     pub hot_targets: Vec<HotTarget>,
 }
 
-/// One edge, flattened with the node facts the predicate needs.
-struct EdgeRow {
-    src_file: String,
-    dst_id: String,
-    dst_name: String,
-    dst_file: String,
-    dst_kind: String,
-    dst_line: i64,
-    dst_parent: Option<String>,
-}
-
-async fn query_rows(db: &Database, sql: &str) -> Result<libsql::Rows> {
-    db.conn()
-        .query(sql, ())
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("edge audit query failed: {e}"),
-            operation: "edge_audit".to_string(),
-        })
-}
-
 /// Runs the audit over `db`.
 ///
 /// `limit` caps how many hot targets are listed.
@@ -108,97 +87,55 @@ pub async fn audit(db: &Database, limit: usize) -> Result<EdgeAudit> {
     // is what lets the gate's predicate be evaluated after the fact rather
     // than only during resolution.
     let mut imports: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut rows = query_rows(db, "SELECT file_path, name FROM nodes WHERE kind = 'use'").await?;
-    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-        message: format!("edge audit read failed: {e}"),
-        operation: "edge_audit".to_string(),
-    })? {
-        let file: String = row.get(0).unwrap_or_default();
-        let name: String = row.get(1).unwrap_or_default();
+    db.for_each_use_node(|file, name| {
         imports.entry(file).or_default().insert(name);
-    }
+    })
+    .await?;
 
     // How many symbols share each name, so "sole candidate" is a lookup.
     let mut name_counts: HashMap<String, i64> = HashMap::new();
-    let mut rows = query_rows(
-        db,
-        "SELECT name, COUNT(*) FROM nodes WHERE kind <> 'file' AND kind <> 'use' GROUP BY name",
-    )
+    db.for_each_symbol_name_count(|name, count| {
+        name_counts.insert(name, count);
+    })
     .await?;
-    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-        message: format!("edge audit read failed: {e}"),
-        operation: "edge_audit".to_string(),
-    })? {
-        name_counts.insert(
-            row.get(0).unwrap_or_default(),
-            row.get(1).unwrap_or_default(),
-        );
-    }
 
     // Parent names, for the "the class that owns the method is the evidence"
     // arm of the resolver's predicate.
     let mut node_name: HashMap<String, String> = HashMap::new();
-    let mut rows = query_rows(db, "SELECT id, name FROM nodes").await?;
-    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-        message: format!("edge audit read failed: {e}"),
-        operation: "edge_audit".to_string(),
-    })? {
-        node_name.insert(
-            row.get(0).unwrap_or_default(),
-            row.get(1).unwrap_or_default(),
-        );
-    }
+    db.for_each_node_name(|id, name| {
+        node_name.insert(id, name);
+    })
+    .await?;
 
     let mut total_edges = 0i64;
     let mut gated_edges = 0i64;
     let mut cross_file = 0i64;
     let mut sole_candidate_cross_file = 0i64;
     let mut unreachable = 0i64;
-    let mut per_target: HashMap<String, (EdgeRow, i64, HashSet<String>)> = HashMap::new();
+    let mut per_target: HashMap<String, (AuditEdgeRow, i64, HashSet<String>)> = HashMap::new();
 
-    let mut rows = query_rows(
-        db,
-        "SELECT s.file_path, n.id, n.name, n.file_path, n.kind, n.start_line, n.parent_id \
-         FROM edges e \
-         JOIN nodes n ON n.id = e.target \
-         JOIN nodes s ON s.id = e.source",
-    )
-    .await?;
-
-    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-        message: format!("edge audit read failed: {e}"),
-        operation: "edge_audit".to_string(),
-    })? {
+    db.for_each_audit_edge(|r| {
         total_edges += 1;
-        let r = EdgeRow {
-            src_file: row.get(0).unwrap_or_default(),
-            dst_id: row.get(1).unwrap_or_default(),
-            dst_name: row.get(2).unwrap_or_default(),
-            dst_file: row.get(3).unwrap_or_default(),
-            dst_kind: row.get(4).unwrap_or_default(),
-            dst_line: row.get(5).unwrap_or_default(),
-            dst_parent: row.get::<Option<String>>(6).unwrap_or_default(),
-        };
 
         if !is_gated_path(&r.src_file) {
-            continue;
+            return;
         }
         gated_edges += 1;
 
         if r.src_file == r.dst_file {
-            continue;
+            return;
         }
         cross_file += 1;
 
         if name_counts.get(&r.dst_name).copied().unwrap_or(0) != 1 {
-            continue;
+            return;
         }
         sole_candidate_cross_file += 1;
 
         // The resolver's evidence model, evaluated after the fact: same
         // directory, the name imported, or the owning class imported.
         if dir_of(&r.src_file) == dir_of(&r.dst_file) {
-            continue;
+            return;
         }
         let file_imports = imports.get(&r.src_file);
         let reachable = file_imports.is_some_and(|imports| {
@@ -209,7 +146,7 @@ pub async fn audit(db: &Database, limit: usize) -> Result<EdgeAudit> {
                     .is_some_and(|parent| imports_name(imports, parent))
         });
         if reachable {
-            continue;
+            return;
         }
 
         unreachable += 1;
@@ -218,11 +155,12 @@ pub async fn audit(db: &Database, limit: usize) -> Result<EdgeAudit> {
             .or_insert_with(|| (r, 0, HashSet::new()));
         entry.1 += 1;
         entry.2.insert(entry.0.src_file.clone());
-    }
+    })
+    .await?;
 
     // `src_file` on the stored row is whichever edge landed first, so the
     // distinct-source count is tracked separately rather than read off it.
-    let mut hot: Vec<(EdgeRow, i64, HashSet<String>)> = per_target.into_values().collect();
+    let mut hot: Vec<(AuditEdgeRow, i64, HashSet<String>)> = per_target.into_values().collect();
     hot.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.dst_name.cmp(&b.0.dst_name)));
     let hot_targets = hot
         .into_iter()

@@ -304,6 +304,28 @@ impl Database {
         drop(self.conn);
     }
 
+    /// Returns the schema version stored in the database.
+    pub async fn schema_version(&self) -> Result<u32> {
+        super::migrations::read_schema_version(&self.conn).await
+    }
+
+    /// Opens a transaction that pins a consistent read snapshot until the
+    /// handle is dropped or the transaction ends.
+    ///
+    /// In WAL mode a reader that has started a transaction keeps seeing the
+    /// same committed state while a writer commits around it, so several
+    /// reads on this handle agree with each other.
+    pub async fn begin_read_snapshot(&self) -> Result<()> {
+        self.conn
+            .execute_batch("BEGIN")
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to begin read snapshot: {e}"),
+                operation: "begin_read_snapshot".to_string(),
+            })?;
+        Ok(())
+    }
+
     /// Checkpoints the WAL back into the main database file.
     ///
     /// This ensures all committed transactions are merged into the main DB

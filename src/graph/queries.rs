@@ -1,10 +1,9 @@
 // Rust guideline compliant 2025-10-17
 use std::collections::{HashMap, HashSet};
 
-use crate::db::Database;
-use crate::errors::{Result, TokenSaveError};
-use crate::profile::DbOp;
-use crate::types::{EdgeKind, Node, NodeKind, Visibility};
+use crate::db::{Database, EdgeEndpoint};
+use crate::errors::Result;
+use crate::types::{EdgeKind, Node, NodeKind};
 
 /// Godot virtual callbacks that the engine invokes on `Object`, `Node`,
 /// `CanvasItem`, `Control`, `Resource` and the physics bodies. A `.gd`
@@ -66,80 +65,6 @@ pub struct GraphQueryManager<'a> {
     db: &'a Database,
 }
 
-fn row_to_node_dead_code(row: &libsql::Row) -> std::result::Result<Node, libsql::Error> {
-    let kind_str = get_string_lossy(row, 1)?;
-    let vis_str = get_string_lossy(row, 11)?;
-    let is_async_int = row.get::<i64>(12)?;
-    let start_line = row.get::<u32>(5)?;
-    // Pre-v7 rows lack attrs_start_line; fall back to start_line. The dead-code
-    // SELECT below does not include the new column, so attempts to read at 21
-    // will always error here — keep the fallback path explicit.
-    let attrs_raw = row.get::<u32>(21).unwrap_or(0);
-    let attrs_start_line = if attrs_raw == 0 {
-        start_line
-    } else {
-        attrs_raw
-    };
-
-    Ok(Node {
-        id: get_string_lossy(row, 0)?,
-        kind: NodeKind::from_str(&kind_str).unwrap_or(NodeKind::Function),
-        name: get_string_lossy(row, 2)?,
-        qualified_name: get_string_lossy(row, 3)?,
-        file_path: get_string_lossy(row, 4)?,
-        start_line,
-        attrs_start_line,
-        end_line: row.get::<u32>(6)?,
-        start_column: row.get::<u32>(7)?,
-        end_column: row.get::<u32>(8)?,
-        signature: get_opt_string_lossy(row, 10)?,
-        docstring: get_opt_string_lossy(row, 9)?,
-        visibility: Visibility::from_str(&vis_str).unwrap_or_default(),
-        is_async: is_async_int != 0,
-        branches: row.get::<u32>(13)?,
-        loops: row.get::<u32>(14)?,
-        returns: row.get::<u32>(15)?,
-        max_nesting: row.get::<u32>(16)?,
-        unsafe_blocks: row.get::<u32>(17)?,
-        unchecked_calls: row.get::<u32>(18)?,
-        assertions: row.get::<u32>(19)?,
-        // The dead-code SELECT does not request the issue #150 health columns;
-        // they are irrelevant to dead-code analysis, so default them to 0.
-        cognitive_complexity: 0,
-        distinct_operators: 0,
-        distinct_operands: 0,
-        total_operators: 0,
-        total_operands: 0,
-        updated_at: row.get::<u64>(20)?,
-        parent_id: None,
-    })
-}
-
-fn get_string_lossy(row: &libsql::Row, idx: i32) -> std::result::Result<String, libsql::Error> {
-    let val = row.get::<libsql::Value>(idx)?;
-    match val {
-        libsql::Value::Text(s) => Ok(s),
-        libsql::Value::Blob(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
-        libsql::Value::Null => Ok(String::new()),
-        libsql::Value::Integer(i) => Ok(i.to_string()),
-        libsql::Value::Real(f) => Ok(f.to_string()),
-    }
-}
-
-fn get_opt_string_lossy(
-    row: &libsql::Row,
-    idx: i32,
-) -> std::result::Result<Option<String>, libsql::Error> {
-    let val = row.get::<libsql::Value>(idx)?;
-    match val {
-        libsql::Value::Text(s) => Ok(Some(s)),
-        libsql::Value::Blob(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
-        libsql::Value::Null => Ok(None),
-        libsql::Value::Integer(i) => Ok(Some(i.to_string())),
-        libsql::Value::Real(f) => Ok(Some(f.to_string())),
-    }
-}
-
 impl<'a> GraphQueryManager<'a> {
     /// Creates a new `GraphQueryManager` backed by the given database.
     pub fn new(db: &'a Database) -> Self {
@@ -174,187 +99,15 @@ impl<'a> GraphQueryManager<'a> {
         include_public: bool,
         include_trait_impls: bool,
     ) -> Result<Vec<Node>> {
-        let kind_filter = if kinds.is_empty() {
-            String::new()
-        } else {
-            let kind_strs: Vec<String> =
-                kinds.iter().map(|k| format!("'{}'", k.as_str())).collect();
-            format!(" AND kind IN ({})", kind_strs.join(", "))
-        };
-        let visibility_filter = if include_public {
-            ""
-        } else {
-            " AND visibility != 'public'"
-        };
-
-        // Trait-impl methods (Rust `impl Trait for Type` blocks) are reached
-        // implicitly by the compiler — `Display::fmt` via `{}`, `Deref::deref`
-        // via auto-deref, `Drop::drop` via drop glue, `From::from` via `?`/
-        // `.into()` — so they carry no explicit incoming `calls` edge. They
-        // also can't be written `pub` in Rust, so they're stored as `private`
-        // and the visibility filter above never excludes them. The result is
-        // a flood of false positives (issue #137). Exclude any method whose
-        // parent is an `Impl`-kind node that is a *trait* impl (vs an inherent
-        // `impl Type` block, whose un-called methods are genuine dead code).
-        //
-        // We detect a trait impl two ways, OR'd together:
-        //   1) the impl node's signature contains ` for ` — i.e. the header is
-        //      `impl <Trait> for <Type>`. This is the PRIMARY signal and the
-        //      only one that works for the common case, because…
-        //   2) …the impl node bears an outgoing `implements` edge. This edge
-        //      only materializes when the trait resolves to an indexed node,
-        //      which it does NOT for stdlib/external traits (`Display`, `Drop`,
-        //      `Deref`, `From`, `AsRef`, …) — precisely the traits in the bug
-        //      report. So the edge alone misses almost every real case (mex has
-        //      zero `implements` edges); the signature scan is what carries the
-        //      fix. The edge is kept as a fallback for multi-line impl headers
-        //      where `extract_first_line` truncates before the ` for `.
-        //
-        // Inherent-impl signatures (`impl Type`) and ObjC `@implementation Foo`
-        // blocks contain no ` for `, so they are untouched — inherent dead
-        // methods are still reported. Class-based languages attach `implements`
-        // to the `Class` node (not an `impl`) and store interface methods
-        // `public`, so the visibility filter already covers them. The guarding
-        // `parent_id IS NULL OR` is required: `NULL NOT IN (...)` is NULL, not
-        // true, which would silently drop every top-level function.
-        let trait_impl_filter = if include_trait_impls {
-            ""
-        } else {
-            " AND (parent_id IS NULL OR parent_id NOT IN (
-                 SELECT p.id FROM nodes p
-                 WHERE p.kind = 'impl'
-                   AND (p.signature LIKE '% for %'
-                        OR p.id IN (SELECT source FROM edges WHERE kind = 'implements'))
-             ))"
-        };
-
-        // Only true "use sites" count as evidence that a symbol is alive:
-        // `calls`, `implements`, `extends`, `type_of`, `returns`, `receives`,
-        // `uses`. Bookkeeping edges (`contains`, `annotates`, `derives_macro`)
-        // are emitted by the extractor even for unused code — every Rust
-        // function tagged `#[inline]`, every `#[derive(Debug)]` on an unused
-        // struct, every annotation_usage adds an incoming edge that is NOT a
-        // real reference. Previously we excluded only `contains`, so any
-        // attribute on an otherwise-unused function masked it from
-        // dead-code detection — which is why the sonium run reported zero
-        // dead functions across 5,715. The narrower allowlist below restores
-        // the intended semantics: "no real caller / referencer = dead".
-        // Test-marker exclusion uses a two-step "resolve + filter in SQL":
-        //   1) `collect_test_marker_ids` runs the leading-wildcard `LIKE`
-        //      scan exactly once over `kind = 'annotation_usage'`.
-        //   2) The marker ids go to the dead-code SELECT as ONE bound
-        //      parameter, a JSON array built with `serde_json`, and the
-        //      SELECT drops test-annotated candidates with
-        //      `id NOT IN (SELECT target FROM edges WHERE kind = 'annotates'
-        //      AND source IN (SELECT value FROM json_each(?)))`.
-        //      The subquery is uncorrelated, so SQLite plans it as a
-        //      `LIST SUBQUERY`: it walks the JSON array once, probes
-        //      `idx_edges_source_kind` per marker, and builds a transient
-        //      in-memory index of the targets that each candidate probes.
-        //      That is the same shape as the old two-temp-table form,
-        //      without writing anything: selected graphs are opened with
-        //      `PRAGMA query_only = 1`, and the transient index is not a
-        //      database write. A single parameter also avoids SQLite's
-        //      bound-parameter limit, so there is no chunking.
-        //
-        // History — DO NOT regress this:
-        // - The pre-4.14.8 form joined `nodes a ON a.id = e2.source` inside
-        //   the correlated `NOT EXISTS` and ran the `a.name LIKE '%::test'`
-        //   chain per matching edge. Fast on scirs (0.1 s, 76 K
-        //   annotation_usage) but timed out on chromium at the 25 s probe
-        //   ceiling, cascade-poisoning every subsequent MCP tool call.
-        // - 4.14.8's `WITH test_marker_ids AS (...)` CTE attempt was even
-        //   worse: SQLite inlined the single-reference CTE, turning every
-        //   dead-candidate row into a full annotation_usage scan. Regressed
-        //   scirs from 0.1 s to >60 s, reverted in 4.14.9.
-        // - 4.14.12's first attempt (single temp table + correlated
-        //   `IN (SELECT id FROM temp.test_markers)` inside `NOT EXISTS`)
-        //   also failed on chromium: SQLite picked `idx_edges_unique
-        //   (source, target, kind)` for the subquery and iterated every
-        //   marker as the outer driver for every candidate
-        //   (~13K markers × ~134K candidates ≈ 1.7B probes). Timed out.
-        // - The next pre-join form (two temp tables, indexed `NOT IN`)
-        //   measured 0.75 s on chromium and 0.6 s on scirs. The
-        //   wildcard scan ran exactly once per call; the per-row
-        //   probe was against a ~15K-row indexed lookup table, not a
-        //   correlated subquery the optimiser can re-shape.
-        // - The two-temp-table form above wrote `temp.test_markers` and
-        //   `temp.test_annotated_targets`, which fails on selected graphs
-        //   (opened with `PRAGMA query_only = 1`) and let concurrent
-        //   read-only calls on the shared connection drop or refill each
-        //   other's tables.
-        // - The next form collected the targets into an in-memory `HashSet`
-        //   (chunked SELECTs of 500 marker ids) and skipped matching rows
-        //   while reading the main query. It was read-only safe but ~11%
-        //   slower per call: rows SQL used to filter out (~2,200 of ~2,970
-        //   candidates on a 24 K-node project) were read and decoded, then
-        //   discarded. Filtering in SQL with `json_each` restores that.
-        let marker_ids = self.db.collect_test_marker_ids().await?;
-        // Always bind the array, even when empty: `NOT IN` over an empty
-        // set is true, so every candidate is kept.
-        let marker_ids_json =
-            serde_json::to_string(&marker_ids).map_err(|e| TokenSaveError::Database {
-                message: format!("failed to encode test marker ids: {e}"),
-                operation: "find_dead_code".to_string(),
-            })?;
-        drop(marker_ids);
-        let godot_virtuals = GODOT_ENGINE_VIRTUALS
-            .iter()
-            .map(|n| format!("'{n}'"))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        let sql = format!(
-            "SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
-                    start_column, end_column, docstring, signature, visibility,
-                    is_async, branches, loops, returns, max_nesting, unsafe_blocks,
-                    unchecked_calls, assertions, updated_at, attrs_start_line
-             FROM nodes
-             WHERE kind != 'route'
-             AND name != 'main'
-             AND name != '_bind_methods'
-             AND name NOT LIKE 'test%'
-             -- Go package-level `init` is invoked implicitly by the runtime at
-             -- package load and can never be called explicitly, so it carries
-             -- no incoming `calls` edge — the same reason `main`, `test*`, and
-             -- Rust trait-impl methods are exempt. Scoped to `.go` so a callable
-             -- function named `init` in another language is still checked (#346).
-             AND NOT (name = 'init' AND file_path LIKE '%.go')
-             -- Godot engine virtuals (`_ready`, `_process`, ...) are called by the
-             -- engine, never by project code, so they have no incoming edge either.
-             -- Scoped to `.gd` for the same reason as Go `init` (#598).
-             AND NOT (file_path LIKE '%.gd' AND name IN ({godot_virtuals}))
-             {visibility_filter}
-             {kind_filter}
-             {trait_impl_filter}
-             AND NOT EXISTS (
-                 SELECT 1 FROM edges
-                 WHERE target = nodes.id
-                 AND kind IN ('calls', 'implements', 'extends', 'type_of', 'returns', 'receives', 'uses')
-             )
-             AND id NOT IN (
-                 SELECT target FROM edges
-                 WHERE kind = 'annotates'
-                 AND source IN (SELECT value FROM json_each(?1))
-             )"
-        );
-
-        let mut rows = self
+        let mut dead = self
             .db
-            .profiled_query(DbOp::FindDeadCode, &sql, libsql::params![marker_ids_json])
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to find dead code: {e}"),
-                operation: "find_dead_code".to_string(),
-            })?;
-
-        let mut dead = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read row: {e}"),
-            operation: "find_dead_code".to_string(),
-        })? {
-            dead.push(row_to_node_dead_code(&row)?);
-        }
+            .find_dead_code_candidates(
+                kinds,
+                include_public,
+                include_trait_impls,
+                GODOT_ENGINE_VIRTUALS,
+            )
+            .await?;
 
         if dead
             .iter()
@@ -382,41 +135,7 @@ impl<'a> GraphQueryManager<'a> {
     /// called method is live too; an override of a base method nothing
     /// reaches stays dead, like the base method itself.
     async fn gdscript_live_overrides(&self) -> Result<HashSet<String>> {
-        let sql = "WITH RECURSIVE ancestry(cls, base) AS (
-                 SELECT e.source, e.target FROM edges e
-                 WHERE e.kind = 'extends'
-                   AND e.source IN (SELECT id FROM nodes
-                                    WHERE file_path LIKE '%.gd'
-                                      AND kind IN ('class', 'inner_class'))
-                 UNION
-                 SELECT a.cls, e.target FROM ancestry a
-                 JOIN edges e ON e.source = a.base AND e.kind = 'extends'
-             )
-             SELECT DISTINCT m.id FROM ancestry a
-             JOIN nodes m ON m.parent_id = a.cls AND m.kind IN ('function', 'method')
-             JOIN nodes b ON b.parent_id = a.base AND b.name = m.name
-                         AND b.kind IN ('function', 'method')
-             WHERE EXISTS (SELECT 1 FROM edges c
-                           WHERE c.target = b.id AND c.kind IN ('calls', 'uses'))";
-        let mut rows = self
-            .db
-            .profiled_query(DbOp::GdscriptLiveOverrides, sql, ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to find live GDScript overrides: {e}"),
-                operation: "gdscript_live_overrides".to_string(),
-            })?;
-        let mut live = HashSet::new();
-        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read row: {e}"),
-            operation: "gdscript_live_overrides".to_string(),
-        })? {
-            live.insert(row.get::<String>(0).map_err(|e| TokenSaveError::Database {
-                message: format!("failed to read override id: {e}"),
-                operation: "gdscript_live_overrides".to_string(),
-            })?);
-        }
-        Ok(live)
+        self.db.gdscript_live_overrides().await
     }
 
     /// Computes metrics for a single node describing its graph connectivity.
@@ -460,42 +179,10 @@ impl<'a> GraphQueryManager<'a> {
         }
 
         let node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
-        let placeholders: Vec<String> = (1..=node_ids.len()).map(|i| format!("?{i}")).collect();
-        let kind_filter = "('uses', 'calls')";
-
-        let sql = format!(
-            "SELECT DISTINCT e.target FROM edges e \
-             WHERE e.source IN ({}) AND e.kind IN {kind_filter}",
-            placeholders.join(", ")
-        );
-
-        let param_values: Vec<libsql::Value> = node_ids
-            .iter()
-            .map(|id| libsql::Value::Text(id.clone()))
-            .collect();
-
-        let mut rows = self
+        let target_ids = self
             .db
-            .profiled_query(
-                DbOp::GetFileDependencies,
-                &sql,
-                libsql::params_from_iter(param_values),
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to query file dependencies: {e}"),
-                operation: "get_file_dependencies".to_string(),
-            })?;
-
-        let mut target_ids: Vec<String> = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read target id: {e}"),
-            operation: "get_file_dependencies".to_string(),
-        })? {
-            if let Ok(id) = row.get::<String>(0) {
-                target_ids.push(id);
-            }
-        }
+            .get_edge_endpoint_ids(&node_ids, EdgeEndpoint::Targets)
+            .await?;
 
         if target_ids.is_empty() {
             return Ok(Vec::new());
@@ -525,42 +212,10 @@ impl<'a> GraphQueryManager<'a> {
         }
 
         let node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
-        let placeholders: Vec<String> = (1..=node_ids.len()).map(|i| format!("?{i}")).collect();
-        let kind_filter = "('uses', 'calls')";
-
-        let sql = format!(
-            "SELECT DISTINCT e.source FROM edges e \
-             WHERE e.target IN ({}) AND e.kind IN {kind_filter}",
-            placeholders.join(", ")
-        );
-
-        let param_values: Vec<libsql::Value> = node_ids
-            .iter()
-            .map(|id| libsql::Value::Text(id.clone()))
-            .collect();
-
-        let mut rows = self
+        let source_ids = self
             .db
-            .profiled_query(
-                DbOp::GetFileDependents,
-                &sql,
-                libsql::params_from_iter(param_values),
-            )
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to query file dependents: {e}"),
-                operation: "get_file_dependents".to_string(),
-            })?;
-
-        let mut source_ids: Vec<String> = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read source id: {e}"),
-            operation: "get_file_dependents".to_string(),
-        })? {
-            if let Ok(id) = row.get::<String>(0) {
-                source_ids.push(id);
-            }
-        }
+            .get_edge_endpoint_ids(&node_ids, EdgeEndpoint::Sources)
+            .await?;
 
         if source_ids.is_empty() {
             return Ok(Vec::new());
@@ -625,21 +280,7 @@ impl<'a> GraphQueryManager<'a> {
         &self,
         path_prefix: Option<&str>,
     ) -> Result<HashMap<String, HashSet<String>>> {
-        let sql = "SELECT DISTINCT n1.file_path AS src_file, n2.file_path AS tgt_file \
-                   FROM edges e \
-                   JOIN nodes n1 ON e.source = n1.id \
-                   JOIN nodes n2 ON e.target = n2.id \
-                   WHERE e.kind IN ('calls', 'uses') \
-                   AND n1.file_path != n2.file_path";
-
-        let mut rows = self
-            .db
-            .profiled_query(DbOp::BuildFileAdjacency, sql, ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to query file adjacency: {e}"),
-                operation: "build_file_adjacency".to_string(),
-            })?;
+        let pairs = self.db.get_cross_file_edge_pairs().await?;
 
         // Normalise the prefix once: ensure it ends with '/'.
         let prefix: Option<String> = path_prefix.map(|p| {
@@ -652,13 +293,7 @@ impl<'a> GraphQueryManager<'a> {
 
         let mut adj: HashMap<String, HashSet<String>> = HashMap::new();
 
-        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read adjacency row: {e}"),
-            operation: "build_file_adjacency".to_string(),
-        })? {
-            let src: String = row.get(0).unwrap_or_default();
-            let tgt: String = row.get(1).unwrap_or_default();
-
+        for (src, tgt) in pairs {
             if let Some(ref pfx) = prefix {
                 if !src.starts_with(pfx.as_str()) || !tgt.starts_with(pfx.as_str()) {
                     continue;

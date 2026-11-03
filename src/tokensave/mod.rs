@@ -46,6 +46,9 @@ pub use rename::{validate_identifier, RenameConfidence, RenameOutcome, RenamePla
 pub use runtime::BranchRuntime;
 pub use staleness::{AutoSyncScope, BranchDrift, DEFAULT_MAX_AUTO_SYNC_FILES};
 pub use util::is_test_file;
+// Session-memory records moved to `crate::types` with their storage (#904);
+// re-exported so `tokensave::tokensave::DecisionRecord` keeps resolving.
+pub use crate::types::{CodeAreaRecord, DecisionRecord};
 pub(crate) use util::*;
 
 /// Central orchestrator that coordinates all subsystems of the code graph.
@@ -77,38 +80,6 @@ pub struct TokenSave {
         crate::cpu::CpuUsage,
         crate::global_benchmark::CpuUsageSource,
     ),
-}
-
-/// A decision recorded by an agent during a session.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct DecisionRecord {
-    /// Row id.
-    pub id: i64,
-    /// The decision text.
-    pub text: String,
-    /// Optional rationale for the decision.
-    pub reason: Option<String>,
-    /// UNIX timestamp (seconds) when the decision was recorded.
-    pub created_at: i64,
-    /// File paths relevant to this decision.
-    pub files: Vec<String>,
-    /// Arbitrary tags for categorisation.
-    pub tags: Vec<String>,
-}
-
-/// A code area (file path) that an agent has touched during a session.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct CodeAreaRecord {
-    /// Row id.
-    pub id: i64,
-    /// Relative file path.
-    pub path: String,
-    /// Optional human-readable description of the area.
-    pub description: Option<String>,
-    /// UNIX timestamp (seconds) of the most recent touch.
-    pub last_touched_at: i64,
-    /// How many times this path has been touched.
-    pub touch_count: u32,
 }
 
 /// Result of a full indexing operation.
@@ -247,7 +218,8 @@ impl TokenSave {
     /// added columns) signals that a forced reindex is needed to backfill the
     /// new schema. Falls back to `false` when the version cannot be read.
     pub async fn needs_schema_upgrade(&self) -> bool {
-        crate::db::migrations::read_schema_version(self.db.conn())
+        self.db
+            .schema_version()
             .await
             .is_ok_and(|v| v < crate::db::migrations::latest_version())
     }

@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use serde::Serialize;
 
 use crate::db::Database;
-use crate::errors::{Result, TokenSaveError};
+use crate::errors::Result;
 
 /// One import statement, as written in the source.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -181,43 +181,10 @@ impl Database {
     /// package resolves to nothing and is not a dependency between this
     /// project's modules, and a same-module import is not a dependency at all.
     pub async fn build_module_import_graph(&self, depth: usize) -> Result<ModuleImportGraph> {
-        // `n1` is the Use node the extractor emitted for the import statement;
-        // `n2` is whatever the resolver bound it to. `Contains` is stored as
-        // `nodes.parent_id` rather than an edge row, and that parent is what
-        // distinguishes a module-level import (parent is the file) from a lazy
-        // one written inside a function body.
-        let sql = "SELECT DISTINCT n1.file_path, n1.start_line, n1.name, n1.signature, \
-                   n2.file_path, COALESCE(parent.kind, 'file') \
-                   FROM edges e \
-                   JOIN nodes n1 ON e.source = n1.id \
-                   JOIN nodes n2 ON e.target = n2.id \
-                   LEFT JOIN nodes parent ON parent.id = n1.parent_id \
-                   WHERE e.kind = 'uses' AND n1.kind = 'use' \
-                   AND n1.file_path != n2.file_path";
-
-        let mut rows = self
-            .conn()
-            .query(sql, ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to query import graph: {e}"),
-                operation: "build_module_import_graph".to_string(),
-            })?;
-
         let mut graph = ModuleImportGraph::default();
-        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read import row: {e}"),
-            operation: "build_module_import_graph".to_string(),
-        })? {
-            let file: String = row.get(0).unwrap_or_default();
-            let line: u32 = row.get(1).unwrap_or(0);
-            let imported: String = row.get(2).unwrap_or_default();
-            let statement: Option<String> = row.get(3).ok();
-            let resolved_file: String = row.get(4).unwrap_or_default();
-            let parent_kind: String = row.get(5).unwrap_or_else(|_| "file".to_string());
-
-            let from = module_of(&file, depth);
-            let to = module_of(&resolved_file, depth);
+        for row in self.get_cross_file_import_rows().await? {
+            let from = module_of(&row.file, depth);
+            let to = module_of(&row.resolved_file, depth);
             graph.modules.insert(from.clone());
             graph.modules.insert(to.clone());
             if from == to {
@@ -225,13 +192,13 @@ impl Database {
             }
 
             let site = ImportSite {
-                file,
-                line: line.saturating_add(1),
-                imported,
-                type_only: is_type_only(statement.as_deref()),
-                statement,
-                resolved_file,
-                lazy: parent_kind != "file",
+                file: row.file,
+                line: row.line.saturating_add(1),
+                imported: row.imported,
+                type_only: is_type_only(row.statement.as_deref()),
+                statement: row.statement,
+                resolved_file: row.resolved_file,
+                lazy: row.parent_kind != "file",
             };
             let sites = graph.edges.entry((from, to)).or_default();
             if !sites.contains(&site) {

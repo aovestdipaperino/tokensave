@@ -33,9 +33,9 @@ is added, and the query ID remains stable.
 
 ## Inventory summary
 
-- SQL-bearing source files: **40**.
-- SQL literal/template occurrences: **377**.
-- Functions retained for construction/binding context: **183**.
+- SQL-bearing source files: **38**.
+- SQL literal/template occurrences: **376**.
+- Functions retained for construction/binding context: **181**.
 
 ## Source file index
 
@@ -46,36 +46,34 @@ is added, and the query ID remains stable.
 | [src/blame_engine.rs](../src/blame_engine.rs) | 16 |
 | [src/branch.rs](../src/branch.rs) | 2 |
 | [src/db/compatibility.rs](../src/db/compatibility.rs) | 7 |
-| [src/db/connection.rs](../src/db/connection.rs) | 11 |
+| [src/db/connection.rs](../src/db/connection.rs) | 12 |
 | [src/db/debug_sql.rs](../src/db/debug_sql.rs) | 7 |
 | [src/db/debug_sql/tests.rs](../src/db/debug_sql/tests.rs) | 16 |
 | [src/db/migrations.rs](../src/db/migrations.rs) | 60 |
+| [src/db/probe.rs](../src/db/probe.rs) | 1 |
+| [src/db/queries/audit.rs](../src/db/queries/audit.rs) | 4 |
 | [src/db/queries/clear.rs](../src/db/queries/clear.rs) | 1 |
 | [src/db/queries/edges.rs](../src/db/queries/edges.rs) | 55 |
 | [src/db/queries/files.rs](../src/db/queries/files.rs) | 8 |
 | [src/db/queries/fingerprints.rs](../src/db/queries/fingerprints.rs) | 3 |
+| [src/db/queries/graph.rs](../src/db/queries/graph.rs) | 6 |
+| [src/db/queries/memory.rs](../src/db/queries/memory.rs) | 7 |
 | [src/db/queries/metadata.rs](../src/db/queries/metadata.rs) | 5 |
 | [src/db/queries/mod.rs](../src/db/queries/mod.rs) | 3 |
 | [src/db/queries/nodes.rs](../src/db/queries/nodes.rs) | 36 |
 | [src/db/queries/routes.rs](../src/db/queries/routes.rs) | 18 |
 | [src/db/queries/search.rs](../src/db/queries/search.rs) | 7 |
 | [src/db/queries/stats.rs](../src/db/queries/stats.rs) | 5 |
+| [src/db/queries/telemetry.rs](../src/db/queries/telemetry.rs) | 4 |
 | [src/db/queries/unresolved.rs](../src/db/queries/unresolved.rs) | 10 |
 | [src/doctor.rs](../src/doctor.rs) | 1 |
-| [src/edge_audit.rs](../src/edge_audit.rs) | 4 |
 | [src/extraction/fstar_extractor.rs](../src/extraction/fstar_extractor.rs) | 2 |
 | [src/extraction/ruby_extractor.rs](../src/extraction/ruby_extractor.rs) | 1 |
 | [src/extraction/ruby_template_extractor.rs](../src/extraction/ruby_template_extractor.rs) | 1 |
 | [src/global_db.rs](../src/global_db.rs) | 41 |
-| [src/graph/imports.rs](../src/graph/imports.rs) | 1 |
-| [src/graph/queries.rs](../src/graph/queries.rs) | 5 |
 | [src/graphify.rs](../src/graphify.rs) | 5 |
-| [src/hooks.rs](../src/hooks.rs) | 1 |
 | [src/mcp/tools/definitions.rs](../src/mcp/tools/definitions.rs) | 4 |
 | [src/mcp/tools/handlers/workflow.rs](../src/mcp/tools/handlers/workflow.rs) | 1 |
-| [src/quality_diff.rs](../src/quality_diff.rs) | 2 |
-| [src/runtime_telemetry.rs](../src/runtime_telemetry.rs) | 4 |
-| [src/tokensave/memory.rs](../src/tokensave/memory.rs) | 7 |
 | [src/tokensave/rename.rs](../src/tokensave/rename.rs) | 3 |
 | [src/tokensave/runtime.rs](../src/tokensave/runtime.rs) | 2 |
 | [src/upgrade.rs](../src/upgrade.rs) | 3 |
@@ -294,9 +292,19 @@ Source: [src/db/connection.rs:245](../src/db/connection.rs#L245).
 PRAGMA user_version
 ```
 
+#### Q0308 — `begin_read_snapshot`
+
+Source: [src/db/connection.rs:320](../src/db/connection.rs#L320).
+
+```sql
+BEGIN
+```
+
+The quality diff's base and target reads both call this method; the second `BEGIN` occurrence (formerly Q0309) is merged here and its ID is retired.
+
 #### Q0026 — `checkpoint`
 
-Source: [src/db/connection.rs:312](../src/db/connection.rs#L312).
+Source: [src/db/connection.rs:334](../src/db/connection.rs#L334).
 
 ```sql
 PRAGMA wal_checkpoint(TRUNCATE);
@@ -304,7 +312,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 
 #### Q0027 — `optimize`
 
-Source: [src/db/connection.rs:324](../src/db/connection.rs#L324).
+Source: [src/db/connection.rs:346](../src/db/connection.rs#L346).
 
 ```sql
 VACUUM; ANALYZE;
@@ -312,7 +320,7 @@ VACUUM; ANALYZE;
 
 #### Q0028 — `size`
 
-Source: [src/db/connection.rs:338](../src/db/connection.rs#L338).
+Source: [src/db/connection.rs:360](../src/db/connection.rs#L360).
 
 ```sql
 SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()
@@ -320,7 +328,7 @@ SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()
 
 #### Q0029 — `quick_check`
 
-Source: [src/db/connection.rs:374](../src/db/connection.rs#L374).
+Source: [src/db/connection.rs:396](../src/db/connection.rs#L396).
 
 ```sql
 PRAGMA quick_check
@@ -328,7 +336,7 @@ PRAGMA quick_check
 
 #### Q0030 — `needs_bulk_load_finalization`
 
-Source: [src/db/connection.rs:405](../src/db/connection.rs#L405).
+Source: [src/db/connection.rs:427](../src/db/connection.rs#L427).
 
 ```sql
 SELECT name FROM sqlite_master WHERE type IN ('table', 'index')
@@ -336,7 +344,7 @@ SELECT name FROM sqlite_master WHERE type IN ('table', 'index')
 
 #### Q0031 — `rebuild_fts`
 
-Source: [src/db/connection.rs:434](../src/db/connection.rs#L434).
+Source: [src/db/connection.rs:456](../src/db/connection.rs#L456).
 
 ```sql
 INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')
@@ -344,7 +352,7 @@ INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')
 
 #### Q0032 — `apply_pragmas`
 
-Source: [src/db/connection.rs:451](../src/db/connection.rs#L451).
+Source: [src/db/connection.rs:473](../src/db/connection.rs#L473).
 
 ```sql
 PRAGMA page_size = 8192;
@@ -359,7 +367,7 @@ PRAGMA page_size = 8192;
 
 #### Q0033 — `begin_bulk_load`
 
-Source: [src/db/connection.rs:475](../src/db/connection.rs#L475).
+Source: [src/db/connection.rs:497](../src/db/connection.rs#L497).
 
 ```sql
 PRAGMA foreign_keys = OFF;
@@ -389,7 +397,7 @@ PRAGMA foreign_keys = OFF;
 
 #### Q0034 — `end_bulk_load`
 
-Source: [src/db/connection.rs:518](../src/db/connection.rs#L518).
+Source: [src/db/connection.rs:540](../src/db/connection.rs#L540).
 
 ```sql
 DELETE FROM edges
@@ -1510,6 +1518,50 @@ INSERT OR IGNORE INTO ambiguous_call_candidates
              WHERE j.type = 'text';
 ```
 
+### src/db/probe.rs
+
+#### Q0302 — `any_name_indexed`
+
+Source: [src/db/probe.rs:19](../src/db/probe.rs#L19).
+
+```sql
+SELECT 1 FROM nodes WHERE LOWER(name) IN ({placeholders}) LIMIT 1
+```
+
+### src/db/queries/audit.rs
+
+#### Q0247 — `for_each_use_node`
+
+Source: [src/db/queries/audit.rs:49](../src/db/queries/audit.rs#L49).
+
+```sql
+SELECT file_path, name FROM nodes WHERE kind = 'use'
+```
+
+#### Q0248 — `for_each_symbol_name_count`
+
+Source: [src/db/queries/audit.rs:64](../src/db/queries/audit.rs#L64).
+
+```sql
+SELECT name, COUNT(*) FROM nodes WHERE kind <> 'file' AND kind <> 'use' GROUP BY name
+```
+
+#### Q0249 — `for_each_node_name`
+
+Source: [src/db/queries/audit.rs:77](../src/db/queries/audit.rs#L77).
+
+```sql
+SELECT id, name FROM nodes
+```
+
+#### Q0250 — `for_each_audit_edge`
+
+Source: [src/db/queries/audit.rs:89](../src/db/queries/audit.rs#L89).
+
+```sql
+SELECT s.file_path, n.id, n.name, n.file_path, n.kind, n.start_line, n.parent_id FROM edges e JOIN nodes n ON n.id = e.target JOIN nodes s ON s.id = e.source
+```
+
 ### src/db/queries/clear.rs
 
 #### Q0088 — `clear`
@@ -2262,6 +2314,164 @@ SELECT node_id, ast_hash, cfg_hash, call_seq_hash, shingles, body_tokens, source
                    FROM node_fingerprints
 ```
 
+### src/db/queries/graph.rs
+
+#### Q0297 — `find_dead_code_candidates`
+
+Source: [src/db/queries/graph.rs:183](../src/db/queries/graph.rs#L183).
+
+```sql
+SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
+                    start_column, end_column, docstring, signature, visibility,
+                    is_async, branches, loops, returns, max_nesting, unsafe_blocks,
+                    unchecked_calls, assertions, updated_at, attrs_start_line
+             FROM nodes
+             WHERE kind != 'route'
+             AND name != 'main'
+             AND name != '_bind_methods'
+             AND name NOT LIKE 'test%'
+             -- Go package-level `init` is invoked implicitly by the runtime at
+             -- package load and can never be called explicitly, so it carries
+             -- no incoming `calls` edge — the same reason `main`, `test*`, and
+             -- Rust trait-impl methods are exempt. Scoped to `.go` so a callable
+             -- function named `init` in another language is still checked (#346).
+             AND NOT (name = 'init' AND file_path LIKE '%.go')
+             -- Godot engine virtuals (`_ready`, `_process`, ...) are called by the
+             -- engine, never by project code, so they have no incoming edge either.
+             -- Scoped to `.gd` for the same reason as Go `init` (#598).
+             AND NOT (file_path LIKE '%.gd' AND name IN ({godot_virtuals}))
+             {visibility_filter}
+             {kind_filter}
+             {trait_impl_filter}
+             AND NOT EXISTS (
+                 SELECT 1 FROM edges
+                 WHERE target = nodes.id
+                 AND kind IN ('calls', 'implements', 'extends', 'type_of', 'returns', 'receives', 'uses')
+             )
+             AND id NOT IN (
+                 SELECT target FROM edges
+                 WHERE kind = 'annotates'
+                 AND source IN (SELECT value FROM json_each(?1))
+             )
+```
+
+#### Q0298 — `gdscript_live_overrides`
+
+Source: [src/db/queries/graph.rs:233](../src/db/queries/graph.rs#L233).
+
+```sql
+WITH RECURSIVE ancestry(cls, base) AS (
+                 SELECT e.source, e.target FROM edges e
+                 WHERE e.kind = 'extends'
+                   AND e.source IN (SELECT id FROM nodes
+                                    WHERE file_path LIKE '%.gd'
+                                      AND kind IN ('class', 'inner_class'))
+                 UNION
+                 SELECT a.cls, e.target FROM ancestry a
+                 JOIN edges e ON e.source = a.base AND e.kind = 'extends'
+             )
+             SELECT DISTINCT m.id FROM ancestry a
+             JOIN nodes m ON m.parent_id = a.cls AND m.kind IN ('function', 'method')
+             JOIN nodes b ON b.parent_id = a.base AND b.name = m.name
+                         AND b.kind IN ('function', 'method')
+             WHERE EXISTS (SELECT 1 FROM edges c
+                           WHERE c.target = b.id AND c.kind IN ('calls', 'uses'))
+```
+
+#### Q0299 — `get_edge_endpoint_ids`
+
+Source: [src/db/queries/graph.rs:302](../src/db/queries/graph.rs#L302).
+
+```sql
+SELECT DISTINCT e.target FROM edges e WHERE e.source IN ({}) AND e.kind IN {kind_filter}
+```
+
+Q0299 and Q0300 share the template in `get_edge_endpoint_ids`: `EdgeEndpoint::Targets` builds the dependency form, `EdgeEndpoint::Sources` the dependent form.
+
+#### Q0300 — `get_edge_endpoint_ids`
+
+Source: [src/db/queries/graph.rs:302](../src/db/queries/graph.rs#L302).
+
+```sql
+SELECT DISTINCT e.source FROM edges e WHERE e.target IN ({}) AND e.kind IN {kind_filter}
+```
+
+Q0299 and Q0300 share the template in `get_edge_endpoint_ids`: `EdgeEndpoint::Targets` builds the dependency form, `EdgeEndpoint::Sources` the dependent form.
+
+#### Q0301 — `get_cross_file_edge_pairs`
+
+Source: [src/db/queries/graph.rs:334](../src/db/queries/graph.rs#L334).
+
+```sql
+SELECT DISTINCT n1.file_path AS src_file, n2.file_path AS tgt_file FROM edges e JOIN nodes n1 ON e.source = n1.id JOIN nodes n2 ON e.target = n2.id WHERE e.kind IN ('calls', 'uses') AND n1.file_path != n2.file_path
+```
+
+#### Q0296 — `get_cross_file_import_rows`
+
+Source: [src/db/queries/graph.rs:369](../src/db/queries/graph.rs#L369).
+
+```sql
+SELECT DISTINCT n1.file_path, n1.start_line, n1.name, n1.signature, n2.file_path, COALESCE(parent.kind, 'file') FROM edges e JOIN nodes n1 ON e.source = n1.id JOIN nodes n2 ON e.target = n2.id LEFT JOIN nodes parent ON parent.id = n1.parent_id WHERE e.kind = 'uses' AND n1.kind = 'use' AND n1.file_path != n2.file_path
+```
+
+### src/db/queries/memory.rs
+
+#### Q0314 — `insert_decision`
+
+Source: [src/db/queries/memory.rs:29](../src/db/queries/memory.rs#L29).
+
+```sql
+INSERT INTO memory_decisions (text, reason, created_at, files, tags) VALUES (?1, ?2, ?3, ?4, ?5)
+```
+
+#### Q0315 — `get_decisions`
+
+Source: [src/db/queries/memory.rs:64](../src/db/queries/memory.rs#L64).
+
+```sql
+SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags FROM memory_decisions d JOIN memory_decisions_fts f ON f.rowid = d.id WHERE memory_decisions_fts MATCH ?1 AND d.created_at >= ?2 ORDER BY d.created_at DESC LIMIT ?3
+```
+
+#### Q0316 — `get_decisions`
+
+Source: [src/db/queries/memory.rs:75](../src/db/queries/memory.rs#L75).
+
+```sql
+SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags FROM memory_decisions d JOIN memory_decisions_fts f ON f.rowid = d.id WHERE memory_decisions_fts MATCH ?1 ORDER BY d.created_at DESC LIMIT ?2
+```
+
+#### Q0317 — `get_decisions`
+
+Source: [src/db/queries/memory.rs:84](../src/db/queries/memory.rs#L84).
+
+```sql
+SELECT id, text, reason, created_at, files, tags FROM memory_decisions WHERE created_at >= ?1 ORDER BY created_at DESC LIMIT ?2
+```
+
+#### Q0318 — `get_decisions`
+
+Source: [src/db/queries/memory.rs:93](../src/db/queries/memory.rs#L93).
+
+```sql
+SELECT id, text, reason, created_at, files, tags FROM memory_decisions ORDER BY created_at DESC LIMIT ?1
+```
+
+#### Q0319 — `upsert_code_area`
+
+Source: [src/db/queries/memory.rs:135](../src/db/queries/memory.rs#L135).
+
+```sql
+INSERT INTO memory_code_areas (path, description, last_touched_at, touch_count) VALUES (?1, ?2, ?3, 1) ON CONFLICT(path) DO UPDATE SET description = COALESCE(excluded.description, memory_code_areas.description), last_touched_at = excluded.last_touched_at, touch_count = memory_code_areas.touch_count + 1
+```
+
+#### Q0320 — `get_code_areas`
+
+Source: [src/db/queries/memory.rs:157](../src/db/queries/memory.rs#L157).
+
+```sql
+SELECT id, path, description, last_touched_at, touch_count FROM memory_code_areas ORDER BY last_touched_at DESC LIMIT ?1
+```
+
 ### src/db/queries/metadata.rs
 
 #### Q0151 — `get_metadata`
@@ -2322,7 +2532,7 @@ SELECT id FROM nodes
 
 #### Q0164 — `query_kind_counts_coalesces_null_kind`
 
-Source: [src/db/queries/mod.rs:498](../src/db/queries/mod.rs#L498).
+Source: [src/db/queries/mod.rs:504](../src/db/queries/mod.rs#L504).
 
 ```sql
 CREATE TABLE t (kind TEXT)
@@ -2330,7 +2540,7 @@ CREATE TABLE t (kind TEXT)
 
 #### Q0165 — `query_kind_counts_coalesces_null_kind`
 
-Source: [src/db/queries/mod.rs:501](../src/db/queries/mod.rs#L501).
+Source: [src/db/queries/mod.rs:507](../src/db/queries/mod.rs#L507).
 
 ```sql
 INSERT INTO t (kind) VALUES ('function'), (NULL)
@@ -2338,7 +2548,7 @@ INSERT INTO t (kind) VALUES ('function'), (NULL)
 
 #### Q0166 — `query_kind_counts_coalesces_null_kind`
 
-Source: [src/db/queries/mod.rs:505](../src/db/queries/mod.rs#L505).
+Source: [src/db/queries/mod.rs:511](../src/db/queries/mod.rs#L511).
 
 ```sql
 SELECT kind, COUNT(*) FROM t GROUP BY kind
@@ -2994,6 +3204,40 @@ Source: [src/db/queries/stats.rs:144](../src/db/queries/stats.rs#L144).
 SELECT COALESCE(MAX(indexed_at), 0) FROM files
 ```
 
+### src/db/queries/telemetry.rs
+
+#### Q0310 — `journal_mode`
+
+Source: [src/db/queries/telemetry.rs:54](../src/db/queries/telemetry.rs#L54).
+
+```sql
+PRAGMA journal_mode
+```
+
+#### Q0311 — `source_total_bytes`
+
+Source: [src/db/queries/telemetry.rs:64](../src/db/queries/telemetry.rs#L64).
+
+```sql
+SELECT COALESCE(SUM(size), 0) FROM files
+```
+
+#### Q0312 — `graph_counts`
+
+Source: [src/db/queries/telemetry.rs:87](../src/db/queries/telemetry.rs#L87).
+
+```sql
+SELECT COUNT(*) FROM nodes
+```
+
+#### Q0313 — `graph_counts`
+
+Source: [src/db/queries/telemetry.rs:90](../src/db/queries/telemetry.rs#L90).
+
+```sql
+SELECT COUNT(*) FROM edges
+```
+
 ### src/db/queries/unresolved.rs
 
 #### Q0236 — `get_gdscript_typed_refs`
@@ -3096,40 +3340,6 @@ Source: [src/doctor.rs:108](../src/doctor.rs#L108).
 
 ```sql
 VACUUM failed: {e}
-```
-
-### src/edge_audit.rs
-
-#### Q0247 — `audit`
-
-Source: [src/edge_audit.rs:111](../src/edge_audit.rs#L111).
-
-```sql
-SELECT file_path, name FROM nodes WHERE kind = 'use'
-```
-
-#### Q0248 — `audit`
-
-Source: [src/edge_audit.rs:125](../src/edge_audit.rs#L125).
-
-```sql
-SELECT name, COUNT(*) FROM nodes WHERE kind <> 'file' AND kind <> 'use' GROUP BY name
-```
-
-#### Q0249 — `audit`
-
-Source: [src/edge_audit.rs:141](../src/edge_audit.rs#L141).
-
-```sql
-SELECT id, name FROM nodes
-```
-
-#### Q0250 — `audit`
-
-Source: [src/edge_audit.rs:161](../src/edge_audit.rs#L161).
-
-```sql
-SELECT s.file_path, n.id, n.name, n.file_path, n.kind, n.start_line, n.parent_id FROM edges e JOIN nodes n ON n.id = e.target JOIN nodes s ON s.id = e.source
 ```
 
 ### src/extraction/fstar_extractor.rs
@@ -3603,114 +3813,6 @@ Source: [src/global_db.rs:1100](../src/global_db.rs#L1100).
 INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_tokens) VALUES (42, ?1, 'tokensave_context', 1000, 100)
 ```
 
-### src/graph/imports.rs
-
-#### Q0296 — `build_module_import_graph`
-
-Source: [src/graph/imports.rs:189](../src/graph/imports.rs#L189).
-
-```sql
-SELECT DISTINCT n1.file_path, n1.start_line, n1.name, n1.signature, n2.file_path, COALESCE(parent.kind, 'file') FROM edges e JOIN nodes n1 ON e.source = n1.id JOIN nodes n2 ON e.target = n2.id LEFT JOIN nodes parent ON parent.id = n1.parent_id WHERE e.kind = 'uses' AND n1.kind = 'use' AND n1.file_path != n2.file_path
-```
-
-### src/graph/queries.rs
-
-#### Q0297 — `find_dead_code`
-
-Source: [src/graph/queries.rs:306](../src/graph/queries.rs#L306).
-
-```sql
-SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
-                    start_column, end_column, docstring, signature, visibility,
-                    is_async, branches, loops, returns, max_nesting, unsafe_blocks,
-                    unchecked_calls, assertions, updated_at, attrs_start_line
-             FROM nodes
-             WHERE kind != 'route'
-             AND name != 'main'
-             AND name != '_bind_methods'
-             AND name NOT LIKE 'test%'
-             -- Go package-level `init` is invoked implicitly by the runtime at
-             -- package load and can never be called explicitly, so it carries
-             -- no incoming `calls` edge — the same reason `main`, `test*`, and
-             -- Rust trait-impl methods are exempt. Scoped to `.go` so a callable
-             -- function named `init` in another language is still checked (#346).
-             AND NOT (name = 'init' AND file_path LIKE '%.go')
-             -- Godot engine virtuals (`_ready`, `_process`, ...) are called by the
-             -- engine, never by project code, so they have no incoming edge either.
-             -- Scoped to `.gd` for the same reason as Go `init` (#598).
-             AND NOT (file_path LIKE '%.gd' AND name IN ({godot_virtuals}))
-             {visibility_filter}
-             {kind_filter}
-             {trait_impl_filter}
-             AND NOT EXISTS (
-                 SELECT 1 FROM edges
-                 WHERE target = nodes.id
-                 AND kind IN ('calls', 'implements', 'extends', 'type_of', 'returns', 'receives', 'uses')
-             )
-             AND id NOT IN (
-                 SELECT target FROM edges
-                 WHERE kind = 'annotates'
-                 AND source IN (SELECT value FROM json_each(?1))
-             )
-```
-
-#### Q0298 — `gdscript_live_overrides`
-
-Source: [src/graph/queries.rs:385](../src/graph/queries.rs#L385).
-
-```sql
-WITH RECURSIVE ancestry(cls, base) AS (
-                 SELECT e.source, e.target FROM edges e
-                 WHERE e.kind = 'extends'
-                   AND e.source IN (SELECT id FROM nodes
-                                    WHERE file_path LIKE '%.gd'
-                                      AND kind IN ('class', 'inner_class'))
-                 UNION
-                 SELECT a.cls, e.target FROM ancestry a
-                 JOIN edges e ON e.source = a.base AND e.kind = 'extends'
-             )
-             SELECT DISTINCT m.id FROM ancestry a
-             JOIN nodes m ON m.parent_id = a.cls AND m.kind IN ('function', 'method')
-             JOIN nodes b ON b.parent_id = a.base AND b.name = m.name
-                         AND b.kind IN ('function', 'method')
-             WHERE EXISTS (SELECT 1 FROM edges c
-                           WHERE c.target = b.id AND c.kind IN ('calls', 'uses'))
-```
-
-#### Q0299 — `get_file_dependencies`
-
-Source: [src/graph/queries.rs:468](../src/graph/queries.rs#L468).
-
-```sql
-SELECT DISTINCT e.target FROM edges e WHERE e.source IN ({}) AND e.kind IN {kind_filter}
-```
-
-#### Q0300 — `get_file_dependents`
-
-Source: [src/graph/queries.rs:530](../src/graph/queries.rs#L530).
-
-```sql
-SELECT DISTINCT e.source FROM edges e WHERE e.target IN ({}) AND e.kind IN {kind_filter}
-```
-
-#### Q0301 — `build_file_adjacency`
-
-Source: [src/graph/queries.rs:623](../src/graph/queries.rs#L623).
-
-```sql
-SELECT DISTINCT n1.file_path AS src_file, n2.file_path AS tgt_file FROM edges e JOIN nodes n1 ON e.source = n1.id JOIN nodes n2 ON e.target = n2.id WHERE e.kind IN ('calls', 'uses') AND n1.file_path != n2.file_path
-```
-
-### src/hooks.rs
-
-#### Q0302 — `any_symbol_indexed`
-
-Source: [src/hooks.rs:412](../src/hooks.rs#L412).
-
-```sql
-SELECT 1 FROM nodes WHERE LOWER(name) IN ({placeholders}) LIMIT 1
-```
-
 ### src/mcp/tools/definitions.rs
 
 #### Q0303 — `module constant / top-level string`
@@ -3753,116 +3855,6 @@ Source: [src/mcp/tools/handlers/workflow.rs:281](../src/mcp/tools/handlers/workf
 
 ```sql
 release
-```
-
-### src/quality_diff.rs
-
-#### Q0308 — `compare`
-
-Source: [src/quality_diff.rs:556](../src/quality_diff.rs#L556).
-
-```sql
-BEGIN
-```
-
-#### Q0309 — `compare`
-
-Source: [src/quality_diff.rs:586](../src/quality_diff.rs#L586).
-
-```sql
-BEGIN
-```
-
-### src/runtime_telemetry.rs
-
-#### Q0310 — `read_journal_mode`
-
-Source: [src/runtime_telemetry.rs:242](../src/runtime_telemetry.rs#L242).
-
-```sql
-PRAGMA journal_mode
-```
-
-#### Q0311 — `read_source_total_bytes`
-
-Source: [src/runtime_telemetry.rs:269](../src/runtime_telemetry.rs#L269).
-
-```sql
-SELECT COALESCE(SUM(size), 0) FROM files
-```
-
-#### Q0312 — `read_graph_counts`
-
-Source: [src/runtime_telemetry.rs:294](../src/runtime_telemetry.rs#L294).
-
-```sql
-SELECT COUNT(*) FROM nodes
-```
-
-#### Q0313 — `read_graph_counts`
-
-Source: [src/runtime_telemetry.rs:295](../src/runtime_telemetry.rs#L295).
-
-```sql
-SELECT COUNT(*) FROM edges
-```
-
-### src/tokensave/memory.rs
-
-#### Q0314 — `record_decision`
-
-Source: [src/tokensave/memory.rs:100](../src/tokensave/memory.rs#L100).
-
-```sql
-INSERT INTO memory_decisions (text, reason, created_at, files, tags) VALUES (?1, ?2, ?3, ?4, ?5)
-```
-
-#### Q0315 — `session_recall`
-
-Source: [src/tokensave/memory.rs:140](../src/tokensave/memory.rs#L140).
-
-```sql
-SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags FROM memory_decisions d JOIN memory_decisions_fts f ON f.rowid = d.id WHERE memory_decisions_fts MATCH ?1 AND d.created_at >= ?2 ORDER BY d.created_at DESC LIMIT ?3
-```
-
-#### Q0316 — `session_recall`
-
-Source: [src/tokensave/memory.rs:151](../src/tokensave/memory.rs#L151).
-
-```sql
-SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags FROM memory_decisions d JOIN memory_decisions_fts f ON f.rowid = d.id WHERE memory_decisions_fts MATCH ?1 ORDER BY d.created_at DESC LIMIT ?2
-```
-
-#### Q0317 — `session_recall`
-
-Source: [src/tokensave/memory.rs:162](../src/tokensave/memory.rs#L162).
-
-```sql
-SELECT id, text, reason, created_at, files, tags FROM memory_decisions WHERE created_at >= ?1 ORDER BY created_at DESC LIMIT ?2
-```
-
-#### Q0318 — `session_recall`
-
-Source: [src/tokensave/memory.rs:171](../src/tokensave/memory.rs#L171).
-
-```sql
-SELECT id, text, reason, created_at, files, tags FROM memory_decisions ORDER BY created_at DESC LIMIT ?1
-```
-
-#### Q0319 — `record_code_area`
-
-Source: [src/tokensave/memory.rs:274](../src/tokensave/memory.rs#L274).
-
-```sql
-INSERT INTO memory_code_areas (path, description, last_touched_at, touch_count) VALUES (?1, ?2, ?3, 1) ON CONFLICT(path) DO UPDATE SET description = COALESCE(excluded.description, memory_code_areas.description), last_touched_at = excluded.last_touched_at, touch_count = memory_code_areas.touch_count + 1
-```
-
-#### Q0320 — `list_code_areas`
-
-Source: [src/tokensave/memory.rs:299](../src/tokensave/memory.rs#L299).
-
-```sql
-SELECT id, path, description, last_touched_at, touch_count FROM memory_code_areas ORDER BY last_touched_at DESC LIMIT ?1
 ```
 
 ### src/tokensave/rename.rs
@@ -4802,9 +4794,26 @@ Source: [src/db/connection.rs:222](../src/db/connection.rs#L222).
     }
 ```
 
-### `checkpoint` — src/db/connection.rs:310
+### `begin_read_snapshot` — src/db/connection.rs:318
 
-Source: [src/db/connection.rs:310](../src/db/connection.rs#L310).
+Source: [src/db/connection.rs:318](../src/db/connection.rs#L318).
+
+```rust
+pub async fn begin_read_snapshot(&self) -> Result<()> {
+    self.conn
+        .execute_batch("BEGIN")
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("failed to begin read snapshot: {e}"),
+            operation: "begin_read_snapshot".to_string(),
+        })?;
+    Ok(())
+}
+```
+
+### `checkpoint` — src/db/connection.rs:332
+
+Source: [src/db/connection.rs:332](../src/db/connection.rs#L332).
 
 ```rust
     pub async fn checkpoint(&self) -> Result<()> {
@@ -4819,9 +4828,9 @@ Source: [src/db/connection.rs:310](../src/db/connection.rs#L310).
     }
 ```
 
-### `optimize` — src/db/connection.rs:322
+### `optimize` — src/db/connection.rs:344
 
-Source: [src/db/connection.rs:322](../src/db/connection.rs#L322).
+Source: [src/db/connection.rs:344](../src/db/connection.rs#L344).
 
 ```rust
     pub async fn optimize(&self) -> Result<()> {
@@ -4836,9 +4845,9 @@ Source: [src/db/connection.rs:322](../src/db/connection.rs#L322).
     }
 ```
 
-### `size` — src/db/connection.rs:334
+### `size` — src/db/connection.rs:356
 
-Source: [src/db/connection.rs:334](../src/db/connection.rs#L334).
+Source: [src/db/connection.rs:356](../src/db/connection.rs#L356).
 
 ```rust
     pub async fn size(&self) -> Result<u64> {
@@ -4875,9 +4884,9 @@ Source: [src/db/connection.rs:334](../src/db/connection.rs#L334).
     }
 ```
 
-### `quick_check` — src/db/connection.rs:371
+### `quick_check` — src/db/connection.rs:393
 
-Source: [src/db/connection.rs:371](../src/db/connection.rs#L371).
+Source: [src/db/connection.rs:393](../src/db/connection.rs#L393).
 
 ```rust
     pub async fn quick_check(&self) -> Result<bool> {
@@ -4902,9 +4911,9 @@ Source: [src/db/connection.rs:371](../src/db/connection.rs#L371).
     }
 ```
 
-### `needs_bulk_load_finalization` — src/db/connection.rs:401
+### `needs_bulk_load_finalization` — src/db/connection.rs:423
 
-Source: [src/db/connection.rs:401](../src/db/connection.rs#L401).
+Source: [src/db/connection.rs:423](../src/db/connection.rs#L423).
 
 ```rust
     pub async fn needs_bulk_load_finalization(&self) -> Result<bool> {
@@ -4935,9 +4944,9 @@ Source: [src/db/connection.rs:401](../src/db/connection.rs#L401).
     }
 ```
 
-### `rebuild_fts` — src/db/connection.rs:432
+### `rebuild_fts` — src/db/connection.rs:454
 
-Source: [src/db/connection.rs:432](../src/db/connection.rs#L432).
+Source: [src/db/connection.rs:454](../src/db/connection.rs#L454).
 
 ```rust
     pub async fn rebuild_fts(&self) -> Result<()> {
@@ -4952,9 +4961,9 @@ Source: [src/db/connection.rs:432](../src/db/connection.rs#L432).
     }
 ```
 
-### `apply_pragmas` — src/db/connection.rs:447
+### `apply_pragmas` — src/db/connection.rs:469
 
-Source: [src/db/connection.rs:447](../src/db/connection.rs#L447).
+Source: [src/db/connection.rs:469](../src/db/connection.rs#L469).
 
 ```rust
     async fn apply_pragmas(conn: &RawConnection, db_file_size: u64) -> Result<()> {
@@ -4979,9 +4988,9 @@ Source: [src/db/connection.rs:447](../src/db/connection.rs#L447).
     }
 ```
 
-### `begin_bulk_load` — src/db/connection.rs:472
+### `begin_bulk_load` — src/db/connection.rs:494
 
-Source: [src/db/connection.rs:472](../src/db/connection.rs#L472).
+Source: [src/db/connection.rs:494](../src/db/connection.rs#L494).
 
 ```rust
     pub async fn begin_bulk_load(&self) -> Result<()> {
@@ -5020,9 +5029,9 @@ Source: [src/db/connection.rs:472](../src/db/connection.rs#L472).
     }
 ```
 
-### `end_bulk_load` — src/db/connection.rs:516
+### `end_bulk_load` — src/db/connection.rs:538
 
-Source: [src/db/connection.rs:516](../src/db/connection.rs#L516).
+Source: [src/db/connection.rs:538](../src/db/connection.rs#L538).
 
 ```rust
     pub async fn end_bulk_load(&self) -> Result<()> {
@@ -7010,6 +7019,55 @@ async fn migrate_v20(conn: &Connection) -> Result<()> {
              FROM ambiguous_calls a, json_each(CASE WHEN json_valid(a.candidate_node_ids) THEN CASE WHEN json_type(a.candidate_node_ids) = 'array' THEN a.candidate_node_ids ELSE '[]' END ELSE '[]' END) j
              WHERE j.type = 'text';",
         ).await.map_err(err)?;
+    }
+    Ok(())
+}
+```
+
+### `any_name_indexed` — src/db/probe.rs:14
+
+Source: [src/db/probe.rs:14](../src/db/probe.rs#L14).
+
+```rust
+pub async fn any_name_indexed(db_path: &Path, names: &[String]) -> Result<bool> {
+    if names.is_empty() {
+        return Ok(false);
+    }
+    let placeholders = vec!["?"; names.len()].join(",");
+    let sql = format!("SELECT 1 FROM nodes WHERE LOWER(name) IN ({placeholders}) LIMIT 1");
+    let params: Vec<libsql::Value> = names
+        .iter()
+        .map(|s| libsql::Value::Text(s.to_lowercase()))
+        .collect();
+    let db = libsql::Builder::new_local(db_path)
+        .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .build()
+        .await?;
+    let conn = db.connect()?;
+    let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+    Ok(rows.next().await?.is_some())
+}
+```
+
+### `audit_scan` — src/db/queries/audit.rs:28
+
+Source: [src/db/queries/audit.rs:28](../src/db/queries/audit.rs#L28).
+
+```rust
+async fn audit_scan(&self, sql: &str, mut f: impl FnMut(&libsql::Row)) -> Result<()> {
+    let mut rows = self
+        .conn()
+        .query(sql, ())
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("edge audit query failed: {e}"),
+            operation: "edge_audit".to_string(),
+        })?;
+    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+        message: format!("edge audit read failed: {e}"),
+        operation: "edge_audit".to_string(),
+    })? {
+        f(&row);
     }
     Ok(())
 }
@@ -9173,6 +9231,574 @@ Source: [src/db/queries/fingerprints.rs:76](../src/db/queries/fingerprints.rs#L7
     }
 ```
 
+### `find_dead_code_candidates` — src/db/queries/graph.rs:42
+
+Source: [src/db/queries/graph.rs:42](../src/db/queries/graph.rs#L42).
+
+```rust
+pub async fn find_dead_code_candidates(
+    &self,
+    kinds: &[NodeKind],
+    include_public: bool,
+    include_trait_impls: bool,
+    godot_virtuals: &[&str],
+) -> Result<Vec<Node>> {
+    let kind_filter = if kinds.is_empty() {
+        String::new()
+    } else {
+        let kind_strs: Vec<String> =
+            kinds.iter().map(|k| format!("'{}'", k.as_str())).collect();
+        format!(" AND kind IN ({})", kind_strs.join(", "))
+    };
+    let visibility_filter = if include_public {
+        ""
+    } else {
+        " AND visibility != 'public'"
+    };
+
+    // Trait-impl methods (Rust `impl Trait for Type` blocks) are reached
+    // implicitly by the compiler — `Display::fmt` via `{}`, `Deref::deref`
+    // via auto-deref, `Drop::drop` via drop glue, `From::from` via `?`/
+    // `.into()` — so they carry no explicit incoming `calls` edge. They
+    // also can't be written `pub` in Rust, so they're stored as `private`
+    // and the visibility filter above never excludes them. The result is
+    // a flood of false positives (issue #137). Exclude any method whose
+    // parent is an `Impl`-kind node that is a *trait* impl (vs an inherent
+    // `impl Type` block, whose un-called methods are genuine dead code).
+    //
+    // We detect a trait impl two ways, OR'd together:
+    //   1) the impl node's signature contains ` for ` — i.e. the header is
+    //      `impl <Trait> for <Type>`. This is the PRIMARY signal and the
+    //      only one that works for the common case, because…
+    //   2) …the impl node bears an outgoing `implements` edge. This edge
+    //      only materializes when the trait resolves to an indexed node,
+    //      which it does NOT for stdlib/external traits (`Display`, `Drop`,
+    //      `Deref`, `From`, `AsRef`, …) — precisely the traits in the bug
+    //      report. So the edge alone misses almost every real case (mex has
+    //      zero `implements` edges); the signature scan is what carries the
+    //      fix. The edge is kept as a fallback for multi-line impl headers
+    //      where `extract_first_line` truncates before the ` for `.
+    //
+    // Inherent-impl signatures (`impl Type`) and ObjC `@implementation Foo`
+    // blocks contain no ` for `, so they are untouched — inherent dead
+    // methods are still reported. Class-based languages attach `implements`
+    // to the `Class` node (not an `impl`) and store interface methods
+    // `public`, so the visibility filter already covers them. The guarding
+    // `parent_id IS NULL OR` is required: `NULL NOT IN (...)` is NULL, not
+    // true, which would silently drop every top-level function.
+    let trait_impl_filter = if include_trait_impls {
+        ""
+    } else {
+        " AND (parent_id IS NULL OR parent_id NOT IN (
+             SELECT p.id FROM nodes p
+             WHERE p.kind = 'impl'
+               AND (p.signature LIKE '% for %'
+                    OR p.id IN (SELECT source FROM edges WHERE kind = 'implements'))
+         ))"
+    };
+
+    // Only true "use sites" count as evidence that a symbol is alive:
+    // `calls`, `implements`, `extends`, `type_of`, `returns`, `receives`,
+    // `uses`. Bookkeeping edges (`contains`, `annotates`, `derives_macro`)
+    // are emitted by the extractor even for unused code — every Rust
+    // function tagged `#[inline]`, every `#[derive(Debug)]` on an unused
+    // struct, every annotation_usage adds an incoming edge that is NOT a
+    // real reference. Previously we excluded only `contains`, so any
+    // attribute on an otherwise-unused function masked it from
+    // dead-code detection — which is why the sonium run reported zero
+    // dead functions across 5,715. The narrower allowlist below restores
+    // the intended semantics: "no real caller / referencer = dead".
+    // Test-marker exclusion uses a two-step "resolve + filter in SQL":
+    //   1) `collect_test_marker_ids` runs the leading-wildcard `LIKE`
+    //      scan exactly once over `kind = 'annotation_usage'`.
+    //   2) The marker ids go to the dead-code SELECT as ONE bound
+    //      parameter, a JSON array built with `serde_json`, and the
+    //      SELECT drops test-annotated candidates with
+    //      `id NOT IN (SELECT target FROM edges WHERE kind = 'annotates'
+    //      AND source IN (SELECT value FROM json_each(?)))`.
+    //      The subquery is uncorrelated, so SQLite plans it as a
+    //      `LIST SUBQUERY`: it walks the JSON array once, probes
+    //      `idx_edges_source_kind` per marker, and builds a transient
+    //      in-memory index of the targets that each candidate probes.
+    //      That is the same shape as the old two-temp-table form,
+    //      without writing anything: selected graphs are opened with
+    //      `PRAGMA query_only = 1`, and the transient index is not a
+    //      database write. A single parameter also avoids SQLite's
+    //      bound-parameter limit, so there is no chunking.
+    //
+    // History — DO NOT regress this:
+    // - The pre-4.14.8 form joined `nodes a ON a.id = e2.source` inside
+    //   the correlated `NOT EXISTS` and ran the `a.name LIKE '%::test'`
+    //   chain per matching edge. Fast on scirs (0.1 s, 76 K
+    //   annotation_usage) but timed out on chromium at the 25 s probe
+    //   ceiling, cascade-poisoning every subsequent MCP tool call.
+    // - 4.14.8's `WITH test_marker_ids AS (...)` CTE attempt was even
+    //   worse: SQLite inlined the single-reference CTE, turning every
+    //   dead-candidate row into a full annotation_usage scan. Regressed
+    //   scirs from 0.1 s to >60 s, reverted in 4.14.9.
+    // - 4.14.12's first attempt (single temp table + correlated
+    //   `IN (SELECT id FROM temp.test_markers)` inside `NOT EXISTS`)
+    //   also failed on chromium: SQLite picked `idx_edges_unique
+    //   (source, target, kind)` for the subquery and iterated every
+    //   marker as the outer driver for every candidate
+    //   (~13K markers × ~134K candidates ≈ 1.7B probes). Timed out.
+    // - The next pre-join form (two temp tables, indexed `NOT IN`)
+    //   measured 0.75 s on chromium and 0.6 s on scirs. The
+    //   wildcard scan ran exactly once per call; the per-row
+    //   probe was against a ~15K-row indexed lookup table, not a
+    //   correlated subquery the optimiser can re-shape.
+    // - The two-temp-table form above wrote `temp.test_markers` and
+    //   `temp.test_annotated_targets`, which fails on selected graphs
+    //   (opened with `PRAGMA query_only = 1`) and let concurrent
+    //   read-only calls on the shared connection drop or refill each
+    //   other's tables.
+    // - The next form collected the targets into an in-memory `HashSet`
+    //   (chunked SELECTs of 500 marker ids) and skipped matching rows
+    //   while reading the main query. It was read-only safe but ~11%
+    //   slower per call: rows SQL used to filter out (~2,200 of ~2,970
+    //   candidates on a 24 K-node project) were read and decoded, then
+    //   discarded. Filtering in SQL with `json_each` restores that.
+    let marker_ids = self.collect_test_marker_ids().await?;
+    // Always bind the array, even when empty: `NOT IN` over an empty
+    // set is true, so every candidate is kept.
+    let marker_ids_json =
+        serde_json::to_string(&marker_ids).map_err(|e| TokenSaveError::Database {
+            message: format!("failed to encode test marker ids: {e}"),
+            operation: "find_dead_code".to_string(),
+        })?;
+    drop(marker_ids);
+    let godot_virtuals = godot_virtuals
+        .iter()
+        .map(|n| format!("'{n}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // The SELECT list stops at `attrs_start_line(21)`: `row_to_node`
+    // reads the absent `parent_id` as `None` and the absent health
+    // columns as 0, which dead-code analysis does not use.
+    let sql = format!(
+        "SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
+                start_column, end_column, docstring, signature, visibility,
+                is_async, branches, loops, returns, max_nesting, unsafe_blocks,
+                unchecked_calls, assertions, updated_at, attrs_start_line
+         FROM nodes
+         WHERE kind != 'route'
+         AND name != 'main'
+         AND name != '_bind_methods'
+         AND name NOT LIKE 'test%'
+         -- Go package-level `init` is invoked implicitly by the runtime at
+         -- package load and can never be called explicitly, so it carries
+         -- no incoming `calls` edge — the same reason `main`, `test*`, and
+         -- Rust trait-impl methods are exempt. Scoped to `.go` so a callable
+         -- function named `init` in another language is still checked (#346).
+         AND NOT (name = 'init' AND file_path LIKE '%.go')
+         -- Godot engine virtuals (`_ready`, `_process`, ...) are called by the
+         -- engine, never by project code, so they have no incoming edge either.
+         -- Scoped to `.gd` for the same reason as Go `init` (#598).
+         AND NOT (file_path LIKE '%.gd' AND name IN ({godot_virtuals}))
+         {visibility_filter}
+         {kind_filter}
+         {trait_impl_filter}
+         AND NOT EXISTS (
+             SELECT 1 FROM edges
+             WHERE target = nodes.id
+             AND kind IN ('calls', 'implements', 'extends', 'type_of', 'returns', 'receives', 'uses')
+         )
+         AND id NOT IN (
+             SELECT target FROM edges
+             WHERE kind = 'annotates'
+             AND source IN (SELECT value FROM json_each(?1))
+         )"
+    );
+
+    let mut rows = self
+        .profiled_query(DbOp::FindDeadCode, &sql, params![marker_ids_json])
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("failed to find dead code: {e}"),
+            operation: "find_dead_code".to_string(),
+        })?;
+    collect_rows(&mut rows, row_to_node, "find_dead_code").await
+}
+```
+
+### `gdscript_live_overrides` — src/db/queries/graph.rs:232
+
+Source: [src/db/queries/graph.rs:232](../src/db/queries/graph.rs#L232).
+
+```rust
+pub async fn gdscript_live_overrides(&self) -> Result<HashSet<String>> {
+    let sql = "WITH RECURSIVE ancestry(cls, base) AS (
+             SELECT e.source, e.target FROM edges e
+             WHERE e.kind = 'extends'
+               AND e.source IN (SELECT id FROM nodes
+                                WHERE file_path LIKE '%.gd'
+                                  AND kind IN ('class', 'inner_class'))
+             UNION
+             SELECT a.cls, e.target FROM ancestry a
+             JOIN edges e ON e.source = a.base AND e.kind = 'extends'
+         )
+         SELECT DISTINCT m.id FROM ancestry a
+         JOIN nodes m ON m.parent_id = a.cls AND m.kind IN ('function', 'method')
+         JOIN nodes b ON b.parent_id = a.base AND b.name = m.name
+                     AND b.kind IN ('function', 'method')
+         WHERE EXISTS (SELECT 1 FROM edges c
+                       WHERE c.target = b.id AND c.kind IN ('calls', 'uses'))";
+    let mut rows = self
+        .profiled_query(DbOp::GdscriptLiveOverrides, sql, ())
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("failed to find live GDScript overrides: {e}"),
+            operation: "gdscript_live_overrides".to_string(),
+        })?;
+    let mut live = HashSet::new();
+    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+        message: format!("failed to read row: {e}"),
+        operation: "gdscript_live_overrides".to_string(),
+    })? {
+        live.insert(row.get::<String>(0).map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read override id: {e}"),
+            operation: "gdscript_live_overrides".to_string(),
+        })?);
+    }
+    Ok(live)
+}
+```
+
+### `get_edge_endpoint_ids` — src/db/queries/graph.rs:272
+
+Source: [src/db/queries/graph.rs:272](../src/db/queries/graph.rs#L272).
+
+```rust
+pub async fn get_edge_endpoint_ids(
+    &self,
+    node_ids: &[String],
+    endpoint: EdgeEndpoint,
+) -> Result<Vec<String>> {
+    if node_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    // The op names and error messages keep the wording of the
+    // `GraphQueryManager` callers they were moved from.
+    let (select_col, filter_col, op, operation, what) = match endpoint {
+        EdgeEndpoint::Targets => (
+            "target",
+            "source",
+            DbOp::GetFileDependencies,
+            "get_file_dependencies",
+            ("file dependencies", "target id"),
+        ),
+        EdgeEndpoint::Sources => (
+            "source",
+            "target",
+            DbOp::GetFileDependents,
+            "get_file_dependents",
+            ("file dependents", "source id"),
+        ),
+    };
+
+    let placeholders: Vec<String> = (1..=node_ids.len()).map(|i| format!("?{i}")).collect();
+    let kind_filter = "('uses', 'calls')";
+    let sql = format!(
+        "SELECT DISTINCT e.{select_col} FROM edges e \
+         WHERE e.{filter_col} IN ({}) AND e.kind IN {kind_filter}",
+        placeholders.join(", ")
+    );
+    let param_values: Vec<libsql::Value> = node_ids
+        .iter()
+        .map(|id| libsql::Value::Text(id.clone()))
+        .collect();
+
+    let mut rows = self
+        .profiled_query(op, &sql, libsql::params_from_iter(param_values))
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("failed to query {}: {e}", what.0),
+            operation: operation.to_string(),
+        })?;
+
+    let mut ids: Vec<String> = Vec::new();
+    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+        message: format!("failed to read {}: {e}", what.1),
+        operation: operation.to_string(),
+    })? {
+        if let Ok(id) = row.get::<String>(0) {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+```
+
+### `get_cross_file_edge_pairs` — src/db/queries/graph.rs:333
+
+Source: [src/db/queries/graph.rs:333](../src/db/queries/graph.rs#L333).
+
+```rust
+pub async fn get_cross_file_edge_pairs(&self) -> Result<Vec<(String, String)>> {
+    let sql = "SELECT DISTINCT n1.file_path AS src_file, n2.file_path AS tgt_file \
+               FROM edges e \
+               JOIN nodes n1 ON e.source = n1.id \
+               JOIN nodes n2 ON e.target = n2.id \
+               WHERE e.kind IN ('calls', 'uses') \
+               AND n1.file_path != n2.file_path";
+
+    let mut rows = self
+        .profiled_query(DbOp::BuildFileAdjacency, sql, ())
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("failed to query file adjacency: {e}"),
+            operation: "build_file_adjacency".to_string(),
+        })?;
+
+    let mut pairs = Vec::new();
+    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+        message: format!("failed to read adjacency row: {e}"),
+        operation: "build_file_adjacency".to_string(),
+    })? {
+        let src: String = row.get(0).unwrap_or_default();
+        let tgt: String = row.get(1).unwrap_or_default();
+        pairs.push((src, tgt));
+    }
+    Ok(pairs)
+}
+```
+
+### `get_cross_file_import_rows` — src/db/queries/graph.rs:363
+
+Source: [src/db/queries/graph.rs:363](../src/db/queries/graph.rs#L363).
+
+```rust
+pub async fn get_cross_file_import_rows(&self) -> Result<Vec<ImportEdgeRow>> {
+    // `n1` is the Use node the extractor emitted for the import statement;
+    // `n2` is whatever the resolver bound it to. `Contains` is stored as
+    // `nodes.parent_id` rather than an edge row, and that parent is what
+    // distinguishes a module-level import (parent is the file) from a lazy
+    // one written inside a function body.
+    let sql = "SELECT DISTINCT n1.file_path, n1.start_line, n1.name, n1.signature, \
+               n2.file_path, COALESCE(parent.kind, 'file') \
+               FROM edges e \
+               JOIN nodes n1 ON e.source = n1.id \
+               JOIN nodes n2 ON e.target = n2.id \
+               LEFT JOIN nodes parent ON parent.id = n1.parent_id \
+               WHERE e.kind = 'uses' AND n1.kind = 'use' \
+               AND n1.file_path != n2.file_path";
+
+    let mut rows = self
+        .conn()
+        .query(sql, ())
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("failed to query import graph: {e}"),
+            operation: "build_module_import_graph".to_string(),
+        })?;
+
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+        message: format!("failed to read import row: {e}"),
+        operation: "build_module_import_graph".to_string(),
+    })? {
+        out.push(ImportEdgeRow {
+            file: row.get(0).unwrap_or_default(),
+            line: row.get(1).unwrap_or(0),
+            imported: row.get(2).unwrap_or_default(),
+            statement: row.get(3).ok(),
+            resolved_file: row.get(4).unwrap_or_default(),
+            parent_kind: row.get(5).unwrap_or_else(|_| "file".to_string()),
+        });
+    }
+    Ok(out)
+}
+```
+
+### `insert_decision` — src/db/queries/memory.rs:11
+
+Source: [src/db/queries/memory.rs:11](../src/db/queries/memory.rs#L11).
+
+```rust
+pub async fn insert_decision(
+    &self,
+    text: &str,
+    reason: Option<&str>,
+    files: &[String],
+    tags: &[String],
+    created_at: i64,
+) -> Result<i64> {
+    let files_json = serde_json::to_string(files).map_err(|e| TokenSaveError::Database {
+        message: format!("record_decision files serialization failed: {e}"),
+        operation: "record_decision".to_string(),
+    })?;
+    let tags_json = serde_json::to_string(tags).map_err(|e| TokenSaveError::Database {
+        message: format!("record_decision tags serialization failed: {e}"),
+        operation: "record_decision".to_string(),
+    })?;
+    let conn = self.conn();
+    conn.execute(
+        "INSERT INTO memory_decisions (text, reason, created_at, files, tags) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![text, reason, created_at, files_json, tags_json],
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("record_decision insert failed: {e}"),
+        operation: "record_decision".to_string(),
+    })?;
+    Ok(conn.last_insert_rowid())
+}
+```
+
+### `get_decisions` — src/db/queries/memory.rs:46
+
+Source: [src/db/queries/memory.rs:46](../src/db/queries/memory.rs#L46).
+
+```rust
+pub async fn get_decisions(
+    &self,
+    fts_query: Option<&str>,
+    since: Option<i64>,
+    limit: i64,
+) -> Result<Vec<DecisionRecord>> {
+    let conn = self.conn();
+    let db_err = |e: libsql::Error| TokenSaveError::Database {
+        message: format!("session_recall query failed: {e}"),
+        operation: "session_recall".to_string(),
+    };
+
+    let mut rows = match (fts_query, since) {
+        (Some(q), Some(ts)) => conn
+            .query(
+                "SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags \
+                 FROM memory_decisions d \
+                 JOIN memory_decisions_fts f ON f.rowid = d.id \
+                 WHERE memory_decisions_fts MATCH ?1 AND d.created_at >= ?2 \
+                 ORDER BY d.created_at DESC LIMIT ?3",
+                params![q, ts, limit],
+            )
+            .await
+            .map_err(db_err)?,
+        (Some(q), None) => conn
+            .query(
+                "SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags \
+                 FROM memory_decisions d \
+                 JOIN memory_decisions_fts f ON f.rowid = d.id \
+                 WHERE memory_decisions_fts MATCH ?1 \
+                 ORDER BY d.created_at DESC LIMIT ?2",
+                params![q, limit],
+            )
+            .await
+            .map_err(db_err)?,
+        (None, Some(ts)) => conn
+            .query(
+                "SELECT id, text, reason, created_at, files, tags \
+                 FROM memory_decisions WHERE created_at >= ?1 \
+                 ORDER BY created_at DESC LIMIT ?2",
+                params![ts, limit],
+            )
+            .await
+            .map_err(db_err)?,
+        (None, None) => conn
+            .query(
+                "SELECT id, text, reason, created_at, files, tags \
+                 FROM memory_decisions ORDER BY created_at DESC LIMIT ?1",
+                params![limit],
+            )
+            .await
+            .map_err(db_err)?,
+    };
+
+    let row_err = |e: libsql::Error| TokenSaveError::Database {
+        message: format!("session_recall row read failed: {e}"),
+        operation: "session_recall".to_string(),
+    };
+    let json_err = |e: serde_json::Error| TokenSaveError::Database {
+        message: format!("session_recall JSON parse failed: {e}"),
+        operation: "session_recall".to_string(),
+    };
+
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().await.map_err(row_err)? {
+        let files_json: String = row.get(4).map_err(row_err)?;
+        let tags_json: String = row.get(5).map_err(row_err)?;
+        out.push(DecisionRecord {
+            id: row.get(0).map_err(row_err)?,
+            text: row.get(1).map_err(row_err)?,
+            reason: row.get::<Option<String>>(2).map_err(row_err)?,
+            created_at: row.get(3).map_err(row_err)?,
+            files: serde_json::from_str(&files_json).map_err(json_err)?,
+            tags: serde_json::from_str(&tags_json).map_err(json_err)?,
+        });
+    }
+    Ok(out)
+}
+```
+
+### `upsert_code_area` — src/db/queries/memory.rs:127
+
+Source: [src/db/queries/memory.rs:127](../src/db/queries/memory.rs#L127).
+
+```rust
+pub async fn upsert_code_area(
+    &self,
+    path: &str,
+    description: Option<&str>,
+    touched_at: i64,
+) -> Result<()> {
+    self.conn()
+        .execute(
+            "INSERT INTO memory_code_areas (path, description, last_touched_at, touch_count) \
+             VALUES (?1, ?2, ?3, 1) \
+             ON CONFLICT(path) DO UPDATE SET \
+                description = COALESCE(excluded.description, memory_code_areas.description), \
+                last_touched_at = excluded.last_touched_at, \
+                touch_count = memory_code_areas.touch_count + 1",
+            params![path, description, touched_at],
+        )
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("record_code_area upsert failed: {e}"),
+            operation: "record_code_area".to_string(),
+        })?;
+    Ok(())
+}
+```
+
+### `get_code_areas` — src/db/queries/memory.rs:152
+
+Source: [src/db/queries/memory.rs:152](../src/db/queries/memory.rs#L152).
+
+```rust
+pub async fn get_code_areas(&self, limit: i64) -> Result<Vec<CodeAreaRecord>> {
+    let mut rows = self
+        .conn()
+        .query(
+            "SELECT id, path, description, last_touched_at, touch_count \
+             FROM memory_code_areas ORDER BY last_touched_at DESC LIMIT ?1",
+            params![limit],
+        )
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("list_code_areas query failed: {e}"),
+            operation: "list_code_areas".to_string(),
+        })?;
+    let row_err = |e: libsql::Error| TokenSaveError::Database {
+        message: format!("list_code_areas row read failed: {e}"),
+        operation: "list_code_areas".to_string(),
+    };
+
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().await.map_err(row_err)? {
+        out.push(CodeAreaRecord {
+            id: row.get(0).map_err(row_err)?,
+            path: row.get(1).map_err(row_err)?,
+            description: row.get::<Option<String>>(2).map_err(row_err)?,
+            last_touched_at: row.get(3).map_err(row_err)?,
+            touch_count: row.get::<i64>(4).map_err(row_err)? as u32,
+        });
+    }
+    Ok(out)
+}
+```
+
 ### `get_metadata` — src/db/queries/metadata.rs:10
 
 Source: [src/db/queries/metadata.rs:10](../src/db/queries/metadata.rs#L10).
@@ -9371,9 +9997,9 @@ Source: [src/db/queries/metadata.rs:165](../src/db/queries/metadata.rs#L165).
     }
 ```
 
-### `build_qmark_placeholders` — src/db/queries/mod.rs:31
+### `build_qmark_placeholders` — src/db/queries/mod.rs:37
 
-Source: [src/db/queries/mod.rs:31](../src/db/queries/mod.rs#L31).
+Source: [src/db/queries/mod.rs:37](../src/db/queries/mod.rs#L37).
 
 ```rust
 pub(crate) fn build_qmark_placeholders(n: usize) -> String {
@@ -9390,9 +10016,9 @@ pub(crate) fn build_qmark_placeholders(n: usize) -> String {
 }
 ```
 
-### `push_quoted` — src/db/queries/mod.rs:218
+### `push_quoted` — src/db/queries/mod.rs:224
 
-Source: [src/db/queries/mod.rs:218](../src/db/queries/mod.rs#L218).
+Source: [src/db/queries/mod.rs:224](../src/db/queries/mod.rs#L224).
 
 ```rust
 pub(crate) fn push_quoted(buf: &mut String, s: &str) {
@@ -9408,9 +10034,9 @@ pub(crate) fn push_quoted(buf: &mut String, s: &str) {
 }
 ```
 
-### `push_path_prefix_filter` — src/db/queries/mod.rs:250
+### `push_path_prefix_filter` — src/db/queries/mod.rs:256
 
-Source: [src/db/queries/mod.rs:250](../src/db/queries/mod.rs#L250).
+Source: [src/db/queries/mod.rs:256](../src/db/queries/mod.rs#L256).
 
 ```rust
 pub(crate) fn push_path_prefix_filter(buf: &mut String, alias: &str, prefix: &str) {
@@ -11446,6 +12072,24 @@ Source: [src/db/queries/stats.rs:15](../src/db/queries/stats.rs#L15).
     }
 ```
 
+### `telemetry_row` — src/db/queries/telemetry.rs:25
+
+Source: [src/db/queries/telemetry.rs:25](../src/db/queries/telemetry.rs#L25).
+
+```rust
+async fn telemetry_row(&self, sql: &str, w: &ScalarRead) -> Result<libsql::Row> {
+    let mut rows = self
+        .conn()
+        .query(sql, ())
+        .await
+        .map_err(|e| w.error(format!("{}: {e}", w.query_failed)))?;
+    rows.next()
+        .await
+        .map_err(|e| w.error(format!("{}: {e}", w.row_failed)))?
+        .ok_or_else(|| w.error(w.no_row.to_string()))
+}
+```
+
 ### `get_gdscript_typed_refs` — src/db/queries/unresolved.rs:13
 
 Source: [src/db/queries/unresolved.rs:13](../src/db/queries/unresolved.rs#L13).
@@ -11762,156 +12406,6 @@ async fn check_database(dc: &mut DoctorCounters, project_path: &Path) {
 }
 ```
 
-### `audit` — src/edge_audit.rs:106
-
-Source: [src/edge_audit.rs:106](../src/edge_audit.rs#L106).
-
-```rust
-pub async fn audit(db: &Database, limit: usize) -> Result<EdgeAudit> {
-    // Import evidence per file. Imports are graph nodes of kind `use`, which
-    // is what lets the gate's predicate be evaluated after the fact rather
-    // than only during resolution.
-    let mut imports: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut rows = query_rows(db, "SELECT file_path, name FROM nodes WHERE kind = 'use'").await?;
-    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-        message: format!("edge audit read failed: {e}"),
-        operation: "edge_audit".to_string(),
-    })? {
-        let file: String = row.get(0).unwrap_or_default();
-        let name: String = row.get(1).unwrap_or_default();
-        imports.entry(file).or_default().insert(name);
-    }
-
-    // How many symbols share each name, so "sole candidate" is a lookup.
-    let mut name_counts: HashMap<String, i64> = HashMap::new();
-    let mut rows = query_rows(
-        db,
-        "SELECT name, COUNT(*) FROM nodes WHERE kind <> 'file' AND kind <> 'use' GROUP BY name",
-    )
-    .await?;
-    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-        message: format!("edge audit read failed: {e}"),
-        operation: "edge_audit".to_string(),
-    })? {
-        name_counts.insert(
-            row.get(0).unwrap_or_default(),
-            row.get(1).unwrap_or_default(),
-        );
-    }
-
-    // Parent names, for the "the class that owns the method is the evidence"
-    // arm of the resolver's predicate.
-    let mut node_name: HashMap<String, String> = HashMap::new();
-    let mut rows = query_rows(db, "SELECT id, name FROM nodes").await?;
-    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-        message: format!("edge audit read failed: {e}"),
-        operation: "edge_audit".to_string(),
-    })? {
-        node_name.insert(
-            row.get(0).unwrap_or_default(),
-            row.get(1).unwrap_or_default(),
-        );
-    }
-
-    let mut total_edges = 0i64;
-    let mut gated_edges = 0i64;
-    let mut cross_file = 0i64;
-    let mut sole_candidate_cross_file = 0i64;
-    let mut unreachable = 0i64;
-    let mut per_target: HashMap<String, (EdgeRow, i64, HashSet<String>)> = HashMap::new();
-
-    let mut rows = query_rows(
-        db,
-        "SELECT s.file_path, n.id, n.name, n.file_path, n.kind, n.start_line, n.parent_id \
-         FROM edges e \
-         JOIN nodes n ON n.id = e.target \
-         JOIN nodes s ON s.id = e.source",
-    )
-    .await?;
-
-    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-        message: format!("edge audit read failed: {e}"),
-        operation: "edge_audit".to_string(),
-    })? {
-        total_edges += 1;
-        let r = EdgeRow {
-            src_file: row.get(0).unwrap_or_default(),
-            dst_id: row.get(1).unwrap_or_default(),
-            dst_name: row.get(2).unwrap_or_default(),
-            dst_file: row.get(3).unwrap_or_default(),
-            dst_kind: row.get(4).unwrap_or_default(),
-            dst_line: row.get(5).unwrap_or_default(),
-            dst_parent: row.get::<Option<String>>(6).unwrap_or_default(),
-        };
-
-        if !is_gated_path(&r.src_file) {
-            continue;
-        }
-        gated_edges += 1;
-
-        if r.src_file == r.dst_file {
-            continue;
-        }
-        cross_file += 1;
-
-        if name_counts.get(&r.dst_name).copied().unwrap_or(0) != 1 {
-            continue;
-        }
-        sole_candidate_cross_file += 1;
-
-        // The resolver's evidence model, evaluated after the fact: same
-        // directory, the name imported, or the owning class imported.
-        if dir_of(&r.src_file) == dir_of(&r.dst_file) {
-            continue;
-        }
-        let file_imports = imports.get(&r.src_file);
-        let reachable = file_imports.is_some_and(|imports| {
-            imports_name(imports, &r.dst_name)
-                || r.dst_parent
-                    .as_deref()
-                    .and_then(|id| node_name.get(id))
-                    .is_some_and(|parent| imports_name(imports, parent))
-        });
-        if reachable {
-            continue;
-        }
-
-        unreachable += 1;
-        let entry = per_target
-            .entry(r.dst_id.clone())
-            .or_insert_with(|| (r, 0, HashSet::new()));
-        entry.1 += 1;
-        entry.2.insert(entry.0.src_file.clone());
-    }
-
-    // `src_file` on the stored row is whichever edge landed first, so the
-    // distinct-source count is tracked separately rather than read off it.
-    let mut hot: Vec<(EdgeRow, i64, HashSet<String>)> = per_target.into_values().collect();
-    hot.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.dst_name.cmp(&b.0.dst_name)));
-    let hot_targets = hot
-        .into_iter()
-        .take(limit)
-        .map(|(r, edges, files)| HotTarget {
-            name: r.dst_name,
-            file_path: r.dst_file,
-            start_line: r.dst_line,
-            kind: r.dst_kind,
-            source_files: files.len() as i64,
-            edges,
-        })
-        .collect();
-
-    Ok(EdgeAudit {
-        total_edges,
-        gated_edges,
-        cross_file,
-        sole_candidate_cross_file,
-        unreachable,
-        hot_targets,
-    })
-}
-```
-
 ### `delete_projects` — src/global_db.rs:591
 
 Source: [src/global_db.rs:591](../src/global_db.rs#L591).
@@ -12084,567 +12578,6 @@ Source: [src/global_db.rs:702](../src/global_db.rs#L702).
             .await
             .is_ok_and(|n| n > 0)
     }
-```
-
-### `build_module_import_graph` — src/graph/imports.rs:183
-
-Source: [src/graph/imports.rs:183](../src/graph/imports.rs#L183).
-
-```rust
-    pub async fn build_module_import_graph(&self, depth: usize) -> Result<ModuleImportGraph> {
-        // `n1` is the Use node the extractor emitted for the import statement;
-        // `n2` is whatever the resolver bound it to. `Contains` is stored as
-        // `nodes.parent_id` rather than an edge row, and that parent is what
-        // distinguishes a module-level import (parent is the file) from a lazy
-        // one written inside a function body.
-        let sql = "SELECT DISTINCT n1.file_path, n1.start_line, n1.name, n1.signature, \
-                   n2.file_path, COALESCE(parent.kind, 'file') \
-                   FROM edges e \
-                   JOIN nodes n1 ON e.source = n1.id \
-                   JOIN nodes n2 ON e.target = n2.id \
-                   LEFT JOIN nodes parent ON parent.id = n1.parent_id \
-                   WHERE e.kind = 'uses' AND n1.kind = 'use' \
-                   AND n1.file_path != n2.file_path";
-
-        let mut rows = self
-            .conn()
-            .query(sql, ())
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to query import graph: {e}"),
-                operation: "build_module_import_graph".to_string(),
-            })?;
-
-        let mut graph = ModuleImportGraph::default();
-        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read import row: {e}"),
-            operation: "build_module_import_graph".to_string(),
-        })? {
-            let file: String = row.get(0).unwrap_or_default();
-            let line: u32 = row.get(1).unwrap_or(0);
-            let imported: String = row.get(2).unwrap_or_default();
-            let statement: Option<String> = row.get(3).ok();
-            let resolved_file: String = row.get(4).unwrap_or_default();
-            let parent_kind: String = row.get(5).unwrap_or_else(|_| "file".to_string());
-
-            let from = module_of(&file, depth);
-            let to = module_of(&resolved_file, depth);
-            graph.modules.insert(from.clone());
-            graph.modules.insert(to.clone());
-            if from == to {
-                continue;
-            }
-
-            let site = ImportSite {
-                file,
-                line: line.saturating_add(1),
-                imported,
-                type_only: is_type_only(statement.as_deref()),
-                statement,
-                resolved_file,
-                lazy: parent_kind != "file",
-            };
-            let sites = graph.edges.entry((from, to)).or_default();
-            if !sites.contains(&site) {
-                sites.push(site);
-            }
-        }
-
-        Ok(graph)
-    }
-```
-
-### `find_dead_code` — src/graph/queries.rs:170
-
-Source: [src/graph/queries.rs:170](../src/graph/queries.rs#L170).
-
-```rust
-    pub async fn find_dead_code(
-        &self,
-        kinds: &[NodeKind],
-        include_public: bool,
-        include_trait_impls: bool,
-    ) -> Result<Vec<Node>> {
-        let kind_filter = if kinds.is_empty() {
-            String::new()
-        } else {
-            let kind_strs: Vec<String> =
-                kinds.iter().map(|k| format!("'{}'", k.as_str())).collect();
-            format!(" AND kind IN ({})", kind_strs.join(", "))
-        };
-        let visibility_filter = if include_public {
-            ""
-        } else {
-            " AND visibility != 'public'"
-        };
-
-        // Trait-impl methods (Rust `impl Trait for Type` blocks) are reached
-        // implicitly by the compiler — `Display::fmt` via `{}`, `Deref::deref`
-        // via auto-deref, `Drop::drop` via drop glue, `From::from` via `?`/
-        // `.into()` — so they carry no explicit incoming `calls` edge. They
-        // also can't be written `pub` in Rust, so they're stored as `private`
-        // and the visibility filter above never excludes them. The result is
-        // a flood of false positives (issue #137). Exclude any method whose
-        // parent is an `Impl`-kind node that is a *trait* impl (vs an inherent
-        // `impl Type` block, whose un-called methods are genuine dead code).
-        //
-        // We detect a trait impl two ways, OR'd together:
-        //   1) the impl node's signature contains ` for ` — i.e. the header is
-        //      `impl <Trait> for <Type>`. This is the PRIMARY signal and the
-        //      only one that works for the common case, because…
-        //   2) …the impl node bears an outgoing `implements` edge. This edge
-        //      only materializes when the trait resolves to an indexed node,
-        //      which it does NOT for stdlib/external traits (`Display`, `Drop`,
-        //      `Deref`, `From`, `AsRef`, …) — precisely the traits in the bug
-        //      report. So the edge alone misses almost every real case (mex has
-        //      zero `implements` edges); the signature scan is what carries the
-        //      fix. The edge is kept as a fallback for multi-line impl headers
-        //      where `extract_first_line` truncates before the ` for `.
-        //
-        // Inherent-impl signatures (`impl Type`) and ObjC `@implementation Foo`
-        // blocks contain no ` for `, so they are untouched — inherent dead
-        // methods are still reported. Class-based languages attach `implements`
-        // to the `Class` node (not an `impl`) and store interface methods
-        // `public`, so the visibility filter already covers them. The guarding
-        // `parent_id IS NULL OR` is required: `NULL NOT IN (...)` is NULL, not
-        // true, which would silently drop every top-level function.
-        let trait_impl_filter = if include_trait_impls {
-            ""
-        } else {
-            " AND (parent_id IS NULL OR parent_id NOT IN (
-                 SELECT p.id FROM nodes p
-                 WHERE p.kind = 'impl'
-                   AND (p.signature LIKE '% for %'
-                        OR p.id IN (SELECT source FROM edges WHERE kind = 'implements'))
-             ))"
-        };
-
-        // Only true "use sites" count as evidence that a symbol is alive:
-        // `calls`, `implements`, `extends`, `type_of`, `returns`, `receives`,
-        // `uses`. Bookkeeping edges (`contains`, `annotates`, `derives_macro`)
-        // are emitted by the extractor even for unused code — every Rust
-        // function tagged `#[inline]`, every `#[derive(Debug)]` on an unused
-        // struct, every annotation_usage adds an incoming edge that is NOT a
-        // real reference. Previously we excluded only `contains`, so any
-        // attribute on an otherwise-unused function masked it from
-        // dead-code detection — which is why the sonium run reported zero
-        // dead functions across 5,715. The narrower allowlist below restores
-        // the intended semantics: "no real caller / referencer = dead".
-        // Test-marker exclusion uses a two-step "resolve + filter in SQL":
-        //   1) `collect_test_marker_ids` runs the leading-wildcard `LIKE`
-        //      scan exactly once over `kind = 'annotation_usage'`.
-        //   2) The marker ids go to the dead-code SELECT as ONE bound
-        //      parameter, a JSON array built with `serde_json`, and the
-        //      SELECT drops test-annotated candidates with
-        //      `id NOT IN (SELECT target FROM edges WHERE kind = 'annotates'
-        //      AND source IN (SELECT value FROM json_each(?)))`.
-        //      The subquery is uncorrelated, so SQLite plans it as a
-        //      `LIST SUBQUERY`: it walks the JSON array once, probes
-        //      `idx_edges_source_kind` per marker, and builds a transient
-        //      in-memory index of the targets that each candidate probes.
-        //      That is the same shape as the old two-temp-table form,
-        //      without writing anything: selected graphs are opened with
-        //      `PRAGMA query_only = 1`, and the transient index is not a
-        //      database write. A single parameter also avoids SQLite's
-        //      bound-parameter limit, so there is no chunking.
-        //
-        // History — DO NOT regress this:
-        // - The pre-4.14.8 form joined `nodes a ON a.id = e2.source` inside
-        //   the correlated `NOT EXISTS` and ran the `a.name LIKE '%::test'`
-        //   chain per matching edge. Fast on scirs (0.1 s, 76 K
-        //   annotation_usage) but timed out on chromium at the 25 s probe
-        //   ceiling, cascade-poisoning every subsequent MCP tool call.
-        // - 4.14.8's `WITH test_marker_ids AS (...)` CTE attempt was even
-        //   worse: SQLite inlined the single-reference CTE, turning every
-        //   dead-candidate row into a full annotation_usage scan. Regressed
-        //   scirs from 0.1 s to >60 s, reverted in 4.14.9.
-        // - 4.14.12's first attempt (single temp table + correlated
-        //   `IN (SELECT id FROM temp.test_markers)` inside `NOT EXISTS`)
-        //   also failed on chromium: SQLite picked `idx_edges_unique
-        //   (source, target, kind)` for the subquery and iterated every
-        //   marker as the outer driver for every candidate
-        //   (~13K markers × ~134K candidates ≈ 1.7B probes). Timed out.
-        // - The next pre-join form (two temp tables, indexed `NOT IN`)
-        //   measured 0.75 s on chromium and 0.6 s on scirs. The
-        //   wildcard scan ran exactly once per call; the per-row
-        //   probe was against a ~15K-row indexed lookup table, not a
-        //   correlated subquery the optimiser can re-shape.
-        // - The two-temp-table form above wrote `temp.test_markers` and
-        //   `temp.test_annotated_targets`, which fails on selected graphs
-        //   (opened with `PRAGMA query_only = 1`) and let concurrent
-        //   read-only calls on the shared connection drop or refill each
-        //   other's tables.
-        // - The next form collected the targets into an in-memory `HashSet`
-        //   (chunked SELECTs of 500 marker ids) and skipped matching rows
-        //   while reading the main query. It was read-only safe but ~11%
-        //   slower per call: rows SQL used to filter out (~2,200 of ~2,970
-        //   candidates on a 24 K-node project) were read and decoded, then
-        //   discarded. Filtering in SQL with `json_each` restores that.
-        let marker_ids = self.db.collect_test_marker_ids().await?;
-        // Always bind the array, even when empty: `NOT IN` over an empty
-        // set is true, so every candidate is kept.
-        let marker_ids_json =
-            serde_json::to_string(&marker_ids).map_err(|e| TokenSaveError::Database {
-                message: format!("failed to encode test marker ids: {e}"),
-                operation: "find_dead_code".to_string(),
-            })?;
-        drop(marker_ids);
-        let godot_virtuals = GODOT_ENGINE_VIRTUALS
-            .iter()
-            .map(|n| format!("'{n}'"))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        let sql = format!(
-            "SELECT id, kind, name, qualified_name, file_path, start_line, end_line,
-                    start_column, end_column, docstring, signature, visibility,
-                    is_async, branches, loops, returns, max_nesting, unsafe_blocks,
-                    unchecked_calls, assertions, updated_at, attrs_start_line
-             FROM nodes
-             WHERE kind != 'route'
-             AND name != 'main'
-             AND name != '_bind_methods'
-             AND name NOT LIKE 'test%'
-             -- Go package-level `init` is invoked implicitly by the runtime at
-             -- package load and can never be called explicitly, so it carries
-             -- no incoming `calls` edge — the same reason `main`, `test*`, and
-             -- Rust trait-impl methods are exempt. Scoped to `.go` so a callable
-             -- function named `init` in another language is still checked (#346).
-             AND NOT (name = 'init' AND file_path LIKE '%.go')
-             -- Godot engine virtuals (`_ready`, `_process`, ...) are called by the
-             -- engine, never by project code, so they have no incoming edge either.
-             -- Scoped to `.gd` for the same reason as Go `init` (#598).
-             AND NOT (file_path LIKE '%.gd' AND name IN ({godot_virtuals}))
-             {visibility_filter}
-             {kind_filter}
-             {trait_impl_filter}
-             AND NOT EXISTS (
-                 SELECT 1 FROM edges
-                 WHERE target = nodes.id
-                 AND kind IN ('calls', 'implements', 'extends', 'type_of', 'returns', 'receives', 'uses')
-             )
-             AND id NOT IN (
-                 SELECT target FROM edges
-                 WHERE kind = 'annotates'
-                 AND source IN (SELECT value FROM json_each(?1))
-             )"
-        );
-
-        let mut rows = self
-            .db
-            .conn()
-            .query(&sql, libsql::params![marker_ids_json])
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to find dead code: {e}"),
-                operation: "find_dead_code".to_string(),
-            })?;
-
-        let mut dead = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read row: {e}"),
-            operation: "find_dead_code".to_string(),
-        })? {
-            dead.push(row_to_node_dead_code(&row)?);
-        }
-
-        if dead
-            .iter()
-            .any(|n| crate::resolution::is_gdscript(&n.file_path))
-        {
-            // Best effort: a failed lookup leaves the overrides reported, and
-            // must not fail the whole dead-code query.
-            let live = self.gdscript_live_overrides().await.unwrap_or_default();
-            if !live.is_empty() {
-                dead.retain(|n| !live.contains(&n.id));
-            }
-        }
-        Ok(dead)
-    }
-```
-
-### `gdscript_live_overrides` — src/graph/queries.rs:384
-
-Source: [src/graph/queries.rs:384](../src/graph/queries.rs#L384).
-
-```rust
-    async fn gdscript_live_overrides(&self) -> Result<HashSet<String>> {
-        let sql = "WITH RECURSIVE ancestry(cls, base) AS (
-                 SELECT e.source, e.target FROM edges e
-                 WHERE e.kind = 'extends'
-                   AND e.source IN (SELECT id FROM nodes
-                                    WHERE file_path LIKE '%.gd'
-                                      AND kind IN ('class', 'inner_class'))
-                 UNION
-                 SELECT a.cls, e.target FROM ancestry a
-                 JOIN edges e ON e.source = a.base AND e.kind = 'extends'
-             )
-             SELECT DISTINCT m.id FROM ancestry a
-             JOIN nodes m ON m.parent_id = a.cls AND m.kind IN ('function', 'method')
-             JOIN nodes b ON b.parent_id = a.base AND b.name = m.name
-                         AND b.kind IN ('function', 'method')
-             WHERE EXISTS (SELECT 1 FROM edges c
-                           WHERE c.target = b.id AND c.kind IN ('calls', 'uses'))";
-        let mut rows =
-            self.db
-                .conn()
-                .query(sql, ())
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to find live GDScript overrides: {e}"),
-                    operation: "gdscript_live_overrides".to_string(),
-                })?;
-        let mut live = HashSet::new();
-        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read row: {e}"),
-            operation: "gdscript_live_overrides".to_string(),
-        })? {
-            live.insert(row.get::<String>(0).map_err(|e| TokenSaveError::Database {
-                message: format!("failed to read override id: {e}"),
-                operation: "gdscript_live_overrides".to_string(),
-            })?);
-        }
-        Ok(live)
-    }
-```
-
-### `get_file_dependencies` — src/graph/queries.rs:457
-
-Source: [src/graph/queries.rs:457](../src/graph/queries.rs#L457).
-
-```rust
-    pub async fn get_file_dependencies(&self, file_path: &str) -> Result<Vec<String>> {
-        let nodes = self.db.get_nodes_by_file(file_path).await?;
-        if nodes.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
-        let placeholders: Vec<String> = (1..=node_ids.len()).map(|i| format!("?{i}")).collect();
-        let kind_filter = "('uses', 'calls')";
-
-        let sql = format!(
-            "SELECT DISTINCT e.target FROM edges e \
-             WHERE e.source IN ({}) AND e.kind IN {kind_filter}",
-            placeholders.join(", ")
-        );
-
-        let param_values: Vec<libsql::Value> = node_ids
-            .iter()
-            .map(|id| libsql::Value::Text(id.clone()))
-            .collect();
-
-        let mut rows = self
-            .db
-            .conn()
-            .query(&sql, libsql::params_from_iter(param_values))
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to query file dependencies: {e}"),
-                operation: "get_file_dependencies".to_string(),
-            })?;
-
-        let mut target_ids: Vec<String> = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read target id: {e}"),
-            operation: "get_file_dependencies".to_string(),
-        })? {
-            if let Ok(id) = row.get::<String>(0) {
-                target_ids.push(id);
-            }
-        }
-
-        if target_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let target_nodes = self.db.get_nodes_by_ids(&target_ids).await?;
-        let dep_files: HashSet<String> = target_nodes
-            .into_iter()
-            .filter(|n| n.file_path != file_path)
-            .map(|n| n.file_path)
-            .collect();
-
-        let mut result: Vec<String> = dep_files.into_iter().collect();
-        result.sort();
-        Ok(result)
-    }
-```
-
-### `get_file_dependents` — src/graph/queries.rs:519
-
-Source: [src/graph/queries.rs:519](../src/graph/queries.rs#L519).
-
-```rust
-    pub async fn get_file_dependents(&self, file_path: &str) -> Result<Vec<String>> {
-        let nodes = self.db.get_nodes_by_file(file_path).await?;
-        if nodes.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
-        let placeholders: Vec<String> = (1..=node_ids.len()).map(|i| format!("?{i}")).collect();
-        let kind_filter = "('uses', 'calls')";
-
-        let sql = format!(
-            "SELECT DISTINCT e.source FROM edges e \
-             WHERE e.target IN ({}) AND e.kind IN {kind_filter}",
-            placeholders.join(", ")
-        );
-
-        let param_values: Vec<libsql::Value> = node_ids
-            .iter()
-            .map(|id| libsql::Value::Text(id.clone()))
-            .collect();
-
-        let mut rows = self
-            .db
-            .conn()
-            .query(&sql, libsql::params_from_iter(param_values))
-            .await
-            .map_err(|e| TokenSaveError::Database {
-                message: format!("failed to query file dependents: {e}"),
-                operation: "get_file_dependents".to_string(),
-            })?;
-
-        let mut source_ids: Vec<String> = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read source id: {e}"),
-            operation: "get_file_dependents".to_string(),
-        })? {
-            if let Ok(id) = row.get::<String>(0) {
-                source_ids.push(id);
-            }
-        }
-
-        if source_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let source_nodes = self.db.get_nodes_by_ids(&source_ids).await?;
-        let dependent_files: HashSet<String> = source_nodes
-            .into_iter()
-            .filter(|n| n.file_path != file_path)
-            .map(|n| n.file_path)
-            .collect();
-
-        let mut result: Vec<String> = dependent_files.into_iter().collect();
-        result.sort();
-        Ok(result)
-    }
-```
-
-### `build_file_adjacency` — src/graph/queries.rs:619
-
-Source: [src/graph/queries.rs:619](../src/graph/queries.rs#L619).
-
-```rust
-    pub async fn build_file_adjacency(
-        &self,
-        path_prefix: Option<&str>,
-    ) -> Result<HashMap<String, HashSet<String>>> {
-        let sql = "SELECT DISTINCT n1.file_path AS src_file, n2.file_path AS tgt_file \
-                   FROM edges e \
-                   JOIN nodes n1 ON e.source = n1.id \
-                   JOIN nodes n2 ON e.target = n2.id \
-                   WHERE e.kind IN ('calls', 'uses') \
-                   AND n1.file_path != n2.file_path";
-
-        let mut rows =
-            self.db
-                .conn()
-                .query(sql, ())
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to query file adjacency: {e}"),
-                    operation: "build_file_adjacency".to_string(),
-                })?;
-
-        // Normalise the prefix once: ensure it ends with '/'.
-        let prefix: Option<String> = path_prefix.map(|p| {
-            if p.ends_with('/') {
-                p.to_string()
-            } else {
-                format!("{p}/")
-            }
-        });
-
-        let mut adj: HashMap<String, HashSet<String>> = HashMap::new();
-
-        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read adjacency row: {e}"),
-            operation: "build_file_adjacency".to_string(),
-        })? {
-            let src: String = row.get(0).unwrap_or_default();
-            let tgt: String = row.get(1).unwrap_or_default();
-
-            if let Some(ref pfx) = prefix {
-                if !src.starts_with(pfx.as_str()) || !tgt.starts_with(pfx.as_str()) {
-                    continue;
-                }
-            }
-
-            adj.entry(src).or_default().insert(tgt);
-        }
-
-        // Ensure every known file appears as a key (even leaf nodes with no deps).
-        let all_files = self.db.get_all_files().await?;
-        for file in all_files {
-            if let Some(ref pfx) = prefix {
-                if !file.path.starts_with(pfx.as_str()) {
-                    continue;
-                }
-            }
-            adj.entry(file.path).or_default();
-        }
-
-        Ok(adj)
-    }
-```
-
-### `any_symbol_indexed` — src/hooks.rs:403
-
-Source: [src/hooks.rs:403](../src/hooks.rs#L403).
-
-```rust
-fn any_symbol_indexed(env: &HookEnv, symbols: &[String]) -> bool {
-    let Some(root) = env.project_root.as_deref() else {
-        return true;
-    };
-    if symbols.is_empty() {
-        return true;
-    }
-    let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
-    let placeholders = vec!["?"; symbols.len()].join(",");
-    let sql = format!("SELECT 1 FROM nodes WHERE LOWER(name) IN ({placeholders}) LIMIT 1");
-    let params: Vec<libsql::Value> = symbols
-        .iter()
-        .map(|s| libsql::Value::Text(s.to_lowercase()))
-        .collect();
-    let probe = async move {
-        let db = libsql::Builder::new_local(&db_path)
-            .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .build()
-            .await?;
-        let conn = db.connect()?;
-        let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
-        Ok::<bool, libsql::Error>(rows.next().await?.is_some())
-    };
-    // The hook runs inside `#[tokio::main]`'s multi-thread runtime (main.rs),
-    // where block_in_place + the ambient handle is the house pattern
-    // (monitor.rs); outside a runtime (sync tests) use a throwaway
-    // current-thread runtime.
-    // shortcut: a current-thread ambient runtime would panic here; no caller
-    // runs the hook on one.
-    let ran = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(probe)).ok(),
-        Err(_) => tokio::runtime::Builder::new_current_thread()
-            .build()
-            .ok()
-            .and_then(|rt| rt.block_on(probe).ok()),
-    };
-    ran.unwrap_or(true)
-}
 ```
 
 ### `handle_run_affected_tests` — src/mcp/tools/handlers/workflow.rs:140
@@ -12861,440 +12794,6 @@ pub(super) async fn handle_run_affected_tests(cg: &TokenSave, args: Value) -> Re
         touched_files,
     })
 }
-```
-
-### `compare` — src/quality_diff.rs:517
-
-Source: [src/quality_diff.rs:517](../src/quality_diff.rs#L517).
-
-```rust
-pub async fn compare(
-    root: &Path,
-    base: &str,
-    target: &str,
-    options: &QualityOptions,
-) -> Result<QualityReport> {
-    let (base_name, base_commit) = resolve(root, base)?;
-    let (target_name, target_commit) = resolve(root, target)?;
-    let renamed = git(
-        root,
-        &[
-            "diff",
-            "--name-status",
-            "--relative",
-            "-z",
-            "--find-renames",
-            &base_commit,
-            &target_commit,
-            "--",
-        ],
-    )?;
-    let fields: Vec<_> = renamed.split(|b| *b == 0).collect();
-    let mut renames = BTreeMap::new();
-    let mut i = 0;
-    while i + 1 < fields.len() {
-        if fields[i].starts_with(b"R") && i + 2 < fields.len() {
-            renames.insert(
-                String::from_utf8_lossy(fields[i + 1]).into_owned(),
-                String::from_utf8_lossy(fields[i + 2]).into_owned(),
-            );
-            i += 3;
-        } else {
-            i += 2;
-        }
-    }
-    let base_cg = TokenSave::open_read_only(root, Some(&base_name)).await?;
-    base_cg
-        .db()
-        .conn()
-        .execute_batch("BEGIN")
-        .await
-        .map_err(|e| error(e.to_string()))?;
-    let mut stale = verify(&base_cg, &base_commit).await?;
-    if !stale.is_empty() && !options.allow_stale {
-        return Err(error(format!(
-            "base index is stale or incomplete: {}. Sync explicitly, or opt in with --allow-stale (MCP thresholds.allow_stale).",
-            stale[0]
-        )));
-    }
-    let base_version = base_cg.db().get_metadata("last_full_index_version").await?;
-    let mut base_snapshot = snapshot(&base_cg, options, &renames).await?;
-    drop(base_cg);
-    // Reuse the pinned metrics for an identical index. A live server may sync
-    // between sequential reads; that must never manufacture same-branch changes.
-    let mut target_snapshot = if base_name == target_name {
-        if base_version.is_none() {
-            stale.push("analysis version provenance is missing".into());
-            if !options.allow_stale {
-                return Err(error(
-                    "analysis version provenance is missing; sync the index explicitly",
-                ));
-            }
-        }
-        base_snapshot.clone()
-    } else {
-        let target_cg = TokenSave::open_read_only(root, Some(&target_name)).await?;
-        target_cg
-            .db()
-            .conn()
-            .execute_batch("BEGIN")
-            .await
-            .map_err(|e| error(e.to_string()))?;
-        let target_stale = verify(&target_cg, &target_commit).await?;
-        if !target_stale.is_empty() && !options.allow_stale {
-            return Err(error(format!(
-            "target index is stale or incomplete: {}. Sync explicitly, or opt in with --allow-stale (MCP thresholds.allow_stale).",
-            target_stale[0]
-        )));
-        }
-        let target_version = target_cg
-            .db()
-            .get_metadata("last_full_index_version")
-            .await?;
-        if base_version.is_none() || target_version.is_none() || base_version != target_version {
-            stale.push("analysis version provenance is missing or differs between indexes; metrics may not be comparable".into());
-            if !options.allow_stale {
-                return Err(error("analysis version provenance is missing or differs; explicitly sync both indexes with the same version"));
-            }
-        }
-        stale.extend(target_stale);
-        snapshot(&target_cg, options, &BTreeMap::new()).await?
-    };
-    if resolve(root, base)?.1 != base_commit || resolve(root, target)?.1 != target_commit {
-        return Err(error(
-            "Git refs changed during comparison; retry with stable branch tips",
-        ));
-    }
-    let ambiguous: BTreeSet<_> = base_snapshot
-        .iter()
-        .chain(target_snapshot.iter())
-        .filter(|(_, metric)| metric.ambiguous)
-        .map(|(key, _)| key.clone())
-        .collect();
-    base_snapshot.retain(|key, _| !ambiguous.contains(key));
-    target_snapshot.retain(|key, _| !ambiguous.contains(key));
-    let findings = classify(&base_snapshot, &target_snapshot, options.min_increase);
-    let mut summary: BTreeMap<String, usize> =
-        ["new", "worsened", "resolved", "improved", "unchanged"]
-            .into_iter()
-            .map(|s| (s.into(), 0))
-            .collect();
-    for f in &findings {
-        *summary.entry(f.status.clone()).or_default() += 1;
-    }
-    let complete = stale.is_empty() && ambiguous.is_empty();
-    let mut limitations = vec![
-        "Tip-to-tip comparison, not merge-base attribution: diverged branch differences may originate on either branch.".into(),
-        "Only indexed files and resolved calls/uses edges are analyzed. Excluded, unindexed or unsupported source and missing edges are not evidence of clean code.".into(),
-        "Git-detected file renames are normalized; symbol renames and ambiguous moves remain unmatched. Unmatched findings require review.".into(),
-        "Architecture policy, dead-code, test reachability, execution coverage and module-size regressions are not analyzed.".into(),
-        "A small increase below min_increase is classified unchanged for gating. No claim of execution behavior or confirmed defects.".into(),
-    ];
-    if !ambiguous.is_empty() {
-        limitations.push(format!("{} ambiguous metrics (same qualified name, kind and signature) excluded from both snapshots; comparison is incomplete.", ambiguous.len()));
-    }
-    limitations.extend(stale);
-    Ok(QualityReport {
-        base: base.into(),
-        target: target.into(),
-        base_commit,
-        target_commit,
-        baseline: "branch_tips".into(),
-        complete,
-        summary,
-        findings,
-        limitations,
-    })
-}
-```
-
-### `read_journal_mode` — src/runtime_telemetry.rs:238
-
-Source: [src/runtime_telemetry.rs:238](../src/runtime_telemetry.rs#L238).
-
-```rust
-async fn read_journal_mode(cg: &crate::tokensave::TokenSave) -> Result<String> {
-    let mut rows = cg
-        .db()
-        .conn()
-        .query("PRAGMA journal_mode", ())
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read journal_mode: {e}"),
-            operation: "read_journal_mode".to_string(),
-        })?;
-    let row = rows
-        .next()
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read journal_mode row: {e}"),
-            operation: "read_journal_mode".to_string(),
-        })?
-        .ok_or_else(|| TokenSaveError::Database {
-            message: "no journal_mode row returned".to_string(),
-            operation: "read_journal_mode".to_string(),
-        })?;
-    row.get::<String>(0).map_err(|e| TokenSaveError::Database {
-        message: format!("failed to decode journal_mode: {e}"),
-        operation: "read_journal_mode".to_string(),
-    })
-}
-```
-
-### `read_source_total_bytes` — src/runtime_telemetry.rs:265
-
-Source: [src/runtime_telemetry.rs:265](../src/runtime_telemetry.rs#L265).
-
-```rust
-async fn read_source_total_bytes(cg: &crate::tokensave::TokenSave) -> Result<u64> {
-    let mut rows = cg
-        .db()
-        .conn()
-        .query("SELECT COALESCE(SUM(size), 0) FROM files", ())
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("failed to sum source bytes: {e}"),
-            operation: "read_source_total_bytes".to_string(),
-        })?;
-    let row = rows
-        .next()
-        .await
-        .map_err(|e| TokenSaveError::Database {
-            message: format!("failed to read source-sum row: {e}"),
-            operation: "read_source_total_bytes".to_string(),
-        })?
-        .ok_or_else(|| TokenSaveError::Database {
-            message: "no source-sum row returned".to_string(),
-            operation: "read_source_total_bytes".to_string(),
-        })?;
-    let v: i64 = row.get(0).map_err(|e| TokenSaveError::Database {
-        message: format!("failed to decode source-sum: {e}"),
-        operation: "read_source_total_bytes".to_string(),
-    })?;
-    Ok(u64::try_from(v).unwrap_or(0))
-}
-```
-
-### `record_decision` — src/tokensave/memory.rs:79
-
-Source: [src/tokensave/memory.rs:79](../src/tokensave/memory.rs#L79).
-
-```rust
-    pub async fn record_decision(
-        &self,
-        text: &str,
-        reason: Option<&str>,
-        files: &[String],
-        tags: &[String],
-    ) -> crate::errors::Result<i64> {
-        debug_assert!(!text.is_empty(), "decision text must not be empty");
-        let files_json =
-            serde_json::to_string(files).map_err(|e| crate::errors::TokenSaveError::Database {
-                message: format!("record_decision files serialization failed: {e}"),
-                operation: "record_decision".to_string(),
-            })?;
-        let tags_json =
-            serde_json::to_string(tags).map_err(|e| crate::errors::TokenSaveError::Database {
-                message: format!("record_decision tags serialization failed: {e}"),
-                operation: "record_decision".to_string(),
-            })?;
-        let now = current_timestamp();
-        let conn = self.db.conn();
-        conn.execute(
-            "INSERT INTO memory_decisions (text, reason, created_at, files, tags) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            libsql::params![text, reason, now, files_json, tags_json],
-        )
-        .await
-        .map_err(|e| crate::errors::TokenSaveError::Database {
-            message: format!("record_decision insert failed: {e}"),
-            operation: "record_decision".to_string(),
-        })?;
-        Ok(conn.last_insert_rowid())
-    }
-```
-
-### `session_recall` — src/tokensave/memory.rs:116
-
-Source: [src/tokensave/memory.rs:116](../src/tokensave/memory.rs#L116).
-
-```rust
-    pub async fn session_recall(
-        &self,
-        query: Option<&str>,
-        since: Option<i64>,
-        limit: usize,
-    ) -> crate::errors::Result<Vec<DecisionRecord>> {
-        let limit = limit.clamp(1, MAX_RECALL_LIMIT) as i64;
-        let conn = self.db.conn();
-
-        let db_err = |e: libsql::Error| crate::errors::TokenSaveError::Database {
-            message: format!("session_recall query failed: {e}"),
-            operation: "session_recall".to_string(),
-        };
-
-        // FTS5 parses the bound MATCH string as a query expression even
-        // through a bound parameter, so raw terms containing `-`, `.`, `/`
-        // etc. (`data-api`) are syntax errors (#218). Escape into quoted
-        // prefix terms first; a query with no tokenizable content degrades
-        // to the unfiltered recency-ordered arms.
-        let fts_query = query.and_then(crate::db::to_fts_match_query);
-
-        let mut rows = match (fts_query.as_deref(), since) {
-            (Some(q), Some(ts)) => conn
-                .query(
-                    "SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags \
-                     FROM memory_decisions d \
-                     JOIN memory_decisions_fts f ON f.rowid = d.id \
-                     WHERE memory_decisions_fts MATCH ?1 AND d.created_at >= ?2 \
-                     ORDER BY d.created_at DESC LIMIT ?3",
-                    libsql::params![q, ts, limit],
-                )
-                .await
-                .map_err(db_err)?,
-            (Some(q), None) => conn
-                .query(
-                    "SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags \
-                     FROM memory_decisions d \
-                     JOIN memory_decisions_fts f ON f.rowid = d.id \
-                     WHERE memory_decisions_fts MATCH ?1 \
-                     ORDER BY d.created_at DESC LIMIT ?2",
-                    libsql::params![q, limit],
-                )
-                .await
-                .map_err(db_err)?,
-            (None, Some(ts)) => conn
-                .query(
-                    "SELECT id, text, reason, created_at, files, tags \
-                     FROM memory_decisions WHERE created_at >= ?1 \
-                     ORDER BY created_at DESC LIMIT ?2",
-                    libsql::params![ts, limit],
-                )
-                .await
-                .map_err(db_err)?,
-            (None, None) => conn
-                .query(
-                    "SELECT id, text, reason, created_at, files, tags \
-                     FROM memory_decisions ORDER BY created_at DESC LIMIT ?1",
-                    libsql::params![limit],
-                )
-                .await
-                .map_err(db_err)?,
-        };
-
-        let row_err = |e: libsql::Error| crate::errors::TokenSaveError::Database {
-            message: format!("session_recall row read failed: {e}"),
-            operation: "session_recall".to_string(),
-        };
-        let json_err = |e: serde_json::Error| crate::errors::TokenSaveError::Database {
-            message: format!("session_recall JSON parse failed: {e}"),
-            operation: "session_recall".to_string(),
-        };
-
-        let mut out = Vec::new();
-        while let Some(row) = rows.next().await.map_err(row_err)? {
-            let files_json: String = row.get(4).map_err(row_err)?;
-            let tags_json: String = row.get(5).map_err(row_err)?;
-            out.push(DecisionRecord {
-                id: row.get(0).map_err(row_err)?,
-                text: row.get(1).map_err(row_err)?,
-                reason: row.get::<Option<String>>(2).map_err(row_err)?,
-                created_at: row.get(3).map_err(row_err)?,
-                files: serde_json::from_str(&files_json).map_err(json_err)?,
-                tags: serde_json::from_str(&tags_json).map_err(json_err)?,
-            });
-        }
-
-        // Recency-decay ranking for the no-explicit-query path. The SQL above
-        // already LIMITed to the newest N rows (which, because the decay is
-        // monotonic in `created_at`, are exactly the N highest-weighted rows),
-        // so we only need to (re)order the selected set by decay weight here.
-        // Higher weight first; ties keep newest-first. No row is dropped — old
-        // decisions still surface, just lower down.
-        if query.is_none() {
-            let now = current_timestamp();
-            out.sort_by(|a, b| {
-                let wa = recency_decay_weight(a.created_at, now);
-                let wb = recency_decay_weight(b.created_at, now);
-                wb.partial_cmp(&wa)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(b.created_at.cmp(&a.created_at))
-            });
-        }
-        Ok(out)
-    }
-```
-
-### `record_code_area` — src/tokensave/memory.rs:265
-
-Source: [src/tokensave/memory.rs:265](../src/tokensave/memory.rs#L265).
-
-```rust
-    pub async fn record_code_area(
-        &self,
-        path: &str,
-        description: Option<&str>,
-    ) -> crate::errors::Result<()> {
-        debug_assert!(!path.is_empty(), "code area path must not be empty");
-        let now = current_timestamp();
-        let conn = self.db.conn();
-        conn.execute(
-            "INSERT INTO memory_code_areas (path, description, last_touched_at, touch_count) \
-             VALUES (?1, ?2, ?3, 1) \
-             ON CONFLICT(path) DO UPDATE SET \
-                description = COALESCE(excluded.description, memory_code_areas.description), \
-                last_touched_at = excluded.last_touched_at, \
-                touch_count = memory_code_areas.touch_count + 1",
-            libsql::params![path, description, now],
-        )
-        .await
-        .map_err(|e| crate::errors::TokenSaveError::Database {
-            message: format!("record_code_area upsert failed: {e}"),
-            operation: "record_code_area".to_string(),
-        })?;
-        Ok(())
-    }
-```
-
-### `list_code_areas` — src/tokensave/memory.rs:291
-
-Source: [src/tokensave/memory.rs:291](../src/tokensave/memory.rs#L291).
-
-```rust
-    pub async fn list_code_areas(
-        &self,
-        limit: usize,
-    ) -> crate::errors::Result<Vec<CodeAreaRecord>> {
-        let limit = limit.clamp(1, MAX_CODE_AREAS_LIMIT) as i64;
-        let conn = self.db.conn();
-        let mut rows = conn
-            .query(
-                "SELECT id, path, description, last_touched_at, touch_count \
-                 FROM memory_code_areas ORDER BY last_touched_at DESC LIMIT ?1",
-                libsql::params![limit],
-            )
-            .await
-            .map_err(|e| crate::errors::TokenSaveError::Database {
-                message: format!("list_code_areas query failed: {e}"),
-                operation: "list_code_areas".to_string(),
-            })?;
-        let row_err = |e: libsql::Error| crate::errors::TokenSaveError::Database {
-            message: format!("list_code_areas row read failed: {e}"),
-            operation: "list_code_areas".to_string(),
-        };
-
-        let mut out = Vec::new();
-        while let Some(row) = rows.next().await.map_err(row_err)? {
-            out.push(CodeAreaRecord {
-                id: row.get(0).map_err(row_err)?,
-                path: row.get(1).map_err(row_err)?,
-                description: row.get::<Option<String>>(2).map_err(row_err)?,
-                last_touched_at: row.get(3).map_err(row_err)?,
-                touch_count: row.get::<i64>(4).map_err(row_err)? as u32,
-            });
-        }
-        Ok(out)
-    }
 ```
 
 ### `project` — src/tokensave/runtime.rs:97

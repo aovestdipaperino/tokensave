@@ -1089,3 +1089,35 @@ pub struct CostTurn {
     /// Agent-native credit units (Droid only). None for Claude turns.
     pub credits: Option<u64>,
 }
+
+/// A decision recorded by an agent during a session.
+#[derive(Debug, Clone, Serialize)]
+pub struct DecisionRecord {
+    /// Row id.
+    pub id: i64,
+    /// The decision text.
+    pub text: String,
+    /// Optional rationale for the decision.
+    pub reason: Option<String>,
+    /// UNIX timestamp (seconds) when the decision was recorded.
+    pub created_at: i64,
+    /// File paths relevant to this decision.
+    pub files: Vec<String>,
+    /// Arbitrary tags for categorisation.
+    pub tags: Vec<String>,
+}
+
+/// A code area (file path) that an agent has touched during a session.
+#[derive(Debug, Clone, Serialize)]
+pub struct CodeAreaRecord {
+    /// Row id.
+    pub id: i64,
+    /// Relative file path.
+    pub path: String,
+    /// Optional human-readable description of the area.
+    pub description: Option<String>,
+    /// UNIX timestamp (seconds) of the most recent touch.
+    pub last_touched_at: i64,
+    /// How many times this path has been touched.
+    pub touch_count: u32,
+}
