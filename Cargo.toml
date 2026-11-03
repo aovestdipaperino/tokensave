@@ -53,6 +53,12 @@ pkg-fmt = "zip"
 default = ["full"]
 beta = []
 
+# Experimental storage backend (#904): stores the project index in Grafeo
+# instead of libSQL. Selected at build time; the global database stays on
+# libSQL. Pinned exactly because Grafeo is pre-1.0 and its file format and
+# API may change between releases.
+grafeo = ["dep:grafeo"]
+
 # Lite tier (11 languages) — always compiled, no feature flag needed:
 # Rust, Go, Java, Scala, TypeScript/JavaScript, Python, C, C++, Kotlin, C#, Swift
 lite = []
@@ -128,6 +134,9 @@ path = "src/main.rs"
 
 [dependencies]
 libsql = "0.9.30"
+# `wal` keeps commits durable between checkpoints; `grafeo-file` is the
+# single-file persistent format; `text-index` replaces FTS5.
+grafeo = { version = "=0.6.1", optional = true, default-features = false, features = ["gql", "wal", "grafeo-file", "text-index"] }
 tree-sitter = "0.26"
 tree-sitter-language = "0.1"
 tokensave-large-treesitters = { version = "0.9.0", git = "https://github.com/aovestdipaperino/tokensave-large-treesitters" }

@@ -6,33 +6,6 @@
 use super::*;
 use crate::profile::DbOp;
 
-/// One resolved, cross-file `uses` edge from an import statement, as read by
-/// [`Database::get_cross_file_import_rows`].
-#[derive(Debug, Clone)]
-pub struct ImportEdgeRow {
-    /// File containing the import statement.
-    pub file: String,
-    /// Zero-based line of the `Use` node.
-    pub line: u32,
-    /// Name of the `Use` node (the imported path).
-    pub imported: String,
-    /// Source text of the statement, when stored.
-    pub statement: Option<String>,
-    /// File of the node the import resolved to.
-    pub resolved_file: String,
-    /// Kind of the `Use` node's parent; `"file"` when it has none.
-    pub parent_kind: String,
-}
-
-/// Direction of the edges read by [`Database::get_edge_endpoint_ids`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EdgeEndpoint {
-    /// Targets of edges whose source is in the given set.
-    Targets,
-    /// Sources of edges whose target is in the given set.
-    Sources,
-}
-
 impl Database {
     /// Returns nodes with no incoming use-site edge, the raw candidates for
     /// dead-code analysis.

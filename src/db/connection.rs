@@ -6,14 +6,12 @@ use std::sync::RwLock;
 use libsql::{Builder, Connection as RawConnection, Database as LibsqlDatabase};
 
 use super::debug_sql::Connection;
+use super::model::CachedTraitDispatchCaller;
 
 use crate::errors::{Result, TokenSaveError};
-use crate::types::{Edge, Node};
 
 use super::migrations;
 use crate::profile::DbOp;
-
-pub(super) type CachedTraitDispatchCaller = (Node, Edge, String, bool);
 
 /// Computes adaptive `(cache_size_kb, mmap_size)` based on the DB file size.
 ///
@@ -302,6 +300,24 @@ impl Database {
     /// Consumes the `Database`, closing the underlying connection.
     pub fn close(self) {
         drop(self.conn);
+    }
+
+    /// Schema version this build creates and migrates indexes to.
+    pub fn latest_schema_version() -> u32 {
+        migrations::latest_version()
+    }
+
+    /// Refuses an index file this build must not open: one created by an
+    /// incompatible release channel or with a newer schema. A missing file
+    /// passes; other open errors are left to [`Self::open`].
+    pub async fn preflight(db_path: &Path) -> Result<()> {
+        super::compatibility::preflight(db_path, migrations::latest_version()).await
+    }
+
+    /// Whether `e` is a condition that clears by itself (a lock, a full
+    /// disk), so the index must not be rebuilt over it.
+    pub fn is_environmental_error(e: &TokenSaveError) -> bool {
+        migrations::is_environmental_error(e)
     }
 
     /// Returns the schema version stored in the database.

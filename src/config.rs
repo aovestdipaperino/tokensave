@@ -335,9 +335,13 @@ impl Default for TokenSaveConfig {
     }
 }
 
-/// Returns channel-specific project state: `.tokensave` or `.tokensave/beta`.
+/// Returns channel-specific project state: `.tokensave` or `.tokensave/beta`,
+/// with a `grafeo` subdirectory when built with the Grafeo storage backend.
 pub fn get_tokensave_dir(project_root: &Path) -> PathBuf {
-    channel_dir(project_root, crate::cloud::is_beta())
+    storage_dir(
+        channel_dir(project_root, crate::cloud::is_beta()),
+        cfg!(feature = "grafeo"),
+    )
 }
 
 /// Separate beta project state (including config, locks, and branch indexes)
@@ -348,6 +352,20 @@ fn channel_dir(root: &Path, beta: bool) -> PathBuf {
         directory.join("beta")
     } else {
         directory
+    }
+}
+
+/// Separates a Grafeo build's project state from a libSQL build's (#904).
+///
+/// The two backends write different file formats under the same index file
+/// names, so neither may open the other's files. Keeping them in sibling
+/// directories also lets both builds index the same checkout side by side
+/// for comparison.
+fn storage_dir(channel_dir: PathBuf, grafeo: bool) -> PathBuf {
+    if grafeo {
+        channel_dir.join("grafeo")
+    } else {
+        channel_dir
     }
 }
 
@@ -1498,6 +1516,21 @@ mod channel_path_tests {
         assert_eq!(
             super::channel_dir(root, true),
             root.join(".tokensave").join("beta")
+        );
+    }
+
+    #[test]
+    fn grafeo_state_is_nested_in_the_channel_directory() {
+        let root = std::path::Path::new("project");
+        let stable = super::channel_dir(root, false);
+        assert_eq!(super::storage_dir(stable.clone(), false), stable);
+        assert_eq!(
+            super::storage_dir(stable, true),
+            root.join(".tokensave").join("grafeo")
+        );
+        assert_eq!(
+            super::storage_dir(super::channel_dir(root, true), true),
+            root.join(".tokensave").join("beta").join("grafeo")
         );
     }
 }
