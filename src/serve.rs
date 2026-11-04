@@ -40,8 +40,11 @@ pub async fn auto_initialize(cwd: &Path) -> Option<TokenSave> {
     let indexed = async {
         let pin = crate::commands::prepare_initial_cpu_usage(&root, None)?;
         let cg = TokenSave::init_with_cpu_usage(&root, pin).await?;
-        // `init` applies the same default when stdin is not a terminal.
-        if !tokensave::config::is_in_gitignore(&root) {
+        // `init` applies the same default when stdin is not a terminal. State
+        // relocated out of the tree (#919) needs no exclusion.
+        if tokensave::config::project_state_is_in_repo(&root)
+            && !tokensave::config::is_in_gitignore(&root)
+        {
             tokensave::config::add_to_git_info_exclude(&root);
         }
         let result = cg.index_all().await?;

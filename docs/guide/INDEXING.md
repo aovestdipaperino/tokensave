@@ -14,6 +14,24 @@ This creates a `.tokensave/` directory with the knowledge graph database. After 
 The [user guide](../USER-GUIDE.md#your-first-index) covers skipped folders,
 `.gitignore` handling, forced re-indexing, and diagnosing slow syncs.
 
+## Keeping state outside the repository
+
+By default the index and the rest of a project's state live in `.tokensave/` at the project root, which `init` adds to `.git/info/exclude`. To create nothing inside your repositories, set a base state directory:
+
+- `TOKENSAVE_STATE_DIR=/path/to/state` in the environment, or
+- `state_dir = "/path/to/state"` in `~/.tokensave/config.toml`.
+
+The environment variable wins over the config file; set but empty, it selects the default layout. The value must be an absolute path or start with `~`; anything else is ignored, and `tokensave doctor` says so. The config-file value is read when a tokensave process starts, so restart MCP servers after changing it. Set it in the config file rather than the environment if you rely on git hooks, which run without your shell's variables.
+
+With a base set, each project keeps its state in `<base>/projects/<name>-<hash>/`. Prerelease builds use a `beta` subdirectory there, as they do under `.tokensave/`. `<hash>` comes from the project root's canonical absolute path (lowercased on Windows), so the same checkout always maps to the same directory, and each linked worktree gets its own. `<name>` is the root's folder name, to make the directories recognizable. Each one holds an `origin.json` recording the project root. Nothing is written under the project root, and `.git/info/exclude` is left untouched.
+
+Changing the setting never loses an index:
+
+- A project that already has `.tokensave/` keeps using it after you set a base. To move it, stop its MCP servers and move the directory to the path `tokensave doctor` names.
+- Every base that has held state is recorded in `~/.tokensave/state-bases.json`. When the configured location (or the default) has no state for a project, state under a recorded base is used.
+
+`tokensave doctor` reports the effective setting, a project whose state is not where the setting puts it, and relocated state whose project directory no longer exists. Deleting a checkout leaves its relocated state behind; `tokensave state list` shows every relocated directory, and `tokensave state prune` deletes the orphans (preview with `--dry-run`). Only directories whose recorded project root is gone are deleted.
+
 ## Automatic initialization
 
 A cloned repository is indexed by the `post-checkout` hook on its first checkout. A repository started with `git init` gets no checkout, so the `auto_init` setting (on by default) covers it. Two entry points initialize a git repository that has no index yet:

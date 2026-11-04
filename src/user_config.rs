@@ -153,6 +153,13 @@ pub struct UserConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_usage: Option<crate::cpu::CpuUsage>,
 
+    /// Base directory for project state (#919): each project keeps its state
+    /// in `<state_dir>/projects/<id>` instead of `<root>/.tokensave`.
+    /// Absolute, or starting with `~`. `TOKENSAVE_STATE_DIR` overrides it.
+    /// Read by [`crate::state_dir`], once per process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_dir: Option<String>,
+
     /// The `[benchmark]` table: whether and when the global hardware
     /// benchmark runs and is used (#752).
     #[serde(default, skip_serializing_if = "BenchmarkPreferences::is_default")]
@@ -335,6 +342,7 @@ impl Default for UserConfig {
             claude_hooks: true,
             auto_init: true,
             cpu_usage: None,
+            state_dir: None,
             benchmark: BenchmarkPreferences::default(),
             profiling: ProfilingPreferences::default(),
             loaded_config: Mutex::new(None),
@@ -364,6 +372,8 @@ pub(crate) struct ConfigFile {
     auto_init: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cpu_usage: Option<crate::cpu::CpuUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state_dir: Option<String>,
     // Last: a TOML table has to follow the plain keys.
     #[serde(default, skip_serializing_if = "BenchmarkPreferences::is_default")]
     benchmark: BenchmarkPreferences,
@@ -383,6 +393,7 @@ impl ConfigFile {
             claude_hooks: c.claude_hooks,
             auto_init: c.auto_init,
             cpu_usage: c.cpu_usage,
+            state_dir: c.state_dir.clone(),
             benchmark: c.benchmark,
             profiling: c.profiling,
         }
@@ -1224,6 +1235,7 @@ impl UserConfig {
             || self.claude_hooks != base.claude_hooks
             || self.auto_init != base.auto_init
             || self.cpu_usage != base.cpu_usage
+            || self.state_dir != base.state_dir
             || self.benchmark != base.benchmark
             || self.profiling != base.profiling;
         if !changed && !self.loaded_legacy_state.load(Ordering::Relaxed) {
@@ -1279,6 +1291,11 @@ impl UserConfig {
                 on_disk.cpu_usage
             } else {
                 self.cpu_usage
+            },
+            state_dir: if self.state_dir == base.state_dir {
+                on_disk.state_dir
+            } else {
+                self.state_dir.clone()
             },
             benchmark: if self.benchmark == base.benchmark {
                 on_disk.benchmark
@@ -1417,6 +1434,7 @@ mod tests {
             claude_hooks: false,
             auto_init: false,
             cpu_usage: Some(crate::cpu::CpuUsage::Low),
+            state_dir: Some("~/tokensave-state".to_string()),
             benchmark: BenchmarkPreferences {
                 enabled: true,
                 auto_run: false,
@@ -1426,6 +1444,28 @@ mod tests {
             loaded_state: Mutex::new(None),
             loaded_legacy_state: AtomicBool::new(false),
         }
+    }
+
+    /// #919: `state_dir` is read by `state_dir`, not through this struct, so
+    /// a save that rewrites `config.toml` for another preference must keep it.
+    #[test]
+    fn state_dir_survives_saving_another_preference() {
+        let _home = test_home();
+        let path = config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "state_dir = \"/srv/tokensave-state\"\n").unwrap();
+
+        let mut config = UserConfig::load();
+        assert_eq!(config.state_dir.as_deref(), Some("/srv/tokensave-state"));
+        config.manage_rules = false;
+        assert!(config.save());
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("state_dir = \"/srv/tokensave-state\""),
+            "{text}"
+        );
+        assert!(text.contains("manage_rules = false"), "{text}");
     }
 
     #[test]
