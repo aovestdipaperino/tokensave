@@ -991,6 +991,27 @@ pub struct ResolvedRef {
     pub resolved_by: String,
 }
 
+/// Result of `tokensave_create_file` (#920).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateFileResult {
+    pub success: bool,
+    /// Project-relative, forward-slash path of the file; the path as given
+    /// when it was refused before it could be resolved.
+    pub file_path: String,
+    /// Canonical absolute path written, or empty when refused.
+    pub resolved_path: String,
+    /// Bytes written.
+    pub bytes: usize,
+    /// True when an existing file was replaced (`overwrite`).
+    pub overwritten: bool,
+    /// True when the file is in the index after the call. A file in a
+    /// language tokensave does not index is written but not indexed.
+    pub indexed: bool,
+    pub message: String,
+    /// SHA-256 hex digest of the content written, or empty when refused.
+    pub digest: String,
+}
+
 /// Result of a single string replacement edit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditResult {

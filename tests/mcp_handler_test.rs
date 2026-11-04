@@ -7334,3 +7334,179 @@ async fn entities_accepts_path_as_an_alias_for_file() {
         extract_text(&by_path.value)
     );
 }
+
+// ── tokensave_create_file (#920) ──────────────────────────────────────────
+
+async fn create_file(cg: &TokenSave, args: Value) -> Value {
+    let result = handle_tool_call(cg, "tokensave_create_file", args, None, None)
+        .await
+        .expect("create_file returns a result");
+    serde_json::from_str(extract_text(&result.value)).expect("create_file json")
+}
+
+/// `link` -> `target`, or `false` where the platform refuses, so the caller
+/// can skip. On Windows without symlink privilege a directory junction, which
+/// needs none and which path resolution follows the same way, stands in.
+fn symlink_dir_or_skip(target: &std::path::Path, link: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link).is_ok();
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir(target, link).is_ok()
+        || std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .output()
+            .is_ok_and(|out| out.status.success());
+    made
+}
+
+fn symlink_file_or_skip(target: &std::path::Path, link: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(target, link);
+    made.is_ok()
+}
+
+#[tokio::test]
+async fn create_file_writes_indexes_and_is_searchable_at_once() {
+    let (dir, cg) = setup_project().await;
+    let parsed = create_file(
+        &cg,
+        json!({ "path": "src/brand/new_module.rs", "content": "pub fn brand_new_fn() {}\n" }),
+    )
+    .await;
+    assert_eq!(parsed["ok"], true, "{parsed}");
+    assert_eq!(parsed["file"], "src/brand/new_module.rs");
+    assert_eq!(parsed["indexed"], true, "{parsed}");
+    assert_eq!(parsed["overwritten"], false);
+    assert_eq!(parsed["bytes"], 25);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("src").join("brand").join("new_module.rs")).unwrap(),
+        "pub fn brand_new_fn() {}\n"
+    );
+
+    let search = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({ "query": "brand_new_fn" }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        extract_text(&search.value).contains("new_module.rs"),
+        "{}",
+        extract_text(&search.value)
+    );
+}
+
+#[tokio::test]
+async fn create_file_replaces_an_existing_file_only_with_overwrite() {
+    let (dir, cg) = setup_project().await;
+    let target = dir.path().join("notes.rs");
+    fs::write(&target, "fn old() {}\n").unwrap();
+
+    let refused = create_file(
+        &cg,
+        json!({ "path": "notes.rs", "content": "fn new() {}\n" }),
+    )
+    .await;
+    assert_eq!(refused["ok"], false);
+    assert!(refused["message"].as_str().unwrap().contains("overwrite"));
+    assert_eq!(fs::read_to_string(&target).unwrap(), "fn old() {}\n");
+
+    let replaced = create_file(
+        &cg,
+        json!({ "path": "notes.rs", "content": "fn new() {}\n", "overwrite": true }),
+    )
+    .await;
+    assert_eq!(replaced["ok"], true, "{replaced}");
+    assert_eq!(replaced["overwritten"], true);
+    assert_eq!(fs::read_to_string(&target).unwrap(), "fn new() {}\n");
+}
+
+#[tokio::test]
+async fn create_file_refuses_paths_outside_the_project() {
+    let (dir, cg) = setup_project().await;
+    let outside = TempDir::new().unwrap();
+    let outside_file = outside.path().join("escape.rs");
+
+    for path in [
+        "../escape.rs".to_string(),
+        "src/../../escape.rs".to_string(),
+        outside_file.to_string_lossy().into_owned(),
+        ".git/hooks/post-commit".to_string(),
+        ".tokensave/evil.json".to_string(),
+        String::new(),
+    ] {
+        let parsed = create_file(&cg, json!({ "path": path, "content": "x" })).await;
+        assert_eq!(parsed["ok"], false, "{path}: {parsed}");
+    }
+    assert!(!outside_file.exists());
+    assert!(!dir
+        .path()
+        .join(".git")
+        .join("hooks")
+        .join("post-commit")
+        .exists());
+
+    // A directory is never replaced, even with overwrite.
+    let parsed = create_file(
+        &cg,
+        json!({ "path": "src", "content": "x", "overwrite": true }),
+    )
+    .await;
+    assert_eq!(parsed["ok"], false, "{parsed}");
+    assert!(dir.path().join("src").is_dir());
+}
+
+#[tokio::test]
+async fn create_file_refuses_a_symlinked_parent_that_leaves_the_root() {
+    let (dir, cg) = setup_project().await;
+    let outside = TempDir::new().unwrap();
+    // The link exists before the call, as an attacker-planted directory would.
+    if !symlink_dir_or_skip(outside.path(), &dir.path().join("linked")) {
+        eprintln!("skipping: symlinks are not available here");
+        return;
+    }
+    let parsed = create_file(&cg, json!({ "path": "linked/escape.rs", "content": "x" })).await;
+    assert_eq!(parsed["ok"], false, "{parsed}");
+    assert!(!outside.path().join("escape.rs").exists());
+}
+
+#[tokio::test]
+async fn create_file_refuses_a_symlink_target_even_with_overwrite() {
+    let (dir, cg) = setup_project().await;
+    let outside = TempDir::new().unwrap();
+    let real = outside.path().join("real.rs");
+    fs::write(&real, "fn real() {}\n").unwrap();
+    if !symlink_file_or_skip(&real, &dir.path().join("alias.rs")) {
+        eprintln!("skipping: symlinks are not available here");
+        return;
+    }
+    let parsed = create_file(
+        &cg,
+        json!({ "path": "alias.rs", "content": "x", "overwrite": true }),
+    )
+    .await;
+    assert_eq!(parsed["ok"], false, "{parsed}");
+    assert_eq!(fs::read_to_string(&real).unwrap(), "fn real() {}\n");
+}
+
+#[tokio::test]
+async fn create_file_bounds_content_by_max_file_size() {
+    let (dir, cg) = setup_project().await;
+    let too_big = "a".repeat(1_048_577);
+    let parsed = create_file(&cg, json!({ "path": "big.txt", "content": too_big })).await;
+    assert_eq!(parsed["ok"], false, "{parsed}");
+    assert!(parsed["message"]
+        .as_str()
+        .unwrap()
+        .contains("max_file_size"));
+    assert!(!dir.path().join("big.txt").exists());
+}
