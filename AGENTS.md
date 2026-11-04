@@ -283,6 +283,7 @@ portable string formats, and documented path-syntax test fixtures.
 - Criterion bench against large real repos: `TOKENSAVE_BENCH_REPOS_DIR=~/tokensave-bench-cache cargo bench --bench large_repos`. Without `TOKENSAVE_BENCH_REPOS_DIR` it registers zero benchmarks. Filter with `cargo bench --bench large_repos -- 'scipy/tokensave_search'`. Repos and pinned refs are in `benches/repos.rs`; delete the `<repo>/.bench-ref` marker to force a re-fetch.
 - MCP test-matrix probe: `cargo build --release --bin tokensave && python3 scripts/mcp_probe/probe.py && python3 scripts/mcp_probe/build_matrix.py > matrix.md`. `scripts/mcp_probe/repos.toml` lists target repos (override with `TOKENSAVE_PROBE_REPOS`).
 - `tokensave bench` is a separate CLI benchmark (fixed query set, retrieval-savings report).
+- MCP footprint baseline (#917): `python3 benchmarks/mcp_footprint.py --binary target/release/tokensave --repo . --rev <commit> --output-dir benchmarks/mcp-footprint`. Stdlib only, any OS; optional `tiktoken` adds token counts. Results feed `docs/MCP-FOOTPRINT-BASELINE.md`; when a change moves the default `tools/list` or `initialize` instructions size, update that report and `DEFAULT_FOOTPRINT_BYTES` in `src/mcp/server.rs` together, with a reason in the PR.
 
 ## Experimental Graphify export (master candidate)
 
