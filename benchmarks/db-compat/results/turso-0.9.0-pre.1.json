@@ -1,0 +1,1551 @@
+{
+  "engines": [
+    "libsql-0.9.30",
+    "turso-0.9.0-pre.1",
+    "turso-0.9.0-pre.1-experimental",
+    "turso-0.9.0-pre.1-mp-wal"
+  ],
+  "existing_db": "target/real-v18.db",
+  "results": [
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "FTS5",
+      "outcome": "pass",
+      "probe": "fts5.external_content_prefix_or"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.external_content_prefix_or"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.external_content_prefix_or"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.external_content_prefix_or"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "FTS5",
+      "outcome": "pass",
+      "probe": "fts5.porter_stemming"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.porter_stemming"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.porter_stemming"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.porter_stemming"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "FTS5",
+      "outcome": "pass",
+      "probe": "fts5.phrase"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.phrase"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.phrase"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.phrase"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "FTS5",
+      "outcome": "pass",
+      "probe": "fts5.quoted_punctuation_prefix"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.quoted_punctuation_prefix"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.quoted_punctuation_prefix"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.quoted_punctuation_prefix"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "FTS5",
+      "outcome": "pass",
+      "probe": "fts5.bm25_weighted_order"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.bm25_weighted_order"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.bm25_weighted_order"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.bm25_weighted_order"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "FTS5",
+      "outcome": "pass",
+      "probe": "fts5.delete_trigger"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.delete_trigger"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.delete_trigger"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.delete_trigger"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "FTS5",
+      "outcome": "pass",
+      "probe": "fts5.update_trigger"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.update_trigger"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.update_trigger"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.update_trigger"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "FTS5",
+      "outcome": "pass",
+      "probe": "fts5.rebuild_command"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.rebuild_command"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.rebuild_command"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.rebuild_command"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "FTS5",
+      "outcome": "pass",
+      "probe": "fts5.unindexed_columns"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.unindexed_columns"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.unindexed_columns"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "FTS5",
+      "outcome": "error",
+      "probe": "fts5.unindexed_columns"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Recursive CTE",
+      "outcome": "pass",
+      "probe": "cte.recursive_union_all_cycle_guard"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Recursive CTE",
+      "outcome": "pass",
+      "probe": "cte.recursive_union_all_cycle_guard"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Recursive CTE",
+      "outcome": "pass",
+      "probe": "cte.recursive_union_all_cycle_guard"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Recursive CTE",
+      "outcome": "pass",
+      "probe": "cte.recursive_union_all_cycle_guard"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Recursive CTE",
+      "outcome": "pass",
+      "probe": "cte.recursive_union_dedup"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Recursive CTE",
+      "outcome": "pass",
+      "probe": "cte.recursive_union_dedup"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Recursive CTE",
+      "outcome": "pass",
+      "probe": "cte.recursive_union_dedup"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Recursive CTE",
+      "outcome": "pass",
+      "probe": "cte.recursive_union_dedup"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Window",
+      "outcome": "pass",
+      "probe": "window.named_first_value_row_number"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Window",
+      "outcome": "pass",
+      "probe": "window.named_first_value_row_number"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Window",
+      "outcome": "pass",
+      "probe": "window.named_first_value_row_number"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Window",
+      "outcome": "pass",
+      "probe": "window.named_first_value_row_number"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Triggers",
+      "outcome": "pass",
+      "probe": "trigger.when_join_insert"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Triggers",
+      "outcome": "pass",
+      "probe": "trigger.when_join_insert"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Triggers",
+      "outcome": "pass",
+      "probe": "trigger.when_join_insert"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Triggers",
+      "outcome": "pass",
+      "probe": "trigger.when_join_insert"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Triggers",
+      "outcome": "pass",
+      "probe": "trigger.when_delete"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Triggers",
+      "outcome": "pass",
+      "probe": "trigger.when_delete"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Triggers",
+      "outcome": "pass",
+      "probe": "trigger.when_delete"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Triggers",
+      "outcome": "pass",
+      "probe": "trigger.when_delete"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Foreign keys",
+      "outcome": "pass",
+      "probe": "fk.on_delete_cascade"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Foreign keys",
+      "outcome": "pass",
+      "probe": "fk.on_delete_cascade"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Foreign keys",
+      "outcome": "pass",
+      "probe": "fk.on_delete_cascade"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Foreign keys",
+      "outcome": "pass",
+      "probe": "fk.on_delete_cascade"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Foreign keys",
+      "outcome": "pass",
+      "probe": "fk.enforced_when_on"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Foreign keys",
+      "outcome": "pass",
+      "probe": "fk.enforced_when_on"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Foreign keys",
+      "outcome": "pass",
+      "probe": "fk.enforced_when_on"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Foreign keys",
+      "outcome": "pass",
+      "probe": "fk.enforced_when_on"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Foreign keys",
+      "outcome": "pass",
+      "probe": "fk.toggle_off_for_bulk_load"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Foreign keys",
+      "outcome": "pass",
+      "probe": "fk.toggle_off_for_bulk_load"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Foreign keys",
+      "outcome": "pass",
+      "probe": "fk.toggle_off_for_bulk_load"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Foreign keys",
+      "outcome": "pass",
+      "probe": "fk.toggle_off_for_bulk_load"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Expression index",
+      "outcome": "pass",
+      "probe": "index.expression_lower"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Expression index",
+      "outcome": "pass",
+      "probe": "index.expression_lower"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Expression index",
+      "outcome": "pass",
+      "probe": "index.expression_lower"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Expression index",
+      "outcome": "pass",
+      "probe": "index.expression_lower"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Expression index",
+      "outcome": "pass",
+      "probe": "index.unique_expression_rejects_duplicate"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Expression index",
+      "outcome": "pass",
+      "probe": "index.unique_expression_rejects_duplicate"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Expression index",
+      "outcome": "pass",
+      "probe": "index.unique_expression_rejects_duplicate"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Expression index",
+      "outcome": "pass",
+      "probe": "index.unique_expression_rejects_duplicate"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "conflict.insert_or_ignore_expression_unique"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "conflict.insert_or_ignore_expression_unique"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "conflict.insert_or_ignore_expression_unique"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "conflict.insert_or_ignore_expression_unique"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "conflict.on_conflict_do_update"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "conflict.on_conflict_do_update"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "conflict.on_conflict_do_update"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "conflict.on_conflict_do_update"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "conflict.insert_or_replace"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "conflict.insert_or_replace"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "conflict.insert_or_replace"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "conflict.insert_or_replace"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "table.autoincrement_no_reuse"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "table.autoincrement_no_reuse"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "table.autoincrement_no_reuse"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Conflict clauses",
+      "outcome": "pass",
+      "probe": "table.autoincrement_no_reuse"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Transactions",
+      "outcome": "pass",
+      "probe": "txn.rollback"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Transactions",
+      "outcome": "pass",
+      "probe": "txn.rollback"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Transactions",
+      "outcome": "pass",
+      "probe": "txn.rollback"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Transactions",
+      "outcome": "pass",
+      "probe": "txn.rollback"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Transactions",
+      "outcome": "pass",
+      "probe": "txn.begin_exclusive"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Transactions",
+      "outcome": "pass",
+      "probe": "txn.begin_exclusive"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Transactions",
+      "outcome": "pass",
+      "probe": "txn.begin_exclusive"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Transactions",
+      "outcome": "pass",
+      "probe": "txn.begin_exclusive"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.page_size"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.page_size"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.page_size"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.page_size"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Rust API",
+      "outcome": "pass",
+      "probe": "api.execute_batch_row_returning_pragma"
+    },
+    {
+      "detail": "setup: unexpected row during execution",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Rust API",
+      "outcome": "error",
+      "probe": "api.execute_batch_row_returning_pragma"
+    },
+    {
+      "detail": "setup: unexpected row during execution",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Rust API",
+      "outcome": "error",
+      "probe": "api.execute_batch_row_returning_pragma"
+    },
+    {
+      "detail": "setup: unexpected row during execution",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Rust API",
+      "outcome": "error",
+      "probe": "api.execute_batch_row_returning_pragma"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.journal_mode_wal"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.journal_mode_wal"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.journal_mode_wal"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.journal_mode_wal"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.synchronous_normal"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.synchronous_normal"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.synchronous_normal"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.synchronous_normal"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.busy_timeout"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.busy_timeout"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.busy_timeout"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.busy_timeout"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.cache_size"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.cache_size"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.cache_size"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.cache_size"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.temp_store_memory"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.temp_store_memory"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.temp_store_memory"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.temp_store_memory"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.mmap_size"
+    },
+    {
+      "detail": "got []",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Pragmas",
+      "outcome": "mismatch",
+      "probe": "pragma.mmap_size"
+    },
+    {
+      "detail": "got []",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Pragmas",
+      "outcome": "mismatch",
+      "probe": "pragma.mmap_size"
+    },
+    {
+      "detail": "got []",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Pragmas",
+      "outcome": "mismatch",
+      "probe": "pragma.mmap_size"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.user_version"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.user_version"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.user_version"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.user_version"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.table_info"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.table_info"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.table_info"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.table_info"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.query_only_blocks_writes"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.query_only_blocks_writes"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.query_only_blocks_writes"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.query_only_blocks_writes"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Integrity",
+      "outcome": "pass",
+      "probe": "pragma.quick_check"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Integrity",
+      "outcome": "pass",
+      "probe": "pragma.quick_check"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Integrity",
+      "outcome": "pass",
+      "probe": "pragma.quick_check"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Integrity",
+      "outcome": "pass",
+      "probe": "pragma.quick_check"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Integrity",
+      "outcome": "pass",
+      "probe": "pragma.integrity_check"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Integrity",
+      "outcome": "pass",
+      "probe": "pragma.integrity_check"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Integrity",
+      "outcome": "pass",
+      "probe": "pragma.integrity_check"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Integrity",
+      "outcome": "pass",
+      "probe": "pragma.integrity_check"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Maintenance",
+      "outcome": "pass",
+      "probe": "maint.vacuum_analyze"
+    },
+    {
+      "detail": "setup: Parse error: VACUUM is an experimental feature. Enable with --experimental-vacuum flag",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Maintenance",
+      "outcome": "error",
+      "probe": "maint.vacuum_analyze"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Maintenance",
+      "outcome": "pass",
+      "probe": "maint.vacuum_analyze"
+    },
+    {
+      "detail": "setup: Parse error: VACUUM is an experimental feature. Enable with --experimental-vacuum flag",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Maintenance",
+      "outcome": "error",
+      "probe": "maint.vacuum_analyze"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Functions",
+      "outcome": "pass",
+      "probe": "func.scalars"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Functions",
+      "outcome": "pass",
+      "probe": "func.scalars"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Functions",
+      "outcome": "pass",
+      "probe": "func.scalars"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Functions",
+      "outcome": "pass",
+      "probe": "func.scalars"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.wal_checkpoint_truncate"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.wal_checkpoint_truncate"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.wal_checkpoint_truncate"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Pragmas",
+      "outcome": "pass",
+      "probe": "pragma.wal_checkpoint_truncate"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Maintenance",
+      "outcome": "pass",
+      "probe": "maint.vacuum_into_snapshot"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Maintenance",
+      "outcome": "pass",
+      "probe": "maint.vacuum_into_snapshot"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Maintenance",
+      "outcome": "pass",
+      "probe": "maint.vacuum_into_snapshot"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Maintenance",
+      "outcome": "pass",
+      "probe": "maint.vacuum_into_snapshot"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Persistence",
+      "outcome": "pass",
+      "probe": "persist.reopen"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Persistence",
+      "outcome": "pass",
+      "probe": "persist.reopen"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Persistence",
+      "outcome": "pass",
+      "probe": "persist.reopen"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Persistence",
+      "outcome": "pass",
+      "probe": "persist.reopen"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Concurrency",
+      "outcome": "pass",
+      "probe": "concurrency.second_handle_sees_commit"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Concurrency",
+      "outcome": "pass",
+      "probe": "concurrency.second_handle_sees_commit"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Concurrency",
+      "outcome": "pass",
+      "probe": "concurrency.second_handle_sees_commit"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Concurrency",
+      "outcome": "pass",
+      "probe": "concurrency.second_handle_sees_commit"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "File compatibility",
+      "outcome": "pass",
+      "probe": "file.read_sqlite_written_db"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "File compatibility",
+      "outcome": "pass",
+      "probe": "file.read_sqlite_written_db"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "File compatibility",
+      "outcome": "pass",
+      "probe": "file.read_sqlite_written_db"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "File compatibility",
+      "outcome": "pass",
+      "probe": "file.read_sqlite_written_db"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "File compatibility",
+      "outcome": "pass",
+      "probe": "file.sqlite_reads_tested_written_db"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "File compatibility",
+      "outcome": "pass",
+      "probe": "file.sqlite_reads_tested_written_db"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "File compatibility",
+      "outcome": "pass",
+      "probe": "file.sqlite_reads_tested_written_db"
+    },
+    {
+      "detail": "",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "File compatibility",
+      "outcome": "pass",
+      "probe": "file.sqlite_reads_tested_written_db"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "File compatibility",
+      "outcome": "pass",
+      "probe": "file.read_sqlite_written_fts_db"
+    },
+    {
+      "detail": "reopen: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "File compatibility",
+      "outcome": "error",
+      "probe": "file.read_sqlite_written_fts_db"
+    },
+    {
+      "detail": "reopen: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "File compatibility",
+      "outcome": "error",
+      "probe": "file.read_sqlite_written_fts_db"
+    },
+    {
+      "detail": "reopen: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "File compatibility",
+      "outcome": "error",
+      "probe": "file.read_sqlite_written_fts_db"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "File compatibility",
+      "outcome": "pass",
+      "probe": "file.sqlite_reads_tested_written_fts_db"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "File compatibility",
+      "outcome": "error",
+      "probe": "file.sqlite_reads_tested_written_fts_db"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "File compatibility",
+      "outcome": "error",
+      "probe": "file.sqlite_reads_tested_written_fts_db"
+    },
+    {
+      "detail": "setup: Parse error: no such module: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "File compatibility",
+      "outcome": "error",
+      "probe": "file.sqlite_reads_tested_written_fts_db"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Existing tokensave DB",
+      "outcome": "pass",
+      "probe": "existing.integrity_check"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.integrity_check"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.integrity_check"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.integrity_check"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Existing tokensave DB",
+      "outcome": "pass",
+      "probe": "existing.user_version"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.user_version"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.user_version"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.user_version"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Existing tokensave DB",
+      "outcome": "pass",
+      "probe": "existing.count_nodes"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.count_nodes"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.count_nodes"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.count_nodes"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Existing tokensave DB",
+      "outcome": "pass",
+      "probe": "existing.count_edges"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.count_edges"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.count_edges"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.count_edges"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Existing tokensave DB",
+      "outcome": "pass",
+      "probe": "existing.fts_search_bm25"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.fts_search_bm25"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.fts_search_bm25"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.fts_search_bm25"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Existing tokensave DB",
+      "outcome": "pass",
+      "probe": "existing.edges_by_target_kind"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.edges_by_target_kind"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.edges_by_target_kind"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.edges_by_target_kind"
+    },
+    {
+      "detail": "",
+      "engine": "libsql-0.9.30",
+      "gate": "Existing tokensave DB",
+      "outcome": "pass",
+      "probe": "existing.lower_name_lookup"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.lower_name_lookup"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-experimental",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.lower_name_lookup"
+    },
+    {
+      "detail": "open: Extension error: Virtual table module not found: fts5",
+      "engine": "turso-0.9.0-pre.1-mp-wal",
+      "gate": "Existing tokensave DB",
+      "outcome": "error",
+      "probe": "existing.lower_name_lookup"
+    }
+  ]
+}
