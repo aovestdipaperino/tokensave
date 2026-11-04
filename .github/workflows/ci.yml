@@ -5,6 +5,8 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  # Manual runs skip change detection and execute every job.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -19,8 +21,87 @@ env:
   RUST_TEST_THREADS: "2"
 
 jobs:
+  # Each job below runs only when a file it depends on changed (#895), so a
+  # docs-only change starts no Rust build. Jobs skipped through `if:` report
+  # as skipped, which `CI OK` treats as passing.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # paths-filter lists PR files through the API
+    outputs:
+      fmt: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.fmt == 'true' }}
+      check: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.check == 'true' }}
+      clippy: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.clippy == 'true' }}
+      test: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.test == 'true' }}
+      pi: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.pi == 'true' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        if: github.event_name != 'workflow_dispatch'
+        with:
+          filters: |
+            ci: &ci
+              - '.github/workflows/ci.yml'
+            toolchain: &toolchain
+              - 'rust-toolchain.toml'
+            cargo: &cargo
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'build.rs'
+              - 'vendor/**'
+            # Library and binaries, including files pulled in with include_*!
+            # (src/resources/**, pi_extension.ts, the default bench queries).
+            lib: &lib
+              - 'src/**'
+              - 'benchmarks/queries/**'
+
+            # rustfmt formats Rust sources only; a toolchain bump changes rustfmt.
+            fmt:
+              - *ci
+              - *toolchain
+              - '**/*.rs'
+            # MSRV `cargo check` builds no test, bench or example targets and
+            # pins its own toolchain.
+            check:
+              - *ci
+              - *cargo
+              - *lib
+            # `--all-targets` adds tests, benches and examples. Fixture-only
+            # changes are left to the test jobs.
+            clippy:
+              - *ci
+              - *toolchain
+              - *cargo
+              - *lib
+              - 'tests/**/*.rs'
+              - 'benches/**'
+              - 'examples/**'
+            # Full test matrix and feature tiers. Tests read fixtures through
+            # include_str! and CARGO_MANIFEST_DIR, and env_var_namespace_test
+            # scans every Rust source in the repository.
+            test:
+              - *ci
+              - *toolchain
+              - *cargo
+              - *lib
+              - 'tests/**'
+              - 'benches/**'
+              - 'benchmarks/**'
+              - 'examples/**'
+              - '**/*.rs'
+            pi:
+              - *ci
+              - 'src/agents/integrations/pi_extension.ts'
+              - 'tests/pi_extension_test.mjs'
+
   test:
     name: Test ${{ matrix.name }}
+    needs: changes
+    if: needs.changes.outputs.test == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -70,6 +151,8 @@ jobs:
 
   clippy:
     name: Clippy
+    needs: changes
+    if: needs.changes.outputs.clippy == 'true'
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -82,6 +165,8 @@ jobs:
 
   msrv:
     name: MSRV
+    needs: changes
+    if: needs.changes.outputs.check == 'true'
     runs-on: ubuntu-latest
     env:
       RUSTUP_TOOLCHAIN: "1.95.0"
@@ -93,6 +178,8 @@ jobs:
 
   fmt:
     name: Format
+    needs: changes
+    if: needs.changes.outputs.fmt == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -105,6 +192,8 @@ jobs:
   # assumes a `full`-only language goes unnoticed in smaller builds (#586).
   features:
     name: Feature tiers
+    needs: changes
+    if: needs.changes.outputs.test == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -119,6 +208,8 @@ jobs:
 
   pi-extension:
     name: Pi extension
+    needs: changes
+    if: needs.changes.outputs.pi == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -129,3 +220,15 @@ jobs:
           # freeze an older patch line instead of enforcing the minimum.
           node-version: '22'
       - run: node --experimental-strip-types --test tests/pi_extension_test.mjs
+
+  # Single required check. A skipped matrix job reports under its unexpanded
+  # name (`Test ${{ matrix.name }}`), so per-platform checks can't be required.
+  ci-ok:
+    name: CI OK
+    if: always()
+    needs: [changes, test, clippy, msrv, fmt, features, pi-extension]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if a gated job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
