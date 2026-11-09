@@ -10,14 +10,19 @@ tokensave measures the tokens it saves on every MCP tool call. Each tool respons
 
 ## Savings ledger
 
-Every MCP call writes an append-only row to `~/.tokensave/global.db` (`savings_ledger` table). Inspect with `tokensave gain`:
+MCP tool calls write an append-only row to `~/.tokensave/global.db` (`savings_ledger` table): the time, the project, the tool name, and the token counts before and after. Inspect with `tokensave gain`:
 
 ```bash
 tokensave gain                    # current project, last 30 days
 tokensave gain --all              # all projects
 tokensave gain --history --range 7d
+tokensave gain --by-tool          # calls and tokens saved per tool
 tokensave gain --json
 ```
+
+`--by-tool` prints one row per tool name for the selected range and project, most-called first. With `--json` each row is an object with `tool`, `calls` and `saved_tokens`. It reads the same ledger as the other views, so it counts the same calls; it cannot be combined with `--history`. The ledger has no session id, so there is no per-session breakdown.
+
+A row is written for each `tools/call` on the served project that its tool handler answers. These calls write no row: `tokensave_more`; calls with a `graph_root` or `graph_branch` selector, which query another graph; calls refused before dispatch (an invalid argument, no default project, a branch-drift or strict-mode refusal); and calls whose handler fails. The write is best-effort: if the global database cannot be opened, the row is skipped. The `tokensave_metrics` line and `report_savings` do not affect it.
 
 Dollar estimates use the existing pricing module (Sonnet input pricing, refreshed daily via LiteLLM).
 
@@ -44,6 +49,14 @@ native token totals. Cached input is billed at the cache-read rate; native outpu
 already includes reasoning, so reasoning is not added a second time. USD is an
 API-equivalent estimate, not the Codex subscription bill.
 
+AugmentCode sessions (`~/.augment/sessions/<uuid>.json`) provide cumulative
+`subAgentCostUsd`. This is real USD for subagents only, not the full session
+cost; main-agent usage is not sourceable, so Augment coverage is always partial.
+Augment spend appears in `cost --by-agent`, JSON, the monitor, and status/default
+cost summaries when in range, but is not assigned to a model or used to infer
+token counts. Cached Augment rows are hidden from status and summaries when the
+local session source is absent.
+
 Legacy Codex snapshots may contain overcounts. A per-row usage revision allows
 validated source replay to correct them once, without guessing missing reasoning
 counts or deleting history. Older or inconsistent source checkpoints cannot
@@ -66,7 +79,7 @@ Task classification categories: Coding, Debugging, Feature Dev, Refactoring, Tes
 tokensave monitor
 ```
 
-A global TUI that shows MCP tool calls from all projects in real time, via a shared memory-mapped ring buffer at `~/.tokensave/monitor.mmap`. Each entry shows the project name, tool name, and token delta. A cost panel at the top shows today's USD spend, savings, efficiency, and top model (refreshed every 30 seconds). When the panel is active, it also shows available local source coverage; Copilot AIU gets its own line when Droid usage is also shown, so the amount remains visible, and is never combined with USD totals.
+A global TUI that shows MCP tool calls from all projects in real time, via a shared memory-mapped ring buffer at `~/.tokensave/monitor.mmap`. Each entry shows the project name, tool name, and token delta. A cost panel at the top shows today's USD spend, savings, efficiency, and top model (refreshed every 30 seconds). When the panel is active, it also shows available local source coverage; Copilot AIU gets its own line when Droid usage is also shown, so the amount remains visible and is never combined with USD totals. Augment subagent spend is shown separately as partial USD because main-agent usage is not sourced.
 
 <p align="center">
   <img src="../../src/resources/monitor-screenshot.png" alt="tokensave monitor TUI" width="800">
