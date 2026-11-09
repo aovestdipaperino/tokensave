@@ -1210,6 +1210,7 @@ pub(crate) fn estimate_dollars_saved(saved_tokens: u64) -> f64 {
 pub async fn handle_gain(
     all: bool,
     history: bool,
+    by_tool: bool,
     range: &str,
     json_output: bool,
 ) -> tokensave::errors::Result<()> {
@@ -1249,6 +1250,21 @@ pub async fn handle_gain(
             println!("{}", serde_json::to_string_pretty(&arr).unwrap_or_default());
         } else {
             tokensave::display::print_gain_history(&rows, estimate_dollars_saved);
+        }
+        return Ok(());
+    }
+
+    if by_tool {
+        let rows = gdb
+            .savings_by_tool(project_filter.as_deref(), since as i64)
+            .await;
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&rows).unwrap_or_default()
+            );
+        } else {
+            tokensave::display::print_gain_by_tool(&rows);
         }
         return Ok(());
     }

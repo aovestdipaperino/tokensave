@@ -25,3 +25,6 @@ core
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Serena MCP local project cache (never ship)
+.serena/
