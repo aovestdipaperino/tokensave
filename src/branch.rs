@@ -419,7 +419,14 @@ pub async fn set_default_branch(
                 message: format!("'{name}' is not a local or origin branch of this repository"),
             });
         }
-        meta.rename_branch(&previous, name);
+        if !meta.rename_branch(&previous, name) {
+            return Err(TokenSaveError::Config {
+                message: format!(
+                    "'{previous}' is recorded as the default branch in branch-meta.json but \
+                     has no entry; run `tokensave branch list` and fix the metadata"
+                ),
+            });
+        }
         SetDefaultOutcome::Renamed { previous }
     };
     branch_meta::save_branch_meta(tokensave_dir, &meta)?;
