@@ -213,6 +213,7 @@ mod variant_edges_bounded_test;
 mod vbnet_extraction_test;
 mod vendored_libsql_test;
 mod vhdl_extraction_test;
+mod wal_sidecar_guard_test;
 mod walk_up_test;
 mod warn_skipped_hidden_dirs_test;
 mod wolfram_extraction_test;

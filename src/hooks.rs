@@ -408,6 +408,10 @@ fn any_symbol_indexed(env: &HookEnv, symbols: &[String]) -> bool {
         return true;
     }
     let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
+    // Fail closed, like an index that cannot be opened (#940).
+    if crate::db::compatibility::check_wal_sidecar(&db_path).is_err() {
+        return true;
+    }
     let placeholders = vec!["?"; symbols.len()].join(",");
     let sql = format!("SELECT 1 FROM nodes WHERE LOWER(name) IN ({placeholders}) LIMIT 1");
     let params: Vec<libsql::Value> = symbols

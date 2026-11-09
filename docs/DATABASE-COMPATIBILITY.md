@@ -60,6 +60,35 @@ Do not point an older stable binary at beta state. Older stable `wipe` commands
 can also delete the nested beta directory; preserve backups before using them.
 Updated stable wipe preserves the beta subtree.
 
+## WAL sidecar page-size check
+
+SQLite before 3.54.0 can return uninitialized page-cache memory when it
+replays a `-wal` file whose page size differs from the database's
+(CVE-2026-119375, RUSTSEC-2026-0459). The SQLite bundled with libSQL 0.9.30
+(3.45.1) does not have the fix. Before any connection opens a database,
+`compatibility::preflight` reads the `-wal` sidecar, if one exists, and
+refuses the database when SQLite would replay the WAL and:
+
+- the WAL header page size differs from the database header page size,
+- the database header is not a valid SQLite header, or
+- a copy of page 1 in the WAL records a different page size, which SQLite
+  would adopt after reading it.
+
+SQLite writes WAL files at the database's page size, and the page size cannot
+change in WAL mode, so a WAL written by SQLite never trips the check. A WAL
+that is shorter than its header or has an invalid magic number or page size
+passes, because SQLite ignores it. So does a WAL beside a missing or empty
+database, which SQLite deletes on open.
+
+A mismatch is a compatibility refusal: tokensave keeps both files and runs no
+recovery. The message names the sidecar to delete before re-indexing. The
+hook's read-only symbol probe applies the same check and fails closed. The
+check reads two fixed-size headers and one page-number field per complete WAL
+frame, plus the first 18 bytes of each page-1 frame, using constant memory.
+It runs before SQLite opens the files and does not guard against a process
+that rewrites the sidecar afterwards. Remove it when the bundled SQLite has
+the upstream fix. Refs #940.
+
 ## Recovery and resources
 
 Existing databases are checked with a short-lived read-only connection before

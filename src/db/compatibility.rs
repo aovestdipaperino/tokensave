@@ -6,6 +6,7 @@ use std::path::Path;
 
 use libsql::{Builder, Connection, OpenFlags};
 
+use super::wal_guard::WalSidecarError;
 use crate::errors::{Result, TokenSaveError};
 
 const STABLE: i64 = 0x5453_5354; // TSST
@@ -61,9 +62,24 @@ async fn check_channel(conn: &Connection, latest: u32, beta: bool) -> Result<()>
     Ok(())
 }
 
+/// Refuses a `-wal` sidecar whose page size differs from the database's.
+/// The bundled `SQLite` would expose uninitialized memory while replaying it
+/// (CVE-2026-119375, #940). Call before any `SQLite` connection opens `path`.
+pub fn check_wal_sidecar(path: &Path) -> Result<()> {
+    super::wal_guard::check(path).map_err(|error| match error {
+        WalSidecarError::Mismatch(message) => refusal(message),
+        WalSidecarError::Io(error) => TokenSaveError::Database {
+            message: format!("failed to inspect database WAL sidecar: {error}"),
+            operation: "database_preflight".to_string(),
+        },
+    })
+}
+
 /// Inspect existing files using a read-only connection, before opening writable.
-/// SQLite may need existing WAL/SHM sidecars to read an active WAL database.
+/// SQLite may need existing WAL/SHM sidecars to read an active WAL database, so
+/// the sidecar is checked first.
 pub async fn preflight(path: &Path, latest: u32) -> Result<()> {
+    check_wal_sidecar(path)?;
     if !path.exists() {
         return Ok(());
     }
