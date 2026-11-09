@@ -264,6 +264,45 @@ impl Database {
         Ok(out)
     }
 
+    /// Every reference recorded at the given call sites, `(from_node_id,
+    /// line)`, so a re-resolution can treat a whole site as one unit (#630).
+    ///
+    /// A site's members may resolve to different nodes sharing the simple
+    /// name, so a re-attempted member's cleanup must not delete a sibling's
+    /// edge; fetching the members is what lets the pass delete and rewrite
+    /// the site together, as the `GDScript` path already did (#597). Bounded by
+    /// the number of sites handed to it.
+    pub async fn get_unresolved_refs_at_sites(
+        &self,
+        sites: &[(String, u32)],
+    ) -> Result<Vec<UnresolvedRef>> {
+        let mut out = Vec::new();
+        for (source, line) in sites {
+            let mut rows = self
+                .conn()
+                .query(
+                    "SELECT from_node_id, reference_name, reference_kind, line, col, file_path
+                     FROM unresolved_refs
+                     WHERE from_node_id = ?1 AND line = ?2",
+                    params![source.as_str(), i64::from(*line)],
+                )
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("failed to query refs at a call site: {e}"),
+                    operation: "get_unresolved_refs_at_sites".to_string(),
+                })?;
+            out.extend(
+                collect_rows(
+                    &mut rows,
+                    row_to_unresolved_ref,
+                    "get_unresolved_refs_at_sites",
+                )
+                .await?,
+            );
+        }
+        Ok(out)
+    }
+
     /// Removes all unresolved references.
     pub async fn clear_unresolved_refs(&self) -> Result<()> {
         self.conn()
