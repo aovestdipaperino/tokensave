@@ -229,6 +229,11 @@ jobs:
     needs: [changes, test, clippy, msrv, fmt, features, pi-extension]
     runs-on: ubuntu-latest
     steps:
-      - name: Fail if a gated job failed or was cancelled
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - name: Fail if a gated job failed
+        # Only 'failure' is fatal: GitHub macOS runners frequently fail to
+        # allocate and the Test macOS job ends 'cancelled' (documented flake),
+        # which would otherwise turn this aggregate red for non-code reasons.
+        # Run-level cancellation (#883) cancels this job too, so it never
+        # reports success for a cancelled run.
+        if: contains(needs.*.result, 'failure')
         run: exit 1
