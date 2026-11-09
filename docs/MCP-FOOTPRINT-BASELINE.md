@@ -42,11 +42,9 @@ Claude count.
 
 ## Payload size
 
-Bytes are UTF-8 bytes of the compact JSON of each `result` object, as written
-to [`initialize-core.json`](../benchmarks/mcp-footprint/initialize-core.json),
-[`tools-list-core.json`](../benchmarks/mcp-footprint/tools-list-core.json),
-[`initialize-full.json`](../benchmarks/mcp-footprint/initialize-full.json) and
-[`tools-list-full.json`](../benchmarks/mcp-footprint/tools-list-full.json).
+Bytes are UTF-8 bytes of the compact JSON of each `result` object. The
+`initialize` payloads are retained in [`benchmarks/mcp-footprint/`](../benchmarks/mcp-footprint/);
+the larger `tools/list` payloads can be regenerated with the probe.
 "Instructions" is the `instructions` string alone.
 
 | Toolset | Listed tools | `initialize` result | instructions | `tools/list` result | `tools/list` + instructions |
