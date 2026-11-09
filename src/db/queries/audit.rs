@@ -4,25 +4,6 @@
 //! audit keeps only the maps it builds from them.
 use super::*;
 
-/// One edge, flattened with the node facts the audit predicate needs.
-#[derive(Debug, Clone)]
-pub struct AuditEdgeRow {
-    /// File of the edge's source node.
-    pub src_file: String,
-    /// Id of the edge's target node.
-    pub dst_id: String,
-    /// Name of the target node.
-    pub dst_name: String,
-    /// File of the target node.
-    pub dst_file: String,
-    /// Kind of the target node.
-    pub dst_kind: String,
-    /// Zero-based start line of the target node.
-    pub dst_line: i64,
-    /// Parent id of the target node.
-    pub dst_parent: Option<String>,
-}
-
 impl Database {
     /// Runs `sql` and passes each row to `f`, with the audit's error wording.
     async fn audit_scan(&self, sql: &str, mut f: impl FnMut(&libsql::Row)) -> Result<()> {

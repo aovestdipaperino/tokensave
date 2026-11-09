@@ -40,22 +40,28 @@ impl Database {
 
     /// Returns up to `limit` decisions, newest first.
     ///
-    /// `fts_query` is an already escaped FTS5 MATCH expression over the
-    /// decision text and reason; `since` keeps decisions created at or after
-    /// that timestamp.
+    /// `query` is free text matched against the decision text and reason; a
+    /// query with no searchable terms matches every decision. `since` keeps
+    /// decisions created at or after that timestamp.
     pub async fn get_decisions(
         &self,
-        fts_query: Option<&str>,
+        query: Option<&str>,
         since: Option<i64>,
         limit: i64,
     ) -> Result<Vec<DecisionRecord>> {
+        // FTS5 parses the bound MATCH string as a query expression even
+        // through a bound parameter, so raw terms containing `-`, `.`, `/`
+        // etc. (`data-api`) are syntax errors (#218). Escape into quoted
+        // prefix terms first; a query with no tokenizable content degrades
+        // to the unfiltered recency-ordered arms.
+        let fts_query = query.and_then(to_fts_match_query);
         let conn = self.conn();
         let db_err = |e: libsql::Error| TokenSaveError::Database {
             message: format!("session_recall query failed: {e}"),
             operation: "session_recall".to_string(),
         };
 
-        let mut rows = match (fts_query, since) {
+        let mut rows = match (fts_query.as_deref(), since) {
             (Some(q), Some(ts)) => conn
                 .query(
                     "SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags \

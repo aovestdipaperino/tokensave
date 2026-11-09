@@ -7,76 +7,14 @@ use std::fmt::Write as _;
 // Node operations
 // ---------------------------------------------------------------------------
 
-/// A predicate for [`Database::get_nodes_filtered`], built by the caller
-/// instead of applied to a materialised `Vec<Node>` in Rust.
-///
-/// Six MCP handlers used to call `get_all_nodes()` and filter the result,
-/// so a single tool call materialised the whole node table to keep a
-/// fraction of it (#410). Each field here is one of the predicates they
-/// applied; an empty filter is exactly `get_all_nodes()`.
-#[derive(Debug, Clone, Default)]
-pub struct NodeFilter {
-    path_prefix: Option<String>,
-    kinds: Option<Vec<&'static str>>,
-    public_only: bool,
-    min_lines: Option<u32>,
-    name_contains: Option<String>,
-}
-
 impl NodeFilter {
-    /// An unconstrained filter, equivalent to selecting every node.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Restricts to a file path, or to a directory containing it.
-    ///
-    /// Matches the exact path, or the path plus a `/` separator, mirroring the
-    /// rule the handlers each wrote by hand — so `src` never matches `srcfoo`.
-    #[must_use]
-    pub fn path_prefix(mut self, prefix: &str) -> Self {
-        self.path_prefix = Some(prefix.to_string());
-        self
-    }
-
-    /// Restricts to a set of node kinds.
-    #[must_use]
-    pub fn kinds(mut self, kinds: &[NodeKind]) -> Self {
-        self.kinds = Some(kinds.iter().map(NodeKind::as_str).collect());
-        self
-    }
-
-    /// Restricts to publicly visible nodes.
-    #[must_use]
-    pub fn public_only(mut self) -> Self {
-        self.public_only = true;
-        self
-    }
-
-    /// Restricts to nodes spanning at least `lines` lines, inclusive of both
-    /// endpoints — the same arithmetic the redundancy handler used.
-    #[must_use]
-    pub fn min_lines(mut self, lines: u32) -> Self {
-        self.min_lines = Some(lines);
-        self
-    }
-
-    /// Restricts to nodes whose name or qualified name contains `needle`,
-    /// case-insensitively.
-    #[must_use]
-    pub fn name_contains(mut self, needle: &str) -> Self {
-        self.name_contains = Some(needle.to_ascii_lowercase());
-        self
-    }
-
     /// Renders the `WHERE` clause, or an empty string when unconstrained.
     ///
     /// Values are inlined rather than bound because the kind list is variadic
     /// and libsql's `params!` is fixed-arity; every inlined value therefore
     /// goes through `push_quoted` or is an integer, and every `LIKE` pattern
     /// through [`escape_like`] first.
-    fn where_clause(&self) -> String {
+    pub(super) fn where_clause(&self) -> String {
         let mut clauses: Vec<String> = Vec::new();
 
         if let Some(prefix) = &self.path_prefix {

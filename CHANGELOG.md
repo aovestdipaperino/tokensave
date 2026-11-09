@@ -80,6 +80,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Changed
 
+- Make the `db` module the storage-backend boundary: copying an index for a newly tracked branch moves to `db::snapshot`, the profiler takes its engine name from `db::ENGINE`, and session-memory search passes raw text so the storage layer owns FTS escaping. No behavior change (Refs #904).
+
 - Confine project-index SQL to the `db` module: graph analysis, session memory, the edge audit, runtime telemetry, the quality diff's read snapshot and the grep hook's symbol probe now go through `Database` methods, the surface a storage-backend trait will cover. Behavior and SQL text are unchanged (Refs #904).
 
 - Route every update notice (`init`, `sync`, `status` and the MCP server) through one method, `cloud::available_update`, which decides whether a newer release should be announced and formats the terminal and agent-facing notices. The CLI still announces every newer release, MCP only minor or major bumps; suppression windows and `TOKENSAVE_UPDATE_CHECK` are unchanged. No behavior change (Refs #902).
