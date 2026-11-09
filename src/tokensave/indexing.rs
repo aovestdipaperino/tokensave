@@ -937,6 +937,33 @@ impl TokenSave {
             if refs.is_empty() {
                 continue;
             }
+            // A re-attempted reference's cleanup deletes by site, so every
+            // reference recorded at the same (caller, line) must re-resolve
+            // with it — a same-named sibling can hold a different target whose
+            // edge would otherwise be deleted and never rewritten (#630).
+            // Same pairing as the GDScript site path above (#597).
+            let mut sites: Vec<(String, u32)> = refs
+                .iter()
+                .map(|r| (r.from_node_id.clone(), r.line))
+                .collect();
+            sites.sort_unstable();
+            sites.dedup();
+            let mut refs = refs;
+            // A full pass re-attempts every reference anyway, so the site
+            // pairing is only needed (and only pays for) an incremental pass.
+            if touched.is_some() {
+                for member in self.db.get_unresolved_refs_at_sites(&sites).await? {
+                    let unseen = !refs.iter().any(|r| {
+                        r.from_node_id == member.from_node_id
+                            && r.line == member.line
+                            && r.reference_name == member.reference_name
+                            && r.reference_kind == member.reference_kind
+                    });
+                    if unseen {
+                        refs.push(member);
+                    }
+                }
+            }
             attempted += refs.len();
             // Only the references actually re-resolved may have their ambiguity
             // records replaced — see `write_ambiguities`. Not collected for a
@@ -946,6 +973,7 @@ impl TokenSave {
                 attempted_refs.extend(refs.iter().map(AmbiguityRefKey::from));
             }
             crate::cancel::check("resolve")?;
+            self.db.delete_resolved_edges_for_refs(&refs).await?;
             let (batch_resolved, batch_ambiguous) =
                 self.cpu_usage().run(|| resolver.resolve_batch(&refs))?;
             resolved.extend(batch_resolved);
@@ -1122,6 +1150,11 @@ impl TokenSave {
         use crate::sync as sync_mod;
 
         self.ensure_current_checkout()?;
+        // This path mutates the graph like a full sync, so it gets the same
+        // crash contract: the sentinel is cleared only on the single success
+        // exit below, and an interrupted pass is recovered on the next open
+        // instead of silently losing resolver edges (#630, #450).
+        write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
         let project_root = &self.project_root;
         let registry = &self.registry;

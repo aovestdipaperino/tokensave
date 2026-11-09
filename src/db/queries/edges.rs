@@ -1817,6 +1817,35 @@ impl Database {
         Ok(())
     }
 
+    /// Removes prior resolver answers for a bounded batch before re-resolution.
+    /// Null provenance also covers legacy rows, which cannot safely be distinguished
+    /// from extractor-written edges and must be preserved.
+    pub async fn delete_resolved_edges_for_refs(&self, refs: &[UnresolvedRef]) -> Result<()> {
+        if refs.is_empty() {
+            return Ok(());
+        }
+        let statement = self
+            .conn()
+            .prepare(
+                "DELETE FROM edges WHERE source = ?1 AND line = ?2 AND kind = ?3
+             AND resolved_by IS NOT NULL
+             AND target IN (SELECT id FROM nodes WHERE name = ?4)",
+            )
+            .await?;
+        for reference in refs {
+            statement
+                .execute(params![
+                    reference.from_node_id.as_str(),
+                    i64::from(reference.line),
+                    reference.reference_kind.as_str(),
+                    crate::resolution::simple_ref_name(&reference.reference_name),
+                ])
+                .await?;
+            statement.reset();
+        }
+        Ok(())
+    }
+
     /// Deletes the `calls` edges that call sites may have produced, each site
     /// given as (caller id, line, callee bare name), so a re-resolution of
     /// every reference at those sites can write them afresh (#597).
@@ -1829,6 +1858,7 @@ impl Database {
                 .execute(
                     "DELETE FROM edges
                      WHERE kind = 'calls' AND source = ?1 AND line = ?2
+                       AND resolved_by IS NOT NULL
                        AND target IN (SELECT id FROM nodes WHERE name = ?3)",
                     params![source.as_str(), i64::from(*line), name.as_str()],
                 )
