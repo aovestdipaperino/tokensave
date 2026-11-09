@@ -129,7 +129,7 @@ Snapshot health metrics at the start of an AI coding session, then diff at the e
 
 ### Edit Primitives
 
-Four writer tools that let agents modify files without regex or shell-quoting hazards. Each is single-file, anchored, and triggers an in-place re-index after writing so the graph never goes stale.
+Writer tools that let agents modify files without regex or shell-quoting hazards. Each is single-file, anchored, and triggers an in-place re-index after writing so the graph never goes stale. The four below are the most common; `tokensave_create_file` is described after the table.
 
 | Tool | Purpose |
 |------|---------|
@@ -137,6 +137,16 @@ Four writer tools that let agents modify files without regex or shell-quoting ha
 | `tokensave_multi_str_replace` | Apply N `(old, new)` replacements atomically -- all-or-nothing transaction |
 | `tokensave_insert_at` | Insert content before or after a unique anchor string or line number |
 | `tokensave_ast_grep_rewrite` | Structural code rewrite via the `ast-grep` CLI in `--rewrite` mode |
+
+`tokensave_create_file` (`path`, `content`, optional `overwrite`) creates a new file and indexes it at once, so it is searchable right after the call. It is in the `edit` area, so it is listed after `tokensave_more` with `edit` or `all`, and is not marked read-only. Its path rules are stricter than the other edit tools', which honor an absolute path outside the project verbatim:
+
+- The file must land inside the indexed project root. An absolute path elsewhere, any `..` component, and a path through a symlinked directory that leaves the root are refused. Symlinks are resolved on the nearest existing directory above the file.
+- Paths inside `.git` and tokensave's own state directory are refused.
+- An existing file is replaced only with `overwrite: true`. A directory or a symlink is never replaced. `project_root`/`cwd` retargeting is not accepted.
+- `content` is limited to the project's `max_file_size` (1 MiB by default).
+- The checks and the write are not atomic. A symlink created in a parent directory between them is followed; without `overwrite` the write still never replaces an existing file.
+
+The result reports the project-relative `file`, `resolved_path`, `bytes`, `overwritten`, `digest`, and `indexed`. `indexed` is false for a file kind tokensave does not index.
 
 ### Git & Workflow
 
