@@ -890,9 +890,9 @@ impl TokenSave {
                 )
             } else {
                 format!(
-                    "Automatic branch tracking is disabled (`auto_track` defaults to false), \
-                     so neither the post-checkout git hook nor opening the project registers \
-                     new branches. Run {add} to track this branch, or set \
+                    "Automatic branch tracking is disabled by `\"auto_track\": false` in \
+                     {config_path}, so neither the post-checkout git hook nor opening the \
+                     project registers new branches. Run {add} to track this branch, or set \
                      `\"auto_track\": true` in {config_path} (or TOKENSAVE_AUTO_TRACK=1 for \
                      one run) to track new branches automatically."
                 )

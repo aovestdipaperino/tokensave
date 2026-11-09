@@ -495,6 +495,20 @@ pub(crate) async fn ingest_from_home(gdb: &GlobalDb, home: &Path) -> IngestStats
     stats.turns_updated = stats.turns_updated.saturating_add(copilot.rows_changed);
     stats.coverage.push(copilot.coverage);
 
+    // Codex CLI ingestion from ~/.codex/sessions
+    let codex_root = home.join(".codex").join("sessions");
+    let codex = crate::accounting::codex::ingest_dir(gdb, &codex_root).await;
+
+    stats.turns_updated = stats.turns_updated.saturating_add(codex.rows_changed);
+    stats.coverage.push(codex.coverage);
+
+    // AugmentCode (auggie) ingestion from ~/.augment/sessions
+    let augment_root = home.join(".augment").join("sessions");
+    let augment = crate::accounting::augment::ingest_dir(gdb, &augment_root).await;
+
+    stats.turns_updated = stats.turns_updated.saturating_add(augment.rows_changed);
+    stats.coverage.push(augment.coverage);
+
     stats
 }
 

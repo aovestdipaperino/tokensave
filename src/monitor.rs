@@ -394,6 +394,11 @@ pub struct CostCache {
     pub week_aiu: Option<u64>,
     /// Coverage quality of the Copilot accounting source.
     pub copilot_state: crate::accounting::parser::CoverageState,
+    /// Augment subagent-only USD observed today and in the past 7 days.
+    pub today_augment_cost: f64,
+    pub week_augment_cost: f64,
+    /// Coverage quality of the Augment accounting source.
+    pub augment_state: crate::accounting::parser::CoverageState,
     pub last_refresh: std::time::Instant,
 }
 
@@ -413,6 +418,9 @@ impl CostCache {
             today_aiu: None,
             week_aiu: None,
             copilot_state: crate::accounting::parser::CoverageState::Absent,
+            today_augment_cost: 0.0,
+            week_augment_cost: 0.0,
+            augment_state: crate::accounting::parser::CoverageState::Absent,
             last_refresh: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(999))
                 .unwrap_or_else(std::time::Instant::now),
@@ -431,6 +439,7 @@ impl CostCache {
             || self.week_credits.is_some_and(|c| c > 0)
             || self.week_droid_tokens > 0
             || self.copilot_state != crate::accounting::parser::CoverageState::Absent
+            || self.augment_state != crate::accounting::parser::CoverageState::Absent
     }
 }
 
@@ -447,7 +456,9 @@ pub fn truncate_to_chars(s: &str, width: usize) -> String {
 pub fn cost_panel_lines(cache: &CostCache) -> Vec<String> {
     use crate::accounting::parser::CoverageState;
 
-    let (spent_label, top_model_label) = if cache.droid_state == CoverageState::Absent {
+    let (spent_label, top_model_label) = if cache.droid_state == CoverageState::Absent
+        && cache.augment_state == CoverageState::Absent
+    {
         ("Spent", "Top model")
     } else {
         ("USD spent", "Top priced model")
@@ -527,6 +538,18 @@ pub fn cost_panel_lines(cache: &CostCache) -> Vec<String> {
         }
     }
 
+    if cache.augment_state != CoverageState::Absent {
+        let augment_line = if cache.week_augment_cost > 0.0 {
+            format!(
+                "  Augment: ${:.2} today | ${:.2} 7d (subagent USD, partial)",
+                cache.today_augment_cost, cache.week_augment_cost
+            )
+        } else {
+            "  Augment partial; no subagent spend in range".to_string()
+        };
+        lines.push(augment_line);
+    }
+
     let top_model_part = if cache.top_model.is_empty() {
         "n/a".to_string()
     } else {
@@ -589,6 +612,14 @@ async fn refresh_cost_cache_from_home(
             c.state
         });
 
+    cache.augment_state = stats
+        .coverage
+        .iter()
+        .find(|c| c.agent == "augment")
+        .map_or(crate::accounting::parser::CoverageState::Absent, |c| {
+            c.state
+        });
+
     let today_start = now_epoch - (now_epoch % 86400);
     let week_start = now_epoch.saturating_sub(7 * 86400);
 
@@ -629,6 +660,21 @@ async fn refresh_cost_cache_from_home(
             .saturating_add(d.output_tokens)
             .saturating_add(d.cache_write_tokens)
             .saturating_add(d.cache_read_tokens);
+    }
+
+    cache.today_augment_cost = today_agents
+        .iter()
+        .find(|summary| summary.agent == "augment")
+        .map_or(0.0, |summary| summary.cost_usd);
+    cache.week_augment_cost = week_agents
+        .iter()
+        .find(|summary| summary.agent == "augment")
+        .map_or(0.0, |summary| summary.cost_usd);
+    if cache.augment_state == crate::accounting::parser::CoverageState::Absent {
+        cache.today_cost -= cache.today_augment_cost;
+        cache.week_cost -= cache.week_augment_cost;
+        cache.today_augment_cost = 0.0;
+        cache.week_augment_cost = 0.0;
     }
 
     // Copilot cumulative nano-AIU (stored in the credits column).
@@ -934,6 +980,62 @@ mod tests {
         let lines = cost_panel_lines(&cache);
         assert_eq!(lines.len(), 2);
         assert!(lines.iter().all(|line| !line.contains("Copilot")));
+    }
+
+    #[tokio::test]
+    async fn refresh_cost_cache_displays_augment_partial_spend() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let session_dir = home.join(".augment").join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("session.json"),
+            r#"{"sessionId":"augment-session","created":"2020-01-01T00:00:00Z","subAgentCostUsd":1.25,"agentState":{"modelId":"butler_a"}}"#,
+        )
+        .unwrap();
+        let db_path = tmp.path().join("db").join("global.db");
+        let gdb = GlobalDb::open_at(&db_path).await.unwrap();
+        let mut cache = CostCache::new();
+
+        refresh_cost_cache_from_home(&mut cache, &gdb, &home, 0).await;
+
+        assert!((cache.today_cost - 1.25).abs() < 1e-12);
+        assert!(
+            cost_panel_lines(&cache)
+                .iter()
+                .any(|line| line.contains("Augment") && line.contains("$1.25")),
+            "{:?}",
+            cost_panel_lines(&cache)
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_cost_cache_hides_augment_rows_after_source_removal() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let session_dir = home.join(".augment").join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("session.json"),
+            r#"{"sessionId":"augment-session","created":"2020-01-01T00:00:00Z","subAgentCostUsd":1.25,"agentState":{"modelId":"butler_a"}}"#,
+        )
+        .unwrap();
+        let db_path = tmp.path().join("db").join("global.db");
+        let gdb = GlobalDb::open_at(&db_path).await.unwrap();
+        let mut cache = CostCache::new();
+
+        refresh_cost_cache_from_home(&mut cache, &gdb, &home, 0).await;
+        fs::remove_dir_all(home.join(".augment")).unwrap();
+        refresh_cost_cache_from_home(&mut cache, &gdb, &home, 0).await;
+
+        assert!(cache.today_cost.abs() < 1e-12);
+        assert!(
+            cost_panel_lines(&cache)
+                .iter()
+                .all(|line| !line.contains("Augment")),
+            "{:?}",
+            cost_panel_lines(&cache)
+        );
     }
 
     #[test]

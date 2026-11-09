@@ -7005,6 +7005,171 @@ async fn test_status_staleness_falls_back_to_last_sync_at_when_files_empty() {
 }
 
 // ---------------------------------------------------------------------------
+// tokensave_status `stale_commits` is relative to the last sync (#936)
+// ---------------------------------------------------------------------------
+
+/// Commits everything staged in `dir` with author and committer time
+/// `secs` (UNIX seconds), so commit-time comparisons are deterministic.
+fn commit_at(dir: &std::path::Path, message: &str, secs: i64, extra: &[&str]) {
+    let date = format!("@{secs} +0000");
+    let mut args = vec!["commit", "-q", "-m", message];
+    args.extend_from_slice(extra);
+    let out = std::process::Command::new("git")
+        .args(&args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_DATE", &date)
+        .env("GIT_COMMITTER_DATE", &date)
+        .output()
+        .expect("failed to run git commit");
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Initialises a git repo in `dir` without committing anything.
+fn init_git_repo(dir: &std::path::Path) {
+    run_git(dir, &["init", "-q"]);
+    run_git(dir, &["config", "user.email", "test@test.com"]);
+    run_git(dir, &["config", "user.name", "Test"]);
+    run_git(dir, &["config", "commit.gpgsign", "false"]);
+}
+
+/// Calls `tokensave_status` and returns the parsed JSON plus its raw text.
+async fn status_json(cg: &TokenSave) -> (Value, String) {
+    let result = handle_tool_call(cg, "tokensave_status", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value).to_string();
+    let status: Value = serde_json::from_str(&text).expect("status must be JSON");
+    (status, text)
+}
+
+/// Backdates every file's `indexed_at`, as on a repo whose indexed content
+/// has not changed for a long time.
+async fn backdate_indexed_at(cg: &TokenSave, secs: i64) {
+    cg.db()
+        .conn()
+        .execute("UPDATE files SET indexed_at = ?1", libsql::params![secs])
+        .await
+        .unwrap();
+}
+
+/// #936: on a quiet repo, `last_updated` (MAX(files.indexed_at)) stays at the
+/// last content reindex, so commits that change no indexed file (an empty
+/// commit, an ignored file) stayed counted after any number of no-change
+/// syncs. A successful no-change sync must clear `stale_commits`, and a
+/// commit made after it must be counted again.
+#[tokio::test]
+async fn test_status_stale_commits_cleared_by_no_change_sync() {
+    let (dir, cg) = setup_project().await;
+    let project = dir.path();
+    let now = tokensave::tokensave::current_timestamp();
+    // The last content reindex happened long ago; every commit below is newer.
+    let reindexed_at = now - 10_000;
+    backdate_indexed_at(&cg, reindexed_at).await;
+
+    fs::write(project.join(".gitignore"), "build/\n").unwrap();
+    fs::create_dir_all(project.join("build")).unwrap();
+    fs::write(project.join("build").join("out.log"), "ignored\n").unwrap();
+    init_git_repo(project);
+    run_git(project, &["add", "src", "tests", ".gitignore"]);
+    commit_at(project, "initial", reindexed_at + 100, &[]);
+    commit_at(project, "empty", reindexed_at + 200, &["--allow-empty"]);
+    run_git(project, &["add", "-f", "build/out.log"]);
+    commit_at(project, "ignored only", reindexed_at + 300, &[]);
+
+    let synced = cg.sync().await.unwrap();
+    assert_eq!(
+        (
+            synced.files_added,
+            synced.files_modified,
+            synced.files_removed
+        ),
+        (0, 0, 0),
+        "the commits change no indexed content, so the sync must be a no-op"
+    );
+
+    let (status, text) = status_json(&cg).await;
+    assert!(
+        status.get("stale_commits").is_none() && status.get("stale_warning").is_none(),
+        "a successful no-change sync must clear stale_commits (#936), got: {text}"
+    );
+
+    // A commit made after the sync is counted.
+    commit_at(project, "after sync", now + 3600, &["--allow-empty"]);
+    let (status, text) = status_json(&cg).await;
+    assert_eq!(
+        status["stale_commits"],
+        json!(1),
+        "only the commit made after the last sync is stale, got: {text}"
+    );
+}
+
+/// #936: the cutoff is strict. A commit in the same second as the last sync
+/// is not reported, and one a second later is.
+#[tokio::test]
+async fn test_status_stale_commits_excludes_commit_in_sync_second() {
+    let (dir, cg) = setup_project().await;
+    let project = dir.path();
+    let sync_at = tokensave::tokensave::current_timestamp() + 3600;
+    backdate_indexed_at(&cg, sync_at - 1000).await;
+    cg.db()
+        .set_metadata("last_sync_at", &sync_at.to_string())
+        .await
+        .unwrap();
+
+    init_git_repo(project);
+    run_git(project, &["add", "."]);
+    commit_at(project, "older", sync_at - 500, &[]);
+    commit_at(project, "same second", sync_at, &["--allow-empty"]);
+    assert_eq!(cg.git_commits_since(sync_at), 0);
+    assert_eq!(cg.git_commits_since(sync_at - 1), 1);
+    assert_eq!(cg.git_commits_since(sync_at - 500), 1);
+    assert_eq!(cg.git_commits_since(sync_at - 501), 2);
+
+    let (status, text) = status_json(&cg).await;
+    assert!(
+        status.get("stale_commits").is_none(),
+        "a commit in the same second as the sync must not be stale (#936), got: {text}"
+    );
+
+    commit_at(project, "next second", sync_at + 1, &["--allow-empty"]);
+    let (status, text) = status_json(&cg).await;
+    assert_eq!(status["stale_commits"], json!(1), "got: {text}");
+}
+
+/// #267 guard with the #936 cutoff: an empty files table still uses the
+/// `last_sync_at` metadata timestamp, so only commits after it are counted.
+#[tokio::test]
+async fn test_status_stale_commits_after_last_sync_with_empty_files() {
+    let (dir, cg) = setup_project().await;
+    let project = dir.path();
+    let sync_at = tokensave::tokensave::current_timestamp() + 3600;
+
+    init_git_repo(project);
+    run_git(project, &["add", "."]);
+    commit_at(project, "before sync", sync_at - 100, &[]);
+    commit_at(project, "after sync", sync_at + 100, &["--allow-empty"]);
+
+    cg.db().clear().await.unwrap();
+    cg.db()
+        .set_metadata("last_sync_at", &sync_at.to_string())
+        .await
+        .unwrap();
+
+    let (status, text) = status_json(&cg).await;
+    assert_eq!(status["last_updated"], json!(0), "got: {text}");
+    assert_eq!(
+        status["stale_commits"],
+        json!(1),
+        "only commits after last_sync_at may be counted (#267, #936), got: {text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Companion documentation (#154 phase 1)
 // ---------------------------------------------------------------------------
 
