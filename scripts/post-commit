@@ -10,6 +10,10 @@
 #   cp scripts/post-commit .git/hooks/post-commit
 #   chmod +x .git/hooks/post-commit
 
-if command -v tokensave &>/dev/null && [ -d ".tokensave" ]; then
+# No `.tokensave` check: project state may live outside the repository
+# (TOKENSAVE_STATE_DIR / state_dir). In a repository with no index,
+# `tokensave sync` without a path exits with an error and creates nothing,
+# unless auto_init indexes it, as with the hooks `tokensave githooks` installs.
+if command -v tokensave &>/dev/null; then
     tokensave sync &>/dev/null &
 fi

@@ -9,6 +9,13 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- **Project state can live outside the repository (Refs #919).**
+  - Set `TOKENSAVE_STATE_DIR`, or `state_dir` in `~/.tokensave/config.toml` (the variable wins; empty selects the default). Each project then keeps its state in `<base>/projects/<name>-<hash>/`, with `beta/` beneath it for prerelease builds.
+  - `<hash>` comes from the root's canonical path, so linked worktrees get separate directories.
+  - `init`, `sync`, `serve`, branch tracking and the private cargo target dir then write nothing under the project root, and `.git/info/exclude` is left alone.
+  - Existing state is never stranded: a project that already has `.tokensave/` keeps using it, and state under a previously used base (recorded in `~/.tokensave/state-bases.json`) is still found after the setting changes.
+  - `tokensave doctor` reports state that is not where the setting puts it, and relocated state whose checkout was deleted. `tokensave state list` and `tokensave state prune [--dry-run]` list them and delete the orphans.
+  - With the setting unset, every path is unchanged. The sample `scripts/post-commit` no longer checks for a `.tokensave/` directory before running `tokensave sync`.
 - **`tokensave_create_file` creates a file and indexes it at once (Refs #920).** Takes `path`, `content` and optional `overwrite` (default false); it is in the `edit` area, so the default `tools/list` is unchanged. Stricter than the other edit tools: the file must land inside the project root (no out-of-root absolute path, no `..`, no symlinked directory leaving the root), never inside `.git` or tokensave's state, never replaces a directory or a symlink, and refuses content over `max_file_size`. The result says whether the file was indexed.
 - **`tokensave gain --by-tool` shows calls and tokens saved per tool (Refs #918).** It reads the existing savings ledger, so nothing new is recorded; with `--json` it prints one `{tool, calls, saved_tokens}` object per tool, most-called first. Existing `gain` and `gain --history` output is unchanged. The token-tracking guide now states which MCP calls write a ledger row, and `gain` is listed in the CLI reference.
 - **Elixir EEx templates are indexed with the `lang-elixir` feature (#907).** Code and output tags in `.eex` files contribute calls and declarations with their original locations; markup, comments, and escaped tags are ignored.

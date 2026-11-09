@@ -446,6 +446,12 @@ pub enum Commands {
         #[arg(long)]
         clean: bool,
     },
+    /// List or prune project state kept under a base state directory
+    /// (`TOKENSAVE_STATE_DIR` or `state_dir`, #919)
+    State {
+        #[command(subcommand)]
+        action: StateAction,
+    },
     /// Opt-in performance profiling: status, reports and sanitized export (#754)
     Profile {
         #[command(subcommand)]
@@ -694,6 +700,22 @@ pub enum ConfigAction {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum StateAction {
+    /// List relocated project state directories and the project each belongs to
+    List,
+    /// Delete relocated state whose project directory no longer exists
+    ///
+    /// Only directories with a recorded origin whose project root is gone
+    /// are removed. State under a project root (`.tokensave/`) is never
+    /// touched.
+    Prune {
+        /// List what would be deleted without deleting anything
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 

@@ -1990,6 +1990,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 eprintln!("Memory report error: {e}");
             }
         }
+        Commands::State { action } => {
+            commands::handle_state_action(action);
+        }
         Commands::Profile { action } => {
             profile_command::handle_profile_action(action)?;
         }
