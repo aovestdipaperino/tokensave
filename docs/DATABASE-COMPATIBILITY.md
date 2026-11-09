@@ -12,6 +12,13 @@ legacy beta database is stable-compatible.
 | Project config, branch metadata, branch databases, locks | `.tokensave/` | `.tokensave/beta/` |
 | Global database | `~/.tokensave/global.db` | `~/.tokensave/beta/global.db` |
 
+With a base state directory set (`TOKENSAVE_STATE_DIR` or `state_dir`, see
+[Keeping state outside the repository](guide/INDEXING.md#keeping-state-outside-the-repository)),
+the project rows move to `<base>/projects/<id>/` (stable) and
+`<base>/projects/<id>/beta/` (beta) with the same contents; the global rows do
+not move. The base only changes where the files are: origin and schema checks
+run on the database at its new path exactly as above, before any migration.
+
 Global user settings and agent installation settings remain shared. The release
 channel comes from the existing compiled release-channel selection,
 not the Git branch being indexed or a runtime override.

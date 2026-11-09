@@ -10,17 +10,21 @@ Run a comprehensive health check of your tokensave installation:
 tokensave doctor
 ```
 
-Checks: binary location, project index, global DB, user config, agent integration (MCP server, hooks, permissions, prompt rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave install`. Use `--agent` to check a specific agent only.
+Checks: binary location, project index, global DB, user config, where project state lives, agent integration (MCP server, hooks, permissions, prompt rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave install`. Use `--agent` to check a specific agent only.
 
 Doctor also validates that each installed hook uses the correct tokensave subcommand and auto-repairs broken hooks.
 
 ## "tokensave not initialized"
 
-The `.tokensave/` directory doesn't exist in your project.
+The `.tokensave/` directory doesn't exist in your project, or, with a base state directory set, the project has no state there yet.
 
 ```bash
 tokensave init
 ```
+
+## State is not where `state_dir` says
+
+`tokensave doctor` warns that a project's state "is not at" the configured location when the project already had state before you set or changed `TOKENSAVE_STATE_DIR` or `state_dir`. tokensave keeps using the existing state, so nothing is lost. To follow the setting, stop the project's MCP servers and move the directory doctor names to the location it gives. Doctor also lists relocated state whose project directory was deleted; `tokensave state prune --dry-run` shows what `tokensave state prune` would delete. See [Keeping state outside the repository](INDEXING.md#keeping-state-outside-the-repository).
 
 ## MCP server not connecting
 
@@ -38,11 +42,11 @@ The AI agent doesn't see tokensave tools.
 
 ## "branch '…' is not tracked" after a checkout
 
-Automatic branch tracking is opt-in. With `auto_track` disabled (the default), the `post-checkout` hook runs on every checkout but intentionally does not register new branches, and tokensave serves them from the nearest tracked ancestor's index.
+Automatic branch tracking is on by default, but a project can turn it off. With `auto_track` disabled, the `post-checkout` hook runs on every checkout but intentionally does not register new branches, and tokensave serves them from the nearest tracked ancestor's index. Projects initialized before tracking became the default have `"auto_track": false` written in their config and keep it after an upgrade.
 
 - Run `tokensave status` (or call `tokensave_status`) to see whether `auto_track` is enabled and why the branch was not tracked
 - Track the branch now with `tokensave branch add`
-- Track new branches automatically by setting `"auto_track": true` in `.tokensave/config.json`, or `TOKENSAVE_AUTO_TRACK=1` for one run
+- Track new branches automatically by setting `"auto_track": true` in `.tokensave/config.json`, or `TOKENSAVE_AUTO_TRACK=1` for one run; check that `TOKENSAVE_AUTO_TRACK` is not set to `0`, `false`, `no`, `off`, or empty in your environment
 - Run `TOKENSAVE_HOOK_DEBUG=1 git checkout <branch>` and read `.tokensave/hook-debug.log` to see what the hook decided
 
 See [Automatic branch tracking](MULTI-BRANCH.md#automatic-branch-tracking-v730) for details.

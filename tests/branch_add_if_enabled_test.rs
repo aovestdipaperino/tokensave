@@ -49,6 +49,17 @@ fn tokensave(root: &Path, args: &[&str]) -> std::process::Output {
 /// A repo on `master`, indexed, with multi-branch bootstrapped and `feature`
 /// checked out but untracked. `auto_track` is written as given.
 fn project(auto_track: bool) -> tempfile::TempDir {
+    let tmp = fresh_project();
+    let config_path = tokensave::config::get_tokensave_dir(tmp.path()).join("config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    config["auto_track"] = serde_json::Value::Bool(auto_track);
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+    tmp
+}
+
+/// The same repo with the config exactly as `init` wrote it.
+fn fresh_project() -> tempfile::TempDir {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
@@ -71,12 +82,6 @@ fn project(auto_track: bool) -> tempfile::TempDir {
     git(root, &["checkout", "-b", "bootstrap"]);
     assert!(tokensave(root, &["branch", "add"]).status.success());
     git(root, &["checkout", "-b", "feature"]);
-
-    let config_path = tokensave::config::get_tokensave_dir(root).join("config.json");
-    let mut config: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-    config["auto_track"] = serde_json::Value::Bool(auto_track);
-    std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
     tmp
 }
@@ -334,22 +339,172 @@ fn post_checkout_hook_debug_explains_a_file_checkout() {
     );
 }
 
-/// A debug setting left on must not grow the log without bound: past its
-/// limit the log starts afresh.
+/// A debug setting left on must not grow the log without bound. The cap is
+/// `HOOK_DEBUG_LOG_LIMIT` = 256 KiB (src/commands.rs), hard-coded here so a
+/// change to the constant fails this test loudly instead of silently.
 #[test]
 fn hook_debug_log_is_bounded() {
     let tmp = project(false);
     let root = tmp.path();
     let log_path = tokensave::config::get_tokensave_dir(root).join("hook-debug.log");
-    std::fs::write(&log_path, vec![b'x'; 300 * 1024]).unwrap();
 
+    // Below the cap the log appends: the seeded marker survives.
+    std::fs::write(&log_path, vec![b'x'; 256 * 1024 - 1]).unwrap();
+    let out = tokensave_with_env(root, BRANCH_CHECKOUT, &[("TOKENSAVE_HOOK_DEBUG", "1")]);
+    assert!(out.status.success());
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    assert!(log.contains("xxxxx"), "below the cap the log must append");
+    assert!(log.contains("post-checkout: did not track branch 'feature'"));
+
+    // At the cap the log starts afresh: the marker is gone.
+    std::fs::write(&log_path, vec![b'x'; 256 * 1024]).unwrap();
     let out = tokensave_with_env(root, BRANCH_CHECKOUT, &[("TOKENSAVE_HOOK_DEBUG", "1")]);
     assert!(out.status.success());
     let log = std::fs::read_to_string(&log_path).unwrap();
     assert!(
-        log.len() < 4096,
-        "the oversized log must restart: {} bytes",
+        !log.contains("xxxxx"),
+        "the log must restart at the cap: {} bytes",
         log.len()
     );
     assert!(log.contains("post-checkout: did not track branch 'feature'"));
+}
+
+// ---------------------------------------------------------------------------
+// #922: `auto_track` is on by default.
+// ---------------------------------------------------------------------------
+
+/// A config left as `init` wrote it tracks a checked-out branch.
+#[test]
+fn a_fresh_install_tracks_a_checked_out_branch() {
+    let tmp = fresh_project();
+    let root = tmp.path();
+
+    let out = tokensave_with_env(root, BRANCH_CHECKOUT, &[]);
+    assert!(out.status.success(), "a hook must never fail the checkout");
+    assert!(
+        is_tracked(root, "feature"),
+        "auto_track is on by default, so the checkout must track the branch"
+    );
+}
+
+/// A config written before the field existed has no `auto_track` at all.
+#[test]
+fn a_config_without_auto_track_tracks_a_checked_out_branch() {
+    let tmp = fresh_project();
+    let root = tmp.path();
+    let config_path = tokensave::config::get_tokensave_dir(root).join("config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    config.as_object_mut().unwrap().remove("auto_track");
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+
+    let out = tokensave_with_env(root, &["branch", "add", "--if-enabled"], &[]);
+    assert!(out.status.success());
+    assert!(is_tracked(root, "feature"), "a missing field means enabled");
+}
+
+/// Every falsey `TOKENSAVE_AUTO_TRACK` spelling still opts out of the default.
+#[test]
+fn the_env_override_opts_out_of_the_default() {
+    let tmp = fresh_project();
+    let root = tmp.path();
+
+    for value in ["0", "false", "no", "off", ""] {
+        let out = tokensave_with_env(root, BRANCH_CHECKOUT, &[("TOKENSAVE_AUTO_TRACK", value)]);
+        assert!(out.status.success());
+        assert!(
+            !is_tracked(root, "feature"),
+            "TOKENSAVE_AUTO_TRACK={value:?} must keep the branch untracked"
+        );
+    }
+}
+
+/// Hooks run in the background, so several checkouts in quick succession can
+/// race to track the same branch. The branch lock must leave one entry and one
+/// database behind.
+#[test]
+fn concurrent_tracking_registers_the_branch_once() {
+    let tmp = fresh_project();
+    let root = tmp.path();
+    let elsewhere = root.join("elsewhere-tmp");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+
+    let children: Vec<_> = (0..4)
+        .map(|_| {
+            Command::new(env!("CARGO_BIN_EXE_tokensave"))
+                .args(BRANCH_CHECKOUT)
+                .current_dir(root)
+                .env("GIT_CONFIG_COUNT", "0")
+                .env("HOME", root)
+                .env("TMPDIR", &elsewhere)
+                .env("TMP", &elsewhere)
+                .env("TEMP", &elsewhere)
+                .env_remove("TOKENSAVE_AUTO_TRACK")
+                .spawn()
+                .expect("spawn tokensave")
+        })
+        .collect();
+    for mut child in children {
+        assert!(child.wait().expect("wait for tokensave").success());
+    }
+
+    assert!(is_tracked(root, "feature"));
+    let branches = tokensave::config::get_tokensave_dir(root).join("branches");
+    let feature_dbs = std::fs::read_dir(&branches)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with("feature") && name.ends_with(".db")
+        })
+        .count();
+    assert_eq!(feature_dbs, 1, "one database for the branch");
+}
+
+/// `git worktree add -b` reports the all-zeros previous HEAD; the hook
+/// initialises the new worktree and, by default, tracks the branch it is on.
+#[test]
+fn a_new_worktree_tracks_its_branch_by_default() {
+    let tmp = fresh_project();
+    let root = tmp.path();
+    let wt_parent = tempdir().unwrap();
+    let wt = wt_parent.path().join("wt");
+    git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt-feature",
+            wt.to_str().unwrap(),
+        ],
+    );
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&wt)
+        .output()
+        .expect("run git");
+    let head = String::from_utf8(head.stdout).unwrap();
+
+    let out = tokensave_with_env(
+        &wt,
+        &[
+            "hook",
+            "post-checkout",
+            "0000000000000000000000000000000000000000",
+            head.trim(),
+            "1",
+        ],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "a hook must never fail the checkout: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        is_tracked(&wt, "wt-feature"),
+        "the worktree's branch must be tracked by default"
+    );
 }

@@ -14,6 +14,24 @@ This creates a `.tokensave/` directory with the knowledge graph database. After 
 The [user guide](../USER-GUIDE.md#your-first-index) covers skipped folders,
 `.gitignore` handling, forced re-indexing, and diagnosing slow syncs.
 
+## Keeping state outside the repository
+
+By default the index and the rest of a project's state live in `.tokensave/` at the project root, which `init` adds to `.git/info/exclude`. To create nothing inside your repositories, set a base state directory:
+
+- `TOKENSAVE_STATE_DIR=/path/to/state` in the environment, or
+- `state_dir = "/path/to/state"` in `~/.tokensave/config.toml`.
+
+The environment variable wins over the config file; set but empty, it selects the default layout. The value must be an absolute path or start with `~`; anything else is ignored, and `tokensave doctor` says so. The config-file value is read when a tokensave process starts, so restart MCP servers after changing it. Set it in the config file rather than the environment if you rely on git hooks, which run without your shell's variables.
+
+With a base set, each project keeps its state in `<base>/projects/<name>-<hash>/`. Prerelease builds use a `beta` subdirectory there, as they do under `.tokensave/`. `<hash>` comes from the project root's canonical absolute path (lowercased on Windows), so the same checkout always maps to the same directory, and each linked worktree gets its own. `<name>` is the root's folder name, to make the directories recognizable. Each one holds an `origin.json` recording the project root. Nothing is written under the project root, and `.git/info/exclude` is left untouched.
+
+Changing the setting never loses an index:
+
+- A project that already has `.tokensave/` keeps using it after you set a base. To move it, stop its MCP servers and move the directory to the path `tokensave doctor` names.
+- Every base that has held state is recorded in `~/.tokensave/state-bases.json`. When the configured location (or the default) has no state for a project, state under a recorded base is used.
+
+`tokensave doctor` reports the effective setting, a project whose state is not where the setting puts it, and relocated state whose project directory no longer exists. Deleting a checkout leaves its relocated state behind; `tokensave state list` shows every relocated directory, and `tokensave state prune` deletes the orphans (preview with `--dry-run`). Only directories whose recorded project root is gone are deleted.
+
 ## Automatic initialization
 
 A cloned repository is indexed by the `post-checkout` hook on its first checkout. A repository started with `git init` gets no checkout, so the `auto_init` setting (on by default) covers it. Two entry points initialize a git repository that has no index yet:
@@ -61,6 +79,8 @@ tokensave keeps the graph up to date without a background daemon or an OS-level 
 **On-demand staleness check.** Every MCP tool call checks whether any indexed files have been modified since the last sync. If stale files are found, they are re-extracted before the tool response is returned. A 30-second cooldown prevents back-to-back calls from re-walking the tree on every keystroke.
 
 **Catch-up sync on connect.** When the MCP server starts, it immediately runs a non-blocking catch-up sync that picks up any changes made while no agent was attached — a `git pull`, an IDE edit, a build step — so the very first tool call of a session sees a fresh index.
+
+**Staleness fields in `tokensave_status`.** `stale_files` counts sampled indexed files whose contents changed since they were indexed; it is the signal that the index content needs a sync. `stale_commits` (with `stale_warning`) counts Git commits reachable from `HEAD` whose committer time is strictly later than the last successful sync. Every successful sync resets it, including one that finds nothing to reindex, so a commit that touches no indexed file is counted only until the next sync. Committer times record when a commit was created, not when it reached the checkout: a commit created before the last sync and pulled afterwards is not counted.
 
 **Multi-agent work and git worktrees.** When multiple agents work on the same project concurrently, the strong assumption is that each agent operates in its own git worktree. Worktrees are independent filesystem checkouts of the same repository: agent A and agent B each have their own copy of every file, so they never overwrite each other's in-flight edits. tokensave automatically detects when a query comes from a worktree nested inside the main checkout and serves results from the correct branch graph. Changes accumulate independently and are eventually reconciled via git merge or rebase — the same process used for any other parallel development. This design avoids the complexity and failure modes of cross-agent locking over a shared mutable directory.
 

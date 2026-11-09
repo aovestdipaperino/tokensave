@@ -210,6 +210,104 @@ fn reenters_project_root(path: &Path, canonical_root: Option<&Path>) -> bool {
         .is_ok_and(|target| path_contains_root(&target, root))
 }
 
+/// Resolves the `path` of `tokensave_create_file` (#920) to the absolute path
+/// to write and its project-relative, forward-slash form.
+///
+/// Refuses, with a message for the caller: an empty path, any `..` component,
+/// a path whose nearest existing ancestor resolves outside the project root
+/// (which covers an absolute path elsewhere and a symlinked parent that leaves
+/// the root), the root itself, and paths inside `.git` or tokensave's state
+/// directory. The target itself is not followed here: the caller refuses a
+/// target that is a symlink.
+pub(crate) fn resolve_new_file_target(
+    project_root: &Path,
+    state_dir: &Path,
+    path: &str,
+) -> std::result::Result<(PathBuf, String), String> {
+    use std::path::Component;
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("path is empty".to_string());
+    }
+    let given = Path::new(path);
+    if given
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(format!("`..` is not allowed in path: {path}"));
+    }
+    let given: PathBuf = given
+        .components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .collect();
+    let canonical_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve the project root: {e}"))?;
+    let candidate = if given.is_absolute() {
+        given
+    } else {
+        project_root.join(given)
+    };
+    let Some(file_name) = candidate.file_name().map(std::ffi::OsStr::to_os_string) else {
+        return Err(format!("path names no file: {path}"));
+    };
+
+    // Canonicalize the nearest existing ancestor of the parent, so a symlink
+    // anywhere above the file is resolved before the containment check. The
+    // missing components below it cannot be symlinks yet.
+    let mut existing = candidate.parent().unwrap_or(Path::new(""));
+    let mut missing = Vec::new();
+    while std::fs::symlink_metadata(existing).is_err() {
+        let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+            return Err(format!("{path} is outside the project root"));
+        };
+        missing.push(name.to_os_string());
+        existing = parent;
+    }
+    let mut target = existing
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", existing.display()))?;
+    for name in missing.iter().rev() {
+        target.push(name);
+    }
+    target.push(&file_name);
+
+    let rel = target
+        .strip_prefix(&canonical_root)
+        .map_err(|_| format!("{path} is outside the project root"))?;
+    if rel.as_os_str().is_empty() {
+        return Err(format!("path names the project root: {path}"));
+    }
+    // Case-insensitive, as `.GIT` is `.git` on Windows and default macOS.
+    let named = |component: Component<'_>, name: &str| {
+        component
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(name)
+    };
+    if rel.components().any(|component| named(component, ".git")) {
+        return Err(format!("refusing to write inside .git: {path}"));
+    }
+    let in_state_dir = rel
+        .components()
+        .next()
+        .is_some_and(|first| named(first, crate::config::TOKENSAVE_DIR))
+        || state_dir
+            .canonicalize()
+            .is_ok_and(|state| target.starts_with(state));
+    if in_state_dir {
+        return Err(format!(
+            "refusing to write inside tokensave's state: {path}"
+        ));
+    }
+    let rel_str = rel
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    Ok((project_root.join(rel), rel_str))
+}
+
 // ---------------------------------------------------------------------------
 // Indexing
 // ---------------------------------------------------------------------------
@@ -2656,6 +2754,121 @@ impl TokenSave {
     /// never brought them back (the cause #633 fixed for `tokensave_rename`).
     pub(crate) async fn reindex_file(&self, file_path: &str) -> Result<()> {
         self.sync_single_files(&[file_path.to_string()]).await
+    }
+
+    /// Creates `path` with `content` and indexes it (`tokensave_create_file`,
+    /// #920).
+    ///
+    /// Stricter than [`Self::resolve_edit_target`]: the file must land inside
+    /// the indexed project root, so an absolute path outside it, a `..`
+    /// component and a symlink leaving the root are refused (see
+    /// [`resolve_new_file_target`]). An existing file is replaced only with
+    /// `overwrite`; a directory or a symlink never is. Content is bounded by
+    /// the project's `max_file_size`, the largest file the index accepts.
+    ///
+    /// Refusals come back as `success: false` with a message, like the other
+    /// edit tools; only I/O failures after the checks are errors.
+    ///
+    /// The checks and the write are not atomic: a symlink created in a parent
+    /// directory between them is followed. Without `overwrite` the write uses
+    /// `create_new`, so an existing file is never replaced by that race.
+    pub async fn create_file(
+        &self,
+        path: &str,
+        content: &str,
+        overwrite: bool,
+    ) -> Result<crate::types::CreateFileResult> {
+        let refuse = |message: String| crate::types::CreateFileResult {
+            success: false,
+            file_path: path.to_string(),
+            resolved_path: String::new(),
+            bytes: 0,
+            overwritten: false,
+            indexed: false,
+            message,
+            digest: String::new(),
+        };
+        if content.len() as u64 > self.config.max_file_size {
+            return Ok(refuse(format!(
+                "content is {} bytes, over the project's max_file_size of {} bytes",
+                content.len(),
+                self.config.max_file_size
+            )));
+        }
+        let state_dir = crate::config::get_tokensave_dir(&self.project_root);
+        let (abs_path, rel_path) =
+            match resolve_new_file_target(&self.project_root, &state_dir, path) {
+                Ok(target) => target,
+                Err(reason) => return Ok(refuse(reason)),
+            };
+        let resolved_path = abs_path.to_string_lossy().into_owned();
+        let existing = std::fs::symlink_metadata(&abs_path).ok();
+        if let Some(meta) = &existing {
+            let reason = if meta.file_type().is_symlink() {
+                Some("the target is a symlink; it is never replaced")
+            } else if meta.is_dir() {
+                Some("the target is a directory")
+            } else if !overwrite {
+                Some("the file exists; pass overwrite: true to replace it")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                let mut refused = refuse(format!("{reason}: {rel_path}"));
+                refused.file_path = rel_path;
+                refused.resolved_path = resolved_path;
+                return Ok(refused);
+            }
+        }
+
+        if let Some(parent) = abs_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| TokenSaveError::Config {
+                message: format!("failed to create {}: {e}", parent.display()),
+            })?;
+        }
+        let write = || -> std::io::Result<()> {
+            use std::io::Write as _;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true);
+            if overwrite {
+                options.create(true).truncate(true);
+            } else {
+                options.create_new(true);
+            }
+            let mut file = options.open(&abs_path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()
+        };
+        write().map_err(|e| TokenSaveError::Config {
+            message: format!("failed to write {resolved_path}: {e}"),
+        })?;
+        let digest = crate::context::read_cache::digest_bytes(content.as_bytes());
+        let overwritten = existing.is_some();
+
+        // The write landed; a reindex failure is reported, not raised, so the
+        // caller does not retry a write that already happened (#563).
+        let (indexed, message) = match self.reindex_file(&rel_path).await {
+            Ok(()) => {
+                let indexed = self.db.get_file(&rel_path).await?.is_some();
+                let message = if indexed {
+                    "file written and indexed"
+                } else {
+                    "file written; not indexed (tokensave does not index this kind of file)"
+                };
+                (indexed, message.to_string())
+            }
+            Err(e) => (false, format!("file written but reindex failed: {e}")),
+        };
+        Ok(crate::types::CreateFileResult {
+            success: true,
+            file_path: rel_path,
+            resolved_path,
+            bytes: content.len(),
+            overwritten,
+            indexed,
+            message,
+            digest,
+        })
     }
 
     /// 1-based inclusive line range covered by a byte span in `source`.

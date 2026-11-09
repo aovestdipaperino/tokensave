@@ -290,6 +290,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_insert_at(),
         def_delete_symbol(),
         def_replace_lines(),
+        def_create_file(),
         def_ast_grep_rewrite(),
         def_rename(),
         graph_scoped(def_gini()),
@@ -437,6 +438,7 @@ pub const TOOL_AREAS: &[(&str, &str, &[&str])] = &[
             "tokensave_insert_at",
             "tokensave_delete_symbol",
             "tokensave_replace_lines",
+            "tokensave_create_file",
             "tokensave_ast_grep_rewrite",
             "tokensave_replace_symbol",
             "tokensave_insert_at_symbol",
@@ -2030,6 +2032,23 @@ fn def_delete_symbol() -> ToolDefinition {
     }
 }
 
+fn def_create_file() -> ToolDefinition {
+    def_rw(
+        "tokensave_create_file",
+        "Create File",
+        "Create a new file inside the indexed project and index it at once, so it is searchable right after the call. Refuses an existing file unless `overwrite` is true, a directory, a symlink, a path outside the project root (absolute, `..`, or through a symlink), and paths inside `.git` or tokensave's own state. Unlike the other edit tools, an absolute path outside the project is never honored. Missing parent directories are created.",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Project-relative path, or an absolute path inside the project root." },
+                "content": { "type": "string", "description": "The file's full content, at most the project's max_file_size (1 MiB by default)." },
+                "overwrite": { "type": "boolean", "description": "Replace an existing regular file. Default false." }
+            },
+            "required": ["path", "content"]
+        }),
+    )
+}
+
 fn def_replace_lines() -> ToolDefinition {
     ToolDefinition {
         name: "tokensave_replace_lines".to_string(),
@@ -3326,6 +3345,7 @@ mod tests {
             "tokensave_log",
             "tokensave_multi_str_replace",
             "tokensave_replace_lines",
+            "tokensave_create_file",
             "tokensave_port_order",
             "tokensave_port_status",
             "tokensave_pr_context",
@@ -3408,6 +3428,33 @@ mod tests {
             get_listed_tool_definitions(Toolset::Full, &none).len(),
             listed
         );
+    }
+
+    /// #920: `tokensave_create_file` is a deferred edit tool: not core, not
+    /// alwaysLoad, writes files, and is listed only once `edit` (or `all`) is.
+    #[test]
+    fn create_file_is_listed_only_with_the_edit_area() {
+        use crate::config::Toolset;
+        use std::collections::BTreeSet;
+        const NAME: &str = "tokensave_create_file";
+        assert!(!CORE_TOOLS.contains(&NAME));
+        assert_eq!(tool_area(NAME), "edit");
+        let definition = get_tool_definitions()
+            .into_iter()
+            .find(|d| d.name == NAME)
+            .unwrap();
+        assert!(!is_always_load(&definition));
+        assert!(!is_read_only_tool(&definition));
+        let listed = |areas: &[&str]| {
+            let areas: BTreeSet<String> = areas.iter().map(|a| (*a).to_string()).collect();
+            get_listed_tool_definitions(Toolset::Core, &areas)
+                .iter()
+                .any(|d| d.name == NAME)
+        };
+        assert!(!listed(&[]));
+        assert!(!listed(&["git"]));
+        assert!(listed(&["edit"]));
+        assert!(listed(&["all"]));
     }
 
     /// #576: each area names real tools only, no tool is in two areas or in

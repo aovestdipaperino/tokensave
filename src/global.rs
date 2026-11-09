@@ -223,6 +223,18 @@ pub(crate) fn gather_local_projects_from(
 
     find_descendant_tokensave(cwd, &canon_home_ts, &mut seen, &mut out);
 
+    // Relocated state (#919) leaves no `.tokensave` in the tree to find, so
+    // add the recorded projects at or below `cwd` too.
+    let canon_cwd = tokensave::state_dir::canonical_root(cwd);
+    for root in tokensave::state_dir::relocated_projects() {
+        if root.starts_with(&canon_cwd)
+            && is_project_dir(&tokensave::config::get_tokensave_dir(&root))
+            && seen.insert(root.clone())
+        {
+            out.push(root);
+        }
+    }
+
     out
 }
 
@@ -482,9 +494,9 @@ mod gather_tests {
 
         let cwd = root.clone();
         let alias_ts: PathBuf = if symlink_ok {
-            tokensave::config::get_tokensave_dir(&home_alias)
+            tokensave::config::get_global_tokensave_dir(&home_alias)
         } else {
-            tokensave::config::get_tokensave_dir(&home_real)
+            tokensave::config::get_global_tokensave_dir(&home_real)
         };
 
         let out = gather_local_projects_from(&cwd, &Some(alias_ts));

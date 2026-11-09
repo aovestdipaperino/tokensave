@@ -236,3 +236,38 @@ fn set_default_renames_an_untracked_branch_and_rejects_unknown_ones() {
     assert_eq!(meta.branches["trunk"].db_file, "tokensave.db");
     assert!(!meta.is_tracked("master"));
 }
+
+/// #880: a recorded default with no matching entry (hand-edited or corrupted
+/// `branch-meta.json`) must not rename anything — and must not print the
+/// success line for a no-op.
+#[test]
+fn set_default_reports_the_inconsistent_metadata_instead_of_success() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    indexed_repo(root, "master");
+    git(root, &["branch", "trunk"]);
+
+    let dir = tokensave::config::get_tokensave_dir(root);
+    let mut broken = load_branch_meta(&dir).expect("branch metadata");
+    broken.branches.remove("master").expect("recorded default");
+    tokensave::branch_meta::save_branch_meta(&dir, &broken).expect("save metadata");
+    let metadata_path = dir.join("branch-meta.json");
+    let before = std::fs::read(&metadata_path).unwrap();
+
+    let out = tokensave(root, &["branch", "set-default", "trunk"]);
+    assert!(!out.status.success(), "a no-op rename must fail");
+    let message = stderr(&out);
+    assert!(
+        message.contains("'master' is recorded as the default branch")
+            && message.contains("branch-meta.json"),
+        "the error names the inconsistent metadata: {message}"
+    );
+    assert!(
+        !message.contains("Default branch is now"),
+        "no success line for a no-op: {message}"
+    );
+    let meta = meta(root);
+    assert_eq!(meta.default_branch, "master", "nothing was renamed");
+    assert!(!meta.is_tracked("trunk"));
+    assert_eq!(std::fs::read(metadata_path).unwrap(), before);
+}

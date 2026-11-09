@@ -754,6 +754,10 @@ async fn borrowed_branch_recovery_preserves_ancestor_graph() {
         .await
         .unwrap();
     ts.index_all().await.unwrap();
+    // The untracked branch must borrow the ancestor DB, not get its own copy.
+    let mut config = tokensave::config::load_config(dir.path()).unwrap();
+    config.auto_track = false;
+    tokensave::config::save_config(dir.path(), &config).unwrap();
     git(&["checkout", "-b", "untracked"]);
     std::fs::write(dir.path().join("lib.rs"), "fn other_branch() {}\n").unwrap();
     let state = tokensave::config::get_tokensave_dir(dir.path());

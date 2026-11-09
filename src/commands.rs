@@ -7,6 +7,73 @@ use crate::Spinner;
 use tokensave::config::{discover_project, ProjectDiscovery};
 use tokensave::tokensave::TokenSave;
 
+/// Handles `tokensave state list|prune` (#919).
+pub(crate) fn handle_state_action(action: crate::cli::StateAction) {
+    use crate::cli::StateAction;
+    use tokensave::display::format_bytes;
+    use tokensave::state_dir;
+
+    let describe = |entry: &state_dir::StateEntry| -> String {
+        let size = state_dir::dir_size(&entry.dir);
+        match &entry.origin {
+            Some(origin) => format!(
+                "{}  ->  {}  ({}, recorded by {})",
+                entry.dir.display(),
+                origin.project_root,
+                format_bytes(size),
+                origin.version
+            ),
+            None => format!(
+                "{}  ->  (no {})",
+                entry.dir.display(),
+                state_dir::ORIGIN_FILENAME
+            ),
+        }
+    };
+
+    match action {
+        StateAction::List => {
+            let setting = state_dir::setting();
+            match &setting.base {
+                Some(base) => println!("Base state directory: {}", base.display()),
+                None => {
+                    println!("Base state directory: none (state lives under each project root)")
+                }
+            }
+            let entries = state_dir::scan();
+            if entries.is_empty() {
+                println!("No relocated project state found.");
+                return;
+            }
+            for entry in &entries {
+                let marker = if entry.is_orphaned() {
+                    "orphaned  "
+                } else {
+                    ""
+                };
+                println!("  {marker}{}", describe(entry));
+            }
+        }
+        StateAction::Prune { dry_run } => {
+            let pruned = state_dir::prune(dry_run);
+            if pruned.is_empty() {
+                println!("No orphaned project state found.");
+                return;
+            }
+            let verb = if dry_run { "Would delete" } else { "Deleted" };
+            for (entry, error) in &pruned {
+                match error {
+                    None => println!("{verb} {}", describe(entry)),
+                    Some(error) => eprintln!("Could not delete {}: {error}", entry.dir.display()),
+                }
+            }
+            if dry_run {
+                println!("Run `tokensave state prune` without --dry-run to delete them.");
+            }
+        }
+    }
+}
+
 pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::errors::Result<()> {
     use tokensave::branch;
     use tokensave::branch_meta;
@@ -305,7 +372,7 @@ pub(crate) async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
     use std::path::PathBuf;
 
     let home_tokensave: Option<PathBuf> =
-        dirs::home_dir().map(|h| tokensave::config::get_tokensave_dir(&h));
+        dirs::home_dir().map(|h| tokensave::config::get_global_tokensave_dir(&h));
 
     let mut targets = global::gather_target_projects(all, &home_tokensave).await;
     if all {
@@ -419,7 +486,7 @@ pub(crate) async fn handle_list(all: bool) -> tokensave::errors::Result<()> {
     use tokensave::display::format_token_count;
 
     let home_tokensave: Option<PathBuf> =
-        dirs::home_dir().map(|h| tokensave::config::get_tokensave_dir(&h));
+        dirs::home_dir().map(|h| tokensave::config::get_global_tokensave_dir(&h));
     let project_paths = global::gather_target_projects(all, &home_tokensave).await;
 
     if project_paths.is_empty() {
@@ -1052,8 +1119,10 @@ pub(crate) async fn init_and_index(
         // stdin and takes it for an answer (#288), but the write itself needs
         // no answer, so the default local exclusion is still applied (#373).
         // Success is reported only when the helper confirms the entry was
-        // actually written.
-        if tokensave::config::is_inside_git_repo(project_path)
+        // actually written. State relocated out of the tree (#919) needs no
+        // exclusion, so the repository is left untouched.
+        if tokensave::config::project_state_is_in_repo(project_path)
+            && tokensave::config::is_inside_git_repo(project_path)
             && !tokensave::config::is_in_gitignore(project_path)
         {
             if io::stdin().is_terminal() {
@@ -1141,6 +1210,7 @@ pub(crate) fn estimate_dollars_saved(saved_tokens: u64) -> f64 {
 pub async fn handle_gain(
     all: bool,
     history: bool,
+    by_tool: bool,
     range: &str,
     json_output: bool,
 ) -> tokensave::errors::Result<()> {
@@ -1180,6 +1250,21 @@ pub async fn handle_gain(
             println!("{}", serde_json::to_string_pretty(&arr).unwrap_or_default());
         } else {
             tokensave::display::print_gain_history(&rows, estimate_dollars_saved);
+        }
+        return Ok(());
+    }
+
+    if by_tool {
+        let rows = gdb
+            .savings_by_tool(project_filter.as_deref(), since as i64)
+            .await;
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&rows).unwrap_or_default()
+            );
+        } else {
+            tokensave::display::print_gain_by_tool(&rows);
         }
         return Ok(());
     }

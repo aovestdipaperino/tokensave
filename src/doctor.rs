@@ -29,15 +29,15 @@ pub async fn run_doctor(agent_filter: Option<&str>) {
     let project_path = crate::config::resolve_path_with_discovery(None);
     if TokenSave::is_initialized(&project_path) {
         dc.pass(&format!(
-            "Index found: {}/.tokensave/",
-            project_path.display()
+            "Index found: {}",
+            crate::config::get_tokensave_dir(&project_path).display()
         ));
         check_database(&mut dc, &project_path).await;
         check_hook_freshness(&mut dc, &project_path);
     } else {
         dc.warn(&format!(
-            "No index at {}/.tokensave/ — run `tokensave init`",
-            project_path.display()
+            "No index at {} — run `tokensave init`",
+            crate::config::get_tokensave_dir(&project_path).display()
         ));
     }
 
@@ -45,6 +45,7 @@ pub async fn run_doctor(agent_filter: Option<&str>) {
     check_index_scope(&mut dc, &project_path);
     check_stale_stores(&mut dc).await;
     check_user_config(&mut dc);
+    check_state_location(&mut dc, &project_path);
 
     // Agent-specific health checks
     if let Some(ref home) = agents::home_dir() {
@@ -249,6 +250,82 @@ async fn check_stale_stores(dc: &mut DoctorCounters) {
 
     let purged = gdb.delete_projects(&stale).await;
     dc.pass(&format!("Purged {purged} stale project(s)"));
+}
+
+/// Check where project state lives (#919): the base state directory
+/// setting, whether this project's state is where the setting puts it, and
+/// relocated state whose project root is gone. Reports only; nothing is
+/// moved or deleted here.
+fn check_state_location(dc: &mut DoctorCounters, project_path: &Path) {
+    use crate::state_dir::{self, BaseSource};
+    eprintln!(
+        "
+[1mProject state location[0m"
+    );
+    let setting = state_dir::setting();
+    let label = match setting.source {
+        BaseSource::Env => state_dir::STATE_DIR_ENV,
+        BaseSource::UserConfig => "state_dir in config.toml",
+        BaseSource::Default => "",
+    };
+    match (&setting.base, setting.raw.as_deref().map(str::trim)) {
+        (Some(base), _) => dc.pass(&format!("Base state directory ({label}): {}", base.display())),
+        (None, Some(raw)) if !raw.is_empty() => dc.warn(&format!(
+            "{label} = {raw:?} is not an absolute path, so it is ignored and state lives under each project root"
+        )),
+        (None, Some(_)) => dc.pass(&format!(
+            "{label} is empty: state lives under each project root"
+        )),
+        (None, None) => dc.pass("State lives under each project root (`.tokensave/`)"),
+    }
+
+    if TokenSave::is_initialized(project_path) {
+        let actual = crate::config::get_tokensave_dir(project_path);
+        let configured = crate::config::configured_project_state_dir(project_path);
+        if actual != configured {
+            dc.warn(&format!(
+                "This project's state is at {}, not at {} where the current setting puts it. tokensave keeps using the existing state; to follow the setting, stop its servers and move the directory there.",
+                actual.display(),
+                configured.display()
+            ));
+        }
+    }
+
+    let entries = state_dir::scan();
+    let orphans: Vec<_> = entries.iter().filter(|e| e.is_orphaned()).collect();
+    if !orphans.is_empty() {
+        dc.warn(&format!(
+            "{} relocated state director{} whose project no longer exists:",
+            orphans.len(),
+            if orphans.len() == 1 { "y" } else { "ies" }
+        ));
+        for entry in &orphans {
+            if let Some(origin) = &entry.origin {
+                dc.info(&format!(
+                    "  • {} (project {}, {}, recorded by {})",
+                    entry.dir.display(),
+                    origin.project_root,
+                    crate::display::format_bytes(state_dir::dir_size(&entry.dir)),
+                    origin.version
+                ));
+            }
+        }
+        dc.info("    Delete them with `tokensave state prune` (preview with --dry-run).");
+    } else if !entries.is_empty() {
+        dc.pass(&format!(
+            "{} relocated state director{}, none orphaned",
+            entries.len(),
+            if entries.len() == 1 { "y" } else { "ies" }
+        ));
+    }
+    let unknown = entries.iter().filter(|e| e.origin.is_none()).count();
+    if unknown > 0 {
+        dc.info(&format!(
+            "  {unknown} relocated state director{} without {}; `tokensave state list` shows them",
+            if unknown == 1 { "y" } else { "ies" },
+            state_dir::ORIGIN_FILENAME
+        ));
+    }
 }
 
 /// Check user config file.
