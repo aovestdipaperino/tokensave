@@ -948,7 +948,6 @@ impl TokenSave {
                 .collect();
             sites.sort_unstable();
             sites.dedup();
-            let mut refs = refs;
             // A full pass re-attempts every reference anyway, so the site
             // pairing is only needed (and only pays for) an incremental pass.
             if touched.is_some() {

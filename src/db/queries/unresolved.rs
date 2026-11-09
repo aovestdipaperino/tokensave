@@ -270,7 +270,7 @@ impl Database {
     /// A site's members may resolve to different nodes sharing the simple
     /// name, so a re-attempted member's cleanup must not delete a sibling's
     /// edge; fetching the members is what lets the pass delete and rewrite
-    /// the site together, as the GDScript path already did (#597). Bounded by
+    /// the site together, as the `GDScript` path already did (#597). Bounded by
     /// the number of sites handed to it.
     pub async fn get_unresolved_refs_at_sites(
         &self,
