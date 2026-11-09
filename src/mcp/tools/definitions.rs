@@ -2036,7 +2036,7 @@ fn def_create_file() -> ToolDefinition {
     def_rw(
         "tokensave_create_file",
         "Create File",
-        "Create a new file inside the indexed project and index it at once, so it is searchable          right after the call. Refuses an existing file unless `overwrite` is true, a directory, a          symlink, a path outside the project root (absolute, `..`, or through a symlink), and          paths inside `.git` or tokensave's own state. Unlike the other edit tools, an absolute          path outside the project is never honored. Missing parent directories are created.",
+        "Create a new file inside the indexed project and index it at once, so it is searchable right after the call. Refuses an existing file unless `overwrite` is true, a directory, a symlink, a path outside the project root (absolute, `..`, or through a symlink), and paths inside `.git` or tokensave's own state. Unlike the other edit tools, an absolute path outside the project is never honored. Missing parent directories are created.",
         json!({
             "type": "object",
             "properties": {
