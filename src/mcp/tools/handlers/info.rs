@@ -79,18 +79,22 @@ pub(super) async fn handle_status(
         output["index_rebuild_in_progress"] = json!(true);
     }
 
-    // Git commit staleness: count commits since last index. `last_updated` is
-    // MAX(files.indexed_at) and reads 0 whenever the files table is empty — an
-    // in-flight or interrupted rebuild — so fall back to the `last_sync_at`
-    // metadata timestamp, which survives `Database::clear()`. Without this, an
-    // empty files table makes `git_commits_since(0)` count every commit in
-    // history (#267).
+    // Git commit staleness: count commits made after the last successful
+    // sync. This counts Git history, not stale indexed content; a commit
+    // that touches no indexed file still counts, and `stale_files` below is
+    // the precise content signal.
+    //
+    // The cutoff is the later of `last_sync_at` (metadata written by every
+    // successful sync, even one that changes nothing) and `last_updated`
+    // (MAX(files.indexed_at), which moves only when a file is reindexed).
+    // `last_updated` alone never advances on a quiet repo, so commits made
+    // after the last content reindex stayed counted after any number of
+    // no-change syncs (#936). `last_sync_at` survives `Database::clear()`, so
+    // an empty files table (`last_updated == 0`, an interrupted rebuild) can
+    // no longer make `git_commits_since(0)` count the whole history (#267).
     if !rebuild_in_progress && !selected_graph {
-        let staleness_since = if stats.last_updated > 0 {
-            stats.last_updated as i64
-        } else {
-            stats.last_sync_at as i64
-        };
+        let staleness_since = stats.last_updated.max(stats.last_sync_at);
+        let staleness_since = i64::try_from(staleness_since).unwrap_or(i64::MAX);
         let stale_commit_count = cg.git_commits_since(staleness_since);
         if stale_commit_count > 0 {
             output["stale_commits"] = json!(stale_commit_count);

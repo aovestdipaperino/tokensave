@@ -323,7 +323,17 @@ impl TokenSave {
         self.db.last_index_time().await.unwrap_or(0)
     }
 
-    /// Count git commits newer than the given UNIX timestamp.
+    /// Counts the commits reachable from `HEAD` whose committer time is
+    /// strictly later than `since_timestamp` (UNIX seconds).
+    ///
+    /// A commit in the same second as `since_timestamp` is not counted, so an
+    /// index synced in the same second as the last commit reports no stale
+    /// commits (#936). The committer time is recorded in the commit, not the
+    /// time the commit entered the checkout: a commit created before the last
+    /// sync but pulled or merged after it is not counted, and a commit whose
+    /// committer date was preserved or skewed (for example by
+    /// `git rebase --committer-date-is-author-date`) is compared as recorded.
+    ///
     /// Returns 0 if git is unavailable or the directory is not a git repository.
     pub fn git_commits_since(&self, since_timestamp: i64) -> usize {
         let Ok(repo) = gix::open(&self.project_root) else {
@@ -332,9 +342,11 @@ impl TokenSave {
         let Ok(head) = repo.head_commit() else {
             return 0;
         };
+        // `ByCommitTimeCutoff` keeps commits with `time >= seconds`. Timestamps
+        // are whole seconds, so `+ 1` makes the comparison `time > since`.
         let sorting = gix::revision::walk::Sorting::ByCommitTimeCutoff {
             order: gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
-            seconds: since_timestamp,
+            seconds: since_timestamp.saturating_add(1),
         };
         let Ok(walk) = head.ancestors().sorting(sorting).all() else {
             return 0;

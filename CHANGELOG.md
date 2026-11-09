@@ -76,6 +76,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- `tokensave_status` no longer reports `stale_commits` after a sync that found no changes (Refs #936). The count started from the last content reindex (`MAX(files.indexed_at)`), which does not move on a quiet repo, so empty commits and commits touching only unindexed files stayed counted after every sync. It now starts from the later of `last_sync_at` and `last_updated`, and counts only commits strictly newer than that second, so a commit made in the same second as the sync is not reported. `stale_commits` counts Git commits by committer time; `stale_files` remains the signal for indexed content that needs reindexing.
+
 - Let the Python comparison benchmark reuse `TOKENSAVE_BENCH_REPOS_DIR` and standard temporary-directory selection, and report clone-storage failures with the destination and a relocation hint (Refs #767).
 
 - Keep the recorded default branch in step with the repository: opening a project renames a default entry whose branch no longer exists (for example after `git branch -m master main`) instead of serving the real default as an untracked branch or duplicating its database; `origin/HEAD` is used only while its branch exists, and `branch add` detects the default like `init` instead of assuming `main`. Add `tokensave branch set-default`, a `BRANCH_DEFAULT_STALE` warning in `tokensave verify`, and a `default_branch_warning` in `tokensave branch list`, `tokensave_status` and `tokensave_branch_list` (Refs #874).
