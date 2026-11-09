@@ -284,7 +284,7 @@ fn check_state_location(dc: &mut DoctorCounters, project_path: &Path) {
         let configured = crate::config::configured_project_state_dir(project_path);
         if actual != configured {
             dc.warn(&format!(
-                "This project's state is at {}, not at {} where the current setting puts it.                  tokensave keeps using the existing state; to follow the setting, stop its                  servers and move the directory there.",
+                "This project's state is at {}, not at {} where the current setting puts it. tokensave keeps using the existing state; to follow the setting, stop its servers and move the directory there.",
                 actual.display(),
                 configured.display()
             ));
