@@ -2058,6 +2058,7 @@ fn test_read_only_tool_names_excludes_mutating_tools() {
         "tokensave_session_end",
         "tokensave_record_decision",
         "tokensave_record_code_area",
+        "tokensave_create_file",
     ] {
         assert!(
             !read_only_set.contains(mutating),
