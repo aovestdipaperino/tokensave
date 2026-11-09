@@ -85,6 +85,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- `tokensave branch set-default` no longer reports success when inconsistent `branch-meta.json` makes the rename a no-op (Refs #880). When the recorded default branch has no matching entry, the command now returns an error naming the metadata and leaves the file unchanged, instead of printing "Default branch is now ... (index kept)".
 - `tokensave_status` no longer reports `stale_commits` after a sync that found no changes (Refs #936). The count started from the last content reindex (`MAX(files.indexed_at)`), which does not move on a quiet repo, so empty commits and commits touching only unindexed files stayed counted after every sync. It now starts from the later of `last_sync_at` and `last_updated`, and counts only commits strictly newer than that second, so a commit made in the same second as the sync is not reported. `stale_commits` counts Git commits by committer time; `stale_files` remains the signal for indexed content that needs reindexing.
 
 - Let the Python comparison benchmark reuse `TOKENSAVE_BENCH_REPOS_DIR` and standard temporary-directory selection, and report clone-storage failures with the destination and a relocation hint (Refs #767).

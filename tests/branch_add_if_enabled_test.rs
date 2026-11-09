@@ -339,21 +339,31 @@ fn post_checkout_hook_debug_explains_a_file_checkout() {
     );
 }
 
-/// A debug setting left on must not grow the log without bound: past its
-/// limit the log starts afresh.
+/// A debug setting left on must not grow the log without bound. The cap is
+/// `HOOK_DEBUG_LOG_LIMIT` = 256 KiB (src/commands.rs), hard-coded here so a
+/// change to the constant fails this test loudly instead of silently.
 #[test]
 fn hook_debug_log_is_bounded() {
     let tmp = project(false);
     let root = tmp.path();
     let log_path = tokensave::config::get_tokensave_dir(root).join("hook-debug.log");
-    std::fs::write(&log_path, vec![b'x'; 300 * 1024]).unwrap();
 
+    // Below the cap the log appends: the seeded marker survives.
+    std::fs::write(&log_path, vec![b'x'; 256 * 1024 - 1]).unwrap();
+    let out = tokensave_with_env(root, BRANCH_CHECKOUT, &[("TOKENSAVE_HOOK_DEBUG", "1")]);
+    assert!(out.status.success());
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    assert!(log.contains("xxxxx"), "below the cap the log must append");
+    assert!(log.contains("post-checkout: did not track branch 'feature'"));
+
+    // At the cap the log starts afresh: the marker is gone.
+    std::fs::write(&log_path, vec![b'x'; 256 * 1024]).unwrap();
     let out = tokensave_with_env(root, BRANCH_CHECKOUT, &[("TOKENSAVE_HOOK_DEBUG", "1")]);
     assert!(out.status.success());
     let log = std::fs::read_to_string(&log_path).unwrap();
     assert!(
-        log.len() < 4096,
-        "the oversized log must restart: {} bytes",
+        !log.contains("xxxxx"),
+        "the log must restart at the cap: {} bytes",
         log.len()
     );
     assert!(log.contains("post-checkout: did not track branch 'feature'"));
