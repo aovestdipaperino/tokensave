@@ -428,6 +428,9 @@ pub enum Commands {
         /// Print per-day history instead of a single total.
         #[arg(long)]
         history: bool,
+        /// Print calls and tokens saved per tool instead of a single total.
+        #[arg(long, conflicts_with = "history")]
+        by_tool: bool,
         /// Time range: "today", "7d", "30d", "month", or "all" (default: "30d").
         #[arg(long, default_value = "30d")]
         range: String,

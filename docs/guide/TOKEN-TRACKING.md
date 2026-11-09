@@ -10,14 +10,19 @@ tokensave measures the tokens it saves on every MCP tool call. Each tool respons
 
 ## Savings ledger
 
-Every MCP call writes an append-only row to `~/.tokensave/global.db` (`savings_ledger` table). Inspect with `tokensave gain`:
+MCP tool calls write an append-only row to `~/.tokensave/global.db` (`savings_ledger` table): the time, the project, the tool name, and the token counts before and after. Inspect with `tokensave gain`:
 
 ```bash
 tokensave gain                    # current project, last 30 days
 tokensave gain --all              # all projects
 tokensave gain --history --range 7d
+tokensave gain --by-tool          # calls and tokens saved per tool
 tokensave gain --json
 ```
+
+`--by-tool` prints one row per tool name for the selected range and project, most-called first. With `--json` each row is an object with `tool`, `calls` and `saved_tokens`. It reads the same ledger as the other views, so it counts the same calls; it cannot be combined with `--history`. The ledger has no session id, so there is no per-session breakdown.
+
+A row is written for each `tools/call` on the served project that its tool handler answers. These calls write no row: `tokensave_more`; calls with a `graph_root` or `graph_branch` selector, which query another graph; calls refused before dispatch (an invalid argument, no default project, a branch-drift or strict-mode refusal); and calls whose handler fails. The write is best-effort: if the global database cannot be opened, the row is skipped. The `tokensave_metrics` line and `report_savings` do not affect it.
 
 Dollar estimates use the existing pricing module (Sonnet input pricing, refreshed daily via LiteLLM).
 

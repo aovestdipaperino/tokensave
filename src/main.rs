@@ -1970,10 +1970,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::Gain {
             all,
             history,
+            by_tool,
             range,
             json,
         } => {
-            commands::handle_gain(all, history, &range, json).await?;
+            commands::handle_gain(all, history, by_tool, &range, json).await?;
         }
         Commands::Monitor => {
             if let Err(e) = tokensave::monitor::run() {
