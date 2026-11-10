@@ -160,6 +160,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 - Resolve the project that owns the current directory the same way in every command run without an explicit path: `init`, `tool`, `doctor`, `verify`, `quality-diff`, `branch`, `gitignore`, the counters, a bare `tokensave`, and the prompt-submit and stop hooks. `sync`, `status`, `serve`, and the MCP roots fallback already did. `init` in a subdirectory of an existing project now reports that project and exits 0 instead of creating a nested index. In an uninitialized git repository, `init` initializes the repository root. Git repository roots isolate nested independent repositories (nested clones and submodules) from an outer repository's index, and a partial `.tokensave/` is no longer skipped in favor of an outer project (#749).
 
+### Internal
+
+- **Scheduled RustSec advisory check (Refs #956).** The new `Security advisories` workflow (`.github/workflows/advisories.yml`) runs `cargo audit` daily on `master` and `beta`, and on pushes and pull requests that change `Cargo.lock`, `Cargo.toml` or the audit configuration. Vulnerabilities, unsound crates and yanked crates fail the job, unmaintained crates are reported as warnings, and the full report goes to the job summary. `.cargo/audit.toml` holds this policy and the list of ignored advisories, each of which needs a written rationale; the list is empty. The workflow is not part of `CI OK`, so a newly published advisory does not block unrelated pull requests.
+
 ## [7.16.0] - 2026-10-22
 
 ### Performance

@@ -208,7 +208,9 @@ serialized.
 ## Follow-up work
 
 - Add a scheduled RustSec advisory check (`cargo audit` or
-  `cargo deny check advisories`) to CI.
+  `cargo deny check advisories`) to CI. Done in #956: the `Security
+  advisories` workflow (`.github/workflows/advisories.yml`) runs `cargo audit`
+  daily on `master` and `beta`, with its policy in `.cargo/audit.toml`.
 - When master's pinned toolchain moves to 1.99 or later, record that #161018
   is fixed there. Until then, keep `process::exit` on the main thread.
 - Consider fuzzing the vendored grammars, or running them under sanitizers on
