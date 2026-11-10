@@ -1995,6 +1995,17 @@ impl TokenSave {
         )
     }
 
+    /// Returns a warning message if git-tracked source files were dropped
+    /// only by an ambiguous default `exclude` glob such as `**/build/**`
+    /// (#949).
+    pub fn warn_tracked_ambiguous_excludes(&self) -> Option<String> {
+        detect_tracked_ambiguous_excludes(
+            &self.project_root,
+            &self.config,
+            &self.registry.supported_extensions(),
+        )
+    }
+
     /// Advances `last_synced_at` on the branch this handle serves.
     ///
     /// Called wherever `last_sync_at` metadata is written, so the DB-level
@@ -2439,16 +2450,6 @@ impl TokenSave {
     }
 }
 
-/// Detects git-tracked, indexable files that the hidden-directory filter
-/// skipped. Returns a formatted warning string if any exist.
-///
-/// Mirrors the walker's pruning rule exactly (`scan_files_walkdir` /
-/// `scan_files_with_gitignore`): a dot-prefixed *directory* blocks descent
-/// unless that directory path itself matches an include glob or manifest
-/// entry. Matching only the files inside (e.g. `.github/**` without a bare
-/// `.github` entry) does not re-enable descent, so this check walks each
-/// ancestor prefix the same way the walker does instead of testing the file
-/// path — otherwise the warning would go silent in exactly that trap.
 /// Every path `git ls-files` reports for the project, as forward-slashed
 /// repository-relative strings.
 ///
@@ -2481,6 +2482,16 @@ pub(crate) fn list_git_tracked_files(project_root: &Path) -> Option<Vec<String>>
     )
 }
 
+/// Detects git-tracked, indexable files that the hidden-directory filter
+/// skipped. Returns a formatted warning string if any exist.
+///
+/// Mirrors the walker's pruning rule exactly (`scan_files_walkdir` /
+/// `scan_files_with_gitignore`): a dot-prefixed *directory* blocks descent
+/// unless that directory path itself matches an include glob or manifest
+/// entry. Matching only the files inside (e.g. `.github/**` without a bare
+/// `.github` entry) does not re-enable descent, so this check walks each
+/// ancestor prefix the same way the walker does instead of testing the file
+/// path — otherwise the warning would go silent in exactly that trap.
 pub fn detect_skipped_hidden_dirs(
     project_root: &Path,
     config: &TokenSaveConfig,
@@ -2570,6 +2581,183 @@ pub fn detect_skipped_hidden_dirs(
 
     Some(format!(
         "\x1b[33mwarning:\x1b[0m skipped {total} tracked {file_word} in hidden directories ({dir_summary}) — add \"{top_dir}\" and \"{top_dir}/**\" to include[] in .tokensave/config.json, then run `tokensave sync -f` to index them (or add \"{top_dir}/**\" to exclude[] to silence this warning)"
+    ))
+}
+
+/// Where the walker's `exclude` handling leaves the files of one directory,
+/// as seen by [`detect_tracked_ambiguous_excludes`].
+enum AmbiguousExcludeVerdict {
+    /// Not excluded at directory level; file-level globs still apply.
+    Reachable,
+    /// Pruned at `dir` by the ambiguous default `pattern` alone.
+    Ambiguous { dir: String, pattern: String },
+    /// Hidden, or excluded by a glob that is not an ambiguous default: a
+    /// deliberate opt-out, or a case another warning reports.
+    Silent,
+}
+
+/// Detects git-tracked, indexable files that only an ambiguous default
+/// `exclude` glob keeps out of the index (#949). Returns a formatted warning
+/// string if any exist.
+///
+/// The [`AMBIGUOUS_DEFAULT_EXCLUDES`](crate::config::AMBIGUOUS_DEFAULT_EXCLUDES)
+/// (`**/build/**`, `**/out/**`, `bin/**`) are meant for generated output, but
+/// a tracked file under `build/` is often a real source package, and nothing else in `init` or `sync` output says it
+/// was left out. A file is reported only when every exclude glob that drops
+/// it is one of those defaults: any other matching glob, including an
+/// explicit `build/**` the user wrote, is a deliberate opt-out. Files under a
+/// hidden directory are left to [`detect_skipped_hidden_dirs`].
+///
+/// Mirrors the walker's exclude rule: a directory is pruned when
+/// [`is_excluded_dir`] matches it, and a file is dropped when
+/// [`is_excluded`] matches it.
+pub fn detect_tracked_ambiguous_excludes(
+    project_root: &Path,
+    config: &TokenSaveConfig,
+    supported_exts: &[&str],
+) -> Option<String> {
+    let is_ambiguous = |pattern: &str| crate::config::AMBIGUOUS_DEFAULT_EXCLUDES.contains(&pattern);
+    // Without an ambiguous default in the config there is nothing to report,
+    // so skip the `git ls-files` subprocess.
+    if !config.exclude.iter().any(|pattern| is_ambiguous(pattern)) {
+        return None;
+    }
+    let tracked = list_git_tracked_files(project_root)?;
+
+    let match_opts = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: false,
+        require_literal_leading_dot: false,
+    };
+    let patterns: Vec<(&str, glob::Pattern)> = config
+        .exclude
+        .iter()
+        .filter_map(|raw| {
+            glob::Pattern::new(raw)
+                .ok()
+                .map(|pattern| (raw.as_str(), pattern))
+        })
+        .collect();
+
+    // Sibling files share the directory verdict, so evaluate the globs once
+    // per parent directory, as `detect_skipped_hidden_dirs` does.
+    let mut dir_cache: HashMap<String, AmbiguousExcludeVerdict> = HashMap::new();
+    // Pruned directory -> (ambiguous pattern that pruned it, file count).
+    let mut dir_counts: HashMap<String, (String, usize)> = HashMap::new();
+
+    for rel_path in tracked.iter().map(String::as_str) {
+        // Only files an extractor could index; a tracked `build/output.bin`
+        // is not worth a warning.
+        let ext = Path::new(rel_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if !supported_exts.contains(&ext) {
+            continue;
+        }
+        let dirs = rel_path.rsplit_once('/').map_or("", |(dirs, _file)| dirs);
+
+        let verdict = dir_cache.entry(dirs.to_string()).or_insert_with(|| {
+            let mut end = 0;
+            for comp in dirs.split('/').filter(|comp| !comp.is_empty()) {
+                end += comp.len() + usize::from(end > 0);
+                if comp.starts_with('.') {
+                    return AmbiguousExcludeVerdict::Silent;
+                }
+                let prefix = &dirs[..end];
+                let probe = format!("{prefix}/_");
+                let mut ambiguous = None;
+                for (raw, pattern) in &patterns {
+                    if pattern.matches_with(&probe, match_opts)
+                        || pattern.matches_with(prefix, match_opts)
+                    {
+                        if !is_ambiguous(raw) {
+                            return AmbiguousExcludeVerdict::Silent;
+                        }
+                        ambiguous.get_or_insert(*raw);
+                    }
+                }
+                // The walker prunes at the shallowest excluded directory and
+                // never sees the globs that would match deeper down.
+                if let Some(raw) = ambiguous {
+                    return AmbiguousExcludeVerdict::Ambiguous {
+                        dir: prefix.to_string(),
+                        pattern: raw.to_string(),
+                    };
+                }
+            }
+            AmbiguousExcludeVerdict::Reachable
+        });
+
+        let (dir, pattern) = match verdict {
+            AmbiguousExcludeVerdict::Silent => continue,
+            AmbiguousExcludeVerdict::Ambiguous { dir, pattern } => (dir.clone(), pattern.clone()),
+            AmbiguousExcludeVerdict::Reachable => {
+                // Only a file-level match can still drop the file.
+                let Some((raw, _)) = patterns.iter().find(|(raw, pattern)| {
+                    is_ambiguous(raw) && pattern.matches_with(rel_path, match_opts)
+                }) else {
+                    continue;
+                };
+                let dir = if dirs.is_empty() { rel_path } else { dirs };
+                (dir.to_string(), raw.to_string())
+            }
+        };
+        // Any deliberate file-level glob, such as `**/*.min.*`, wins over an
+        // ambiguous default.
+        if patterns
+            .iter()
+            .any(|(raw, pattern)| !is_ambiguous(raw) && pattern.matches_with(rel_path, match_opts))
+        {
+            continue;
+        }
+        // `git ls-files` lists index entries that may not exist on disk
+        // (sparse checkouts, staged deletions); the walker never saw those.
+        if !project_root.join(rel_path).is_file() {
+            continue;
+        }
+        dir_counts.entry(dir).or_insert((pattern, 0)).1 += 1;
+    }
+
+    if dir_counts.is_empty() {
+        return None;
+    }
+
+    let total: usize = dir_counts.values().map(|(_, count)| count).sum();
+    let mut dir_vec: Vec<(String, String, usize)> = dir_counts
+        .into_iter()
+        .map(|(dir, (pattern, count))| (dir, pattern, count))
+        .collect();
+    dir_vec.sort_unstable_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+
+    let dir_summary = dir_vec
+        .iter()
+        .map(|(dir, _, count)| format!("{dir}: {count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut top_patterns: Vec<&str> = Vec::new();
+    for (_, pattern, _) in &dir_vec {
+        if !top_patterns.contains(&pattern.as_str()) {
+            top_patterns.push(pattern);
+        }
+    }
+    let remove = top_patterns
+        .iter()
+        .map(|pattern| format!("\"{pattern}\""))
+        .collect::<Vec<_>>()
+        .join(" and ");
+
+    let top_dir = &dir_vec[0].0;
+    // The silencing glob must not itself be an ambiguous default, or it
+    // would not silence anything: `bin` -> `bin/**/*`, not `bin/**`.
+    let mut keep = format!("{top_dir}/**");
+    if is_ambiguous(&keep) {
+        keep.push_str("/*");
+    }
+    let file_word = if total == 1 { "file" } else { "files" };
+
+    Some(format!(
+        "\x1b[33mwarning:\x1b[0m excluded {total} tracked {file_word} by default build-output excludes ({dir_summary}) — if they are source, remove {remove} from exclude[] in .tokensave/config.json and run `tokensave sync` to index them (or add \"{keep}\" to exclude[] to keep them excluded and silence this warning)"
     ))
 }
 
