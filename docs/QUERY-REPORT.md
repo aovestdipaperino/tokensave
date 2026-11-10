@@ -276,7 +276,7 @@ PRAGMA user_version
 
 #### Q0308 — `begin_read_snapshot`
 
-Source: [src/db/connection.rs:318](../src/db/connection.rs#L318).
+Source: [src/db/connection.rs:336](../src/db/connection.rs#L336).
 
 ```sql
 BEGIN
@@ -286,7 +286,7 @@ The quality diff's base and target reads both call this method; the second `BEGI
 
 #### Q0026 — `checkpoint`
 
-Source: [src/db/connection.rs:332](../src/db/connection.rs#L332).
+Source: [src/db/connection.rs:350](../src/db/connection.rs#L350).
 
 ```sql
 PRAGMA wal_checkpoint(TRUNCATE);
@@ -294,7 +294,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 
 #### Q0027 — `optimize`
 
-Source: [src/db/connection.rs:344](../src/db/connection.rs#L344).
+Source: [src/db/connection.rs:362](../src/db/connection.rs#L362).
 
 ```sql
 VACUUM; ANALYZE;
@@ -302,7 +302,7 @@ VACUUM; ANALYZE;
 
 #### Q0028 — `size`
 
-Source: [src/db/connection.rs:358](../src/db/connection.rs#L358).
+Source: [src/db/connection.rs:376](../src/db/connection.rs#L376).
 
 ```sql
 SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()
@@ -310,7 +310,7 @@ SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()
 
 #### Q0029 — `quick_check`
 
-Source: [src/db/connection.rs:394](../src/db/connection.rs#L394).
+Source: [src/db/connection.rs:412](../src/db/connection.rs#L412).
 
 ```sql
 PRAGMA quick_check
@@ -318,7 +318,7 @@ PRAGMA quick_check
 
 #### Q0030 — `needs_bulk_load_finalization`
 
-Source: [src/db/connection.rs:425](../src/db/connection.rs#L425).
+Source: [src/db/connection.rs:443](../src/db/connection.rs#L443).
 
 ```sql
 SELECT name FROM sqlite_master WHERE type IN ('table', 'index')
@@ -326,7 +326,7 @@ SELECT name FROM sqlite_master WHERE type IN ('table', 'index')
 
 #### Q0031 — `rebuild_fts`
 
-Source: [src/db/connection.rs:454](../src/db/connection.rs#L454).
+Source: [src/db/connection.rs:472](../src/db/connection.rs#L472).
 
 ```sql
 INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')
@@ -334,7 +334,7 @@ INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')
 
 #### Q0032 — `apply_pragmas`
 
-Source: [src/db/connection.rs:471](../src/db/connection.rs#L471).
+Source: [src/db/connection.rs:489](../src/db/connection.rs#L489).
 
 ```sql
 PRAGMA page_size = 8192;
@@ -349,7 +349,7 @@ PRAGMA page_size = 8192;
 
 #### Q0033 — `begin_bulk_load`
 
-Source: [src/db/connection.rs:495](../src/db/connection.rs#L495).
+Source: [src/db/connection.rs:513](../src/db/connection.rs#L513).
 
 ```sql
 PRAGMA foreign_keys = OFF;
@@ -379,7 +379,7 @@ PRAGMA foreign_keys = OFF;
 
 #### Q0034 — `end_bulk_load`
 
-Source: [src/db/connection.rs:538](../src/db/connection.rs#L538).
+Source: [src/db/connection.rs:556](../src/db/connection.rs#L556).
 
 ```sql
 DELETE FROM edges
@@ -4743,9 +4743,9 @@ Source: [src/db/connection.rs:220](../src/db/connection.rs#L220).
     }
 ```
 
-### `begin_read_snapshot` — src/db/connection.rs:316
+### `begin_read_snapshot` — src/db/connection.rs:334
 
-Source: [src/db/connection.rs:316](../src/db/connection.rs#L316).
+Source: [src/db/connection.rs:334](../src/db/connection.rs#L334).
 
 ```rust
     pub async fn begin_read_snapshot(&self) -> Result<()> {
@@ -4760,9 +4760,9 @@ Source: [src/db/connection.rs:316](../src/db/connection.rs#L316).
     }
 ```
 
-### `checkpoint` — src/db/connection.rs:330
+### `checkpoint` — src/db/connection.rs:348
 
-Source: [src/db/connection.rs:330](../src/db/connection.rs#L330).
+Source: [src/db/connection.rs:348](../src/db/connection.rs#L348).
 
 ```rust
     pub async fn checkpoint(&self) -> Result<()> {
@@ -4777,9 +4777,9 @@ Source: [src/db/connection.rs:330](../src/db/connection.rs#L330).
     }
 ```
 
-### `optimize` — src/db/connection.rs:342
+### `optimize` — src/db/connection.rs:360
 
-Source: [src/db/connection.rs:342](../src/db/connection.rs#L342).
+Source: [src/db/connection.rs:360](../src/db/connection.rs#L360).
 
 ```rust
     pub async fn optimize(&self) -> Result<()> {
@@ -4794,9 +4794,9 @@ Source: [src/db/connection.rs:342](../src/db/connection.rs#L342).
     }
 ```
 
-### `size` — src/db/connection.rs:354
+### `size` — src/db/connection.rs:372
 
-Source: [src/db/connection.rs:354](../src/db/connection.rs#L354).
+Source: [src/db/connection.rs:372](../src/db/connection.rs#L372).
 
 ```rust
     pub async fn size(&self) -> Result<u64> {
@@ -4833,9 +4833,9 @@ Source: [src/db/connection.rs:354](../src/db/connection.rs#L354).
     }
 ```
 
-### `quick_check` — src/db/connection.rs:391
+### `quick_check` — src/db/connection.rs:409
 
-Source: [src/db/connection.rs:391](../src/db/connection.rs#L391).
+Source: [src/db/connection.rs:409](../src/db/connection.rs#L409).
 
 ```rust
     pub async fn quick_check(&self) -> Result<bool> {
@@ -4860,9 +4860,9 @@ Source: [src/db/connection.rs:391](../src/db/connection.rs#L391).
     }
 ```
 
-### `needs_bulk_load_finalization` — src/db/connection.rs:421
+### `needs_bulk_load_finalization` — src/db/connection.rs:439
 
-Source: [src/db/connection.rs:421](../src/db/connection.rs#L421).
+Source: [src/db/connection.rs:439](../src/db/connection.rs#L439).
 
 ```rust
     pub async fn needs_bulk_load_finalization(&self) -> Result<bool> {
@@ -4893,9 +4893,9 @@ Source: [src/db/connection.rs:421](../src/db/connection.rs#L421).
     }
 ```
 
-### `rebuild_fts` — src/db/connection.rs:452
+### `rebuild_fts` — src/db/connection.rs:470
 
-Source: [src/db/connection.rs:452](../src/db/connection.rs#L452).
+Source: [src/db/connection.rs:470](../src/db/connection.rs#L470).
 
 ```rust
     pub async fn rebuild_fts(&self) -> Result<()> {
@@ -4910,9 +4910,9 @@ Source: [src/db/connection.rs:452](../src/db/connection.rs#L452).
     }
 ```
 
-### `apply_pragmas` — src/db/connection.rs:467
+### `apply_pragmas` — src/db/connection.rs:485
 
-Source: [src/db/connection.rs:467](../src/db/connection.rs#L467).
+Source: [src/db/connection.rs:485](../src/db/connection.rs#L485).
 
 ```rust
     async fn apply_pragmas(conn: &RawConnection, db_file_size: u64) -> Result<()> {
@@ -4937,9 +4937,9 @@ Source: [src/db/connection.rs:467](../src/db/connection.rs#L467).
     }
 ```
 
-### `begin_bulk_load` — src/db/connection.rs:492
+### `begin_bulk_load` — src/db/connection.rs:510
 
-Source: [src/db/connection.rs:492](../src/db/connection.rs#L492).
+Source: [src/db/connection.rs:510](../src/db/connection.rs#L510).
 
 ```rust
     pub async fn begin_bulk_load(&self) -> Result<()> {
@@ -4978,9 +4978,9 @@ Source: [src/db/connection.rs:492](../src/db/connection.rs#L492).
     }
 ```
 
-### `end_bulk_load` — src/db/connection.rs:536
+### `end_bulk_load` — src/db/connection.rs:554
 
-Source: [src/db/connection.rs:536](../src/db/connection.rs#L536).
+Source: [src/db/connection.rs:554](../src/db/connection.rs#L554).
 
 ```rust
     pub async fn end_bulk_load(&self) -> Result<()> {

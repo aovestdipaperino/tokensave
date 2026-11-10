@@ -221,7 +221,7 @@ impl TokenSave {
         self.db
             .schema_version()
             .await
-            .is_ok_and(|v| v < crate::db::migrations::latest_version())
+            .is_ok_and(|v| v < Database::latest_schema_version())
     }
 
     /// Opens an existing `TokenSave` project at the given root.
@@ -252,10 +252,7 @@ impl TokenSave {
 
         let (candidate, _, _) =
             Self::resolve_db_for_branch(project_root, &tokensave_dir, active_branch.as_deref());
-        if let Err(error) =
-            crate::db::compatibility::preflight(&candidate, crate::db::migrations::latest_version())
-                .await
-        {
+        if let Err(error) = Database::preflight(&candidate).await {
             if crate::db::compatibility::is_refusal(&error) {
                 return Err(error);
             }
@@ -348,7 +345,7 @@ impl TokenSave {
                 // Never delete a database over a condition that clears by
                 // itself, or while another tokensave process is using it:
                 // the holder would keep writing to an unlinked file.
-                if crate::db::migrations::is_environmental_error(&e) {
+                if Database::is_environmental_error(&e) {
                     return Err(e);
                 }
                 let lock = match rebuild_refusal(project_root, &db_path) {

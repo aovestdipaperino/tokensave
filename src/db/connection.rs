@@ -302,6 +302,24 @@ impl Database {
         drop(self.conn);
     }
 
+    /// Schema version this build creates and migrates indexes to.
+    pub fn latest_schema_version() -> u32 {
+        migrations::latest_version()
+    }
+
+    /// Refuses an index file this build must not open: one created by an
+    /// incompatible release channel or with a newer schema. A missing file
+    /// passes; other open errors are left to [`Self::open`].
+    pub async fn preflight(db_path: &Path) -> Result<()> {
+        super::compatibility::preflight(db_path, migrations::latest_version()).await
+    }
+
+    /// Whether `e` is a condition that clears by itself (a lock, a full
+    /// disk), so the index must not be rebuilt over it.
+    pub fn is_environmental_error(e: &TokenSaveError) -> bool {
+        migrations::is_environmental_error(e)
+    }
+
     /// Returns the schema version stored in the database.
     pub async fn schema_version(&self) -> Result<u32> {
         super::migrations::read_schema_version(&self.conn).await

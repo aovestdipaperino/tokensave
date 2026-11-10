@@ -57,6 +57,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- Add an experimental `grafeo` cargo feature that stores the project index in Grafeo instead of libSQL, for the storage-backend benchmark (Refs #904). Work in progress: only part of the storage API is ported, the rest fails with an explicit error; Grafeo builds keep their state under `.tokensave/[beta/]grafeo/`; a Grafeo index can be opened by one process at a time. Not enabled in any release build.
+
 - **Elixir EEx templates are indexed with the `lang-elixir` feature (#907).** Code and output tags in `.eex` files contribute calls and declarations with their original locations; markup, comments, and escaped tags are ignored.
 - **AWK is now an indexed language (`lang-awk` feature, in `full`).** A new tree-sitter extractor covers `function` definitions, `BEGIN`/`END` blocks and pattern-action rules (each a function node named for its pattern), plus call edges and branch/loop/return complexity. The `tree-sitter-awk` grammar (Beaglefoot, v0.7.2) is vendored in `tokensave-large-treesitters`. Handles `.awk`.
 - **Wolfram Language is now an indexed language (`lang-wolfram` feature, in `full`).** A new tree-sitter extractor records `Set`/`SetDelayed` definitions (`f[x_] := …`) as functions, plain assignments as constants, call edges, and doc comments. The `tree-sitter-wolfram` grammar (WolframResearch) is vendored in `tokensave-large-treesitters`. Handles `.wl`, `.wls` and `.wlt`.

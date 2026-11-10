@@ -8,22 +8,46 @@
 //! engine's on-disk format, such as copying an index for a new branch
 //! ([`snapshot`]), live here as well.
 //!
-//! libSQL is the only backend so far.
+//! libSQL is the default backend; the experimental `grafeo` feature selects
+//! a Grafeo backend instead.
 
+// SQLite modules the global database uses in every build.
 pub mod compatibility;
-mod connection;
 pub mod debug_sql;
 pub mod migrations;
 pub mod model;
+
+// libSQL project-index backend (the default).
+#[cfg(not(feature = "grafeo"))]
+mod connection;
+#[cfg(not(feature = "grafeo"))]
 pub mod probe;
+#[cfg(not(feature = "grafeo"))]
 mod profiled;
+#[cfg(not(feature = "grafeo"))]
 mod queries;
+#[cfg(not(feature = "grafeo"))]
 pub mod snapshot;
 
+#[cfg(not(feature = "grafeo"))]
 pub use connection::Database;
+#[cfg(not(feature = "grafeo"))]
+pub(crate) use profiled::RowSource;
 
 /// Name of the storage engine this build uses. Profiling records are kept
 /// per engine, so measurements of different backends never merge.
+#[cfg(not(feature = "grafeo"))]
 pub const ENGINE: &str = "libsql";
+
+// Experimental Grafeo project-index backend (#904).
+#[cfg(feature = "grafeo")]
+mod grafeo;
+#[cfg(feature = "grafeo")]
+pub use self::grafeo::{probe, snapshot, Database};
+
+/// Name of the storage engine this build uses. Profiling records are kept
+/// per engine, so measurements of different backends never merge.
+#[cfg(feature = "grafeo")]
+pub const ENGINE: &str = "grafeo";
+
 pub use model::{AuditEdgeRow, EdgeEndpoint, ImportEdgeRow, NodeFilter, StoredFingerprint};
-pub(crate) use profiled::RowSource;
