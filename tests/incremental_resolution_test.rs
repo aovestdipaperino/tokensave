@@ -22,10 +22,40 @@
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use tempfile::tempdir;
 use tokensave::resolution::{index_keys_for_test, ReferenceResolver};
 use tokensave::tokensave::TokenSave;
+use tokio::sync::{Mutex, MutexGuard};
+
+/// Every sync reads the process-wide `TOKENSAVE_FULL_RESOLVE`, and `cargo test`
+/// runs this file's tests on threads of one process. Without this lock, one
+/// test's full pass flips the resolution mode of another test's concurrent
+/// sync, and `set_var` races native code reading the environment (#947).
+/// Every test in this file holds it for its whole body.
+async fn env_guard() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().await
+}
+
+/// Sets `TOKENSAVE_FULL_RESOLVE=1` until dropped, so a failing assertion
+/// cannot leave the full-resolve mode on for the tests that run after it.
+/// Only create it while holding [`env_guard`].
+struct FullResolve;
+
+impl FullResolve {
+    fn on() -> Self {
+        std::env::set_var("TOKENSAVE_FULL_RESOLVE", "1");
+        Self
+    }
+}
+
+impl Drop for FullResolve {
+    fn drop(&mut self) {
+        std::env::remove_var("TOKENSAVE_FULL_RESOLVE");
+    }
+}
 
 /// A project with real cross-file structure: a trait, two impls that make
 /// `area` ambiguous, callers in a third file, and a re-export.
@@ -273,6 +303,7 @@ async fn snapshot(cg: &TokenSave) -> Snapshot {
 /// resolved incrementally and one resolved in full, compared after every step.
 #[tokio::test]
 async fn incremental_resolution_matches_a_full_pass_across_a_series_of_edits() {
+    let _env = env_guard().await;
     let inc_dir = tempdir().unwrap();
     let full_dir = tempdir().unwrap();
     write_project(inc_dir.path());
@@ -283,9 +314,10 @@ async fn incremental_resolution_matches_a_full_pass_across_a_series_of_edits() {
     let inc = TokenSave::init(inc_dir.path()).await.unwrap();
     let full = TokenSave::init(full_dir.path()).await.unwrap();
     inc.sync().await.unwrap();
-    std::env::set_var("TOKENSAVE_FULL_RESOLVE", "1");
-    full.sync().await.unwrap();
-    std::env::remove_var("TOKENSAVE_FULL_RESOLVE");
+    {
+        let _full = FullResolve::on();
+        full.sync().await.unwrap();
+    }
 
     let (inc_edges, _) = snapshot(&inc).await;
     assert!(
@@ -299,11 +331,11 @@ async fn incremental_resolution_matches_a_full_pass_across_a_series_of_edits() {
 
         // Same second-resolution mtime granularity concerns as the rest of the
         // suite: content hashing is what decides staleness, so no sleep needed.
-        std::env::remove_var("TOKENSAVE_FULL_RESOLVE");
         inc.sync().await.unwrap();
-        std::env::set_var("TOKENSAVE_FULL_RESOLVE", "1");
-        full.sync().await.unwrap();
-        std::env::remove_var("TOKENSAVE_FULL_RESOLVE");
+        {
+            let _full = FullResolve::on();
+            full.sync().await.unwrap();
+        }
 
         let (inc_edges, inc_ambiguous) = snapshot(&inc).await;
         let (full_edges, full_ambiguous) = snapshot(&full).await;
@@ -339,6 +371,7 @@ async fn incremental_resolution_matches_a_full_pass_across_a_series_of_edits() {
 /// nodes, and vice versa. Add a fourth cache to `from_nodes` and this fails.
 #[tokio::test]
 async fn touched_name_keys_match_the_resolvers_own_name_index() {
+    let _env = env_guard().await;
     let tmp = tempdir().unwrap();
     write_project(tmp.path());
     let cg = TokenSave::init(tmp.path()).await.unwrap();
