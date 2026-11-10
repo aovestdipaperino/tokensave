@@ -345,6 +345,17 @@ impl Default for TokenSaveConfig {
     }
 }
 
+/// Default `exclude` globs whose directory names usually hold generated
+/// output but are also common names for real source packages (#949).
+///
+/// A Python data pipeline imported as `build.extract`, or a `bin/` of tracked
+/// scripts, is source that these defaults drop. `init` and `sync` therefore
+/// report git-tracked, indexable files that only these globs exclude; see
+/// `detect_tracked_ambiguous_excludes`. The other defaults (`node_modules`,
+/// `.venv`, `site-packages`, …) are almost never tracked source, and tracked
+/// `vendor/` code is excluded on purpose, so they are not listed here.
+pub const AMBIGUOUS_DEFAULT_EXCLUDES: &[&str] = &["**/build/**", "**/out/**", "bin/**"];
+
 /// Returns channel-specific project state: `.tokensave` or `.tokensave/beta`
 /// under the project root, or the same layout under a configured base state
 /// directory (#919, see [`crate::state_dir`]).

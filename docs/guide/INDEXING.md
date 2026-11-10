@@ -118,6 +118,32 @@ extension associations and artifact tracking. Use existing `project.json`
 aliases. Run `tokensave sync` after editing mappings (`sync -f` also works).
 See the [configuration guide](../USER-GUIDE.md#custom-language-extensions).
 
+## Default excludes
+
+A new project's `.tokensave/config.json` starts with `exclude` globs for
+dependency, tool-state and build-output directories, such as `**/node_modules/**`,
+`**/vendor/**`, `**/.venv/**`, `**/target/**`, `**/build/**`, `**/out/**` and `bin/**`.
+Files under them are not indexed. Edit the list and run `tokensave sync` to change it.
+
+Three of these defaults, `**/build/**`, `**/out/**` and `bin/**`, are meant for
+generated output but are also common names for real source: a Python package
+imported as `build.extract`, or a `bin/` of scripts. When git tracks indexable
+files that only these globs exclude, `init` and `sync` print a warning:
+
+```text
+warning: excluded 2 tracked files by default build-output excludes (build: 2) — if they are source, remove "**/build/**" from exclude[] in .tokensave/config.json and run `tokensave sync` to index them (or add "build/**" to exclude[] to keep them excluded and silence this warning)
+```
+
+- To index the files, remove the named glob from `exclude` and run `tokensave sync`.
+- To keep them excluded, add the suggested explicit glob. A file matched by any
+  exclude glob other than these three defaults counts as deliberately excluded
+  and is not reported.
+
+Only files with an extension an extractor handles are counted. Files in hidden
+directories get their own warning instead. The other defaults are not reported:
+their contents are rarely source, and tracked `vendor/` code is usually excluded
+on purpose. The check needs a git repository and is skipped outside one.
+
 ## Non-code artifacts
 
 `tokensave_files` covers more than source. Files whose extension is listed in

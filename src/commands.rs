@@ -1191,6 +1191,9 @@ pub(crate) async fn init_and_index(
     if let Some(warning) = cg.warn_skipped_hidden_dirs() {
         eprintln!("{warning}");
     }
+    if let Some(warning) = cg.warn_tracked_ambiguous_excludes() {
+        eprintln!("{warning}");
+    }
     global::update_global_db(&cg).await;
     Ok(cg)
 }

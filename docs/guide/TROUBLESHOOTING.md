@@ -39,6 +39,7 @@ The AI agent doesn't see tokensave tools.
 - Run `tokensave sync` to update the index
 - Check that the language is supported (see [Supported Languages](LANGUAGES.md))
 - Verify the file isn't excluded by `.gitignore`
+- Check the `exclude` globs in `.tokensave/config.json`: the defaults skip directories such as `build/`, `out/` and `bin/`, which some projects use for source (see [Default excludes](INDEXING.md#default-excludes))
 
 ## "branch '…' is not tracked" after a checkout
 

@@ -41,7 +41,7 @@ pub(crate) use guard::*;
 pub use guard::{
     acquire_branch_operation_lock, try_acquire_sync_lock, BranchOperationLock, SyncLockGuard,
 };
-pub use indexing::detect_skipped_hidden_dirs;
+pub use indexing::{detect_skipped_hidden_dirs, detect_tracked_ambiguous_excludes};
 pub use rename::{validate_identifier, RenameConfidence, RenameOutcome, RenamePlan, RenameSite};
 pub use runtime::BranchRuntime;
 pub use staleness::{AutoSyncScope, BranchDrift, DEFAULT_MAX_AUTO_SYNC_FILES};

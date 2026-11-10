@@ -648,6 +648,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 if let Some(warning) = cg.warn_skipped_hidden_dirs() {
                     eprintln!("{warning}");
                 }
+                if let Some(warning) = cg.warn_tracked_ambiguous_excludes() {
+                    eprintln!("{warning}");
+                }
                 if !result.skipped_paths.is_empty() {
                     eprintln!();
                     eprintln!(
