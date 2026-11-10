@@ -189,6 +189,15 @@ For resource-sensitive changes, contributors and AI coding agents MUST review:
       recorded; repeated and long-running checks are considered.
 - [ ] Significant resource increases are justified and claims match the evidence.
 
+Changes that involve `unsafe` code, native dependencies, platform APIs,
+concurrency, filesystem state or callbacks also need a soundness review. It
+covers panic and unwind safety, trait implementations that do not keep their
+promises, and process-wide OS state such as environment variables, signals,
+mapped files and `process::exit`. The checks are listed in
+[AGENTS.md](AGENTS.md#rust-memory-safety-and-soundness-review), and the current
+`unsafe` inventory and findings are in
+[docs/MEMORY-SAFETY-AUDIT.md](docs/MEMORY-SAFETY-AUDIT.md).
+
 ## Adding a New Language Extractor
 
 1. Add a tree-sitter grammar dependency (or vendor it under `vendor/`).

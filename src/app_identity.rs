@@ -34,6 +34,13 @@ impl ConsoleIdentity {
             previous.truncate(length as usize + 1);
             Console::SetConsoleTitleW(title.as_ptr());
         }
+        // `GetConsoleTitleW` reports the title's full length, which can exceed
+        // what fit in the buffer, so `truncate` may leave it untouched. `Drop`
+        // hands this buffer to `SetConsoleTitleW`, which reads up to a NUL:
+        // force one so that read can never run past the allocation (#947).
+        if let Some(last) = previous.last_mut() {
+            *last = 0;
+        }
         Some(Self(previous))
     }
 }
