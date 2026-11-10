@@ -21,6 +21,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Documentation
 
+- `CONTRIBUTING.md`, `AGENTS.md` and the pull request template now require crediting the people who proposed or substantially specified a change in an issue as co-authors of the PR that implements it, with `Co-authored-by:` trailers using their GitHub noreply address. Ported from `master` (#951) to keep shared rules synchronized (Refs #950).
 - Use a wide beta README logo matching the stable logo's dimensions and wordmark layout, with a beta badge, and preserve this intentional branch-specific branding difference (Refs #801).
 
 - Require agents to verify linked PR states before closing an issue and summarize merged improvements with the actual destination branch, validation, and remaining work; synchronize this rule across master and beta (Refs #803).
