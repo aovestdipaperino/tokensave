@@ -2,9 +2,12 @@
 
 - **Issue:** [#947](https://github.com/aovestdipaperino/tokensave/issues/947)
 - **Date:** 2026-11-10
-- **Branch audited:** `master` at `251a055`
-- **Toolchain:** Rust 1.98.1 (pinned in `rust-toolchain.toml`), edition 2021,
-  default `panic = "unwind"` in every profile
+- **Branches audited:** `master` at `251a055` and `beta` at `cf03ec1`. Except
+  where a finding is marked *beta only*, the audited code is the same on both
+  branches. This file is kept identical on both.
+- **Toolchains:** Rust 1.98.1 on `master` and Rust 1.99.0 on `beta`, each
+  pinned in `rust-toolchain.toml`. Both use edition 2021 and the default
+  `panic = "unwind"` in every profile.
 - **Background:** Microsoft FORGE Lab,
   [*Memory Safety Bugs in Rust Standard Library*](https://forge-blog.github.io/posts/rust-std-memory-safety/)
 
@@ -24,11 +27,11 @@ TokenSave or its dependencies are sound.
 
 | Area | Result |
 |---|---|
-| `unsafe` in TokenSave code | 9 sites in 3 files: 3 grammar FFI declarations and 6 `memmap2` mappings. Each has a `SAFETY:` comment. No unchecked indexing, `transmute`, `static mut`, raw-pointer arithmetic or manual initialization. |
+| `unsafe` in TokenSave code | On both branches: 9 sites in 3 files, made up of 3 grammar FFI declarations and 6 `memmap2` mappings. Beta only: 3 more Win32 console calls in `src/app_identity.rs`. Each site has a `SAFETY:` comment. There is no unchecked indexing, `transmute`, `static mut`, raw-pointer arithmetic or manual initialization. On beta, one console-title buffer needed a NUL-termination hardening, which is made in the beta change. |
 | Pattern 1, panic safety | No partially initialized state is visible during unwinding. `safe_extract` is the only `catch_unwind`. No actionable finding. |
 | Pattern 2, untrusted trait implementations | No `unsafe` code depends on a trait implementation's result. The one custom `Ord` is a total order. No actionable finding. |
-| Pattern 3, OS and process state | **One confirmed test-only defect, fixed in this change:** `tests/incremental_resolution_test.rs` mutated `TOKENSAVE_FULL_RESOLVE` while sibling tests synced concurrently. Production code never mutates the environment. |
-| Upstream Rust issues in the article | None reachable from TokenSave code. #161018 is unfixed in the pinned 1.98.1, but TokenSave never triggers it. Details are in the [table below](#upstream-rust-issues). |
+| Pattern 3, OS and process state | **One confirmed test-only defect, fixed on both branches:** `tests/incremental_resolution_test.rs` mutated `TOKENSAVE_FULL_RESOLVE` while sibling tests synced concurrently. Production code never mutates the environment. |
+| Upstream Rust issues in the article | None reachable from TokenSave code. #161018 is unfixed in master's pinned 1.98.1, but TokenSave never triggers it. Beta's 1.99.0 includes the fix. Details are in the [table below](#upstream-rust-issues). |
 
 ## Inventory of `unsafe` code
 
@@ -41,6 +44,7 @@ that only *counts* `unsafe` blocks in indexed source are excluded.
 | `src/extraction/ts_provider.rs` (`wgsl_grammar`, `actionscript_grammar`, `gdscript_grammar`) | `unsafe extern "C"` declarations and `LanguageFn::from_raw` | The C symbol is the generated tree-sitter entry point: no arguments, returns a static `TSLanguage` pointer. | Sound if the vendored grammar matches its declaration. `build.rs` compiles the grammars only when the feature is on, and the module has the same `cfg`. Grammar C code is not memory-safe. That risk is contained by worker-process isolation, see [FFI and native libraries](#ffi-and-native-libraries). |
 | `src/monitor.rs` `write_entry_inner`, `MmapReader::open_at`, `MmapReader::refresh` | `memmap2::MmapMut::map_mut` and `Mmap::map` of `~/.tokensave/monitor.mmap` | The file is never truncated while mapped. Writers hold `lock_exclusive`. | TokenSave only grows the file to `FILE_SIZE`. Readers check bounds against `mmap.len()` and copy bytes out. A concurrent writer can cause at most a torn entry. |
 | `src/memstats.rs` writer, `open_at`, `purge_dead_slots` | Same `memmap2` mappings for the memory-stats table | Same as above. | Same as above. |
+| `src/app_identity.rs` `ConsoleIdentity` (*beta only*, Windows) | `SetCurrentProcessExplicitAppUserModelID`, `GetConsoleTitleW` and `SetConsoleTitleW`, with the old title restored in `Drop` | Strings passed in are NUL-terminated UTF-16 that outlive the call. The buffer restored in `Drop` is NUL-terminated. | The input strings are built with `.chain(Some(0))`. `GetConsoleTitleW` returns the title length without its NUL. The original code then truncated to `length + 1`, which does nothing when the reported length is the full title and not what fit in the 32,768-unit buffer. The result relied on the API terminating a truncated title. **Hardened on beta:** the last element is now forced to NUL after truncation, so `Drop` can never read past the buffer. No crash was reproduced. This is defense in depth against an unusually long or failed title read. |
 
 **Residual mmap risk (accepted, documented).** `memmap2` mappings are only as
 safe as the file behind them. If something outside TokenSave truncates the
@@ -127,18 +131,20 @@ serialized.
   - `global_git_hooks_*_test`, `rebuild_lock_test`,
     `local_git_hooks_shadow_test` and `tls_root_fallback_test` each contain a
     single test.
-  - **Defect (fixed):** `incremental_resolution_test` has four tests. One
-    toggled `TOKENSAVE_FULL_RESOLVE` around `sync()` without a lock, while the
-    other three called `init`/`sync` on other threads. Every sync reads that
+  - **Defect (fixed):** `incremental_resolution_test` has four tests on
+    `master` and two on `beta`. One toggled `TOKENSAVE_FULL_RESOLVE` around
+    `sync()` without a lock, while the others called `init`/`sync` on other
+    threads. Every sync reads that
     variable (`incremental_resolution_enabled` in
     `src/tokensave/indexing.rs`), so a sibling test could run in full-resolve
-    mode. `an_untouched_call_loses_its_stale_edge_when_a_new_target_makes_it_ambiguous`,
-    which exists to test the incremental path, could then pass without
+    mode. On `master`,
+    `an_untouched_call_loses_its_stale_edge_when_a_new_target_makes_it_ambiguous`
+    exists to test the incremental path, so it could then pass without
     exercising it. On glibc, `setenv` racing a `getenv` from native code is
     also a data race. Rust's own `env::var` calls take the standard library's
     environment lock, so this race involves native code only. This change
-    holds a file-wide lock in all four tests and sets the variable through a
-    drop guard, so a failing assertion cannot leave it set. The impact is
+    holds a file-wide lock in every test of the file and sets the variable
+    through a drop guard, so a failing assertion cannot leave it set. The impact is
     limited to test reliability. It does not affect shipped binaries.
 
 ### Process exit and signals
@@ -183,7 +189,7 @@ serialized.
 | [#156491](https://github.com/rust-lang/rust/issues/156491) | 2 | `str::replace` with a custom `Pattern` | 1.97.0 (PR #156556) | **Not applicable.** `Pattern` cannot be implemented on stable. The pinned 1.98.1 includes the fix. |
 | #158265, #165076, #164904 | 2 | `Pattern` searchers (`strip_prefix`, `split_once`, `split`) | open | **Not applicable.** Only the standard pattern types are used. |
 | [PR #155708](https://github.com/rust-lang/rust/pull/155708) (`Borrow`/`join` family, CVE-2020-36323) | 2 | `[T]::join` with a misbehaving `Borrow` | 1.97.0 | **Not applicable.** No custom `Borrow`. `join` is used on `String` and `&str`. The pinned 1.98.1 includes the fix. |
-| [#161018](https://github.com/rust-lang/rust/issues/161018) | 3 | `process::exit` from a non-main thread unmaps the main thread's alternate signal stack (Unix) | 1.99.0 (PR #161037) | **Not reachable.** The pinned 1.98.1 does **not** include the fix, but TokenSave calls `exit` only from the main thread. Recheck this if `exit` is ever called from a spawned thread or a blocking task. Bumping the toolchain to 1.99 or later removes the concern. |
+| [#161018](https://github.com/rust-lang/rust/issues/161018) | 3 | `process::exit` from a non-main thread unmaps the main thread's alternate signal stack (Unix) | 1.99.0 (PR #161037) | **Not reachable.** Master's pinned 1.98.1 does **not** include the fix, but TokenSave calls `exit` only from the main thread. Recheck this if `exit` is ever called from a spawned thread or a blocking task. Beta's pinned 1.99.0 includes the fix. |
 | [#156951](https://github.com/rust-lang/rust/issues/156951) | 3 | `CommandExt::exec` writes `environ` under a read lock (Unix) | open (PR #157144) | **Not applicable.** No `exec`. |
 | [#164243](https://github.com/rust-lang/rust/issues/164243) | 3 | `process::exit` while a thread-local is in an inconsistent state (double free) | open (PR #165125) | **Not reachable.** It requires calling `exit` from inside a thread-local mutation or a `Drop` that runs during one. TokenSave's thread-locals in `src/profile/` hold plain values and `RefCell` contexts, and nothing in their scope calls `exit`. |
 
@@ -192,7 +198,7 @@ serialized.
 | Check | Result |
 |---|---|
 | Source search for `unsafe`, `*_unchecked`, `transmute`, `static mut`, `catch_unwind`, `set_var`, `remove_var`, `process::exit`, `exec` and `CommandExt` | Results are in the sections above. |
-| `cargo test --locked --no-default-features --features lite --test incremental_resolution_test` (Windows, Rust 1.98.1) | 4 passed, 0 failed, with the fix. |
+| `cargo test --locked --no-default-features --features lite --test incremental_resolution_test` (Windows) | `master` (Rust 1.98.1): 4 passed, 0 failed, with the fix. `beta`: see the beta pull request. |
 | `rustfmt --check` on the changed test | Clean. |
 | `cargo clippy` | **Not run locally.** The change adds no `unsafe` code and touches one test file. CI's Clippy job runs on it. |
 | `cargo audit` / RustSec | **Not run.** `cargo-audit` is not installed in the audit environment, and CI has no RustSec job. Recommended follow-up: add a scheduled `cargo audit` or `cargo deny check advisories` job. |
@@ -203,8 +209,8 @@ serialized.
 
 - Add a scheduled RustSec advisory check (`cargo audit` or
   `cargo deny check advisories`) to CI.
-- When the pinned toolchain moves to 1.99 or later, record that #161018 is
-  fixed. Until then, keep `process::exit` on the main thread.
+- When master's pinned toolchain moves to 1.99 or later, record that #161018
+  is fixed there. Until then, keep `process::exit` on the main thread.
 - Consider fuzzing the vendored grammars, or running them under sanitizers on
   a Linux CI job, as a separate evaluation.
 
