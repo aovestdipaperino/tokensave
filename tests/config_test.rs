@@ -49,10 +49,16 @@ fn test_is_excluded() {
 fn test_tokensave_dir_creation() {
     let dir = TempDir::new().unwrap();
     let cg_dir = get_tokensave_dir(dir.path());
-    let expected = if tokensave::cloud::is_beta() {
+    let channel = if tokensave::cloud::is_beta() {
         dir.path().join(".tokensave").join("beta")
     } else {
         dir.path().join(".tokensave")
+    };
+    // A Grafeo build keeps its state beside the libSQL state (#904).
+    let expected = if cfg!(feature = "grafeo") {
+        channel.join("grafeo")
+    } else {
+        channel
     };
     assert_eq!(cg_dir, expected);
 }

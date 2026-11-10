@@ -74,9 +74,14 @@ impl BranchRuntime {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    // Used only by tests a Grafeo build skips (#904).
+    #[cfg(not(feature = "grafeo"))]
     use super::*;
+    #[cfg(not(feature = "grafeo"))]
     use std::process::Command;
 
+    // Used only by tests a Grafeo build skips (#904).
+    #[cfg(not(feature = "grafeo"))]
     fn git(root: &Path, args: &[&str]) {
         let output = Command::new("git")
             .args(args)
@@ -94,6 +99,8 @@ mod tests {
         );
     }
 
+    // Used only by tests a Grafeo build skips (#904).
+    #[cfg(not(feature = "grafeo"))]
     async fn project(root: &Path) -> TokenSave {
         git(root, &["init", "-b", "main"]);
         std::fs::write(root.join(".gitignore"), ".tokensave/\n").unwrap();
@@ -108,6 +115,8 @@ mod tests {
         TokenSave::open(root).await.unwrap()
     }
 
+    // Opens one index twice; Grafeo allows one handle per index (#904).
+    #[cfg(not(feature = "grafeo"))]
     #[tokio::test]
     async fn round_trip_tracks_and_syncs_without_polluting_parent() {
         let tmp = tempfile::tempdir().unwrap();
@@ -138,6 +147,8 @@ mod tests {
         assert!(main.db.get_file("feature.rs").await.unwrap().is_none());
     }
 
+    // Opens one index twice; Grafeo allows one handle per index (#904).
+    #[cfg(not(feature = "grafeo"))]
     #[tokio::test]
     async fn leases_serialize_concurrent_transitions_and_retry_after_failure() {
         let tmp = tempfile::tempdir().unwrap();
@@ -184,6 +195,8 @@ mod tests {
         );
     }
 
+    // Opens one index twice; Grafeo allows one handle per index (#904).
+    #[cfg(not(feature = "grafeo"))]
     #[tokio::test]
     async fn worktree_switches_use_worktree_local_metadata() {
         let tmp = tempfile::tempdir().unwrap();
@@ -211,6 +224,8 @@ mod tests {
             .is_tracked("linked-next"));
     }
 
+    // Opens one index twice; Grafeo allows one handle per index (#904).
+    #[cfg(not(feature = "grafeo"))]
     #[tokio::test]
     async fn auto_tracking_disabled_keeps_ancestor_fallback_unchanged() {
         let tmp = tempfile::tempdir().unwrap();
@@ -233,6 +248,8 @@ mod tests {
         );
     }
 
+    // Opens one index twice; Grafeo allows one handle per index (#904).
+    #[cfg(not(feature = "grafeo"))]
     #[tokio::test]
     async fn sync_bounds_refuse_transition_then_allow_retry_after_explicit_sync() {
         let tmp = tempfile::tempdir().unwrap();
@@ -255,6 +272,8 @@ mod tests {
         );
     }
 
+    // Opens one index twice; Grafeo allows one handle per index (#904).
+    #[cfg(not(feature = "grafeo"))]
     #[tokio::test]
     async fn legacy_and_detached_contexts_keep_existing_policy() {
         let tmp = tempfile::tempdir().unwrap();

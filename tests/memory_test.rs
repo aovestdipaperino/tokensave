@@ -71,14 +71,9 @@ async fn record_code_area_upserts_touch_count() {
 /// `record_decision`'s `now()` so tests can simulate old vs. recent memories.
 async fn insert_decision_at(cg: &TokenSave, text: &str, created_at: i64) {
     cg.db()
-        .conn()
-        .execute(
-            "INSERT INTO memory_decisions (text, reason, created_at, files, tags) \
-             VALUES (?1, NULL, ?2, '[]', '[]')",
-            libsql::params![text, created_at],
-        )
+        .insert_decision(text, None, &[], &[], created_at)
         .await
-        .unwrap();
+        .expect("inserting a decision with an explicit timestamp succeeds");
 }
 
 #[tokio::test]

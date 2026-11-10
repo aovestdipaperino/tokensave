@@ -1,6 +1,4 @@
 //! Indexed-file records.
-use grafeo::Value;
-
 use super::{db_error, file_from, file_props, Database, FILE};
 use crate::errors::Result;
 use crate::types::{FileKind, FileRecord};
@@ -19,7 +17,7 @@ impl Database {
                     for (key, value) in file_props(file) {
                         self.db
                             .set_node_property(gid, key.as_str(), value)
-                            .map_err(|e| db_error("upsert_files", e))?;
+                            .map_err(|e| db_error("upsert_files", &e))?;
                     }
                 }
                 None => new.push(file_props(file)),
@@ -28,7 +26,7 @@ impl Database {
         if !new.is_empty() {
             self.db
                 .batch_create_nodes_with_props(FILE, new)
-                .map_err(|e| db_error("upsert_files", e))?;
+                .map_err(|e| db_error("upsert_files", &e))?;
         }
         Ok(())
     }
@@ -56,12 +54,14 @@ impl Database {
         self.files_matching(|f| f.kind == FileKind::Code, "get_code_files")
     }
 
-    /// Deletes one file record.
+    /// Deletes a file record and, first, its nodes, as the libSQL backend
+    /// does.
     pub async fn delete_file(&self, path: &str) -> Result<()> {
+        self.delete_nodes_by_file(path).await?;
         for gid in self.find("path", path, "delete_file")? {
             self.db
                 .delete_node(gid)
-                .map_err(|e| db_error("delete_file", e))?;
+                .map_err(|e| db_error("delete_file", &e))?;
         }
         Ok(())
     }
@@ -71,24 +71,11 @@ impl Database {
         keep: impl Fn(&FileRecord) -> bool,
         operation: &str,
     ) -> Result<Vec<FileRecord>> {
-        let rows = self
-            .db
-            .execute(&format!("MATCH (f:{FILE}) RETURN f.path"))
-            .map_err(|e| db_error(operation, e))?;
-        let mut out = Vec::with_capacity(rows.rows().len());
-        for row in rows.rows() {
-            let Some(path) = row.first().and_then(Value::as_str) else {
-                continue;
-            };
-            for gid in self.find("path", path, operation)? {
-                if let Some(node) = self.graph_node(gid, operation)? {
-                    let file = file_from(&node);
-                    if keep(&file) {
-                        out.push(file);
-                    }
-                }
-            }
-        }
-        Ok(out)
+        Ok(self
+            .scan_label(FILE, operation)?
+            .iter()
+            .map(|p| file_from(p.as_ref()))
+            .filter(|f| keep(f))
+            .collect())
     }
 }

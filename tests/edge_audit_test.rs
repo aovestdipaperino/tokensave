@@ -69,6 +69,8 @@ async fn a_correctly_resolved_index_reports_no_unreachable_edges() {
     );
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn a_phantom_edge_inside_production_is_counted() {
     let (_tmp, cg) = fixture().await;

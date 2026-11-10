@@ -2,10 +2,10 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tokensave::db::migrations::latest_version;
 use tokensave::db::Database;
-use tokensave::types::{
-    AmbiguousCall, Edge, EdgeKind, ExecutableBodyDocument, FileRecord, Node, NodeKind,
-    UnresolvedRef, Visibility,
-};
+use tokensave::types::{Edge, EdgeKind, FileRecord, Node, NodeKind, UnresolvedRef, Visibility};
+// Used only by the tests that read the libSQL schema directly.
+#[cfg(not(feature = "grafeo"))]
+use tokensave::types::{AmbiguousCall, ExecutableBodyDocument};
 
 /// Helper: create an in-memory-style temp database and return (TempDir, Database).
 ///
@@ -578,6 +578,8 @@ async fn test_migrate_v7_adds_and_backfills_attrs_start_line() {
     assert_eq!(r.get::<u32>(0).expect("attrs"), 55);
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn test_migrate_is_idempotent_at_latest() {
     // After Database::initialize creates the latest schema, calling migrate
@@ -795,6 +797,8 @@ async fn test_search_nodes_bounded_excludes_file_and_doc_nodes() {
     );
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 /// Set-based deletion must clean both edge directions and every dependent,
 /// including with foreign keys disabled during indexing.
 #[tokio::test]
@@ -874,6 +878,8 @@ async fn test_delete_nodes_by_file_cleans_dependents_and_preserves_other_files()
     }
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn test_delete_nodes_by_file_rolls_back_fts_and_dependents_on_error() {
     let (_dir, db) = setup_db().await;
@@ -915,6 +921,8 @@ async fn test_delete_nodes_by_file_rolls_back_fts_and_dependents_on_error() {
     db.delete_nodes_by_file("src/a.rs").await.unwrap();
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn indexed_body_storage_preserves_match_update_delete_and_insert_rollback() {
     let (_dir, db) = setup_db().await;
@@ -1006,6 +1014,8 @@ async fn indexed_body_storage_preserves_match_update_delete_and_insert_rollback(
     db.conn().execute("INSERT INTO executable_body_fts(executable_body_fts, rank) VALUES('integrity-check', 1)", ()).await.unwrap();
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn ambiguity_membership_tracks_replacement_updates_deletion_and_exact_ids() {
     let (_dir, db) = setup_db().await;
@@ -1121,6 +1131,8 @@ async fn ambiguity_membership_tracks_replacement_updates_deletion_and_exact_ids(
         .contains("idx_ambiguous_candidates_node"));
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn body_batches_bound_large_documents_and_roll_back_earlier_batches() {
     let (_dir, db) = setup_db().await;
@@ -1184,6 +1196,8 @@ async fn body_batches_bound_large_documents_and_roll_back_earlier_batches() {
         .unwrap();
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 /// The optimized rank column must retain explicit weighted BM25 scores, even
 /// when the table's persistent rank default is configured differently.
 #[tokio::test]

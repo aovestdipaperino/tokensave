@@ -34,6 +34,8 @@ fn git(root: &Path, args: &[&str]) {
     );
 }
 
+// Used only by tests a Grafeo build skips (#904).
+#[cfg(not(feature = "grafeo"))]
 /// A project in multi-branch mode, indexed on `master`, with `feature`
 /// tracked. Returns the open handle, still resolved to `master`.
 async fn project_on_master_with_tracked_feature() -> (tempfile::TempDir, TokenSave) {
@@ -65,6 +67,8 @@ async fn project_on_master_with_tracked_feature() -> (tempfile::TempDir, TokenSa
     (tmp, cg)
 }
 
+// Opens one index twice; Grafeo allows one handle per index (#904).
+#[cfg(not(feature = "grafeo"))]
 /// The #400 reproduction: the handle says `master`, the working tree is on
 /// `feature`, and an automatic sync must decline rather than write
 /// `feature`'s files into `master`'s database.
@@ -91,6 +95,8 @@ async fn a_checkout_under_a_live_handle_is_detected_as_drift() {
     assert_eq!(drift.working_tree, "feature");
 }
 
+// Opens one index twice; Grafeo allows one handle per index (#904).
+#[cfg(not(feature = "grafeo"))]
 /// The guard that actually prevents the corruption: with drift present, the
 /// bounded scope used by automatic syncs refuses instead of returning files.
 #[tokio::test]

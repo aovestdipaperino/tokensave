@@ -1,4 +1,6 @@
 use crate::common::stability::Project;
+// Used only by tests a Grafeo build skips (#904).
+#[cfg(not(feature = "grafeo"))]
 use serde_json::Value;
 use tokensave::graphify::export_file;
 
@@ -13,10 +15,14 @@ async fn fixture() -> Project {
     .await
 }
 
+// Used only by tests a Grafeo build skips (#904).
+#[cfg(not(feature = "grafeo"))]
 fn read(path: &std::path::Path) -> Value {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn snapshot_preserves_internal_graph_and_refuses_overwrite() {
     let p = fixture().await;
@@ -74,6 +80,8 @@ async fn snapshot_preserves_internal_graph_and_refuses_overwrite() {
     assert_eq!(bytes, std::fs::read(&second).unwrap());
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn limits_and_stale_inputs_publish_nothing() {
     let p = fixture().await;
@@ -111,6 +119,8 @@ async fn limits_and_stale_inputs_publish_nothing() {
         .any(|n| n["label"].as_str().unwrap().contains("changed")));
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn separate_roots_never_share_snapshot_ids_and_deleted_files_fail() {
     let a = fixture().await;
@@ -197,6 +207,8 @@ async fn untracked_checkout_refuses_default_branch_fallback() {
     assert!(!out.exists());
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn oversized_database_text_is_refused_without_truncating_identity() {
     let p = fixture().await;
@@ -216,6 +228,8 @@ async fn oversized_database_text_is_refused_without_truncating_identity() {
     assert!(!out.exists());
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn cancellation_isolated_in_child_publishes_nothing() {
     if std::env::var_os("TOKENSAVE_GRAPHIFY_CANCEL_TEST").is_none() {

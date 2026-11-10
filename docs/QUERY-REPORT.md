@@ -29,6 +29,14 @@ accepted monotonic update moves the timestamp (Copilot) or preserves the
 session-start bucket (Droid). No SQL occurrence or construction-function count
 is added, and the query ID remains stable.
 
+Storage-backend context (#904): the Rails route dispatch decision moved from
+`src/db/queries/routes.rs` to the backend-neutral `src/db/rails_routes.rs`,
+which holds no SQL. `rebuild_rails_routes_inner` now writes the links that
+decision returns with Q0210 after it has run, instead of while it runs. SQL
+text, bindings and counts are unchanged. The experimental Grafeo backend in
+`src/db/grafeo/` (the `grafeo` cargo feature) issues GQL rather than SQL, so
+it is outside this inventory.
+
 `?`, `?1`, and similar placeholders are bound by the caller. Rust format fields such as `{placeholders}`, `{where_clause}`, `{limit}`, and `{}` are preserved as templates; they are not executable SQL until constructed. Rust string escapes and backslash-newline continuations are decoded for readability. Dynamic SQL has potentially unlimited concrete instances, so the report includes its templates and complete builder functions in the construction appendix, including conditional clauses and parameter bindings. No SQL was executed to enumerate the inventory; separate benchmark evidence is linked below.
 
 ## Inventory summary
@@ -2514,7 +2522,7 @@ SELECT id FROM nodes
 
 #### Q0164 — `query_kind_counts_coalesces_null_kind`
 
-Source: [src/db/queries/mod.rs:505](../src/db/queries/mod.rs#L505).
+Source: [src/db/queries/mod.rs:399](../src/db/queries/mod.rs#L399).
 
 ```sql
 CREATE TABLE t (kind TEXT)
@@ -2522,7 +2530,7 @@ CREATE TABLE t (kind TEXT)
 
 #### Q0165 — `query_kind_counts_coalesces_null_kind`
 
-Source: [src/db/queries/mod.rs:508](../src/db/queries/mod.rs#L508).
+Source: [src/db/queries/mod.rs:402](../src/db/queries/mod.rs#L402).
 
 ```sql
 INSERT INTO t (kind) VALUES ('function'), (NULL)
@@ -2530,7 +2538,7 @@ INSERT INTO t (kind) VALUES ('function'), (NULL)
 
 #### Q0166 — `query_kind_counts_coalesces_null_kind`
 
-Source: [src/db/queries/mod.rs:512](../src/db/queries/mod.rs#L512).
+Source: [src/db/queries/mod.rs:406](../src/db/queries/mod.rs#L406).
 
 ```sql
 SELECT kind, COUNT(*) FROM t GROUP BY kind
@@ -2900,7 +2908,7 @@ DELETE FROM nodes WHERE file_path = ?1
 
 #### Q0204 — `invalidate_rails_routes`
 
-Source: [src/db/queries/routes.rs:203](../src/db/queries/routes.rs#L203).
+Source: [src/db/queries/routes.rs:45](../src/db/queries/routes.rs#L45).
 
 ```sql
 SELECT EXISTS (SELECT 1 FROM nodes WHERE kind = 'route')
@@ -2909,7 +2917,7 @@ SELECT EXISTS (SELECT 1 FROM nodes WHERE kind = 'route')
 
 #### Q0205 — `rebuild_rails_routes`
 
-Source: [src/db/queries/routes.rs:236](../src/db/queries/routes.rs#L236).
+Source: [src/db/queries/routes.rs:79](../src/db/queries/routes.rs#L79).
 
 ```sql
 BEGIN
@@ -2917,7 +2925,7 @@ BEGIN
 
 #### Q0206 — `rebuild_rails_routes`
 
-Source: [src/db/queries/routes.rs:242](../src/db/queries/routes.rs#L242).
+Source: [src/db/queries/routes.rs:85](../src/db/queries/routes.rs#L85).
 
 ```sql
 COMMIT
@@ -2925,7 +2933,7 @@ COMMIT
 
 #### Q0207 — `rebuild_rails_routes`
 
-Source: [src/db/queries/routes.rs:243](../src/db/queries/routes.rs#L243).
+Source: [src/db/queries/routes.rs:86](../src/db/queries/routes.rs#L86).
 
 ```sql
 ROLLBACK
@@ -2933,7 +2941,7 @@ ROLLBACK
 
 #### Q0208 — `rebuild_rails_routes`
 
-Source: [src/db/queries/routes.rs:249](../src/db/queries/routes.rs#L249).
+Source: [src/db/queries/routes.rs:93](../src/db/queries/routes.rs#L93).
 
 ```sql
 ROLLBACK
@@ -2941,7 +2949,7 @@ ROLLBACK
 
 #### Q0209 — `rebuild_rails_routes_inner`
 
-Source: [src/db/queries/routes.rs:263](../src/db/queries/routes.rs#L263).
+Source: [src/db/queries/routes.rs:103](../src/db/queries/routes.rs#L103).
 
 ```sql
 DELETE FROM edges WHERE resolved_by = ?1
@@ -2950,7 +2958,7 @@ DELETE FROM edges WHERE resolved_by = ?1
 
 #### Q0210 — `rebuild_rails_routes_inner`
 
-Source: [src/db/queries/routes.rs:345](../src/db/queries/routes.rs#L345).
+Source: [src/db/queries/routes.rs:111](../src/db/queries/routes.rs#L111).
 
 ```sql
 INSERT INTO edges(source,target,kind,line,resolved_by) VALUES (?1,?2,'calls',?3,?4)
@@ -2958,7 +2966,7 @@ INSERT INTO edges(source,target,kind,line,resolved_by) VALUES (?1,?2,'calls',?3,
 
 #### Q0211 — `rebuild_rails_routes_inner`
 
-Source: [src/db/queries/routes.rs:359](../src/db/queries/routes.rs#L359).
+Source: [src/db/queries/routes.rs:117](../src/db/queries/routes.rs#L117).
 
 ```sql
 INSERT OR REPLACE INTO metadata(key,value) VALUES ('rails_routes_pending','0')
@@ -2966,7 +2974,7 @@ INSERT OR REPLACE INTO metadata(key,value) VALUES ('rails_routes_pending','0')
 
 #### Q0212 — `route_rows`
 
-Source: [src/db/queries/routes.rs:472](../src/db/queries/routes.rs#L472).
+Source: [src/db/queries/routes.rs:135](../src/db/queries/routes.rs#L135).
 
 ```sql
 SELECT n.id, n.file_path, n.start_line, r.reference_name
@@ -2977,7 +2985,7 @@ SELECT n.id, n.file_path, n.start_line, r.reference_name
 
 #### Q0213 — `rails_evidence`
 
-Source: [src/db/queries/routes.rs:496](../src/db/queries/routes.rs#L496).
+Source: [src/db/queries/routes.rs:159](../src/db/queries/routes.rs#L159).
 
 ```sql
 SELECT file_path, from_node_id, reference_name, line FROM unresolved_refs
@@ -2986,7 +2994,7 @@ SELECT file_path, from_node_id, reference_name, line FROM unresolved_refs
 
 #### Q0214 — `rails_evidence`
 
-Source: [src/db/queries/routes.rs:502](../src/db/queries/routes.rs#L502).
+Source: [src/db/queries/routes.rs:165](../src/db/queries/routes.rs#L165).
 
 ```sql
 SELECT file_path, from_node_id, reference_name, line FROM unresolved_refs
@@ -2995,7 +3003,7 @@ SELECT file_path, from_node_id, reference_name, line FROM unresolved_refs
 
 #### Q0215 — `ruby_owners`
 
-Source: [src/db/queries/routes.rs:620](../src/db/queries/routes.rs#L620).
+Source: [src/db/queries/routes.rs:199](../src/db/queries/routes.rs#L199).
 
 ```sql
 SELECT id, kind, qualified_name, file_path FROM nodes
@@ -3004,7 +3012,7 @@ SELECT id, kind, qualified_name, file_path FROM nodes
 
 #### Q0216 — `owner_methods`
 
-Source: [src/db/queries/routes.rs:661](../src/db/queries/routes.rs#L661).
+Source: [src/db/queries/routes.rs:237](../src/db/queries/routes.rs#L237).
 
 ```sql
 SELECT parent_id, id, name, kind, visibility FROM nodes
@@ -3013,7 +3021,7 @@ SELECT parent_id, id, name, kind, visibility FROM nodes
 
 #### Q0217 — `owner_visibility_evidence`
 
-Source: [src/db/queries/routes.rs:697](../src/db/queries/routes.rs#L697).
+Source: [src/db/queries/routes.rs:273](../src/db/queries/routes.rs#L273).
 
 ```sql
 SELECT from_node_id, reference_name FROM unresolved_refs
@@ -3023,7 +3031,7 @@ SELECT from_node_id, reference_name FROM unresolved_refs
 
 #### Q0218 — `route_invalidation_waits_for_concurrent_transaction`
 
-Source: [src/db/queries/routes.rs:739](../src/db/queries/routes.rs#L739).
+Source: [src/db/queries/routes.rs:315](../src/db/queries/routes.rs#L315).
 
 ```sql
 BEGIN
@@ -3031,7 +3039,7 @@ BEGIN
 
 #### Q0219 — `route_invalidation_waits_for_concurrent_transaction`
 
-Source: [src/db/queries/routes.rs:742](../src/db/queries/routes.rs#L742).
+Source: [src/db/queries/routes.rs:318](../src/db/queries/routes.rs#L318).
 
 ```sql
 ROLLBACK
@@ -3039,7 +3047,7 @@ ROLLBACK
 
 #### Q0220 — `route_rebuild_checks_pending_after_waiting_for_write_transaction`
 
-Source: [src/db/queries/routes.rs:768](../src/db/queries/routes.rs#L768).
+Source: [src/db/queries/routes.rs:344](../src/db/queries/routes.rs#L344).
 
 ```sql
 BEGIN
@@ -3047,7 +3055,7 @@ BEGIN
 
 #### Q0221 — `route_rebuild_checks_pending_after_waiting_for_write_transaction`
 
-Source: [src/db/queries/routes.rs:772](../src/db/queries/routes.rs#L772).
+Source: [src/db/queries/routes.rs:348](../src/db/queries/routes.rs#L348).
 
 ```sql
 ROLLBACK
@@ -3057,7 +3065,7 @@ ROLLBACK
 
 #### Q0223 — `insert_executable_body_documents`
 
-Source: [src/db/queries/search.rs:92](../src/db/queries/search.rs#L92).
+Source: [src/db/queries/search.rs:69](../src/db/queries/search.rs#L69).
 
 ```sql
 INSERT INTO executable_bodies (node_id, file_path, body) VALUES {placeholders}
@@ -3065,7 +3073,7 @@ INSERT INTO executable_bodies (node_id, file_path, body) VALUES {placeholders}
 
 #### Q0225 — `search_executable_bodies`
 
-Source: [src/db/queries/search.rs:165](../src/db/queries/search.rs#L165).
+Source: [src/db/queries/search.rs:142](../src/db/queries/search.rs#L142).
 
 ```sql
 SELECT node_id, body FROM executable_body_fts
@@ -3075,7 +3083,7 @@ SELECT node_id, body FROM executable_body_fts
 
 #### Q0226 — `search_nodes`
 
-Source: [src/db/queries/search.rs:295](../src/db/queries/search.rs#L295).
+Source: [src/db/queries/search.rs:270](../src/db/queries/search.rs#L270).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -3088,7 +3096,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0227 — `search_nodes_bounded_fts`
 
-Source: [src/db/queries/search.rs:373](../src/db/queries/search.rs#L373).
+Source: [src/db/queries/search.rs:346](../src/db/queries/search.rs#L346).
 
 ```sql
 SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
@@ -3106,7 +3114,7 @@ SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
 
 #### Q0228 — `search_nodes_fts`
 
-Source: [src/db/queries/search.rs:423](../src/db/queries/search.rs#L423).
+Source: [src/db/queries/search.rs:394](../src/db/queries/search.rs#L394).
 
 ```sql
 SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
@@ -3123,7 +3131,7 @@ SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
 
 #### Q0229 — `batch_incoming_call_counts`
 
-Source: [src/db/queries/search.rs:471](../src/db/queries/search.rs#L471).
+Source: [src/db/queries/search.rs:442](../src/db/queries/search.rs#L442).
 
 ```sql
 SELECT target, COUNT(*) AS cnt FROM edges WHERE target IN ({placeholders}) AND kind = 'calls' GROUP BY target
@@ -3131,7 +3139,7 @@ SELECT target, COUNT(*) AS cnt FROM edges WHERE target IN ({placeholders}) AND k
 
 #### Q0230 — `search_nodes_by_exact_name`
 
-Source: [src/db/queries/search.rs:509](../src/db/queries/search.rs#L509).
+Source: [src/db/queries/search.rs:483](../src/db/queries/search.rs#L483).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -9952,9 +9960,9 @@ Source: [src/db/queries/metadata.rs:165](../src/db/queries/metadata.rs#L165).
     }
 ```
 
-### `build_qmark_placeholders` — src/db/queries/mod.rs:38
+### `build_qmark_placeholders` — src/db/queries/mod.rs:42
 
-Source: [src/db/queries/mod.rs:38](../src/db/queries/mod.rs#L38).
+Source: [src/db/queries/mod.rs:42](../src/db/queries/mod.rs#L42).
 
 ```rust
 pub(crate) fn build_qmark_placeholders(n: usize) -> String {
@@ -9971,9 +9979,9 @@ pub(crate) fn build_qmark_placeholders(n: usize) -> String {
 }
 ```
 
-### `push_quoted` — src/db/queries/mod.rs:225
+### `push_quoted` — src/db/queries/mod.rs:229
 
-Source: [src/db/queries/mod.rs:225](../src/db/queries/mod.rs#L225).
+Source: [src/db/queries/mod.rs:229](../src/db/queries/mod.rs#L229).
 
 ```rust
 pub(crate) fn push_quoted(buf: &mut String, s: &str) {
@@ -9989,9 +9997,9 @@ pub(crate) fn push_quoted(buf: &mut String, s: &str) {
 }
 ```
 
-### `push_path_prefix_filter` — src/db/queries/mod.rs:257
+### `push_path_prefix_filter` — src/db/queries/mod.rs:261
 
-Source: [src/db/queries/mod.rs:257](../src/db/queries/mod.rs#L257).
+Source: [src/db/queries/mod.rs:261](../src/db/queries/mod.rs#L261).
 
 ```rust
 pub(crate) fn push_path_prefix_filter(buf: &mut String, alias: &str, prefix: &str) {
@@ -11117,16 +11125,12 @@ Source: [src/db/queries/nodes.rs:17](../src/db/queries/nodes.rs#L17).
     }
 ```
 
-### `rebuild_rails_routes_inner` — src/db/queries/routes.rs:255
+### `rebuild_rails_routes_inner` — src/db/queries/routes.rs:99
 
-Source: [src/db/queries/routes.rs:255](../src/db/queries/routes.rs#L255).
+Source: [src/db/queries/routes.rs:99](../src/db/queries/routes.rs#L99).
 
 ```rust
     async fn rebuild_rails_routes_inner(&self, start: std::time::Instant) -> Result<()> {
-        let custom_inflections = !self
-            .rails_evidence(RUBY_CUSTOM_INFLECTIONS_REFERENCE)
-            .await?
-            .is_empty();
         // By source, so the delete uses the edges source index.
         self.conn()
             .execute(
@@ -11136,94 +11140,12 @@ Source: [src/db/queries/routes.rs:255](../src/db/queries/routes.rs#L255).
             )
             .await
             .map_err(|error| route_error(&error))?;
-        let routes = self.route_rows().await?;
-        let contexts = self.route_contexts().await?;
-        let mut status_by_route: Vec<(&RouteRow, RouteStatus<'_>)> = Vec::new();
-        for route in &routes {
-            let context = contexts.resolve(&route.file, route.line, &mut Vec::new());
-            let resolved = match (parse_route_target(&route.target), context) {
-                (None, _) => continue,
-                (_, Err(status)) => Err(status),
-                (Some(_), Ok(_)) if custom_inflections => Err("custom-inflections"),
-                (Some(target), Ok(context)) if target.unless_api_only && context.api_only => {
-                    Err("api-only")
-                }
-                (Some(target), Ok(context)) => Ok((
-                    if target.absolute || context.module.is_empty() {
-                        target.constant.to_string()
-                    } else {
-                        format!("{}::{}", camelize(&context.module), target.constant)
-                    },
-                    target.action.to_string(),
-                )),
-            };
-            status_by_route.push((route, resolved));
+        let plan = self.rails_route_plan().await?;
+        for (route, action, line) in &plan.links {
+            self.conn().execute("INSERT INTO edges(source,target,kind,line,resolved_by) VALUES (?1,?2,'calls',?3,?4)", params![route.as_str(), action.as_str(), i64::from(*line), ResolvedBy::RailsRoute.code()]).await.map_err(|error| route_error(&error))?;
         }
-        let constants: BTreeSet<&str> = status_by_route
-            .iter()
-            .filter_map(|(_, r)| r.as_ref().ok().map(|(c, _)| c.as_str()))
-            .collect();
-        let owners = self.ruby_owners(&constants).await?;
-        let owner_ids: Vec<String> = owners
-            .values()
-            .flatten()
-            .map(|(id, _)| id.clone())
-            .collect();
-        let methods = self.owner_methods(&owner_ids).await?;
-        let hidden = self.owner_visibility_evidence(&owner_ids).await?;
-
-        let mut counts = serde_json::Map::new();
-        for (route, resolved) in status_by_route {
-            let status = match resolved {
-                Err(status) => status,
-                Ok((constant, action)) => {
-                    let mut candidates = ActionCandidates::default();
-                    for (owner, kind) in owners.get(&constant).into_iter().flatten() {
-                        candidates.owner_found = true;
-                        candidates.conflicting_kind |= kind == "module";
-                        candidates.unresolved_visibility |= hidden
-                            .get(owner)
-                            .is_some_and(|names| names.contains(&action) || names.contains("*"));
-                        for (id, name, kind, visibility) in methods.get(owner).into_iter().flatten()
-                        {
-                            if *name == action {
-                                candidates.targets.push((
-                                    id.clone(),
-                                    kind.clone(),
-                                    visibility.clone(),
-                                ));
-                            }
-                        }
-                    }
-                    let ActionCandidates {
-                        owner_found,
-                        conflicting_kind,
-                        unresolved_visibility,
-                        targets,
-                    } = candidates;
-                    if !owner_found {
-                        "missing-controller"
-                    } else if conflicting_kind || targets.len() > 1 {
-                        "ambiguous-action"
-                    } else if targets.is_empty() {
-                        "missing-action"
-                    } else if targets[0].1 != "method" || targets[0].2 != "public" {
-                        "non-public-instance-action"
-                    } else if unresolved_visibility {
-                        "unresolved-visibility"
-                    } else {
-                        self.conn().execute("INSERT INTO edges(source,target,kind,line,resolved_by) VALUES (?1,?2,'calls',?3,?4)", params![route.id.as_str(), targets[0].0.as_str(), i64::from(route.line), ResolvedBy::RailsRoute.code()]).await.map_err(|error| route_error(&error))?;
-                        "resolved"
-                    }
-                }
-            };
-            let count = counts.entry(status).or_insert(serde_json::json!(0));
-            *count = serde_json::json!(count.as_u64().unwrap_or(0) + 1);
-        }
-        let counts = serde_json::to_string(&counts).map_err(|e| TokenSaveError::Config {
-            message: e.to_string(),
-        })?;
-        self.set_metadata("rails_route_counts", &counts).await?;
+        self.set_metadata("rails_route_counts", &plan.counts)
+            .await?;
         self.conn()
             .execute(
                 "INSERT OR REPLACE INTO metadata(key,value) VALUES ('rails_routes_pending','0')",
@@ -11241,24 +11163,14 @@ Source: [src/db/queries/routes.rs:255](../src/db/queries/routes.rs#L255).
     }
 ```
 
-### `ruby_owners` — src/db/queries/routes.rs:605
+### `ruby_owners` — src/db/queries/routes.rs:194
 
-Source: [src/db/queries/routes.rs:605](../src/db/queries/routes.rs#L605).
+Source: [src/db/queries/routes.rs:194](../src/db/queries/routes.rs#L194).
 
 ```rust
-    async fn ruby_owners(
-        &self,
-        constants: &BTreeSet<&str>,
-    ) -> Result<HashMap<String, Vec<(String, String)>>> {
-        let mut names = BTreeSet::new();
-        for constant in constants {
-            let segments: Vec<&str> = constant.split("::").collect();
-            for start in 0..segments.len() {
-                names.insert(segments[start..].join("::"));
-            }
-        }
-        let names: Vec<String> = names.into_iter().collect();
-        let mut owners: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    pub(in crate::db) async fn ruby_owners(&self, constants: &BTreeSet<&str>) -> Result<Owners> {
+        let names: Vec<String> = constant_suffixes(constants).into_iter().collect();
+        let mut owners = Owners::new();
         for chunk in names.chunks(BATCH) {
             let sql = format!(
                 "SELECT id, kind, qualified_name, file_path FROM nodes
@@ -11295,16 +11207,13 @@ Source: [src/db/queries/routes.rs:605](../src/db/queries/routes.rs#L605).
     }
 ```
 
-### `owner_methods` — src/db/queries/routes.rs:654
+### `owner_methods` — src/db/queries/routes.rs:233
 
-Source: [src/db/queries/routes.rs:654](../src/db/queries/routes.rs#L654).
+Source: [src/db/queries/routes.rs:233](../src/db/queries/routes.rs#L233).
 
 ```rust
-    async fn owner_methods(
-        &self,
-        owner_ids: &[String],
-    ) -> Result<HashMap<String, Vec<(String, String, String, String)>>> {
-        let mut methods: HashMap<String, Vec<(String, String, String, String)>> = HashMap::new();
+    pub(in crate::db) async fn owner_methods(&self, owner_ids: &[String]) -> Result<OwnerMethods> {
+        let mut methods = OwnerMethods::new();
         for chunk in owner_ids.chunks(BATCH) {
             let sql = format!(
                 "SELECT parent_id, id, name, kind, visibility FROM nodes
@@ -11336,12 +11245,12 @@ Source: [src/db/queries/routes.rs:654](../src/db/queries/routes.rs#L654).
     }
 ```
 
-### `owner_visibility_evidence` — src/db/queries/routes.rs:690
+### `owner_visibility_evidence` — src/db/queries/routes.rs:266
 
-Source: [src/db/queries/routes.rs:690](../src/db/queries/routes.rs#L690).
+Source: [src/db/queries/routes.rs:266](../src/db/queries/routes.rs#L266).
 
 ```rust
-    async fn owner_visibility_evidence(
+    pub(in crate::db) async fn owner_visibility_evidence(
         &self,
         owner_ids: &[String],
     ) -> Result<HashMap<String, HashSet<String>>> {
@@ -11374,9 +11283,9 @@ Source: [src/db/queries/routes.rs:690](../src/db/queries/routes.rs#L690).
     }
 ```
 
-### `route_invalidation_waits_for_concurrent_transaction` — src/db/queries/routes.rs:730
+### `route_invalidation_waits_for_concurrent_transaction` — src/db/queries/routes.rs:306
 
-Source: [src/db/queries/routes.rs:730](../src/db/queries/routes.rs#L730).
+Source: [src/db/queries/routes.rs:306](../src/db/queries/routes.rs#L306).
 
 ```rust
     async fn route_invalidation_waits_for_concurrent_transaction() {
@@ -11410,9 +11319,9 @@ Source: [src/db/queries/routes.rs:730](../src/db/queries/routes.rs#L730).
     }
 ```
 
-### `route_rebuild_checks_pending_after_waiting_for_write_transaction` — src/db/queries/routes.rs:761
+### `route_rebuild_checks_pending_after_waiting_for_write_transaction` — src/db/queries/routes.rs:337
 
-Source: [src/db/queries/routes.rs:761](../src/db/queries/routes.rs#L761).
+Source: [src/db/queries/routes.rs:337](../src/db/queries/routes.rs#L337).
 
 ```rust
     async fn route_rebuild_checks_pending_after_waiting_for_write_transaction() {
@@ -11450,9 +11359,9 @@ Source: [src/db/queries/routes.rs:761](../src/db/queries/routes.rs#L761).
     }
 ```
 
-### `insert_executable_body_documents` — src/db/queries/search.rs:51
+### `insert_executable_body_documents` — src/db/queries/search.rs:15
 
-Source: [src/db/queries/search.rs:51](../src/db/queries/search.rs#L51).
+Source: [src/db/queries/search.rs:15](../src/db/queries/search.rs#L15).
 
 ```rust
     pub async fn insert_executable_body_documents(
@@ -11525,9 +11434,9 @@ Source: [src/db/queries/search.rs:51](../src/db/queries/search.rs#L51).
     }
 ```
 
-### `search_executable_bodies` — src/db/queries/search.rs:124
+### `search_executable_bodies` — src/db/queries/search.rs:101
 
-Source: [src/db/queries/search.rs:124](../src/db/queries/search.rs#L124).
+Source: [src/db/queries/search.rs:101](../src/db/queries/search.rs#L101).
 
 ```rust
     pub async fn search_executable_bodies(
@@ -11625,9 +11534,9 @@ Source: [src/db/queries/search.rs:124](../src/db/queries/search.rs#L124).
     }
 ```
 
-### `search_nodes` — src/db/queries/search.rs:242
+### `search_nodes` — src/db/queries/search.rs:219
 
-Source: [src/db/queries/search.rs:242](../src/db/queries/search.rs#L242).
+Source: [src/db/queries/search.rs:219](../src/db/queries/search.rs#L219).
 
 ```rust
     pub async fn search_nodes(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
@@ -11712,9 +11621,9 @@ Source: [src/db/queries/search.rs:242](../src/db/queries/search.rs#L242).
     }
 ```
 
-### `search_nodes_bounded_fts` — src/db/queries/search.rs:365
+### `search_nodes_bounded_fts` — src/db/queries/search.rs:340
 
-Source: [src/db/queries/search.rs:365](../src/db/queries/search.rs#L365).
+Source: [src/db/queries/search.rs:340](../src/db/queries/search.rs#L340).
 
 ```rust
     async fn search_nodes_bounded_fts(
@@ -11763,9 +11672,9 @@ Source: [src/db/queries/search.rs:365](../src/db/queries/search.rs#L365).
     }
 ```
 
-### `search_nodes_fts` — src/db/queries/search.rs:415
+### `search_nodes_fts` — src/db/queries/search.rs:388
 
-Source: [src/db/queries/search.rs:415](../src/db/queries/search.rs#L415).
+Source: [src/db/queries/search.rs:388](../src/db/queries/search.rs#L388).
 
 ```rust
     pub(crate) async fn search_nodes_fts(
@@ -11813,9 +11722,9 @@ Source: [src/db/queries/search.rs:415](../src/db/queries/search.rs#L415).
     }
 ```
 
-### `batch_incoming_call_counts` — src/db/queries/search.rs:461
+### `batch_incoming_call_counts` — src/db/queries/search.rs:432
 
-Source: [src/db/queries/search.rs:461](../src/db/queries/search.rs#L461).
+Source: [src/db/queries/search.rs:432](../src/db/queries/search.rs#L432).
 
 ```rust
     pub async fn batch_incoming_call_counts(
@@ -11854,9 +11763,9 @@ Source: [src/db/queries/search.rs:461](../src/db/queries/search.rs#L461).
     }
 ```
 
-### `search_nodes_by_exact_name` — src/db/queries/search.rs:499
+### `search_nodes_by_exact_name` — src/db/queries/search.rs:473
 
-Source: [src/db/queries/search.rs:499](../src/db/queries/search.rs#L499).
+Source: [src/db/queries/search.rs:473](../src/db/queries/search.rs#L473).
 
 ```rust
     pub async fn search_nodes_by_exact_name(

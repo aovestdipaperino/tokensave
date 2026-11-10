@@ -27,7 +27,7 @@ impl Database {
             return self
                 .db
                 .set_node_property(gid, "meta_value", text(value))
-                .map_err(|e| db_error("set_metadata", e));
+                .map_err(|e| db_error("set_metadata", &e));
         }
         let props = PropMap::from([
             ("meta_key".into(), text(key)),
@@ -35,7 +35,7 @@ impl Database {
         ]);
         self.db
             .create_node_with_props(&[META], props)
-            .map_err(|e| db_error("set_metadata", e))?;
+            .map_err(|e| db_error("set_metadata", &e))?;
         Ok(())
     }
 }

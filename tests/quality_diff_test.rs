@@ -344,6 +344,8 @@ async fn crlf_index_accepts_git_normalization_but_rejects_stale_source() {
     assert!(err.to_string().contains("stale indexed contents: base.rs"));
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn cycles_coupling_and_preexisting_edges() {
     let dir = fixture().await;
@@ -569,6 +571,8 @@ async fn missing_analysis_candidates_symbol_rename_and_small_increases() {
         .contains("missing"));
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn large_index_and_empty_analysis() {
     let dir = fixture().await;

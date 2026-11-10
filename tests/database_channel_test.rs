@@ -1,11 +1,10 @@
 use libsql::Builder;
 use std::path::Path;
 use tempfile::TempDir;
-use tokensave::{
-    db::{compatibility, migrations, Database},
-    global_db::GlobalDb,
-    tokensave::TokenSave,
-};
+// Used only by tests a Grafeo build skips (#904).
+#[cfg(not(feature = "grafeo"))]
+use tokensave::db::{compatibility, migrations, Database};
+use tokensave::{global_db::GlobalDb, tokensave::TokenSave};
 
 async fn header(path: &Path, sql: &str) -> i64 {
     let db = Builder::new_local(path).build().await.unwrap();
@@ -23,6 +22,8 @@ async fn set_header(path: &Path, sql: &str) {
         .unwrap();
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn fresh_and_legacy_origins_survive_reinitialization() {
     let dir = TempDir::new().unwrap();
@@ -59,6 +60,8 @@ async fn fresh_and_legacy_origins_survive_reinitialization() {
     );
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn incompatible_headers_never_write_or_recover_even_when_dirty() {
     let dir = TempDir::new().unwrap();
@@ -124,6 +127,8 @@ async fn global_origin_and_legacy_policy() {
     assert!(!path.with_extension("db-wal").exists());
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn branch_copy_refuses_incompatible_database_before_creating_destination() {
     let dir = TempDir::new().unwrap();
@@ -189,6 +194,8 @@ async fn wipe_preserves_the_other_channel_state() {
         .exists());
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn beta_initialization_does_not_adopt_shared_legacy_state() {
     if !tokensave::cloud::is_beta() {
@@ -209,6 +216,8 @@ async fn beta_initialization_does_not_adopt_shared_legacy_state() {
     assert!(stable.join("beta").join("tokensave.db").exists());
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn opening_an_empty_database_records_origin() {
     let dir = TempDir::new().unwrap();
