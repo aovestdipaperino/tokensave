@@ -137,6 +137,48 @@ when a PR implements an issue someone else proposed or substantially specified, 
 a `Co-authored-by:` trailer with their GitHub noreply address for each such person,
 and name them in the PR description.
 
+## Rust memory safety and soundness review
+
+Apply these checks to changes that involve `unsafe` code, native dependencies
+(libSQL, tree-sitter grammars, `memmap2`), platform APIs, concurrency,
+filesystem state or callbacks. They add to the memory and resource rules in
+CONTRIBUTING.md and do not replace or relax any existing rule.
+[docs/MEMORY-SAFETY-AUDIT.md](docs/MEMORY-SAFETY-AUDIT.md) records the current
+inventory and findings (#947). Update it when a change adds, removes or
+re-justifies an `unsafe` site.
+
+- **Panic and unwind safety:** Do not assume a safe operation cannot panic.
+  While an unsafe invariant holds or state is partially initialized, check
+  every `Drop`, `Clone`, comparison, allocation, iterator and callback that
+  runs. Unwinding must preserve memory safety and ownership, so use guards or
+  rollback where needed. `catch_unwind` is not a substitute for soundness, and
+  this rule does not relax any existing restriction on its use.
+- **Adversarial trait implementations:** Do not assume a safe implementation
+  of `AsRef`, `Borrow`, `Deref`, `Clone`, `Ord` or an iterator trait returns
+  stable, consistent or repeatable results, unless that guarantee is
+  established. Validate or keep a value before using it as an unchecked index,
+  length, pointer or allocation size. A safe API must stay sound when given an
+  unusual but safe implementation.
+- **OS, process state and FFI:** Do not assume that environment variables,
+  signal handlers, file descriptors and handles, paths, mapped memory or other
+  process-wide OS state stay unchanged across concurrent activity or native
+  calls. At FFI boundaries, check lifetime, ownership, synchronization and the
+  platform contract. Library code must not call `std::env::set_var` or
+  `remove_var`. Pass a child's environment with `Command::env`. A test that
+  mutates the environment needs its own `[[test]]` target. If that target has
+  more than one test, it must also hold a lock for the whole duration of the
+  change. Call `process::exit` only from the main thread, and never from a
+  `Drop` or a thread-local access.
+- **Verification and reporting:** For a relevant change, test error and panic
+  paths and adversarial inputs. Use supported tools where they apply, such as
+  Miri, sanitizers, Clippy and `cargo audit`, and report the actual results
+  and limits in the PR. Separate confirmed, reachable defects from speculative
+  or non-applicable upstream reports. Do not claim soundness or exploitability
+  without evidence.
+
+Background: [Memory Safety Bugs in Rust Standard Library](https://forge-blog.github.io/posts/rust-std-memory-safety/)
+(Microsoft FORGE Lab).
+
 ## Issue closure verification and merged-result summaries
 
 Before closing an issue, and only with the explicit permission required above,
