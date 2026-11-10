@@ -154,6 +154,33 @@ impl Database {
         Ok(())
     }
 
+    /// Stores `area` as given, replacing any area with the same path, so its
+    /// touch count and timestamps survive a storage switch (#946). The
+    /// record's `id` is not kept; the table assigns one.
+    pub async fn import_code_area(&self, area: &CodeAreaRecord) -> Result<()> {
+        self.conn()
+            .execute(
+                "INSERT INTO memory_code_areas (path, description, last_touched_at, touch_count) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(path) DO UPDATE SET \
+                    description = excluded.description, \
+                    last_touched_at = excluded.last_touched_at, \
+                    touch_count = excluded.touch_count",
+                params![
+                    area.path.as_str(),
+                    area.description.as_deref(),
+                    area.last_touched_at,
+                    i64::from(area.touch_count)
+                ],
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("import_code_area upsert failed: {e}"),
+                operation: "import_code_area".to_string(),
+            })?;
+        Ok(())
+    }
+
     /// Returns up to `limit` code areas, most recently touched first.
     pub async fn get_code_areas(&self, limit: i64) -> Result<Vec<CodeAreaRecord>> {
         let mut rows = self

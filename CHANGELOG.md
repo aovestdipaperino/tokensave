@@ -58,6 +58,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- Add `tokensave storage switch libsql|grafeo [--keep-old]` to move a project between the libSQL and Grafeo indexes without losing session-memory decisions and code areas (Refs #946). A build of the current backend saves those records and the project configuration to `.tokensave/[beta/]storage-switch.json` without changing its index; a build of the target backend then rebuilds the index with a full index, restores the records and removes the old index. An interrupted switch can be run again, and a build that finds a prepared switch or a newer index of the other backend prints a one-line hint.
 - Add an experimental `grafeo` cargo feature that stores the project index in Grafeo instead of libSQL, for the storage-backend benchmark (Refs #904). Every `Database` method is ported: whole-graph analyses scan the graph and aggregate in Rust, and full-text search ranks an in-memory index with FTS5's BM25 and the libSQL column weights, without Porter stemming. Grafeo builds keep their state under `.tokensave/[beta/]grafeo/`; a Grafeo index can be opened by one process at a time. Not enabled in any release build.
 
 - **Elixir EEx templates are indexed with the `lang-elixir` feature (#907).** Code and output tags in `.eex` files contribute calls and declarations with their original locations; markup, comments, and escaped tags are ignored.

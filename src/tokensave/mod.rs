@@ -249,6 +249,9 @@ impl TokenSave {
         let config = load_config(project_root)?;
         let tokensave_dir = get_tokensave_dir(project_root);
         let active_branch = branch::current_branch(project_root);
+        // A pending storage switch, or a newer index of the other backend,
+        // means this index may be stale (#946). Only hint; never act.
+        crate::storage_switch::print_storage_hint_once(project_root);
 
         let (candidate, _, _) =
             Self::resolve_db_for_branch(project_root, &tokensave_dir, active_branch.as_deref());

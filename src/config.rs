@@ -344,6 +344,20 @@ pub fn get_tokensave_dir(project_root: &Path) -> PathBuf {
     )
 }
 
+/// Returns the channel's project-state directory (`.tokensave` or
+/// `.tokensave/beta`), which both storage backends share. Backend-neutral
+/// state, such as a pending storage switch (#946), lives here.
+pub fn get_channel_dir(project_root: &Path) -> PathBuf {
+    channel_dir(project_root, crate::cloud::is_beta())
+}
+
+/// Returns the project-state directory of the libSQL (`grafeo == false`) or
+/// Grafeo (`grafeo == true`) backend, whichever backend this build uses.
+/// [`get_tokensave_dir`] is this directory for the build's own backend.
+pub fn get_backend_dir(project_root: &Path, grafeo: bool) -> PathBuf {
+    storage_dir(get_channel_dir(project_root), grafeo)
+}
+
 /// Separate beta project state (including config, locks, and branch indexes)
 /// from stable without changing stable paths or shared user settings.
 fn channel_dir(root: &Path, beta: bool) -> PathBuf {

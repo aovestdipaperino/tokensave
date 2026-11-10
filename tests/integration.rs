@@ -193,6 +193,7 @@ mod skipped_summary_cli_test;
 mod sql_debug_cli_test;
 mod sql_extraction_test;
 mod staleness_out_of_root_test;
+mod storage_switch_test;
 mod strict_tree_mismatch_test;
 mod svelte_extraction_test;
 mod swift_extraction_test;

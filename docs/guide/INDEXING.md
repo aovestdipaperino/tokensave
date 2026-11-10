@@ -82,6 +82,57 @@ The worker is a hidden `extract-worker` subcommand authenticated against the par
 
 Edit primitives (`tokensave_str_replace`, `tokensave_insert_at`, etc.) still run in-process: they target one file at a time where subprocess overhead would dominate, and an extractor crash there is immediately visible to the agent.
 
+## Storage backends
+
+The project index is stored in libSQL by default. Builds compiled with the
+experimental `grafeo` cargo feature store it in [Grafeo](https://crates.io/crates/grafeo)
+instead (#904). The backend is chosen when the binary is built, and each
+backend keeps its index in its own directory, so a build never opens the
+other backend's files:
+
+| Backend | Project state |
+|---|---|
+| libSQL (default) | `.tokensave/` (`.tokensave/beta/` for beta builds) |
+| Grafeo | `.tokensave/grafeo/` (`.tokensave/beta/grafeo/`) |
+
+A Grafeo index can be opened by one process at a time. The global database
+in `~/.tokensave` is always libSQL.
+
+### Switching backends
+
+A re-index rebuilds the code graph, but not the session memory that agents
+record: decisions and code areas. `tokensave storage switch` moves a
+project to another backend and keeps them. Because a build can read only
+its own backend's index, the command runs twice, once with each build:
+
+```bash
+# 1. With a build of the current backend (here, Grafeo):
+tokensave storage switch libsql
+# 2. Install a libSQL build, then run the same command with it:
+tokensave storage switch libsql
+```
+
+1. The first run saves the decisions and code areas of every index of the
+   project (the default branch and each tracked branch, without duplicates)
+   and the project's `config.json` to `.tokensave/[beta/]storage-switch.json`.
+   It does not change the current index.
+2. The second run rebuilds the target index with a full index, as
+   `tokensave init` does, adds the saved records (and any already in the
+   target's old index), then deletes the switch file and the old backend's
+   index. Pass `--keep-old` to either run to keep the old index.
+
+The old index is not touched until the new one is complete. If the second
+run is interrupted, run it again: it rebuilds the target index from the
+start. To cancel a prepared switch, delete `storage-switch.json`. The switch
+moves the default branch's graph only; track other branches again with
+`tokensave branch add` afterwards. Use `--path` to name a project other than
+the current one. Switching from libSQL to Grafeo works the same way, with
+the builds in the opposite order.
+
+When a build opens its index and finds a prepared switch, or an index of
+the other backend that is newer than its own, it prints a one-line hint on
+stderr naming the command to run. It never switches on its own.
+
 ## Custom source extensions
 
 Map extensions to an enabled extractor in `.tokensave/config.json`:

@@ -477,6 +477,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: BranchAction,
     },
+    /// Manage the project-index storage backend (libSQL or Grafeo)
+    Storage {
+        #[command(subcommand)]
+        action: StorageAction,
+    },
     /// Wipe local tokensave DBs (current folder, parents, and children)
     Wipe {
         /// Wipe ALL tracked projects so the global DB ends empty
@@ -758,6 +763,28 @@ pub enum BranchAction {
     },
     /// Remove DBs for branches that no longer exist in git
     Gc {
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum StorageAction {
+    /// Move the project to another storage backend, keeping its decisions
+    /// and code areas
+    ///
+    /// Run it with a build of the current backend to save the records a
+    /// re-index cannot rebuild, then with a build of the target backend to
+    /// rebuild the index there and restore them. The old index is kept until
+    /// the new one is complete.
+    Switch {
+        /// Backend to move the project to
+        #[arg(value_enum)]
+        backend: tokensave::storage_switch::StorageBackend,
+        /// Keep the old backend's index after the switch
+        #[arg(long)]
+        keep_old: bool,
         /// Project path (default: current directory)
         #[arg(short, long)]
         path: Option<String>,

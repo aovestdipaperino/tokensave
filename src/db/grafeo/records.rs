@@ -168,6 +168,29 @@ impl Database {
         Ok(())
     }
 
+    /// Stores `area` as given, replacing any area with the same path, so its
+    /// touch count and timestamps survive a storage switch (#946). The
+    /// record's `id` is not kept; a new one is assigned.
+    pub async fn import_code_area(&self, area: &CodeAreaRecord) -> Result<()> {
+        let op = "import_code_area";
+        let existing = self.find("area_path", &area.path, op)?;
+        self.delete_graph_nodes(&existing, op)?;
+        let id = self.next_record_id(CODE_AREA, "area_id", op)?;
+        let mut props = PropMap::from([
+            ("area_id".into(), int(id)),
+            ("area_path".into(), text(&area.path)),
+            ("area_touched".into(), int(area.last_touched_at)),
+            ("area_count".into(), int(i64::from(area.touch_count))),
+        ]);
+        if let Some(description) = &area.description {
+            props.insert("area_desc".into(), text(description));
+        }
+        self.db
+            .create_node_with_props(&[CODE_AREA], props)
+            .map_err(|e| db_error(op, &e))?;
+        Ok(())
+    }
+
     /// Returns up to `limit` code areas, most recently touched first.
     pub async fn get_code_areas(&self, limit: i64) -> Result<Vec<CodeAreaRecord>> {
         let mut out: Vec<CodeAreaRecord> = self
