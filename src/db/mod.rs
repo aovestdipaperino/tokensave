@@ -17,6 +17,11 @@ pub mod debug_sql;
 pub mod migrations;
 pub mod model;
 
+// Backend-neutral helpers both project-index backends share.
+pub(crate) mod fts_query;
+pub(crate) mod language;
+mod rails_routes;
+
 // libSQL project-index backend (the default).
 #[cfg(not(feature = "grafeo"))]
 mod connection;

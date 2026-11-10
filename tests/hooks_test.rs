@@ -2058,24 +2058,53 @@ fn indexed_project_with_nodes(names: &[&str]) -> (tempfile::TempDir, PathBuf) {
         .build()
         .expect("runtime");
     rt.block_on(async {
-        let db = libsql::Builder::new_local(&db_path)
-            .build()
+        // Written through the storage API, so the fixture uses whichever
+        // backend this build was compiled with.
+        let (db, _) = tokensave::db::Database::initialize(&db_path)
             .await
             .expect("create db");
-        let conn = db.connect().expect("connect");
-        conn.execute("CREATE TABLE nodes (name TEXT)", ())
-            .await
-            .expect("create table");
-        for name in names {
-            conn.execute(
-                "INSERT INTO nodes (name) VALUES (?)",
-                libsql::params![*name],
-            )
-            .await
-            .expect("insert");
-        }
+        let nodes: Vec<tokensave::types::Node> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| fixture_node(&format!("n{i}"), name))
+            .collect();
+        db.insert_nodes(&nodes).await.expect("insert nodes");
+        db.close();
     });
     (tmp, root)
+}
+
+fn fixture_node(id: &str, name: &str) -> tokensave::types::Node {
+    tokensave::types::Node {
+        id: id.to_string(),
+        kind: tokensave::types::NodeKind::Function,
+        name: name.to_string(),
+        qualified_name: name.to_string(),
+        file_path: "src/main.rs".to_string(),
+        start_line: 1,
+        attrs_start_line: 1,
+        end_line: 1,
+        start_column: 0,
+        end_column: 0,
+        signature: None,
+        docstring: None,
+        visibility: tokensave::types::Visibility::Pub,
+        is_async: false,
+        branches: 0,
+        loops: 0,
+        returns: 0,
+        max_nesting: 0,
+        unsafe_blocks: 0,
+        unchecked_calls: 0,
+        assertions: 0,
+        cognitive_complexity: 0,
+        distinct_operators: 0,
+        distinct_operands: 0,
+        total_operators: 0,
+        total_operands: 0,
+        updated_at: 0,
+        parent_id: None,
+    }
 }
 
 fn grep_input(pattern: &str) -> String {

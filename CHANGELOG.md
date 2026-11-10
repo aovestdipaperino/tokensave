@@ -57,7 +57,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
-- Add an experimental `grafeo` cargo feature that stores the project index in Grafeo instead of libSQL, for the storage-backend benchmark (Refs #904). Work in progress: only part of the storage API is ported, the rest fails with an explicit error; Grafeo builds keep their state under `.tokensave/[beta/]grafeo/`; a Grafeo index can be opened by one process at a time. Not enabled in any release build.
+- Add an experimental `grafeo` cargo feature that stores the project index in Grafeo instead of libSQL, for the storage-backend benchmark (Refs #904). Every `Database` method is ported: whole-graph analyses scan the graph and aggregate in Rust, and full-text search ranks an in-memory index with FTS5's BM25 and the libSQL column weights, without Porter stemming. Grafeo builds keep their state under `.tokensave/[beta/]grafeo/`; a Grafeo index can be opened by one process at a time. Not enabled in any release build.
 
 - **Elixir EEx templates are indexed with the `lang-elixir` feature (#907).** Code and output tags in `.eex` files contribute calls and declarations with their original locations; markup, comments, and escaped tags are ignored.
 - **AWK is now an indexed language (`lang-awk` feature, in `full`).** A new tree-sitter extractor covers `function` definitions, `BEGIN`/`END` blocks and pattern-action rules (each a function node named for its pattern), plus call edges and branch/loop/return complexity. The `tree-sitter-awk` grammar (Beaglefoot, v0.7.2) is vendored in `tokensave-large-treesitters`. Handles `.awk`.
@@ -81,6 +81,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - Correct the multi-branch guide: the `post-checkout` hook tracks branches only when `auto_track` is enabled, which is off by default. Add a troubleshooting entry for untracked branches (Refs #877).
 
 ### Changed
+
+- Share backend-neutral storage code between the libSQL and Grafeo backends: the Rails route dispatch decision moves to `db::rails_routes`, the FTS5 query builders to `db::fts_query` and the language labels of `status` to `db::language`. SQL text and behavior are unchanged (Refs #904).
 
 - Make the `db` module the storage-backend boundary: copying an index for a newly tracked branch moves to `db::snapshot`, the profiler takes its engine name from `db::ENGINE`, and session-memory search passes raw text so the storage layer owns FTS escaping. No behavior change (Refs #904).
 

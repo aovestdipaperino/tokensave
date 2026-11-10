@@ -3,6 +3,9 @@
 //! A separate test binary because it sets `TOKENSAVE_BUSY_TIMEOUT_MS`, which
 //! is process-global: with the default two-minute timeout, five open attempts
 //! would wait ten minutes on the held lock.
+//!
+//! It opens the libSQL file directly, so a Grafeo build skips it (#904).
+#![cfg(not(feature = "grafeo"))]
 
 use libsql::Builder;
 use tempfile::TempDir;

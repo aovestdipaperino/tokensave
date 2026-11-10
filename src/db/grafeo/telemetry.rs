@@ -28,7 +28,7 @@ impl Database {
         let result = self
             .db
             .execute(query)
-            .map_err(|e| db_error("graph_counts", e))?;
+            .map_err(|e| db_error("graph_counts", &e))?;
         Ok(result
             .rows()
             .first()

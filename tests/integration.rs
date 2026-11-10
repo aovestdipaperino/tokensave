@@ -34,6 +34,8 @@ mod branch_default_reconcile_test;
 mod branch_drift_test;
 mod branch_gc_and_add_test;
 mod branch_last_synced_test;
+// Copies libSQL write-ahead-log files, which a Grafeo build does not write.
+#[cfg(not(feature = "grafeo"))]
 mod branch_wal_copy_test;
 mod c_extraction_test;
 mod canvas_extraction_test;
@@ -140,6 +142,8 @@ mod migration_test;
 mod module_imports_test;
 mod monitor_test;
 mod msbasic2_extraction_test;
+// Opens one index twice; Grafeo allows one handle per index (#904).
+#[cfg(not(feature = "grafeo"))]
 mod multi_mcp_coordination_test;
 mod nix_extraction_test;
 mod node_filter_test;
@@ -219,6 +223,8 @@ mod wolfram_extraction_test;
 mod xaml_extraction_test;
 mod zig_extraction_test;
 
+// `verify` checks the libSQL file format directly.
+#[cfg(not(feature = "grafeo"))]
 mod verify_test;
 
 mod language_aliases_test;

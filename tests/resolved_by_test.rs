@@ -1,10 +1,11 @@
 //! `edges.resolved_by` is persisted and read back (#544).
 
+use std::collections::HashMap;
 use std::fs;
 
 use tempfile::TempDir;
 use tokensave::tokensave::TokenSave;
-use tokensave::types::{EdgeKind, ResolvedBy};
+use tokensave::types::{Edge, EdgeKind, Node, ResolvedBy};
 
 const UTILS_RS: &str = "pub fn compute_total(x: i32) -> i32 {
     x + 1
@@ -17,28 +18,51 @@ impl Counter {
 }
 ";
 
-/// `(source name, target name, resolved_by code)` for every `calls` edge.
-async fn call_provenance(cg: &TokenSave) -> Vec<(String, String, Option<i64>)> {
-    let mut rows = cg
+/// Every edge joined to its endpoint nodes, through the storage API so the
+/// test runs against every backend. Edges with a missing endpoint are
+/// dropped, as an inner join drops them.
+async fn joined_edges(cg: &TokenSave) -> Vec<(Node, Node, Edge)> {
+    let edges = cg
         .db()
-        .conn()
-        .query(
-            "SELECT s.name, t.name, e.resolved_by FROM edges e
-             JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
-             WHERE e.kind = 'calls' ORDER BY s.name, t.name, e.line",
-            (),
-        )
+        .get_all_edges()
         .await
-        .unwrap();
-    let mut out = Vec::new();
-    while let Some(row) = rows.next().await.unwrap() {
-        out.push((
-            row.get::<String>(0).unwrap(),
-            row.get::<String>(1).unwrap(),
-            row.get::<Option<i64>>(2).unwrap(),
-        ));
-    }
-    out
+        .expect("reading every edge succeeds");
+    let ids: Vec<String> = edges
+        .iter()
+        .flat_map(|e| [e.source.clone(), e.target.clone()])
+        .collect();
+    let nodes: HashMap<String, Node> = cg
+        .db()
+        .get_nodes_by_ids(&ids)
+        .await
+        .expect("reading the edge endpoints succeeds")
+        .into_iter()
+        .map(|n| (n.id.clone(), n))
+        .collect();
+    edges
+        .into_iter()
+        .filter_map(|e| {
+            let source = nodes.get(&e.source)?.clone();
+            let target = nodes.get(&e.target)?.clone();
+            Some((source, target, e))
+        })
+        .collect()
+}
+
+/// `(source name, target name, resolved_by code)` for every `calls` edge,
+/// ordered by source name, target name and line.
+async fn call_provenance(cg: &TokenSave) -> Vec<(String, String, Option<i64>)> {
+    let mut calls: Vec<(String, String, Option<u32>, Option<i64>)> = joined_edges(cg)
+        .await
+        .into_iter()
+        .filter(|(_, _, e)| e.kind == EdgeKind::Calls)
+        .map(|(s, t, e)| (s.name, t.name, e.line, e.resolved_by.map(ResolvedBy::code)))
+        .collect();
+    calls.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    calls
+        .into_iter()
+        .map(|(source, target, _, code)| (source, target, code))
+        .collect()
 }
 
 #[test]
@@ -141,29 +165,23 @@ async fn incremental_sync_persists_resolved_by() {
     );
 }
 
-/// Every edge as `(source qname, target qname, kind, line, code)`.
+/// Every edge as `(source qname, target qname, kind, line, code)`, in that
+/// column order.
 async fn labels(cg: &TokenSave) -> Vec<(String, String, String, Option<i64>, Option<i64>)> {
-    let mut rows = cg
-        .db()
-        .conn()
-        .query(
-            "SELECT s.qualified_name, t.qualified_name, e.kind, e.line, e.resolved_by
-             FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
-             ORDER BY 1, 2, 3, 4",
-            (),
-        )
+    let mut out: Vec<_> = joined_edges(cg)
         .await
-        .unwrap();
-    let mut out = Vec::new();
-    while let Some(row) = rows.next().await.unwrap() {
-        out.push((
-            row.get::<String>(0).unwrap(),
-            row.get::<String>(1).unwrap(),
-            row.get::<String>(2).unwrap(),
-            row.get::<Option<i64>>(3).unwrap(),
-            row.get::<Option<i64>>(4).unwrap(),
-        ));
-    }
+        .into_iter()
+        .map(|(s, t, e)| {
+            (
+                s.qualified_name,
+                t.qualified_name,
+                e.kind.as_str().to_string(),
+                e.line.map(i64::from),
+                e.resolved_by.map(ResolvedBy::code),
+            )
+        })
+        .collect();
+    out.sort();
     out
 }
 

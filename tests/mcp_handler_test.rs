@@ -6101,6 +6101,8 @@ async fn search_doc_penalty_on_additive_query_path() {
 // McpServer::refresh_file_token_map
 // ---------------------------------------------------------------------------
 
+// Opens one index twice; Grafeo allows one handle per index (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn refresh_file_token_map_picks_up_new_files() {
     let tmp = tempfile::tempdir().unwrap();
@@ -6896,6 +6898,8 @@ async fn test_replace_symbol_project_root_override_writes_to_worktree_not_primar
 // tokensave_status vs. an in-flight / interrupted full rebuild (#267)
 // ---------------------------------------------------------------------------
 
+// Used only by tests a Grafeo build skips (#904).
+#[cfg(not(feature = "grafeo"))]
 /// Runs a git command in `dir`, panicking with stderr on failure.
 fn run_git(dir: &std::path::Path, args: &[&str]) {
     let out = std::process::Command::new("git")
@@ -6911,6 +6915,8 @@ fn run_git(dir: &std::path::Path, args: &[&str]) {
     );
 }
 
+// Used only by tests a Grafeo build skips (#904).
+#[cfg(not(feature = "grafeo"))]
 /// Turns an already-indexed test project into a git repo with two commits.
 fn init_git_with_commits(project: &std::path::Path) {
     run_git(project, &["init"]);
@@ -6924,6 +6930,8 @@ fn init_git_with_commits(project: &std::path::Path) {
     run_git(project, &["commit", "-m", "second"]);
 }
 
+// Opens one index twice; Grafeo allows one handle per index (#904).
+#[cfg(not(feature = "grafeo"))]
 /// #267: `index_all()` clears nodes/edges/files up front and only repopulates
 /// them at the end. A status call racing that window used to report an empty,
 /// "149 commits stale" graph while search served current data moments later.
@@ -6961,6 +6969,8 @@ async fn test_status_mid_rebuild_reports_rebuild_in_progress() {
     );
 }
 
+// Opens one index twice; Grafeo allows one handle per index (#904).
+#[cfg(not(feature = "grafeo"))]
 /// #267: with the files table empty (interrupted rebuild, mid-clear snapshot)
 /// `last_updated` reads 0 and the staleness check used to call
 /// `git_commits_since(0)`, counting every commit in the branch history. It

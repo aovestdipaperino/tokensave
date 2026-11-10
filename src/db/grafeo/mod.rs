@@ -7,37 +7,59 @@
 //! - every tokensave node is a `Symbol` graph node carrying its fields as
 //!   properties, found through the `id` property index;
 //! - every tokensave edge is a native graph edge whose type is the edge
-//!   kind, with `line` and `resolved_by` as properties;
-//! - files, unresolved references and metadata are nodes with their own
-//!   labels and property names, because Grafeo's property indexes are
-//!   global across labels.
+//!   kind, with `line` and `resolved_by` as properties. `contains` edges are
+//!   stored as the child's `parent_id` property, as in the libSQL backend;
+//! - files, unresolved references, metadata and the other side records
+//!   (ambiguous calls, fingerprints, session memory, executable bodies) are
+//!   nodes with their own labels and property names, because Grafeo's
+//!   property indexes are global across labels.
 //!
-//! Traversals use Grafeo's direct API (property index, then adjacency)
-//! rather than GQL: a GQL pattern anchored on its target node is not
-//! planned through the property index and was four orders of magnitude
-//! slower in the spike recorded on #904.
+//! Point lookups and traversals use Grafeo's direct API (property index,
+//! then adjacency) rather than GQL: a GQL pattern anchored on its target
+//! node is not planned through the property index and was four orders of
+//! magnitude slower in the spike recorded on #904. Whole-graph analyses
+//! scan a label with one GQL query and aggregate in Rust.
+//!
+//! State the libSQL backend keeps in derived tables is computed here
+//! instead: the reverse trait-dispatch caller map is rebuilt lazily after
+//! edges change, and full-text search ranks an in-memory index that is
+//! rebuilt after nodes change (see `search`).
 //!
 //! Grafeo locks a read-write database file exclusively across processes, so
 //! this backend serves one process at a time. It exists to benchmark Grafeo
-//! against libSQL; methods outside the benchmark fail with a
-//! "not supported by the grafeo storage backend yet" error (see `pending`).
+//! against libSQL.
+#![allow(
+    clippy::unused_async,
+    clippy::unused_async_trait_impl,
+    reason = "the Database API is async for the libSQL backend; Grafeo's calls are synchronous"
+)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
+use grafeo::store::PropertyKey;
 use grafeo::{GrafeoDB, NodeId, Value};
 
+use crate::db::model::CachedTraitDispatchCaller;
 use crate::errors::{Result, TokenSaveError};
 use crate::types::{Edge, EdgeKind, FileKind, FileRecord, Node, NodeKind, ResolvedBy, Visibility};
 
+mod ambiguous;
+mod analysis;
 mod edges;
 mod files;
 mod metadata;
 mod nodes;
-mod pending;
 pub mod probe;
+mod records;
+mod routes;
+mod search;
 pub mod snapshot;
+mod stats;
 mod telemetry;
+mod unresolved;
 
 /// Version of the graph layout this build writes, stored as metadata.
 const SCHEMA_VERSION: u32 = 1;
@@ -50,6 +72,16 @@ const FILE: &str = "File";
 const UNRESOLVED: &str = "UnresolvedRef";
 /// Label of key/value metadata.
 const META: &str = "Meta";
+/// Label of recorded ambiguous call sites.
+const AMBIGUOUS: &str = "AmbiguousCall";
+/// Label of node fingerprints.
+const FINGERPRINT: &str = "Fingerprint";
+/// Label of session-memory decisions.
+const DECISION: &str = "Decision";
+/// Label of session-memory code areas.
+const CODE_AREA: &str = "CodeArea";
+/// Label of executable-body search documents.
+const BODY: &str = "ExecutableBody";
 
 /// Properties with an index. Each name belongs to one label only, because
 /// Grafeo's property indexes span all labels.
@@ -68,13 +100,38 @@ const INDEXED_PROPERTIES: &[&str] = &[
     "ref_file_path",
     // Meta
     "meta_key",
+    // AmbiguousCall
+    "amb_from",
+    "amb_file",
+    // Fingerprint
+    "fp_node",
+    // CodeArea
+    "area_path",
+    // ExecutableBody
+    "body_file",
 ];
+
+/// Reverse trait-dispatch callers, by concrete method id.
+type DispatchMap = HashMap<String, Vec<CachedTraitDispatchCaller>>;
 
 /// A project index stored in Grafeo.
 pub struct Database {
     db: GrafeoDB,
     path: PathBuf,
     read_only: bool,
+    /// Reverse trait-dispatch callers; rebuilt when `dispatch_dirty` is set.
+    trait_dispatch: RwLock<DispatchMap>,
+    /// Set when edges or nodes change, so the caller map is recomputed on
+    /// its next read.
+    dispatch_dirty: AtomicBool,
+    /// Last sequence number given to an unresolved reference, so references
+    /// can be paged in insertion order like the libSQL autoincrement id.
+    ref_seq: AtomicI64,
+    /// Bumped whenever a write may change search results.
+    search_generation: AtomicU64,
+    /// Full-text index over symbols, tagged with the generation it was
+    /// built at.
+    search_cache: Mutex<Option<(u64, Arc<search::SearchIndex>)>>,
 }
 
 impl Database {
@@ -99,28 +156,35 @@ impl Database {
     /// Opens the index at `db_path` without allowing writes. Several readers
     /// may share the file, but not while a writer has it open.
     pub async fn open_read_only(db_path: &Path) -> Result<Self> {
-        let db = GrafeoDB::open_read_only(db_path).map_err(|e| db_error("open_read_only", e))?;
-        let database = Self {
-            db,
-            path: db_path.to_path_buf(),
-            read_only: true,
-        };
+        let db = GrafeoDB::open_read_only(db_path).map_err(|e| db_error("open_read_only", &e))?;
+        let database = Self::with_handle(db, db_path, true, "open_read_only")?;
         database.check_schema_version("open_read_only").await?;
         Ok(database)
     }
 
     fn open_read_write(db_path: &Path, operation: &str) -> Result<(Self, bool)> {
-        let db = GrafeoDB::open(db_path).map_err(|e| db_error(operation, e))?;
+        let db = GrafeoDB::open(db_path).map_err(|e| db_error(operation, &e))?;
         for property in INDEXED_PROPERTIES {
             db.create_property_index(property)
-                .map_err(|e| db_error(operation, e))?;
+                .map_err(|e| db_error(operation, &e))?;
         }
+        Ok((Self::with_handle(db, db_path, false, operation)?, false))
+    }
+
+    fn with_handle(db: GrafeoDB, db_path: &Path, read_only: bool, operation: &str) -> Result<Self> {
         let database = Self {
             db,
             path: db_path.to_path_buf(),
-            read_only: false,
+            read_only,
+            trait_dispatch: RwLock::new(HashMap::new()),
+            dispatch_dirty: AtomicBool::new(true),
+            ref_seq: AtomicI64::new(0),
+            search_generation: AtomicU64::new(0),
+            search_cache: Mutex::new(None),
         };
-        Ok((database, false))
+        let last_seq = database.max_ref_seq(operation)?;
+        database.ref_seq.store(last_seq, Ordering::SeqCst);
+        Ok(database)
     }
 
     /// Refuses an index written by a newer layout than this build knows.
@@ -198,7 +262,7 @@ impl Database {
     pub async fn checkpoint(&self) -> Result<()> {
         self.db
             .wal_checkpoint()
-            .map_err(|e| db_error("checkpoint", e))
+            .map_err(|e| db_error("checkpoint", &e))
     }
 
     /// Grafeo maintains its own storage; there is nothing to optimize.
@@ -221,8 +285,10 @@ impl Database {
         Ok(false)
     }
 
-    /// The text index is maintained on every write.
+    /// The search index is rebuilt from the graph on demand; dropping it is
+    /// the rebuild.
     pub async fn rebuild_fts(&self) -> Result<()> {
+        self.graph_changed();
         Ok(())
     }
 
@@ -243,15 +309,29 @@ impl Database {
     pub async fn clear(&self) -> Result<()> {
         self.db
             .execute("MATCH (n) DETACH DELETE n")
-            .map_err(|e| db_error("clear", e))?;
+            .map_err(|e| db_error("clear", &e))?;
+        self.ref_seq.store(0, Ordering::SeqCst);
+        self.graph_changed();
         Ok(())
+    }
+
+    /// Marks the derived caches (trait-dispatch callers, search index) as
+    /// stale after a write to nodes or edges.
+    fn graph_changed(&self) {
+        self.dispatch_dirty.store(true, Ordering::SeqCst);
+        self.search_generation.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Ids of graph nodes whose indexed `property` equals `value`.
     fn find(&self, property: &str, value: &str, operation: &str) -> Result<Vec<NodeId>> {
+        self.find_value(property, &Value::from(value), operation)
+    }
+
+    /// Ids of graph nodes whose indexed `property` equals `value`.
+    fn find_value(&self, property: &str, value: &Value, operation: &str) -> Result<Vec<NodeId>> {
         self.db
-            .find_nodes_by_property(property, &Value::from(value))
-            .map_err(|e| db_error(operation, e))
+            .find_nodes_by_property(property, value)
+            .map_err(|e| db_error(operation, &e))
     }
 
     /// The graph node of the tokensave node `id`.
@@ -261,12 +341,107 @@ impl Database {
 
     /// Reads a graph node; `None` if it was deleted meanwhile.
     fn graph_node(&self, id: NodeId, operation: &str) -> Result<Option<grafeo::store::Node>> {
-        self.db.get_node(id).map_err(|e| db_error(operation, e))
+        self.db.get_node(id).map_err(|e| db_error(operation, &e))
+    }
+
+    /// Deletes graph nodes, without their edges.
+    fn delete_graph_nodes(&self, ids: &[NodeId], operation: &str) -> Result<()> {
+        for gid in ids {
+            self.db
+                .delete_node(*gid)
+                .map_err(|e| db_error(operation, &e))?;
+        }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Scans
+    // -----------------------------------------------------------------------
+
+    /// Runs a GQL query and returns its rows.
+    fn query_rows(&self, query: &str, operation: &str) -> Result<Vec<Vec<Value>>> {
+        Ok(self
+            .db
+            .execute(query)
+            .map_err(|e| db_error(operation, &e))?
+            .into_rows())
+    }
+
+    /// The properties of every graph node with `label`, in graph-id order.
+    /// Each map also carries the graph id under `_id`.
+    fn scan_label(&self, label: &str, operation: &str) -> Result<Vec<Props>> {
+        let mut out: Vec<Props> = self
+            .query_rows(&format!("MATCH (n:{label}) RETURN n"), operation)?
+            .into_iter()
+            .filter_map(|row| match row.into_iter().next() {
+                Some(Value::Map(map)) => Some(map),
+                _ => None,
+            })
+            .collect();
+        out.sort_by_key(|p| graph_id(p.as_ref()).map_or(u64::MAX, |id| id.0));
+        Ok(out)
+    }
+
+    /// Every code-graph node, in insertion order.
+    fn all_symbols(&self, operation: &str) -> Result<Vec<Node>> {
+        Ok(self
+            .scan_label(SYMBOL, operation)?
+            .iter()
+            .map(|p| node_from(p.as_ref()))
+            .collect())
+    }
+
+    /// Every code-graph edge whose kind is in `kinds`; every edge when
+    /// `kinds` is empty.
+    fn scan_edges(&self, kinds: &[EdgeKind], operation: &str) -> Result<Vec<Edge>> {
+        let pattern = match kinds {
+            [kind] => format!("[e:{}]", kind.as_str()),
+            _ => "[e]".to_string(),
+        };
+        let rows = self.query_rows(
+            &format!(
+                "MATCH (a:{SYMBOL})-{pattern}->(b:{SYMBOL}) \
+                 RETURN a.id, b.id, type(e), e.line, e.resolved_by"
+            ),
+            operation,
+        )?;
+        let wanted: Vec<&str> = kinds.iter().map(EdgeKind::as_str).collect();
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let [source, target, kind, line, resolved_by] = row.as_slice() else {
+                continue;
+            };
+            let kind = kind.as_str().unwrap_or_default();
+            if !wanted.is_empty() && !wanted.contains(&kind) {
+                continue;
+            }
+            out.push(Edge {
+                source: source.as_str().unwrap_or_default().to_string(),
+                target: target.as_str().unwrap_or_default().to_string(),
+                kind: EdgeKind::from_str(kind).unwrap_or(EdgeKind::Uses),
+                line: line.as_int64().and_then(|v| u32::try_from(v).ok()),
+                resolved_by: resolved_by.as_int64().and_then(ResolvedBy::from_code),
+            });
+        }
+        Ok(out)
+    }
+
+    /// The largest reference sequence number in the index; 0 when empty.
+    fn max_ref_seq(&self, operation: &str) -> Result<i64> {
+        let rows = self.query_rows(
+            &format!("MATCH (r:{UNRESOLVED}) RETURN max(r.ref_seq)"),
+            operation,
+        )?;
+        Ok(rows
+            .first()
+            .and_then(|row| row.first())
+            .and_then(Value::as_int64)
+            .unwrap_or(0))
     }
 }
 
 /// Wraps a Grafeo error with the operation that failed.
-fn db_error(operation: &str, e: grafeo::Error) -> TokenSaveError {
+fn db_error(operation: &str, e: &grafeo::Error) -> TokenSaveError {
     TokenSaveError::Database {
         message: e.to_string(),
         operation: operation.to_string(),
@@ -282,24 +457,66 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 /// Size of a file, or the summed size of a directory's files; 0 if absent.
 fn path_size(path: &Path) -> u64 {
     match std::fs::metadata(path) {
-        Ok(m) if m.is_dir() => std::fs::read_dir(path)
-            .map(|entries| {
-                entries
-                    .filter_map(|e| e.ok())
-                    .map(|e| path_size(&e.path()))
-                    .sum()
-            })
-            .unwrap_or(0),
+        Ok(m) if m.is_dir() => std::fs::read_dir(path).map_or(0, |entries| {
+            entries
+                .filter_map(std::result::Result::ok)
+                .map(|e| path_size(&e.path()))
+                .sum()
+        }),
         Ok(m) => m.len(),
         Err(_) => 0,
     }
 }
 
 // ---------------------------------------------------------------------------
+// SQL predicate equivalents
+// ---------------------------------------------------------------------------
+
+/// Whether `file_path` is `prefix` or lies under it, as the libSQL path
+/// filter (`file_path = p OR file_path LIKE 'p/%'`) decides. `LIKE` ignores
+/// ASCII case, so the directory match does too.
+fn under_path(file_path: &str, prefix: &str) -> bool {
+    let exact = prefix.trim_end_matches('/');
+    if file_path == exact {
+        return true;
+    }
+    file_path.len() > exact.len()
+        && file_path.as_bytes().get(exact.len()) == Some(&b'/')
+        && file_path
+            .get(..exact.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(exact))
+}
+
+/// `value LIKE '%suffix'`: ends with `suffix`, ignoring ASCII case.
+fn ends_with_ci(value: &str, suffix: &str) -> bool {
+    value.len() >= suffix.len()
+        && value
+            .get(value.len() - suffix.len()..)
+            .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
+}
+
+/// `value LIKE 'prefix%'`: starts with `prefix`, ignoring ASCII case.
+fn starts_with_ci(value: &str, prefix: &str) -> bool {
+    value
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
+/// `value LIKE '%needle%'`: contains `needle`, ignoring ASCII case.
+fn contains_ci(value: &str, needle: &str) -> bool {
+    value
+        .to_ascii_lowercase()
+        .contains(&needle.to_ascii_lowercase())
+}
+
+// ---------------------------------------------------------------------------
 // Property conversion
 // ---------------------------------------------------------------------------
 
-type PropMap = HashMap<grafeo::store::PropertyKey, Value>;
+type PropMap = HashMap<PropertyKey, Value>;
+
+/// The properties of a scanned node, as a GQL `RETURN n` yields them.
+type Props = Arc<BTreeMap<PropertyKey, Value>>;
 
 /// Read access to the properties of a Grafeo node or edge.
 trait PropSource {
@@ -318,6 +535,21 @@ impl PropSource for grafeo::store::Edge {
     }
 }
 
+impl PropSource for BTreeMap<PropertyKey, Value> {
+    fn prop(&self, key: &str) -> Option<&Value> {
+        self.get(&PropertyKey::from(key))
+    }
+}
+
+/// The graph id a scanned node carries under `_id`.
+fn graph_id(props: &BTreeMap<PropertyKey, Value>) -> Option<NodeId> {
+    props
+        .prop("_id")
+        .and_then(Value::as_int64)
+        .and_then(|v| u64::try_from(v).ok())
+        .map(NodeId::new)
+}
+
 fn text(value: &str) -> Value {
     Value::from(value)
 }
@@ -332,7 +564,7 @@ fn put_opt(props: &mut PropMap, key: &str, value: Option<&str>) {
     }
 }
 
-fn get_str(props: &impl PropSource, key: &str) -> String {
+fn get_str(props: &(impl PropSource + ?Sized), key: &str) -> String {
     props
         .prop(key)
         .and_then(Value::as_str)
@@ -340,15 +572,15 @@ fn get_str(props: &impl PropSource, key: &str) -> String {
         .to_string()
 }
 
-fn get_opt_str(props: &impl PropSource, key: &str) -> Option<String> {
+fn get_opt_str(props: &(impl PropSource + ?Sized), key: &str) -> Option<String> {
     props.prop(key).and_then(Value::as_str).map(str::to_string)
 }
 
-fn get_i64(props: &impl PropSource, key: &str) -> Option<i64> {
+fn get_i64(props: &(impl PropSource + ?Sized), key: &str) -> Option<i64> {
     props.prop(key).and_then(Value::as_int64)
 }
 
-fn get_u32(props: &impl PropSource, key: &str) -> u32 {
+fn get_u32(props: &(impl PropSource + ?Sized), key: &str) -> u32 {
     get_i64(props, key)
         .and_then(|v| u32::try_from(v).ok())
         .unwrap_or(0)
@@ -393,7 +625,7 @@ fn node_props(node: &Node) -> PropMap {
     p
 }
 
-fn node_from(p: &grafeo::store::Node) -> Node {
+fn node_from(p: &(impl PropSource + ?Sized)) -> Node {
     let start_line = get_u32(p, "start_line");
     let attrs = get_u32(p, "attrs_start_line");
     Node {
@@ -467,7 +699,7 @@ fn file_props(file: &FileRecord) -> PropMap {
     p
 }
 
-fn file_from(p: &grafeo::store::Node) -> FileRecord {
+fn file_from(p: &(impl PropSource + ?Sized)) -> FileRecord {
     FileRecord {
         path: get_str(p, "path"),
         content_hash: get_str(p, "content_hash"),
@@ -478,5 +710,29 @@ fn file_from(p: &grafeo::store::Node) -> FileRecord {
         indexed_at: get_i64(p, "indexed_at").unwrap_or(0),
         node_count: get_u32(p, "node_count"),
         kind: FileKind::from_str_or_code(&get_str(p, "file_kind")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{contains_ci, ends_with_ci, starts_with_ci, under_path};
+
+    #[test]
+    fn under_path_matches_the_directory_and_its_contents_only() {
+        assert!(under_path("src", "src"));
+        assert!(under_path("src/a.rs", "src"));
+        assert!(under_path("src/a.rs", "src/"));
+        assert!(under_path("SRC/a.rs", "src"));
+        assert!(!under_path("srcfoo/a.rs", "src"));
+        assert!(!under_path("a_b/x.rs", "axb"));
+    }
+
+    #[test]
+    fn like_equivalents_ignore_ascii_case() {
+        assert!(ends_with_ci("main.GO", ".go"));
+        assert!(!ends_with_ci("go", ".go"));
+        assert!(starts_with_ci("Test_parse", "test"));
+        assert!(!starts_with_ci("te", "test"));
+        assert!(contains_ci("skip-TEST-coverage", "test"));
     }
 }

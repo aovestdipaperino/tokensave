@@ -1295,6 +1295,8 @@ async fn sync_if_stale_silent_waits_for_peer_then_returns_ok() {
 // #86 — last_sync_timestamp prefers metadata over max(indexed_at)
 // ---------------------------------------------------------------------------
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 /// Regression for #86: the MCP `last synced N ago` warning was reading
 /// `MAX(files.indexed_at)`, which only advances when a file is actually
 /// reindexed. On quiet repos a successful sync (with 0 changes) leaves
@@ -1333,6 +1335,8 @@ async fn last_sync_timestamp_uses_metadata_not_indexed_at() {
     );
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 /// Fallback: if `last_sync_at` metadata is missing, fall back to
 /// `last_index_time`. This keeps freshly-imported projects (no sync yet,
 /// only an `init`) honest.

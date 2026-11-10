@@ -1,8 +1,12 @@
 use libsql::{Builder, Connection, Database as LibsqlDatabase};
+// Used only by tests a Grafeo build skips (#904).
+#[cfg(not(feature = "grafeo"))]
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use tokensave::db::migrations::{create_schema, latest_version, migrate};
 use tokensave::db::Database;
+// Used only by tests a Grafeo build skips (#904).
+#[cfg(not(feature = "grafeo"))]
 use tokensave::errors::TokenSaveError;
 
 // ---------------------------------------------------------------------------
@@ -53,12 +57,16 @@ async fn get_user_version(conn: &Connection) -> u32 {
     v as u32
 }
 
+// Used only by tests a Grafeo build skips (#904).
+#[cfg(not(feature = "grafeo"))]
 fn sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
     let mut path = db_path.as_os_str().to_os_string();
     path.push(suffix);
     path.into()
 }
 
+// Used only by tests a Grafeo build skips (#904).
+#[cfg(not(feature = "grafeo"))]
 fn file_bytes(path: &Path) -> Vec<u8> {
     std::fs::read(path).expect("failed to read database bytes")
 }
@@ -592,6 +600,8 @@ async fn test_indexes_exist_after_full_migration() {
     assert!(index_exists(&conn, "idx_unresolved_refs_file_path").await);
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 /// Database::initialize creates a database at the latest schema version.
 #[tokio::test]
 async fn test_database_initialize_creates_latest_version() {
@@ -640,6 +650,8 @@ async fn test_database_open_no_migration_needed() {
     );
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 /// Database::open on a v1 database migrates to the latest schema version.
 #[tokio::test]
 async fn test_database_open_migrates_v1_to_latest() {
@@ -684,6 +696,8 @@ async fn test_database_open_migrates_v1_to_latest() {
     assert_eq!(version as u32, latest_version());
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn read_only_open_current_schema_queries_without_writes_or_byte_changes() {
     let dir = TempDir::new().expect("failed to create temp dir");
@@ -733,6 +747,8 @@ async fn read_only_open_current_schema_queries_without_writes_or_byte_changes() 
     assert_eq!(file_bytes(&db_path), before);
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn read_only_open_rejects_old_schema_without_migration_or_byte_changes() {
     let dir = TempDir::new().expect("failed to create temp dir");
@@ -762,6 +778,8 @@ async fn read_only_open_rejects_old_schema_without_migration_or_byte_changes() {
     assert_eq!(file_bytes(&db_path), before);
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn read_only_open_rejects_newer_schema_without_byte_changes() {
     let dir = TempDir::new().expect("failed to create temp dir");
@@ -798,6 +816,8 @@ async fn read_only_open_rejects_newer_schema_without_byte_changes() {
     assert_eq!(file_bytes(&db_path), before);
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn read_only_open_reads_active_non_empty_wal() {
     let dir = TempDir::new().expect("failed to create temp dir");
@@ -848,6 +868,8 @@ async fn read_only_open_reads_active_non_empty_wal() {
     );
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn read_only_open_remains_valid_while_writer_writes_and_checkpoints() {
     let dir = TempDir::new().expect("failed to create temp dir");
@@ -898,6 +920,8 @@ async fn read_only_open_remains_valid_while_writer_writes_and_checkpoints() {
     );
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn read_only_open_accepts_relative_database_path() {
     let cwd = std::env::current_dir().expect("failed to read current directory");
@@ -1603,6 +1627,8 @@ async fn test_migrate_v18_is_idempotent() {
     );
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 /// A failed migration names the way out, and `sync --force`'s open rebuilds
 /// the database instead of failing the same way again.
 #[tokio::test]
@@ -1645,6 +1671,8 @@ async fn test_failed_migration_is_recoverable_by_a_forced_rebuild() {
     assert!(!cg.get_nodes_by_name("f").await.expect("query").is_empty());
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 /// A failed migration is not rebuilt while another tokensave process holds
 /// the project's sync lock: deleting the database under it would leave that
 /// process writing to an unlinked file.

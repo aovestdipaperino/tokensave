@@ -1849,6 +1849,8 @@ async fn test_search_nodes_ranking_order() {
     assert!(results[0].score > 0.0, "score should be positive");
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn test_search_nodes_like_fallback_escapes_wildcards() {
     let (_dir, db) = setup_db().await;
@@ -2418,6 +2420,8 @@ async fn test_batch_incoming_call_counts() {
     );
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 /// Regression test: a node whose signature contains non-UTF-8 bytes (e.g. from
 /// a Latin-1 encoded source file) must not crash `row_to_node`. The lossy
 /// fallback replaces invalid bytes with U+FFFD.

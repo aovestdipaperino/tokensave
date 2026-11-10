@@ -8,6 +8,8 @@
 //! - The dirty sentinel lifecycle works correctly
 //! - The full crash→detect→repair cycle works end-to-end
 
+// Used only by tests a Grafeo build skips (#904).
+#[cfg(not(feature = "grafeo"))]
 use std::io::{Seek, Write};
 use tempfile::TempDir;
 use tokensave::db::Database;
@@ -85,6 +87,8 @@ async fn quick_check_passes_after_inserts() {
     );
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn quick_check_detects_page_level_corruption() {
     let (_dir, db, db_path) = setup_db().await;
@@ -130,6 +134,8 @@ async fn rebuild_fts_on_fresh_db() {
     db.rebuild_fts().await.unwrap();
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn rebuild_fts_restores_search_after_fts_damage() {
     let (_dir, db, _path) = setup_db().await;
@@ -166,6 +172,8 @@ async fn rebuild_fts_restores_search_after_fts_damage() {
 
 // ─── search_nodes self-healing ───────────────────────────────────────────
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn search_nodes_falls_back_to_like_when_fts_empty() {
     let (_dir, db, _path) = setup_db().await;
@@ -188,6 +196,8 @@ async fn search_nodes_falls_back_to_like_when_fts_empty() {
 
 // ─── begin_bulk_load no longer disables synchronous ──────────────────────
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn bulk_load_preserves_synchronous_normal() {
     let (_dir, db, _path) = setup_db().await;
@@ -226,6 +236,8 @@ async fn bulk_load_round_trip_preserves_data() {
 
 // ─── is_corruption_error ─────────────────────────────────────────────────
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[test]
 fn is_corruption_error_matches_malformed() {
     let e = tokensave::errors::TokenSaveError::Database {
@@ -310,6 +322,8 @@ fn dirty_sentinel_survives_drop() {
 
 // ─── Full crash→detect→repair cycle ──────────────────────────────────────
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn corrupt_db_detected_and_repaired_on_reopen() {
     let dir = TempDir::new().unwrap();
@@ -371,6 +385,8 @@ async fn corrupt_db_detected_and_repaired_on_reopen() {
     );
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn fts_corruption_healed_by_search_nodes() {
     let (_dir, db, _path) = setup_db().await;
@@ -407,6 +423,8 @@ async fn fts_corruption_healed_by_search_nodes() {
 
 // ─── Bulk-load edge dedup + interrupted-finalization recovery (#318) ──────
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 /// Returns `true` if an index named `name` exists on the database.
 async fn index_exists(db: &Database, name: &str) -> bool {
     let mut rows = db
@@ -423,6 +441,8 @@ async fn index_exists(db: &Database, name: &str) -> bool {
     false
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 /// Returns the total number of rows in the `edges` table.
 async fn edge_count(db: &Database) -> i64 {
     let mut rows = db
@@ -433,6 +453,8 @@ async fn edge_count(db: &Database) -> i64 {
     rows.next().await.unwrap().unwrap().get(0).unwrap()
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 /// `begin_bulk_load` drops `idx_edges_unique`, so `INSERT OR IGNORE` can no
 /// longer dedupe during the load. `end_bulk_load` must therefore collapse any
 /// duplicate rows *before* it recreates the unique index — otherwise that
@@ -474,6 +496,8 @@ async fn end_bulk_load_dedupes_edges_before_unique_index() {
     );
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 /// A bulk load interrupted between `begin_bulk_load` and `end_bulk_load`
 /// leaves the graph un-indexed and possibly duplicated. `quick_check` passes
 /// (the B-tree is intact), so `TokenSave::open` must detect the missing
@@ -546,6 +570,8 @@ async fn open_finalizes_interrupted_bulk_load() {
     assert_eq!(dup_groups, 0, "recovery must remove duplicate edges");
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 /// Child exits without dropping SQLite handles, leaving a real WAL behind.
 #[tokio::test]
 async fn crash_writer_child() {
@@ -567,6 +593,8 @@ async fn crash_writer_child() {
     std::process::exit(0);
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn process_exit_preserves_commits_and_rolls_back_incomplete_writes() {
     let dir = TempDir::new().unwrap();
@@ -616,16 +644,22 @@ async fn process_exit_preserves_commits_and_rolls_back_incomplete_writes() {
     assert!(rows.next().await.unwrap().is_none());
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn unreadable_database_is_preserved_even_when_dirty() {
     assert_unreadable_database_preserved(true).await;
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn unreadable_database_is_preserved_when_clean() {
     assert_unreadable_database_preserved(false).await;
 }
 
+// Used only by tests a Grafeo build skips (#904).
+#[cfg(not(feature = "grafeo"))]
 async fn assert_unreadable_database_preserved(dirty: bool) {
     let dir = TempDir::new().unwrap();
     let ts = tokensave::tokensave::TokenSave::init(dir.path())
@@ -656,6 +690,8 @@ async fn assert_unreadable_database_preserved(dirty: bool) {
     assert_eq!(state.join("dirty").exists(), dirty);
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn interrupted_partial_graph_is_reindexed_before_serving() {
     let dir = TempDir::new().unwrap();
@@ -694,6 +730,8 @@ async fn interrupted_partial_graph_is_reindexed_before_serving() {
     assert_eq!(decisions[0].text, "preserve this decision");
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn live_sync_defers_dirty_recovery() {
     let dir = TempDir::new().unwrap();
@@ -727,6 +765,8 @@ async fn live_sync_defers_dirty_recovery() {
     assert_eq!(ts.session_recall(None, None, 10).await.unwrap().len(), 1);
 }
 
+// Reads or writes the libSQL schema with SQL (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn borrowed_branch_recovery_preserves_ancestor_graph() {
     let dir = TempDir::new().unwrap();
@@ -777,6 +817,8 @@ async fn borrowed_branch_recovery_preserves_ancestor_graph() {
     );
 }
 
+// Tests the libSQL file format, which a Grafeo build does not write (#904).
+#[cfg(not(feature = "grafeo"))]
 #[tokio::test]
 async fn live_writer_keeps_bulk_load_unfinalized() {
     let dir = TempDir::new().unwrap();

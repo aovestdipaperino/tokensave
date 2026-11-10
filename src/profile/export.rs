@@ -118,7 +118,8 @@ mod tests {
         snap.insert(secret_path.into(), s.clone());
         snap.insert("tool.charge_customer_card".into(), s.clone());
         let mut merged = BTreeMap::new();
-        merged.insert("libsql".to_string(), snap.clone());
+        // Keyed by this build's engine, which the export keeps.
+        merged.insert(super::super::storage::ENGINE.to_string(), snap.clone());
         merged.insert("secret-engine".to_string(), snap);
 
         let tools = BTreeSet::from(["tokensave_search".to_string()]);
