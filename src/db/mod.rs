@@ -3,6 +3,7 @@ mod connection;
 pub mod migrations;
 mod profiled;
 mod queries;
+mod wal_guard;
 
 pub use connection::Database;
 pub(crate) use profiled::RowSource;

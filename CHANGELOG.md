@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Security
+
+- **Refuse databases whose `-wal` sidecar has a different page size (Refs #940).** libSQL 0.9.30 bundles SQLite 3.45.1, which predates the fix for CVE-2026-119375 (RUSTSEC-2026-0459). With a crafted database and `-wal` file whose page sizes differ, such as a `.tokensave/` directory shipped in a cloned repository, ordinary queries could return uninitialized process memory into MCP responses. Before SQLite opens a database, tokensave now compares the WAL header and every copy of page 1 in the WAL against the database header, and refuses the database as a compatibility refusal, leaving the files untouched, when they disagree. WAL files that SQLite would ignore, and WAL files that SQLite itself writes, are unaffected. `cargo audit` does not report this advisory because it is filed against `libsqlite3-sys`, which tokensave does not use. libSQL 0.10.0 bundles SQLite 3.47.0 and is also affected, so upgrading does not help.
+
 ### Added
 
 - **Project state can live outside the repository (Refs #919).**

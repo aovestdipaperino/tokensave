@@ -322,6 +322,10 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
   `user_version` and must never be silently relabeled on migration or open.
 - Validate origin and supported schema before write pragmas or migrations.
   Compatibility refusals must bypass crash recovery and forced rebuilds.
+- `compatibility::preflight` also refuses a `-wal` sidecar whose page size
+  differs from the database's (`src/db/wal_guard.rs`, CVE-2026-119375, #940)
+  before SQLite opens it. A new code path that opens a database with libSQL
+  must call `preflight` or `check_wal_sidecar` first.
 - Stable state paths stay unchanged. Prerelease builds use `.tokensave/beta/`
   for project state and the global database. Use `get_tokensave_dir` for
   project paths; global user settings remain shared. See

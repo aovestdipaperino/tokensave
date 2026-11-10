@@ -51,6 +51,15 @@ Automatic branch tracking is on by default, but a project can turn it off. With 
 
 See [Automatic branch tracking](MULTI-BRANCH.md#automatic-branch-tracking-v730) for details.
 
+## "refusing to open …: the WAL holds …-byte pages"
+
+tokensave found a `-wal` file beside the database whose page size differs from the database's. SQLite never writes such a file, so the database or its sidecar is corrupt or was crafted, for example a `.tokensave/` directory committed to a repository. Opening it could return uninitialized memory into tool output (CVE-2026-119375), so tokensave refuses it and leaves the files untouched.
+
+- If you don't trust where the `.tokensave/` directory came from, delete it and run `tokensave init`
+- Otherwise delete the `-wal` and `-shm` files named in the message and run `tokensave sync --force`
+
+See [Database channel compatibility](../DATABASE-COMPATIBILITY.md#wal-sidecar-page-size-check) for details.
+
 ## Indexing is slow
 
 Large projects take longer on the first full index.
