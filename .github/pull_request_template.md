@@ -28,3 +28,4 @@
 - [ ] `CHANGELOG.md` updated (under `[Unreleased]` if no version bump)
 - [ ] No secrets, credentials, or `.env` files included
 - [ ] Breaking changes documented (if any)
+- [ ] Issue proposers credited with `Co-authored-by:` trailers (if the PR implements someone else's issue)

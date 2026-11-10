@@ -155,6 +155,11 @@ create issues for identified bugs and enhancements, link PRs with "Refs #N" (nev
 "Fixes #N" / "Closes #N"), and never close an issue (including via `gh issue close`)
 without explicit permission — issue closure is left to the repository maintainer.
 
+Follow the [issue author credit rules](CONTRIBUTING.md#crediting-issue-authors):
+when a PR implements an issue someone else proposed or substantially specified, add
+a `Co-authored-by:` trailer with their GitHub noreply address for each such person,
+and name them in the PR description.
+
 ## Issue closure verification and merged-result summaries
 
 Before closing an issue, and only with the explicit permission required above,

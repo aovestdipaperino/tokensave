@@ -333,6 +333,8 @@ refactor: simplify reference resolver lookup
 ```
 
 Keep the first line under 72 characters. Add a body explaining *why* if the change isn't obvious.
+When the change implements someone else's issue, add a `Co-authored-by:` trailer for
+them as described in [Crediting Issue Authors](#crediting-issue-authors).
 
 ## Pull Requests
 
@@ -341,6 +343,32 @@ Keep the first line under 72 characters. Add a body explaining *why* if the chan
 - Keep PRs focused — one logical change per PR.
 - Include test coverage for new behavior.
 - Update `CHANGELOG.md` under an `[Unreleased]` section.
+- Credit the people who proposed the change; see [Crediting Issue Authors](#crediting-issue-authors).
+
+## Crediting Issue Authors
+
+Many changes start as an issue: a feature idea, a design, or a bug report with a
+reproduction or root-cause analysis. The people who wrote that issue are credited as
+co-authors of the pull request that implements it. These rules apply to every
+contributor, human or AI agent:
+
+- If a PR implements an idea, design, or fix that someone else proposed or
+  substantially specified in an issue, add a `Co-authored-by:` trailer for that
+  person to at least one commit in the PR.
+- Credit each person who made a substantive contribution: the original proposer and
+  anyone whose issue comment shaped the design or the fix. Linking, reacting to, or
+  agreeing with the issue is not enough.
+- Use the person's GitHub noreply address,
+  `Co-authored-by: Name <ID+login@users.noreply.github.com>`, where `ID` comes from
+  `gh api users/<login> --jq .id`. Never guess an address or look up a private one.
+- Put the trailers in the last block of the commit message, one per person, after
+  the body and alongside any other trailers.
+- Do not add a trailer when the proposer is already an author of the PR's commits,
+  for bots, or when the proposer asks not to be credited.
+- Name the credited people in the PR description, for example
+  "Co-authored-by trailer for @login, who proposed this in #N".
+- When squash-merging, keep the `Co-authored-by:` trailers in the final commit
+  message.
 
 ## GitHub Issue Lifecycle
 
