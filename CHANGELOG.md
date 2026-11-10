@@ -41,6 +41,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Documentation
 
+- `CONTRIBUTING.md`, `AGENTS.md` and the pull request template now require crediting the people who proposed or substantially specified a change in an issue as co-authors of the PR that implements it, with `Co-authored-by:` trailers using their GitHub noreply address (Refs #950).
 - Correct the multi-branch guide: the `post-checkout` hook tracks branches only when `auto_track` is enabled, which is off by default. Add a troubleshooting entry for untracked branches (Refs #877).
 - Record an MCP footprint and latency baseline in `docs/MCP-FOOTPRINT-BASELINE.md`, measured with the new `benchmarks/mcp_footprint.py` probe: `initialize` and `tools/list` bytes and token counts for the core and full toolsets, cold start, index time and size, and query latency. A unit test now fails when the default `tools/list` plus the `initialize` instructions grow beyond the recorded 24,056 bytes. The MCP tools guide now says five tools are `anthropic/alwaysLoad`, not three, and cites the measured sizes (Refs #917).
 
