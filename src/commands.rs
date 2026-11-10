@@ -1,7 +1,7 @@
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-use crate::cli::BranchAction;
+use crate::cli::{BranchAction, StorageAction};
 use crate::global;
 use crate::Spinner;
 use tokensave::config::{discover_project, ProjectDiscovery};
@@ -293,6 +293,83 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
                     "\x1b[32m✔\x1b[0m Cleaned up {} stale branch(es).",
                     removed.len()
                 );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Handles `tokensave storage switch` (#946).
+pub(crate) async fn handle_storage_action(action: StorageAction) -> tokensave::errors::Result<()> {
+    use tokensave::storage_switch::{self, SwitchOutcome};
+
+    match action {
+        StorageAction::Switch {
+            backend,
+            keep_old,
+            path,
+        } => {
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
+            let spinner = Spinner::new();
+            let outcome = storage_switch::switch(&project_path, backend, keep_old, |c, t, f| {
+                spinner.set_message(&format!("[{c}/{t}] indexing {f}"));
+            })
+            .await;
+            // On an error the spinner is dropped, which clears its line.
+            match outcome? {
+                SwitchOutcome::Prepared(report) => {
+                    spinner.done(&format!(
+                        "saved {} decisions and {} code areas for the switch to {}",
+                        report.decisions,
+                        report.code_areas,
+                        report.to.label()
+                    ));
+                    eprintln!(
+                        "The {} index is unchanged. To finish, install a {} build and run:\n  \
+                         tokensave storage switch {}",
+                        report.from.label(),
+                        report.to.label(),
+                        report.to
+                    );
+                    if !report.dropped_branches.is_empty() {
+                        eprintln!(
+                            "Tracked branches are not carried over ({}); track them again \
+                             with `tokensave branch add` after the switch.",
+                            report.dropped_branches.join(", ")
+                        );
+                    }
+                    eprintln!("To cancel, delete {}.", report.handoff.display());
+                }
+                SwitchOutcome::Finished(report, cg) => {
+                    spinner.done(&format!(
+                        "switched from {} to {} — {} files, {} nodes, {} edges; \
+                         restored {} decisions and {} code areas",
+                        report.from.label(),
+                        report.to.label(),
+                        report.file_count,
+                        report.node_count,
+                        report.edge_count,
+                        report.decisions,
+                        report.code_areas
+                    ));
+                    if let Some(old) = &report.kept_old {
+                        eprintln!(
+                            "The old {} index is kept in {}.",
+                            report.from.label(),
+                            old.display()
+                        );
+                    }
+                    if !report.dropped_branches.is_empty() {
+                        eprintln!(
+                            "Track branches again with `tokensave branch add` as needed: {}.",
+                            report.dropped_branches.join(", ")
+                        );
+                    }
+                    for warning in &report.warnings {
+                        eprintln!("\x1b[33mwarning:\x1b[0m {warning}");
+                    }
+                    global::update_global_db(&cg).await;
+                }
             }
         }
     }

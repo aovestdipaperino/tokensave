@@ -42,7 +42,7 @@ it is outside this inventory.
 ## Inventory summary
 
 - SQL-bearing source files: **38**.
-- SQL literal/template occurrences: **376**.
+- SQL literal/template occurrences: **377**.
 - Functions retained for construction/binding context: **181**.
 
 ## Source file index
@@ -64,7 +64,7 @@ it is outside this inventory.
 | [src/db/queries/files.rs](../src/db/queries/files.rs) | 8 |
 | [src/db/queries/fingerprints.rs](../src/db/queries/fingerprints.rs) | 3 |
 | [src/db/queries/graph.rs](../src/db/queries/graph.rs) | 6 |
-| [src/db/queries/memory.rs](../src/db/queries/memory.rs) | 7 |
+| [src/db/queries/memory.rs](../src/db/queries/memory.rs) | 8 |
 | [src/db/queries/metadata.rs](../src/db/queries/metadata.rs) | 5 |
 | [src/db/queries/mod.rs](../src/db/queries/mod.rs) | 3 |
 | [src/db/queries/nodes.rs](../src/db/queries/nodes.rs) | 36 |
@@ -2454,9 +2454,21 @@ Source: [src/db/queries/memory.rs:141](../src/db/queries/memory.rs#L141).
 INSERT INTO memory_code_areas (path, description, last_touched_at, touch_count) VALUES (?1, ?2, ?3, 1) ON CONFLICT(path) DO UPDATE SET description = COALESCE(excluded.description, memory_code_areas.description), last_touched_at = excluded.last_touched_at, touch_count = memory_code_areas.touch_count + 1
 ```
 
-#### Q0320 — `get_code_areas`
+#### Q0389 — `import_code_area`
 
 Source: [src/db/queries/memory.rs:163](../src/db/queries/memory.rs#L163).
+
+Used by `tokensave storage switch` (#946) to store a code area moved from
+another index with its own description, timestamp and touch count. `?4` is
+the `u32` touch count widened to `i64`.
+
+```sql
+INSERT INTO memory_code_areas (path, description, last_touched_at, touch_count) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(path) DO UPDATE SET description = excluded.description, last_touched_at = excluded.last_touched_at, touch_count = excluded.touch_count
+```
+
+#### Q0320 — `get_code_areas`
+
+Source: [src/db/queries/memory.rs:189](../src/db/queries/memory.rs#L189).
 
 ```sql
 SELECT id, path, description, last_touched_at, touch_count FROM memory_code_areas ORDER BY last_touched_at DESC LIMIT ?1
