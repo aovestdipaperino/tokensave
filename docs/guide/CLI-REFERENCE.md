@@ -40,6 +40,7 @@ tokensave memory [--clean]         # Per-instance RSS report for all tokensave p
 tokensave upgrade                  # Self-update to latest version
 tokensave channel [stable|beta]    # Show or switch update channel
 tokensave doctor [--agent NAME]    # Check installation health
+tokensave doctor --caveman [--session-id ID]  # Also check Caveman compatibility; JSON report on stdout
 tokensave githooks [on|off] [--local]  # Manage git hooks (--local: this repo only, no core.hooksPath)
 tokensave branch add|list|remove|removeall|gc|set-default   # Multi-branch management
 tokensave current-counter          # Show per-project token counter
@@ -58,6 +59,15 @@ tokensave state prune [--dry-run]  # Delete relocated state whose project direct
 | `TOKENSAVE_AUTO_INIT` | environment | Overrides `auto_init` for one run. `0`, `false`, `no`, `off` or empty turn it off; any other value turns it on. |
 
 See [Automatic initialization](INDEXING.md#automatic-initialization) for the guards that apply.
+
+## Settings for Caveman cooperation
+
+| Setting | Where | Effect |
+|---|---|---|
+| `caveman_compatibility` | `~/.tokensave/config.toml` | `false` (default): the MCP instructions never mention Caveman. `true`: when a Caveman skill is installed for a supported agent, the MCP `initialize` instructions ask the agent to keep tokensave results exact. Read when the MCP server starts a session. |
+| `TOKENSAVE_CAVEMAN_COMPATIBILITY` | environment | Overrides `caveman_compatibility` for one run. `0`, `false`, `no`, `off` or empty turn it off; any other value turns it on. |
+
+See [Working alongside Caveman](AGENT-INTEGRATIONS.md#working-alongside-caveman).
 
 ## Settings for the state location
 

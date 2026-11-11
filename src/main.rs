@@ -1689,8 +1689,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 );
             }
         }
-        Commands::Doctor { agent } => {
-            tokensave::doctor::run_doctor(agent.as_deref()).await;
+        Commands::Doctor {
+            agent,
+            caveman,
+            session_id,
+        } => {
+            tokensave::doctor::run_doctor(agent.as_deref(), caveman, session_id.as_deref()).await;
         }
         Commands::Cost {
             range,
@@ -2366,6 +2370,8 @@ mod startup_tests {
     fn doctor_skips_agent_install_maintenance() {
         let command = Commands::Doctor {
             agent: Some("kiro".to_string()),
+            caveman: false,
+            session_id: None,
         };
         assert!(should_skip_agent_install_maintenance(&command));
     }

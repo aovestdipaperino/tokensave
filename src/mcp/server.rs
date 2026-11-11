@@ -2230,6 +2230,7 @@ impl McpServer {
                 self.report_savings(),
                 self.served_projects(),
                 self.toolset(),
+                crate::caveman::cooperation_enabled(self.served_root()),
             )),
             "initialized" | "notifications/initialized" | "notifications/roots/list_changed" => {
                 // Known notifications - no response required
@@ -2276,12 +2277,17 @@ impl McpServer {
     /// exists to deliver (#356); when the setting is off the sentence is
     /// omitted, and `handle_tools_call` correspondingly stops appending the
     /// `tokensave_metrics:` line it refers to.
+    ///
+    /// `caveman_cooperation` appends [`crate::caveman::COOPERATION_INSTRUCTIONS`]
+    /// (#797). It is off unless the user opted in and a Caveman skill was
+    /// found, so the default instructions are unchanged.
     fn handle_initialize(
         id: Value,
         params: Option<&Value>,
         report_savings: bool,
         projects: ServedProjects<'_>,
         toolset: crate::config::Toolset,
+        caveman_cooperation: bool,
     ) -> JsonRpcResponse {
         const BASE_INSTRUCTIONS: &str = "tokensave is a code-graph MCP server. \
             Start with tokensave_context for any code exploration task \
@@ -2303,6 +2309,9 @@ impl McpServer {
         // `graph_root` description, which a client sends once per tool on
         // every turn, keeps only one sentence.
         instructions.push_str(crate::mcp::tools::GRAPH_SELECTOR_INSTRUCTIONS);
+        if caveman_cooperation {
+            instructions.push_str(crate::caveman::COOPERATION_INSTRUCTIONS);
+        }
         if report_savings {
             instructions.push_str(REPORT_SAVINGS_INSTRUCTION);
         }
@@ -3748,6 +3757,7 @@ mod default_footprint_tests {
             crate::config::TokenSaveConfig::default().report_savings,
             ServedProjects::Default { siblings: &[] },
             toolset,
+            false,
         );
         let instructions = initialize
             .result
@@ -3757,6 +3767,35 @@ mod default_footprint_tests {
             .unwrap_or_default();
         assert!(!instructions.is_empty(), "initialize sent no instructions");
         tools_list.len() + instructions.len()
+    }
+
+    /// #797: the Caveman sentence appears only when cooperation is on, and
+    /// the rest of the instructions is the same either way.
+    #[test]
+    fn caveman_cooperation_only_appends_its_sentence() {
+        let instructions = |cooperate: bool| {
+            McpServer::handle_initialize(
+                json!(1),
+                None,
+                false,
+                ServedProjects::Default { siblings: &[] },
+                crate::config::Toolset::default(),
+                cooperate,
+            )
+            .result
+            .as_ref()
+            .and_then(|result| result.get("instructions"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_default()
+        };
+        let off = instructions(false);
+        let on = instructions(true);
+        assert!(!off.contains("Caveman"), "{off}");
+        assert_eq!(
+            on.replacen(crate::caveman::COOPERATION_INSTRUCTIONS, "", 1),
+            off
+        );
     }
 
     /// #917: the per-description cap does not bound the total, which grows

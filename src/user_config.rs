@@ -146,6 +146,13 @@ pub struct UserConfig {
     #[serde(default = "default_true")]
     pub auto_init: bool,
 
+    /// When true, and an independently installed Caveman skill is found, the
+    /// MCP `initialize` instructions ask the agent to keep tokensave results
+    /// exact while Caveman shortens its prose (#797). Off by default.
+    /// `TOKENSAVE_CAVEMAN_COMPATIBILITY` overrides it per run.
+    #[serde(default)]
+    pub caveman_compatibility: bool,
+
     /// Machine-wide CPU usage profile for projects whose
     /// `.tokensave/config.json` has no `cpu_usage` (#752). It takes
     /// precedence over the saved hardware benchmark; `TOKENSAVE_CPU_USAGE`
@@ -341,6 +348,7 @@ impl Default for UserConfig {
             manage_rules: true,
             claude_hooks: true,
             auto_init: true,
+            caveman_compatibility: false,
             cpu_usage: None,
             state_dir: None,
             benchmark: BenchmarkPreferences::default(),
@@ -370,6 +378,8 @@ pub(crate) struct ConfigFile {
     claude_hooks: bool,
     #[serde(default = "default_true")]
     auto_init: bool,
+    #[serde(default)]
+    caveman_compatibility: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cpu_usage: Option<crate::cpu::CpuUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -392,6 +402,7 @@ impl ConfigFile {
             manage_rules: c.manage_rules,
             claude_hooks: c.claude_hooks,
             auto_init: c.auto_init,
+            caveman_compatibility: c.caveman_compatibility,
             cpu_usage: c.cpu_usage,
             state_dir: c.state_dir.clone(),
             benchmark: c.benchmark,
@@ -906,6 +917,16 @@ pub fn auto_init_setting() -> bool {
         .is_none_or(|file| file.auto_init)
 }
 
+/// The `caveman_compatibility` setting in `config.toml` (#797), read without
+/// the side effects of [`UserConfig::load`]. A missing or unparseable file
+/// means the default, `false`.
+pub fn caveman_compatibility_setting() -> bool {
+    config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|contents| toml::from_str::<ConfigFile>(&contents).ok())
+        .is_some_and(|file| file.caveman_compatibility)
+}
+
 /// Returns the path to the advisory lock guarding `config.toml`'s
 /// read-modify-write span in `save()` (see `merge_config_file`'s doc
 /// comment). A distinct sidecar path rather than locking `config.toml`
@@ -1234,6 +1255,7 @@ impl UserConfig {
             || self.manage_rules != base.manage_rules
             || self.claude_hooks != base.claude_hooks
             || self.auto_init != base.auto_init
+            || self.caveman_compatibility != base.caveman_compatibility
             || self.cpu_usage != base.cpu_usage
             || self.state_dir != base.state_dir
             || self.benchmark != base.benchmark
@@ -1286,6 +1308,11 @@ impl UserConfig {
                 on_disk.auto_init
             } else {
                 self.auto_init
+            },
+            caveman_compatibility: if self.caveman_compatibility == base.caveman_compatibility {
+                on_disk.caveman_compatibility
+            } else {
+                self.caveman_compatibility
             },
             cpu_usage: if self.cpu_usage == base.cpu_usage {
                 on_disk.cpu_usage
@@ -1433,6 +1460,7 @@ mod tests {
             manage_rules: false,
             claude_hooks: false,
             auto_init: false,
+            caveman_compatibility: true,
             cpu_usage: Some(crate::cpu::CpuUsage::Low),
             state_dir: Some("~/tokensave-state".to_string()),
             benchmark: BenchmarkPreferences {
@@ -1504,6 +1532,35 @@ mod tests {
         assert!(!auto_init_setting());
         let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
         assert!(text.contains("auto_init = false"), "{text}");
+    }
+
+    #[test]
+    fn caveman_compatibility_defaults_off_and_round_trips() {
+        let _home = test_home();
+        assert!(!caveman_compatibility_setting(), "no config.toml means off");
+        assert!(!UserConfig::default().caveman_compatibility);
+
+        assert!(sample_config().save());
+        assert!(UserConfig::load().caveman_compatibility);
+        assert!(caveman_compatibility_setting());
+        let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
+        assert!(text.contains("caveman_compatibility = true"), "{text}");
+        let state = std::fs::read_to_string(state_path().unwrap()).unwrap();
+        assert!(!state.contains("caveman_compatibility"), "{state}");
+    }
+
+    #[test]
+    fn caveman_compatibility_survives_a_concurrent_stale_save() {
+        let _home = test_home();
+        assert!(UserConfig::load().save());
+        let stale = UserConfig::load();
+        let mut changed = UserConfig::load();
+        changed.caveman_compatibility = true;
+        assert!(changed.save());
+        let mut stale = stale;
+        stale.upload_enabled = !stale.upload_enabled;
+        assert!(stale.save());
+        assert!(UserConfig::load().caveman_compatibility);
     }
 
     #[test]
