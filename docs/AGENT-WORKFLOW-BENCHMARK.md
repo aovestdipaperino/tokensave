@@ -42,7 +42,11 @@ flowchart LR
   TokenSave MCP server on an indexed checkout, with only its server
   instructions. `tokensave-guided`: as `tokensave`, plus the rules text that
   `tokensave install` writes for Claude Code. The last two form the guidance
-  A/B experiment: the only difference is the guidance text.
+  A/B experiment: the only difference is the guidance text. Three optional
+  Caveman arms (#797) need `--caveman-skill`: `caveman` (the pinned skill in
+  the system prompt, no TokenSave), `tokensave-caveman-nocoop` (plus the
+  server, cooperation off) and `tokensave-caveman` (cooperation on). See
+  [Caveman arms](../scripts/agent-bench/README.md#caveman-arms-797).
 - **Isolation.** `--strict-mcp-config` and `--setting-sources project` keep
   the user's MCP servers, hooks, plugins and user instructions out. Agent
   instruction files are removed from the checkouts, so every arm starts
@@ -81,7 +85,8 @@ patch verified by tests. The task table is in the
 The report assigns each arm and task a dominant actionable bottleneck, in
 this order:
 
-1. Lower success rate than baseline: **response/context quality**.
+1. Lower success rate than the arm's reference arm (`baseline` unless
+   `arms.json` names another): **response/context quality**.
    Speed never outranks correctness.
 2. Database time of at least 10% of wall time: **database latency**.
    Only then do engine or query changes (#904) rank first.

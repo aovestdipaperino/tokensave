@@ -51,6 +51,12 @@ GIT_ENV = {
     "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
     "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
 }
+# Caveman arms (#797). The skill is supplied by the operator from a pinned
+# Caveman checkout; the harness never fetches or installs Caveman.
+CAVEMAN_SKILL_MAX_BYTES = 64 * 1024  # TokenSave's own discovery limit
+CAVEMAN_IDENTITY = "name: caveman"  # TokenSave's discovery identity check
+# Start of TokenSave's COOPERATION_INSTRUCTIONS (src/caveman.rs).
+COOPERATION_MARKER = "If Caveman is active in this session"
 
 
 def die(msg: str) -> None:
@@ -211,10 +217,62 @@ def reset_workspace(ws: Path) -> None:
     git(ws, "clean", "-q", "-fd", "-e", ".tokensave")
 
 
-def mcp_config(arm: dict[str, Any], tokensave: Path, ws: Path, profile: bool) -> dict[str, Any]:
+def load_caveman_skill(path: Path) -> bytes:
+    """Reads the operator's pinned Caveman SKILL.md and applies the same
+    size and identity checks TokenSave's discovery applies."""
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        die(f"cannot read Caveman skill {path}: {exc.strerror or exc}")
+    if len(data) > CAVEMAN_SKILL_MAX_BYTES:
+        die(f"Caveman skill {path} is larger than {CAVEMAN_SKILL_MAX_BYTES} bytes")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        die(f"Caveman skill {path} is not UTF-8")
+    if not any(line.strip() == CAVEMAN_IDENTITY for line in text.splitlines()):
+        die(f"Caveman skill {path} has no `{CAVEMAN_IDENTITY}` line")
+    return data
+
+
+def caveman_agent_home(work: Path, skill: bytes) -> Path:
+    """A harness-owned Claude config directory holding only the pinned skill.
+    It is given to the TokenSave server (never to the agent) so that
+    cooperation discovery finds this skill and not the user's install."""
+    root = work / "caveman-agent-home"
+    target = root / "skills" / "caveman" / "SKILL.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(skill)
+    return root
+
+
+def prompt_appendix(arm: dict[str, Any], caveman_skill: bytes | None) -> str | None:
+    """Text appended to the agent's system prompt: the arm's rules file, then
+    the Caveman skill for Caveman arms."""
+    parts = []
+    guide = arm.get("append_system_prompt_file")
+    if guide:
+        parts.append(Path(guide).expanduser().read_text(encoding="utf-8"))
+    if arm.get("caveman_skill") and caveman_skill is not None:
+        parts.append(caveman_skill.decode("utf-8"))
+    return "\n\n".join(parts) if parts else None
+
+
+def mcp_config(
+    arm: dict[str, Any],
+    tokensave: Path,
+    ws: Path,
+    profile: bool,
+    caveman_home: Path | None = None,
+) -> dict[str, Any]:
     if not arm.get("tokensave"):
         return {"mcpServers": {}}
     env = {"TOKENSAVE_SKIP_AGENT_MAINTENANCE": "1"}
+    # Explicit in every arm, so a user's `caveman_compatibility = true` cannot
+    # reach an arm that does not declare it.
+    env["TOKENSAVE_CAVEMAN_COMPATIBILITY"] = "1" if arm.get("caveman_cooperation") else "0"
+    if arm.get("caveman_skill") and caveman_home is not None:
+        env["CLAUDE_CONFIG_DIR"] = str(caveman_home)
     if profile:
         env["TOKENSAVE_PROFILE"] = "light"
     return {
@@ -232,7 +290,7 @@ def mcp_config(arm: dict[str, Any], tokensave: Path, ws: Path, profile: bool) ->
 def build_command(
     claude: Path,
     arms_cfg: dict[str, Any],
-    arm: dict[str, Any],
+    appendix: str | None,
     prompt: str,
     model: str,
     mcp_path: Path,
@@ -246,10 +304,94 @@ def build_command(
         cmd += ["--max-budget-usd", str(budget)]
     if effort:
         cmd += ["--effort", effort]
-    guide = arm.get("append_system_prompt_file")
-    if guide:
-        cmd += ["--append-system-prompt", Path(guide).expanduser().read_text(encoding="utf-8")]
+    if appendix:
+        cmd += ["--append-system-prompt", appendix]
     return cmd
+
+
+def mcp_instructions(cmd: list[str], env: dict[str, str], cwd: Path, timeout_s: float = 120.0) -> str | None:
+    """Starts an MCP server, sends `initialize` and returns the instructions
+    of its reply ("" when there are none), or None when no reply arrived in
+    time. The server's stdin is closed afterwards and the process reaped."""
+    try:
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    lines: queue.Queue = queue.Queue()
+
+    def pump() -> None:
+        assert proc.stdout is not None
+        try:
+            for raw in proc.stdout:
+                lines.put(raw)
+        except (OSError, ValueError):  # pipe closed by the cleanup below
+            pass
+        lines.put(None)
+
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    request = {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "agent-bench", "version": "1"}},
+    }
+    try:
+        assert proc.stdin is not None
+        proc.stdin.write((json.dumps(request) + "\n").encode("utf-8"))
+        proc.stdin.flush()
+        deadline = time.monotonic() + timeout_s
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                raw = lines.get(timeout=remaining)
+            except queue.Empty:
+                return None
+            if raw is None:
+                return None
+            try:
+                msg = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(msg, dict) and msg.get("id") == 1:
+                result = msg.get("result")
+                text = result.get("instructions") if isinstance(result, dict) else None
+                return text if isinstance(text, str) else ""
+    except OSError:
+        return None
+    finally:
+        try:
+            if proc.stdin is not None:
+                proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            kill_tree(proc)
+            proc.wait()
+        reader.join(timeout=5)
+        if proc.stdout is not None:
+            proc.stdout.close()
+
+
+def verify_cooperation(arm_name: str, arm: dict[str, Any], server: dict[str, Any], ws: Path) -> bool:
+    """Checks that the server for a TokenSave+Caveman arm includes the
+    cooperation paragraph exactly when the arm declares it. Dies otherwise."""
+    env = {**agent_env(), **{k: v for k, v in server["env"].items() if k != "TOKENSAVE_PROFILE"}}
+    text = mcp_instructions([server["command"], *server["args"]], env, ws)
+    if text is None:
+        die(f"arm {arm_name}: no `initialize` reply from the TokenSave server")
+    present = COOPERATION_MARKER in text
+    expected = bool(arm.get("caveman_cooperation"))
+    if present != expected:
+        die(f"arm {arm_name}: Caveman cooperation instructions are "
+            f"{'present' if present else 'absent'}, but the arm expects them "
+            f"{'present' if expected else 'absent'}. Check the TokenSave binary "
+            "(it needs Caveman cooperation, #971) and the --caveman-skill file.")
+    return present
 
 
 def kill_tree(proc: subprocess.Popen) -> None:
@@ -435,6 +577,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     claude = resolve_binary(args.claude)
     tasks = [t for t in tasks_cfg["tasks"] if not args.tasks_filter or t["id"] in args.tasks_filter.split(",")]
     arm_names = args.arms_filter.split(",") if args.arms_filter else list(arms_cfg["arms"])
+    caveman_skill = load_caveman_skill(args.caveman_skill) if args.caveman_skill else None
     arms: dict[str, dict[str, Any]] = {}
     for name in arm_names:
         arm = arms_cfg["arms"].get(name)
@@ -443,6 +586,9 @@ def cmd_run(args: argparse.Namespace) -> None:
         guide = arm.get("append_system_prompt_file")
         if guide and not Path(guide).expanduser().is_file():
             print(f"skip arm {name}: {guide} not found (unsupported here)", file=sys.stderr)
+            continue
+        if arm.get("caveman_skill") and caveman_skill is None:
+            print(f"skip arm {name}: needs --caveman-skill (unsupported here)", file=sys.stderr)
             continue
         arms[name] = arm
     for task in tasks:
@@ -458,9 +604,25 @@ def cmd_run(args: argparse.Namespace) -> None:
                 f"their declared fields. Agent reply:\n{leaked}")
         isolation = "verified"
 
+    caveman_home = caveman_agent_home(work, caveman_skill) if caveman_skill is not None else None
+    cooperation: dict[str, bool] = {}
+    for name, arm in arms.items():
+        if arm.get("tokensave") and arm.get("caveman_skill"):
+            ws = workspace(work, tasks[0]["repo"], True)
+            server = mcp_config(arm, tokensave, ws, False, caveman_home)["mcpServers"]["tokensave"]
+            cooperation[name] = verify_cooperation(name, arm, server, ws)
+
     run_id = uuid.uuid4().hex[:12]
     env_info = environment(tokensave, claude)
     env_info["instruction_isolation"] = isolation
+    appendices = {name: prompt_appendix(arm, caveman_skill) for name, arm in arms.items()}
+    env_info["prompt_appendix_sha256"] = {
+        name: hashlib.sha256(text.encode("utf-8")).hexdigest()
+        for name, text in sorted(appendices.items()) if text
+    }
+    if caveman_skill is not None:
+        env_info["caveman_skill_sha256"] = hashlib.sha256(caveman_skill).hexdigest()
+        env_info["caveman_cooperation_verified"] = cooperation
     salt = secrets.token_bytes(32)  # duplicate-detection hashes are per run only
     profile_dir = args.profile_dir or profiling.default_dir()
     results = work / "results.jsonl"
@@ -487,9 +649,10 @@ def cmd_run(args: argparse.Namespace) -> None:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8", newline="\n")
         mcp_path.write_text(
-            json.dumps(mcp_config(arm, tokensave, ws, not args.no_profile)), encoding="utf-8"
+            json.dumps(mcp_config(arm, tokensave, ws, not args.no_profile, caveman_home)), encoding="utf-8"
         )
-        cmd = build_command(claude, arms_cfg, arm, task["prompt"], args.model, mcp_path, args.budget, args.effort)
+        cmd = build_command(claude, arms_cfg, appendices[arm_name], task["prompt"], args.model,
+                            mcp_path, args.budget, args.effort)
         before = profiling.snapshot(profile_dir)
         events, raw_lines, end_ms, exit_code, timed_out = run_agent(cmd, ws, args.timeout)
         metrics, answer = trace.parse(events, salt, end_ms)
@@ -514,12 +677,15 @@ def cmd_run(args: argparse.Namespace) -> None:
             "category": task.get("category"),
             "repo": task["repo"],
             "arm": arm_name,
+            "reference_arm": arm.get("reference", "baseline"),
             "requested_model": args.model,
             "effort": args.effort,
             "conditions": {
                 "process": "cold",
                 "index": "prebuilt" if arm.get("tokensave") else "none",
                 "os_cache": "warm" if args.warmup else "unknown",
+                "caveman": "skill-prompt" if arm.get("caveman_skill") else "none",
+                "caveman_cooperation": bool(arm.get("tokensave") and arm.get("caveman_cooperation")),
             },
             "exit_code": exit_code,
             "timed_out": timed_out,
@@ -588,6 +754,8 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("--budget", type=float, default=2.0, help="max USD per trial (agent-enforced)")
     sp.add_argument("--tokensave", default="tokensave")
     sp.add_argument("--claude", default="claude")
+    sp.add_argument("--caveman-skill", type=Path,
+                    help="SKILL.md from a pinned Caveman checkout; enables the Caveman arms (#797)")
     sp.add_argument("--profile-dir", type=Path, help="TokenSave profile directory (default ~/.tokensave/profile)")
     sp.add_argument("--no-profile", action="store_true", help="do not enable #754 profiling for the MCP server")
     sp.add_argument("--keep-raw", action="store_true", help="OPT-IN: keep full raw traces (sensitive)")
