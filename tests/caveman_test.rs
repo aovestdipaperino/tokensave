@@ -375,7 +375,14 @@ fn init_reports_an_installed_caveman() {
     assert_eq!(std::fs::read(&skill_path).expect("skill"), before);
     let config = home.join(".tokensave").join("config.toml");
     let saved = std::fs::read_to_string(&config).unwrap_or_default();
-    assert!(!saved.contains("caveman_compatibility"), "{saved}");
+    // `init` may write the user config with every default (it does on Linux),
+    // but must never turn cooperation on.
+    let enabled = saved.lines().any(|line| {
+        line.split_once('=').is_some_and(|(key, value)| {
+            key.trim() == "caveman_compatibility" && value.trim() != "false"
+        })
+    });
+    assert!(!enabled, "{saved}");
 }
 
 #[test]
