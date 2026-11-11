@@ -60,16 +60,17 @@ fn node_kind_as_str_roundtrip() {
 
     for kind in kinds {
         let s = kind.as_str();
-        let parsed = NodeKind::from_str(s)
-            .unwrap_or_else(|| panic!("failed to parse NodeKind from '{}'", s));
+        let parsed = s
+            .parse::<NodeKind>()
+            .unwrap_or_else(|e| panic!("failed to parse NodeKind from '{}': {e}", s));
         assert_eq!(kind, parsed, "roundtrip failed for NodeKind::{}", s);
     }
 }
 
 #[test]
-fn node_kind_from_str_unknown_returns_none() {
-    assert!(NodeKind::from_str("unknown_kind").is_none());
-    assert!(NodeKind::from_str("").is_none());
+fn node_kind_from_str_unknown_returns_err() {
+    assert!("unknown_kind".parse::<NodeKind>().is_err());
+    assert!("".parse::<NodeKind>().is_err());
 }
 
 #[test]
@@ -86,16 +87,27 @@ fn edge_kind_as_str_roundtrip() {
 
     for kind in kinds {
         let s = kind.as_str();
-        let parsed = EdgeKind::from_str(s)
-            .unwrap_or_else(|| panic!("failed to parse EdgeKind from '{}'", s));
+        let parsed = s
+            .parse::<EdgeKind>()
+            .unwrap_or_else(|e| panic!("failed to parse EdgeKind from '{}': {e}", s));
         assert_eq!(kind, parsed, "roundtrip failed for EdgeKind::{}", s);
     }
 }
 
 #[test]
-fn edge_kind_from_str_unknown_returns_none() {
-    assert!(EdgeKind::from_str("unknown_edge").is_none());
-    assert!(EdgeKind::from_str("").is_none());
+fn edge_kind_from_str_unknown_returns_err() {
+    assert!("unknown_edge".parse::<EdgeKind>().is_err());
+    assert!("".parse::<EdgeKind>().is_err());
+}
+
+#[test]
+fn parse_enum_error_names_the_type_and_value() {
+    let err = "bogus".parse::<NodeKind>().unwrap_err();
+    assert_eq!(err.to_string(), "unknown node kind: \"bogus\"");
+    let err = "bogus".parse::<EdgeKind>().unwrap_err();
+    assert_eq!(err.to_string(), "unknown edge kind: \"bogus\"");
+    let err = "bogus".parse::<Visibility>().unwrap_err();
+    assert_eq!(err.to_string(), "unknown visibility: \"bogus\"");
 }
 
 #[test]
@@ -266,7 +278,7 @@ fn test_new_node_kinds_roundtrip() {
     ];
     for (kind, expected_str) in kinds {
         assert_eq!(kind.as_str(), expected_str);
-        assert_eq!(NodeKind::from_str(expected_str), Some(kind));
+        assert_eq!(expected_str.parse::<NodeKind>(), Ok(kind));
     }
 }
 
@@ -305,7 +317,7 @@ fn test_c_cpp_csharp_pascal_kotlin_dart_node_kinds_roundtrip() {
     ];
     for (kind, expected_str) in kinds {
         assert_eq!(kind.as_str(), expected_str);
-        assert_eq!(NodeKind::from_str(expected_str), Some(kind));
+        assert_eq!(expected_str.parse::<NodeKind>(), Ok(kind));
     }
 }
 
@@ -319,7 +331,7 @@ fn test_new_edge_kinds_roundtrip() {
     ];
     for (kind, expected_str) in kinds {
         assert_eq!(kind.as_str(), expected_str);
-        assert_eq!(EdgeKind::from_str(expected_str), Some(kind));
+        assert_eq!(expected_str.parse::<EdgeKind>(), Ok(kind));
     }
 }
 
@@ -333,11 +345,11 @@ fn visibility_as_str_and_from_str_roundtrip() {
     ];
     for (vis, s) in cases {
         assert_eq!(vis.as_str(), s);
-        assert_eq!(Visibility::from_str(s), Some(vis));
+        assert_eq!(s.parse::<Visibility>(), Ok(vis));
     }
     // "pub" is an alias for "public"
-    assert_eq!(Visibility::from_str("pub"), Some(Visibility::Pub));
-    assert!(Visibility::from_str("unknown").is_none());
+    assert_eq!("pub".parse::<Visibility>(), Ok(Visibility::Pub));
+    assert!("unknown".parse::<Visibility>().is_err());
 }
 
 #[test]
