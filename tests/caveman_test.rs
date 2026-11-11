@@ -5,7 +5,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use tokensave::caveman::{inspect, Activation, Installation, Scope, COOPERATION_INSTRUCTIONS};
+use tokensave::caveman::{
+    self, inspect, Activation, Installation, Scope, COOPERATION_INSTRUCTIONS,
+};
 
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
@@ -321,4 +323,74 @@ fn doctor_caveman_runs_the_normal_checks_and_prints_json() {
     assert_eq!(reports[0]["version"], "4.1.0");
     assert_eq!(reports[0]["activation"], "inactive");
     assert!(!project.join(".tokensave").exists());
+}
+
+#[test]
+fn init_notice_points_to_the_opt_in_without_enabling_it() {
+    assert_eq!(caveman::init_notice_text(&[], false), None);
+    let off = caveman::init_notice_text(&["claude", "codex"], false).expect("notice");
+    assert!(off.contains("claude, codex"), "{off}");
+    assert!(off.contains("caveman_compatibility = true"), "{off}");
+    assert!(off.contains(caveman::COMPATIBILITY_ENV), "{off}");
+    let on = caveman::init_notice_text(&["claude"], true).expect("notice");
+    assert!(on.contains("cooperation is on"), "{on}");
+    let missing = caveman::init_notice_text(&[], true).expect("notice");
+    assert!(missing.contains("no Caveman skill was found"), "{missing}");
+}
+
+/// Runs `tokensave init` on a fresh project with an isolated home.
+fn run_init(home: &Path, project: &Path, compatibility: &str) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_tokensave"))
+        .args(["init", "--no-git-hook", "--cpu-usage", "balanced"])
+        .arg(project)
+        .current_dir(project)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("APPDATA", home)
+        .env("LOCALAPPDATA", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
+        .env("TOKENSAVE_CAVEMAN_COMPATIBILITY", compatibility)
+        .env("TOKENSAVE_SKIP_AGENT_MAINTENANCE", "1")
+        .env("TOKENSAVE_UPDATE_CHECK", "off")
+        .output()
+        .expect("run tokensave");
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// `init` reports an installed Caveman and leaves the opt-in setting alone.
+#[test]
+fn init_reports_an_installed_caveman() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path();
+    let project = home.join("project");
+    write(&project.join("lib.rs"), "fn main() {}\n");
+    let skill_path = skill(&home.join(".claude"));
+    let before = std::fs::read(&skill_path).expect("skill");
+
+    let stderr = run_init(home, &project, "0");
+    assert!(stderr.contains("Caveman found for claude"), "{stderr}");
+    assert!(stderr.contains("caveman_compatibility = true"), "{stderr}");
+    assert_eq!(std::fs::read(&skill_path).expect("skill"), before);
+    let config = home.join(".tokensave").join("config.toml");
+    let saved = std::fs::read_to_string(&config).unwrap_or_default();
+    // `init` may write the user config with every default (it does on Linux),
+    // but must never turn cooperation on.
+    let enabled = saved.lines().any(|line| {
+        line.split_once('=').is_some_and(|(key, value)| {
+            key.trim() == "caveman_compatibility" && value.trim() != "false"
+        })
+    });
+    assert!(!enabled, "{saved}");
+}
+
+#[test]
+fn init_says_nothing_about_caveman_when_it_is_absent() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let home = tmp.path();
+    let project = home.join("project");
+    write(&project.join("lib.rs"), "fn main() {}\n");
+    let stderr = run_init(home, &project, "0");
+    assert!(!stderr.contains("Caveman"), "{stderr}");
 }
