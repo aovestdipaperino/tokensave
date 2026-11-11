@@ -115,8 +115,33 @@ No SQL changed.
 
 - Measured comparison of baseline, tokensave alone, Caveman alone and both
   on the same tasks and models: input and output tokens, cost, latency,
-  correctness and recovery. The benchmark harness from draft PR #800 is
-  outside this change and needs its own PR with a CI job.
+  correctness and recovery. The benchmark harness from draft PR #800 (see
+  [Benchmark harness](#benchmark-harness-draft-pr-800)) still needs paid
+  trials.
 - Stock-agent trials that confirm the paragraph is followed, and a check
   of results that pass through Caveman's proxy.
 - Porting to `beta`.
+
+## Benchmark harness (draft PR #800)
+
+`scripts/caveman_bench/` is not merged. It holds:
+
+- A pinned three-task invoice suite (`tasks.py`): code understanding,
+  caller/impact analysis and a discount-rounding edit. Scoring runs outside
+  the editable checkout, requires exact answers, checks 251 edit inputs
+  through five public call paths, and rejects changed scorer hashes.
+- A paired runner (`run.py`) that alternates arm order and divides all trial
+  costs by successful tasks.
+- `anthropic_driver.py`, a direct Anthropic Messages benchmark agent with
+  bounded stdio MCP (`transport.py`), and `configure_anthropic.py` to pin
+  candidates and pricing. It is a voice-only benchmark agent, not a stock
+  Claude Code or Codex session: arm B puts the pinned Caveman skill in its
+  system prompt.
+
+The 27 Python tests use synthetic provider responses; CI runs them in the
+`Caveman benchmark harness` job. No paid request has
+run, so no savings, billing, model performance, stock-agent activation or
+proxy preservation is established. Trials run sequentially; turns, messages,
+context, artifact reads (1 MiB) and private traces (64 MiB per trial) are
+capped, and owned MCP servers are closed, killed if needed and reaped. See
+[scripts/caveman_bench/README.md](../scripts/caveman_bench/README.md).
