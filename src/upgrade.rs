@@ -360,8 +360,15 @@ fn extract_zip(data: &[u8], bin_name: &str, dest: &Path) -> Result<()> {
             message: format!("zip entry error: {e}"),
         })?;
 
+        // zip 9 decodes the entry name on demand and reports undecodable names
+        // as an error.
+        let name = file.name().map_err(|e| TokenSaveError::Config {
+            message: format!("zip entry name error: {e}"),
+        })?;
         if archive_entry_matches(
-            Path::new(file.name()).file_name().and_then(|n| n.to_str()),
+            Path::new(name.as_ref())
+                .file_name()
+                .and_then(|n| n.to_str()),
             bin_name,
         ) {
             let mut out = std::fs::File::create(dest).map_err(io_err("create temp file failed"))?;
