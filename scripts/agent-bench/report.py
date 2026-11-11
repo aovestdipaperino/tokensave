@@ -164,7 +164,7 @@ def verdict(arm: dict[str, Any], baseline: dict[str, Any] | None) -> str:
     The thresholds are documented in README.md; they are heuristics."""
     if baseline and arm.get("success_rate") is not None and baseline.get("success_rate") is not None:
         if arm["success_rate"] < baseline["success_rate"]:
-            return "response/context quality (lower success than baseline)"
+            return "response/context quality (lower success than the reference arm)"
     db = arm.get("share_db")
     if db is not None and db >= DB_SHARE_ACTIONABLE:
         return f"database latency ({db:.0%} of wall time)"
@@ -188,19 +188,32 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         by_arm[r["arm"]].append(r)
     groups = {f"{t}/{a}": summarize_group(rs) for (t, a), rs in sorted(by_task_arm.items())}
     arms = {a: summarize_group(rs) for a, rs in sorted(by_arm.items())}
+    # Each arm is compared with its reference arm (records older than the
+    # field compare with the baseline).
+    refs: dict[str, str] = {}
+    for r in records:
+        refs.setdefault(r["arm"], r.get("reference_arm") or "baseline")
     comparisons = {}
     for (task, arm), rs in sorted(by_task_arm.items()):
-        base = by_task_arm.get((task, "baseline"))
-        if arm == "baseline" or not base:
+        ref = refs[arm]
+        base = by_task_arm.get((task, ref))
+        if arm in ("baseline", ref) or not base:
             continue
         a = _vals(base, lambda r: r["metrics"]["wall_ms"])
         b = _vals(rs, lambda r: r["metrics"]["wall_ms"])
+        a_cost = _vals(base, lambda r: r["metrics"].get("cost_usd"))
+        b_cost = _vals(rs, lambda r: r["metrics"].get("cost_usd"))
+        a_out = _vals(base, lambda r: r["metrics"].get("output_tokens"))
+        b_out = _vals(rs, lambda r: r["metrics"].get("output_tokens"))
         comparisons[f"{task}/{arm}"] = {
+            "reference": ref,
             "wall_ms_median_diff": (_median(b) - _median(a)) if a and b else None,
             "wall_ms_median_diff_ci95": _bootstrap_median_diff(a, b),
+            "cost_usd_median_diff": (_median(b_cost) - _median(a_cost)) if a_cost and b_cost else None,
+            "output_tokens_median_diff": (_median(b_out) - _median(a_out)) if a_out and b_out else None,
             "success_rate_diff": groups[f"{task}/{arm}"]["success_rate"]
-            - groups[f"{task}/baseline"]["success_rate"],
-            "verdict": verdict(groups[f"{task}/{arm}"], groups[f"{task}/baseline"]),
+            - groups[f"{task}/{ref}"]["success_rate"],
+            "verdict": verdict(groups[f"{task}/{arm}"], groups[f"{task}/{ref}"]),
         }
     envs = {json.dumps(r.get("environment"), sort_keys=True) for r in records}
     models = sorted({str(r["metrics"].get("model") or r.get("requested_model")) for r in records})
@@ -212,7 +225,8 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "arms": arms,
         "groups": groups,
         "comparisons": comparisons,
-        "arm_verdicts": {a: verdict(s, arms.get("baseline")) for a, s in arms.items() if a != "baseline"},
+        "references": {a: refs[a] for a in arms if a != "baseline"},
+        "arm_verdicts": {a: verdict(s, arms.get(refs[a])) for a, s in arms.items() if a != "baseline"},
     }
 
 
@@ -285,21 +299,25 @@ def render_markdown(records: list[dict[str, Any]]) -> str:
         )
 
     if agg["comparisons"]:
-        lines += ["", "## Against baseline", ""]
-        lines.append("| Task / arm | Δ wall p50 (s) | 95% CI (bootstrap) | Δ success | Dominant actionable bottleneck |")
-        lines.append("|---|---:|---|---:|---|")
+        lines += ["", "## Against reference arm", ""]
+        lines.append("Each arm is compared with its reference arm (`reference` in arms.json; default `baseline`).")
+        lines.append("")
+        lines.append("| Task / arm | Reference | Δ wall p50 (s) | 95% CI (bootstrap) | Δ cost p50 $ | Δ out tok p50 | Δ success | Dominant actionable bottleneck |")
+        lines.append("|---|---|---:|---|---:|---:|---:|---|")
         for key, c in agg["comparisons"].items():
             ci = c["wall_ms_median_diff_ci95"]
             ci_text = f"{ci[0] / 1000:+.1f} … {ci[1] / 1000:+.1f}" if ci else "n/a (n<2)"
             diff = c["wall_ms_median_diff"]
+            cost = c["cost_usd_median_diff"]
+            out = c["output_tokens_median_diff"]
             lines.append(
-                f"| {key} | {(diff / 1000):+.1f} | {ci_text} | {c['success_rate_diff']:+.0%} | {c['verdict']} |"
-                if diff is not None
-                else f"| {key} | n/a | {ci_text} | {c['success_rate_diff']:+.0%} | {c['verdict']} |"
+                f"| {key} | {c['reference']} | {f'{diff / 1000:+.1f}' if diff is not None else 'n/a'} | {ci_text} | "
+                f"{f'{cost:+.3f}' if cost is not None else 'n/a'} | {f'{out:+.0f}' if out is not None else 'n/a'} | "
+                f"{c['success_rate_diff']:+.0%} | {c['verdict']} |"
             )
     if agg["arm_verdicts"]:
         lines += ["", "## Verdict by arm", ""]
         for arm, v in agg["arm_verdicts"].items():
-            lines.append(f"- **{arm}**: {v}")
+            lines.append(f"- **{arm}** (vs {agg['references'][arm]}): {v}")
     lines += ["", "## Environment", "", "```json", json.dumps(agg["environments"], indent=2), "```", ""]
     return "\n".join(lines)

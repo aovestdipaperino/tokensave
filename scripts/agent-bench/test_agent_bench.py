@@ -203,6 +203,23 @@ class ReportTest(unittest.TestCase):
         recs += [record("t", "tokensave", 10_000, ts_calls=5, dupes=2)]
         self.assertIn("number of calls", report.aggregate(recs)["arm_verdicts"]["tokensave"])
 
+    def test_arms_compare_with_their_reference_arm(self):
+        recs = [record("t", "caveman", 10_000) for _ in range(2)]
+        recs += [record("t", "tokensave-caveman", 6_000) for _ in range(2)]
+        for r in recs[2:]:
+            r["reference_arm"] = "caveman"
+        recs += [record("t", "baseline", 20_000)]  # older record: no reference field
+        agg = report.aggregate(recs)
+        comp = agg["comparisons"]["t/tokensave-caveman"]
+        self.assertEqual(comp["reference"], "caveman")
+        self.assertEqual(comp["wall_ms_median_diff"], -4000)
+        self.assertEqual(comp["cost_usd_median_diff"], 0)
+        self.assertEqual(agg["comparisons"]["t/caveman"]["reference"], "baseline")
+        self.assertEqual(agg["references"]["tokensave-caveman"], "caveman")
+        md = report.render_markdown(recs)
+        self.assertIn("| t/tokensave-caveman | caveman | -4.0 |", md)
+        self.assertIn("**tokensave-caveman** (vs caveman)", md)
+
     def test_db_share_verdict(self):
         prof = {"mcp_total_ms": 3000.0, "db_ms_in_tools": 2000.0, "sync_ms": 0.0,
                 "db_ops_in_tools": 10, "repeated_db_executions": 0}
@@ -237,6 +254,31 @@ class ConfigTest(unittest.TestCase):
         cfg = agent_bench.mcp_config(arms["arms"]["tokensave"], Path("ts"), Path("ws"), True)
         self.assertEqual(cfg["mcpServers"]["tokensave"]["env"]["TOKENSAVE_PROFILE"], "light")
 
+    def test_references_name_defined_arms(self):
+        arms = agent_bench.load_json(HERE / "arms.json")["arms"]
+        for name, arm in arms.items():
+            self.assertIn(arm.get("reference", "baseline"), arms, name)
+            self.assertNotEqual(arm.get("reference"), name)
+            if "caveman_cooperation" in arm:
+                self.assertTrue(arm["tokensave"] and arm["caveman_skill"], name)
+
+    def test_caveman_arms_differ_only_in_cooperation_flag(self):
+        arms = agent_bench.load_json(HERE / "arms.json")["arms"]
+        home = Path("home")
+        coop = agent_bench.mcp_config(arms["tokensave-caveman"], Path("ts"), Path("ws"), False, home)
+        plain = agent_bench.mcp_config(arms["tokensave-caveman-nocoop"], Path("ts"), Path("ws"), False, home)
+        coop_env = coop["mcpServers"]["tokensave"]["env"]
+        plain_env = plain["mcpServers"]["tokensave"]["env"]
+        self.assertEqual(coop_env.pop("TOKENSAVE_CAVEMAN_COMPATIBILITY"), "1")
+        self.assertEqual(plain_env.pop("TOKENSAVE_CAVEMAN_COMPATIBILITY"), "0")
+        self.assertEqual(coop_env, plain_env)
+        self.assertEqual(coop_env["CLAUDE_CONFIG_DIR"], str(home))
+        # A user's own caveman_compatibility setting cannot reach other arms.
+        ts = agent_bench.mcp_config(arms["tokensave"], Path("ts"), Path("ws"), False, home)
+        ts_env = ts["mcpServers"]["tokensave"]["env"]
+        self.assertEqual(ts_env["TOKENSAVE_CAVEMAN_COMPATIBILITY"], "0")
+        self.assertNotIn("CLAUDE_CONFIG_DIR", ts_env)
+
     def test_fixture_has_exactly_one_seeded_failure(self):
         proc = subprocess.run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests"],
                               cwd=HERE / "fixtures" / "inventory", capture_output=True, text=True)
@@ -265,6 +307,93 @@ class EnvTest(unittest.TestCase):
     def test_arms_load_no_user_or_project_settings(self):
         args = agent_bench.load_json(HERE / "arms.json")["common_args"]
         self.assertEqual(args[args.index("--setting-sources") + 1], "")
+
+
+SKILL = b"---\nname: caveman\ndescription: terse\n---\nTalk like caveman.\n"
+
+FAKE_SERVER = """
+import json, sys, time
+mode = sys.argv[1]
+if mode == "silent":
+    sys.stdin.read()  # never replies; exits when the harness closes stdin
+    sys.exit(0)
+req = json.loads(sys.stdin.readline())
+print("not json", flush=True)
+print(json.dumps({"jsonrpc": "2.0", "method": "notifications/message"}), flush=True)
+result = {} if mode == "none" else {"instructions": "Use tokensave." + (
+    " If Caveman is active in this session, it governs only your prose." if mode == "coop" else "")}
+print(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": result}), flush=True)
+sys.stdin.read()
+"""
+
+
+class CavemanTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.server = self.dir / "fake_server.py"
+        self.server.write_text(FAKE_SERVER, encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def skill(self, data: bytes) -> Path:
+        path = self.dir / "SKILL.md"
+        path.write_bytes(data)
+        return path
+
+    def test_skill_checks_match_tokensave_discovery(self):
+        self.assertEqual(agent_bench.load_caveman_skill(self.skill(SKILL)), SKILL)
+        for bad in (b"---\nname: other\n---\n", b"name: caveman\n\xff\xfe",
+                    b"name: caveman\n" + b"x" * agent_bench.CAVEMAN_SKILL_MAX_BYTES):
+            with self.assertRaises(SystemExit):
+                agent_bench.load_caveman_skill(self.skill(bad))
+        with self.assertRaises(SystemExit):
+            agent_bench.load_caveman_skill(self.dir / "missing.md")
+
+    def test_agent_home_holds_only_the_pinned_skill(self):
+        home = agent_bench.caveman_agent_home(self.dir / "work", SKILL)
+        files = [p.relative_to(home).as_posix() for p in home.rglob("*") if p.is_file()]
+        self.assertEqual(files, ["skills/caveman/SKILL.md"])
+        self.assertEqual((home / "skills" / "caveman" / "SKILL.md").read_bytes(), SKILL)
+
+    def test_prompt_appendix_combines_rules_and_skill(self):
+        rules = self.dir / "rules.md"
+        rules.write_text("# Rules", encoding="utf-8")
+        self.assertIsNone(agent_bench.prompt_appendix({"tokensave": True}, SKILL))
+        self.assertIsNone(agent_bench.prompt_appendix({"caveman_skill": True}, None))
+        self.assertEqual(agent_bench.prompt_appendix({"caveman_skill": True}, SKILL), SKILL.decode())
+        both = agent_bench.prompt_appendix(
+            {"append_system_prompt_file": str(rules), "caveman_skill": True}, SKILL)
+        self.assertEqual(both, "# Rules\n\n" + SKILL.decode())
+        cmd = agent_bench.build_command(Path("claude"), {"common_args": []}, both, "p", "m",
+                                        Path("mcp.json"), None, None)
+        self.assertEqual(cmd[-2:], ["--append-system-prompt", both])
+
+    def test_reads_initialize_instructions(self):
+        cmd = [sys.executable, str(self.server)]
+        env = dict(agent_bench.os.environ)
+        self.assertIn("If Caveman is active", agent_bench.mcp_instructions(cmd + ["coop"], env, self.dir))
+        self.assertEqual(agent_bench.mcp_instructions(cmd + ["plain"], env, self.dir), "Use tokensave.")
+        self.assertEqual(agent_bench.mcp_instructions(cmd + ["none"], env, self.dir), "")
+        started = agent_bench.time.monotonic()
+        self.assertIsNone(agent_bench.mcp_instructions(cmd + ["silent"], env, self.dir, timeout_s=0.5))
+        self.assertLess(agent_bench.time.monotonic() - started, 10)
+        self.assertIsNone(agent_bench.mcp_instructions([str(self.dir / "no-such-binary")], env, self.dir))
+
+    def test_cooperation_mismatch_stops_the_run(self):
+        def server(mode):
+            return {"command": sys.executable, "args": [str(self.server), mode],
+                    "env": {"TOKENSAVE_PROFILE": "light"}}
+
+        coop = {"tokensave": True, "caveman_skill": True, "caveman_cooperation": True}
+        nocoop = {"tokensave": True, "caveman_skill": True, "caveman_cooperation": False}
+        self.assertTrue(agent_bench.verify_cooperation("a", coop, server("coop"), self.dir))
+        self.assertFalse(agent_bench.verify_cooperation("b", nocoop, server("plain"), self.dir))
+        with self.assertRaises(SystemExit):
+            agent_bench.verify_cooperation("c", coop, server("plain"), self.dir)
+        with self.assertRaises(SystemExit):
+            agent_bench.verify_cooperation("d", nocoop, server("coop"), self.dir)
 
 
 class CheckTest(unittest.TestCase):

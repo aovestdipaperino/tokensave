@@ -111,6 +111,11 @@ No SQL changed.
 - `user_config` tests cover the default, round trip and a concurrent stale
   save.
 
+The [agent workflow benchmark](../scripts/agent-bench/README.md#caveman-arms-797)
+has Caveman arms for the measured comparison. Its CI tests and a local
+`initialize` handshake check that the paragraph appears only in the
+cooperation arm. No paid trial has run yet.
+
 ## Remaining work for #797
 
 - Measured comparison of baseline, tokensave alone, Caveman alone and both
