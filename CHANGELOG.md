@@ -13,6 +13,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- **End-to-end agent workflow benchmark (Refs #948).** `scripts/agent-bench/` runs Claude Code headless on a pinned task suite (definition, references, impact, multi-hop, missing symbol, file added after indexing, a test-verified bug fix) without TokenSave, with the TokenSave MCP server, and with the server plus the installed rules. It checks every answer independently and records correctness, wall time split into model and tool wait, model and tool calls, tokens, cost, repeated retrievals and TokenSave response size. TokenSave-internal MCP and database time is read from the existing opt-in profiler (#754); no new instrumentation. Results hold metrics only unless `--keep-raw` is passed. Method, decision rules and the pilot results are in `docs/AGENT-WORKFLOW-BENCHMARK.md`; CI runs the harness's synthetic tests.
 - **Project state can live outside the repository (Refs #919).**
   - Set `TOKENSAVE_STATE_DIR`, or `state_dir` in `~/.tokensave/config.toml` (the variable wins; empty selects the default). Each project then keeps its state in `<base>/projects/<name>-<hash>/`, with `beta/` beneath it for prerelease builds.
   - `<hash>` comes from the root's canonical path, so linked worktrees get separate directories.

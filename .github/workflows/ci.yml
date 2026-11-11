@@ -37,6 +37,7 @@ jobs:
       clippy: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.clippy == 'true' }}
       test: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.test == 'true' }}
       pi: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.pi == 'true' }}
+      agent_bench: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.agent_bench == 'true' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -98,6 +99,9 @@ jobs:
               - *ci
               - 'src/agents/integrations/pi_extension.ts'
               - 'tests/pi_extension_test.mjs'
+            agent_bench:
+              - *ci
+              - 'scripts/agent-bench/**'
 
   test:
     name: Test ${{ matrix.name }}
@@ -222,12 +226,25 @@ jobs:
           node-version: '22'
       - run: node --experimental-strip-types --test tests/pi_extension_test.mjs
 
+  # Synthetic traces only: no model calls, no tokensave binary (#948).
+  agent-bench:
+    name: Agent benchmark harness
+    needs: changes
+    if: needs.changes.outputs.agent_bench == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m unittest discover -s scripts/agent-bench -v
+
   # Single required check. A skipped matrix job reports under its unexpanded
   # name (`Test ${{ matrix.name }}`), so per-platform checks can't be required.
   ci-ok:
     name: CI OK
     if: always()
-    needs: [changes, test, clippy, msrv, fmt, features, pi-extension]
+    needs: [changes, test, clippy, msrv, fmt, features, pi-extension, agent-bench]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if a gated job failed

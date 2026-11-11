@@ -108,3 +108,18 @@ python3 scripts/mcp_probe/build_matrix.py > matrix.md
 Output cells are `✓ 5/5` (clean), `🐛 e/N` (errors), `⏱ N/N` (timeouts), `∅ E/N` (empty), `🐢 ok/slow` (>10 s calls). Any cell carrying an error or timeout earns a 🚩 in the rightmost column. Per-call detail with the first 100 chars of each error lands in the TSV log for follow-up.
 
 Different from the criterion bench above: criterion measures per-iteration latency for a focused tool set on pinned refs and produces statistical reports under `target/criterion/`; `mcp_probe` exercises every tool with a broader query set on whatever repos you point it at, optimising for breadth of coverage rather than measurement precision.
+
+## End-to-end agent workflow benchmark (`scripts/agent-bench`)
+
+`tokensave bench`, the criterion bench and `mcp_probe` measure TokenSave on its own. `scripts/agent-bench/` measures what TokenSave changes in a real agent task (#948): the same Claude Code agent and model run a fixed task suite with no TokenSave, with the TokenSave MCP server, and with the server plus the rules `tokensave install` writes. Each answer is checked independently (expected identifiers, a test command, unchanged files), so a faster run that gets the answer wrong does not count as a win.
+
+Per trial it records correctness, wall time split into model wait and tool wait, model calls, tool calls, tokens and the agent's cost estimate, repeated retrieval calls, and TokenSave response size. TokenSave-internal MCP and database time comes from the [opt-in profiler](../PROFILING.md). By default the results hold metrics only: no prompts, answers, arguments, paths or source.
+
+```bash
+cargo build --release --bin tokensave
+python3 scripts/agent-bench/agent_bench.py prepare --work /private/bench --tokensave target/release/tokensave
+python3 scripts/agent-bench/agent_bench.py run --work /private/bench --tokensave target/release/tokensave --model <model-id> --repetitions 3 --warmup
+python3 scripts/agent-bench/agent_bench.py report --work /private/bench --out report.md
+```
+
+`run` makes paid model calls; `--budget` caps each trial. See [`scripts/agent-bench/README.md`](../../scripts/agent-bench/README.md) for the arms, tasks, metrics and limitations, and [the agent workflow benchmark report](../AGENT-WORKFLOW-BENCHMARK.md) for results.

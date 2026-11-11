@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "description": "Agent configurations compared by run. Every arm uses the same agent, model and CLI arguments; arms differ only in the fields shown.",
+  "agent": "claude-code",
+  "common_args": [
+    "--setting-sources", "",
+    "--permission-mode", "acceptEdits",
+    "--permission-prompts", "none",
+    "--allowedTools", "Read", "Grep", "Glob", "Edit", "Write", "Bash(python *)", "Bash(python3 *)", "Bash(git status*)", "Bash(git diff*)", "PowerShell(python *)", "mcp__tokensave",
+    "--disable-slash-commands",
+    "--no-session-persistence"
+  ],
+  "arms": {
+    "baseline": {
+      "description": "No TokenSave: no MCP servers, unindexed checkout.",
+      "tokensave": false
+    },
+    "tokensave": {
+      "description": "TokenSave MCP server (libSQL) on an indexed checkout; server instructions only.",
+      "tokensave": true
+    },
+    "tokensave-guided": {
+      "description": "As tokensave, plus the rules text `tokensave install` writes for Claude Code, appended to the system prompt. Tests whether guidance changes tool use.",
+      "tokensave": true,
+      "append_system_prompt_file": "~/.claude/rules/tokensave.md"
+    }
+  }
+}
