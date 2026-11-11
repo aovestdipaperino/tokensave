@@ -29,6 +29,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Documentation
 
+- `docs/MEMORY-SAFETY-AUDIT.md` now records rust-lang/rust#161018 (`process::exit` from a non-main thread on Unix) as fixed on both branches, since `master` also pins Rust 1.99.0, and drops the matching follow-up item. The file stays identical to `master` (Refs #957).
 - `CONTRIBUTING.md`, `AGENTS.md` and the pull request template now require crediting the people who proposed or substantially specified a change in an issue as co-authors of the PR that implements it, with `Co-authored-by:` trailers using their GitHub noreply address. Ported from `master` (#951) to keep shared rules synchronized (Refs #950).
 - Use a wide beta README logo matching the stable logo's dimensions and wordmark layout, with a beta badge, and preserve this intentional branch-specific branding difference (Refs #801).
 
