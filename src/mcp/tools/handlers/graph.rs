@@ -1915,9 +1915,9 @@ pub(super) async fn handle_callers_for(cg: &TokenSave, args: Value) -> Result<To
     let kinds: Vec<EdgeKind> = if kind_arg.is_empty() {
         Vec::new()
     } else {
-        match EdgeKind::from_str(kind_arg) {
-            Some(k) => vec![k],
-            None => {
+        match kind_arg.parse::<EdgeKind>() {
+            Ok(k) => vec![k],
+            Err(_) => {
                 return Err(TokenSaveError::Config {
                     message: format!("unknown edge kind: {kind_arg}"),
                 });

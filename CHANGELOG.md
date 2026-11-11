@@ -74,7 +74,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - Review `#[allow]` attributes outside the language extractors: remove 7 that no longer suppress anything, replace 4 with the code fix the lint asks for, and give the remaining unexplained ones a `reason` (Refs #886).
 - Resolve the pre-existing `clippy::pedantic` warnings in the MCP server: box the ~56 KiB `tools/call` handler future once instead of inlining it into every caller (including the serve loop), and simplify the serve loop's control flow with `let ... else` and `if let` (Refs #886).
 - Resolve the pre-existing `clippy::pedantic` warnings outside the MCP server (`src/profile/`, branch GC, config docs, one integration test) as part of the Google Rust Style Guide audit; the one intentional `Option<Option<_>>` is kept with a documented `#[allow]`. No behavior change (Refs #886).
-- Drop the unread `Database` reference from `ReferenceResolver`: `ReferenceResolver::from_nodes` now takes only the pre-loaded nodes. Library users must remove the first argument. No behavior change (Refs #912).
+- Fix the `dead_code` warnings of the `lite` build: Ruby-only extractor state and helpers now compile only with `lang-ruby`, and `find_descendant_by_kind` only with the Julia or PowerShell extractor that uses it. No behavior change (Refs #912).
 
 ### Documentation
 
