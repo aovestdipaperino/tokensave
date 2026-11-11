@@ -116,8 +116,8 @@ No SQL changed.
 - Measured comparison of baseline, tokensave alone, Caveman alone and both
   on the same tasks and models: input and output tokens, cost, latency,
   correctness and recovery. The benchmark harness from draft PR #800 (see
-  [Benchmark harness](#benchmark-harness-draft-pr-800)) still needs a CI job
-  and paid trials.
+  [Benchmark harness](#benchmark-harness-draft-pr-800)) still needs paid
+  trials.
 - Stock-agent trials that confirm the paragraph is followed, and a check
   of results that pass through Caveman's proxy.
 - Porting to `beta`.
@@ -138,7 +138,8 @@ No SQL changed.
   Claude Code or Codex session: arm B puts the pinned Caveman skill in its
   system prompt.
 
-The 27 Python tests use synthetic provider responses. No paid request has
+The 27 Python tests use synthetic provider responses; CI runs them in the
+`Caveman benchmark harness` job. No paid request has
 run, so no savings, billing, model performance, stock-agent activation or
 proxy preservation is established. Trials run sequentially; turns, messages,
 context, artifact reads (1 MiB) and private traces (64 MiB per trial) are
