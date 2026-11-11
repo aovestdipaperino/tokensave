@@ -7,6 +7,14 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Security
+
+- **Resolve the RustSec advisories reported by `cargo audit` (Refs #960).** `cargo audit` no longer reports any vulnerable or unsound crate in `Cargo.lock`. Before this change it reported 20 vulnerabilities and 3 unsound crates.
+  - libSQL is now built with only its local `core` feature. Its default `replication`, `remote`, `sync` and `tls` features pulled in a network stack (hyper 0.14, h2 0.3, rustls 0.22, tonic, rustls-pemfile) that tokensave never used, because it opens databases only with `Builder::new_local`. `Cargo.lock` now lists 73 fewer packages, and `rustls` 0.22.4, `rustls-webpki` 0.102.8, `h2` 0.3.27 and `anyhow` are gone.
+  - `zip`, used by the Windows self-upgrade, moves from 8 to 9 (RUSTSEC-2026-0367, -0368, -0369 and -0429). tokensave never called the affected `extract` functions. The only code change is that zip 9 returns entry names as a `Result`, so an archive entry with an undecodable name now fails the upgrade with a `zip entry name error` message.
+  - Semver-compatible updates: `rustls` 0.23.46, `rustls-webpki` 0.103.16, `webpki-roots` and `webpki-root-certs` 1.0.12, `crossbeam-epoch` 0.9.21, `faster-hex` 0.10.1 and `tokio` 1.54.1.
+  - `bincode` 1.3.3 and 2.0.1 and `proc-macro-error2` 2.0.1 are still reported as unmaintained. These are warnings and do not fail the check.
+
 ### Fixed
 
 - Return MCP invalid-parameter errors for selected graphs rejected by database compatibility checks, preserving internal errors for database failures (Refs #835).
