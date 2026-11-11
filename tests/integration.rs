@@ -38,6 +38,7 @@ mod branch_wal_copy_test;
 mod c_extraction_test;
 mod call_chain_symbol_test;
 mod canvas_extraction_test;
+mod caveman_test;
 mod claude_agent_test;
 mod cloud_test;
 mod cobol_extraction_test;

@@ -119,3 +119,34 @@ Once configured, Claude Code automatically uses tokensave instead of reading raw
 | **Stop hook** | Runs when the session ends | Flushes token counters |
 
 The result: Claude gets the same code understanding with far fewer tokens. A typical Explore agent reads 20-50 files; tokensave returns the relevant symbols, relationships, and code snippets from its pre-built index.
+
+## Working alongside Caveman
+
+[Caveman](https://github.com/JuliusBrussee/caveman) is a separate project that makes an agent write shorter prose. tokensave reduces what the agent reads; Caveman reduces what it writes. The two can run together without any setting. tokensave never installs, configures or runs Caveman, and its tool results are the same whether Caveman is installed or not.
+
+To ask the agent to keep tokensave results exact while Caveman is on, opt in:
+
+```toml
+# ~/.tokensave/config.toml
+caveman_compatibility = true
+```
+
+`TOKENSAVE_CAVEMAN_COMPATIBILITY` overrides the setting for one run: `0`, `false`, `no`, `off` or empty turn it off, and any other value turns it on. When cooperation is on and a Caveman skill is found for a supported agent, the MCP `initialize` instructions gain one paragraph. It tells the agent to keep using targeted tokensave queries, to quote code, identifiers, paths, line numbers, signatures, errors and numbers from tokensave results exactly, and that user instructions take precedence. Restart the agent's MCP connection after changing the setting or installing or removing Caveman. With the setting off, which is the default, no agent file is read and the instructions are unchanged.
+
+tokensave looks for a skill named `caveman` in these places, for Claude Code, Codex, Cursor, Copilot, Gemini, OpenCode, Pi and OMP:
+
+- `.agents/skills/caveman/` and `.<agent>/skills/caveman/` in the project;
+- `skills/caveman/` and `caveman/skills/caveman/` in the agent's home, which honors `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and OpenCode's `XDG_CONFIG_HOME`;
+- `~/.agents/skills/caveman/`;
+- for Claude Code, the plugin path that `plugins/installed_plugins.json` records for `caveman@caveman`.
+
+Check what tokensave sees with:
+
+```bash
+tokensave doctor --caveman
+tokensave doctor --caveman --agent claude --session-id <claude-session-id>
+```
+
+This runs the normal `doctor` checks and adds a **Caveman compatibility** section. It also prints a JSON report per agent on stdout, so `tokensave doctor --caveman 2>/dev/null` gives only the JSON. The Caveman check reads files and changes nothing. A report separates installation (`absent`, `installed`, `partial` or `unsupported`) from activation in a session (`active`, `inactive` or `unknown`). A skill on disk only means that Caveman is available. Activation is reported only for a Claude Code session named with `--session-id`, and only when the plugin manifest names a Caveman release tokensave was checked against (4.0.1 and 4.1.0). tokensave then reads that session's `.caveman-sessions/<id>.mode` file. Caveman's machine-wide `.caveman-active` flag and its `defaultMode` setting never count as activation.
+
+Caveman's optional proxy or input compression can rewrite tool results after tokensave has returned them, and tokensave cannot prevent that. If you need exact results in a run, turn off lossy input compression with Caveman's own controls. `doctor --caveman` says so whenever a Caveman skill is found. The design notes and findings are in [Caveman compatibility](../CAVEMAN-COMPATIBILITY.md).

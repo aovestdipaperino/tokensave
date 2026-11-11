@@ -23,6 +23,7 @@ pub mod blame_engine;
 pub mod branch;
 pub mod branch_meta;
 pub mod cancel;
+pub mod caveman;
 pub mod cloud;
 pub mod config;
 pub mod context;
