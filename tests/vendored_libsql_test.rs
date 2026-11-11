@@ -72,6 +72,54 @@ fn package_version(manifest: &str) -> Option<String> {
         })
 }
 
+/// The libsql version requirement in our `[dependencies]` table.
+///
+/// Accepts both the plain `libsql = "<version>"` form and the inline-table
+/// form `libsql = { version = "<version>", ... }`, which the manifest uses to
+/// turn off libsql's default network features (#960). The first `libsql = `
+/// line is the dependency; the later `[patch.crates-io]` entry has no version.
+fn requested_libsql_version(manifest: &str) -> Option<String> {
+    let value = manifest
+        .lines()
+        .find_map(|line| line.strip_prefix("libsql = "))?
+        .trim();
+    let version = match value.strip_prefix('{') {
+        Some(table) => table
+            .split(',')
+            .find_map(|field| {
+                field
+                    .trim()
+                    .strip_prefix("version")?
+                    .trim_start()
+                    .strip_prefix('=')
+            })?
+            .trim()
+            .strip_prefix('"')?,
+        None => value.strip_prefix('"')?,
+    };
+    Some(version.split('"').next()?.to_string())
+}
+
+#[test]
+fn requested_libsql_version_reads_both_manifest_forms() {
+    assert_eq!(
+        requested_libsql_version("[dependencies]\nlibsql = \"0.9.30\"\n").as_deref(),
+        Some("0.9.30")
+    );
+    assert_eq!(
+        requested_libsql_version(
+            "[dependencies]\nlibsql = { version = \"0.9.30\", default-features = false, \
+             features = [\"core\"] }\n\n[patch.crates-io]\nlibsql = { path = \"vendor/libsql\" }\n"
+        )
+        .as_deref(),
+        Some("0.9.30")
+    );
+    assert_eq!(
+        requested_libsql_version("[patch.crates-io]\nlibsql = { path = \"vendor/libsql\" }\n"),
+        None
+    );
+}
+
 #[test]
 fn patch_entry_and_vendored_copy_agree_on_existing() {
     let vendored = repo_root().join("vendor").join("libsql");
@@ -112,17 +160,8 @@ fn vendored_libsql_matches_the_requested_version() {
         return;
     }
 
-    // Accept both `libsql = "<version>"` and the table form
-    // `libsql = { version = "<version>", ... }`.
-    let requested = ours
-        .lines()
-        .find_map(|line| line.strip_prefix("libsql = "))
-        .and_then(|rest| {
-            rest.strip_prefix('"')
-                .or_else(|| rest.split_once("version = \"").map(|(_, version)| version))
-        })
-        .and_then(|rest| rest.split('"').next())
-        .expect("Cargo.toml declares the libsql version as a string or `version = \"<version>\"`");
+    let requested = requested_libsql_version(&ours)
+        .expect("Cargo.toml declares `libsql = \"<version>\"` or `libsql = { version = \"<version>\", ... }`");
 
     let vendored = read_lf(&repo_root().join("vendor").join("libsql").join("Cargo.toml"))
         .expect("read vendor/libsql/Cargo.toml");

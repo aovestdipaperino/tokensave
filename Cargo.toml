@@ -126,6 +126,10 @@ name = "tokensave"
 path = "src/main.rs"
 
 [dependencies]
+# Only the local-file engine (`core`). libsql's default `replication`,
+# `remote`, `sync` and `tls` features pull in a hyper 0.14 / rustls 0.22 /
+# tonic network stack that tokensave never uses (it only calls
+# `Builder::new_local`) and that carries RustSec advisories (#960).
 libsql = { version = "0.9.30", default-features = false, features = ["core"] }
 tree-sitter = "0.26"
 tree-sitter-language = "0.1"

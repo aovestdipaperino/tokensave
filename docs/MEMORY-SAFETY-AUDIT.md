@@ -170,9 +170,7 @@ serialized.
 - **libSQL/SQLite.** The known double-close use-after-free in libsql 0.9.30 is
   already patched in `vendor/libsql` (#367), and
   `tests/vendored_libsql_test.rs` guards that patch against drift. TokenSave
-  uses only the safe libsql API, and builds libsql with only its `core`
-  feature, so libsql's remote, replication and TLS code (hyper, tonic,
-  rustls 0.22) is not compiled in (#960).
+  uses only the safe libsql API.
 - **tree-sitter grammars.** These are about 50 C and C++ grammars plus
   external scanners, linked statically. Extraction runs them in authenticated
   worker subprocesses, so a crash or `abort()` in a scanner costs one file,
@@ -204,7 +202,7 @@ serialized.
 | `cargo test --locked --no-default-features --features lite --test incremental_resolution_test` (Windows) | `master` (Rust 1.98.1): 4 passed, 0 failed, with the fix. `beta`: see the beta pull request. |
 | `rustfmt --check` on the changed test | Clean. |
 | `cargo clippy` | **Not run locally.** The change adds no `unsafe` code and touches one test file. CI's Clippy job runs on it. |
-| `cargo audit` / RustSec | **Not run** when the audit was written: `cargo-audit` was not installed in the audit environment, and CI had no RustSec job. #956 added the job. With the dependency updates for #960, `cargo audit` 0.23.0 on `master` reports no vulnerabilities and no unsound crates, plus two allowed unmaintained warnings (`bincode`, `proc-macro-error2`). |
+| `cargo audit` / RustSec | **Not run.** `cargo-audit` is not installed in the audit environment, and CI has no RustSec job. Recommended follow-up: add a scheduled `cargo audit` or `cargo deny check advisories` job. |
 | Miri | **Not run.** TokenSave's `unsafe` code is FFI and mmap, which Miri cannot execute, and the pinned toolchain is stable. Running Miri on the remaining safe code would find only standard-library bugs, which the table above covers. |
 | Sanitizers (ASan/TSan) on vendored grammars | **Not run.** They need nightly and a Linux host. Worker isolation contains grammar crashes in the meantime. |
 
