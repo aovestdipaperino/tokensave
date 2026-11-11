@@ -140,6 +140,8 @@ tokensave looks for a skill named `caveman` in these places, for Claude Code, Co
 - `~/.agents/skills/caveman/`;
 - for Claude Code, the plugin path that `plugins/installed_plugins.json` records for `caveman@caveman`.
 
+`tokensave init` searches these places too. When it finds a Caveman skill, it names the agents and, if the setting is off, shows how to turn it on. It never turns it on itself, and it says nothing when no skill is found and the setting is off. Auto-initialization by hooks or `serve` does not search.
+
 Check what tokensave sees with:
 
 ```bash
