@@ -8,7 +8,7 @@
 //! schemas and the default instructions are never changed.
 //!
 //! Everything here is read-only and bounded: fixed candidate paths, at most
-//! `MAX_ARTIFACT_BYTES` per file and `MAX_REGISTRY_ENTRIES` plugin-registry
+//! [`MAX_ARTIFACT_BYTES`] per file and [`MAX_REGISTRY_ENTRIES`] plugin-registry
 //! entries, no cache, no background task and no subprocess. An installed skill
 //! is evidence of availability only. Session activation is reported solely
 //! from Claude's per-session state file for an explicitly named session of a
@@ -35,10 +35,10 @@ pub const AGENTS: &[&str] = &[
 ];
 
 /// Upper bound for any file read here.
-const MAX_ARTIFACT_BYTES: u64 = 64 * 1024;
+pub const MAX_ARTIFACT_BYTES: u64 = 64 * 1024;
 
 /// Upper bound for Claude plugin-registry entries considered.
-const MAX_REGISTRY_ENTRIES: usize = 16;
+pub const MAX_REGISTRY_ENTRIES: usize = 16;
 
 /// Caveman's own limit for a session state file (`MAX_FLAG_BYTES`).
 const MAX_SESSION_BYTES: u64 = 64;
@@ -152,7 +152,8 @@ impl Scope {
     }
 
     /// The scope Caveman itself would use for `agent`, from the environment.
-    fn from_env(home: &Path, project: &Path, agent: &str) -> Self {
+    #[must_use]
+    pub fn from_env(home: &Path, project: &Path, agent: &str) -> Self {
         let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
         let agent_root = match agent {
             "claude" => std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
@@ -554,7 +555,7 @@ fn read_session(root: &Path, agent: &str, id: &str, report: &mut Report) {
     }
 }
 
-/// Reads a regular file of at most `MAX_ARTIFACT_BYTES`. The bound holds
+/// Reads a regular file of at most [`MAX_ARTIFACT_BYTES`]. The bound holds
 /// even if the file grows after the size check.
 fn read_artifact(path: &Path) -> std::io::Result<String> {
     if !std::fs::metadata(path)?.is_file() {

@@ -1694,7 +1694,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             caveman,
             session_id,
         } => {
-            tokensave::doctor::run_doctor(agent.as_deref(), caveman, session_id.as_deref()).await;
+            let caveman = caveman.then_some(tokensave::doctor::CavemanCheck {
+                session_id: session_id.as_deref(),
+            });
+            tokensave::doctor::run_doctor(agent.as_deref(), caveman).await;
         }
         Commands::Cost {
             range,

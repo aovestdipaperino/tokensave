@@ -10,13 +10,19 @@ use crate::agents::{self, DoctorCounters, HealthcheckContext};
 use crate::display::{format_bytes, format_token_count};
 use crate::tokensave::TokenSave;
 
+/// Options for the Caveman compatibility check (`doctor --caveman`, #797).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CavemanCheck<'a> {
+    /// Explicitly named Claude Code session whose Caveman mode to report.
+    pub session_id: Option<&'a str>,
+}
+
 /// Runs a comprehensive health check of the tokensave installation.
 ///
-/// With `caveman` (#797), a Caveman compatibility section is added to the
-/// normal checks and the per-agent report is printed as JSON on stdout after
-/// the summary; the human-readable output stays on stderr. `session_id` is the
-/// explicitly named Claude Code session whose Caveman mode to report.
-pub async fn run_doctor(agent_filter: Option<&str>, caveman: bool, session_id: Option<&str>) {
+/// With `caveman`, a Caveman compatibility section is added to the normal
+/// checks and the per-agent report is printed as JSON on stdout after the
+/// summary; the human-readable output stays on stderr.
+pub async fn run_doctor(agent_filter: Option<&str>, caveman: Option<CavemanCheck<'_>>) {
     debug_assert!(
         !env!("CARGO_PKG_VERSION").is_empty(),
         "CARGO_PKG_VERSION must not be empty"
@@ -76,7 +82,7 @@ pub async fn run_doctor(agent_filter: Option<&str>, caveman: bool, session_id: O
     }
 
     let caveman_reports =
-        caveman.then(|| check_caveman(&mut dc, agent_filter, session_id, &project_path));
+        caveman.map(|check| check_caveman(&mut dc, agent_filter, check, &project_path));
 
     check_network(&mut dc);
     print_summary(&dc);
@@ -94,25 +100,24 @@ pub async fn run_doctor(agent_filter: Option<&str>, caveman: bool, session_id: O
 fn check_caveman(
     dc: &mut DoctorCounters,
     agent_filter: Option<&str>,
-    session_id: Option<&str>,
+    check: CavemanCheck<'_>,
     project_path: &Path,
 ) -> Vec<crate::caveman::Report> {
     use crate::caveman::{Activation, Installation};
 
     eprintln!("\n\x1b[1mCaveman compatibility\x1b[0m");
-    let reports = crate::caveman::diagnostics(agent_filter, session_id, project_path);
+    let reports = crate::caveman::diagnostics(agent_filter, check.session_id, project_path);
     let source = if std::env::var_os(crate::caveman::COMPATIBILITY_ENV).is_some() {
         crate::caveman::COMPATIBILITY_ENV
     } else {
         "config.toml"
     };
+    let enabled = reports
+        .first()
+        .map_or_else(crate::caveman::enabled, |r| r.enabled);
     dc.info(&format!(
         "caveman_compatibility {} ({source})",
-        if crate::caveman::enabled() {
-            "on"
-        } else {
-            "off"
-        }
+        if enabled { "on" } else { "off" }
     ));
     for report in &reports {
         let agent = &report.agent;
