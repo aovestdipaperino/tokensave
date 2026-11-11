@@ -6,9 +6,12 @@ use std::fs;
 use tempfile::TempDir;
 use tokensave::tokensave::TokenSave;
 
+#[cfg(feature = "lang-bash")]
 const BASH_PROFILE: &str = "export PATH=\"$HOME/bin:$PATH\"\n\nmy_greet() {\n    echo hello\n}\n";
+#[cfg(feature = "lang-bash")]
 const SHRC: &str = "my_prompt() {\n    echo prompt\n}\n";
 
+#[cfg(feature = "lang-bash")]
 async fn index_with_manifest(manifest: &str) -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
