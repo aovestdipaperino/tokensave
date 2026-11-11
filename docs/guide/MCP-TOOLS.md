@@ -143,7 +143,14 @@ Writer tools that let agents modify files without regex or shell-quoting hazards
 | `tokensave_insert_at` | Insert content before or after a unique anchor string or line number |
 | `tokensave_ast_grep_rewrite` | Structural code rewrite via the `ast-grep` CLI in `--rewrite` mode |
 
-`tokensave_create_file` (`path`, `content`, optional `overwrite`) creates a new file and indexes it at once, so it is searchable right after the call. It is in the `edit` area, so it is listed after `tokensave_more` with `edit` or `all`, and is not marked read-only. Its path rules are stricter than the other edit tools', which honor an absolute path outside the project verbatim:
+**Where the edit tools write.** Every edit tool (the ones above, `tokensave_replace_lines`, the symbol edits `tokensave_replace_symbol`, `tokensave_insert_at_symbol` and `tokensave_delete_symbol`, and `tokensave_rename`) resolves its target and refuses it unless it lies inside one of these:
+
+- the indexed project root, or
+- another git worktree of the same repository, as `git worktree list` reports it from the project root. This is how an agent working in a worktree edits its own checkout: pass an absolute path there, or a relative `path` with `project_root` (alias `cwd`) set to the worktree.
+
+Symlinks and `..` are resolved before the check, so neither can point an edit outside those directories. There is one exception. The indexer follows a symlink inside the root into a directory outside it, so a file the index tracks under such a link (a plain path with no `..`) stays editable through it. Paths inside `.git` and tokensave's own state directory are refused as well. A refused edit fails with a `refusing to edit` error and leaves the file untouched. A rename that would touch a refused file is blocked as a whole. The check and the write are not atomic, so a symlink swapped in between them is followed.
+
+`tokensave_create_file` (`path`, `content`, optional `overwrite`) creates a new file and indexes it at once, so it is searchable right after the call. It is in the `edit` area, so it is listed after `tokensave_more` with `edit` or `all`, and is not marked read-only. Its path rules are stricter than the other edit tools', which also accept another worktree of the repository:
 
 - The file must land inside the indexed project root. An absolute path elsewhere, any `..` component, and a path through a symlinked directory that leaves the root are refused. Symlinks are resolved on the nearest existing directory above the file.
 - Paths inside `.git` and tokensave's own state directory are refused.

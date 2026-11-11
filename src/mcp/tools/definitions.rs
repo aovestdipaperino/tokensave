@@ -1907,7 +1907,7 @@ fn def_str_replace() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                    "description": "Absolute or project-relative file path inside the indexed project or another git worktree of the same repository; other paths are refused."
                 },
                 "old_str": {
                     "type": "string",
@@ -1945,7 +1945,7 @@ fn def_multi_str_replace() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                    "description": "Absolute or project-relative file path inside the indexed project or another git worktree of the same repository; other paths are refused."
                 },
                 "replacements": {
                     "type": "array",
@@ -1981,7 +1981,7 @@ fn def_insert_at() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                    "description": "Absolute or project-relative file path inside the indexed project or another git worktree of the same repository; other paths are refused."
                 },
                 "anchor": {
                     "type": "string",
@@ -2036,7 +2036,7 @@ fn def_create_file() -> ToolDefinition {
     def_rw(
         "tokensave_create_file",
         "Create File",
-        "Create a new file inside the indexed project and index it at once, so it is searchable right after the call. Refuses an existing file unless `overwrite` is true, a directory, a symlink, a path outside the project root (absolute, `..`, or through a symlink), and paths inside `.git` or tokensave's own state. Unlike the other edit tools, an absolute path outside the project is never honored. Missing parent directories are created.",
+        "Create a new file inside the indexed project and index it at once, so it is searchable right after the call. Refuses an existing file unless `overwrite` is true, a directory, a symlink, a path outside the project root (absolute, `..`, or through a symlink), and paths inside `.git` or tokensave's own state. Unlike the other edit tools, a path in another git worktree is refused too. Missing parent directories are created.",
         json!({
             "type": "object",
             "properties": {
@@ -2471,7 +2471,7 @@ fn def_ast_grep_rewrite() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                    "description": "Absolute or project-relative file path inside the indexed project or another git worktree of the same repository; other paths are refused."
                 },
                 "pattern": {
                     "type": "string",

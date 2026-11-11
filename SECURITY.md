@@ -78,6 +78,8 @@ The MCP server exposes **more than 80 tools** (one fewer when the optional `ast-
 
 - `tokensave_run_affected_tests` — compiles and runs the project's own test suite via a `cargo` subprocess (bounded by a configurable wall-clock timeout, default 300 s, and a per-invocation test cap)
 
+**Path containment.** The edit tools only write inside the indexed project root or another git worktree of the same repository. They resolve symlinks and `..` before checking, and they refuse paths inside `.git` and tokensave's state directory (#866). The indexer follows a symlink inside the root into a directory outside it, so a file the index tracks through such a link stays editable. A repository can contain such links, so review symlinks in a repository you do not trust before indexing it. `tokensave_create_file` is stricter: it accepts only the project root. `tokensave_read` reads only files inside the root of the selected graph (#636). The check and the following read or write are not atomic, so a symlink swapped in between them by another local process is followed.
+
 The edit tools target a single file with a unique anchor and re-index in place. They never run shell commands you didn't supply, and the server still **cannot** access the network on behalf of the AI agent. Every editing and state-mutating tool is single-file or single-record scoped — there is no bulk-delete or recursive-write primitive.
 
 > Note: file edits are applied by the agent on your behalf through your agent's own tool-approval flow. Treat tokensave's edit tools with the same caution as your agent's built-in file-write tools.
