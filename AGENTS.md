@@ -310,7 +310,7 @@ use one component per `Path`/`PathBuf` `join` or `push` call for hard-coded
 relative filesystem paths, as in PR #738. Preserve external path inputs,
 portable string formats, and documented path-syntax test fixtures.
 
-- Toolchain is pinned by `rust-toolchain.toml` (Rust 1.98.1, clippy + rustfmt).
+- Toolchain is pinned by `rust-toolchain.toml` (Rust 1.99.0, clippy + rustfmt).
 - `cargo build` builds the default `full` feature set (50+ languages). For fast dev cycles use `cargo build --no-default-features --features lite` (or `medium`).
 - `cargo test --workspace --locked --features test-transport` is the CI test command; CI also runs `cargo test --workspace --locked --no-default-features --features lite` and `cargo check --workspace --all-targets --locked --no-default-features --features medium` on Linux. On Windows set `RUST_MIN_STACK=8388608` (CI does this; async-heavy tests overflow the 1 MB MSVC default).
 - `cargo clippy --workspace --all-targets` (CI runs it with `continue-on-error: true`).
@@ -380,7 +380,7 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 
 ## Setup and environment
 
-- Rust 1.98.1 pinned via `rust-toolchain.toml`.
+- Rust 1.99.0 pinned via `rust-toolchain.toml`.
 - `.cargo/config.toml` sets `CFLAGS`/`CXXFLAGS=-DNDEBUG` (disable C/C++ assertions in vendored grammars), isolates `core.hooksPath` for tests that create real git repos, and reserves an 8 MB main-thread stack on Windows MSVC.
 - Env-var policy: tokensave-owned variables must start with `TOKENSAVE_`; enforced by `tests/env_var_namespace_test.rs`. External (OS/Cargo/git/agent) vars need an explicit allowlist rationale. Never print env-var values (some carry auth material).
 - `TOKENSAVE_WORKER_TOKEN` — auth for the hidden `extract-worker` subcommand (256-bit token, also required as first 32 bytes on stdin). Direct invocation fails. `TOKENSAVE_DISABLE_SUBPROCESS=1` opts out of the worker pool.

@@ -11,7 +11,7 @@ cargo build --locked
 cargo test --workspace --locked
 ```
 
-Requires **Rust 1.95.0+** (edition 2021). The CI and release toolchain is pinned to **1.98.1**.
+Requires **Rust 1.95.0+** (edition 2021). The CI and release toolchain is pinned to **1.99.0**.
 
 ## Build and Artifact Lifecycle
 
