@@ -1399,27 +1399,125 @@ pub(super) async fn handle_find_exact_symbol(
     })
 }
 
-/// Handles `tokensave_call_chain` tool calls. Finds the shortest directed
-/// call path from `from_id` to `to_id` along outgoing `Calls` edges.
-pub(super) async fn handle_call_chain(cg: &TokenSave, args: Value) -> Result<ToolResult> {
-    let from_id = args
-        .get("from_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: from_id".to_string(),
-        })?;
-    let to_id =
-        args.get("to_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| TokenSaveError::Config {
-                message: "missing required parameter: to_id".to_string(),
-            })?;
+/// Nodes whose edges a `follow: "any"` search may read. Every edge kind in
+/// both directions reaches well-connected nodes fast, so the hop limit alone
+/// does not bound the work.
+const CONNECTION_NODE_BUDGET: usize = 2000;
+
+/// One end of a `tokensave_call_chain` request.
+enum ChainEnd {
+    /// A node id: given as such, or the one node a symbol name resolved to.
+    Id(String),
+    /// A symbol name that matched no node, or more than one. Holds the
+    /// candidate listing. A path needs one start and one end, so the tool
+    /// does not pick among candidates.
+    Unresolved(Value),
+}
+
+/// Reads one end of the chain: `id_key` (a node id) wins over `symbol_key`
+/// (a symbol name, resolved as `tokensave_callers` resolves `symbol`).
+async fn chain_end(
+    cg: &TokenSave,
+    args: &Value,
+    id_key: &str,
+    symbol_key: &str,
+    scope_prefix: Option<&str>,
+) -> Result<ChainEnd> {
+    let text = |key: &str| {
+        args.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    if let Some(id) = text(id_key) {
+        return Ok(ChainEnd::Id(id.to_string()));
+    }
+    let symbol = text(symbol_key).ok_or_else(|| TokenSaveError::Config {
+        message: format!("missing required parameter: {symbol_key} (or {id_key})"),
+    })?;
+    // List every candidate, so the caller can choose one by node id.
+    let lookup = json!({ "symbol": symbol, "max_matches": 20 });
+    let target =
+        symbol_target::resolve_target(cg, &lookup, scope_prefix, KindRanking::Definition).await?;
+    Ok(match target {
+        Target::NodeId(id) => ChainEnd::Id(id),
+        Target::Symbol(matches) => {
+            let single = matches.unanswered.is_empty()
+                && matches.answered.len() == 1
+                && matches.answered[0].nodes.len() == 1;
+            if single {
+                ChainEnd::Id(matches.answered[0].nodes[0].id.clone())
+            } else {
+                let headings = vec![serde_json::Map::new(); matches.answered.len()];
+                ChainEnd::Unresolved(matches.to_json(headings))
+            }
+        }
+    })
+}
+
+/// Handles `tokensave_call_chain` tool calls.
+///
+/// Each end is a node id (`from_id`, `to_id`) or a symbol name (`from`,
+/// `to`). With `follow: "calls"` (the default) the tool finds the shortest
+/// directed path along outgoing `Calls` edges. With `follow: "any"` it finds
+/// the shortest connection over every stored edge kind in either direction.
+pub(super) async fn handle_call_chain(
+    cg: &TokenSave,
+    args: Value,
+    scope_prefix: Option<&str>,
+) -> Result<ToolResult> {
+    let follow_any = match args.get("follow").and_then(Value::as_str) {
+        None | Some("calls") => false,
+        Some("any") => true,
+        Some(other) => {
+            return Err(TokenSaveError::Config {
+                message: format!("invalid follow: '{other}' (expected \"calls\" or \"any\")"),
+            })
+        }
+    };
     let max_depth = args
         .get("max_depth")
         .and_then(serde_json::Value::as_u64)
         .map_or(8, |v| v.clamp(1, 20) as usize);
 
-    let path = cg.get_call_chain(from_id, to_id, max_depth).await?;
+    let from = chain_end(cg, &args, "from_id", "from", scope_prefix).await?;
+    let to = chain_end(cg, &args, "to_id", "to", scope_prefix).await?;
+    let (from_id, to_id) = match (from, to) {
+        (ChainEnd::Id(from_id), ChainEnd::Id(to_id)) => (from_id, to_id),
+        (from, to) => {
+            let mut unresolved = serde_json::Map::new();
+            for (key, end) in [("from", from), ("to", to)] {
+                if let ChainEnd::Unresolved(listing) = end {
+                    unresolved.insert(key.to_string(), listing);
+                }
+            }
+            let body = json!({
+                "found": false,
+                "length": 0,
+                "steps": [],
+                "unresolved": unresolved,
+                "message": "A path needs one start node and one end node. Each name under \
+                            `unresolved` matched no symbol or more than one; re-call with \
+                            from_id / to_id set to the node_id of one listed candidate.",
+            });
+            let formatted = serde_json::to_string_pretty(&body).unwrap_or_default();
+            return Ok(ToolResult {
+                value: json!({
+                    "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+                }),
+                touched_files: Vec::new(),
+            });
+        }
+    };
+
+    let (path, budget_exhausted) = if follow_any {
+        let search = cg
+            .get_connection_path(&from_id, &to_id, max_depth, CONNECTION_NODE_BUDGET)
+            .await?;
+        (search.path, search.budget_exhausted)
+    } else {
+        (cg.get_call_chain(&from_id, &to_id, max_depth).await?, false)
+    };
     let (touched_files, body) = if let Some(steps) = path {
         let files = unique_file_paths(steps.iter().map(|(n, _)| n.file_path.as_str()));
         // A step can have several call sites; report the strongest (see
@@ -1438,6 +1536,16 @@ pub(super) async fn handle_call_chain(cg: &TokenSave, args: Value) -> Result<Too
                     "edge_kind": edge.as_ref().map(|e| e.kind.as_str()),
                 });
                 if let Some(edge) = edge {
+                    if follow_any {
+                        // "forward": the edge goes from the previous step to
+                        // this one. "reverse": from this step to the previous.
+                        let direction = if edge.target == n.id {
+                            "forward"
+                        } else {
+                            "reverse"
+                        };
+                        item["edge_direction"] = json!(direction);
+                    }
                     insert_provenance(&mut item, reported_provenance(&strongest, edge));
                 }
                 item
@@ -1452,15 +1560,26 @@ pub(super) async fn handle_call_chain(cg: &TokenSave, args: Value) -> Result<Too
             }),
         )
     } else {
-        (
-            Vec::new(),
-            json!({
-                "found": false,
-                "length": 0,
-                "steps": [],
-                "message": format!("no directed call chain from {from_id} to {to_id} within {max_depth} hops"),
-            }),
-        )
+        let message = if budget_exhausted {
+            format!(
+                "search stopped after {CONNECTION_NODE_BUDGET} nodes without reaching \
+                 {to_id} from {from_id}; a connection can still exist"
+            )
+        } else if follow_any {
+            format!("no connection between {from_id} and {to_id} within {max_depth} hops")
+        } else {
+            format!("no directed call chain from {from_id} to {to_id} within {max_depth} hops")
+        };
+        let mut body = json!({
+            "found": false,
+            "length": 0,
+            "steps": [],
+            "message": message,
+        });
+        if budget_exhausted {
+            body["budget_exhausted"] = json!(true);
+        }
+        (Vec::new(), body)
     };
 
     let formatted = serde_json::to_string_pretty(&body).unwrap_or_default();

@@ -36,6 +36,7 @@ mod branch_gc_and_add_test;
 mod branch_last_synced_test;
 mod branch_wal_copy_test;
 mod c_extraction_test;
+mod call_chain_symbol_test;
 mod canvas_extraction_test;
 mod claude_agent_test;
 mod cloud_test;

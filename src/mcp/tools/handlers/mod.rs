@@ -787,7 +787,7 @@ pub async fn handle_tool_call_with_session(
         "tokensave_constructors" => analysis::handle_constructors(cg, args, scope_prefix).await,
         "tokensave_field_sites" => analysis::handle_field_sites(cg, args, scope_prefix).await,
         "tokensave_callers_for" => graph::handle_callers_for(cg, args).await,
-        "tokensave_call_chain" => graph::handle_call_chain(cg, args).await,
+        "tokensave_call_chain" => graph::handle_call_chain(cg, args, scope_prefix).await,
         "tokensave_file_dependents" => graph::handle_file_dependents(cg, args).await,
         "tokensave_replace_symbol" => edit::handle_replace_symbol(cg, args).await,
         "tokensave_insert_at_symbol" => edit::handle_insert_at_symbol(cg, args).await,
