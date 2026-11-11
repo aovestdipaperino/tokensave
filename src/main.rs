@@ -1317,6 +1317,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             path,
             timings,
             idle_timeout_secs,
+            watch,
         } => {
             let canonical_disable = std::env::var("TOKENSAVE_DISABLE_SERVER").ok();
             let legacy_disable = std::env::var("DISABLE_TOKENSAVE").ok();
@@ -1467,6 +1468,17 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             } else {
                 tokensave::mcp::McpServer::new(cg, scope_prefix).await
             };
+            // Opt-in filesystem watcher (#937): off unless the user config or
+            // `--watch` turns it on, in which case nothing below changes but a
+            // watcher task is added beside the on-demand staleness check.
+            let user_config = tokensave::user_config::UserConfig::load();
+            if watch || user_config.filesystem_watch_enabled {
+                server.start_filesystem_watch(
+                    tokensave::mcp::fs_watch::WatchSettings::from_debounce_setting(
+                        &user_config.watcher_debounce,
+                    ),
+                );
+            }
             run_mcp_server(&server, timings, peeked_line, idle_timeout_secs).await?;
             // A hard kill skips this; that is what reaping on startup and on
             // read is for.
@@ -2430,6 +2442,7 @@ mod startup_tests {
             path: None,
             timings: false,
             idle_timeout_secs: None,
+            watch: false,
         }));
     }
 

@@ -69,14 +69,22 @@ pub struct UserConfig {
     #[serde(default)]
     pub installed_agents: Vec<String>,
 
-    /// Debounce interval for the embedded MCP file watcher, which was
-    /// removed in 6.1.1 (#80). Nothing reads this field: index freshness
-    /// now comes from the on-demand staleness check run at the top of
-    /// every MCP `tools/call`, and its 30 s cooldown is not configurable.
-    /// Kept for now because dropping it would silently strip the key from
-    /// existing `config.toml` files on their next save (#390).
+    /// Quiet period the opt-in filesystem watcher waits for before it
+    /// applies a burst of events (#937), as `"2s"`, `"500ms"` or `"1m"`.
+    /// Read only when [`Self::filesystem_watch_enabled`] (or
+    /// `serve --watch`) turns the watcher on; the on-demand staleness check
+    /// that runs at the top of every MCP `tools/call` keeps its own,
+    /// non-configurable 30 s cooldown either way.
     #[serde(default = "default_watcher_debounce", alias = "daemon_debounce")]
     pub watcher_debounce: String,
+
+    /// When true, `tokensave serve` watches the served project with the
+    /// operating system's file notifications and applies changes through
+    /// the incremental sync pipeline as they happen (#937). Off by default:
+    /// with it off, no watcher is created and no directory is registered.
+    /// `serve --watch` turns it on for one run.
+    #[serde(default)]
+    pub filesystem_watch_enabled: bool,
 
     /// Cached country flags from the worldwide counter.
     #[serde(default)]
@@ -338,6 +346,7 @@ impl Default for UserConfig {
             last_version_warning_at: 0,
             installed_agents: Vec::new(),
             watcher_debounce: default_watcher_debounce(),
+            filesystem_watch_enabled: false,
             cached_country_flags: Vec::new(),
             last_flags_fetch_at: 0,
             last_pricing_fetch_at: 0,
@@ -368,6 +377,8 @@ pub(crate) struct ConfigFile {
     upload_enabled: bool,
     #[serde(default = "default_watcher_debounce", alias = "daemon_debounce")]
     watcher_debounce: String,
+    #[serde(default)]
+    filesystem_watch_enabled: bool,
     #[serde(default = "default_extraction_timeout_secs")]
     extraction_timeout_secs: u64,
     #[serde(default)]
@@ -397,6 +408,7 @@ impl ConfigFile {
         Self {
             upload_enabled: c.upload_enabled,
             watcher_debounce: c.watcher_debounce.clone(),
+            filesystem_watch_enabled: c.filesystem_watch_enabled,
             extraction_timeout_secs: c.extraction_timeout_secs,
             wildcard_permissions: c.wildcard_permissions,
             manage_rules: c.manage_rules,
@@ -1250,6 +1262,7 @@ impl UserConfig {
 
         let changed = self.upload_enabled != base.upload_enabled
             || self.watcher_debounce != base.watcher_debounce
+            || self.filesystem_watch_enabled != base.filesystem_watch_enabled
             || self.extraction_timeout_secs != base.extraction_timeout_secs
             || self.wildcard_permissions != base.wildcard_permissions
             || self.manage_rules != base.manage_rules
@@ -1282,6 +1295,13 @@ impl UserConfig {
                 on_disk.watcher_debounce
             } else {
                 self.watcher_debounce.clone()
+            },
+            filesystem_watch_enabled: if self.filesystem_watch_enabled
+                == base.filesystem_watch_enabled
+            {
+                on_disk.filesystem_watch_enabled
+            } else {
+                self.filesystem_watch_enabled
             },
             extraction_timeout_secs: if self.extraction_timeout_secs == base.extraction_timeout_secs
             {
@@ -1367,10 +1387,17 @@ impl UserConfig {
     }
 }
 
-/// Parse a human-readable duration string like "15s" or "1m" into a Duration.
+/// Parse a human-readable duration string like "500ms", "15s" or "1m" into a
+/// Duration. A bare number is seconds.
 pub fn parse_duration(s: &str) -> Option<std::time::Duration> {
     let s = s.trim();
-    if let Some(secs) = s.strip_suffix('s') {
+    if let Some(millis) = s.strip_suffix("ms") {
+        millis
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .map(std::time::Duration::from_millis)
+    } else if let Some(secs) = s.strip_suffix('s') {
         secs.trim()
             .parse::<u64>()
             .ok()
@@ -1406,6 +1433,22 @@ mod tests {
     fn parse_duration_minutes() {
         assert_eq!(parse_duration("1m"), Some(Duration::from_secs(60)));
         assert_eq!(parse_duration("2m"), Some(Duration::from_secs(120)));
+    }
+
+    #[test]
+    fn parse_duration_milliseconds() {
+        assert_eq!(parse_duration("500ms"), Some(Duration::from_millis(500)));
+        assert_eq!(parse_duration(" 250 ms "), Some(Duration::from_millis(250)));
+        assert_eq!(parse_duration("xms"), None);
+    }
+
+    #[test]
+    fn filesystem_watch_is_off_by_default() {
+        assert!(!UserConfig::default().filesystem_watch_enabled);
+        let cfg: UserConfig = toml::from_str("").unwrap();
+        assert!(!cfg.filesystem_watch_enabled);
+        let cfg: UserConfig = toml::from_str("filesystem_watch_enabled = true").unwrap();
+        assert!(cfg.filesystem_watch_enabled);
     }
 
     #[test]
@@ -1450,6 +1493,7 @@ mod tests {
             last_version_warning_at: 500,
             installed_agents: vec!["claude".to_string(), "cursor".to_string()],
             watcher_debounce: "5s".to_string(),
+            filesystem_watch_enabled: true,
             cached_country_flags: vec!["us".to_string(), "cz".to_string()],
             last_flags_fetch_at: 600,
             last_pricing_fetch_at: 700,
@@ -1698,6 +1742,10 @@ mod tests {
         );
         assert_eq!(loaded.installed_agents, config.installed_agents);
         assert_eq!(loaded.watcher_debounce, config.watcher_debounce);
+        assert_eq!(
+            loaded.filesystem_watch_enabled,
+            config.filesystem_watch_enabled
+        );
         assert_eq!(loaded.cached_country_flags, config.cached_country_flags);
         assert_eq!(loaded.last_flags_fetch_at, config.last_flags_fetch_at);
         assert_eq!(loaded.last_pricing_fetch_at, config.last_pricing_fetch_at);

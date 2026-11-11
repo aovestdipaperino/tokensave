@@ -545,6 +545,13 @@ pub struct McpServer {
     last_local_age_warning_at: AtomicI64,
     /// Last index-age warning timestamp emitted per selected provenance root.
     selected_age_warnings_at: std::sync::Mutex<HashMap<String, i64>>,
+    /// The opt-in filesystem watcher task (#937). `None` unless
+    /// [`Self::start_filesystem_watch`] was called; taken and stopped by
+    /// [`Self::shutdown`].
+    fs_watch: std::sync::Mutex<Option<super::fs_watch::FsWatchHandle>>,
+    /// The watcher's counters, reported by `tokensave_status`. Reports
+    /// `state: off` while no watcher was started.
+    fs_watch_stats: Arc<super::fs_watch::WatchStats>,
     /// Number of global-ledger persistence tasks spawned by this server.
     #[cfg(feature = "test-transport")]
     accounting_tasks_started: AtomicUsize,
@@ -709,7 +716,8 @@ impl McpServer {
     /// Index freshness is maintained by a lazy staleness check
     /// ([`maybe_sync_if_stale`](Self::maybe_sync_if_stale)) invoked at the
     /// start of every `tools/call` and gated by a 30 s cooldown — there
-    /// is no background watcher task. This replaces the
+    /// is no background watcher task unless `serve` opts in through
+    /// [`Self::start_filesystem_watch`] (#937). This replaces the
     /// `notify-debouncer-full` watcher removed in v6.x (#80), which was
     /// the source of severe CPU and memory pressure on large monorepos
     /// where nested ignored directories (`apps/*/node_modules`,
@@ -872,6 +880,8 @@ impl McpServer {
             version_reindex_done: AtomicBool::new(false),
             last_local_age_warning_at: AtomicI64::new(0),
             selected_age_warnings_at: std::sync::Mutex::new(HashMap::new()),
+            fs_watch: std::sync::Mutex::new(None),
+            fs_watch_stats: Arc::new(super::fs_watch::WatchStats::default()),
             #[cfg(feature = "test-transport")]
             accounting_tasks_started: AtomicUsize::new(0),
             #[cfg(feature = "test-transport")]
@@ -1470,6 +1480,246 @@ impl McpServer {
         // between our cooldown windows, in which case `stale` is empty
         // here but our in-memory `file_token_map` is still pre-sync.
         self.refresh_file_token_map().await;
+    }
+
+    /// Starts the opt-in filesystem watcher (#937). `serve` calls this only
+    /// when `filesystem_watch_enabled` or `--watch` asks for it; without
+    /// that call no watcher, watch registration or watcher task exists.
+    ///
+    /// The watcher starts after the startup catch-up sync, so the changes
+    /// made while the server was down are reconciled by that scan first and
+    /// the watcher only has to follow what happens from then on. Calling it
+    /// again, or on a server with no default project, does nothing.
+    pub fn start_filesystem_watch(self: &Arc<Self>, settings: super::fs_watch::WatchSettings) {
+        if self.cg.is_none() {
+            return;
+        }
+        let Ok(mut slot) = self.fs_watch.lock() else {
+            return;
+        };
+        if slot.is_some() {
+            return;
+        }
+        super::fs_watch::set_state(&self.fs_watch_stats, "starting");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let task = tokio::spawn(Self::run_filesystem_watch(
+            Arc::downgrade(self),
+            settings,
+            cancel.clone(),
+        ));
+        *slot = Some(super::fs_watch::FsWatchHandle::new(cancel, task));
+    }
+
+    /// The watcher task: waits for the startup catch-up, registers the
+    /// watches, then applies debounced batches until cancelled. Holds only a
+    /// `Weak` between batches so it never keeps a dropped server alive.
+    async fn run_filesystem_watch(
+        weak: std::sync::Weak<Self>,
+        settings: super::fs_watch::WatchSettings,
+        cancel: tokio_util::sync::CancellationToken,
+    ) {
+        use super::fs_watch::{self, NativeWatcher, WatchMode, CHANNEL_CAPACITY, MAX_WATCHED_DIRS};
+
+        loop {
+            let Some(server) = weak.upgrade() else {
+                return;
+            };
+            if server.startup_catch_up_done() {
+                break;
+            }
+            drop(server);
+            tokio::select! {
+                () = cancel.cancelled() => return,
+                () = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+        }
+
+        let Some(server) = weak.upgrade() else {
+            return;
+        };
+        let stats = Arc::clone(&server.fs_watch_stats);
+        let Some(root) = server.cg.as_ref().map(|cg| cg.project_root().to_path_buf()) else {
+            return;
+        };
+        let mode = WatchMode::for_platform();
+        let dirs = match mode {
+            WatchMode::RecursiveRoot => Vec::new(),
+            WatchMode::PerDirectory => {
+                let walker = Arc::clone(&server);
+                let walk = tokio::task::spawn_blocking(move || {
+                    let cg = walker.cg.as_ref()?;
+                    cg.watch_directories(cg.project_root(), MAX_WATCHED_DIRS)
+                })
+                .await;
+                if let Ok(Some(dirs)) = walk {
+                    dirs
+                } else {
+                    stats.record_error(&format!(
+                        "the project has more than {MAX_WATCHED_DIRS} watchable directories; \
+                         not watching. Exclude large directories with `exclude` globs, or rely \
+                         on the on-demand staleness check"
+                    ));
+                    fs_watch::set_state(&stats, "failed");
+                    return;
+                }
+            }
+        };
+        drop(server);
+
+        let (tx, rx) = tokio::sync::mpsc::channel(CHANNEL_CAPACITY);
+        let overflow = Arc::new(AtomicBool::new(false));
+        let mut native = match NativeWatcher::start(
+            &root,
+            mode,
+            dirs,
+            tx,
+            Arc::clone(&overflow),
+            Arc::clone(&stats),
+        ) {
+            Ok(native) => native,
+            Err(message) => {
+                stats.record_error(&format!(
+                    "{message}; falling back to the on-demand staleness check"
+                ));
+                fs_watch::set_state(&stats, "failed");
+                return;
+            }
+        };
+        fs_watch::mark_started(&stats, mode, settings);
+        fs_watch::set_state(&stats, "active");
+        eprintln!(
+            "[tokensave] filesystem watch active on {} ({} mode, {}ms debounce)",
+            root.display(),
+            match mode {
+                WatchMode::RecursiveRoot => "recursive",
+                WatchMode::PerDirectory => "per-directory",
+            },
+            settings.debounce.as_millis()
+        );
+
+        let apply_weak = weak.clone();
+        fs_watch::run_watch_loop(
+            rx,
+            overflow,
+            settings,
+            cancel,
+            move |batch| {
+                let weak = apply_weak.clone();
+                async move {
+                    match weak.upgrade() {
+                        Some(server) => server.apply_watch_batch(batch).await,
+                        None => fs_watch::WatchOutcome::default(),
+                    }
+                }
+            },
+            |new_dirs| native.add_dirs(new_dirs),
+        )
+        .await;
+        // Dropping the native watcher releases every registered watch.
+        drop(native);
+        fs_watch::set_state(&stats, "stopped");
+    }
+
+    /// Applies one debounced watcher batch through the existing sync
+    /// pipeline: a targeted [`TokenSave::sync_if_stale_silent`] over the
+    /// changed files, or — when the batch overflowed, the event stream
+    /// reported an error, or a directory appeared or vanished — the same
+    /// bounded reconciliation the lazy resync runs.
+    pub async fn apply_watch_batch(
+        &self,
+        batch: super::fs_watch::WatchBatch,
+    ) -> super::fs_watch::WatchOutcome {
+        let mut outcome = super::fs_watch::WatchOutcome::default();
+        let stats = &self.fs_watch_stats;
+        stats.record_batch(batch.changes.len());
+        let Some(cg) = self.cg.as_ref() else {
+            return outcome;
+        };
+        // Same guard as an automatic sync (#400): never write one branch's
+        // files into another branch's database.
+        if let Some(drift) = cg.branch_drift() {
+            stats.report_drift(&format!(
+                "the working tree is on branch '{}' but this server serves '{}'",
+                drift.working_tree, drift.serving
+            ));
+            return outcome;
+        }
+        stats.clear_drift();
+
+        let plan = cg.plan_watch_batch(&batch.changes).await;
+        // A per-directory watcher needs the whole new subtree: `mkdir -p` or
+        // a moved-in folder brings nested directories with no event of their
+        // own. A recursive watch already covers them.
+        if super::fs_watch::WatchMode::for_platform() == super::fs_watch::WatchMode::PerDirectory {
+            for dir in &plan.new_dirs {
+                if let Some(subtree) = cg.watch_directories(dir, super::fs_watch::MAX_WATCHED_DIRS)
+                {
+                    outcome.new_dirs.extend(subtree);
+                } else {
+                    stats.record_error(&format!(
+                        "{} holds more than {} directories; not watching it",
+                        dir.display(),
+                        super::fs_watch::MAX_WATCHED_DIRS
+                    ));
+                }
+            }
+        }
+        if batch.rescan || plan.reconcile {
+            if batch.rescan {
+                stats.record_error(&format!(
+                    "{}; reconciling with a bounded scan",
+                    batch.reasons.join("; ")
+                ));
+            }
+            if let Some(wait) = stats.reconcile_wait() {
+                // Too soon after the last scan: apply what is known now and
+                // scan once the interval has passed.
+                self.sync_watched_files(cg, &plan.files).await;
+                outcome.retry_rescan_after = Some(wait);
+                return outcome;
+            }
+            // Shares the lazy resync's overlap guard (#535): if a resync is
+            // already walking the tree, retry rather than walk it twice.
+            if self
+                .lazy_sync_in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                self.sync_watched_files(cg, &plan.files).await;
+                outcome.retry_rescan_after = Some(super::fs_watch::MIN_RECONCILE_INTERVAL);
+                return outcome;
+            }
+            self.run_lazy_resync().await;
+            self.lazy_sync_in_flight.store(false, Ordering::Release);
+            stats.record_reconcile();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            self.last_staleness_check_at.store(now, Ordering::Release);
+            outcome.reconciled = true;
+            return outcome;
+        }
+        self.sync_watched_files(cg, &plan.files).await;
+        outcome
+    }
+
+    /// Syncs the files of a watcher batch and refreshes the token map.
+    async fn sync_watched_files(&self, cg: &TokenSave, files: &[String]) {
+        if files.is_empty() {
+            return;
+        }
+        if let Err(e) = cg.sync_if_stale_silent(files).await {
+            self.fs_watch_stats
+                .record_error(&format!("incremental sync of watched changes failed: {e}"));
+            return;
+        }
+        self.refresh_file_token_map().await;
+    }
+
+    /// The watcher's counters and state, as reported by `tokensave_status`.
+    pub fn filesystem_watch_status(&self) -> Value {
+        self.fs_watch_stats.to_json()
     }
 
     /// On the first `tools/call` of the session, force a per-project reindex if
@@ -2149,6 +2399,14 @@ impl McpServer {
         // Idempotency guard: only run the persistence path once.
         if self.shutdown_done.swap(true, Ordering::SeqCst) {
             return;
+        }
+
+        // Stop the opt-in watcher first (#937), so no watcher-triggered sync
+        // writes to the database while it is being persisted and
+        // checkpointed, and every native watch is released.
+        let fs_watch = self.fs_watch.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(handle) = fs_watch {
+            handle.stop().await;
         }
 
         let uptime = self.stats.started_at.elapsed();
@@ -3512,6 +3770,9 @@ impl McpServer {
             "tool_call_counts": tool_counts,
             "approx_tokens_saved": self.tokens_saved.load(Ordering::Relaxed),
         });
+        if self.cg.is_some() {
+            stats["filesystem_watch"] = self.filesystem_watch_status();
+        }
 
         if let Some(ref gdb) = self.global_db {
             if let Some(global_total) = gdb.global_tokens_saved().await {

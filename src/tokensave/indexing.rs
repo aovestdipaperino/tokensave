@@ -308,6 +308,61 @@ pub(crate) fn resolve_new_file_target(
     Ok((project_root.join(rel), rel_str))
 }
 
+/// The directory-pruning rule of the gitignore-aware scan walk.
+///
+/// Shared by [`TokenSave::scan_files_with_gitignore`] and the opt-in
+/// filesystem watcher (#937), which registers only the directories this rule
+/// keeps, so a directory the scan never enters is never watched either.
+pub(super) struct ScanDirPrune {
+    root: PathBuf,
+    config: TokenSaveConfig,
+    canonical_root: Option<PathBuf>,
+    manifest: Option<std::sync::Arc<crate::project_manifest::CompiledManifest>>,
+}
+
+impl ScanDirPrune {
+    pub(super) fn new(cg: &TokenSave) -> Self {
+        Self {
+            root: cg.project_root.clone(),
+            config: cg.config.clone(),
+            canonical_root: cg.project_root.canonicalize().ok(),
+            manifest: cg.manifest(),
+        }
+    }
+
+    /// Whether the walk descends into the directory at `path`, found at
+    /// `depth` below the walk root.
+    pub(super) fn keeps(&self, path: &Path, depth: usize, is_symlink: bool) -> bool {
+        let rel_str = path
+            .strip_prefix(&self.root)
+            .map(|rel| rel.to_string_lossy().replace('\\', "/"));
+        if let Ok(rel_str) = &rel_str {
+            if is_excluded_dir(rel_str, &self.config) {
+                return false;
+            }
+        }
+        // Hidden directories stay pruned exactly as the crate's disabled
+        // hidden filter pruned them; an include glob or manifest entry
+        // re-admits one (#194).
+        let hidden = path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with('.'));
+        if depth > 0 && hidden {
+            let rel_str = rel_str.unwrap_or_default();
+            let manifest_allows = self.manifest.as_deref().is_some_and(|m| {
+                m.matches_local_file(&rel_str) || m.local_dir_may_contain(&rel_str)
+            });
+            if !is_included(&rel_str, &self.config) && !manifest_allows {
+                return false;
+            }
+        }
+        // A link back onto the root or one of its ancestors would re-walk the
+        // project plus the rest of the filesystem (#327). The walk root itself
+        // is exempt so a project opened through a symlinked path still scans.
+        !(depth > 0 && is_symlink && reenters_project_root(path, self.canonical_root.as_deref()))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Indexing
 // ---------------------------------------------------------------------------
@@ -2300,10 +2355,7 @@ impl TokenSave {
         // gets walked (#170). Mirrors the `is_excluded_dir` prune in
         // `scan_files_walkdir` and applies equally to `--skip-folder`, which
         // feeds the same exclude list.
-        let root = self.project_root.clone();
-        let config = self.config.clone();
-        let canonical_root = self.project_root.canonicalize().ok();
-        let manifest_for_prune = manifest.clone();
+        let prune = ScanDirPrune::new(self);
         let walker = ignore::WalkBuilder::new(&self.project_root)
             .follow_links(true)
             .hidden(false) // hidden entries are filtered manually below
@@ -2314,38 +2366,7 @@ impl TokenSave {
             .filter_entry(move |e| {
                 // Only prune directories; files are filtered later by accept_file.
                 if e.file_type().is_some_and(|ft| ft.is_dir()) {
-                    if let Ok(rel) = e.path().strip_prefix(&root) {
-                        let rel_str = rel.to_string_lossy().replace('\\', "/");
-                        if is_excluded_dir(&rel_str, &config) {
-                            return false;
-                        }
-                    }
-                    // Hidden directories stay pruned exactly as the crate's
-                    // disabled hidden filter pruned them; an include glob or
-                    // manifest entry re-admits one (#194).
-                    if e.depth() > 0 && e.file_name().to_string_lossy().starts_with('.') {
-                        let rel_str = e
-                            .path()
-                            .strip_prefix(&root)
-                            .map(|rel| rel.to_string_lossy().replace('\\', "/"))
-                            .unwrap_or_default();
-                        let manifest_allows = manifest_for_prune.as_deref().is_some_and(|m| {
-                            m.matches_local_file(&rel_str) || m.local_dir_may_contain(&rel_str)
-                        });
-                        if !is_included(&rel_str, &config) && !manifest_allows {
-                            return false;
-                        }
-                    }
-                    // A link back onto the root or one of its ancestors would
-                    // re-walk the project plus the rest of the filesystem
-                    // (#327). The walk root itself is exempt so a project
-                    // opened through a symlinked path still scans.
-                    if e.depth() > 0
-                        && e.path_is_symlink()
-                        && reenters_project_root(e.path(), canonical_root.as_deref())
-                    {
-                        return false;
-                    }
+                    return prune.keeps(e.path(), e.depth(), e.path_is_symlink());
                 }
                 true
             })
