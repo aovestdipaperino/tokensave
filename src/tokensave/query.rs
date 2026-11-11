@@ -198,6 +198,23 @@ impl TokenSave {
             .await
     }
 
+    /// Finds the shortest path between two nodes over every stored edge
+    /// kind, in either direction. `max_depth` bounds the path length and
+    /// `max_expanded` the number of nodes the search reads edges for; see
+    /// [`GraphTraverser::find_path_bounded`].
+    pub async fn get_connection_path(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        max_depth: usize,
+        max_expanded: usize,
+    ) -> Result<crate::graph::traversal::PathSearch> {
+        let traverser = GraphTraverser::new(&self.db);
+        traverser
+            .find_path_bounded(from_id, to_id, &[], max_depth, max_expanded)
+            .await
+    }
+
     /// Builds a bidirectional call graph around a node.
     pub async fn get_call_graph(&self, node_id: &str, depth: usize) -> Result<Subgraph> {
         let traverser = GraphTraverser::new(&self.db);
