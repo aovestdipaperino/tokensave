@@ -379,6 +379,9 @@ async fn a_linked_worktree_of_the_repository_is_editable() {
     fs::write(main.join("src").join("main.rs"), MAIN_RS).expect("write main.rs");
     fs::write(main.join("src").join("lib.rs"), LIB_RS).expect("write lib.rs");
     git(&main, &["init", "-q", "-b", "master"]);
+    // Keep LF on checkout, so the worktree's copy matches byte for byte on
+    // Windows hosts that set `core.autocrlf`.
+    git(&main, &["config", "core.autocrlf", "false"]);
     git(&main, &["add", "-A"]);
     git(&main, &["commit", "-q", "-m", "base"]);
     let worktree = base.path().join("main_repo_wt");
