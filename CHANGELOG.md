@@ -74,6 +74,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - Review `#[allow]` attributes outside the language extractors: remove 7 that no longer suppress anything, replace 4 with the code fix the lint asks for, and give the remaining unexplained ones a `reason` (Refs #886).
 - Resolve the pre-existing `clippy::pedantic` warnings in the MCP server: box the ~56 KiB `tools/call` handler future once instead of inlining it into every caller (including the serve loop), and simplify the serve loop's control flow with `let ... else` and `if let` (Refs #886).
 - Resolve the pre-existing `clippy::pedantic` warnings outside the MCP server (`src/profile/`, branch GC, config docs, one integration test) as part of the Google Rust Style Guide audit; the one intentional `Option<Option<_>>` is kept with a documented `#[allow]`. No behavior change (Refs #886).
+- Implement the standard `FromStr` trait for `NodeKind`, `EdgeKind` and `Visibility` in place of their inherent `Option`-returning `from_str` methods, with a new `ParseEnumError` that names the type and the rejected value. Callers now use `s.parse::<NodeKind>()`. Library users must switch from `NodeKind::from_str(s)` (an `Option`) to `s.parse::<NodeKind>().ok()`. No behavior change for the CLI or the MCP server (Refs #912).
 
 ### Documentation
 
