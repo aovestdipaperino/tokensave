@@ -349,7 +349,17 @@ fn extract_zip(data: &[u8], bin_name: &str, dest: &Path) -> Result<()> {
             message: format!("zip entry error: {e}"),
         })?;
 
-        if Path::new(file.name()).file_name().and_then(|n| n.to_str()) == Some(bin_name) {
+        // zip 9 decodes entry names fallibly. An entry whose name cannot be
+        // decoded cannot be the binary we are looking for, so skip it.
+        let Ok(name) = file.name() else {
+            continue;
+        };
+        let is_binary = Path::new(name.as_ref())
+            .file_name()
+            .and_then(|n| n.to_str())
+            == Some(bin_name);
+        drop(name);
+        if is_binary {
             let mut out = std::fs::File::create(dest).map_err(io_err("create temp file failed"))?;
             std::io::copy(&mut file, &mut out).map_err(io_err("extract failed"))?;
             return Ok(());
@@ -1103,6 +1113,33 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
 )]
 mod tests {
     use super::*;
+
+    /// The Windows self-upgrade reads the binary out of the release zip by
+    /// file name, ignoring the directory it sits in.
+    #[cfg(windows)]
+    #[test]
+    fn extract_zip_finds_the_binary_by_file_name() {
+        use std::io::Write;
+
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        writer
+            .start_file("tokensave-x/README.md", options)
+            .expect("start readme");
+        writer.write_all(b"readme").expect("write readme");
+        writer
+            .start_file("tokensave-x/tokensave.exe", options)
+            .expect("start binary");
+        writer.write_all(b"binary").expect("write binary");
+        let data = writer.finish().expect("finish zip").into_inner();
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dest = dir.path().join("out.exe");
+        extract_zip(&data, "tokensave.exe", &dest).expect("binary extracted");
+        assert_eq!(std::fs::read(&dest).expect("read dest"), b"binary");
+
+        assert!(extract_zip(&data, "missing.exe", &dest).is_err());
+    }
 
     /// The staging directory must not be at a name another local user can
     /// predict. The old path was `temp_dir()/tokensave_upgrade_<pid>`, and a
