@@ -626,10 +626,13 @@ mod tests {
     fn algorithm_version_change_invalidates() {
         let dir = tempfile::tempdir().unwrap();
         let current = host(8, 16);
-        saved_with(dir.path(), current, |s| {
-            s.algorithm_version = hardware::ALGORITHM_VERSION + 1;
-        });
-        assert_invalid(dir.path(), &current, "benchmark algorithm");
+        // Version 1 used transient free memory; future algorithms are also incompatible.
+        for version in [1, hardware::ALGORITHM_VERSION + 1] {
+            saved_with(dir.path(), current, |s| {
+                s.algorithm_version = version;
+            });
+            assert_invalid(dir.path(), &current, "benchmark algorithm");
+        }
     }
 
     #[test]

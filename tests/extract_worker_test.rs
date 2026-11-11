@@ -74,7 +74,7 @@ fn worker_with_correct_env_but_wrong_stdin_token_exits_nonzero() {
     {
         let stdin = child.stdin.as_mut().expect("piped");
         // 32 bytes of 0xFF — definitely not the expected zeros.
-        stdin.write_all(&[0xFFu8; 32]).expect("write stdin");
+        stdin.write_all(&[0xffu8; 32]).expect("write stdin");
     }
     drop(child.stdin.take());
     let status = child.wait().expect("wait");

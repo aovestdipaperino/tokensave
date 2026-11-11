@@ -1,6 +1,6 @@
 use serde_json::json;
-use tokensave::mcp::tools::*;
-use tokensave::mcp::transport::*;
+use tokensave::mcp::tools::{get_tool_definitions, ToolDefinition};
+use tokensave::mcp::transport::{ErrorCode, JsonRpcRequest, JsonRpcResponse};
 
 #[test]
 fn test_parse_jsonrpc_request() {
@@ -97,9 +97,9 @@ fn test_tool_definitions_count() {
     // the external `ast-grep` binary is on PATH — hide-when-missing so
     // agents never receive a tool that will instantly fail.
     let expected = if tokensave::mcp::tools::ast_grep_available() {
-        88
+        89
     } else {
-        87
+        88
     };
     assert_eq!(tools.len(), expected);
     // `tokensave_doc` (#154) must be advertised, or the handler is unreachable.
@@ -121,6 +121,7 @@ fn test_write_and_exec_tools_are_not_read_only() {
         "tokensave_ast_grep_rewrite",
         "tokensave_delete_symbol",
         "tokensave_replace_lines",
+        "tokensave_create_file",
     ];
     let tools = get_tool_definitions();
     for name in write_or_exec {

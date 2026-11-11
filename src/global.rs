@@ -59,7 +59,6 @@ pub(crate) fn check_for_update(
     if !tokensave::cloud::update_check_enabled() {
         return;
     }
-    let current_version = env!("CARGO_PKG_VERSION");
     let now = current_unix_timestamp();
 
     let latest = if !skip_cache && now - config.last_version_check_at < 300 {
@@ -69,31 +68,56 @@ pub(crate) fn check_for_update(
         }
         config.cached_latest_version.clone()
     } else if let Some(v) = tokensave::cloud::fetch_latest_version() {
-        config.cached_latest_version = v.clone();
-        config.last_version_check_at = now;
-        config.save();
+        record_latest_version(config, &v, now);
         v
     } else {
         return;
     };
 
-    // The status page (skip_suppression=true) warns on any newer version;
-    // the CLI only warns on minor+ bumps to avoid nagging on patch releases.
-    let dominated = if skip_suppression {
-        tokensave::cloud::is_newer_version(current_version, &latest)
-    } else {
-        tokensave::cloud::is_newer_minor_version(current_version, &latest)
-    };
+    warn_if_update_available(config, &latest, now, skip_suppression);
+}
 
-    if dominated && (skip_suppression || now - config.last_version_warning_at >= 900) {
-        eprintln!(
-            "\n\x1b[33mUpdate available: v{} → v{}\x1b[0m\n  Run: \x1b[1mtokensave upgrade\x1b[0m",
-            current_version, latest
-        );
-        if !skip_suppression {
-            config.last_version_warning_at = now;
-            config.save();
-        }
+/// Caches a version fetched by a parallel check (`init`, `sync`) and warns
+/// the user if it is newer than the running binary. The warning is
+/// suppressed for 15 minutes after it was last shown.
+pub(crate) fn notify_fetched_update(latest: &str) {
+    let now = current_unix_timestamp();
+    let mut config = tokensave::user_config::UserConfig::load();
+    record_latest_version(&mut config, latest, now);
+    warn_if_update_available(&mut config, latest, now, false);
+}
+
+/// Stores a freshly fetched latest version in the user config cache.
+fn record_latest_version(config: &mut tokensave::user_config::UserConfig, latest: &str, now: i64) {
+    config.cached_latest_version = latest.to_string();
+    config.last_version_check_at = now;
+    config.save();
+}
+
+/// Prints the update notice on stderr when `latest` is a newer release than
+/// the running binary. The CLI announces every newer release, patch bumps
+/// included. Unless `skip_suppression` is true, the notice is shown at most
+/// once every 15 minutes.
+fn warn_if_update_available(
+    config: &mut tokensave::user_config::UserConfig,
+    latest: &str,
+    now: i64,
+    skip_suppression: bool,
+) {
+    let Some(update) = tokensave::cloud::available_update(
+        env!("CARGO_PKG_VERSION"),
+        latest,
+        tokensave::cloud::UpdateNoticeScope::AnyRelease,
+    ) else {
+        return;
+    };
+    if !skip_suppression && now - config.last_version_warning_at < 900 {
+        return;
+    }
+    eprintln!("\n{}", update.terminal_notice());
+    if !skip_suppression {
+        config.last_version_warning_at = now;
+        config.save();
     }
 }
 
@@ -190,7 +214,7 @@ pub(crate) fn gather_local_projects_from(
 
     let mut cursor: Option<&Path> = Some(cwd);
     while let Some(dir) = cursor {
-        let ts = dir.join(".tokensave");
+        let ts = tokensave::config::get_tokensave_dir(dir);
         if is_project_dir(&ts) && seen.insert(dir.to_path_buf()) {
             out.push(dir.to_path_buf());
         }
@@ -198,6 +222,18 @@ pub(crate) fn gather_local_projects_from(
     }
 
     find_descendant_tokensave(cwd, &canon_home_ts, &mut seen, &mut out);
+
+    // Relocated state (#919) leaves no `.tokensave` in the tree to find, so
+    // add the recorded projects at or below `cwd` too.
+    let canon_cwd = tokensave::state_dir::canonical_root(cwd);
+    for root in tokensave::state_dir::relocated_projects() {
+        if root.starts_with(&canon_cwd)
+            && is_project_dir(&tokensave::config::get_tokensave_dir(&root))
+            && seen.insert(root.clone())
+        {
+            out.push(root);
+        }
+    }
 
     out
 }
@@ -248,11 +284,24 @@ pub(crate) fn find_descendant_tokensave(
                 // doing it for every dir entry would mean one syscall per
                 // entry on tree walks of arbitrary size.
                 if let Some(canon) = canon_home_ts {
-                    if path.canonicalize().ok().as_ref() == Some(canon) {
+                    if path
+                        .parent()
+                        .and_then(|root| {
+                            tokensave::config::get_tokensave_dir(root)
+                                .canonicalize()
+                                .ok()
+                        })
+                        .as_ref()
+                        == Some(canon)
+                    {
                         continue;
                     }
                 }
-                if path.join("tokensave.db").exists() {
+                if path.parent().is_some_and(|root| {
+                    tokensave::config::get_tokensave_dir(root)
+                        .join("tokensave.db")
+                        .exists()
+                }) {
                     if let Some(parent) = path.parent() {
                         let pb = parent.to_path_buf();
                         if seen.insert(pb.clone()) {
@@ -345,7 +394,7 @@ mod gather_tests {
 
     /// Plant a `.tokensave/tokensave.db` marker so `is_project_dir` returns true.
     fn make_project(root: &Path) {
-        let ts = root.join(".tokensave");
+        let ts = tokensave::config::get_tokensave_dir(root);
         fs::create_dir_all(&ts).unwrap();
         fs::write(ts.join("tokensave.db"), b"").unwrap();
     }
@@ -445,9 +494,9 @@ mod gather_tests {
 
         let cwd = root.clone();
         let alias_ts: PathBuf = if symlink_ok {
-            home_alias.join(".tokensave")
+            tokensave::config::get_global_tokensave_dir(&home_alias)
         } else {
-            home_real.join(".tokensave")
+            tokensave::config::get_global_tokensave_dir(&home_real)
         };
 
         let out = gather_local_projects_from(&cwd, &Some(alias_ts));

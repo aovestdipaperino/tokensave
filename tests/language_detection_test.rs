@@ -230,7 +230,7 @@ async fn opt_in_preserves_known_extension_manifest_and_selection_policies() {
     .unwrap();
     fs::write(dir.path().join("override.custom"), PY).unwrap();
     fs::write(
-        dir.path().join(".tokensave").join("project.json"),
+        tokensave::config::get_tokensave_dir(dir.path()).join("project.json"),
         r#"{"version":1,"entries":[{"path":"override.custom","language":"Rust"}]}"#,
     )
     .unwrap();
@@ -328,9 +328,13 @@ async fn branch_indexes_keep_detected_symbols_separate() {
     cg.index_all().await.unwrap();
     drop(cg);
     git(root, &["checkout", "-b", "feature"]);
-    tokensave::branch::track_branch_copy(root, &root.join(".tokensave"), "feature")
-        .await
-        .unwrap();
+    tokensave::branch::track_branch_copy(
+        root,
+        &tokensave::config::get_tokensave_dir(root),
+        "feature",
+    )
+    .await
+    .unwrap();
     fs::write(root.join("script.custom"), RS).unwrap();
     git(root, &["add", "script.custom"]);
     git(root, &["commit", "-m", "switch language"]);
@@ -489,7 +493,7 @@ async fn detection_preserves_registered_formats_and_artifact_override_equivalenc
         fs::write(dir.path().join(path), source).unwrap();
     }
     fs::write(
-        dir.path().join(".tokensave").join("project.json"),
+        tokensave::config::get_tokensave_dir(dir.path()).join("project.json"),
         r#"{"entries":[{"path":"override.custom","language":"python"}]}"#,
     )
     .unwrap();

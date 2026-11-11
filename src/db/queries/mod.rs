@@ -6,7 +6,10 @@ use libsql::params;
 use super::connection::{CachedTraitDispatchCaller, Database};
 use crate::errors::{Result, TokenSaveError};
 use crate::resolution::{AmbiguityRefKey, TouchedNode};
-use crate::types::*;
+use crate::types::{
+    AmbiguousCall, Edge, EdgeKind, ExecutableBodyDocument, FileRecord, GraphStats, Node, NodeKind,
+    ResolvedBy, SearchResult, UnresolvedRef, Visibility, EDGE_UPSERT_CLAUSE,
+};
 
 mod clear;
 mod edges;
@@ -277,15 +280,19 @@ pub(crate) fn push_int(buf: &mut String, val: i64) {
 /// Collects all rows from a `Rows` iterator into a `Vec<T>` using the given
 /// row-mapping function.
 pub(crate) async fn collect_rows<T>(
-    rows: &mut libsql::Rows,
+    rows: &mut impl crate::db::RowSource,
     map_fn: fn(&libsql::Row) -> std::result::Result<T, libsql::Error>,
     operation: &str,
 ) -> Result<Vec<T>> {
     let mut items = Vec::new();
-    while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
-        message: format!("failed to read row: {e}"),
-        operation: operation.to_string(),
-    })? {
+    while let Some(row) = rows
+        .next_row()
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read row: {e}"),
+            operation: operation.to_string(),
+        })?
+    {
         items.push(map_fn(&row).map_err(|e| TokenSaveError::Database {
             message: format!("failed to map row: {e}"),
             operation: operation.to_string(),
@@ -328,6 +335,7 @@ pub(crate) fn display_language_for_path(path: &str) -> &'static str {
         "as" => "ActionScript",
         "c" | "h" => "C",
         "cpp" | "cc" | "cxx" | "hpp" | "hxx" | "hh" | "inl" | "ipp" | "tcc" => "C++",
+        "cu" | "cuh" => "CUDA",
         "cs" => "C#",
         "fs" | "fsi" | "fsx" => "F#",
         "fst" | "fsti" => "F*",
@@ -363,6 +371,11 @@ pub(crate) fn display_language_for_path(path: &str) -> &'static str {
         "qnt" => "Quint",
         "gd" => "GDScript",
         "vhd" | "vhdl" => "VHDL",
+        "awk" => "AWK",
+        "wl" | "wls" | "wlt" => "Wolfram",
+        "lisp" | "lsp" | "cl" | "asd" => "Common Lisp",
+        "scm" | "ss" => "Scheme",
+        "fbs" => "FlatBuffers",
         _ => "Other",
     }
 }

@@ -3,7 +3,9 @@ use tokensave::db::Database;
 #[cfg(feature = "lang-terraform")]
 use tokensave::extraction::{LanguageExtractor, TerraformExtractor};
 use tokensave::resolution::ReferenceResolver;
-use tokensave::types::*;
+use tokensave::types::{
+    generate_node_id, Edge, EdgeKind, Node, NodeKind, ResolvedRef, UnresolvedRef, Visibility,
+};
 
 /// Sets up a temporary database pre-populated with two nodes: a `helper`
 /// function in `src/utils.rs` and a `main` function in `src/main.rs`.

@@ -135,7 +135,10 @@ pub fn format_bounded_project_row(project_root: &Path, max_width: usize) -> Stri
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one argument per independent section of the `status` output"
+)]
 pub fn print_status_header(
     stats: &GraphStats,
     tokens_saved: u64,
@@ -174,7 +177,10 @@ pub fn print_status_header(
 }
 
 /// Prints the status output as a compact bordered table.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one argument per independent section of the `status` output"
+)]
 pub fn print_status_table(
     stats: &GraphStats,
     tokens_saved: u64,
@@ -530,6 +536,18 @@ pub fn print_gain_history<F: Fn(u64) -> f64>(rows: &[crate::global_db::SavingsDa
             saved_str,
             r.calls,
             format!("${usd:.2}")
+        );
+    }
+}
+
+pub fn print_gain_by_tool(rows: &[crate::global_db::SavingsTool]) {
+    println!("  {:<32} {:>8} {:>10}", "Tool", "Calls", "Tokens");
+    for r in rows {
+        println!(
+            "  {:<32} {:>8} {:>10}",
+            r.tool,
+            r.calls,
+            format_token_count(r.saved_tokens)
         );
     }
 }

@@ -196,7 +196,7 @@ impl Database {
 
     pub(crate) async fn invalidate_rails_routes(&self) -> Result<()> {
         // Metadata shares the transaction connection, so unlocked writes can be rolled back by another task.
-        let _guard = self.write_lock.lock().await;
+        let _guard = self.lock_writes().await;
         let mut rows = self
             .conn()
             .query(
@@ -227,10 +227,11 @@ impl Database {
 
     /// Rebuild only declared route dispatch, including links lost after controller reindexing.
     pub async fn rebuild_rails_routes(&self) -> Result<()> {
-        let _guard = self.write_lock.lock().await;
+        let _guard = self.lock_writes().await;
         if self.get_metadata("rails_routes_pending").await?.as_deref() != Some("1") {
             return Ok(());
         }
+        let tx_span = super::super::profiled::transaction_span();
         let start = std::time::Instant::now();
         self.conn()
             .execute("BEGIN", ())
@@ -243,6 +244,7 @@ impl Database {
                     let _ = self.conn().execute("ROLLBACK", ()).await;
                     return Err(route_error(&error));
                 }
+                tx_span.finish();
                 Ok(())
             }
             Err(error) => {

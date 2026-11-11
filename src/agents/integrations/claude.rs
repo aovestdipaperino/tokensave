@@ -1428,8 +1428,8 @@ fn extract_tokensave_bin_from_hooks(settings: &serde_json::Value) -> Option<Stri
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::super::{install_tool_perms, TOKENSAVE_WILDCARD_PERM};
     use super::*;
+    use crate::agents::{install_tool_perms, TOKENSAVE_WILDCARD_PERM};
     use serde_json::json;
 
     #[test]

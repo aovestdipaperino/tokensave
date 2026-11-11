@@ -7,7 +7,7 @@ use std::fs;
 use tempfile::TempDir;
 use tokensave::extraction::{LanguageExtractor, LanguageRegistry, McFunctionExtractor};
 use tokensave::tokensave::TokenSave;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, NodeKind};
 
 #[test]
 fn test_mcfunction_registry_dispatch() {

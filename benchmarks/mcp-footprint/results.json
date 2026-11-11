@@ -1,0 +1,336 @@
+{
+  "command": [
+    "python.exe",
+    "benchmarks/mcp_footprint.py",
+    "--binary",
+    "target/release/tokensave.exe",
+    "--repo",
+    ".",
+    "--rev",
+    "cb57475c201fcbac1688b24c8db023247a392b5d",
+    "--output-dir",
+    "benchmarks/mcp-footprint",
+    "--runs",
+    "10",
+    "--query-runs",
+    "5"
+  ],
+  "binary_version": "tokensave 7.17.0",
+  "repository_commit": "cb57475c201fcbac1688b24c8db023247a392b5d",
+  "host": {
+    "platform": "Windows-11-10.0.26300-SP0",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+    "cpus": 8,
+    "python": "3.14.7"
+  },
+  "tokenizers": {
+    "chars/4": "tokensave estimate (src/context/read_modes.rs)",
+    "tiktoken": "0.14.0"
+  },
+  "cold_start_without_index": {
+    "to_initialize_ms": {
+      "runs": 10,
+      "median": 84.1,
+      "p95": 192.6,
+      "min": 62.7,
+      "max": 192.6
+    },
+    "to_first_tools_list_ms": {
+      "runs": 10,
+      "median": 87.6,
+      "p95": 197.2,
+      "min": 66.0,
+      "max": 197.2
+    }
+  },
+  "init": {
+    "wall_ms": 35107.0,
+    "tokensave_dir_bytes": 115672568
+  },
+  "footprint": {
+    "core": {
+      "tools": 12,
+      "bytes": {
+        "initialize_result": 2068,
+        "instructions": 1891,
+        "tools_list_result": 22165,
+        "tools_list_plus_instructions": 24056
+      },
+      "tokens": {
+        "chars/4": {
+          "initialize_result": 516,
+          "instructions": 472,
+          "tools_list_result": 5533
+        },
+        "tiktoken o200k_base": {
+          "initialize_result": 440,
+          "instructions": 390,
+          "tools_list_result": 5072
+        },
+        "tiktoken cl100k_base": {
+          "initialize_result": 437,
+          "instructions": 389,
+          "tools_list_result": 5000
+        }
+      }
+    },
+    "full": {
+      "tools": 86,
+      "bytes": {
+        "initialize_result": 1236,
+        "instructions": 1077,
+        "tools_list_result": 96884,
+        "tools_list_plus_instructions": 97961
+      },
+      "tokens": {
+        "chars/4": {
+          "initialize_result": 308,
+          "instructions": 268,
+          "tools_list_result": 24198
+        },
+        "tiktoken o200k_base": {
+          "initialize_result": 259,
+          "instructions": 212,
+          "tools_list_result": 21834
+        },
+        "tiktoken cl100k_base": {
+          "initialize_result": 255,
+          "instructions": 210,
+          "tools_list_result": 21439
+        }
+      }
+    }
+  },
+  "cold_start_with_index": {
+    "to_initialize_ms": {
+      "runs": 10,
+      "median": 299.2,
+      "p95": 439.0,
+      "min": 233.5,
+      "max": 439.0
+    },
+    "to_first_tools_list_ms": {
+      "runs": 10,
+      "median": 302.1,
+      "p95": 442.9,
+      "min": 236.3,
+      "max": 442.9
+    }
+  },
+  "query_latency": {
+    "queries": [
+      {
+        "tool": "tokensave_context",
+        "arguments": {
+          "task": "How is configuration loaded at startup?"
+        },
+        "result_bytes": 2045,
+        "latency_ms": {
+          "runs": 5,
+          "median": 184.3,
+          "p95": 210.4,
+          "min": 166.3,
+          "max": 210.4
+        }
+      },
+      {
+        "tool": "tokensave_context",
+        "arguments": {
+          "task": "Where are command-line arguments parsed and dispatched?"
+        },
+        "result_bytes": 1619,
+        "latency_ms": {
+          "runs": 5,
+          "median": 159.8,
+          "p95": 249.7,
+          "min": 147.3,
+          "max": 249.7
+        }
+      },
+      {
+        "tool": "tokensave_context",
+        "arguments": {
+          "task": "How is the main entry point organized?"
+        },
+        "result_bytes": 1476,
+        "latency_ms": {
+          "runs": 5,
+          "median": 151.3,
+          "p95": 181.4,
+          "min": 140.3,
+          "max": 181.4
+        }
+      },
+      {
+        "tool": "tokensave_context",
+        "arguments": {
+          "task": "How are errors defined, wrapped, and propagated?"
+        },
+        "result_bytes": 1873,
+        "latency_ms": {
+          "runs": 5,
+          "median": 141.5,
+          "p95": 155.4,
+          "min": 139.5,
+          "max": 155.4
+        }
+      },
+      {
+        "tool": "tokensave_context",
+        "arguments": {
+          "task": "Where is logging or diagnostic output emitted?"
+        },
+        "result_bytes": 1725,
+        "latency_ms": {
+          "runs": 5,
+          "median": 164.9,
+          "p95": 234.5,
+          "min": 154.1,
+          "max": 234.5
+        }
+      },
+      {
+        "tool": "tokensave_context",
+        "arguments": {
+          "task": "How are tests organized and what test harness is used?"
+        },
+        "result_bytes": 1837,
+        "latency_ms": {
+          "runs": 5,
+          "median": 174.5,
+          "p95": 209.4,
+          "min": 156.7,
+          "max": 209.4
+        }
+      },
+      {
+        "tool": "tokensave_context",
+        "arguments": {
+          "task": "How is data persisted to disk or to a database?"
+        },
+        "result_bytes": 1517,
+        "latency_ms": {
+          "runs": 5,
+          "median": 116.0,
+          "p95": 128.5,
+          "min": 114.4,
+          "max": 128.5
+        }
+      },
+      {
+        "tool": "tokensave_context",
+        "arguments": {
+          "task": "How are async tasks or background work spawned?"
+        },
+        "result_bytes": 1729,
+        "latency_ms": {
+          "runs": 5,
+          "median": 183.6,
+          "p95": 228.2,
+          "min": 152.8,
+          "max": 228.2
+        }
+      },
+      {
+        "tool": "tokensave_context",
+        "arguments": {
+          "task": "How does the build wire up dependencies and initialize state?"
+        },
+        "result_bytes": 1673,
+        "latency_ms": {
+          "runs": 5,
+          "median": 135.1,
+          "p95": 166.1,
+          "min": 129.3,
+          "max": 166.1
+        }
+      },
+      {
+        "tool": "tokensave_context",
+        "arguments": {
+          "task": "How are public API surfaces exposed (HTTP endpoints, library exports, or CLI commands)?"
+        },
+        "result_bytes": 1357,
+        "latency_ms": {
+          "runs": 5,
+          "median": 169.4,
+          "p95": 193.8,
+          "min": 156.9,
+          "max": 193.8
+        }
+      },
+      {
+        "tool": "tokensave_search",
+        "arguments": {
+          "query": "McpServer"
+        },
+        "result_bytes": 937,
+        "latency_ms": {
+          "runs": 5,
+          "median": 162.3,
+          "p95": 239.7,
+          "min": 135.7,
+          "max": 239.7
+        }
+      },
+      {
+        "tool": "tokensave_search",
+        "arguments": {
+          "query": "handle_tools_list"
+        },
+        "result_bytes": 249,
+        "latency_ms": {
+          "runs": 5,
+          "median": 206.1,
+          "p95": 244.2,
+          "min": 186.0,
+          "max": 244.2
+        }
+      },
+      {
+        "tool": "tokensave_search",
+        "arguments": {
+          "query": "sync"
+        },
+        "result_bytes": 1130,
+        "latency_ms": {
+          "runs": 5,
+          "median": 154.4,
+          "p95": 202.0,
+          "min": 138.8,
+          "max": 202.0
+        }
+      },
+      {
+        "tool": "tokensave_search",
+        "arguments": {
+          "query": "Toolset"
+        },
+        "result_bytes": 1471,
+        "latency_ms": {
+          "runs": 5,
+          "median": 167.6,
+          "p95": 490.1,
+          "min": 130.5,
+          "max": 490.1
+        }
+      },
+      {
+        "tool": "tokensave_search",
+        "arguments": {
+          "query": "resolve"
+        },
+        "result_bytes": 1343,
+        "latency_ms": {
+          "runs": 5,
+          "median": 267.6,
+          "p95": 313.0,
+          "min": 237.3,
+          "max": 313.0
+        }
+      }
+    ],
+    "median_of_medians_ms": 164.9
+  }
+}

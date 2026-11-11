@@ -3,11 +3,32 @@ use std::collections::{HashSet, VecDeque};
 
 use crate::db::Database;
 use crate::errors::Result;
-use crate::types::*;
+use crate::profile::McpPhase;
+use crate::types::{
+    Edge, EdgeKind, Node, NodeKind, Subgraph, TraversalDirection, TraversalOptions,
+};
 
 /// A path through the graph: a sequence of nodes, each paired with the
 /// optional edge used to reach it (the first node has `None`).
 pub type GraphPath = Vec<(Node, Option<Edge>)>;
+
+/// The result of a path search that has a work bound.
+#[derive(Debug)]
+pub struct PathSearch {
+    /// The shortest path found, if any.
+    pub path: Option<GraphPath>,
+    /// True when the search stopped at its node budget. `path` is then
+    /// `None`, and that means "not found within the budget", not "no path
+    /// exists".
+    pub budget_exhausted: bool,
+}
+
+/// Reported to the profiler as a path is: one row when found, else none.
+impl crate::profile::Counted for PathSearch {
+    fn rows(&self) -> (u64, u64) {
+        (u64::from(self.path.is_some()), 0)
+    }
+}
 
 /// Performs graph traversal operations on the code graph.
 pub struct GraphTraverser<'a> {
@@ -53,6 +74,19 @@ impl<'a> GraphTraverser<'a> {
     /// node kind filter, direction, and result limit. Returns a `Subgraph`
     /// containing the discovered nodes and the edges used to reach them.
     pub async fn traverse_bfs(&self, start_id: &str, opts: &TraversalOptions) -> Result<Subgraph> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.traverse_bfs_unprofiled(start_id, opts),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::traverse_bfs`].
+    async fn traverse_bfs_unprofiled(
+        &self,
+        start_id: &str,
+        opts: &TraversalOptions,
+    ) -> Result<Subgraph> {
         debug_assert!(
             !start_id.is_empty(),
             "traverse_bfs called with empty start_id"
@@ -191,6 +225,19 @@ impl<'a> GraphTraverser<'a> {
     /// Uses an iterative approach with an explicit stack to avoid async
     /// recursion issues.
     pub async fn traverse_dfs(&self, start_id: &str, opts: &TraversalOptions) -> Result<Subgraph> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.traverse_dfs_unprofiled(start_id, opts),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::traverse_dfs`].
+    async fn traverse_dfs_unprofiled(
+        &self,
+        start_id: &str,
+        opts: &TraversalOptions,
+    ) -> Result<Subgraph> {
         debug_assert!(
             !start_id.is_empty(),
             "traverse_dfs called with empty start_id"
@@ -310,6 +357,19 @@ impl<'a> GraphTraverser<'a> {
         node_id: &str,
         max_depth: usize,
     ) -> Result<Vec<(Node, Edge, usize)>> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.get_callers_with_depth_unprofiled(node_id, max_depth),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::get_callers_with_depth`].
+    async fn get_callers_with_depth_unprofiled(
+        &self,
+        node_id: &str,
+        max_depth: usize,
+    ) -> Result<Vec<(Node, Edge, usize)>> {
         debug_assert!(!node_id.is_empty(), "get_callers called with empty node_id");
         debug_assert!(max_depth > 0, "get_callers max_depth must be positive");
         let mut results: Vec<(Node, Edge, usize)> = Vec::new();
@@ -376,6 +436,19 @@ impl<'a> GraphTraverser<'a> {
     /// in the first incoming-edge query. The optional string identifies the
     /// trait method through which the caller dispatches.
     pub async fn get_callers_with_dispatch_depth(
+        &self,
+        node_id: &str,
+        max_depth: usize,
+    ) -> Result<Vec<(Node, Edge, usize, Option<String>)>> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.get_callers_with_dispatch_depth_unprofiled(node_id, max_depth),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::get_callers_with_dispatch_depth`].
+    async fn get_callers_with_dispatch_depth_unprofiled(
         &self,
         node_id: &str,
         max_depth: usize,
@@ -466,6 +539,19 @@ impl<'a> GraphTraverser<'a> {
     ///
     /// Follows outgoing `Calls` edges to find callees transitively.
     pub async fn get_callees(&self, node_id: &str, max_depth: usize) -> Result<Vec<(Node, Edge)>> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.get_callees_unprofiled(node_id, max_depth),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::get_callees`].
+    async fn get_callees_unprofiled(
+        &self,
+        node_id: &str,
+        max_depth: usize,
+    ) -> Result<Vec<(Node, Edge)>> {
         debug_assert!(!node_id.is_empty(), "get_callees called with empty node_id");
         debug_assert!(max_depth > 0, "get_callees max_depth must be positive");
         let mut results: Vec<(Node, Edge)> = Vec::new();
@@ -558,6 +644,19 @@ impl<'a> GraphTraverser<'a> {
     ///
     /// Returns every reachable node, including the seeds themselves.
     pub async fn get_impact_radius_multi(
+        &self,
+        seed_ids: &[String],
+        max_depth: usize,
+    ) -> Result<Vec<Node>> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.get_impact_radius_multi_unprofiled(seed_ids, max_depth),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::get_impact_radius_multi`].
+    async fn get_impact_radius_multi_unprofiled(
         &self,
         seed_ids: &[String],
         max_depth: usize,
@@ -699,13 +798,72 @@ impl<'a> GraphTraverser<'a> {
         to_id: &str,
         edge_kinds: &[EdgeKind],
     ) -> Result<Option<GraphPath>> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.find_path_unprofiled(from_id, to_id, edge_kinds),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::find_path`]: a search without bounds.
+    async fn find_path_unprofiled(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        edge_kinds: &[EdgeKind],
+    ) -> Result<Option<GraphPath>> {
+        Ok(self
+            .find_path_bounded_unprofiled(from_id, to_id, edge_kinds, usize::MAX, usize::MAX)
+            .await?
+            .path)
+    }
+
+    /// Finds the shortest path between two nodes, following edges in both
+    /// directions, within two bounds.
+    ///
+    /// `max_depth` is the longest path, in edges. `max_expanded` is the
+    /// number of nodes whose edges the search may read: a well-connected
+    /// node has many neighbors in both directions, so depth alone does not
+    /// bound the work. When the search stops at `max_expanded`, the result
+    /// says so, because "not found" then does not mean "not connected".
+    ///
+    /// If `edge_kinds` is empty, all edge types are followed.
+    pub async fn find_path_bounded(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        edge_kinds: &[EdgeKind],
+        max_depth: usize,
+        max_expanded: usize,
+    ) -> Result<PathSearch> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.find_path_bounded_unprofiled(from_id, to_id, edge_kinds, max_depth, max_expanded),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::find_path_bounded`].
+    async fn find_path_bounded_unprofiled(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        edge_kinds: &[EdgeKind],
+        max_depth: usize,
+        max_expanded: usize,
+    ) -> Result<PathSearch> {
         debug_assert!(!from_id.is_empty(), "find_path called with empty from_id");
         debug_assert!(!to_id.is_empty(), "find_path called with empty to_id");
         if from_id == to_id {
-            if let Some(node) = self.db.get_node_by_id(from_id).await? {
-                return Ok(Some(vec![(node, None)]));
-            }
-            return Ok(None);
+            let path = self
+                .db
+                .get_node_by_id(from_id)
+                .await?
+                .map(|node| vec![(node, None)]);
+            return Ok(PathSearch {
+                path,
+                budget_exhausted: false,
+            });
         }
 
         // BFS: track parent info for path reconstruction.
@@ -713,71 +871,66 @@ impl<'a> GraphTraverser<'a> {
         let mut parent_map: std::collections::HashMap<String, (String, Edge)> =
             std::collections::HashMap::new();
         let mut visited: HashSet<String> = HashSet::new();
-        let mut queue: VecDeque<String> = VecDeque::new();
+        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
 
         visited.insert(from_id.to_string());
-        queue.push_back(from_id.to_string());
+        queue.push_back((from_id.to_string(), 0));
 
         let mut found = false;
+        let mut expanded = 0usize;
+        let mut budget_exhausted = false;
 
-        while let Some(current_id) = queue.pop_front() {
-            // Get outgoing edges.
+        'search: while let Some((current_id, depth)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+            if expanded >= max_expanded {
+                budget_exhausted = true;
+                break;
+            }
+            expanded += 1;
+
+            // Outgoing edges first, then incoming: the neighbor of an
+            // outgoing edge is its target, of an incoming edge its source.
             let outgoing = self.db.get_outgoing_edges(&current_id, edge_kinds).await?;
-            for edge in outgoing {
-                let neighbor = edge.target.clone();
-                if !visited.contains(&neighbor) {
-                    visited.insert(neighbor.clone());
-                    let is_target = neighbor == to_id;
-                    parent_map.insert(neighbor.clone(), (current_id.clone(), edge));
-
-                    if is_target {
-                        found = true;
-                        break;
-                    }
-                    queue.push_back(neighbor);
-                }
-            }
-
-            if found {
-                break;
-            }
-
-            // Also get incoming edges (traverse bidirectionally for path finding).
             let incoming = self.db.get_incoming_edges(&current_id, edge_kinds).await?;
-            for edge in incoming {
-                let neighbor = edge.source.clone();
-                if !visited.contains(&neighbor) {
-                    visited.insert(neighbor.clone());
-                    let is_target = neighbor == to_id;
-                    parent_map.insert(neighbor.clone(), (current_id.clone(), edge));
-
-                    if is_target {
-                        found = true;
-                        break;
-                    }
-                    queue.push_back(neighbor);
+            let neighbors = outgoing
+                .into_iter()
+                .map(|edge| (edge.target.clone(), edge))
+                .chain(incoming.into_iter().map(|edge| (edge.source.clone(), edge)));
+            for (neighbor, edge) in neighbors {
+                if !visited.insert(neighbor.clone()) {
+                    continue;
                 }
-            }
-
-            if found {
-                break;
+                let is_target = neighbor == to_id;
+                parent_map.insert(neighbor.clone(), (current_id.clone(), edge));
+                if is_target {
+                    found = true;
+                    break 'search;
+                }
+                queue.push_back((neighbor, depth + 1));
             }
         }
 
         if !found {
-            return Ok(None);
+            return Ok(PathSearch {
+                path: None,
+                budget_exhausted,
+            });
         }
 
         // Reconstruct path from to_id back to from_id.
         let mut path_ids: Vec<(String, Option<Edge>)> = Vec::new();
         let mut current = to_id.to_string();
         while current != from_id {
-            if let Some((parent, edge)) = parent_map.remove(&current) {
-                path_ids.push((current, Some(edge)));
-                current = parent;
-            } else {
-                return Ok(None);
-            }
+            let Some((parent, edge)) = parent_map.remove(&current) else {
+                return Ok(PathSearch {
+                    path: None,
+                    budget_exhausted: false,
+                });
+            };
+            path_ids.push((current, Some(edge)));
+            current = parent;
         }
         path_ids.push((from_id.to_string(), None));
         path_ids.reverse();
@@ -790,7 +943,10 @@ impl<'a> GraphTraverser<'a> {
             }
         }
 
-        Ok(Some(path))
+        Ok(PathSearch {
+            path: Some(path),
+            budget_exhausted: false,
+        })
     }
 
     /// Finds the shortest *directed* path from `from_id` to `to_id`, following
@@ -802,6 +958,21 @@ impl<'a> GraphTraverser<'a> {
     /// older `find_path` does a bidirectional walk that's right for "are these
     /// connected at all" but wrong for directed-chain queries.
     pub async fn find_path_directed(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        edge_kinds: &[EdgeKind],
+        max_depth: usize,
+    ) -> Result<Option<GraphPath>> {
+        crate::profile::measure(
+            McpPhase::GraphTraversal,
+            self.find_path_directed_unprofiled(from_id, to_id, edge_kinds, max_depth),
+        )
+        .await
+    }
+
+    /// Unprofiled body of [`Self::find_path_directed`].
+    async fn find_path_directed_unprofiled(
         &self,
         from_id: &str,
         to_id: &str,

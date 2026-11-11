@@ -17,7 +17,7 @@
 // markers. The markers also carry a content hash so `tokensave doctor` can
 // report drift clearly and so a second unchanged install can skip writing.
 
-use crate::agents::fs::*;
+use crate::agents::fs::{backup_config_file, resolve_symlink_target, safe_write_text_file};
 use crate::agents::traits::DoctorCounters;
 use crate::errors::{Result, TokenSaveError};
 use std::path::Path;
@@ -128,7 +128,9 @@ and shell tools instead of tokensave MCP tools.\n\n\
 ### SQL fallback\n\n\
 If the graph tools cannot answer a question, find the active database in \
 `.tokensave/branch-meta.json` (`db_file`) (or `.tokensave/tokensave.db` if \
-branch-meta.json is absent) before querying it directly with SQL (tables: \
+branch-meta.json is absent) before querying it directly with SQL. Beta builds \
+use `.tokensave/beta/branch-meta.json` and `.tokensave/beta/tokensave.db` \
+instead; never use the stable index for a beta session (tables: \
 `nodes`, `edges`, `files`).\n\n\
 ### Tool gaps\n\n\
 If a tokensave tool could answer a question natively but does not, suggest the \

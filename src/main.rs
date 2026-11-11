@@ -9,10 +9,11 @@ use tokensave::tokensave::TokenSave;
 mod cli;
 mod commands;
 mod global;
+mod profile_command;
 mod serve;
 mod tool_command;
 
-use cli::*;
+use cli::{Cli, Commands};
 
 /// Alias for the shared timestamp utility.
 pub(crate) fn current_unix_timestamp() -> i64 {
@@ -114,11 +115,14 @@ impl Drop for Spinner {
 
 /// Build the JSON object for one `by_agent` row.
 ///
-/// `cost_usd` is `null` for Droid (a credits-only agent with no USD pricing);
-/// it is a numeric value for all other agents.
-/// All token fields and `credits` are always present.
+/// `cost_usd` is `null` for the credits-only agents (Droid, Copilot) that have
+/// no USD pricing; it is a numeric value for all other agents.
+/// All token fields and `credits` are always present. `credits` is emitted in
+/// each agent's native unit at machine precision: Droid Factory credits, and
+/// Copilot raw nano-AIU (divide by 1e9 for whole AIU). The human table renders
+/// Copilot as whole AIU; the structured JSON and CSV keep the exact nano value.
 fn agent_row_json(a: &tokensave::global_db::AgentCostSummary) -> serde_json::Value {
-    let cost_usd: serde_json::Value = if a.agent == "droid" {
+    let cost_usd: serde_json::Value = if tokensave::accounting::is_credits_only(&a.agent) {
         serde_json::Value::Null
     } else {
         serde_json::json!(a.cost_usd)
@@ -147,11 +151,14 @@ fn format_agent_row(a: &tokensave::global_db::AgentCostSummary) -> String {
         .saturating_add(a.cache_write_tokens)
         .saturating_add(a.cache_read_tokens);
     let raw_str = tokensave::display::format_token_count(raw);
-    let credits_str = match a.credits {
-        Some(c) => tokensave::display::format_token_count(c),
-        None => "n/a".to_string(),
+    // Copilot's credit column holds nano-AIU; render it as whole AIU. Other
+    // credit-carrying agents (Droid) use raw compact counts.
+    let credits_str = match (a.agent.as_str(), a.credits) {
+        ("copilot", Some(c)) => format!("{} AIU", tokensave::accounting::copilot_format_aiu(c)),
+        (_, Some(c)) => tokensave::display::format_token_count(c),
+        (_, None) => "n/a".to_string(),
     };
-    let usd_str = if a.agent == "droid" {
+    let usd_str = if tokensave::accounting::is_credits_only(&a.agent) {
         "n/a".to_string()
     } else {
         format!("${:.2}", a.cost_usd)
@@ -176,6 +183,20 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Some(cmd) => cmd,
         None => return commands::handle_no_command().await,
     };
+
+    // Experimental export is read-only and bypasses startup maintenance.
+    if let Commands::GraphifyExport {
+        project,
+        file,
+        output,
+        max_nodes,
+        max_edges,
+    } = &command
+    {
+        let root = tokensave::config::resolve_path_with_discovery(project.clone());
+        tokensave::cancel::install_signal_handlers();
+        return tokensave::graphify::export_file(&root, file, output, *max_nodes, *max_edges).await;
+    }
 
     // Verification must bypass config saves, telemetry and agent maintenance.
     if let Commands::Verify {
@@ -465,8 +486,20 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // from inside indexing.rs) against this process.
             tokensave::memstats::init("index", &project_path);
             tokensave::memstats::record("start");
+            // Opt-in profiling (#754); a no-op unless enabled.
+            let profiler = tokensave::profile::Profiler::start_from_environment();
 
-            commands::init_and_index(&project_path, &skip_folders, false, cpu_usage).await?;
+            tokensave::profile::invocation(commands::init_and_index(
+                &project_path,
+                &skip_folders,
+                false,
+                cpu_usage,
+            ))
+            .await
+            .0?;
+            if let Some(profiler) = profiler {
+                profiler.shutdown();
+            }
 
             // Offer this repository's own git hooks (#455). Local rather than
             // global, because the global path claims `core.hooksPath` — one
@@ -476,22 +509,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
 
             // Print update notice from parallel check (suppressed for 15 min)
             if let Ok(Some(latest)) = version_handle.join() {
-                let current_version = env!("CARGO_PKG_VERSION");
-                let now = current_unix_timestamp();
-                let mut config = tokensave::user_config::UserConfig::load();
-                config.cached_latest_version = latest.clone();
-                config.last_version_check_at = now;
-                config.save();
-                if tokensave::cloud::is_newer_version(current_version, &latest)
-                    && now - config.last_version_warning_at >= 900
-                {
-                    eprintln!(
-                        "\n\x1b[33mUpdate available: v{} → v{}\x1b[0m\n  Run: \x1b[1mtokensave upgrade\x1b[0m",
-                        current_version, latest
-                    );
-                    config.last_version_warning_at = now;
-                    config.save();
-                }
+                global::notify_fetched_update(&latest);
             }
         }
         Commands::Tune {
@@ -519,14 +537,37 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // on a large tree; Ctrl-C must stop it at the next phase boundary
             // rather than at the end (#450).
             tokensave::cancel::install_signal_handlers();
+            let explicit_path = path.is_some();
             let project_path = tokensave::config::resolve_path_with_discovery(path);
+            // #876: the installed `post-commit` and `post-merge` hooks run a
+            // pathless `sync`, so a repository started with `git init` reaches
+            // here on its first commit. With `auto_init` on, initialize it
+            // instead of failing. The decision lives in the binary, so hooks
+            // written by earlier versions get it without being rewritten.
+            let mut auto_initialize = false;
             if !TokenSave::is_initialized(&project_path) {
-                eprintln!(
-                    "\x1b[31merror:\x1b[0m no TokenSave index found at '{}'.\n\
-                     Run \x1b[1mtokensave init\x1b[0m to create one first.",
-                    project_path.display()
-                );
-                std::process::exit(1);
+                match (!explicit_path).then(|| tokensave::auto_init::decide(&project_path)) {
+                    Some(tokensave::auto_init::Decision::Init(_)) => {
+                        eprintln!(
+                            "No TokenSave index at '{}'; initializing it (auto_init).",
+                            project_path.display()
+                        );
+                        auto_initialize = true;
+                    }
+                    decision => {
+                        if let Some(tokensave::auto_init::Decision::Skip(skip)) = &decision {
+                            if let Some(hint) = skip.hint(&project_path) {
+                                eprintln!("{hint}");
+                            }
+                        }
+                        eprintln!(
+                            "\x1b[31merror:\x1b[0m no TokenSave index found at '{}'.\n\
+                             Run \x1b[1mtokensave init\x1b[0m to create one first.",
+                            project_path.display()
+                        );
+                        std::process::exit(1);
+                    }
+                }
             }
             // Warn if legacy .codegraph directory exists
             if project_path.join(".codegraph").is_dir() {
@@ -544,46 +585,54 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // inside the indexing code itself.
             tokensave::memstats::init("sync", &project_path);
             tokensave::memstats::record("start");
+            // Opt-in profiling (#754); a no-op unless enabled.
+            let profiler = tokensave::profile::Profiler::start_from_environment();
 
-            if force {
-                commands::init_and_index(&project_path, &skip_folders, verbose, None).await?;
+            if force || auto_initialize {
+                tokensave::profile::invocation(commands::init_and_index(
+                    &project_path,
+                    &skip_folders,
+                    verbose,
+                    None,
+                ))
+                .await
+                .0?;
             } else {
                 let mut cg = TokenSave::open(&project_path).await?;
                 cg.add_skip_folders(&skip_folders);
                 let spinner = Spinner::new();
                 let sync_start = std::time::Instant::now();
-                let result = cg
-                    .sync_with_progress_verbose(
-                        |current, total, detail| {
-                            if current == 0 {
-                                // Phase message (scanning, hashing, detecting, resolving)
-                                spinner.set_message(detail);
-                            } else {
-                                // Per-file progress with ETA
-                                let elapsed = sync_start.elapsed().as_secs_f64();
-                                let eta = if current > 1 {
-                                    let per_file = elapsed / (current - 1) as f64;
-                                    let remaining = per_file * (total - current) as f64;
-                                    if remaining >= 1.0 {
-                                        format!(" (ETA: {remaining:.0}s)")
-                                    } else {
-                                        String::new()
-                                    }
+                let result = tokensave::profile::invocation(cg.sync_with_progress_verbose(
+                    |current, total, detail| {
+                        if current == 0 {
+                            // Phase message (scanning, hashing, detecting, resolving)
+                            spinner.set_message(detail);
+                        } else {
+                            // Per-file progress with ETA
+                            let elapsed = sync_start.elapsed().as_secs_f64();
+                            let eta = if current > 1 {
+                                let per_file = elapsed / (current - 1) as f64;
+                                let remaining = per_file * (total - current) as f64;
+                                if remaining >= 1.0 {
+                                    format!(" (ETA: {remaining:.0}s)")
                                 } else {
                                     String::new()
-                                };
-                                spinner.set_message(&format!(
-                                    "[{current}/{total}] syncing {detail}{eta}"
-                                ));
-                            }
-                        },
-                        |msg| {
-                            if verbose {
-                                eprintln!("  \x1b[2m[verbose]\x1b[0m {msg}");
-                            }
-                        },
-                    )
-                    .await?;
+                                }
+                            } else {
+                                String::new()
+                            };
+                            spinner
+                                .set_message(&format!("[{current}/{total}] syncing {detail}{eta}"));
+                        }
+                    },
+                    |msg| {
+                        if verbose {
+                            eprintln!("  \x1b[2m[verbose]\x1b[0m {msg}");
+                        }
+                    },
+                ))
+                .await
+                .0?;
                 let skipped_msg = if result.skipped_paths.is_empty() {
                     String::new()
                 } else {
@@ -597,6 +646,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     result.duration_ms
                 ));
                 if let Some(warning) = cg.warn_skipped_hidden_dirs() {
+                    eprintln!("{warning}");
+                }
+                if let Some(warning) = cg.warn_tracked_ambiguous_excludes() {
                     eprintln!("{warning}");
                 }
                 if !result.skipped_paths.is_empty() {
@@ -617,27 +669,16 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
                 global::update_global_db(&cg).await;
             }
+            if let Some(profiler) = profiler {
+                profiler.shutdown();
+            }
 
             // Print update notice from parallel check (suppressed for 15 min)
             if let Ok(Some(latest)) = version_handle.join() {
-                let current_version = env!("CARGO_PKG_VERSION");
-                let now = current_unix_timestamp();
-                let mut config = tokensave::user_config::UserConfig::load();
-                config.cached_latest_version = latest.clone();
-                config.last_version_check_at = now;
-                config.save();
-                if tokensave::cloud::is_newer_version(current_version, &latest)
-                    && now - config.last_version_warning_at >= 900
-                {
-                    eprintln!(
-                        "\n\x1b[33mUpdate available: v{} → v{}\x1b[0m\n  Run: \x1b[1mtokensave upgrade\x1b[0m",
-                        current_version, latest
-                    );
-                    config.last_version_warning_at = now;
-                    config.save();
-                }
+                global::notify_fetched_update(&latest);
             }
         }
+        Commands::GraphifyExport { .. } => unreachable!("export dispatched before startup"),
         Commands::Verify { .. } => unreachable!("verify is dispatched before startup"),
         Commands::Status {
             path,
@@ -755,23 +796,27 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     }
                 });
                 // Ingest new session data so cost info is up-to-date.
-                let droid_present = if let Some(ref db) = gdb {
+                let (droid_present, augment_present) = if let Some(ref db) = gdb {
                     let stats = tokensave::accounting::parser::ingest(db).await;
-                    stats.coverage.iter().any(|coverage| {
-                        coverage.agent == "droid"
-                            && coverage.state != tokensave::accounting::CoverageState::Absent
-                    })
+                    let source_present = |agent| {
+                        stats.coverage.iter().any(|coverage| {
+                            coverage.agent == agent
+                                && coverage.state != tokensave::accounting::CoverageState::Absent
+                        })
+                    };
+                    (source_present("droid"), source_present("augment"))
                 } else {
-                    false
+                    (false, false)
                 };
                 // Best-effort cost summary for the status header.
                 let cost_info = match &gdb {
                     Some(db) => {
-                        tokensave::accounting::metrics::quick_cost_summary_with_droid_presence(
+                        tokensave::accounting::metrics::quick_cost_summary_with_source_presence(
                             db,
                             tokens_saved,
                             global_tokens_saved.unwrap_or(0),
                             droid_present,
+                            augment_present,
                         )
                         .await
                     }
@@ -800,6 +845,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         Some(cg.project_root()),
                         details,
                     );
+                }
+
+                // #877: the table shows only a `[fallback]` marker; say why
+                // the branch is untracked and how to track it.
+                if let (Some(warning), Some(hint)) = (cg.fallback_warning(), cg.auto_track_hint()) {
+                    eprintln!("\n\x1b[33mWarning: {warning}\n{hint}\x1b[0m");
                 }
 
                 // Warn if .tokensave is not in .gitignore
@@ -1270,6 +1321,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 // The process exits cleanly so the host does not retry.
                 return Ok(());
             }
+            // Opt-in profiling (#754): off unless `[profiling]` or
+            // TOKENSAVE_PROFILE enables it, in which case aggregates are
+            // flushed to ~/.tokensave/profile/ until the server exits.
+            let profiler = tokensave::profile::Profiler::start_from_environment();
             let original_cwd = std::env::current_dir().ok();
             // An explicit --path is a deliberate choice of project root
             // (possibly a different repo than the CWD, #201); only
@@ -1286,7 +1341,20 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // discovery fails: every fallback below and a server with no
             // default project read the same list (#606).
             let mut registered: Option<Vec<serve::RegisteredProject>> = None;
-            let cg = match serve::ensure_initialized(&project_path).await {
+            // #876: a git repository with no index is initialized here when
+            // `auto_init` allows it, before any fallback can pick another
+            // project. Only for a CWD-discovered root: an explicit `--path`
+            // keeps its no-default-project behavior (#606).
+            let auto_initialized = if explicit_path || TokenSave::is_initialized(&project_path) {
+                None
+            } else {
+                serve::auto_initialize(&project_path).await
+            };
+            let opened = match auto_initialized {
+                Some(cg) => Ok(cg),
+                None => serve::ensure_initialized(&project_path).await,
+            };
+            let cg = match opened {
                 Ok(cg) => Some(cg),
                 // An explicit `--path` names the project to serve. A folder
                 // without an index gets no default project rather than
@@ -1347,7 +1415,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 watch_for_orphaning();
                 let server = tokensave::mcp::McpServer::new_without_project(registered).await;
                 run_mcp_server(&server, timings, peeked_line, idle_timeout_secs).await?;
-                exit_after_serve();
+                exit_after_serve(profiler);
             };
 
             // Set the shutdown flag the instant a signal arrives, rather than
@@ -1397,7 +1465,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // A hard kill skips this; that is what reaping on startup and on
             // read is for.
             tokensave::servers::unregister();
-            exit_after_serve();
+            exit_after_serve(profiler);
         }
         Commands::Servers { json } => {
             let entries = tokensave::servers::list();
@@ -1626,13 +1694,10 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             caveman,
             session_id,
         } => {
-            if caveman {
-                let reports =
-                    tokensave::caveman::diagnostics(agent.as_deref(), session_id.as_deref());
-                println!("{}", serde_json::to_string_pretty(&reports)?);
-            } else {
-                tokensave::doctor::run_doctor(agent.as_deref()).await;
-            }
+            let caveman = caveman.then_some(tokensave::doctor::CavemanCheck {
+                session_id: session_id.as_deref(),
+            });
+            tokensave::doctor::run_doctor(agent.as_deref(), caveman).await;
         }
         Commands::Cost {
             range,
@@ -1664,10 +1729,20 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 coverage.agent == "droid"
                     && coverage.state != tokensave::accounting::CoverageState::Absent
             });
-            let summary = tokensave::accounting::metrics::cost_summary_with_droid_presence(
+            let copilot_present = ingest_stats.coverage.iter().any(|coverage| {
+                coverage.agent == "copilot"
+                    && coverage.state != tokensave::accounting::CoverageState::Absent
+            });
+            let augment_present = ingest_stats.coverage.iter().any(|coverage| {
+                coverage.agent == "augment"
+                    && coverage.state != tokensave::accounting::CoverageState::Absent
+            });
+            let summary = tokensave::accounting::metrics::cost_summary_with_source_presence(
                 &gdb,
                 since,
                 droid_present,
+                copilot_present,
+                augment_present,
             )
             .await;
 
@@ -1700,7 +1775,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                             "by_model": s.by_model.iter().map(|(m, c, t)| serde_json::json!({"model": m, "cost": c, "tokens": t})).collect::<Vec<_>>(),
                             "by_category": s.by_category.iter().map(|(cat, c, n)| serde_json::json!({"category": cat, "cost": c, "turns": n})).collect::<Vec<_>>(),
                         });
-                        if droid_present {
+                        if droid_present || copilot_present || augment_present {
                             obj["by_agent"] = serde_json::json!(s
                                 .by_agent
                                 .iter()
@@ -1714,7 +1789,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         if by_agent {
                             println!("agent,cost_usd,credits,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,turns");
                             for a in &s.by_agent {
-                                let cost_cell = if a.agent == "droid" {
+                                let cost_cell = if tokensave::accounting::is_credits_only(&a.agent)
+                                {
                                     String::new()
                                 } else {
                                     format!("{:.4}", a.cost_usd)
@@ -1797,7 +1873,14 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             } else {
                 // Default summary
                 let today_since = tokensave::accounting::metrics::parse_range("today");
-                let today_cost = gdb.total_cost_since(today_since).await.unwrap_or(0.0);
+                let today_cost =
+                    tokensave::accounting::metrics::total_cost_since_with_augment_presence(
+                        &gdb,
+                        today_since,
+                        augment_present,
+                    )
+                    .await
+                    .unwrap_or(0.0);
                 let today_breakdown = gdb
                     .token_breakdown_since(today_since)
                     .await
@@ -1897,10 +1980,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::Gain {
             all,
             history,
+            by_tool,
             range,
             json,
         } => {
-            commands::handle_gain(all, history, &range, json).await?;
+            commands::handle_gain(all, history, by_tool, &range, json).await?;
         }
         Commands::Monitor => {
             if let Err(e) = tokensave::monitor::run() {
@@ -1915,6 +1999,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             if let Err(e) = tokensave::memstats::run(clean) {
                 eprintln!("Memory report error: {e}");
             }
+        }
+        Commands::State { action } => {
+            commands::handle_state_action(action);
+        }
+        Commands::Profile { action } => {
+            profile_command::handle_profile_action(action)?;
         }
         Commands::QualityDiff { .. } => unreachable!("handled before startup"),
         Commands::Branch { action } => {
@@ -2561,8 +2651,13 @@ async fn run_mcp_server(
 /// Shutdown has already persisted counters and checkpointed the WAL, and is
 /// idempotent, so there is nothing left to unwind for. Stdout is flushed
 /// first: a response written just before a signal must still reach the client.
-fn exit_after_serve() -> ! {
+fn exit_after_serve(profiler: Option<tokensave::profile::Profiler>) -> ! {
     use std::io::Write;
+    // `process::exit` skips destructors, so the final profile flush runs
+    // here explicitly.
+    if let Some(profiler) = profiler {
+        profiler.shutdown();
+    }
     let _ = std::io::stdout().flush();
     std::process::exit(0);
 }

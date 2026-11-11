@@ -11,7 +11,7 @@ cargo build --locked
 cargo test --workspace --locked
 ```
 
-Requires **Rust 1.95.0+** (edition 2021). The CI and release toolchain is pinned to **1.98.1**.
+Requires **Rust 1.95.0+** (edition 2021). The CI and release toolchain is pinned to **1.99.0**.
 
 ## Build and Artifact Lifecycle
 
@@ -82,6 +82,73 @@ cargo test --locked --no-default-features --features lite
    cargo fmt --all -- --check
    cargo clippy --workspace --all-targets --locked
    ```
+5. **Follow the [Rust coding style](#rust-coding-style).**
+
+## Rust Coding Style
+
+On `master`, Rust code follows
+[Google's Rust Style Guide](https://google.github.io/styleguide/rustguide.html).
+[AGENTS.md](AGENTS.md#rust-style-guide-master-only) defines the scope, the
+precedence and TokenSave's documented exceptions. TokenSave's own rules take
+precedence; for example, library code must not use `unwrap()` or `expect()`.
+This applies to `master` only; `beta` has not adopted the guide.
+The repository-wide audit and cleanup remain follow-up work tracked by #845;
+this documentation change does not establish compliance of existing code.
+
+### Enforced by tooling
+
+These checks are the enforceable baseline. Run them with the pinned toolchain
+before opening a PR:
+
+- `cargo fmt --all -- --check`: standard formatting with the default
+  `max_width = 100`. This is a formatting target, not a guarantee that every
+  line is at most 100 columns. CI blocks on this check.
+- `cargo clippy --workspace --all-targets --locked`: the crate lints configured
+  in `src/lib.rs` (`clippy::all` denied, `clippy::pedantic` warned,
+  `unwrap_used`/`expect_used` denied). These cover several guide rules,
+  including `borrowed_box` and `ptr_arg` (accept `&T`, `&[T]` and `&str`),
+  `new_without_default`, `len_without_is_empty`, `should_implement_trait` and
+  `wrong_self_convention`. CI runs Clippy as non-blocking, so check its output
+  locally and do not introduce new warnings.
+
+### Requires manual review
+
+Tooling does not fully enforce these rules, so authors and reviewers check
+them on every changed Rust file:
+
+- **Imports:** no new glob imports beyond the guide's permitted cases; one
+  module per `use` statement; call free functions through their module
+  (`mem::take(...)`); import types and use them unqualified unless the names
+  are ambiguous; prefer function-local imports for traits that are used once.
+- **Modules:** name files after their primary item; keep non-leaf modules
+  limited to declarations, re-exports and a small amount of glue code.
+- **Ownership:** borrow rather than `.clone()` when it is practical; avoid
+  `Rc`/`Arc` unless sharing across owners, tasks or threads requires it.
+- **APIs:** prefer an enum over an unclear `bool` parameter; prefer named
+  fields over tuples beyond very local use; use newtypes for values that are
+  easily confused; implement standard traits instead of custom equivalents;
+  derive rather than hand-implement when possible.
+- **Naming:** `new`/`try_new`/`from_*` constructors; `as_`/`to_`/`into_`
+  conversions; `foo`/`foo_mut`/`set_foo`/`take_foo` accessors; an `Ext` suffix
+  for extension traits; descriptive lifetimes; no project-specific
+  abbreviations.
+- **Implementation:** pattern matching instead of check-then-unwrap; explicit
+  types where inference hides meaning (`.into()`, `.parse()`, long iterator
+  chains); a `for` loop instead of complex combinator chains or `for_each`; no
+  combinator chains in `for` headers; `format!`/`write!` instead of chained
+  `+` concatenation; context strings on non-obvious `assert!`s.
+- **Docs and unsafe:** `///` docs on public items that say something the code
+  does not; `//!` for module docs; no `unsafe` unless safe code cannot do it,
+  and then a `// SAFETY:` comment and a stated justification.
+- **Macros:** prefer functions, types and traits to macros; prefer
+  `macro_rules!` to procedural macros.
+
+### Exceptions and cleanup
+
+Document any deviation that is not already listed in AGENTS.md where it
+occurs (`#[allow(lint, reason = "...")]` or a comment), and call it out in the
+PR description. Keep style-only cleanup of existing code behavior-preserving
+and in its own PRs, separate from functional changes.
 
 ## Filesystem Path Construction
 
@@ -169,7 +236,7 @@ MCP requests, and long-running server workloads, including error paths.
 - Contributors and agents MUST NOT claim code is leak-free without supporting
   evidence, and MUST qualify conclusions by the paths and workloads checked.
 
-Use the existing [memory diagnostics](README.md#memory-diagnostics) for sampled
+Use the existing [memory diagnostics](docs/guide/TOKEN-TRACKING.md#memory-diagnostics) for sampled
 RSS and phase attribution, the [automatic-sync and server lifecycle guide](docs/USER-GUIDE.md#how-the-mcp-server-refreshes-the-index)
 for operational constraints, and [query optimization notes](docs/QUERY-OPTIMIZATIONS.md)
 for existing database strategies. These describe specific mechanisms; the policy
@@ -188,6 +255,15 @@ For resource-sensitive changes, contributors and AI coding agents MUST review:
 - [ ] Memory and CPU regression risks, validation evidence, and untested paths are
       recorded; repeated and long-running checks are considered.
 - [ ] Significant resource increases are justified and claims match the evidence.
+
+Changes that involve `unsafe` code, native dependencies, platform APIs,
+concurrency, filesystem state or callbacks also need a soundness review. It
+covers panic and unwind safety, trait implementations that do not keep their
+promises, and process-wide OS state such as environment variables, signals,
+mapped files and `process::exit`. The checks are listed in
+[AGENTS.md](AGENTS.md#rust-memory-safety-and-soundness-review), and the current
+`unsafe` inventory and findings are in
+[docs/MEMORY-SAFETY-AUDIT.md](docs/MEMORY-SAFETY-AUDIT.md).
 
 ## Adding a New Language Extractor
 
@@ -210,9 +286,13 @@ cargo test --locked test_find_stale_files
 cargo test --locked sync
 
 # Faster local loop: only the 11 lite-tier languages (language tests for the
-# other tiers are compiled out). CI still runs the full feature set.
+# other tiers are compiled out). CI runs the full set and also this lite run.
 cargo test-lite
 ```
+
+### What CI runs
+
+CI (`.github/workflows/ci.yml`) runs each job only when a file that job depends on changed. A change limited to documentation, `scripts/` or `assets/` starts no Rust build. Format runs for `.rs` changes, MSRV for library and Cargo changes, and the test matrix and feature tiers for anything a build or test reads, including `tests/fixtures/`. If your change makes a build or test read a file that the filters in the `changes` job do not cover, add it to the matching filters. The `CI OK` job reports the combined result. A manual run (`workflow_dispatch`) executes every job.
 
 ### Test layout
 
@@ -283,6 +363,41 @@ writers or establish a public output-order guarantee. Repeated small full
 indexes exercise the production parallel extraction path, without timing
 assertions or a large repository stress test.
 
+## Documentation
+
+User documentation lives in [`docs/guide/`](docs/guide/README.md) and is published
+to the [GitHub Wiki](https://github.com/aovestdipaperino/tokensave/wiki). The
+guide is the single source: the wiki is generated from it by
+`.github/workflows/wiki.yml` on every push to `master` that changes it, and any
+edit made directly in the wiki is overwritten.
+
+- **Keep `README.md` short.** It holds what tokensave is, the installation guide,
+  the quick start, and links into the guide. Put details in the guide page for
+  that topic, or add a page if no existing page fits.
+- **Update the docs with the code.** A change that adds, removes, or changes a
+  command, flag, MCP tool, configuration field, environment variable, supported
+  agent, or language updates the affected guide pages (and `README.md`, if it is
+  mentioned there) in the same pull request.
+- **One place per fact.** Explain each topic on one guide page and link to it
+  from other pages instead of copying it. The installation commands are the one
+  intended duplicate: every method in `README.md` must appear unchanged in
+  [`docs/guide/INSTALLATION.md`](docs/guide/INSTALLATION.md), which also holds
+  the less common ones (such as installing from upstream `master`).
+- **Linking.** Link to other guide pages with relative links such as
+  `[MCP Tools](MCP-TOOLS.md#tools-by-category)`, and to other repository files
+  with relative paths. Keep each page's single `# Title`: the wiki names the
+  page after it.
+- **New pages.** Use an uppercase, hyphenated file name (`NEW-TOPIC.md`) and add
+  it to the `wiki-sidebar` list in [`docs/guide/README.md`](docs/guide/README.md)
+  and to the table in `README.md`.
+- **Check before submitting.** Run `python3 scripts/wiki/sync_wiki.py check` to
+  validate links, anchors, and the sidebar, and
+  `python3 scripts/wiki/sync_wiki.py build --out /tmp/tokensave-wiki` to
+  preview the generated wiki pages.
+
+Design notes, evaluations, and reports stay in `docs/` outside the guide and are
+not published to the wiki.
+
 ## Environment Variables
 
 Tokensave-owned environment variables must start with `TOKENSAVE_`. Runtime Rust sources are checked by `tests/env_var_namespace_test.rs`; operating-system, Cargo, Git, and agent-owned variables require an explicit allowlist rationale. Use qualified environment APIs such as `std::env::var` so the policy check can identify accesses. Keep variable names as string literals at their access site unless a shared constant is required, and never print environment-variable values because some carry authentication material.
@@ -298,6 +413,8 @@ refactor: simplify reference resolver lookup
 ```
 
 Keep the first line under 72 characters. Add a body explaining *why* if the change isn't obvious.
+When the change implements someone else's issue, add a `Co-authored-by:` trailer for
+them as described in [Crediting Issue Authors](#crediting-issue-authors).
 
 ## Pull Requests
 
@@ -306,6 +423,32 @@ Keep the first line under 72 characters. Add a body explaining *why* if the chan
 - Keep PRs focused — one logical change per PR.
 - Include test coverage for new behavior.
 - Update `CHANGELOG.md` under an `[Unreleased]` section.
+- Credit the people who proposed the change; see [Crediting Issue Authors](#crediting-issue-authors).
+
+## Crediting Issue Authors
+
+Many changes start as an issue: a feature idea, a design, or a bug report with a
+reproduction or root-cause analysis. The people who wrote that issue are credited as
+co-authors of the pull request that implements it. These rules apply to every
+contributor, human or AI agent:
+
+- If a PR implements an idea, design, or fix that someone else proposed or
+  substantially specified in an issue, add a `Co-authored-by:` trailer for that
+  person to at least one commit in the PR.
+- Credit each person who made a substantive contribution: the original proposer and
+  anyone whose issue comment shaped the design or the fix. Linking, reacting to, or
+  agreeing with the issue is not enough.
+- Use the person's GitHub noreply address,
+  `Co-authored-by: Name <ID+login@users.noreply.github.com>`, where `ID` comes from
+  `gh api users/<login> --jq .id`. Never guess an address or look up a private one.
+- Put the trailers in the last block of the commit message, one per person, after
+  the body and alongside any other trailers.
+- Do not add a trailer when the proposer is already an author of the PR's commits,
+  for bots, or when the proposer asks not to be credited.
+- Name the credited people in the PR description, for example
+  "Co-authored-by trailer for @login, who proposed this in #N".
+- When squash-merging, keep the `Co-authored-by:` trailers in the final commit
+  message.
 
 ## GitHub Issue Lifecycle
 

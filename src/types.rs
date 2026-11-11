@@ -93,7 +93,10 @@ pub enum NodeKind {
     Signal,
 }
 
-#[allow(clippy::should_implement_trait)]
+#[allow(
+    clippy::should_implement_trait,
+    reason = "returns `Option`, as every caller expects; `FromStr` would add an unused error type"
+)]
 impl NodeKind {
     /// Returns the string representation of this node kind.
     pub fn as_str(&self) -> &'static str {
@@ -276,7 +279,10 @@ pub enum EdgeKind {
     Reopens,
 }
 
-#[allow(clippy::should_implement_trait)]
+#[allow(
+    clippy::should_implement_trait,
+    reason = "returns `Option`, as every caller expects; `FromStr` would add an unused error type"
+)]
 impl EdgeKind {
     /// Returns the string representation of this edge kind.
     pub fn as_str(&self) -> &'static str {
@@ -338,7 +344,10 @@ impl Visibility {
         }
     }
 
-    #[allow(clippy::should_implement_trait)]
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "returns `Option`, as every caller expects; `FromStr` would add an unused error type"
+    )]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "public" | "pub" => Some(Self::Pub),
@@ -980,6 +989,27 @@ pub struct ResolvedRef {
     pub target_node_id: String,
     pub confidence: f64,
     pub resolved_by: String,
+}
+
+/// Result of `tokensave_create_file` (#920).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateFileResult {
+    pub success: bool,
+    /// Project-relative, forward-slash path of the file; the path as given
+    /// when it was refused before it could be resolved.
+    pub file_path: String,
+    /// Canonical absolute path written, or empty when refused.
+    pub resolved_path: String,
+    /// Bytes written.
+    pub bytes: usize,
+    /// True when an existing file was replaced (`overwrite`).
+    pub overwritten: bool,
+    /// True when the file is in the index after the call. A file in a
+    /// language tokensave does not index is written but not indexed.
+    pub indexed: bool,
+    pub message: String,
+    /// SHA-256 hex digest of the content written, or empty when refused.
+    pub digest: String,
 }
 
 /// Result of a single string replacement edit.

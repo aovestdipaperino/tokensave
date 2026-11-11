@@ -66,7 +66,7 @@ fn def_always_load(
 /// `graph_root` description for a tool that answers about one graph.
 ///
 /// It used to be one 457-byte paragraph repeated verbatim on every one of the
-/// 53 graph-scoped tools, re-sent every turn before any tool is called
+/// 55 graph-scoped tools, re-sent every turn before any tool is called
 /// (#576). Each description is now one sentence; the full cross-project rules
 /// go once per session in [`GRAPH_SELECTOR_INSTRUCTIONS`]. Only the tools in
 /// [`FEDERATABLE_TOOLS`](crate::mcp::graph_scope::FEDERATABLE_TOOLS) mention
@@ -279,7 +279,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_port_order(),
         def_commit_context(),
         def_pr_context(),
-        def_simplify_scan(),
+        graph_scoped(def_simplify_scan()),
         graph_scoped(def_test_map()),
         graph_scoped(def_type_hierarchy()),
         def_branch_search(),
@@ -290,12 +290,13 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_insert_at(),
         def_delete_symbol(),
         def_replace_lines(),
+        def_create_file(),
         def_ast_grep_rewrite(),
         def_rename(),
         graph_scoped(def_gini()),
         graph_scoped(def_dependency_depth()),
         graph_scoped(def_health()),
-        def_redundancy(),
+        graph_scoped(def_redundancy()),
         def_runtime(),
         graph_scoped(def_dsm()),
         graph_scoped(def_test_risk()),
@@ -437,6 +438,7 @@ pub const TOOL_AREAS: &[(&str, &str, &[&str])] = &[
             "tokensave_insert_at",
             "tokensave_delete_symbol",
             "tokensave_replace_lines",
+            "tokensave_create_file",
             "tokensave_ast_grep_rewrite",
             "tokensave_replace_symbol",
             "tokensave_insert_at_symbol",
@@ -1752,7 +1754,7 @@ fn def_pr_context() -> ToolDefinition {
 }
 
 fn def_simplify_scan() -> ToolDefinition {
-    local_graph_no_selectors(def(
+    def(
         "tokensave_simplify_scan",
         "Simplify Scan",
         "Quality analysis of changed files: duplications, dead code, coupling, and complexity hotspots.",
@@ -1767,7 +1769,7 @@ fn def_simplify_scan() -> ToolDefinition {
             },
             "required": ["files"]
         }),
-    ))
+    )
 }
 
 fn def_test_map() -> ToolDefinition {
@@ -2030,6 +2032,23 @@ fn def_delete_symbol() -> ToolDefinition {
     }
 }
 
+fn def_create_file() -> ToolDefinition {
+    def_rw(
+        "tokensave_create_file",
+        "Create File",
+        "Create a new file inside the indexed project and index it at once, so it is searchable right after the call. Refuses an existing file unless `overwrite` is true, a directory, a symlink, a path outside the project root (absolute, `..`, or through a symlink), and paths inside `.git` or tokensave's own state. Unlike the other edit tools, an absolute path outside the project is never honored. Missing parent directories are created.",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Project-relative path, or an absolute path inside the project root." },
+                "content": { "type": "string", "description": "The file's full content, at most the project's max_file_size (1 MiB by default)." },
+                "overwrite": { "type": "boolean", "description": "Replace an existing regular file. Default false." }
+            },
+            "required": ["path", "content"]
+        }),
+    )
+}
+
 fn def_replace_lines() -> ToolDefinition {
     ToolDefinition {
         name: "tokensave_replace_lines".to_string(),
@@ -2133,7 +2152,7 @@ fn def_runtime() -> ToolDefinition {
 }
 
 fn def_redundancy() -> ToolDefinition {
-    local_graph_no_selectors(def(
+    def(
         "tokensave_redundancy",
         "Redundancy Hunt",
         "Find functionally duplicated function/method bodies via AST isomorphism, control-flow match, call-sequence match, and token-shingle Jaccard similarity. Each pair is bucketed as 'definite' (AST-identical), 'likely' (CFG or algorithmic match), or 'naming_only' (low confidence). Use when consolidating helpers or auditing code health. Computed lazily and cached per (node, body source hash) — first call on a fresh index can be slow on large repos.",
@@ -2162,7 +2181,7 @@ fn def_redundancy() -> ToolDefinition {
                 }
             }
         }),
-    ))
+    )
 }
 
 fn def_dsm() -> ToolDefinition {
@@ -3023,28 +3042,43 @@ fn def_call_chain() -> ToolDefinition {
     def(
         "tokensave_call_chain",
         "Call Chain",
-        "Find the shortest directed call chain between two symbols, following \
-         only outgoing `calls` edges. Returns the ordered sequence of nodes \
-         and edges that connect `from_id` to `to_id`, or a not-found result. \
-         Use `tokensave_search` or `tokensave_by_qualified_name` first to \
-         resolve symbol names into node IDs.",
+        "Find the shortest path between two symbols. Name each end by symbol \
+         (`from`, `to`) or by node ID (`from_id`, `to_id`). By default the \
+         path is a directed call chain: only outgoing `calls` edges. With \
+         `follow: \"any\"` it is the shortest connection over every edge \
+         kind in either direction, and each step reports `edge_direction`. \
+         Returns the ordered nodes and edges, or a not-found result. A name \
+         that matches several symbols is not guessed: the candidates are \
+         listed for a re-call by node ID.",
         json!({
             "type": "object",
             "properties": {
+                "from": {
+                    "type": "string",
+                    "description": "Symbol name of the start (the caller end), e.g. 'RefreshAsync' or 'Coordinator::RefreshAsync'. Must match one symbol."
+                },
+                "to": {
+                    "type": "string",
+                    "description": "Symbol name of the end (the callee end). Must match one symbol."
+                },
                 "from_id": {
                     "type": "string",
-                    "description": "Source node ID (the caller end of the chain)."
+                    "description": "Start node ID. Takes precedence over `from`."
                 },
                 "to_id": {
                     "type": "string",
-                    "description": "Target node ID (the callee end of the chain)."
+                    "description": "End node ID. Takes precedence over `to`."
+                },
+                "follow": {
+                    "type": "string",
+                    "enum": ["calls", "any"],
+                    "description": "calls (default): outgoing `calls` edges only, a chain of execution. any: every edge kind in either direction, for how two symbols are connected."
                 },
                 "max_depth": {
                     "type": "number",
-                    "description": "Maximum BFS depth (default: 8, max: 20)."
+                    "description": "Maximum path length in edges (default: 8, max: 20)."
                 }
-            },
-            "required": ["from_id", "to_id"]
+            }
         }),
     )
 }
@@ -3224,7 +3258,7 @@ fn def_diff() -> ToolDefinition {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreadable_literal)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     /// The drift gate's refused set, derived from the registry the same way
@@ -3293,6 +3327,12 @@ mod tests {
             "tokensave_file_dependents",
             "tokensave_find_exact_symbol",
             "tokensave_imports",
+            // Graph-scoped by owner decision: both read only the selected
+            // graph (and, for redundancy, its project's source files); the
+            // redundancy fingerprint cache is not written on a read-only
+            // selected graph.
+            "tokensave_simplify_scan",
+            "tokensave_redundancy",
         ]
         .into_iter()
         .collect()
@@ -3320,6 +3360,7 @@ mod tests {
             "tokensave_log",
             "tokensave_multi_str_replace",
             "tokensave_replace_lines",
+            "tokensave_create_file",
             "tokensave_port_order",
             "tokensave_port_status",
             "tokensave_pr_context",
@@ -3402,6 +3443,33 @@ mod tests {
             get_listed_tool_definitions(Toolset::Full, &none).len(),
             listed
         );
+    }
+
+    /// #920: `tokensave_create_file` is a deferred edit tool: not core, not
+    /// alwaysLoad, writes files, and is listed only once `edit` (or `all`) is.
+    #[test]
+    fn create_file_is_listed_only_with_the_edit_area() {
+        use crate::config::Toolset;
+        use std::collections::BTreeSet;
+        const NAME: &str = "tokensave_create_file";
+        assert!(!CORE_TOOLS.contains(&NAME));
+        assert_eq!(tool_area(NAME), "edit");
+        let definition = get_tool_definitions()
+            .into_iter()
+            .find(|d| d.name == NAME)
+            .unwrap();
+        assert!(!is_always_load(&definition));
+        assert!(!is_read_only_tool(&definition));
+        let listed = |areas: &[&str]| {
+            let areas: BTreeSet<String> = areas.iter().map(|a| (*a).to_string()).collect();
+            get_listed_tool_definitions(Toolset::Core, &areas)
+                .iter()
+                .any(|d| d.name == NAME)
+        };
+        assert!(!listed(&[]));
+        assert!(!listed(&["git"]));
+        assert!(listed(&["edit"]));
+        assert!(listed(&["all"]));
     }
 
     /// #576: each area names real tools only, no tool is in two areas or in
@@ -3531,7 +3599,7 @@ mod tests {
                     definition.name
                 );
                 // #576: the array rule reaches only the two tools that honour
-                // it, so the other 51 do not pay for it on every turn.
+                // it, so the other 53 do not pay for it on every turn.
                 assert_eq!(
                     graph_root.unwrap()["description"]
                         .as_str()
@@ -3574,7 +3642,7 @@ mod tests {
             .filter(|definition| is_graph_scoped_tool(definition))
             .map(|definition| definition.name.as_str())
             .collect();
-        assert_eq!(actual.len(), 53);
+        assert_eq!(actual.len(), 55);
         assert_eq!(actual, canonical);
     }
 
@@ -3628,7 +3696,7 @@ mod tests {
     }
 
     #[test]
-    fn selectorless_refusal_set_is_derived_and_covers_the_known_six() {
+    fn selectorless_refusal_set_is_derived_and_covers_the_known_four() {
         // The branch-drift gate refuses this exact set today; deriving it
         // from the registry marker must reproduce the same membership, and
         // any future selector-less local graph tool must appear here
@@ -3637,8 +3705,6 @@ mod tests {
         let expected: BTreeSet<String> = [
             "tokensave_affected",
             "tokensave_diff_context",
-            "tokensave_simplify_scan",
-            "tokensave_redundancy",
             "tokensave_diagnostics",
             "tokensave_diagnose",
         ]
@@ -3650,6 +3716,15 @@ mod tests {
             "derived selector-less refusal set lost members: missing={:?}",
             expected.difference(&derived).collect::<Vec<_>>()
         );
+        // Catches: `tokensave_simplify_scan` or `tokensave_redundancy` still
+        // marked selector-less local-only after becoming graph-scoped, which
+        // would keep refusing `graph_root`/`graph_branch` before dispatch.
+        for graph_scoped in ["tokensave_simplify_scan", "tokensave_redundancy"] {
+            assert!(
+                !derived.contains(graph_scoped),
+                "{graph_scoped} is graph-scoped and must leave the selector-less refusal set"
+            );
+        }
     }
 
     #[test]

@@ -22,7 +22,6 @@ use std::hash::{BuildHasher, Hash};
 /// SCCs are emitted in reverse-topological order over the condensation:
 /// if SCC `A` depends on SCC `B`, `B` appears in the result before `A`.
 /// This matches Tarjan's natural emission order.
-#[allow(clippy::implicit_hasher)]
 pub fn tarjan_scc<N>(
     adj: &HashMap<N, HashSet<N, impl BuildHasher>, impl BuildHasher>,
 ) -> Vec<Vec<N>>
@@ -144,8 +143,10 @@ where
 /// is only cyclic if it has an explicit self-edge in `adj`; otherwise
 /// it's just an isolated vertex. Components of size >= 2 are always
 /// cyclic by Tarjan's definition.
-#[allow(clippy::implicit_hasher)]
-pub fn is_cyclic_scc<N>(scc: &[N], adj: &HashMap<N, HashSet<N>>) -> bool
+pub fn is_cyclic_scc<N>(
+    scc: &[N],
+    adj: &HashMap<N, HashSet<N, impl BuildHasher>, impl BuildHasher>,
+) -> bool
 where
     N: Eq + Hash,
 {

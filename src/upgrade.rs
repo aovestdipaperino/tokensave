@@ -349,7 +349,16 @@ fn extract_zip(data: &[u8], bin_name: &str, dest: &Path) -> Result<()> {
             message: format!("zip entry error: {e}"),
         })?;
 
-        if Path::new(file.name()).file_name().and_then(|n| n.to_str()) == Some(bin_name) {
+        // zip 9 decodes the entry name on demand and reports undecodable names
+        // as an error.
+        let name = file.name().map_err(|e| TokenSaveError::Config {
+            message: format!("zip entry name error: {e}"),
+        })?;
+        if Path::new(name.as_ref())
+            .file_name()
+            .and_then(|n| n.to_str())
+            == Some(bin_name)
+        {
             let mut out = std::fs::File::create(dest).map_err(io_err("create temp file failed"))?;
             std::io::copy(&mut file, &mut out).map_err(io_err("extract failed"))?;
             return Ok(());
@@ -1460,13 +1469,9 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  tokensave-v1.2
     #[test]
     #[cfg(unix)]
     fn live_snapshot_includes_self_and_real_parent_pid() {
-        extern "C" {
-            fn getppid() -> i32;
-        }
-
         use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
         let self_pid = std::process::id();
-        let real_ppid = unsafe { getppid() } as u32;
+        let real_ppid = std::os::unix::process::parent_id();
 
         let mut sys = System::new();
         sys.refresh_processes_specifics(

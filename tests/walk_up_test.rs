@@ -75,8 +75,12 @@ fn extract_text(value: &serde_json::Value) -> &str {
 async fn test_discover_project_root_from_subdir() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
-    fs::create_dir_all(root.join(".tokensave")).unwrap();
-    fs::write(root.join(".tokensave").join("tokensave.db"), b"fake").unwrap();
+    fs::create_dir_all(tokensave::config::get_tokensave_dir(root)).unwrap();
+    fs::write(
+        tokensave::config::get_tokensave_dir(root).join("tokensave.db"),
+        b"fake",
+    )
+    .unwrap();
     let subdir = root.join("src").join("mcp").join("tools");
     fs::create_dir_all(&subdir).unwrap();
 

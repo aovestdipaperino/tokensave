@@ -1,6 +1,7 @@
 //! Full and incremental indexing.
 use super::query::resolve_symbol_for_edit;
 use super::*;
+use crate::profile::{IndexPhase, SyncPhase};
 
 const RAILS_ROUTE_REFERENCES_METADATA: &str = "rails_route_references_v3";
 
@@ -209,6 +210,104 @@ fn reenters_project_root(path: &Path, canonical_root: Option<&Path>) -> bool {
         .is_ok_and(|target| path_contains_root(&target, root))
 }
 
+/// Resolves the `path` of `tokensave_create_file` (#920) to the absolute path
+/// to write and its project-relative, forward-slash form.
+///
+/// Refuses, with a message for the caller: an empty path, any `..` component,
+/// a path whose nearest existing ancestor resolves outside the project root
+/// (which covers an absolute path elsewhere and a symlinked parent that leaves
+/// the root), the root itself, and paths inside `.git` or tokensave's state
+/// directory. The target itself is not followed here: the caller refuses a
+/// target that is a symlink.
+pub(crate) fn resolve_new_file_target(
+    project_root: &Path,
+    state_dir: &Path,
+    path: &str,
+) -> std::result::Result<(PathBuf, String), String> {
+    use std::path::Component;
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("path is empty".to_string());
+    }
+    let given = Path::new(path);
+    if given
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(format!("`..` is not allowed in path: {path}"));
+    }
+    let given: PathBuf = given
+        .components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .collect();
+    let canonical_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve the project root: {e}"))?;
+    let candidate = if given.is_absolute() {
+        given
+    } else {
+        project_root.join(given)
+    };
+    let Some(file_name) = candidate.file_name().map(std::ffi::OsStr::to_os_string) else {
+        return Err(format!("path names no file: {path}"));
+    };
+
+    // Canonicalize the nearest existing ancestor of the parent, so a symlink
+    // anywhere above the file is resolved before the containment check. The
+    // missing components below it cannot be symlinks yet.
+    let mut existing = candidate.parent().unwrap_or(Path::new(""));
+    let mut missing = Vec::new();
+    while std::fs::symlink_metadata(existing).is_err() {
+        let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+            return Err(format!("{path} is outside the project root"));
+        };
+        missing.push(name.to_os_string());
+        existing = parent;
+    }
+    let mut target = existing
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", existing.display()))?;
+    for name in missing.iter().rev() {
+        target.push(name);
+    }
+    target.push(&file_name);
+
+    let rel = target
+        .strip_prefix(&canonical_root)
+        .map_err(|_| format!("{path} is outside the project root"))?;
+    if rel.as_os_str().is_empty() {
+        return Err(format!("path names the project root: {path}"));
+    }
+    // Case-insensitive, as `.GIT` is `.git` on Windows and default macOS.
+    let named = |component: Component<'_>, name: &str| {
+        component
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(name)
+    };
+    if rel.components().any(|component| named(component, ".git")) {
+        return Err(format!("refusing to write inside .git: {path}"));
+    }
+    let in_state_dir = rel
+        .components()
+        .next()
+        .is_some_and(|first| named(first, crate::config::TOKENSAVE_DIR))
+        || state_dir
+            .canonicalize()
+            .is_ok_and(|state| target.starts_with(state));
+    if in_state_dir {
+        return Err(format!(
+            "refusing to write inside tokensave's state: {path}"
+        ));
+    }
+    let rel_str = rel
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    Ok((project_root.join(rel), rel_str))
+}
+
 // ---------------------------------------------------------------------------
 // Indexing
 // ---------------------------------------------------------------------------
@@ -351,12 +450,26 @@ impl TokenSave {
         F: Fn(usize, usize, &str),
         V: Fn(&str),
     {
+        let lock = try_acquire_sync_lock(&self.project_root)?;
+        self.index_all_with_lock(on_file, on_verbose, lock).await
+    }
+
+    /// Keep recovery and indexing inside the same writer critical section.
+    pub(super) async fn index_all_with_lock<F, V>(
+        &self,
+        on_file: F,
+        on_verbose: V,
+        _lock: SyncLockGuard,
+    ) -> Result<IndexResult>
+    where
+        F: Fn(usize, usize, &str),
+        V: Fn(&str),
+    {
         debug_assert!(self.project_root.exists(), "project root does not exist");
         debug_assert!(
             self.project_root.is_dir(),
             "project root is not a directory"
         );
-        let _lock = try_acquire_sync_lock(&self.project_root)?;
         // Fail loudly on a broken project.json (unknown language, bad glob)
         // instead of silently indexing without the manifest (#194).
         self.ensure_current_checkout()?;
@@ -364,6 +477,9 @@ impl TokenSave {
         let dispatch_revision = self.dispatch_revision();
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
+        // Profiling (#754): phase spans keep the verbose timings above
+        // unchanged; an early `?` return records the open phase as failed.
+        let run_span = crate::profile::span(IndexPhase::Total);
 
         // 1. Enter bulk-load mode, then clear existing data. Order matters:
         // `begin_bulk_load` can fail while another process holds the table
@@ -378,9 +494,11 @@ impl TokenSave {
 
         // 2. Scan for source files
         let phase_start = Instant::now();
+        let scan_span = crate::profile::span(IndexPhase::Scan);
         let detection_before = crate::language_detection::statistics();
         let (files, skipped_extensions) = self.scan_files_diagnostics();
         let total = files.len();
+        scan_span.finish();
         on_verbose(&format!(
             "scanned {} files in {:.1}s",
             total,
@@ -393,6 +511,7 @@ impl TokenSave {
         let registry = &self.registry;
 
         let phase_start = Instant::now();
+        let extract_span = crate::profile::span(IndexPhase::Extract);
         crate::memstats::record("index:extract");
         let (files, artifact_files) = self.partition_artifacts(files, &self.artifact_extensions());
         if self.config.language_detection.enabled {
@@ -447,6 +566,7 @@ impl TokenSave {
             all_unresolved.extend(result.unresolved_refs);
         }
 
+        extract_span.finish();
         on_verbose(&format!(
             "extracted {} nodes, {} edges from {} files in {:.1}s",
             total_nodes,
@@ -485,6 +605,7 @@ impl TokenSave {
 
         // 5. Resolve references in-memory (parallel) before DB insert
         let phase_start = Instant::now();
+        let resolve_span = crate::profile::span(IndexPhase::Resolve);
         crate::memstats::set_graph_nodes(all_nodes.len() as u64);
         // Last point before anything is written in the full-index path: the
         // inserts all happen after resolution, so leaving here still commits
@@ -518,6 +639,7 @@ impl TokenSave {
             all_edges.extend(variant_edges);
         }
         crate::memstats::record("index:resolve:done");
+        resolve_span.finish();
         on_verbose(&format!(
             "resolved {} references in {:.1}s",
             all_unresolved.len(),
@@ -555,6 +677,7 @@ impl TokenSave {
 
         // 7. Bulk-insert via prepared statements (zero SQL re-parsing)
         let phase_start = Instant::now();
+        let write_span = crate::profile::span(IndexPhase::DbWrite);
         crate::memstats::record("index:insert");
         self.db.insert_nodes(&all_nodes).await?;
         self.db
@@ -581,17 +704,24 @@ impl TokenSave {
             self.db.insert_unresolved_refs(&all_unresolved).await?;
         }
 
+        write_span.finish();
+
         // 8. Restore indexes and normal durability
+        let fts_span = crate::profile::span(IndexPhase::FtsMaintenance);
         self.db.end_bulk_load().await?;
+        fts_span.finish();
+        let edge_span = crate::profile::span(IndexPhase::EdgeBuild);
         self.db.rebuild_ruby_reopenings().await?;
         self.rebuild_rails_routes_best_effort(true).await;
         self.db.rebuild_trait_dispatch_callers().await?;
+        edge_span.finish();
         on_verbose(&format!(
             "wrote to database in {:.1}s",
             phase_start.elapsed().as_secs_f64()
         ));
 
         let duration_ms = start.elapsed().as_millis() as u64;
+        let commit_span = crate::profile::span(IndexPhase::Commit);
         let now_str = current_timestamp().to_string();
         self.db.set_metadata("last_full_sync_at", &now_str).await?;
         self.db
@@ -624,6 +754,10 @@ impl TokenSave {
         self.db
             .set_metadata("language_dispatch_revision", &dispatch_revision)
             .await?;
+        commit_span.finish();
+        if let Some(elapsed_us) = run_span.end(true) {
+            crate::profile::record_run(true, total, elapsed_us, total_nodes + total_edges);
+        }
         let result = IndexResult {
             file_count: extraction_count,
             node_count: total_nodes,
@@ -803,6 +937,32 @@ impl TokenSave {
             if refs.is_empty() {
                 continue;
             }
+            // A re-attempted reference's cleanup deletes by site, so every
+            // reference recorded at the same (caller, line) must re-resolve
+            // with it — a same-named sibling can hold a different target whose
+            // edge would otherwise be deleted and never rewritten (#630).
+            // Same pairing as the GDScript site path above (#597).
+            let mut sites: Vec<(String, u32)> = refs
+                .iter()
+                .map(|r| (r.from_node_id.clone(), r.line))
+                .collect();
+            sites.sort_unstable();
+            sites.dedup();
+            // A full pass re-attempts every reference anyway, so the site
+            // pairing is only needed (and only pays for) an incremental pass.
+            if touched.is_some() {
+                for member in self.db.get_unresolved_refs_at_sites(&sites).await? {
+                    let unseen = !refs.iter().any(|r| {
+                        r.from_node_id == member.from_node_id
+                            && r.line == member.line
+                            && r.reference_name == member.reference_name
+                            && r.reference_kind == member.reference_kind
+                    });
+                    if unseen {
+                        refs.push(member);
+                    }
+                }
+            }
             attempted += refs.len();
             // Only the references actually re-resolved may have their ambiguity
             // records replaced — see `write_ambiguities`. Not collected for a
@@ -812,6 +972,7 @@ impl TokenSave {
                 attempted_refs.extend(refs.iter().map(AmbiguityRefKey::from));
             }
             crate::cancel::check("resolve")?;
+            self.db.delete_resolved_edges_for_refs(&refs).await?;
             let (batch_resolved, batch_ambiguous) =
                 self.cpu_usage().run(|| resolver.resolve_batch(&refs))?;
             resolved.extend(batch_resolved);
@@ -988,6 +1149,11 @@ impl TokenSave {
         use crate::sync as sync_mod;
 
         self.ensure_current_checkout()?;
+        // This path mutates the graph like a full sync, so it gets the same
+        // crash contract: the sentinel is cleared only on the single success
+        // exit below, and an interrupted pass is recovered on the next open
+        // instead of silently losing resolver edges (#630, #450).
+        write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
         let project_root = &self.project_root;
         let registry = &self.registry;
@@ -1256,10 +1422,13 @@ impl TokenSave {
         let dispatch_revision = self.dispatch_revision();
         write_dirty_sentinel(&self.project_root);
         let start = Instant::now();
+        // Profiling (#754): see `index_all_with_progress_verbose`.
+        let run_span = crate::profile::span(SyncPhase::Total);
 
         crate::cancel::check("sync")?;
         on_progress(0, 0, "scanning files");
         let phase_start = Instant::now();
+        let scan_span = crate::profile::span(SyncPhase::Scan);
         let detection_before = crate::language_detection::statistics();
         let (current_files, skipped_extensions) = self.scan_files_diagnostics();
         if self.config.language_detection.enabled {
@@ -1287,6 +1456,7 @@ impl TokenSave {
                 })
                 .collect()
         })?;
+        scan_span.finish();
         on_verbose(&format!(
             "stat-checked {} files in {:.1}s",
             file_stats.len(),
@@ -1379,6 +1549,7 @@ impl TokenSave {
         // Read + hash only files with changed stats or new files
         on_progress(0, 0, "hashing changed files");
         let phase_start = Instant::now();
+        let hash_span = crate::profile::span(SyncPhase::Hash);
         let needs_read: Vec<&String> = new_files.iter().chain(stat_changed.iter()).collect();
         let hash_results: Vec<_> = self.cpu_usage().run(|| {
             needs_read
@@ -1405,6 +1576,7 @@ impl TokenSave {
                 }
             }
         }
+        hash_span.finish();
         on_verbose(&format!(
             "hashed {} files in {:.1}s ({} read errors)",
             hash_map.len(),
@@ -1553,6 +1725,7 @@ impl TokenSave {
         let registry = &self.registry;
 
         let phase_start = Instant::now();
+        let extract_span = crate::profile::span(SyncPhase::Extract);
         let _ = stat_map; // worker re-stats internally
         crate::memstats::record("sync:extract");
         let (sync_extractions, sync_skipped): (Vec<_>, Vec<_>) = extract_files_isolated(
@@ -1639,6 +1812,7 @@ impl TokenSave {
         if !queued_edges.is_empty() {
             self.db.insert_edges(&queued_edges).await?;
         }
+        extract_span.finish();
 
         if !to_index.is_empty() {
             on_verbose(&format!(
@@ -1656,6 +1830,7 @@ impl TokenSave {
         if !to_index.is_empty() {
             on_progress(0, 0, "resolving references");
             let phase_start = Instant::now();
+            let resolve_span = crate::profile::span(SyncPhase::Resolve);
             // Every sample here is taken *after* the work it names. They used
             // to be taken before it, so each one reported the RSS of the
             // previous step under the next step's name — which is how the
@@ -1710,6 +1885,7 @@ impl TokenSave {
             }
             // Reports what was re-attempted against what the table holds, so
             // the incremental narrowing (#484) is visible rather than implied.
+            resolve_span.finish();
             on_verbose(&format!(
                 "resolved {attempted_refs} of {pending_refs} references ({} names touched) in {:.1}s",
                 touched.name_count(),
@@ -1717,6 +1893,7 @@ impl TokenSave {
             ));
         }
 
+        let edge_span = crate::profile::span(SyncPhase::EdgeBuild);
         if ruby_changed {
             self.db.rebuild_ruby_reopenings().await?;
         }
@@ -1728,7 +1905,9 @@ impl TokenSave {
         )
         .await;
         self.db.rebuild_trait_dispatch_callers().await?;
+        edge_span.finish();
         let duration_ms = start.elapsed().as_millis() as u64;
+        let commit_span = crate::profile::span(SyncPhase::Commit);
         self.db
             .set_metadata("last_sync_at", &current_timestamp().to_string())
             .await?;
@@ -1755,6 +1934,15 @@ impl TokenSave {
         self.db
             .set_metadata("language_dispatch_revision", &dispatch_revision)
             .await?;
+        commit_span.finish();
+        if let Some(elapsed_us) = run_span.end(true) {
+            crate::profile::record_run(
+                false,
+                file_stats.len(),
+                elapsed_us,
+                total_nodes + total_edges,
+            );
+        }
         clear_dirty_sentinel(&self.project_root);
         crate::memstats::record("sync:done");
         Ok(SyncResult {
@@ -1803,6 +1991,17 @@ impl TokenSave {
             &self.project_root,
             &self.config,
             self.manifest().as_deref(),
+            &self.registry.supported_extensions(),
+        )
+    }
+
+    /// Returns a warning message if git-tracked source files were dropped
+    /// only by an ambiguous default `exclude` glob such as `**/build/**`
+    /// (#949).
+    pub fn warn_tracked_ambiguous_excludes(&self) -> Option<String> {
+        detect_tracked_ambiguous_excludes(
+            &self.project_root,
+            &self.config,
             &self.registry.supported_extensions(),
         )
     }
@@ -2251,16 +2450,6 @@ impl TokenSave {
     }
 }
 
-/// Detects git-tracked, indexable files that the hidden-directory filter
-/// skipped. Returns a formatted warning string if any exist.
-///
-/// Mirrors the walker's pruning rule exactly (`scan_files_walkdir` /
-/// `scan_files_with_gitignore`): a dot-prefixed *directory* blocks descent
-/// unless that directory path itself matches an include glob or manifest
-/// entry. Matching only the files inside (e.g. `.github/**` without a bare
-/// `.github` entry) does not re-enable descent, so this check walks each
-/// ancestor prefix the same way the walker does instead of testing the file
-/// path — otherwise the warning would go silent in exactly that trap.
 /// Every path `git ls-files` reports for the project, as forward-slashed
 /// repository-relative strings.
 ///
@@ -2293,6 +2482,16 @@ pub(crate) fn list_git_tracked_files(project_root: &Path) -> Option<Vec<String>>
     )
 }
 
+/// Detects git-tracked, indexable files that the hidden-directory filter
+/// skipped. Returns a formatted warning string if any exist.
+///
+/// Mirrors the walker's pruning rule exactly (`scan_files_walkdir` /
+/// `scan_files_with_gitignore`): a dot-prefixed *directory* blocks descent
+/// unless that directory path itself matches an include glob or manifest
+/// entry. Matching only the files inside (e.g. `.github/**` without a bare
+/// `.github` entry) does not re-enable descent, so this check walks each
+/// ancestor prefix the same way the walker does instead of testing the file
+/// path — otherwise the warning would go silent in exactly that trap.
 pub fn detect_skipped_hidden_dirs(
     project_root: &Path,
     config: &TokenSaveConfig,
@@ -2382,6 +2581,183 @@ pub fn detect_skipped_hidden_dirs(
 
     Some(format!(
         "\x1b[33mwarning:\x1b[0m skipped {total} tracked {file_word} in hidden directories ({dir_summary}) — add \"{top_dir}\" and \"{top_dir}/**\" to include[] in .tokensave/config.json, then run `tokensave sync -f` to index them (or add \"{top_dir}/**\" to exclude[] to silence this warning)"
+    ))
+}
+
+/// Where the walker's `exclude` handling leaves the files of one directory,
+/// as seen by [`detect_tracked_ambiguous_excludes`].
+enum AmbiguousExcludeVerdict {
+    /// Not excluded at directory level; file-level globs still apply.
+    Reachable,
+    /// Pruned at `dir` by the ambiguous default `pattern` alone.
+    Ambiguous { dir: String, pattern: String },
+    /// Hidden, or excluded by a glob that is not an ambiguous default: a
+    /// deliberate opt-out, or a case another warning reports.
+    Silent,
+}
+
+/// Detects git-tracked, indexable files that only an ambiguous default
+/// `exclude` glob keeps out of the index (#949). Returns a formatted warning
+/// string if any exist.
+///
+/// The [`AMBIGUOUS_DEFAULT_EXCLUDES`](crate::config::AMBIGUOUS_DEFAULT_EXCLUDES)
+/// (`**/build/**`, `**/out/**`, `bin/**`) are meant for generated output, but
+/// a tracked file under `build/` is often a real source package, and nothing else in `init` or `sync` output says it
+/// was left out. A file is reported only when every exclude glob that drops
+/// it is one of those defaults: any other matching glob, including an
+/// explicit `build/**` the user wrote, is a deliberate opt-out. Files under a
+/// hidden directory are left to [`detect_skipped_hidden_dirs`].
+///
+/// Mirrors the walker's exclude rule: a directory is pruned when
+/// [`is_excluded_dir`] matches it, and a file is dropped when
+/// [`is_excluded`] matches it.
+pub fn detect_tracked_ambiguous_excludes(
+    project_root: &Path,
+    config: &TokenSaveConfig,
+    supported_exts: &[&str],
+) -> Option<String> {
+    let is_ambiguous = |pattern: &str| crate::config::AMBIGUOUS_DEFAULT_EXCLUDES.contains(&pattern);
+    // Without an ambiguous default in the config there is nothing to report,
+    // so skip the `git ls-files` subprocess.
+    if !config.exclude.iter().any(|pattern| is_ambiguous(pattern)) {
+        return None;
+    }
+    let tracked = list_git_tracked_files(project_root)?;
+
+    let match_opts = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: false,
+        require_literal_leading_dot: false,
+    };
+    let patterns: Vec<(&str, glob::Pattern)> = config
+        .exclude
+        .iter()
+        .filter_map(|raw| {
+            glob::Pattern::new(raw)
+                .ok()
+                .map(|pattern| (raw.as_str(), pattern))
+        })
+        .collect();
+
+    // Sibling files share the directory verdict, so evaluate the globs once
+    // per parent directory, as `detect_skipped_hidden_dirs` does.
+    let mut dir_cache: HashMap<String, AmbiguousExcludeVerdict> = HashMap::new();
+    // Pruned directory -> (ambiguous pattern that pruned it, file count).
+    let mut dir_counts: HashMap<String, (String, usize)> = HashMap::new();
+
+    for rel_path in tracked.iter().map(String::as_str) {
+        // Only files an extractor could index; a tracked `build/output.bin`
+        // is not worth a warning.
+        let ext = Path::new(rel_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if !supported_exts.contains(&ext) {
+            continue;
+        }
+        let dirs = rel_path.rsplit_once('/').map_or("", |(dirs, _file)| dirs);
+
+        let verdict = dir_cache.entry(dirs.to_string()).or_insert_with(|| {
+            let mut end = 0;
+            for comp in dirs.split('/').filter(|comp| !comp.is_empty()) {
+                end += comp.len() + usize::from(end > 0);
+                if comp.starts_with('.') {
+                    return AmbiguousExcludeVerdict::Silent;
+                }
+                let prefix = &dirs[..end];
+                let probe = format!("{prefix}/_");
+                let mut ambiguous = None;
+                for (raw, pattern) in &patterns {
+                    if pattern.matches_with(&probe, match_opts)
+                        || pattern.matches_with(prefix, match_opts)
+                    {
+                        if !is_ambiguous(raw) {
+                            return AmbiguousExcludeVerdict::Silent;
+                        }
+                        ambiguous.get_or_insert(*raw);
+                    }
+                }
+                // The walker prunes at the shallowest excluded directory and
+                // never sees the globs that would match deeper down.
+                if let Some(raw) = ambiguous {
+                    return AmbiguousExcludeVerdict::Ambiguous {
+                        dir: prefix.to_string(),
+                        pattern: raw.to_string(),
+                    };
+                }
+            }
+            AmbiguousExcludeVerdict::Reachable
+        });
+
+        let (dir, pattern) = match verdict {
+            AmbiguousExcludeVerdict::Silent => continue,
+            AmbiguousExcludeVerdict::Ambiguous { dir, pattern } => (dir.clone(), pattern.clone()),
+            AmbiguousExcludeVerdict::Reachable => {
+                // Only a file-level match can still drop the file.
+                let Some((raw, _)) = patterns.iter().find(|(raw, pattern)| {
+                    is_ambiguous(raw) && pattern.matches_with(rel_path, match_opts)
+                }) else {
+                    continue;
+                };
+                let dir = if dirs.is_empty() { rel_path } else { dirs };
+                (dir.to_string(), raw.to_string())
+            }
+        };
+        // Any deliberate file-level glob, such as `**/*.min.*`, wins over an
+        // ambiguous default.
+        if patterns
+            .iter()
+            .any(|(raw, pattern)| !is_ambiguous(raw) && pattern.matches_with(rel_path, match_opts))
+        {
+            continue;
+        }
+        // `git ls-files` lists index entries that may not exist on disk
+        // (sparse checkouts, staged deletions); the walker never saw those.
+        if !project_root.join(rel_path).is_file() {
+            continue;
+        }
+        dir_counts.entry(dir).or_insert((pattern, 0)).1 += 1;
+    }
+
+    if dir_counts.is_empty() {
+        return None;
+    }
+
+    let total: usize = dir_counts.values().map(|(_, count)| count).sum();
+    let mut dir_vec: Vec<(String, String, usize)> = dir_counts
+        .into_iter()
+        .map(|(dir, (pattern, count))| (dir, pattern, count))
+        .collect();
+    dir_vec.sort_unstable_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+
+    let dir_summary = dir_vec
+        .iter()
+        .map(|(dir, _, count)| format!("{dir}: {count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut top_patterns: Vec<&str> = Vec::new();
+    for (_, pattern, _) in &dir_vec {
+        if !top_patterns.contains(&pattern.as_str()) {
+            top_patterns.push(pattern);
+        }
+    }
+    let remove = top_patterns
+        .iter()
+        .map(|pattern| format!("\"{pattern}\""))
+        .collect::<Vec<_>>()
+        .join(" and ");
+
+    let top_dir = &dir_vec[0].0;
+    // The silencing glob must not itself be an ambiguous default, or it
+    // would not silence anything: `bin` -> `bin/**/*`, not `bin/**`.
+    let mut keep = format!("{top_dir}/**");
+    if is_ambiguous(&keep) {
+        keep.push_str("/*");
+    }
+    let file_word = if total == 1 { "file" } else { "files" };
+
+    Some(format!(
+        "\x1b[33mwarning:\x1b[0m excluded {total} tracked {file_word} by default build-output excludes ({dir_summary}) — if they are source, remove {remove} from exclude[] in .tokensave/config.json and run `tokensave sync` to index them (or add \"{keep}\" to exclude[] to keep them excluded and silence this warning)"
     ))
 }
 
@@ -2598,6 +2974,121 @@ impl TokenSave {
     /// never brought them back (the cause #633 fixed for `tokensave_rename`).
     pub(crate) async fn reindex_file(&self, file_path: &str) -> Result<()> {
         self.sync_single_files(&[file_path.to_string()]).await
+    }
+
+    /// Creates `path` with `content` and indexes it (`tokensave_create_file`,
+    /// #920).
+    ///
+    /// Stricter than [`Self::resolve_edit_target`]: the file must land inside
+    /// the indexed project root, so an absolute path outside it, a `..`
+    /// component and a symlink leaving the root are refused (see
+    /// [`resolve_new_file_target`]). An existing file is replaced only with
+    /// `overwrite`; a directory or a symlink never is. Content is bounded by
+    /// the project's `max_file_size`, the largest file the index accepts.
+    ///
+    /// Refusals come back as `success: false` with a message, like the other
+    /// edit tools; only I/O failures after the checks are errors.
+    ///
+    /// The checks and the write are not atomic: a symlink created in a parent
+    /// directory between them is followed. Without `overwrite` the write uses
+    /// `create_new`, so an existing file is never replaced by that race.
+    pub async fn create_file(
+        &self,
+        path: &str,
+        content: &str,
+        overwrite: bool,
+    ) -> Result<crate::types::CreateFileResult> {
+        let refuse = |message: String| crate::types::CreateFileResult {
+            success: false,
+            file_path: path.to_string(),
+            resolved_path: String::new(),
+            bytes: 0,
+            overwritten: false,
+            indexed: false,
+            message,
+            digest: String::new(),
+        };
+        if content.len() as u64 > self.config.max_file_size {
+            return Ok(refuse(format!(
+                "content is {} bytes, over the project's max_file_size of {} bytes",
+                content.len(),
+                self.config.max_file_size
+            )));
+        }
+        let state_dir = crate::config::get_tokensave_dir(&self.project_root);
+        let (abs_path, rel_path) =
+            match resolve_new_file_target(&self.project_root, &state_dir, path) {
+                Ok(target) => target,
+                Err(reason) => return Ok(refuse(reason)),
+            };
+        let resolved_path = abs_path.to_string_lossy().into_owned();
+        let existing = std::fs::symlink_metadata(&abs_path).ok();
+        if let Some(meta) = &existing {
+            let reason = if meta.file_type().is_symlink() {
+                Some("the target is a symlink; it is never replaced")
+            } else if meta.is_dir() {
+                Some("the target is a directory")
+            } else if !overwrite {
+                Some("the file exists; pass overwrite: true to replace it")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                let mut refused = refuse(format!("{reason}: {rel_path}"));
+                refused.file_path = rel_path;
+                refused.resolved_path = resolved_path;
+                return Ok(refused);
+            }
+        }
+
+        if let Some(parent) = abs_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| TokenSaveError::Config {
+                message: format!("failed to create {}: {e}", parent.display()),
+            })?;
+        }
+        let write = || -> std::io::Result<()> {
+            use std::io::Write as _;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true);
+            if overwrite {
+                options.create(true).truncate(true);
+            } else {
+                options.create_new(true);
+            }
+            let mut file = options.open(&abs_path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()
+        };
+        write().map_err(|e| TokenSaveError::Config {
+            message: format!("failed to write {resolved_path}: {e}"),
+        })?;
+        let digest = crate::context::read_cache::digest_bytes(content.as_bytes());
+        let overwritten = existing.is_some();
+
+        // The write landed; a reindex failure is reported, not raised, so the
+        // caller does not retry a write that already happened (#563).
+        let (indexed, message) = match self.reindex_file(&rel_path).await {
+            Ok(()) => {
+                let indexed = self.db.get_file(&rel_path).await?.is_some();
+                let message = if indexed {
+                    "file written and indexed"
+                } else {
+                    "file written; not indexed (tokensave does not index this kind of file)"
+                };
+                (indexed, message.to_string())
+            }
+            Err(e) => (false, format!("file written but reindex failed: {e}")),
+        };
+        Ok(crate::types::CreateFileResult {
+            success: true,
+            file_path: rel_path,
+            resolved_path,
+            bytes: content.len(),
+            overwritten,
+            indexed,
+            message,
+            digest,
+        })
     }
 
     /// 1-based inclusive line range covered by a byte span in `source`.

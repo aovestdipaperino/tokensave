@@ -2,7 +2,7 @@
 
 use tokensave::extraction::GlslExtractor;
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, NodeKind};
 
 #[test]
 fn test_glsl_file_node_is_root() {

@@ -1,6 +1,6 @@
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::SvelteExtractor;
-use tokensave::types::*;
+use tokensave::types::{NodeKind, Visibility};
 
 #[test]
 fn test_svelte_file_node() {

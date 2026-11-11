@@ -151,16 +151,20 @@ pub struct TokenSaveConfig {
     /// such projects backfill the latest schema on first MCP tool use.
     #[serde(default)]
     pub last_indexed_version: String,
-    /// Transparently track the current git branch when it is untracked, by
-    /// copying the nearest-ancestor DB on the next `TokenSave::open`. Defaults
-    /// to `false` (current behavior: fall back to the ancestor DB with a
-    /// warning). The `TOKENSAVE_AUTO_TRACK` env var overrides this per-run.
-    /// Independent of the `post-checkout` git hook, which tracks on branch
-    /// switch when `tokensave install` set it up.
-    #[serde(default)]
+    /// Track an untracked git branch automatically by copying the nearest
+    /// tracked ancestor's DB: the `post-checkout` hook does so on a branch
+    /// checkout, and `TokenSave::open` on the next open. `false` falls back to
+    /// the ancestor DB with a warning instead. The `TOKENSAVE_AUTO_TRACK` env
+    /// var overrides this per-run.
+    ///
+    /// Defaults to `true` (#922), including when the field is absent. An
+    /// explicit `false` is kept as written, so a project whose config was
+    /// saved while the default was still `false` keeps that value until the
+    /// user changes it.
+    #[serde(default = "default_auto_track")]
     pub auto_track: bool,
     /// Automatically collect indexes for deleted Git branches on open and
-    /// MCP freshness checks. Opt-in; TOKENSAVE_AUTO_GC overrides per run.
+    /// MCP freshness checks. Opt-in; `TOKENSAVE_AUTO_GC` overrides per run.
     #[serde(default)]
     pub auto_gc: bool,
     /// Refuse `tokensave_*` MCP calls when the index describes a different
@@ -255,6 +259,12 @@ fn default_artifact_extensions() -> Vec<String> {
     .collect()
 }
 
+/// Serde default for [`TokenSaveConfig::auto_track`], so a config without the
+/// field tracks new branches like a freshly written one (#922).
+fn default_auto_track() -> bool {
+    true
+}
+
 /// Serde default for [`TokenSaveConfig::report_savings`]. Off by default so
 /// MCP results stay compact; accounting to the global DB still happens.
 fn default_report_savings() -> bool {
@@ -322,7 +332,7 @@ impl Default for TokenSaveConfig {
             source_path_overrides: Vec::new(),
             docs_dir: default_docs_dir(),
             last_indexed_version: String::new(),
-            auto_track: false,
+            auto_track: default_auto_track(),
             auto_gc: false,
             strict_tree: false,
             max_auto_sync_files: default_max_auto_sync_files(),
@@ -335,9 +345,82 @@ impl Default for TokenSaveConfig {
     }
 }
 
-/// Returns the path to the `.tokensave` directory within the given project root.
+/// Default `exclude` globs whose directory names usually hold generated
+/// output but are also common names for real source packages (#949).
+///
+/// A Python data pipeline imported as `build.extract`, or a `bin/` of tracked
+/// scripts, is source that these defaults drop. `init` and `sync` therefore
+/// report git-tracked, indexable files that only these globs exclude; see
+/// `detect_tracked_ambiguous_excludes`. The other defaults (`node_modules`,
+/// `.venv`, `site-packages`, …) are almost never tracked source, and tracked
+/// `vendor/` code is excluded on purpose, so they are not listed here.
+pub const AMBIGUOUS_DEFAULT_EXCLUDES: &[&str] = &["**/build/**", "**/out/**", "bin/**"];
+
+/// Returns channel-specific project state: `.tokensave` or `.tokensave/beta`
+/// under the project root, or the same layout under a configured base state
+/// directory (#919, see [`crate::state_dir`]).
 pub fn get_tokensave_dir(project_root: &Path) -> PathBuf {
-    project_root.join(TOKENSAVE_DIR)
+    locate_project_state(project_root).into_dir()
+}
+
+/// Where `project_root` keeps its state, and whether that is under the root.
+pub fn locate_project_state(project_root: &Path) -> crate::state_dir::Location {
+    let beta = crate::cloud::is_beta();
+    crate::state_dir::locate(project_root, channel_dir(project_root, beta), |dir| {
+        channel_subdir(dir, beta)
+    })
+}
+
+/// The channel-independent project state root: the directory holding the
+/// stable state and the `beta` subdirectory. `<root>/.tokensave` by default.
+pub fn project_state_root(project_root: &Path) -> PathBuf {
+    match locate_project_state(project_root) {
+        crate::state_dir::Location::InRepo(_) => project_root.join(TOKENSAVE_DIR),
+        crate::state_dir::Location::Relocated { base, .. } => {
+            crate::state_dir::relocated_root(&base, project_root)
+        }
+    }
+}
+
+/// Where the current setting puts `project_root`'s state, whether or not any
+/// exists there. Differs from [`get_tokensave_dir`] when existing state is
+/// kept at its old location after the setting changed.
+pub fn configured_project_state_dir(project_root: &Path) -> PathBuf {
+    let beta = crate::cloud::is_beta();
+    match crate::state_dir::configured_base() {
+        Some(base) => channel_subdir(crate::state_dir::relocated_root(&base, project_root), beta),
+        None => channel_dir(project_root, beta),
+    }
+}
+
+/// Whether `project_root` keeps its state under itself, so `init` should keep
+/// `.tokensave/` out of Git. False when the state is relocated.
+pub fn project_state_is_in_repo(project_root: &Path) -> bool {
+    matches!(
+        locate_project_state(project_root),
+        crate::state_dir::Location::InRepo(_)
+    )
+}
+
+/// Returns the channel-specific global state directory under `home`:
+/// `~/.tokensave` or `~/.tokensave/beta`. Never relocated: the base state
+/// directory setting moves project state only.
+pub fn get_global_tokensave_dir(home: &Path) -> PathBuf {
+    channel_dir(home, crate::cloud::is_beta())
+}
+
+/// Separate beta project state (including config, locks, and branch indexes)
+/// from stable without changing stable paths or shared user settings.
+fn channel_dir(root: &Path, beta: bool) -> PathBuf {
+    channel_subdir(root.join(TOKENSAVE_DIR), beta)
+}
+
+fn channel_subdir(directory: PathBuf, beta: bool) -> PathBuf {
+    if beta {
+        directory.join("beta")
+    } else {
+        directory
+    }
 }
 
 /// Returns the path to the configuration file (`config.json`) within the `.tokensave` directory.
@@ -428,7 +511,8 @@ fn migrate_config(config: &mut TokenSaveConfig) {
 /// Writes to a temporary file first and then renames it to the final location,
 /// ensuring that a partial write never corrupts the configuration.
 pub fn save_config(project_root: &Path, config: &TokenSaveConfig) -> Result<()> {
-    let tokensave_dir = get_tokensave_dir(project_root);
+    let location = locate_project_state(project_root);
+    let tokensave_dir = location.dir().to_path_buf();
     fs::create_dir_all(&tokensave_dir).map_err(|e| TokenSaveError::Config {
         message: format!(
             "failed to create tokensave directory '{}': {}",
@@ -436,6 +520,9 @@ pub fn save_config(project_root: &Path, config: &TokenSaveConfig) -> Result<()> 
             e
         ),
     })?;
+    if let crate::state_dir::Location::Relocated { base, .. } = &location {
+        crate::state_dir::record(base, project_root);
+    }
 
     let config_path = get_config_path(project_root);
     let tmp_path = config_path.with_extension("tmp");
@@ -749,7 +836,7 @@ fn discover_project_from(start: &Path, home: Option<&Path>) -> ProjectDiscovery 
     let mut git_root: Option<PathBuf> = None;
     let mut crossed_repository = false;
     for dir in start.ancestors() {
-        let tokensave_dir = dir.join(".tokensave");
+        let tokensave_dir = get_tokensave_dir(dir);
         let found = if tokensave_dir.join("tokensave.db").exists() {
             Some(ProjectDiscovery::Initialized(dir.to_path_buf()))
         } else if Some(dir) != home && tokensave_dir.join("config.json").is_file() {
@@ -1060,8 +1147,9 @@ pub fn load_query_ignore(project_root: &Path) -> QueryIgnore {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
-        env_bool_override, is_excluded, is_excluded_dir, is_ignored_by_git, is_included,
-        load_query_ignore, QueryIgnore, TokenSaveConfig,
+        env_bool_override, get_config_path, get_tokensave_dir, is_excluded, is_excluded_dir,
+        is_ignored_by_git, is_included, load_config, load_query_ignore, save_config, QueryIgnore,
+        TokenSaveConfig, CONFIG_FILENAME,
     };
     use std::fs;
     use std::process::Command;
@@ -1242,7 +1330,7 @@ mod tests {
     #[test]
     fn test_load_query_ignore_reads_file() {
         let dir = TempDir::new().unwrap();
-        let ts_dir = dir.path().join(".tokensave");
+        let ts_dir = crate::config::get_tokensave_dir(dir.path());
         fs::create_dir_all(&ts_dir).unwrap();
         fs::write(ts_dir.join("queryignore"), "generated\ntests/*\n").unwrap();
 
@@ -1281,6 +1369,50 @@ mod tests {
     }
 
     #[test]
+    fn auto_track_defaults_to_on() {
+        // #922: new branches are tracked without opting in.
+        assert!(TokenSaveConfig::default().auto_track);
+    }
+
+    #[test]
+    fn configs_without_auto_track_default_to_on() {
+        let json = r#"{"version":2,"root_dir":"/x","exclude":[],"max_file_size":1000,
+                       "extract_docstrings":true,"track_call_sites":true}"#;
+        let config: TokenSaveConfig = serde_json::from_str(json).unwrap();
+        assert!(config.auto_track);
+    }
+
+    #[test]
+    fn an_explicit_auto_track_false_survives_load_and_save() {
+        // #922: a config saved while the default was off records `false`, and
+        // an upgrade must not turn it on behind the user's back.
+        let tmp = TempDir::new().unwrap();
+        let config_dir = get_tokensave_dir(tmp.path());
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join(CONFIG_FILENAME),
+            r#"{"version":2,"root_dir":"/x","exclude":[],"max_file_size":1000,
+                "extract_docstrings":true,"track_call_sites":true,"auto_track":false}"#,
+        )
+        .unwrap();
+
+        let config = load_config(tmp.path()).unwrap();
+        assert!(!config.auto_track);
+        save_config(tmp.path(), &config).unwrap();
+        assert!(!load_config(tmp.path()).unwrap().auto_track);
+    }
+
+    #[test]
+    fn a_new_config_records_auto_track_on() {
+        let tmp = TempDir::new().unwrap();
+        save_config(tmp.path(), &TokenSaveConfig::default()).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(get_config_path(tmp.path())).unwrap())
+                .unwrap();
+        assert_eq!(written["auto_track"], serde_json::Value::Bool(true));
+    }
+
+    #[test]
     fn env_override_respects_falsey_spellings() {
         // Absent → the config value wins, in both directions.
         assert!(env_bool_override("TOKENSAVE_UNSET_TEST_VAR_XYZ", true));
@@ -1291,7 +1423,7 @@ mod tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod discovery_tests {
-    use super::{discover_project_from, ProjectDiscovery};
+    use super::{discover_project_from, get_tokensave_dir, ProjectDiscovery};
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;
@@ -1306,7 +1438,7 @@ mod discovery_tests {
     }
 
     fn init_project(dir: &Path) {
-        let tokensave_dir = dir.join(".tokensave");
+        let tokensave_dir = get_tokensave_dir(dir);
         fs::create_dir_all(&tokensave_dir).unwrap();
         fs::write(tokensave_dir.join("tokensave.db"), b"").unwrap();
     }
@@ -1447,7 +1579,8 @@ mod discovery_tests {
         let workspace = tmp.path().to_path_buf();
         init_project(&workspace);
         let partial = mkdirs(&workspace, &["app"]);
-        let tokensave_dir = mkdirs(&partial, &[".tokensave"]);
+        let tokensave_dir = get_tokensave_dir(&partial);
+        fs::create_dir_all(&tokensave_dir).unwrap();
         fs::write(tokensave_dir.join("config.json"), "{}").unwrap();
         let start = mkdirs(&partial, &["src"]);
         assert_eq!(discover(&start), ProjectDiscovery::Incomplete(partial));
@@ -1457,7 +1590,8 @@ mod discovery_tests {
     fn global_state_directory_in_home_is_not_a_project() {
         let tmp = TempDir::new().unwrap();
         let home = tmp.path().to_path_buf();
-        let global_dir = mkdirs(&home, &[".tokensave"]);
+        let global_dir = super::get_global_tokensave_dir(&home);
+        fs::create_dir_all(&global_dir).unwrap();
         fs::write(global_dir.join("config.json"), "{}").unwrap();
         let start = mkdirs(&home, &["scratch"]);
         assert_eq!(
@@ -1473,5 +1607,18 @@ mod discovery_tests {
         init_project(&root);
         let start = mkdirs(&root, &["sous dossier", "日本"]);
         assert_eq!(discover(&start), ProjectDiscovery::Initialized(root));
+    }
+}
+
+#[cfg(test)]
+mod channel_path_tests {
+    #[test]
+    fn beta_state_is_isolated_and_stable_layout_is_unchanged() {
+        let root = std::path::Path::new("project");
+        assert_eq!(super::channel_dir(root, false), root.join(".tokensave"));
+        assert_eq!(
+            super::channel_dir(root, true),
+            root.join(".tokensave").join("beta")
+        );
     }
 }

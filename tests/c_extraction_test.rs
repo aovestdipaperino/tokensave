@@ -1,6 +1,6 @@
 use tokensave::extraction::CExtractor;
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, NodeKind, Visibility};
 
 #[test]
 fn test_c_file_node_is_root() {

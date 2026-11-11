@@ -549,9 +549,9 @@ mod tests {
     #[test]
     fn resolve_extractor_honors_override() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".tokensave")).unwrap();
+        std::fs::create_dir_all(crate::config::get_tokensave_dir(dir.path())).unwrap();
         std::fs::write(
-            dir.path().join(".tokensave").join("project.json"),
+            crate::config::get_tokensave_dir(dir.path()).join("project.json"),
             r#"{"version":1,"entries":[{"path":"dotfiles/.bash_profile","language":"python"}]}"#,
         )
         .unwrap();

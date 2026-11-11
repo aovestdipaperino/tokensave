@@ -22,10 +22,40 @@
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use tempfile::tempdir;
 use tokensave::resolution::{index_keys_for_test, ReferenceResolver};
 use tokensave::tokensave::TokenSave;
+use tokio::sync::{Mutex, MutexGuard};
+
+/// Every sync reads the process-wide `TOKENSAVE_FULL_RESOLVE`, and `cargo test`
+/// runs this file's tests on threads of one process. Without this lock, one
+/// test's full pass flips the resolution mode of another test's concurrent
+/// sync, and `set_var` races native code reading the environment (#947).
+/// Every test in this file holds it for its whole body.
+async fn env_guard() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().await
+}
+
+/// Sets `TOKENSAVE_FULL_RESOLVE=1` until dropped, so a failing assertion
+/// cannot leave the full-resolve mode on for the tests that run after it.
+/// Only create it while holding [`env_guard`].
+struct FullResolve;
+
+impl FullResolve {
+    fn on() -> Self {
+        std::env::set_var("TOKENSAVE_FULL_RESOLVE", "1");
+        Self
+    }
+}
+
+impl Drop for FullResolve {
+    fn drop(&mut self) {
+        std::env::remove_var("TOKENSAVE_FULL_RESOLVE");
+    }
+}
 
 /// A project with real cross-file structure: a trait, two impls that make
 /// `area` ambiguous, callers in a third file, and a re-export.
@@ -273,6 +303,7 @@ async fn snapshot(cg: &TokenSave) -> Snapshot {
 /// resolved incrementally and one resolved in full, compared after every step.
 #[tokio::test]
 async fn incremental_resolution_matches_a_full_pass_across_a_series_of_edits() {
+    let _env = env_guard().await;
     let inc_dir = tempdir().unwrap();
     let full_dir = tempdir().unwrap();
     write_project(inc_dir.path());
@@ -283,9 +314,10 @@ async fn incremental_resolution_matches_a_full_pass_across_a_series_of_edits() {
     let inc = TokenSave::init(inc_dir.path()).await.unwrap();
     let full = TokenSave::init(full_dir.path()).await.unwrap();
     inc.sync().await.unwrap();
-    std::env::set_var("TOKENSAVE_FULL_RESOLVE", "1");
-    full.sync().await.unwrap();
-    std::env::remove_var("TOKENSAVE_FULL_RESOLVE");
+    {
+        let _full = FullResolve::on();
+        full.sync().await.unwrap();
+    }
 
     let (inc_edges, _) = snapshot(&inc).await;
     assert!(
@@ -299,11 +331,11 @@ async fn incremental_resolution_matches_a_full_pass_across_a_series_of_edits() {
 
         // Same second-resolution mtime granularity concerns as the rest of the
         // suite: content hashing is what decides staleness, so no sleep needed.
-        std::env::remove_var("TOKENSAVE_FULL_RESOLVE");
         inc.sync().await.unwrap();
-        std::env::set_var("TOKENSAVE_FULL_RESOLVE", "1");
-        full.sync().await.unwrap();
-        std::env::remove_var("TOKENSAVE_FULL_RESOLVE");
+        {
+            let _full = FullResolve::on();
+            full.sync().await.unwrap();
+        }
 
         let (inc_edges, inc_ambiguous) = snapshot(&inc).await;
         let (full_edges, full_ambiguous) = snapshot(&full).await;
@@ -331,6 +363,157 @@ async fn incremental_resolution_matches_a_full_pass_across_a_series_of_edits() {
     }
 }
 
+#[tokio::test]
+async fn an_untouched_call_loses_its_stale_edge_when_a_new_target_makes_it_ambiguous() {
+    let _env = env_guard().await;
+    let root = tempdir().unwrap();
+    std::fs::write(root.path().join("a.py"), "def run(x):\n    x.subscribe()\n").unwrap();
+    std::fs::write(
+        root.path().join("bus.py"),
+        "class Bus:\n    def subscribe(self):\n        pass\n",
+    )
+    .unwrap();
+    let graph = TokenSave::init(root.path()).await.unwrap();
+    graph.index_all().await.unwrap();
+    let before = graph.db().get_all_edges().await.unwrap();
+    let call = before
+        .iter()
+        .find(|edge| edge.kind == tokensave::types::EdgeKind::Calls)
+        .expect("the sole subscribe candidate initially resolves");
+    assert!(call.resolved_by.is_some());
+    let caller = call.source.clone();
+
+    std::fs::write(
+        root.path().join("other.py"),
+        "class Other:\n    def subscribe(self):\n        pass\n",
+    )
+    .unwrap();
+    graph.sync().await.unwrap();
+    let remaining = graph.db().get_outgoing_edges(&caller, &[]).await.unwrap();
+    assert!(
+        remaining
+            .iter()
+            .all(|edge| edge.kind != tokensave::types::EdgeKind::Calls),
+        "an ambiguous reattempt must remove the previous answer: {remaining:?}"
+    );
+
+    let fresh_root = tempdir().unwrap();
+    for name in ["a.py", "bus.py", "other.py"] {
+        std::fs::copy(root.path().join(name), fresh_root.path().join(name)).unwrap();
+    }
+    let fresh = TokenSave::init(fresh_root.path()).await.unwrap();
+    fresh.index_all().await.unwrap();
+    let fresh_calls = fresh
+        .db()
+        .get_edges_by_kind(tokensave::types::EdgeKind::Calls)
+        .await
+        .unwrap();
+    assert!(
+        fresh_calls.is_empty(),
+        "a fresh index must also have no call: {fresh_calls:?}"
+    );
+}
+
+#[tokio::test]
+async fn resolver_cleanup_preserves_legacy_extractor_and_other_site_edges() {
+    use tokensave::types::{EdgeKind, ResolvedBy};
+
+    let _env = env_guard().await;
+    let root = tempdir().unwrap();
+    std::fs::write(root.path().join("a.py"), "def run(x):\n    x.subscribe()\n").unwrap();
+    std::fs::write(
+        root.path().join("bus.py"),
+        "class Bus:\n    def subscribe(self):\n        pass\n",
+    )
+    .unwrap();
+    let graph = TokenSave::init(root.path()).await.unwrap();
+    graph.index_all().await.unwrap();
+    let original = graph
+        .db()
+        .get_edges_by_kind(EdgeKind::Calls)
+        .await
+        .unwrap()
+        .remove(0);
+    let reference = graph
+        .db()
+        .get_unresolved_refs()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|reference| {
+            reference.from_node_id == original.source && reference.reference_kind == EdgeKind::Calls
+        })
+        .unwrap();
+    let mut legacy_target = graph
+        .db()
+        .get_node_by_id(&original.target)
+        .await
+        .unwrap()
+        .unwrap();
+    legacy_target.id.push_str("-legacy");
+    graph.db().insert_node(&legacy_target).await.unwrap();
+    let mut legacy = original.clone();
+    legacy.target = legacy_target.id;
+    legacy.resolved_by = None;
+    let mut other_kind = original.clone();
+    other_kind.kind = EdgeKind::Uses;
+    other_kind.resolved_by = Some(ResolvedBy::ExactMatch);
+    let mut other_line = original.clone();
+    other_line.line = original.line.map(|line| line + 1);
+    graph
+        .db()
+        .insert_edges(&[legacy.clone(), other_kind.clone(), other_line.clone()])
+        .await
+        .unwrap();
+
+    for _ in 0..3 {
+        graph
+            .db()
+            .delete_resolved_edges_for_refs(std::slice::from_ref(&reference))
+            .await
+            .unwrap();
+        let remaining = graph
+            .db()
+            .get_outgoing_edges(&original.source, &[])
+            .await
+            .unwrap();
+        assert!(!remaining.contains(&original));
+        for preserved in [&legacy, &other_kind, &other_line] {
+            assert!(
+                remaining.contains(preserved),
+                "cleanup removed protected edge {preserved:?}"
+            );
+        }
+    }
+    graph
+        .db()
+        .delete_call_edges_at_sites(&[(
+            original.source.clone(),
+            reference.line,
+            "subscribe".to_string(),
+        )])
+        .await
+        .unwrap();
+    assert!(graph
+        .db()
+        .get_outgoing_edges(&original.source, &[])
+        .await
+        .unwrap()
+        .contains(&legacy));
+
+    let site = graph
+        .db()
+        .get_unresolved_refs_at_sites(&[(original.source.clone(), reference.line)])
+        .await
+        .unwrap();
+    assert!(
+        site.iter()
+            .any(|member| member.reference_name == reference.reference_name),
+        "site membership must include the reference itself: {site:?}"
+    );
+    assert!(site.iter().all(|member| member.line == reference.line));
+}
+
 /// The touched-name set is only correct if it enumerates the *same* keys the
 /// resolver's pre-filter admits. `index_keys` duplicates the shape of
 /// `from_nodes`'s three caches by necessity — it runs over nodes being deleted,
@@ -339,6 +522,7 @@ async fn incremental_resolution_matches_a_full_pass_across_a_series_of_edits() {
 /// nodes, and vice versa. Add a fourth cache to `from_nodes` and this fails.
 #[tokio::test]
 async fn touched_name_keys_match_the_resolvers_own_name_index() {
+    let _env = env_guard().await;
     let tmp = tempdir().unwrap();
     write_project(tmp.path());
     let cg = TokenSave::init(tmp.path()).await.unwrap();

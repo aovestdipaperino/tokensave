@@ -25,6 +25,22 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Export one indexed file as an experimental Graphify snapshot (no sync)
+    GraphifyExport {
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// Repository-relative source file using / separators
+        #[arg(long)]
+        file: String,
+        /// New output JSON path; existing files are refused
+        #[arg(long)]
+        output: std::path::PathBuf,
+        #[arg(long, default_value_t = 1000)]
+        max_nodes: usize,
+        #[arg(long, default_value_t = 5000)]
+        max_edges: usize,
+    },
     /// Check index integrity without changing it
     Verify {
         /// Project path (default: current directory)
@@ -361,10 +377,11 @@ pub enum Commands {
         /// Check only this agent (default: all agents)
         #[arg(long, value_parser = agent_value_parser())]
         agent: Option<String>,
-        /// Print read-only Caveman compatibility diagnostics as JSON
+        /// Also check Caveman compatibility (read-only) and print the
+        /// per-agent report as JSON on stdout
         #[arg(long)]
         caveman: bool,
-        /// Explicit Claude session identity; never inferred from a machine-wide flag
+        /// Claude Code session whose Caveman mode to report; never inferred
         #[arg(long, requires = "caveman")]
         session_id: Option<String>,
     },
@@ -418,6 +435,9 @@ pub enum Commands {
         /// Print per-day history instead of a single total.
         #[arg(long)]
         history: bool,
+        /// Print calls and tokens saved per tool instead of a single total.
+        #[arg(long, conflicts_with = "history")]
+        by_tool: bool,
         /// Time range: "today", "7d", "30d", "month", or "all" (default: "30d").
         #[arg(long, default_value = "30d")]
         range: String,
@@ -432,6 +452,17 @@ pub enum Commands {
         /// Purge slots left behind by dead processes
         #[arg(long)]
         clean: bool,
+    },
+    /// List or prune project state kept under a base state directory
+    /// (`TOKENSAVE_STATE_DIR` or `state_dir`, #919)
+    State {
+        #[command(subcommand)]
+        action: StateAction,
+    },
+    /// Opt-in performance profiling: status, reports and sanitized export (#754)
+    Profile {
+        #[command(subcommand)]
+        action: ProfileAction,
     },
     /// Compare code quality at two indexed branch tips without changing files.
     QualityDiff {
@@ -587,6 +618,74 @@ mod tests {
 }
 
 #[derive(Subcommand)]
+pub enum ProfileAction {
+    /// Show the profiling mode, storage use, recorded samples and overhead
+    Status,
+    /// Enable profiling for new tokensave processes (data stays local)
+    Enable {
+        /// Collect detailed data; falls back to light after `--for`
+        #[arg(long)]
+        detailed: bool,
+        /// How long detailed mode lasts, e.g. 2h or 1d (default: 24h)
+        #[arg(long = "for", value_name = "DURATION", requires = "detailed")]
+        duration: Option<String>,
+    },
+    /// Disable profiling (recorded data is kept until `profile reset`)
+    Disable,
+    /// Report recorded latency by operation, ranked by cumulative time
+    Report {
+        /// Only MCP phases and per-tool invocations
+        #[arg(long, group = "profile_section")]
+        mcp: bool,
+        /// Only database operations
+        #[arg(long, group = "profile_section")]
+        database: bool,
+        /// Only index, sync and run-size series
+        #[arg(long, group = "profile_section")]
+        indexing: bool,
+        /// Window to include, e.g. 30m, 24h or 7d
+        #[arg(long, default_value = "24h")]
+        since: String,
+        /// Only this engine (e.g. libsql)
+        #[arg(long)]
+        engine: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rank bottlenecks by cumulative impact, with evidence and N+1 candidates
+    Analyze {
+        /// Window to include, e.g. 24h or 7d
+        #[arg(long, default_value = "7d")]
+        since: String,
+        /// Number of findings to show per engine
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+        /// Output as JSON (all findings)
+        #[arg(long)]
+        json: bool,
+    },
+    /// List operations with executions at or above the slow threshold
+    SlowQueries {
+        /// Window to include, e.g. 30m, 24h or 7d
+        #[arg(long, default_value = "24h")]
+        since: String,
+    },
+    /// Print the sanitized export (static operation names and aggregates
+    /// only), e.g. to attach to a GitHub issue
+    Export {
+        /// Window to include, e.g. 24h or 7d
+        #[arg(long, default_value = "7d")]
+        since: String,
+        /// Write to this file instead of stdout
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
+    },
+    /// Delete all recorded profile data
+    Reset,
+}
+
+#[derive(Subcommand)]
 pub enum ConfigAction {
     /// Show, run, or reset the machine-level hardware benchmark
     ///
@@ -608,6 +707,22 @@ pub enum ConfigAction {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum StateAction {
+    /// List relocated project state directories and the project each belongs to
+    List,
+    /// Delete relocated state whose project directory no longer exists
+    ///
+    /// Only directories with a recorded origin whose project root is gone
+    /// are removed. State under a project root (`.tokensave/`) is never
+    /// touched.
+    Prune {
+        /// List what would be deleted without deleting anything
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -640,6 +755,18 @@ pub enum BranchAction {
     /// Remove a tracked branch and delete its DB
     Remove {
         /// Branch name to remove
+        name: String,
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+    },
+    /// Make a branch the default, keeping the data already indexed
+    ///
+    /// An untracked branch takes over the current default's entry and
+    /// database. A tracked branch becomes the default with its own
+    /// database; the previous default stays as an ordinary branch entry.
+    SetDefault {
+        /// Branch to make the default
         name: String,
         /// Project path (default: current directory)
         #[arg(short, long)]

@@ -37,8 +37,13 @@ fn env_disabled() -> HookEnv {
 fn indexed_project() -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().join("project");
-    std::fs::create_dir_all(root.join(".tokensave")).expect("create .tokensave");
-    std::fs::write(root.join(".tokensave").join("tokensave.db"), b"").expect("write db");
+    std::fs::create_dir_all(tokensave::config::get_tokensave_dir(&root))
+        .expect("create .tokensave");
+    std::fs::write(
+        tokensave::config::get_tokensave_dir(&root).join("tokensave.db"),
+        b"",
+    )
+    .expect("write db");
     (tmp, root)
 }
 
@@ -2046,8 +2051,9 @@ fn test_relative_target_climbing_out_of_the_project_is_left_alone() {
 fn indexed_project_with_nodes(names: &[&str]) -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().join("project");
-    std::fs::create_dir_all(root.join(".tokensave")).expect("create .tokensave");
-    let db_path = root.join(".tokensave").join("tokensave.db");
+    std::fs::create_dir_all(tokensave::config::get_tokensave_dir(&root))
+        .expect("create .tokensave");
+    let db_path = tokensave::config::get_tokensave_dir(&root).join("tokensave.db");
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("runtime");

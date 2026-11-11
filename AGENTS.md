@@ -2,6 +2,24 @@
 
 This file provides guidance to the agent when working with code in this repository.
 
+## Fork-specific branch workflow
+
+- Create new work branches in the user's fork rather than in the upstream
+  repository. This rule applies to every fork. Use a work branch instead of
+  working directly on `master`, unless the user explicitly requests a direct
+  commit.
+- Name branches `<type>/<short-description>`, using the same Conventional
+  Commits types as commit messages (for example `feat/dart-annotations`,
+  `fix/utf16-sync`, `refactor/resolver-lookup`, `ci/release-workflow`). Keep
+  the description descriptive, lowercase, and hyphenated, and do not include
+  the number of any issue or pull request associated with the work. Refer to
+  issues and pull requests in commit messages and PR descriptions instead.
+- Write commit messages and PR titles using
+  [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`,
+  `fix:`, `docs:`, `ci:`, `refactor:`, `test:`, `chore:`, with an optional
+  scope such as `fix(db):`), as described in
+  [CONTRIBUTING.md](CONTRIBUTING.md#commit-messages).
+
 ## Keeping agent guidance current
 
 Treat `AGENTS.md` on the original repository's `master` branch
@@ -27,7 +45,7 @@ so GitHub can render it and contributors can edit it directly.
 
 Keep `README.md` synchronized between `master` and `beta`. Installation
 instructions are the only permitted branch-specific difference in README
-content; keep all other content the same, including the beta announcement.
+content; keep all other content the same.
 Record this rule identically in both branches' `AGENTS.md` files.
 
 - On `master`, preserve the stable installation guide: Homebrew
@@ -48,18 +66,59 @@ Record this rule identically in both branches' `AGENTS.md` files.
   disposable-checkout advice, and link to the master guide for returning
   to stable.
 - Preserve these installation differences when merging or synchronizing the
-  branches. The beta announcement on both branches may continue to show the
-  explicit beta installation command.
+  branches.
 
-## README beta announcement
+## Beta announcement
 
-Keep the beta announcement near the top of `README.md` current with the new
-release features available on `beta`. When adding or changing beta features,
-update the announcement's highlights and links accordingly on both `master`
-and `beta`; describe only features already available on the beta branch.
-When those features reach a stable release, revise or remove the announcement
-so it continues to describe what is available in beta beyond stable. Keep the
-installation instructions accurate and link to the beta changelog for details.
+`README.md` carries no beta announcement. The beta is described in the
+"Trying the beta" section of `docs/guide/INSTALLATION.md` on `master`, which
+also shows the explicit beta installation command. Keep that section current
+with the new release features available on `beta`: when adding or changing
+beta features, update its highlights and links, and describe only features
+already available on the beta branch. When those features reach a stable
+release, revise or remove the section so it continues to describe what is
+available in beta beyond stable. Keep the installation instructions accurate
+and link to the beta changelog for details.
+
+## Documentation and GitHub Wiki
+
+User documentation is published both as Markdown in `docs/guide/` and as the
+[GitHub Wiki](https://github.com/aovestdipaperino/tokensave/wiki), and the two
+MUST stay aligned. `docs/guide/` is the single source:
+`.github/workflows/wiki.yml` regenerates the whole wiki from it with
+`scripts/wiki/sync_wiki.py` on every relevant push to `master`. Never edit the
+wiki directly, and never copy wiki content back by hand; direct wiki edits are
+overwritten.
+
+- Keep `README.md` a concise entry point: what tokensave is, the installation
+  guide required above, the quick start, and the documentation table linking
+  into `docs/guide/`. Put detailed explanations in the matching guide page.
+- When a change adds, removes, or changes user-visible behavior (a command,
+  flag, MCP tool, configuration field, environment variable, supported agent,
+  language, or default), update the affected `docs/guide/` pages, and the
+  README if it mentions the behavior, in the same change. A pull request that
+  changes such behavior without the matching documentation update is
+  incomplete.
+- Describe each topic on one guide page and link to it elsewhere. The
+  installation commands are the one intended duplicate: keep
+  `docs/guide/INSTALLATION.md` consistent with the README installation guide
+  and the branch-specific installation rules above. The README keeps only the
+  common methods; less common ones, such as installing from upstream
+  `master`, live only in `docs/guide/INSTALLATION.md` and are linked from the
+  README.
+- New guide pages use uppercase, hyphenated file names, a single `# Title`
+  (the wiki page is named after it), and an entry in both the `wiki-sidebar`
+  list in `docs/guide/README.md` and the README documentation table.
+- Before finishing, run `python3 scripts/wiki/sync_wiki.py check` and
+  `python3 -m unittest discover -s scripts/wiki`, and report the results.
+- The wiki describes `master` (stable) only. On `beta`, `docs/guide/` describes
+  beta behavior and is not published; keep its page structure the same as on
+  `master` so the branches can be synchronized like `README.md`.
+- Design notes, evaluations, and reports remain in `docs/` outside
+  `docs/guide/` and are not published to the wiki.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md#documentation) for the contributor-facing
+version of these rules.
 
 ## Contributing
 
@@ -72,6 +131,53 @@ Follow the [GitHub issue lifecycle rules](CONTRIBUTING.md#github-issue-lifecycle
 create issues for identified bugs and enhancements, link PRs with "Refs #N" (never
 "Fixes #N" / "Closes #N"), and never close an issue (including via `gh issue close`)
 without explicit permission — issue closure is left to the repository maintainer.
+
+Follow the [issue author credit rules](CONTRIBUTING.md#crediting-issue-authors):
+when a PR implements an issue someone else proposed or substantially specified, add
+a `Co-authored-by:` trailer with their GitHub noreply address for each such person,
+and name them in the PR description.
+
+## Rust memory safety and soundness review
+
+Apply these checks to changes that involve `unsafe` code, native dependencies
+(libSQL, tree-sitter grammars, `memmap2`), platform APIs, concurrency,
+filesystem state or callbacks. They add to the memory and resource rules in
+CONTRIBUTING.md and do not replace or relax any existing rule.
+[docs/MEMORY-SAFETY-AUDIT.md](docs/MEMORY-SAFETY-AUDIT.md) records the current
+inventory and findings (#947). Update it when a change adds, removes or
+re-justifies an `unsafe` site.
+
+- **Panic and unwind safety:** Do not assume a safe operation cannot panic.
+  While an unsafe invariant holds or state is partially initialized, check
+  every `Drop`, `Clone`, comparison, allocation, iterator and callback that
+  runs. Unwinding must preserve memory safety and ownership, so use guards or
+  rollback where needed. `catch_unwind` is not a substitute for soundness, and
+  this rule does not relax any existing restriction on its use.
+- **Adversarial trait implementations:** Do not assume a safe implementation
+  of `AsRef`, `Borrow`, `Deref`, `Clone`, `Ord` or an iterator trait returns
+  stable, consistent or repeatable results, unless that guarantee is
+  established. Validate or keep a value before using it as an unchecked index,
+  length, pointer or allocation size. A safe API must stay sound when given an
+  unusual but safe implementation.
+- **OS, process state and FFI:** Do not assume that environment variables,
+  signal handlers, file descriptors and handles, paths, mapped memory or other
+  process-wide OS state stay unchanged across concurrent activity or native
+  calls. At FFI boundaries, check lifetime, ownership, synchronization and the
+  platform contract. Library code must not call `std::env::set_var` or
+  `remove_var`. Pass a child's environment with `Command::env`. A test that
+  mutates the environment needs its own `[[test]]` target. If that target has
+  more than one test, it must also hold a lock for the whole duration of the
+  change. Call `process::exit` only from the main thread, and never from a
+  `Drop` or a thread-local access.
+- **Verification and reporting:** For a relevant change, test error and panic
+  paths and adversarial inputs. Use supported tools where they apply, such as
+  Miri, sanitizers, Clippy and `cargo audit`, and report the actual results
+  and limits in the PR. Separate confirmed, reachable defects from speculative
+  or non-applicable upstream reports. Do not claim soundness or exploitability
+  without evidence.
+
+Background: [Memory Safety Bugs in Rust Standard Library](https://forge-blog.github.io/posts/rust-std-memory-safety/)
+(Microsoft FORGE Lab).
 
 ## Issue closure verification and merged-result summaries
 
@@ -120,6 +226,83 @@ coverage changes, update the report's scope and limitations. Before finishing,
 review the source diff for SQL changes and verify that each is reflected in the
 report. Git history records the changes; the report describes the current source.
 
+## Rust style guide (master only)
+
+TokenSave has adopted [Google's Rust Style Guide](https://google.github.io/styleguide/rustguide.html)
+for Rust code on `master` (#845). It applies to every new or modified Rust
+file in `src/`, `tests/`, `benches/`, `examples/` and `build.rs`. `vendor/`,
+the `codegraph/` submodule and generated or vendored grammar sources are
+excluded. This section is an intentional difference between the branches. Do
+not copy it, the matching CONTRIBUTING.md section or the style cleanup to
+`beta` unless a later decision extends the adoption.
+
+This change integrates the rules only. The repository-wide audit and any
+cleanup of existing code remain follow-up work tracked by #845; adoption does
+not imply that the current codebase has been audited or is fully compliant.
+
+Precedence, highest first:
+
+1. TokenSave's explicitly documented rules: this file, CONTRIBUTING.md
+   (including path construction and memory/resource management), the crate
+   lint configuration in `src/lib.rs`, and the exceptions listed below.
+2. Google's Rust Style Guide.
+3. The official [Rust Style Guide](https://doc.rust-lang.org/style-guide/) and
+   [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/), as the
+   Google guide directs.
+4. Default `rustfmt` output from the pinned toolchain.
+
+Guide sections marked `[chrome]`, Chromium, Android or Fuchsia do not apply.
+These include small crates, flat file layout, `chromium::import!`, the bans on
+`async` and standard-library threads, and the gtest/Fuchsia test frameworks.
+TokenSave is application code (a CLI and MCP server), so, following the
+guide's "Apply API design rules in context" section, its API-design rules are
+strong recommendations rather than binding requirements.
+
+Project-specific exceptions:
+
+- **No `unwrap`/`expect` in library code.** `src/lib.rs` denies
+  `clippy::unwrap_used` and `clippy::expect_used`. This overrides the guide's
+  "Prefer `expect` over `unwrap`". Use pattern matching, `?`, `let ... else` or
+  a typed error instead. Inline library tests inherit these crate lints unless
+  explicitly overridden. In separate test crates and the binary entry point,
+  where permitted by their lint configuration, prefer `expect` with a message
+  that states the invariant.
+- **Errors instead of panics.** Library code reports broken invariants through
+  `Result` or `Option`, using the guide's option to avoid panics entirely.
+- **`catch_unwind` as defense in depth.** `safe_extract` in
+  `src/tokensave/extract.rs` catches extractor panics so that one bad file is
+  skipped. Subprocess isolation remains the primary defense. This falls under
+  the guide's defense-in-depth exception. Add no other `catch_unwind` use
+  unless it has the same justification and is approved in review.
+- **Async, threads and `Arc`.** Tokio, `async`/`.await` and worker threads are
+  part of the architecture. `Arc` is acceptable for state shared across tasks
+  or threads. Justify any other `Rc`/`Arc` use as the guide requires.
+- **No `rustfmt.toml`.** The guide's `imports_granularity = Module`,
+  `hex_literal_case = Lower` and `format_macro_matchers` options are not
+  available on the pinned stable toolchain, and the guide allows them to be
+  omitted. `max_width = 100` is already the default. Apply one-module-per-`use`
+  and lowercase hex literals by hand in new code.
+- **Glob imports (tracked deviation).** `src/lib.rs` allows
+  `clippy::wildcard_imports`, and existing code contains glob imports. New
+  code must not add glob imports outside the guide's permitted cases: `use
+  super::*` in inline modules (such as `mod tests`), `use Enum::*` in code
+  focused on that enum, and `pub use submodule::*` re-exports. Existing glob
+  imports are handled by the #845 audit, not in unrelated changes.
+
+Exceptions and upstream revisions:
+
+- Every deviation must either be listed above or be justified where it occurs,
+  with `#[allow(lint, reason = "...")]` or a nearby comment, and be accepted in
+  PR review. Do not deviate silently.
+- When Google revises the guide, update this section and CONTRIBUTING.md in a
+  dedicated docs PR that names the revision reviewed and any rules that change.
+- Keep style-only cleanup behavior-preserving and in separate, reviewable PRs,
+  split by module. Do not mix it with functional changes or reformat unrelated
+  code in a feature PR.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md#rust-coding-style) for which rules tooling
+enforces and which need manual review.
+
 ## Build, lint, and test
 
 Follow the mandatory [filesystem path construction rule](CONTRIBUTING.md#filesystem-path-construction):
@@ -127,20 +310,43 @@ use one component per `Path`/`PathBuf` `join` or `push` call for hard-coded
 relative filesystem paths, as in PR #738. Preserve external path inputs,
 portable string formats, and documented path-syntax test fixtures.
 
-- Toolchain is pinned by `rust-toolchain.toml` (Rust 1.98.1, clippy + rustfmt).
+- Toolchain is pinned by `rust-toolchain.toml` (Rust 1.99.0, clippy + rustfmt).
 - `cargo build` builds the default `full` feature set (50+ languages). For fast dev cycles use `cargo build --no-default-features --features lite` (or `medium`).
-- `cargo test --workspace` is the CI test command. On Windows set `RUST_MIN_STACK=8388608` (CI does this; async-heavy tests overflow the 1 MB MSVC default).
+- `cargo test --workspace --locked --features test-transport` is the CI test command; CI also runs `cargo test --workspace --locked --no-default-features --features lite` and `cargo check --workspace --all-targets --locked --no-default-features --features medium` on Linux. On Windows set `RUST_MIN_STACK=8388608` (CI does this; async-heavy tests overflow the 1 MB MSVC default).
 - `cargo clippy --workspace --all-targets` (CI runs it with `continue-on-error: true`).
 - `cargo fmt --all -- --check`.
+- Pi extension prompt/relay tests: `node --experimental-strip-types --test tests/pi_extension_test.mjs` (Node 22.6+ with TypeScript stripping support; separate from Cargo tests; run by the `Pi extension` CI job).
+- Documentation checks: `python3 scripts/wiki/sync_wiki.py check` (links, anchors, wiki sidebar) and `python3 -m unittest discover -s scripts/wiki`; preview the wiki with `python3 scripts/wiki/sync_wiki.py build --out /tmp/tokensave-wiki`. Run by `.github/workflows/wiki.yml`, separate from Cargo tests.
 - `src/lib.rs` denies `clippy::all`, `clippy::unwrap_used`, and `clippy::expect_used`, and warns on `clippy::pedantic` — avoid `unwrap()`/`expect()` in library code.
 - Language-specific tests: `cargo test --test integration rust_extraction_test::`; single test: `cargo test test_find_stale_files`; filter: `cargo test sync`. Lite-only local loop: `cargo test-lite`.
 - Integration tests live in `tests/` (one file per module/language) but compile into a single binary, `tests/integration.rs` (`autotests = false`): a new test file must be added there as a `mod`. Files that mutate env vars or the `cancel` flag are separate `[[test]]` targets in `Cargo.toml` instead. Helpers are shared via `crate::common` (`tests/common/mod.rs`); fixtures are in `tests/fixtures/`. See CONTRIBUTING.md "Test layout".
 
 ### Non-standard test/bench harnesses
 
+- Graphify coexistence evaluation (#791): `python3 scripts/graphify_probe.py --graphify /path/to/pinned/graphify --benchmark-repo "$PWD" --output /tmp/graphify-results.json`. Requires Linux, GNU time, git, both CLIs, and the Graphify revision in `docs/GRAPHIFY-EVALUATION.md`. Uses disposable copies; does not install assistant integrations. The evaluation records limits and outstanding checks.
+- Pi real-session regressions: `node scripts/pi-tests/run.mjs /path/to/prepared/pi`; see `scripts/pi-tests/README.md` for the pinned Pi prerequisites and offline scope.
+- End-to-end agent workflow benchmark (#948): `python3 scripts/agent-bench/agent_bench.py prepare|run|report --work /private/dir ...`; see `scripts/agent-bench/README.md`. `run` makes paid real-model calls through Claude Code; `results.jsonl` holds metrics only unless `--keep-raw`. Synthetic tests: `python3 -m unittest discover -s scripts/agent-bench` (CI `Agent benchmark harness` job). Results and decision report: `docs/AGENT-WORKFLOW-BENCHMARK.md`.
+- Caveman benchmark harness (#797, draft PR #800): `python3 -m unittest discover -s scripts/caveman_bench -p 'test_*.py'` (synthetic provider responses only; Python 3.11+ and POSIX). The optional metered agent and manifest builder are `scripts/caveman_bench/anthropic_driver.py` and `configure_anthropic.py`; see `scripts/caveman_bench/README.md`. Never describe test results as paid trials or stock-agent activation evidence; paid runs need explicit model/pricing configuration and operator-provided credentials.
+- Conditional Pi read-routing assessment: `python3 scripts/pi-eval/assess_reads.py --help`; see `scripts/pi-eval/READ-ROUTING.md`. This read-only assessment never enables interception; real-model traces and independent review are prerequisites for any later enforcement.
+
 - Criterion bench against large real repos: `TOKENSAVE_BENCH_REPOS_DIR=~/tokensave-bench-cache cargo bench --bench large_repos`. Without `TOKENSAVE_BENCH_REPOS_DIR` it registers zero benchmarks. Filter with `cargo bench --bench large_repos -- 'scipy/tokensave_search'`. Repos and pinned refs are in `benches/repos.rs`; delete the `<repo>/.bench-ref` marker to force a re-fetch.
 - MCP test-matrix probe: `cargo build --release --bin tokensave && python3 scripts/mcp_probe/probe.py && python3 scripts/mcp_probe/build_matrix.py > matrix.md`. `scripts/mcp_probe/repos.toml` lists target repos (override with `TOKENSAVE_PROBE_REPOS`).
 - `tokensave bench` is a separate CLI benchmark (fixed query set, retrieval-savings report).
+- MCP footprint baseline (#917): `python3 benchmarks/mcp_footprint.py --binary target/release/tokensave --repo . --rev <commit> --output-dir benchmarks/mcp-footprint`. Stdlib only, any OS; optional `tiktoken` adds token counts. Results feed `docs/MCP-FOOTPRINT-BASELINE.md`; when a change moves the default `tools/list` or `initialize` instructions size, update that report and `DEFAULT_FOOTPRINT_BYTES` in `src/mcp/server.rs` together, with a reason in the PR.
+
+## Experimental Graphify export (master candidate)
+
+- Optional external-reader validation: `python3 scripts/graphify/run.py --help`.
+  Follow `scripts/graphify/README.md` for pinned offline prerequisites and the
+  limits of its fixture timings. This command requires the candidate files.
+
+- `tokensave graphify-export` reads one selected indexed source file without
+  automatic sync or migrations. Keep its source, field, node, edge, output and
+  lock-wait bounds; retain read-only startup and no-clobber publication.
+- Run `cargo test --test integration graphify_export_test::` for focused checks.
+  See [the pinned contract](docs/graphify/README.md). This candidate guidance is
+  branch-specific until the implementation is merged; do not copy commands to
+  branches that lack the implementation.
 
 ## Architecture
 
@@ -154,18 +360,39 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - `src/context/` — AI-ready context assembly (builder, formatter, ranking, read modes).
 - `src/mcp/` — stdio JSON-RPC server, tool definitions, handlers, transport.
 - `src/agents/` — agent integrations (Claude, Codex, Cursor, etc.) and git hooks.
+- `src/caveman.rs` — opt-in, read-only Caveman discovery and the extra MCP `initialize` paragraph (#797); see `docs/CAVEMAN-COMPATIBILITY.md`.
 - `src/sync.rs` — incremental sync (content hashing, stale/new/removed detection).
 - `src/bench.rs` — `tokensave bench` harness.
 - `build.rs` compiles vendored grammars (WGSL, ActionScript, GDScript) only when their feature is enabled.
 
+## Database channel compatibility
+
+- Creation origin uses SQLite `application_id` (`0` = legacy/unknown,
+  `0x54535354` = stable, `0x54534254` = beta); it is independent of
+  `user_version` and must never be silently relabeled on migration or open.
+- Validate origin and supported schema before write pragmas or migrations.
+  Compatibility refusals must bypass crash recovery and forced rebuilds.
+- `compatibility::preflight` also refuses a `-wal` sidecar whose page size
+  differs from the database's (`src/db/wal_guard.rs`, CVE-2026-119375, #940)
+  before SQLite opens it. A new code path that opens a database with libSQL
+  must call `preflight` or `check_wal_sidecar` first.
+- Stable state paths stay unchanged. Prerelease builds use `.tokensave/beta/`
+  for project state and the global database. Use `get_tokensave_dir` for
+  project paths; global user settings remain shared. See
+  [docs/DATABASE-COMPATIBILITY.md](docs/DATABASE-COMPATIBILITY.md).
+
 ## Setup and environment
 
-- Rust 1.98.1 pinned via `rust-toolchain.toml`.
+- Rust 1.99.0 pinned via `rust-toolchain.toml`.
 - `.cargo/config.toml` sets `CFLAGS`/`CXXFLAGS=-DNDEBUG` (disable C/C++ assertions in vendored grammars), isolates `core.hooksPath` for tests that create real git repos, and reserves an 8 MB main-thread stack on Windows MSVC.
 - Env-var policy: tokensave-owned variables must start with `TOKENSAVE_`; enforced by `tests/env_var_namespace_test.rs`. External (OS/Cargo/git/agent) vars need an explicit allowlist rationale. Never print env-var values (some carry auth material).
 - `TOKENSAVE_WORKER_TOKEN` — auth for the hidden `extract-worker` subcommand (256-bit token, also required as first 32 bytes on stdin). Direct invocation fails. `TOKENSAVE_DISABLE_SUBPROCESS=1` opts out of the worker pool.
 - `TOKENSAVE_DISABLE_GREP_HOOK=1` — opt out of the Claude PreToolUse grep guardrail (useful for headless/subagent dispatch).
 - `TOKENSAVE_AUTO_TRACK` — per-run override of the `auto_track` config field (truthy values enable; `0`/`false`/`no`/`off`/empty disable).
+- `TOKENSAVE_HOOK_DEBUG` — makes the `post-checkout` hook and `branch add --if-enabled` explain skipped actions on stderr and in `.tokensave/hook-debug.log` (initialized projects only; restarts at 256 KiB). Off by default so hooks stay quiet.
+- `TOKENSAVE_CAVEMAN_COMPATIBILITY` — per-run override of the user-level `caveman_compatibility` setting (default off; same parsing as `TOKENSAVE_AUTO_TRACK`).
+- `TOKENSAVE_AUTO_INIT` — per-run override of the user-level `auto_init` setting in `~/.tokensave/config.toml` (same parsing as `TOKENSAVE_AUTO_TRACK`).
+- `TOKENSAVE_STATE_DIR` — base directory for project state (#919), overriding `state_dir` in `~/.tokensave/config.toml`; empty selects the in-repo `.tokensave/` default. Resolution lives in `src/state_dir.rs` behind `config::get_tokensave_dir`; home-directory (global) state must use `config::get_global_tokensave_dir`, which is never relocated. `.cargo/config.toml` sets it empty (`force = false`) so tests ignore a developer's `state_dir`.
 - Bench vars: `TOKENSAVE_BENCH_REPOS_DIR` (required), `TOKENSAVE_BENCH_REPOS`, `TOKENSAVE_BENCH_SKIP_CLONE`; probe: `TOKENSAVE_PROBE_REPOS`.
 
 ## Gotchas and workflow quirks
@@ -175,27 +402,10 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - **Versioning is not SemVer.** Patch/minor/major encode required maintenance: patch = no action, minor = silent reinstall of agent integrations, major = reinstall + forced full reindex. The DB schema has its own version (`LATEST_VERSION` in `src/db/migrations.rs`, stored in `PRAGMA user_version`); reindex detection is schema-driven, not release-version-driven. See `TOKENSAVE-VERSIONING.md`.
 - **CHANGELOG.md is huge (~500 KB).** The release workflow extracts the `## [<version>]` block; run `scripts/prepare-release.py` before a release to promote `[Unreleased]` content into it (idempotent).
 - **CI disk-space flake.** The Linux runner ships ~10 GB free; the ~713 MB cache restore plus the cargo target dir (34 tree-sitter parsers) can exceed it, so CI frees disk space first.
+- **CI jobs are gated per job by changed paths.** The `changes` job in `.github/workflows/ci.yml` runs `dorny/paths-filter`, and each job runs only when one of its inputs changed (for example, docs-only changes run no Rust job). When a change adds a file that a build or test reads outside the existing filters (a new `include_str!` source, a fixture directory), extend the matching filters in the same change. `CI OK` aggregates the results and is the check to require; `workflow_dispatch` runs every job.
 - **No daemon / file watcher.** Since 6.1.1 the design is on-demand staleness: every MCP tool call checks for stale files (30 s cooldown), and the server runs a catch-up sync on connect. CLI-only workflows rely on git hooks (`scripts/post-commit`, `scripts/post-checkout`) to keep the index fresh.
-- **`init` vs `sync`.** `init` is one-time opt-in per project; `sync` only updates already-initialized projects. Global git hooks never create DBs in uninitialized repos.
+- **`init` vs `sync`.** `sync <path>` only updates already-initialized projects. A pathless `sync` (what the `post-commit`/`post-merge` hooks run) and `serve` initialize an uninitialized git repository top level when the user-level `auto_init` setting allows it (default on, #876); the gate and its guards (temp dir, `$HOME`, bare/subdirectory, `max_auto_sync_files`) live in `src/auto_init.rs`. Repositories under the system temp dir are always skipped, so tests that expect the old behavior keep it; tests of auto-init give the child its own `TMPDIR`.
 - **Multi-agent work assumes git worktrees.** tokensave detects nested worktrees and serves the correct branch graph; changes accumulate independently and reconcile via merge/rebase.
 - **`codegraph` is a git submodule** (`codegraph/`), not part of the crate.
 - **`test-transport` feature** adds test-only JSON-RPC transport hooks in `src/mcp/`.
-- **Release workflow** builds per-platform binaries and skips beta/prerelease tags (handled by `release-beta.yml`).
-
-## Caveman compatibility
-
-`src/caveman.rs` contributes only read-only discovery and conditional MCP
-initialization instructions. Keep semantic retrieval results exact, and leave
-Caveman installation, activation, configuration and routing independently owned.
-Maintain `docs/CAVEMAN-COMPATIBILITY.md` as the implementation and validation
-record. Run the `caveman_test` integration module and semantic-preservation
-regression for changes here; benchmark-accounting checks use
-`python3 -m unittest discover -s scripts/caveman_bench -p 'test_*.py'`.
-
-The optional metered benchmark agent and manifest builder are
-`scripts/caveman_bench/anthropic_driver.py` and `configure_anthropic.py`.
-They require Python 3.11+ and POSIX. Keep provider usage, model-visible source
-read auditing, candidate/scorer pins, private trace retention and process cleanup
-covered by the same Python test command. Tests use synthetic provider responses;
-never describe them as paid trials or stock-agent activation evidence. Paid runs
-require explicit model/pricing configuration and operator-provided credentials.
+- **Release workflow** builds per-platform binaries with `--locked` on the pinned toolchain and skips beta/prerelease tags. `release-beta.yml` is disabled: its jobs are gated on the `BETA_CHANNEL_ENABLED` repository variable (`vars`, because `env` is not available in a job-level `if:`), and beta installs from the `beta` branch.

@@ -92,6 +92,7 @@ async fn only_read_only_tools_are_concurrent_safe() {
         "tokensave_delete_symbol",
         "tokensave_rename",
         "tokensave_replace_lines",
+        "tokensave_create_file",
         "tokensave_ast_grep_rewrite",
     ] {
         assert!(

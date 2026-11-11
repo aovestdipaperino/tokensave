@@ -17,6 +17,7 @@
 
 pub mod accounting;
 pub mod agents;
+pub mod auto_init;
 pub mod bench;
 pub mod blame_engine;
 pub mod branch;
@@ -50,12 +51,14 @@ pub mod mcp;
 pub mod memory;
 pub mod memstats;
 pub mod monitor;
+pub mod profile;
 pub mod project_manifest;
 pub mod quality_diff;
 pub mod redundancy;
 pub mod resolution;
 pub mod runtime_telemetry;
 pub mod servers;
+pub mod state_dir;
 pub mod sync;
 pub mod text;
 pub mod tokensave;
@@ -65,3 +68,6 @@ pub mod user_config;
 pub mod worktree;
 
 pub mod verify;
+
+/// Experimental Graphify file interchange.
+pub mod graphify;

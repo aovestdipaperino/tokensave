@@ -153,7 +153,7 @@ async fn setup_selected_branch_project() -> TempDir {
     run_git(project, &["add", "src/lib.rs"]);
     run_git(project, &["commit", "-m", "feature"]);
 
-    let tokensave_dir = project.join(".tokensave");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(&project);
     fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
     fs::copy(
         tokensave_dir.join("tokensave.db"),
@@ -190,7 +190,7 @@ async fn setup_colliding_project() -> TempDir {
     graph.checkpoint().await.unwrap();
     drop(graph);
 
-    let tokensave_dir = project.join(".tokensave");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(&project);
     fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
     fs::copy(
         tokensave_dir.join("tokensave.db"),
@@ -428,8 +428,9 @@ async fn project_snapshot(root: &Path, branch: Option<&str>, source: &str) -> Pr
         source: fs::read(&source_path).unwrap(),
         source_mtime: fs::metadata(source_path).unwrap().modified().unwrap(),
         graph: semantic_graph,
-        config: fs::read(root.join(".tokensave").join("config.json")).unwrap(),
-        branch_meta: fs::read(root.join(".tokensave").join("branch-meta.json")).ok(),
+        config: fs::read(tokensave::config::get_tokensave_dir(&root).join("config.json")).unwrap(),
+        branch_meta: fs::read(tokensave::config::get_tokensave_dir(&root).join("branch-meta.json"))
+            .ok(),
         last_sync,
     }
 }
@@ -983,7 +984,7 @@ async fn selected_read_bypasses_cache_and_never_returns_unchanged() {
     drop(foreign);
     let server = McpServer::new(local, None).await;
     let graph_root = foreign_dir.path().display().to_string();
-    let db_path = foreign_dir.path().join(".tokensave").join("tokensave.db");
+    let db_path = tokensave::config::get_tokensave_dir(foreign_dir.path()).join("tokensave.db");
     let db_before = fs::read(&db_path).unwrap();
     let cache_rows_before = read_cache_row_count(&db_path).await;
     assert_eq!(cache_rows_before, 0);
@@ -1035,7 +1036,7 @@ async fn selected_read_rejects_paths_outside_canonical_selected_root() {
 
     let server = McpServer::new(local, None).await;
     let graph_root = selected_root.display().to_string();
-    let db_path = selected_root.join(".tokensave").join("tokensave.db");
+    let db_path = tokensave::config::get_tokensave_dir(&selected_root).join("tokensave.db");
     let cache_rows_before = read_cache_row_count(&db_path).await;
     let mut paths = vec![
         outside.display().to_string(),
@@ -1102,7 +1103,7 @@ async fn primary_read_rejects_paths_outside_project_root() {
     std::os::unix::fs::symlink(&outside, local_dir.path().join("linked-secret.txt")).unwrap();
 
     let server = McpServer::new(local, None).await;
-    let db_path = local_dir.path().join(".tokensave").join("tokensave.db");
+    let db_path = tokensave::config::get_tokensave_dir(local_dir.path()).join("tokensave.db");
     let cache_rows_before = read_cache_row_count(&db_path).await;
     // Both temp dirs share a parent, so `..` reaches the secret.
     let outside_name = outside_dir
@@ -1374,6 +1375,18 @@ async fn cross_project_selected_queries_leave_both_projects_unchanged() {
                 "graph_branch": "main"
             }),
         ),
+        // Catches: dead_code on a selected graph writing to it. Its query
+        // builds TEMP tables, which a `query_only` selected connection rejects
+        // with "attempt to write a readonly database".
+        (
+            41,
+            "tokensave_dead_code",
+            json!({
+                "include_public": true,
+                "graph_root": selected_dir.path().display().to_string(),
+                "graph_branch": "main"
+            }),
+        ),
     ] {
         let response = call_server(&server, id, name, arguments).await;
         assert!(response["error"].is_null(), "{response}");
@@ -1383,6 +1396,407 @@ async fn cross_project_selected_queries_leave_both_projects_unchanged() {
     let selected_after = project_snapshot(selected_dir.path(), Some("main"), "src/lib.rs").await;
     assert_eq!(local_after, local_before);
     assert_eq!(selected_after, selected_before);
+}
+
+/// A git project on `main` whose `src/lib.rs` holds `lib_source`, indexed and
+/// checkpointed, with no open handle left behind.
+async fn setup_selected_main_project(lib_source: &str) -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    run_git(project, &["init", "-b", "main"]);
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src").join("lib.rs"), lib_source).unwrap();
+    run_git(project, &["add", "src/lib.rs"]);
+    run_git(project, &["commit", "-m", "main"]);
+
+    let graph = TokenSave::init(project).await.unwrap();
+    graph.index_all().await.unwrap();
+    graph.checkpoint().await.unwrap();
+    drop(graph);
+    dir
+}
+
+/// Every `node_fingerprints` row of a project's graph, read through a
+/// read-only open. `project_snapshot` does not cover this cache table, and
+/// `tokensave_redundancy` is the one tool that writes it.
+async fn fingerprint_rows(root: &Path, branch: Option<&str>) -> Vec<String> {
+    let graph = TokenSave::open_read_only(root, branch).await.unwrap();
+    query_snapshot_rows(
+        graph.db(),
+        "SELECT json_array(node_id, ast_hash, cfg_hash, call_seq_hash, shingles,
+                           body_tokens, source_hash)
+         FROM node_fingerprints ORDER BY node_id",
+    )
+    .await
+}
+
+/// Two structurally identical functions (renamed identifiers), plus one
+/// unrelated function, as in `mcp_handler_test::test_redundancy_finds_planted_duplicate`.
+const SELECTED_DUPLICATE_PAIR_SOURCE: &str = r#"
+pub fn compute_a(value: i32) -> i32 {
+    let mut acc = 0;
+    for i in 0..value {
+        if i % 2 == 0 {
+            acc += i;
+        } else {
+            acc -= i;
+        }
+    }
+    acc
+}
+
+pub fn compute_b(input: i32) -> i32 {
+    let mut total = 0;
+    for j in 0..input {
+        if j % 2 == 0 {
+            total += j;
+        } else {
+            total -= j;
+        }
+    }
+    total
+}
+
+pub fn unrelated(x: i32) -> i32 {
+    x * 2
+}
+"#;
+
+#[tokio::test]
+async fn selected_graph_redundancy_reports_selected_project_pair_without_writing() {
+    // Catches: `tokensave_redundancy` refusing `graph_root`/`graph_branch`
+    // (InvalidParams "does not support graph_root"), answering from the
+    // served project instead of the selected one, leaking raw node IDs that
+    // the caller cannot resolve against the selected graph, or persisting its
+    // fingerprint cache (or anything else) into the selected project's
+    // database during a read-only selected call.
+    let (local_dir, local) = setup_named_project("local_only").await;
+    let selected_dir = setup_selected_main_project(SELECTED_DUPLICATE_PAIR_SOURCE).await;
+    let server = McpServer::new(local, None).await;
+    assert!(
+        server
+            .wait_for_startup_catch_up(std::time::Duration::from_secs(30))
+            .await
+    );
+    server
+        .cg()
+        .expect("default project")
+        .checkpoint()
+        .await
+        .unwrap();
+
+    let local_before = project_snapshot(local_dir.path(), None, "src/main.rs").await;
+    let selected_before = project_snapshot(selected_dir.path(), Some("main"), "src/lib.rs").await;
+    let local_fingerprints_before = fingerprint_rows(local_dir.path(), None).await;
+    let selected_fingerprints_before = fingerprint_rows(selected_dir.path(), Some("main")).await;
+
+    let response = call_server(
+        &server,
+        60,
+        "tokensave_redundancy",
+        json!({
+            "min_lines": 5,
+            "similarity_threshold": 0.5,
+            "graph_root": selected_dir.path().display().to_string(),
+            "graph_branch": "main"
+        }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response}");
+
+    let payload = response_payload(&response);
+    assert_eq!(payload["pair_count"], 1, "{payload}");
+    let top = &payload["pairs"][0];
+    assert_eq!(top["overlap_kind"], "ast_isomorphic", "{payload}");
+    assert_eq!(top["severity"], "definite", "{payload}");
+    let mut names = [
+        top["a"]["name"].as_str().unwrap_or_default(),
+        top["b"]["name"].as_str().unwrap_or_default(),
+    ];
+    names.sort_unstable();
+    assert_eq!(names, ["compute_a", "compute_b"], "{payload}");
+    assert_eq!(top["a"]["file"], "src/lib.rs", "{payload}");
+    assert_eq!(top["b"]["file"], "src/lib.rs", "{payload}");
+    let ids = response_structured_ids(&response);
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert!(ids.iter().all(|id| id.starts_with("graph:")), "{ids:?}");
+
+    let local_after = project_snapshot(local_dir.path(), None, "src/main.rs").await;
+    let selected_after = project_snapshot(selected_dir.path(), Some("main"), "src/lib.rs").await;
+    assert_eq!(local_after, local_before);
+    assert_eq!(selected_after, selected_before);
+    assert_eq!(
+        fingerprint_rows(local_dir.path(), None).await,
+        local_fingerprints_before
+    );
+    assert_eq!(
+        fingerprint_rows(selected_dir.path(), Some("main")).await,
+        selected_fingerprints_before
+    );
+}
+
+#[tokio::test]
+async fn selected_graph_simplify_scan_reports_selected_project_code() {
+    // Catches: `tokensave_simplify_scan` refusing `graph_root` (InvalidParams
+    // "does not support graph_root"), or scanning the served project's graph
+    // instead of the selected one. Both projects hold a private, uncalled
+    // function, so a scan of the wrong graph names the wrong one.
+    let (local_dir, local) = setup_named_project("local_only").await;
+    fs::write(
+        local_dir.path().join("src").join("lib.rs"),
+        "fn local_only_dead() -> i32 { 1 }\n",
+    )
+    .unwrap();
+    local.index_all().await.unwrap();
+    let selected_dir = setup_selected_main_project(
+        "pub fn used() -> i32 { 0 }\nfn selected_only_dead() -> i32 { 2 }\n",
+    )
+    .await;
+    let server = McpServer::new(local, None).await;
+
+    let response = call_server(
+        &server,
+        61,
+        "tokensave_simplify_scan",
+        json!({
+            "files": ["src/lib.rs"],
+            "graph_root": selected_dir.path().display().to_string()
+        }),
+    )
+    .await;
+    assert!(response["error"].is_null(), "{response}");
+
+    let payload = response_payload(&response);
+    let dead: Vec<&str> = payload["dead_introductions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no dead_introductions: {payload}"))
+        .iter()
+        .filter_map(|entry| entry["symbol"].as_str())
+        .collect();
+    assert_eq!(dead, ["selected_only_dead"], "{payload}");
+    assert_eq!(
+        payload["dead_introductions"][0]["file"], "src/lib.rs",
+        "{payload}"
+    );
+}
+
+/// A git project with two tracked, indexed branches: `other` holds the
+/// duplicate pair, `main` holds unrelated code and is the branch checked out
+/// when this returns.
+async fn setup_two_branch_project_on_main() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    run_git(project, &["init", "-b", "main"]);
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src").join("lib.rs"),
+        "pub fn main_only() -> i32 { 1 }\n",
+    )
+    .unwrap();
+    run_git(project, &["add", "src/lib.rs"]);
+    run_git(project, &["commit", "-m", "main"]);
+
+    let graph = TokenSave::init(project).await.unwrap();
+    graph.index_all().await.unwrap();
+    graph.checkpoint().await.unwrap();
+    drop(graph);
+
+    run_git(project, &["checkout", "-b", "other"]);
+    fs::write(
+        project.join("src").join("lib.rs"),
+        SELECTED_DUPLICATE_PAIR_SOURCE,
+    )
+    .unwrap();
+    run_git(project, &["add", "src/lib.rs"]);
+    run_git(project, &["commit", "-m", "other"]);
+
+    let tokensave_dir = project.join(".tokensave");
+    fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
+    fs::copy(
+        tokensave_dir.join("tokensave.db"),
+        tokensave_dir.join("branches").join("other.db"),
+    )
+    .unwrap();
+    let mut meta = branch_meta::load_branch_meta(&tokensave_dir).unwrap();
+    meta.add_branch("other", "branches/other.db", "main");
+    branch_meta::save_branch_meta(&tokensave_dir, &meta).unwrap();
+
+    let other = TokenSave::open_branch(project, "other").await.unwrap();
+    other.index_all().await.unwrap();
+    other.checkpoint().await.unwrap();
+    drop(other);
+
+    run_git(project, &["checkout", "main"]);
+    dir
+}
+
+/// Whether `message` names `branch` as a whole word, so `main` does not match
+/// inside an unrelated identifier.
+fn names_branch(message: &str, branch: &str) -> bool {
+    message
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .any(|word| word == branch)
+}
+
+#[tokio::test]
+async fn selected_graph_redundancy_refuses_branch_not_checked_out() {
+    // Catches: `tokensave_redundancy` on a selected branch that is not the
+    // one checked out in the selected root. It reads source from the working
+    // tree, so it would apply `other`'s stored line/column ranges to `main`'s
+    // files and report wrong, missing or bogus pairs. It must refuse with
+    // InvalidParams naming both branches, and leave both databases unchanged.
+    let (local_dir, local) = setup_named_project("local_only").await;
+    let selected_dir = setup_two_branch_project_on_main().await;
+    let selected = selected_dir.path();
+    let server = McpServer::new(local, None).await;
+
+    let local_before = project_snapshot(local_dir.path(), None, "src/main.rs").await;
+    let main_before = project_snapshot(selected, Some("main"), "src/lib.rs").await;
+    let other_before = project_snapshot(selected, Some("other"), "src/lib.rs").await;
+    let main_fingerprints_before = fingerprint_rows(selected, Some("main")).await;
+    let other_fingerprints_before = fingerprint_rows(selected, Some("other")).await;
+    // Precondition: the two branch databases hold different graphs.
+    assert_ne!(main_before.graph, other_before.graph);
+
+    let response = call_server(
+        &server,
+        62,
+        "tokensave_redundancy",
+        json!({
+            "min_lines": 5,
+            "similarity_threshold": 0.5,
+            "graph_root": selected.display().to_string(),
+            "graph_branch": "other"
+        }),
+    )
+    .await;
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        !message.contains("does not support graph_root"),
+        "{response}"
+    );
+    assert!(names_branch(message, "other"), "{response}");
+    assert!(names_branch(message, "main"), "{response}");
+
+    assert_eq!(
+        project_snapshot(local_dir.path(), None, "src/main.rs").await,
+        local_before
+    );
+    assert_eq!(
+        project_snapshot(selected, Some("main"), "src/lib.rs").await,
+        main_before
+    );
+    assert_eq!(
+        project_snapshot(selected, Some("other"), "src/lib.rs").await,
+        other_before
+    );
+    assert_eq!(
+        fingerprint_rows(selected, Some("main")).await,
+        main_fingerprints_before
+    );
+    assert_eq!(
+        fingerprint_rows(selected, Some("other")).await,
+        other_fingerprints_before
+    );
+}
+
+#[tokio::test]
+async fn selected_graph_redundancy_refuses_parent_branch_fallback() {
+    // Catches: `tokensave_redundancy` with only `graph_root`, where the
+    // checked-out branch (`feature`) is untracked and the read-only open
+    // falls back to the parent branch's (`main`) database. The working tree
+    // is `feature`'s, so the stored ranges belong to other file contents. It
+    // must refuse with InvalidParams naming both branches, and leave the
+    // database unchanged.
+    let (_local_dir, local) = setup_named_project("local_only").await;
+    let (selected_dir, selected_graph) = setup_fallback_project("fallback_only").await;
+    selected_graph.checkpoint().await.unwrap();
+    drop(selected_graph);
+    let selected = selected_dir.path();
+    let server = McpServer::new(local, None).await;
+
+    // Precondition: with no branch named, the read-only open really falls
+    // back from the untracked `feature` checkout to `main`'s database.
+    let probe = TokenSave::open_read_only(selected, None).await.unwrap();
+    assert_eq!(probe.serving_branch(), Some("main"));
+    assert!(probe.fallback_warning().is_some());
+    drop(probe);
+
+    let main_before = project_snapshot(selected, Some("main"), "src/main.rs").await;
+    let main_fingerprints_before = fingerprint_rows(selected, Some("main")).await;
+
+    let response = call_server(
+        &server,
+        63,
+        "tokensave_redundancy",
+        json!({
+            "min_lines": 1,
+            "graph_root": selected.display().to_string()
+        }),
+    )
+    .await;
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        !message.contains("does not support graph_root"),
+        "{response}"
+    );
+    assert!(names_branch(message, "feature"), "{response}");
+    assert!(names_branch(message, "main"), "{response}");
+
+    assert_eq!(
+        project_snapshot(selected, Some("main"), "src/main.rs").await,
+        main_before
+    );
+    assert_eq!(
+        fingerprint_rows(selected, Some("main")).await,
+        main_fingerprints_before
+    );
+}
+
+// Catches: `tokensave_dead_code` with `graph_root` failing on the selected
+// graph's read-only (`query_only`) connection because the dead-code query
+// creates TEMP tables, and dead_code answering from the served project
+// instead of the selected one.
+#[tokio::test]
+async fn selected_graph_dead_code_reports_selected_project_unused_functions() {
+    let (_local_dir, local) = setup_named_project("local_only_unused").await;
+    let selected_dir = TempDir::new().unwrap();
+    fs::create_dir_all(selected_dir.path().join("src")).unwrap();
+    fs::write(
+        selected_dir.path().join("src").join("lib.rs"),
+        "fn selected_entry() { selected_used(); }\n\
+         fn selected_used() {}\n\
+         fn selected_unused() {}\n",
+    )
+    .unwrap();
+    let selected = TokenSave::init(selected_dir.path()).await.unwrap();
+    selected.index_all().await.unwrap();
+    selected.checkpoint().await.unwrap();
+    drop(selected);
+    let server = McpServer::new(local, None).await;
+
+    let response = call_server(
+        &server,
+        42,
+        "tokensave_dead_code",
+        json!({ "graph_root": selected_dir.path().display().to_string() }),
+    )
+    .await;
+
+    assert!(response["error"].is_null(), "{response}");
+    assert_ne!(response["result"]["isError"], json!(true), "{response}");
+    let payload = response_payload(&response);
+    let names: Vec<&str> = payload["symbols"]
+        .as_array()
+        .unwrap_or_else(|| panic!("dead_code payload has no symbols array: {payload}"))
+        .iter()
+        .filter_map(|symbol| symbol["name"].as_str())
+        .collect();
+    assert!(names.contains(&"selected_unused"), "{payload}");
+    assert!(!names.contains(&"selected_used"), "{payload}");
+    assert!(!names.contains(&"local_only_unused"), "{payload}");
 }
 
 #[tokio::test]
@@ -1512,7 +1926,7 @@ async fn diagnostics_selectors_are_rejected_before_subprocess_or_target_creation
     .unwrap();
     let server = McpServer::new(local, None).await;
     let graph_root = selected_dir.path().display().to_string();
-    let target = selected_dir.path().join(".tokensave").join("target");
+    let target = tokensave::config::get_tokensave_dir(selected_dir.path()).join("target");
 
     for (index, arguments) in [
         json!({ "graph_root": graph_root.clone() }),
@@ -1550,9 +1964,7 @@ async fn selected_invalid_graph_selectors_return_invalid_params() {
     let selected_dir = setup_selected_branch_project().await;
     let missing_db_dir = setup_selected_branch_project().await;
     fs::remove_file(
-        missing_db_dir
-            .path()
-            .join(".tokensave")
+        tokensave::config::get_tokensave_dir(missing_db_dir.path())
             .join("branches")
             .join("feature.db"),
     )
@@ -1633,7 +2045,7 @@ async fn selected_database_open_failure_returns_internal_error() {
     foreign.checkpoint().await.unwrap();
     drop(foreign);
     fs::write(
-        foreign_dir.path().join(".tokensave").join("tokensave.db"),
+        tokensave::config::get_tokensave_dir(foreign_dir.path()).join("tokensave.db"),
         b"not a sqlite database",
     )
     .unwrap();
@@ -1694,6 +2106,43 @@ async fn selected_schema_mismatches_return_invalid_params() {
             "{response}"
         );
     }
+}
+
+#[tokio::test]
+async fn selected_unknown_database_origin_returns_invalid_params() {
+    let (_local_dir, local) = setup_named_project("local_only").await;
+    let server = McpServer::new(local, None).await;
+    let (foreign_dir, foreign) = setup_named_project("foreign_only").await;
+    foreign
+        .db()
+        .conn()
+        .execute("PRAGMA application_id = 17", ())
+        .await
+        .unwrap();
+    foreign.checkpoint().await.unwrap();
+    drop(foreign);
+    let db_path = tokensave::config::get_tokensave_dir(foreign_dir.path()).join("tokensave.db");
+    let before = fs::read(&db_path).unwrap();
+
+    let response = call_server(
+        &server,
+        61,
+        "tokensave_search",
+        json!({
+            "query": "foreign_only",
+            "graph_root": foreign_dir.path().display().to_string()
+        }),
+    )
+    .await;
+
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("unrecognized database application ID 17")),
+        "{response}"
+    );
+    assert_eq!(fs::read(&db_path).unwrap(), before);
 }
 
 #[tokio::test]
@@ -2014,9 +2463,10 @@ async fn test_index_age_warning_dedup_and_zero_hit_suppression() {
         .as_secs() as i64
         - 7200;
 
-    let (db, _migrated) = Database::open(&project.join(".tokensave").join("tokensave.db"))
-        .await
-        .unwrap();
+    let (db, _migrated) =
+        Database::open(&tokensave::config::get_tokensave_dir(&project).join("tokensave.db"))
+            .await
+            .unwrap();
     db.set_metadata("last_sync_at", &two_hours_ago.to_string())
         .await
         .unwrap();

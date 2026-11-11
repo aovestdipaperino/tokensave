@@ -2,7 +2,7 @@
 
 use tokensave::extraction::CudaExtractor;
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, ExtractionResult, NodeKind};
 
 fn extract() -> ExtractionResult {
     let source = std::fs::read_to_string("tests/fixtures/sample.cu").unwrap();

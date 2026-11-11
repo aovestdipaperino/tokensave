@@ -50,7 +50,7 @@ async fn project_on_master_with_tracked_feature() -> (tempfile::TempDir, TokenSa
 
     // Bootstrap multi-branch mode: `feature` gets its own DB.
     git(&root, &["checkout", "-b", "feature"]);
-    let tokensave_dir = root.join(".tokensave");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(&root);
     assert!(
         tokensave::branch::track_branch_copy(&root, &tokensave_dir, "feature")
             .await

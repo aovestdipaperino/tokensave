@@ -2,7 +2,13 @@
 // Registry
 // ---------------------------------------------------------------------------
 
-use crate::agents::integrations::*;
+use crate::agents::integrations::{
+    AntigravityIntegration, AugmentIntegration, ClaudeIntegration, ClineIntegration,
+    CodexIntegration, CopilotIntegration, CursorIntegration, DroidIntegration, GeminiIntegration,
+    GrokIntegration, KiloIntegration, KimiIntegration, KiroIntegration, OmpIntegration,
+    OpenCodeIntegration, PiIntegration, PlankIntegration, QwenIntegration, RooCodeIntegration,
+    VibeIntegration, ZedIntegration,
+};
 use crate::agents::traits::AgentIntegration;
 use crate::errors::TokenSaveError;
 use std::path::Path;

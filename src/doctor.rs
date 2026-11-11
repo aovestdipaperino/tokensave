@@ -10,8 +10,19 @@ use crate::agents::{self, DoctorCounters, HealthcheckContext};
 use crate::display::{format_bytes, format_token_count};
 use crate::tokensave::TokenSave;
 
+/// Options for the Caveman compatibility check (`doctor --caveman`, #797).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CavemanCheck<'a> {
+    /// Explicitly named Claude Code session whose Caveman mode to report.
+    pub session_id: Option<&'a str>,
+}
+
 /// Runs a comprehensive health check of the tokensave installation.
-pub async fn run_doctor(agent_filter: Option<&str>) {
+///
+/// With `caveman`, a Caveman compatibility section is added to the normal
+/// checks and the per-agent report is printed as JSON on stdout after the
+/// summary; the human-readable output stays on stderr.
+pub async fn run_doctor(agent_filter: Option<&str>, caveman: Option<CavemanCheck<'_>>) {
     debug_assert!(
         !env!("CARGO_PKG_VERSION").is_empty(),
         "CARGO_PKG_VERSION must not be empty"
@@ -29,15 +40,15 @@ pub async fn run_doctor(agent_filter: Option<&str>) {
     let project_path = crate::config::resolve_path_with_discovery(None);
     if TokenSave::is_initialized(&project_path) {
         dc.pass(&format!(
-            "Index found: {}/.tokensave/",
-            project_path.display()
+            "Index found: {}",
+            crate::config::get_tokensave_dir(&project_path).display()
         ));
         check_database(&mut dc, &project_path).await;
         check_hook_freshness(&mut dc, &project_path);
     } else {
         dc.warn(&format!(
-            "No index at {}/.tokensave/ — run `tokensave init`",
-            project_path.display()
+            "No index at {} — run `tokensave init`",
+            crate::config::get_tokensave_dir(&project_path).display()
         ));
     }
 
@@ -45,6 +56,7 @@ pub async fn run_doctor(agent_filter: Option<&str>) {
     check_index_scope(&mut dc, &project_path);
     check_stale_stores(&mut dc).await;
     check_user_config(&mut dc);
+    check_state_location(&mut dc, &project_path);
 
     // Agent-specific health checks
     if let Some(ref home) = agents::home_dir() {
@@ -69,8 +81,82 @@ pub async fn run_doctor(agent_filter: Option<&str>) {
         dc.fail("Could not determine home directory");
     }
 
+    let caveman_reports =
+        caveman.map(|check| check_caveman(&mut dc, agent_filter, check, &project_path));
+
     check_network(&mut dc);
     print_summary(&dc);
+
+    if let Some(reports) = caveman_reports {
+        match serde_json::to_string_pretty(&reports) {
+            Ok(json) => println!("{json}"),
+            Err(e) => eprintln!("Could not serialize the Caveman report: {e}"),
+        }
+    }
+}
+
+/// Reports Caveman compatibility for the selected agents. Read-only: no
+/// file is written and no Caveman code runs.
+fn check_caveman(
+    dc: &mut DoctorCounters,
+    agent_filter: Option<&str>,
+    check: CavemanCheck<'_>,
+    project_path: &Path,
+) -> Vec<crate::caveman::Report> {
+    use crate::caveman::{Activation, Installation};
+
+    eprintln!("\n\x1b[1mCaveman compatibility\x1b[0m");
+    let reports = crate::caveman::diagnostics(agent_filter, check.session_id, project_path);
+    let source = if std::env::var_os(crate::caveman::COMPATIBILITY_ENV).is_some() {
+        crate::caveman::COMPATIBILITY_ENV
+    } else {
+        "config.toml"
+    };
+    let enabled = reports
+        .first()
+        .map_or_else(crate::caveman::enabled, |r| r.enabled);
+    dc.info(&format!(
+        "caveman_compatibility {} ({source})",
+        if enabled { "on" } else { "off" }
+    ));
+    for report in &reports {
+        let agent = &report.agent;
+        match report.installation {
+            Installation::Absent => dc.info(&format!("{agent}: no Caveman skill found")),
+            Installation::Unsupported => {
+                dc.info(&format!("{agent}: no Caveman discovery adapter"));
+            }
+            Installation::Partial => {
+                dc.warn(&format!(
+                    "{agent}: Caveman installation incomplete or malformed"
+                ));
+            }
+            Installation::Installed => {
+                let version = report.version.as_deref().unwrap_or("unknown release");
+                let skill = report
+                    .skill
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                dc.pass(&format!("{agent}: Caveman skill ({version}) at {skill}"));
+            }
+        }
+        match report.activation {
+            Activation::Active => dc.info(&format!("{agent}: Caveman active in this session")),
+            Activation::Inactive => {
+                dc.info(&format!("{agent}: Caveman off in this session"));
+            }
+            Activation::Unknown => {}
+        }
+        if report.installation != Installation::Absent
+            && report.installation != Installation::Unsupported
+        {
+            for warning in &report.warnings {
+                dc.info(&format!("{agent}: {warning}"));
+            }
+        }
+    }
+    reports
 }
 
 /// Check database health: report size and run VACUUM to reclaim space.
@@ -202,8 +288,7 @@ async fn check_stale_stores(dc: &mut DoctorCounters) {
         .await
         .into_iter()
         .filter(|p| {
-            !Path::new(p)
-                .join(".tokensave")
+            !crate::config::get_tokensave_dir(Path::new(p))
                 .join("tokensave.db")
                 .exists()
         })
@@ -252,6 +337,82 @@ async fn check_stale_stores(dc: &mut DoctorCounters) {
     dc.pass(&format!("Purged {purged} stale project(s)"));
 }
 
+/// Check where project state lives (#919): the base state directory
+/// setting, whether this project's state is where the setting puts it, and
+/// relocated state whose project root is gone. Reports only; nothing is
+/// moved or deleted here.
+fn check_state_location(dc: &mut DoctorCounters, project_path: &Path) {
+    use crate::state_dir::{self, BaseSource};
+    eprintln!(
+        "
+[1mProject state location[0m"
+    );
+    let setting = state_dir::setting();
+    let label = match setting.source {
+        BaseSource::Env => state_dir::STATE_DIR_ENV,
+        BaseSource::UserConfig => "state_dir in config.toml",
+        BaseSource::Default => "",
+    };
+    match (&setting.base, setting.raw.as_deref().map(str::trim)) {
+        (Some(base), _) => dc.pass(&format!("Base state directory ({label}): {}", base.display())),
+        (None, Some(raw)) if !raw.is_empty() => dc.warn(&format!(
+            "{label} = {raw:?} is not an absolute path, so it is ignored and state lives under each project root"
+        )),
+        (None, Some(_)) => dc.pass(&format!(
+            "{label} is empty: state lives under each project root"
+        )),
+        (None, None) => dc.pass("State lives under each project root (`.tokensave/`)"),
+    }
+
+    if TokenSave::is_initialized(project_path) {
+        let actual = crate::config::get_tokensave_dir(project_path);
+        let configured = crate::config::configured_project_state_dir(project_path);
+        if actual != configured {
+            dc.warn(&format!(
+                "This project's state is at {}, not at {} where the current setting puts it. tokensave keeps using the existing state; to follow the setting, stop its servers and move the directory there.",
+                actual.display(),
+                configured.display()
+            ));
+        }
+    }
+
+    let entries = state_dir::scan();
+    let orphans: Vec<_> = entries.iter().filter(|e| e.is_orphaned()).collect();
+    if !orphans.is_empty() {
+        dc.warn(&format!(
+            "{} relocated state director{} whose project no longer exists:",
+            orphans.len(),
+            if orphans.len() == 1 { "y" } else { "ies" }
+        ));
+        for entry in &orphans {
+            if let Some(origin) = &entry.origin {
+                dc.info(&format!(
+                    "  • {} (project {}, {}, recorded by {})",
+                    entry.dir.display(),
+                    origin.project_root,
+                    crate::display::format_bytes(state_dir::dir_size(&entry.dir)),
+                    origin.version
+                ));
+            }
+        }
+        dc.info("    Delete them with `tokensave state prune` (preview with --dry-run).");
+    } else if !entries.is_empty() {
+        dc.pass(&format!(
+            "{} relocated state director{}, none orphaned",
+            entries.len(),
+            if entries.len() == 1 { "y" } else { "ies" }
+        ));
+    }
+    let unknown = entries.iter().filter(|e| e.origin.is_none()).count();
+    if unknown > 0 {
+        dc.info(&format!(
+            "  {unknown} relocated state director{} without {}; `tokensave state list` shows them",
+            if unknown == 1 { "y" } else { "ies" },
+            state_dir::ORIGIN_FILENAME
+        ));
+    }
+}
+
 /// Check user config file.
 fn check_user_config(dc: &mut DoctorCounters) {
     eprintln!("\n\x1b[1mUser config\x1b[0m");
@@ -272,6 +433,20 @@ fn check_user_config(dc: &mut DoctorCounters) {
         }
     } else {
         dc.fail("Could not determine home directory for config");
+    }
+    let source = if std::env::var_os(crate::auto_init::AUTO_INIT_ENV).is_some() {
+        crate::auto_init::AUTO_INIT_ENV
+    } else {
+        "config.toml"
+    };
+    if crate::auto_init::enabled() {
+        dc.info(&format!(
+            "auto_init on ({source}): new git repositories are indexed on first commit or serve"
+        ));
+    } else {
+        dc.info(&format!(
+            "auto_init off ({source}): run `tokensave init` in new repositories"
+        ));
     }
 }
 

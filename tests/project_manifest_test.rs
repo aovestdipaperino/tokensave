@@ -12,7 +12,7 @@ const SHRC: &str = "my_prompt() {\n    echo prompt\n}\n";
 async fn index_with_manifest(manifest: &str) -> (TempDir, TokenSave) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    fs::create_dir_all(project.join(".tokensave")).unwrap();
+    fs::create_dir_all(tokensave::config::get_tokensave_dir(project)).unwrap();
     fs::create_dir_all(project.join("homedir").join(".bashrc.d")).unwrap();
     fs::write(project.join("homedir").join(".bash_profile"), BASH_PROFILE).unwrap();
     fs::write(
@@ -25,7 +25,11 @@ async fn index_with_manifest(manifest: &str) -> (TempDir, TokenSave) {
     .unwrap();
     // A normal source file to prove default dispatch still works.
     fs::write(project.join("main.sh"), "regular_fn() { echo hi; }\n").unwrap();
-    fs::write(project.join(".tokensave").join("project.json"), manifest).unwrap();
+    fs::write(
+        tokensave::config::get_tokensave_dir(project).join("project.json"),
+        manifest,
+    )
+    .unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -84,9 +88,13 @@ async fn manifest_external_absolute_path_is_indexed() {
 
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    fs::create_dir_all(project.join(".tokensave")).unwrap();
+    fs::create_dir_all(tokensave::config::get_tokensave_dir(project)).unwrap();
     fs::write(project.join("main.sh"), "local_fn() { echo hi; }\n").unwrap();
-    fs::write(project.join(".tokensave").join("project.json"), manifest).unwrap();
+    fs::write(
+        tokensave::config::get_tokensave_dir(project).join("project.json"),
+        manifest,
+    )
+    .unwrap();
 
     let cg = TokenSave::init(project).await.unwrap();
     cg.index_all().await.unwrap();
@@ -115,10 +123,10 @@ async fn manifest_external_absolute_path_is_indexed() {
 async fn unknown_language_fails_the_sync_loudly() {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
-    fs::create_dir_all(project.join(".tokensave")).unwrap();
+    fs::create_dir_all(tokensave::config::get_tokensave_dir(project)).unwrap();
     fs::write(project.join("main.sh"), "f() { echo hi; }\n").unwrap();
     fs::write(
-        project.join(".tokensave").join("project.json"),
+        tokensave::config::get_tokensave_dir(project).join("project.json"),
         r#"{ "version": 1, "entries": [ { "path": "x/*.cfg", "language": "klingon" } ] }"#,
     )
     .unwrap();

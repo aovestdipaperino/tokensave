@@ -137,7 +137,19 @@ pub struct UserConfig {
     #[serde(default = "default_true")]
     pub claude_hooks: bool,
 
-    /// Opt in to cooperation with independently installed Caveman through MCP instructions.
+    /// When true, a git repository with no index is initialized the first
+    /// time tokensave runs in it unasked: from the `post-commit`/`post-merge`
+    /// hooks' `sync`, or from `serve` (#876). Only a repository's top level
+    /// qualifies, never one under the system temp dir or `$HOME` itself, and
+    /// never one with more candidate files than `max_auto_sync_files`.
+    /// `TOKENSAVE_AUTO_INIT` overrides it per run.
+    #[serde(default = "default_true")]
+    pub auto_init: bool,
+
+    /// When true, and an independently installed Caveman skill is found, the
+    /// MCP `initialize` instructions ask the agent to keep tokensave results
+    /// exact while Caveman shortens its prose (#797). Off by default.
+    /// `TOKENSAVE_CAVEMAN_COMPATIBILITY` overrides it per run.
     #[serde(default)]
     pub caveman_compatibility: bool,
 
@@ -148,10 +160,22 @@ pub struct UserConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_usage: Option<crate::cpu::CpuUsage>,
 
+    /// Base directory for project state (#919): each project keeps its state
+    /// in `<state_dir>/projects/<id>` instead of `<root>/.tokensave`.
+    /// Absolute, or starting with `~`. `TOKENSAVE_STATE_DIR` overrides it.
+    /// Read by [`crate::state_dir`], once per process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_dir: Option<String>,
+
     /// The `[benchmark]` table: whether and when the global hardware
     /// benchmark runs and is used (#752).
     #[serde(default, skip_serializing_if = "BenchmarkPreferences::is_default")]
     pub benchmark: BenchmarkPreferences,
+
+    /// The `[profiling]` table: opt-in latency profiling (#754). Off by
+    /// default; `TOKENSAVE_PROFILE` overrides the mode for one run.
+    #[serde(default, skip_serializing_if = "ProfilingPreferences::is_default")]
+    pub profiling: ProfilingPreferences,
 
     /// Snapshot of the config-owned fields (see `ConfigFile`) as last seen
     /// on disk by this instance -- either at `load()` time, or as of its own
@@ -230,6 +254,60 @@ impl BenchmarkPreferences {
     }
 }
 
+/// `[profiling]` in `config.toml`: the opt-in performance profiler (#754).
+/// Recorded aggregates live under `~/.tokensave/profile/`; see
+/// [`crate::profile`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfilingPreferences {
+    /// What is collected: `off` (the default), `light` or `detailed`.
+    #[serde(default)]
+    pub mode: crate::profile::Mode,
+    /// Operations at least this slow are counted as slow, per operation.
+    #[serde(default = "default_profiling_slow_query_ms")]
+    pub slow_query_ms: u64,
+    /// Aggregate files older than this many days are deleted at flush time.
+    #[serde(default = "default_profiling_retention_days")]
+    pub retention_days: u32,
+    /// Upper bound on the total size of `~/.tokensave/profile/`; the oldest
+    /// files are deleted first when a flush exceeds it.
+    #[serde(default = "default_profiling_max_bytes")]
+    pub max_bytes: u64,
+    /// UNIX timestamp after which `detailed` falls back to `light`, so a
+    /// temporary deep-dive cannot stay on indefinitely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detailed_expires_at: Option<i64>,
+}
+
+fn default_profiling_slow_query_ms() -> u64 {
+    50
+}
+
+fn default_profiling_retention_days() -> u32 {
+    14
+}
+
+fn default_profiling_max_bytes() -> u64 {
+    32 * 1024 * 1024
+}
+
+impl Default for ProfilingPreferences {
+    fn default() -> Self {
+        Self {
+            mode: crate::profile::Mode::Off,
+            slow_query_ms: default_profiling_slow_query_ms(),
+            retention_days: default_profiling_retention_days(),
+            max_bytes: default_profiling_max_bytes(),
+            detailed_expires_at: None,
+        }
+    }
+}
+
+impl ProfilingPreferences {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// The global resource settings in `config.toml`, as read by
 /// [`resource_preferences`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -269,9 +347,12 @@ impl Default for UserConfig {
             wildcard_permissions: false,
             manage_rules: true,
             claude_hooks: true,
+            auto_init: true,
             caveman_compatibility: false,
             cpu_usage: None,
+            state_dir: None,
             benchmark: BenchmarkPreferences::default(),
+            profiling: ProfilingPreferences::default(),
             loaded_config: Mutex::new(None),
             loaded_state: Mutex::new(None),
             loaded_legacy_state: AtomicBool::new(false),
@@ -295,13 +376,19 @@ pub(crate) struct ConfigFile {
     manage_rules: bool,
     #[serde(default = "default_true")]
     claude_hooks: bool,
+    #[serde(default = "default_true")]
+    auto_init: bool,
     #[serde(default)]
     caveman_compatibility: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cpu_usage: Option<crate::cpu::CpuUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state_dir: Option<String>,
     // Last: a TOML table has to follow the plain keys.
     #[serde(default, skip_serializing_if = "BenchmarkPreferences::is_default")]
     benchmark: BenchmarkPreferences,
+    #[serde(default, skip_serializing_if = "ProfilingPreferences::is_default")]
+    profiling: ProfilingPreferences,
 }
 
 impl ConfigFile {
@@ -314,9 +401,12 @@ impl ConfigFile {
             wildcard_permissions: c.wildcard_permissions,
             manage_rules: c.manage_rules,
             claude_hooks: c.claude_hooks,
+            auto_init: c.auto_init,
             caveman_compatibility: c.caveman_compatibility,
             cpu_usage: c.cpu_usage,
+            state_dir: c.state_dir.clone(),
             benchmark: c.benchmark,
+            profiling: c.profiling,
         }
     }
 }
@@ -800,6 +890,43 @@ pub fn resource_preferences() -> ResourcePreferences {
     })
 }
 
+/// Returns the directory holding the profiler's aggregate files:
+/// `~/.tokensave/profile/` (#754).
+pub fn profile_dir() -> Option<PathBuf> {
+    tokensave_dir().map(|d| d.join("profile"))
+}
+
+/// Reads the `[profiling]` table straight from `config.toml`, with the same
+/// lock-free, read-only semantics as [`resource_preferences`]: a missing or
+/// unparseable file yields the defaults (profiling off).
+pub fn profiling_preferences() -> ProfilingPreferences {
+    config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|contents| toml::from_str::<ConfigFile>(&contents).ok())
+        .map(|file| file.profiling)
+        .unwrap_or_default()
+}
+
+/// The `auto_init` setting in `config.toml` (#876), read without the side
+/// effects of [`UserConfig::load`]. A missing or unparseable file means the
+/// default, `true`.
+pub fn auto_init_setting() -> bool {
+    config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|contents| toml::from_str::<ConfigFile>(&contents).ok())
+        .is_none_or(|file| file.auto_init)
+}
+
+/// The `caveman_compatibility` setting in `config.toml` (#797), read without
+/// the side effects of [`UserConfig::load`]. A missing or unparseable file
+/// means the default, `false`.
+pub fn caveman_compatibility_setting() -> bool {
+    config_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|contents| toml::from_str::<ConfigFile>(&contents).ok())
+        .is_some_and(|file| file.caveman_compatibility)
+}
+
 /// Returns the path to the advisory lock guarding `config.toml`'s
 /// read-modify-write span in `save()` (see `merge_config_file`'s doc
 /// comment). A distinct sidecar path rather than locking `config.toml`
@@ -1127,9 +1254,12 @@ impl UserConfig {
             || self.wildcard_permissions != base.wildcard_permissions
             || self.manage_rules != base.manage_rules
             || self.claude_hooks != base.claude_hooks
+            || self.auto_init != base.auto_init
             || self.caveman_compatibility != base.caveman_compatibility
             || self.cpu_usage != base.cpu_usage
-            || self.benchmark != base.benchmark;
+            || self.state_dir != base.state_dir
+            || self.benchmark != base.benchmark
+            || self.profiling != base.profiling;
         if !changed && !self.loaded_legacy_state.load(Ordering::Relaxed) {
             return Ok(None);
         }
@@ -1174,6 +1304,11 @@ impl UserConfig {
             } else {
                 self.claude_hooks
             },
+            auto_init: if self.auto_init == base.auto_init {
+                on_disk.auto_init
+            } else {
+                self.auto_init
+            },
             caveman_compatibility: if self.caveman_compatibility == base.caveman_compatibility {
                 on_disk.caveman_compatibility
             } else {
@@ -1184,10 +1319,20 @@ impl UserConfig {
             } else {
                 self.cpu_usage
             },
+            state_dir: if self.state_dir == base.state_dir {
+                on_disk.state_dir
+            } else {
+                self.state_dir.clone()
+            },
             benchmark: if self.benchmark == base.benchmark {
                 on_disk.benchmark
             } else {
                 self.benchmark
+            },
+            profiling: if self.profiling == base.profiling {
+                on_disk.profiling
+            } else {
+                self.profiling
             },
         }))
     }
@@ -1314,36 +1459,41 @@ mod tests {
             wildcard_permissions: true,
             manage_rules: false,
             claude_hooks: false,
-            caveman_compatibility: false,
+            auto_init: false,
+            caveman_compatibility: true,
             cpu_usage: Some(crate::cpu::CpuUsage::Low),
+            state_dir: Some("~/tokensave-state".to_string()),
             benchmark: BenchmarkPreferences {
                 enabled: true,
                 auto_run: false,
             },
+            profiling: ProfilingPreferences::default(),
             loaded_config: Mutex::new(None),
             loaded_state: Mutex::new(None),
             loaded_legacy_state: AtomicBool::new(false),
         }
     }
 
+    /// #919: `state_dir` is read by `state_dir`, not through this struct, so
+    /// a save that rewrites `config.toml` for another preference must keep it.
     #[test]
-    fn caveman_preference_defaults_round_trips_and_preserves_concurrent_changes() {
+    fn state_dir_survives_saving_another_preference() {
         let _home = test_home();
-        assert!(!UserConfig::default().caveman_compatibility);
-        let initial = UserConfig::load();
-        assert!(!initial.caveman_compatibility);
-        assert!(initial.save());
-        let mut stale = UserConfig::load();
-        let mut changed = UserConfig::load();
-        changed.caveman_compatibility = true;
-        assert!(changed.save());
-        stale.upload_enabled = !stale.upload_enabled;
-        assert!(stale.save());
-        assert!(UserConfig::load().caveman_compatibility);
-        let persisted = std::fs::read_to_string(config_path().unwrap()).unwrap();
-        assert!(persisted.contains("caveman_compatibility = true"));
-        let state = std::fs::read_to_string(state_path().unwrap()).unwrap();
-        assert!(!state.contains("caveman_compatibility"));
+        let path = config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "state_dir = \"/srv/tokensave-state\"\n").unwrap();
+
+        let mut config = UserConfig::load();
+        assert_eq!(config.state_dir.as_deref(), Some("/srv/tokensave-state"));
+        config.manage_rules = false;
+        assert!(config.save());
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("state_dir = \"/srv/tokensave-state\""),
+            "{text}"
+        );
+        assert!(text.contains("manage_rules = false"), "{text}");
     }
 
     #[test]
@@ -1369,6 +1519,48 @@ mod tests {
         let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
         assert!(text.contains("cpu_usage = \"low\""), "{text}");
         assert!(text.contains("[benchmark]"), "{text}");
+    }
+
+    #[test]
+    fn auto_init_defaults_on_and_round_trips() {
+        let _home = test_home();
+        assert!(auto_init_setting(), "no config.toml means the default");
+        assert!(UserConfig::default().auto_init);
+
+        assert!(sample_config().save());
+        assert!(!UserConfig::load().auto_init);
+        assert!(!auto_init_setting());
+        let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
+        assert!(text.contains("auto_init = false"), "{text}");
+    }
+
+    #[test]
+    fn caveman_compatibility_defaults_off_and_round_trips() {
+        let _home = test_home();
+        assert!(!caveman_compatibility_setting(), "no config.toml means off");
+        assert!(!UserConfig::default().caveman_compatibility);
+
+        assert!(sample_config().save());
+        assert!(UserConfig::load().caveman_compatibility);
+        assert!(caveman_compatibility_setting());
+        let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
+        assert!(text.contains("caveman_compatibility = true"), "{text}");
+        let state = std::fs::read_to_string(state_path().unwrap()).unwrap();
+        assert!(!state.contains("caveman_compatibility"), "{state}");
+    }
+
+    #[test]
+    fn caveman_compatibility_survives_a_concurrent_stale_save() {
+        let _home = test_home();
+        assert!(UserConfig::load().save());
+        let stale = UserConfig::load();
+        let mut changed = UserConfig::load();
+        changed.caveman_compatibility = true;
+        assert!(changed.save());
+        let mut stale = stale;
+        stale.upload_enabled = !stale.upload_enabled;
+        assert!(stale.save());
+        assert!(UserConfig::load().caveman_compatibility);
     }
 
     #[test]
@@ -1417,6 +1609,57 @@ mod tests {
         assert!(reloaded.wildcard_permissions);
         assert!(!reloaded.benchmark.auto_run);
         assert_eq!(reloaded.cpu_usage, Some(crate::cpu::CpuUsage::Performance));
+    }
+
+    #[test]
+    fn profiling_preferences_default_off_and_are_not_written() {
+        let _home = test_home();
+        assert_eq!(profiling_preferences(), ProfilingPreferences::default());
+        assert_eq!(profiling_preferences().mode, crate::profile::Mode::Off);
+        assert!(UserConfig::default().save());
+        let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
+        assert!(!text.contains("profiling"), "{text}");
+    }
+
+    #[test]
+    fn profiling_preferences_round_trip() {
+        let _home = test_home();
+        let mut config = UserConfig::default();
+        config.profiling.mode = crate::profile::Mode::Detailed;
+        config.profiling.slow_query_ms = 20;
+        config.profiling.detailed_expires_at = Some(1_700_000_000);
+        assert!(config.save());
+        let text = std::fs::read_to_string(config_path().unwrap()).unwrap();
+        assert!(text.contains("[profiling]"), "{text}");
+        assert!(text.contains("mode = \"detailed\""), "{text}");
+        assert_eq!(UserConfig::load().profiling, config.profiling);
+        assert_eq!(profiling_preferences(), config.profiling);
+    }
+
+    #[test]
+    fn concurrent_profiling_change_survives_unrelated_save() {
+        let _home = test_home();
+        assert!(UserConfig::default().save());
+        let mut stale = UserConfig::load();
+
+        let mut other = UserConfig::load();
+        other.profiling.mode = crate::profile::Mode::Light;
+        assert!(other.save());
+
+        stale.wildcard_permissions = true;
+        assert!(stale.save());
+
+        let reloaded = UserConfig::load();
+        assert!(reloaded.wildcard_permissions);
+        assert_eq!(reloaded.profiling.mode, crate::profile::Mode::Light);
+    }
+
+    #[test]
+    fn profiling_consent_is_independent_of_counter_upload() {
+        let _home = test_home();
+        let config = UserConfig::default();
+        assert!(config.upload_enabled);
+        assert_eq!(config.profiling.mode, crate::profile::Mode::Off);
     }
 
     #[test]
@@ -2223,7 +2466,7 @@ wildcard_permissions = true # managed in dotfiles\n";
         if let Some(parent) = config_p.parent() {
             std::fs::create_dir_all(parent).expect("create tokensave dir");
         }
-        let corrupt_bytes: &[u8] = &[b'w', b'p', b'=', 0xFF, 0xFE, b'x'];
+        let corrupt_bytes: &[u8] = &[b'w', b'p', b'=', 0xff, 0xfe, b'x'];
         std::fs::write(&config_p, corrupt_bytes).expect("seed invalid-UTF-8 config.toml");
 
         let loaded = UserConfig::load();
@@ -2285,7 +2528,7 @@ wildcard_permissions = true # managed in dotfiles\n";
         if let Some(parent) = state_p.parent() {
             std::fs::create_dir_all(parent).expect("create tokensave dir");
         }
-        let corrupt_bytes: &[u8] = &[b'p', b'u', b'=', 0xFF, 0xFE, b'x'];
+        let corrupt_bytes: &[u8] = &[b'p', b'u', b'=', 0xff, 0xfe, b'x'];
         std::fs::write(&state_p, corrupt_bytes).expect("seed invalid-UTF-8 state.toml");
 
         let loaded = UserConfig::load();

@@ -21,9 +21,12 @@ concurrency:
 
 jobs:
   star-history:
+    # Only the upstream repository; forks would otherwise run this daily
+    # with `contents: write`.
+    if: github.repository == 'aovestdipaperino/tokensave'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: narayann7/star-history-action@29310fc87122228fe128d811f14027be3ca99601 # v1.0.3
         with:
           # Since ~2026-07-15 GitHub also blocks the Actions installation
