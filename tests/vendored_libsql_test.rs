@@ -112,11 +112,17 @@ fn vendored_libsql_matches_the_requested_version() {
         return;
     }
 
+    // Accept both `libsql = "<version>"` and the table form
+    // `libsql = { version = "<version>", ... }`.
     let requested = ours
         .lines()
-        .find_map(|line| line.strip_prefix("libsql = \""))
+        .find_map(|line| line.strip_prefix("libsql = "))
+        .and_then(|rest| {
+            rest.strip_prefix('"')
+                .or_else(|| rest.split_once("version = \"").map(|(_, version)| version))
+        })
         .and_then(|rest| rest.split('"').next())
-        .expect("Cargo.toml declares `libsql = \"<version>\"`");
+        .expect("Cargo.toml declares the libsql version as a string or `version = \"<version>\"`");
 
     let vendored = read_lf(&repo_root().join("vendor").join("libsql").join("Cargo.toml"))
         .expect("read vendor/libsql/Cargo.toml");
