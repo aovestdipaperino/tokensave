@@ -5,9 +5,10 @@
 - **Branches audited:** `master` at `251a055` and `beta` at `cf03ec1`. Except
   where a finding is marked *beta only*, the audited code is the same on both
   branches. This file is kept identical on both.
-- **Toolchains:** Rust 1.98.1 on `master` and Rust 1.99.0 on `beta`, each
-  pinned in `rust-toolchain.toml`. Both use edition 2021 and the default
-  `panic = "unwind"` in every profile.
+- **Toolchains:** Rust 1.98.1 on `master` and Rust 1.99.0 on `beta` at the
+  time of the audit, each pinned in `rust-toolchain.toml`. `master` has since
+  moved to 1.99.0 (#957), so both branches now pin 1.99.0. Both use edition
+  2021 and the default `panic = "unwind"` in every profile.
 - **Background:** Microsoft FORGE Lab,
   [*Memory Safety Bugs in Rust Standard Library*](https://forge-blog.github.io/posts/rust-std-memory-safety/)
 
@@ -31,7 +32,7 @@ TokenSave or its dependencies are sound.
 | Pattern 1, panic safety | No partially initialized state is visible during unwinding. `safe_extract` is the only `catch_unwind`. No actionable finding. |
 | Pattern 2, untrusted trait implementations | No `unsafe` code depends on a trait implementation's result. The one custom `Ord` is a total order. No actionable finding. |
 | Pattern 3, OS and process state | **One confirmed test-only defect, fixed on both branches:** `tests/incremental_resolution_test.rs` mutated `TOKENSAVE_FULL_RESOLVE` while sibling tests synced concurrently. Production code never mutates the environment. |
-| Upstream Rust issues in the article | None reachable from TokenSave code. #161018 is unfixed in master's pinned 1.98.1, but TokenSave never triggers it. Beta's 1.99.0 includes the fix. Details are in the [table below](#upstream-rust-issues). |
+| Upstream Rust issues in the article | None reachable from TokenSave code. Both branches pin Rust 1.99.0, which includes the #161018 fix; TokenSave never triggered it before the fix either. Details are in the [table below](#upstream-rust-issues). |
 
 ## Inventory of `unsafe` code
 
@@ -186,10 +187,10 @@ serialized.
 |---|---|---|---|---|
 | [#156501](https://github.com/rust-lang/rust/issues/156501) | 1 | `Iterator::map_windows` clone (nightly feature) | closed 2026-06 | **Not applicable.** Nightly-only, not used. |
 | [#156490](https://github.com/rust-lang/rust/issues/156490), #159334, #159368, #159370 | 1 | Allocation-dependent collections with an unwinding allocator | open / various | **Not applicable.** Default global allocator, which aborts on failure. No `allocator_api`. |
-| [#156491](https://github.com/rust-lang/rust/issues/156491) | 2 | `str::replace` with a custom `Pattern` | 1.97.0 (PR #156556) | **Not applicable.** `Pattern` cannot be implemented on stable. The pinned 1.98.1 includes the fix. |
+| [#156491](https://github.com/rust-lang/rust/issues/156491) | 2 | `str::replace` with a custom `Pattern` | 1.97.0 (PR #156556) | **Not applicable.** `Pattern` cannot be implemented on stable. The pinned 1.99.0 includes the fix. |
 | #158265, #165076, #164904 | 2 | `Pattern` searchers (`strip_prefix`, `split_once`, `split`) | open | **Not applicable.** Only the standard pattern types are used. |
-| [PR #155708](https://github.com/rust-lang/rust/pull/155708) (`Borrow`/`join` family, CVE-2020-36323) | 2 | `[T]::join` with a misbehaving `Borrow` | 1.97.0 | **Not applicable.** No custom `Borrow`. `join` is used on `String` and `&str`. The pinned 1.98.1 includes the fix. |
-| [#161018](https://github.com/rust-lang/rust/issues/161018) | 3 | `process::exit` from a non-main thread unmaps the main thread's alternate signal stack (Unix) | 1.99.0 (PR #161037) | **Not reachable.** Master's pinned 1.98.1 does **not** include the fix, but TokenSave calls `exit` only from the main thread. Recheck this if `exit` is ever called from a spawned thread or a blocking task. Beta's pinned 1.99.0 includes the fix. |
+| [PR #155708](https://github.com/rust-lang/rust/pull/155708) (`Borrow`/`join` family, CVE-2020-36323) | 2 | `[T]::join` with a misbehaving `Borrow` | 1.97.0 | **Not applicable.** No custom `Borrow`. `join` is used on `String` and `&str`. The pinned 1.99.0 includes the fix. |
+| [#161018](https://github.com/rust-lang/rust/issues/161018) | 3 | `process::exit` from a non-main thread unmaps the main thread's alternate signal stack (Unix) | 1.99.0 (PR #161037) | **Fixed in the pinned toolchain.** Both branches pin 1.99.0, which includes the fix; `master` moved from 1.98.1 to 1.99.0 in #957. It was not reachable before that either, because TokenSave calls `exit` only from the main thread. Keep that rule: it is still required by `AGENTS.md` and also avoids #164243 below. |
 | [#156951](https://github.com/rust-lang/rust/issues/156951) | 3 | `CommandExt::exec` writes `environ` under a read lock (Unix) | open (PR #157144) | **Not applicable.** No `exec`. |
 | [#164243](https://github.com/rust-lang/rust/issues/164243) | 3 | `process::exit` while a thread-local is in an inconsistent state (double free) | open (PR #165125) | **Not reachable.** It requires calling `exit` from inside a thread-local mutation or a `Drop` that runs during one. TokenSave's thread-locals in `src/profile/` hold plain values and `RefCell` contexts, and nothing in their scope calls `exit`. |
 
@@ -209,8 +210,6 @@ serialized.
 
 - Add a scheduled RustSec advisory check (`cargo audit` or
   `cargo deny check advisories`) to CI.
-- When master's pinned toolchain moves to 1.99 or later, record that #161018
-  is fixed there. Until then, keep `process::exit` on the main thread.
 - Consider fuzzing the vendored grammars, or running them under sanitizers on
   a Linux CI job, as a separate evaluation.
 

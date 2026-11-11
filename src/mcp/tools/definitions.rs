@@ -3042,28 +3042,43 @@ fn def_call_chain() -> ToolDefinition {
     def(
         "tokensave_call_chain",
         "Call Chain",
-        "Find the shortest directed call chain between two symbols, following \
-         only outgoing `calls` edges. Returns the ordered sequence of nodes \
-         and edges that connect `from_id` to `to_id`, or a not-found result. \
-         Use `tokensave_search` or `tokensave_by_qualified_name` first to \
-         resolve symbol names into node IDs.",
+        "Find the shortest path between two symbols. Name each end by symbol \
+         (`from`, `to`) or by node ID (`from_id`, `to_id`). By default the \
+         path is a directed call chain: only outgoing `calls` edges. With \
+         `follow: \"any\"` it is the shortest connection over every edge \
+         kind in either direction, and each step reports `edge_direction`. \
+         Returns the ordered nodes and edges, or a not-found result. A name \
+         that matches several symbols is not guessed: the candidates are \
+         listed for a re-call by node ID.",
         json!({
             "type": "object",
             "properties": {
+                "from": {
+                    "type": "string",
+                    "description": "Symbol name of the start (the caller end), e.g. 'RefreshAsync' or 'Coordinator::RefreshAsync'. Must match one symbol."
+                },
+                "to": {
+                    "type": "string",
+                    "description": "Symbol name of the end (the callee end). Must match one symbol."
+                },
                 "from_id": {
                     "type": "string",
-                    "description": "Source node ID (the caller end of the chain)."
+                    "description": "Start node ID. Takes precedence over `from`."
                 },
                 "to_id": {
                     "type": "string",
-                    "description": "Target node ID (the callee end of the chain)."
+                    "description": "End node ID. Takes precedence over `to`."
+                },
+                "follow": {
+                    "type": "string",
+                    "enum": ["calls", "any"],
+                    "description": "calls (default): outgoing `calls` edges only, a chain of execution. any: every edge kind in either direction, for how two symbols are connected."
                 },
                 "max_depth": {
                     "type": "number",
-                    "description": "Maximum BFS depth (default: 8, max: 20)."
+                    "description": "Maximum path length in edges (default: 8, max: 20)."
                 }
-            },
-            "required": ["from_id", "to_id"]
+            }
         }),
     )
 }
