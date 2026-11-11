@@ -354,7 +354,11 @@ fn extract_zip(data: &[u8], bin_name: &str, dest: &Path) -> Result<()> {
         let name = file.name().map_err(|e| TokenSaveError::Config {
             message: format!("zip entry name error: {e}"),
         })?;
-        if Path::new(name.as_ref()).file_name().and_then(|n| n.to_str()) == Some(bin_name) {
+        if Path::new(name.as_ref())
+            .file_name()
+            .and_then(|n| n.to_str())
+            == Some(bin_name)
+        {
             let mut out = std::fs::File::create(dest).map_err(io_err("create temp file failed"))?;
             std::io::copy(&mut file, &mut out).map_err(io_err("extract failed"))?;
             return Ok(());
