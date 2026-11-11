@@ -13,6 +13,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Added
 
+- **Traversal tools show how each edge was resolved (Refs #962).** `tokensave_callers`, `tokensave_callees` and `tokensave_call_chain` add `resolved_by` (the resolver path, such as `exact-match` or `simple-name-match`) and `resolved_exact` to each item. `resolved_exact` is `false` when the resolver picked the target by name alone. When a relationship has several call sites, the strongest provenance is reported. `tokensave_impact` adds `heuristic_edge_count`. The fields come from the stored `edges.resolved_by` column; there is no schema change and no reindex. Edges without a resolver path keep their previous output.
 - **Project state can live outside the repository (Refs #919).**
   - Set `TOKENSAVE_STATE_DIR`, or `state_dir` in `~/.tokensave/config.toml` (the variable wins; empty selects the default). Each project then keeps its state in `<base>/projects/<name>-<hash>/`, with `beta/` beneath it for prerelease builds.
   - `<hash>` comes from the root's canonical path, so linked worktrees get separate directories.

@@ -89,6 +89,8 @@ and not a fallback to a parent branch's index).
 | `tokensave_rename` | Graph-based rename: every site with a confidence class (`exact`, `heuristic`, `ambiguous`, `text_only`), a diff preview, and an all-or-nothing apply. Not binding-aware |
 | `tokensave_hotspots` | Most connected symbols (highest call count) |
 
+**Edge provenance.** `tokensave_callers`, `tokensave_callees` and `tokensave_call_chain` show how the resolver bound each edge they return. `resolved_by` names the resolver path, for example `exact-match`, `qualified-match` or `simple-name-match`. `resolved_exact` is `false` when the resolver picked the target by name alone, so a symbol of the same name elsewhere could be the real target; read the call site before you rely on such an edge. When one function reaches a target from several call sites, the strongest provenance is reported. Both fields are absent for an edge that an extractor read directly from the syntax tree. `tokensave_impact` reports `heuristic_edge_count`: the number of edges in the radius with `resolved_exact: false`.
+
 ### Code Quality
 
 | Tool | Purpose |

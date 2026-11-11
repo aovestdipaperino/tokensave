@@ -70,6 +70,7 @@ mod dockerfile_extraction_test;
 mod docs_discovery_test;
 mod droid_agent_test;
 mod edge_audit_test;
+mod edge_provenance_output_test;
 mod elixir_extraction_test;
 mod env_var_namespace_test;
 mod extract_worker_test;

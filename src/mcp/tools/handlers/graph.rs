@@ -12,7 +12,7 @@ use crate::context::format_context_as_markdown;
 use crate::cpu::CpuUsage;
 use crate::errors::{Result, TokenSaveError};
 use crate::tokensave::TokenSave;
-use crate::types::{BuildContextOptions, EdgeKind, Node, NodeKind, Visibility};
+use crate::types::{BuildContextOptions, Edge, EdgeKind, Node, NodeKind, ResolvedBy, Visibility};
 
 use super::super::ToolResult;
 use super::symbol_target::{self, KindRanking, Target};
@@ -1003,6 +1003,56 @@ pub(super) async fn handle_callers(
     })
 }
 
+/// Source, target and kind of an edge: one relationship, whatever its line.
+type EdgePair = (String, String, EdgeKind);
+
+/// The strongest provenance among `edges` for each relationship.
+///
+/// One function can reach one target from several call sites, and the
+/// resolver binds each site on its own. The relationship is as well
+/// established as its best site, so that site's provenance is reported.
+fn strongest_provenance(edges: &[Edge]) -> HashMap<EdgePair, Option<ResolvedBy>> {
+    let mut best: HashMap<EdgePair, &Edge> = HashMap::new();
+    for edge in edges {
+        best.entry((edge.source.clone(), edge.target.clone(), edge.kind))
+            .and_modify(|kept| {
+                if edge.provenance_key() < kept.provenance_key() {
+                    *kept = edge;
+                }
+            })
+            .or_insert(edge);
+    }
+    best.into_iter()
+        .map(|(pair, edge)| (pair, edge.resolved_by))
+        .collect()
+}
+
+/// The provenance to report for `edge`: the strongest that `strongest` holds
+/// for its relationship, else the edge's own.
+fn reported_provenance(
+    strongest: &HashMap<EdgePair, Option<ResolvedBy>>,
+    edge: &Edge,
+) -> Option<ResolvedBy> {
+    strongest
+        .get(&(edge.source.clone(), edge.target.clone(), edge.kind))
+        .copied()
+        .unwrap_or(edge.resolved_by)
+}
+
+/// Adds `resolved_by` and `resolved_exact` to a result item (#544).
+///
+/// `resolved_by` names the resolver path that bound the edge.
+/// `resolved_exact` is false when a symbol of the same name elsewhere could
+/// be the real target. Both are left out for an edge that an extractor read
+/// directly from the syntax tree, which has no resolver path.
+fn insert_provenance(item: &mut Value, resolved_by: Option<ResolvedBy>) {
+    let (Some(resolved_by), Some(fields)) = (resolved_by, item.as_object_mut()) else {
+        return;
+    };
+    fields.insert("resolved_by".to_string(), json!(resolved_by.as_str()));
+    fields.insert("resolved_exact".to_string(), json!(resolved_by.is_exact()));
+}
+
 /// Today's single-node list output: the bare array when it fits `limit`,
 /// otherwise `{count, total, truncated, <key>: [...]}` (#669).
 fn single_node_list(key: &str, items: Vec<Value>, limit: usize) -> (Value, Vec<String>) {
@@ -1094,9 +1144,12 @@ async fn caller_items_for(
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
-    let mut call_lines: HashMap<(String, String, EdgeKind), Vec<u32>> = HashMap::new();
+    let mut call_lines: HashMap<EdgePair, Vec<u32>> = HashMap::new();
+    let mut strongest: HashMap<EdgePair, Option<ResolvedBy>> = HashMap::new();
     if !reached_targets.is_empty() {
-        for e in cg.get_incoming_edges_bulk(&reached_targets, &[]).await? {
+        let site_edges = cg.get_incoming_edges_bulk(&reached_targets, &[]).await?;
+        strongest = strongest_provenance(&site_edges);
+        for e in site_edges {
             if let Some(line) = e.line {
                 call_lines
                     .entry((e.source, e.target, e.kind))
@@ -1120,7 +1173,7 @@ async fn caller_items_for(
             lines.push(line);
             lines.sort_unstable();
             lines.dedup();
-            json!({
+            let mut item = json!({
                 "node_id": node.id,
                 "name": node.name,
                 "kind": node.kind.as_str(),
@@ -1139,7 +1192,9 @@ async fn caller_items_for(
                 "edge_kind": edge.kind.as_str(),
                 "dispatch_via_trait": dispatch_from.is_some(),
                 "dispatch_from": dispatch_from,
-            })
+            });
+            insert_provenance(&mut item, reported_provenance(&strongest, edge));
+            item
         })
         .collect())
 }
@@ -1236,10 +1291,18 @@ async fn callee_items_for(
     let results = cg.get_callees(node_id, max_depth).await?;
     let mut seen: HashSet<String> = results.iter().map(|(n, _)| n.id.clone()).collect();
 
+    // The traversal keeps one edge per callee, but the graph stores one edge
+    // per call site. Fetch the edges among the start node and its callees, so
+    // each callee reports the strongest provenance of its sites.
+    let mut reached: Vec<String> = Vec::with_capacity(results.len() + 1);
+    reached.push(node_id.to_string());
+    reached.extend(results.iter().map(|(n, _)| n.id.clone()));
+    let strongest = strongest_provenance(&cg.get_internal_edges(&reached).await?);
+
     let mut items: Vec<Value> = results
         .iter()
         .map(|(node, edge)| {
-            json!({
+            let mut item = json!({
                 "node_id": node.id,
                 "name": node.name,
                 "kind": node.kind.as_str(),
@@ -1248,7 +1311,9 @@ async fn callee_items_for(
                 "end_line": super::display_line(node.end_line),
                 "edge_kind": edge.kind.as_str(),
                 "dispatch_via_trait": false,
-            })
+            });
+            insert_provenance(&mut item, reported_provenance(&strongest, edge));
+            item
         })
         .collect();
 
@@ -1357,17 +1422,25 @@ pub(super) async fn handle_call_chain(cg: &TokenSave, args: Value) -> Result<Too
     let path = cg.get_call_chain(from_id, to_id, max_depth).await?;
     let (touched_files, body) = if let Some(steps) = path {
         let files = unique_file_paths(steps.iter().map(|(n, _)| n.file_path.as_str()));
+        // A step can have several call sites; report the strongest (see
+        // `strongest_provenance`).
+        let step_ids: Vec<String> = steps.iter().map(|(n, _)| n.id.clone()).collect();
+        let strongest = strongest_provenance(&cg.get_internal_edges(&step_ids).await?);
         let items: Vec<Value> = steps
             .iter()
             .map(|(n, edge)| {
-                json!({
+                let mut item = json!({
                     "id": n.id,
                     "name": n.name,
                     "kind": n.kind.as_str(),
                     "file": n.file_path,
                     "line": super::display_line(n.start_line),
                     "edge_kind": edge.as_ref().map(|e| e.kind.as_str()),
-                })
+                });
+                if let Some(edge) = edge {
+                    insert_provenance(&mut item, reported_provenance(&strongest, edge));
+                }
+                item
             })
             .collect();
         (
@@ -1482,6 +1555,9 @@ async fn impact_body(
     // a single node's count is the traversal's, as before.
     let mut edge_keys: HashSet<(String, String, EdgeKind, Option<u32>)> = HashSet::new();
     let mut edge_count = 0usize;
+    // Edges of the radius that the resolver bound by name alone (#544): a
+    // symbol of the same name elsewhere could be the real target.
+    let mut heuristic_edge_count = 0usize;
     for node_id in node_ids {
         let subgraph = cg.get_impact_radius(node_id, max_depth).await?;
         for n in subgraph.nodes {
@@ -1490,8 +1566,10 @@ async fn impact_body(
             }
         }
         for e in subgraph.edges {
+            let heuristic = e.resolved_by.is_some_and(|r| !r.is_exact());
             if node_ids.len() == 1 || edge_keys.insert((e.source, e.target, e.kind, e.line)) {
                 edge_count += 1;
+                heuristic_edge_count += usize::from(heuristic);
             }
         }
     }
@@ -1513,6 +1591,10 @@ async fn impact_body(
     let mut body = serde_json::Map::new();
     body.insert("node_count".to_string(), json!(nodes.len()));
     body.insert("edge_count".to_string(), json!(edge_count));
+    body.insert(
+        "heuristic_edge_count".to_string(),
+        json!(heuristic_edge_count),
+    );
     body.extend(symbol_target::capped_list("nodes", items, limit));
     Ok(body)
 }
