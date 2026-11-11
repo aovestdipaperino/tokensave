@@ -199,10 +199,6 @@ fn slim_blocks_continuations_and_embedded_ruby() {
 #[tokio::test]
 async fn templates_resolve_calls_to_ruby_helpers() {
     use tokensave::resolution::ReferenceResolver;
-    let dir = tempfile::tempdir().unwrap();
-    let (db, _) = tokensave::db::Database::initialize(&dir.path().join("test.db"))
-        .await
-        .unwrap();
     let ruby = RubyExtractor.extract("helpers.rb", "def template_helper\nend\n");
     for (path, source) in [
         ("view.erb", "<%= template_helper() %>"),
@@ -211,7 +207,7 @@ async fn templates_resolve_calls_to_ruby_helpers() {
         let template = extract(path, source);
         let mut nodes = ruby.nodes.clone();
         nodes.extend(template.nodes);
-        let resolver = ReferenceResolver::from_nodes(&db, &nodes);
+        let resolver = ReferenceResolver::from_nodes(&nodes);
         let resolved = resolver.resolve_all(&template.unresolved_refs);
         assert!(resolved
             .resolved
@@ -462,17 +458,13 @@ async fn resolve_template(
     template: (&str, &str),
 ) -> (Vec<tokensave::types::Node>, Vec<(String, String)>) {
     use tokensave::resolution::ReferenceResolver;
-    let dir = tempfile::tempdir().unwrap();
-    let (db, _) = tokensave::db::Database::initialize(&dir.path().join("test.db"))
-        .await
-        .unwrap();
     let mut nodes = Vec::new();
     for (path, source) in ruby {
         nodes.extend(RubyExtractor.extract(path, source).nodes);
     }
     let extracted = extract(template.0, template.1);
     nodes.extend(extracted.nodes.clone());
-    let resolver = ReferenceResolver::from_nodes(&db, &nodes);
+    let resolver = ReferenceResolver::from_nodes(&nodes);
     let resolution = resolver.resolve_all(&extracted.unresolved_refs);
     let edges = resolution
         .resolved
