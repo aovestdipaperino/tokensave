@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
+use std::path::PathBuf;
 #[cfg(feature = "test-transport")]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -478,6 +479,9 @@ pub struct McpServer {
     last_flush_at: AtomicI64,
     /// User-level database tracking all projects (best-effort).
     global_db: Option<GlobalDb>,
+    /// Explicit global database path used by isolated test servers.
+    #[cfg(feature = "test-transport")]
+    global_db_path_override: Option<PathBuf>,
     /// Initialized projects sitting directly beside the served root, snapshotted
     /// at startup and named in the `initialize` instructions so a session knows
     /// which other graphs `graph_root` can reach (#375).
@@ -724,7 +728,34 @@ impl McpServer {
     /// `packages/*/target`) drove unbounded event traffic and `FileId`
     /// cache growth.
     pub async fn new(cg: TokenSave, scope_prefix: Option<String>) -> Arc<Self> {
-        Self::new_inner(Some(cg), scope_prefix, true, Vec::new()).await
+        Self::new_inner(Some(cg), scope_prefix, true, Vec::new(), None).await
+    }
+
+    /// Creates a server with an isolated global database path for tests.
+    #[cfg(feature = "test-transport")]
+    pub async fn new_with_global_db_path(
+        cg: TokenSave,
+        scope_prefix: Option<String>,
+        global_db_path: PathBuf,
+    ) -> Arc<Self> {
+        Self::new_inner(
+            Some(cg),
+            scope_prefix,
+            true,
+            Vec::new(),
+            Some(global_db_path),
+        )
+        .await
+    }
+
+    /// Reads savings from the server's injected global database in tests.
+    #[cfg(feature = "test-transport")]
+    pub async fn global_savings_for_test(
+        &self,
+        project: &str,
+    ) -> Option<crate::global_db::SavingsTotal> {
+        let global_db = self.global_db.as_ref()?;
+        Some(global_db.sum_savings(Some(project), 0).await)
     }
 
     /// A server with no default project (#606), for a `serve` that resolved
@@ -740,7 +771,7 @@ impl McpServer {
     /// `registered_projects` are the registered projects whose index exists,
     /// as `serve` already probed them; the server does not probe them again.
     pub async fn new_without_project(registered_projects: Vec<String>) -> Arc<Self> {
-        Self::new_inner(None, None, false, registered_projects).await
+        Self::new_inner(None, None, false, registered_projects, None).await
     }
 
     /// [`Self::new`] for a server whose project root was named explicitly
@@ -751,7 +782,7 @@ impl McpServer {
     /// suppressed; its "run `tokensave init` here" remedy is wrong for a
     /// deliberate cross-repo serve (#201).
     pub async fn new_explicit_root(cg: TokenSave, scope_prefix: Option<String>) -> Arc<Self> {
-        Self::new_inner(Some(cg), scope_prefix, false, Vec::new()).await
+        Self::new_inner(Some(cg), scope_prefix, false, Vec::new(), None).await
     }
 
     async fn new_inner(
@@ -759,6 +790,7 @@ impl McpServer {
         scope_prefix: Option<String>,
         check_worktree_mismatch: bool,
         registered_projects: Vec<String>,
+        global_db_path_override: Option<PathBuf>,
     ) -> Arc<Self> {
         // The DB stores `/`-separated paths on every platform, but the scope
         // prefix is derived from an OS path, so on Windows it arrives with
@@ -812,7 +844,10 @@ impl McpServer {
             Some(cg) => cg.get_tokens_saved().await.unwrap_or(0),
             None => 0,
         };
-        let global_db = GlobalDb::open().await;
+        let global_db = match global_db_path_override.as_ref() {
+            Some(path) => GlobalDb::open_at(path).await,
+            None => GlobalDb::open().await,
+        };
         // Register this project in the global DB with its current tokens
         let mut sibling_projects = Vec::new();
         if let (Some(gdb), Some(cg)) = (global_db.as_ref(), cg.as_ref()) {
@@ -859,6 +894,8 @@ impl McpServer {
             last_flushed_tokens: AtomicU64::new(persisted),
             last_flush_at: AtomicI64::new(0),
             global_db,
+            #[cfg(feature = "test-transport")]
+            global_db_path_override,
             sibling_projects,
             session_state: SessionState::new(),
             version_cache: std::sync::Mutex::new(VersionCheckState {
@@ -3720,10 +3757,19 @@ impl McpServer {
                         self.accounting_tasks_pending.fetch_add(1, Ordering::AcqRel);
                         Arc::clone(&self.accounting_tasks_pending)
                     };
+                    #[cfg(feature = "test-transport")]
+                    let global_db_path_override = self.global_db_path_override.clone();
                     tokio::spawn(async move {
                         #[cfg(feature = "test-transport")]
                         let _guard = AccountingTaskGuard(accounting_tasks_pending);
-                        if let Some(gdb) = crate::global_db::GlobalDb::open().await {
+                        #[cfg(feature = "test-transport")]
+                        let global_db = match global_db_path_override.as_ref() {
+                            Some(path) => crate::global_db::GlobalDb::open_at(path).await,
+                            None => crate::global_db::GlobalDb::open().await,
+                        };
+                        #[cfg(not(feature = "test-transport"))]
+                        let global_db = crate::global_db::GlobalDb::open().await;
+                        if let Some(gdb) = global_db {
                             gdb.record_savings(
                                 &project_path_str,
                                 &tool_name_owned,
