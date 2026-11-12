@@ -21,6 +21,32 @@ pub struct PathSearch {
     /// `None`, and that means "not found within the budget", not "no path
     /// exists".
     pub budget_exhausted: bool,
+    /// The number of nodes whose edges the search read.
+    pub expanded: usize,
+}
+
+/// One end of a search that runs from both ends of a path.
+struct SearchSide {
+    /// Nodes reached in the last level, not yet expanded.
+    frontier: Vec<String>,
+    /// The number of levels expanded.
+    depth: usize,
+    /// Edges from this side's end to each node it reached.
+    distance: std::collections::HashMap<String, usize>,
+    /// For each node reached: the node it was reached from, one step nearer
+    /// to this side's end, and the edge between them.
+    parent: std::collections::HashMap<String, (String, Edge)>,
+}
+
+impl SearchSide {
+    fn new(end_id: &str) -> Self {
+        Self {
+            frontier: vec![end_id.to_string()],
+            depth: 0,
+            distance: std::collections::HashMap::from([(end_id.to_string(), 0)]),
+            parent: std::collections::HashMap::new(),
+        }
+    }
 }
 
 /// Reported to the profiler as a path is: one row when found, else none.
@@ -844,6 +870,12 @@ impl<'a> GraphTraverser<'a> {
     }
 
     /// Unprofiled body of [`Self::find_path_bounded`].
+    ///
+    /// The search runs from both ends and expands one whole level at a time,
+    /// always on the side with the smaller frontier. A search from one end
+    /// reads every node within the path length of the start; two searches
+    /// that meet in the middle each go half as far, and so read far fewer
+    /// nodes for the same path.
     async fn find_path_bounded_unprofiled(
         &self,
         from_id: &str,
@@ -863,77 +895,99 @@ impl<'a> GraphTraverser<'a> {
             return Ok(PathSearch {
                 path,
                 budget_exhausted: false,
+                expanded: 0,
             });
         }
 
-        // BFS: track parent info for path reconstruction.
-        // parent_map: child_id -> (parent_id, edge_used)
-        let mut parent_map: std::collections::HashMap<String, (String, Edge)> =
-            std::collections::HashMap::new();
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-
-        visited.insert(from_id.to_string());
-        queue.push_back((from_id.to_string(), 0));
-
-        let mut found = false;
+        let mut from_side = SearchSide::new(from_id);
+        let mut to_side = SearchSide::new(to_id);
         let mut expanded = 0usize;
-        let mut budget_exhausted = false;
+        let not_found = |budget_exhausted: bool, expanded: usize| PathSearch {
+            path: None,
+            budget_exhausted,
+            expanded,
+        };
 
-        'search: while let Some((current_id, depth)) = queue.pop_front() {
-            if depth >= max_depth {
-                continue;
+        // The node where the two sides met on the shortest path so far, with
+        // that path's length in edges.
+        let mut meeting: Option<(String, usize)> = None;
+        while meeting.is_none() {
+            // A side with nothing left to expand has read its whole
+            // component, and the other end is not in it.
+            if from_side.frontier.is_empty() || to_side.frontier.is_empty() {
+                return Ok(not_found(false, expanded));
             }
-            if expanded >= max_expanded {
-                budget_exhausted = true;
-                break;
+            // Every path still to be found is longer than the two depths
+            // together.
+            if from_side.depth + to_side.depth >= max_depth {
+                return Ok(not_found(false, expanded));
             }
-            expanded += 1;
-
-            // Outgoing edges first, then incoming: the neighbor of an
-            // outgoing edge is its target, of an incoming edge its source.
-            let outgoing = self.db.get_outgoing_edges(&current_id, edge_kinds).await?;
-            let incoming = self.db.get_incoming_edges(&current_id, edge_kinds).await?;
-            let neighbors = outgoing
-                .into_iter()
-                .map(|edge| (edge.target.clone(), edge))
-                .chain(incoming.into_iter().map(|edge| (edge.source.clone(), edge)));
-            for (neighbor, edge) in neighbors {
-                if !visited.insert(neighbor.clone()) {
-                    continue;
-                }
-                let is_target = neighbor == to_id;
-                parent_map.insert(neighbor.clone(), (current_id.clone(), edge));
-                if is_target {
-                    found = true;
-                    break 'search;
-                }
-                queue.push_back((neighbor, depth + 1));
-            }
-        }
-
-        if !found {
-            return Ok(PathSearch {
-                path: None,
-                budget_exhausted,
-            });
-        }
-
-        // Reconstruct path from to_id back to from_id.
-        let mut path_ids: Vec<(String, Option<Edge>)> = Vec::new();
-        let mut current = to_id.to_string();
-        while current != from_id {
-            let Some((parent, edge)) = parent_map.remove(&current) else {
-                return Ok(PathSearch {
-                    path: None,
-                    budget_exhausted: false,
-                });
+            let (side, other) = if from_side.frontier.len() <= to_side.frontier.len() {
+                (&mut from_side, &to_side)
+            } else {
+                (&mut to_side, &from_side)
             };
+
+            // Expand the whole level before the search stops: the first
+            // meeting is not always on the shortest path, but the shortest
+            // of one level's meetings is.
+            let level = std::mem::take(&mut side.frontier);
+            for current_id in level {
+                if expanded >= max_expanded {
+                    return Ok(not_found(true, expanded));
+                }
+                expanded += 1;
+
+                // The neighbor of an outgoing edge is its target, of an
+                // incoming edge its source.
+                let outgoing = self.db.get_outgoing_edges(&current_id, edge_kinds).await?;
+                let incoming = self.db.get_incoming_edges(&current_id, edge_kinds).await?;
+                let neighbors = outgoing
+                    .into_iter()
+                    .map(|edge| (edge.target.clone(), edge))
+                    .chain(incoming.into_iter().map(|edge| (edge.source.clone(), edge)));
+                for (neighbor, edge) in neighbors {
+                    if side.distance.contains_key(&neighbor) {
+                        continue;
+                    }
+                    let distance = side.depth + 1;
+                    side.distance.insert(neighbor.clone(), distance);
+                    side.parent
+                        .insert(neighbor.clone(), (current_id.clone(), edge));
+                    if let Some(other_distance) = other.distance.get(&neighbor) {
+                        let length = distance + other_distance;
+                        if meeting.as_ref().is_none_or(|(_, best)| length < *best) {
+                            meeting = Some((neighbor.clone(), length));
+                        }
+                    }
+                    side.frontier.push(neighbor);
+                }
+            }
+            side.depth += 1;
+        }
+        let Some((meeting_id, length)) = meeting else {
+            return Ok(not_found(false, expanded));
+        };
+        if length > max_depth {
+            return Ok(not_found(false, expanded));
+        }
+
+        // From the meeting node back to the start, then reversed: each step
+        // carries the edge that leads to it from the step before.
+        let mut path_ids: Vec<(String, Option<Edge>)> = Vec::new();
+        let mut current = meeting_id.clone();
+        while let Some((parent, edge)) = from_side.parent.remove(&current) {
             path_ids.push((current, Some(edge)));
             current = parent;
         }
-        path_ids.push((from_id.to_string(), None));
+        path_ids.push((current, None));
         path_ids.reverse();
+        // From the meeting node on to the end.
+        let mut current = meeting_id;
+        while let Some((next, edge)) = to_side.parent.remove(&current) {
+            path_ids.push((next.clone(), Some(edge)));
+            current = next;
+        }
 
         // Resolve node IDs to actual Node objects.
         let mut path: Vec<(Node, Option<Edge>)> = Vec::new();
@@ -946,6 +1000,7 @@ impl<'a> GraphTraverser<'a> {
         Ok(PathSearch {
             path: Some(path),
             budget_exhausted: false,
+            expanded,
         })
     }
 
