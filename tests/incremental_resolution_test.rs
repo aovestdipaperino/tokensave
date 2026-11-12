@@ -535,7 +535,7 @@ async fn touched_name_keys_match_the_resolvers_own_name_index() {
         "precondition: the fixture must have nodes"
     );
 
-    let resolver = ReferenceResolver::from_nodes(db, &nodes);
+    let resolver = ReferenceResolver::from_nodes(&nodes);
     let known: HashSet<String> = resolver
         .known_names()
         .iter()

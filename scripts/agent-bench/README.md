@@ -62,6 +62,48 @@ declared fields:
 `tokensave-guided` is skipped and reported as unsupported when the rules file
 does not exist.
 
+### Caveman arms (#797)
+
+Three more arms compare TokenSave with and without
+[Caveman](https://github.com/JuliusBrussee/caveman). They run only when `run`
+gets `--caveman-skill PATH`, the `SKILL.md` of a Caveman checkout you pinned
+yourself. The harness never fetches or installs Caveman. Without the option
+these arms are skipped and reported as unsupported.
+
+| Arm | MCP servers | Extra prompt | Cooperation | Compared with |
+|---|---|---|---|---|
+| `caveman` | none | the Caveman skill | n/a | `baseline` |
+| `tokensave-caveman-nocoop` | `tokensave serve` | the Caveman skill | off | `caveman` |
+| `tokensave-caveman` | `tokensave serve` | the Caveman skill | on | `tokensave-caveman-nocoop` |
+
+Each comparison changes one thing. `tokensave` against `baseline` and
+`tokensave-caveman-nocoop` against `caveman` show TokenSave's effect
+without and with Caveman; `tokensave-caveman` against
+`tokensave-caveman-nocoop` shows the effect of the cooperation paragraph
+alone (#971).
+
+- The skill must be UTF-8, at most 64 KiB and contain a `name: caveman`
+  line, the same checks TokenSave's discovery applies. It is appended
+  verbatim to the system prompt with `--append-system-prompt`. This is
+  not stock plugin activation: Claude Code's plugin, its hooks and its
+  mode switching are not loaded (`--setting-sources ""` drops them), and
+  the intensity is whatever the skill text defaults to.
+- For both TokenSave+Caveman arms the server gets `CLAUDE_CONFIG_DIR` set to
+  `<work>/caveman-agent-home`, which holds only the pinned skill, so
+  discovery finds that skill and not your own install. The agent keeps its
+  own configuration directory. The arms differ only in
+  `TOKENSAVE_CAVEMAN_COMPATIBILITY` (`1` or `0`). Every other TokenSave arm
+  gets `0`, so a `caveman_compatibility = true` in your config cannot leak
+  into them.
+- Before the first trial, `run` starts the server of each TokenSave+Caveman
+  arm, sends MCP `initialize`, and stops unless the cooperation paragraph
+  is present exactly in `tokensave-caveman`. The `--tokensave` binary must
+  include #971.
+- Each trial records `conditions.caveman` and
+  `conditions.caveman_cooperation`. The run environment records the
+  skill's SHA-256, the verified cooperation state per arm, and the SHA-256
+  of each arm's appended prompt text.
+
 Isolation keeps the arms comparable:
 
 - `--strict-mcp-config` drops the user's MCP servers.
@@ -142,8 +184,14 @@ Times are harness receipt times of each stream-json line.
   per-call database operations (N+1 candidates), and catch-up sync/index time.
   These are subsets of tool wait (sync on connect may also overlap startup).
 
+Each arm is compared with its reference arm: `reference` in `arms.json`,
+`baseline` by default and for records written before the field existed.
+The comparison table shows the differences in median wall time (with a
+bootstrap 95% interval), median cost and median output tokens, and in
+success rate.
+
 The report's verdict per task and arm is a documented heuristic, applied in
-this order: lower success than baseline means **response/context quality**;
+this order: lower success than the reference arm means **response/context quality**;
 database time of at least 10% of wall time means **database latency**;
 exact plus near duplicates of at least 20% of TokenSave calls means **number
 of calls**; model wait of at least 50% of wall time means **agent/model

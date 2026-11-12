@@ -617,7 +617,7 @@ impl TokenSave {
             // #253: `from_nodes` borrows from `all_nodes` rather than
             // cloning it into its caches; the remaining peak here is
             // `all_nodes` itself (#306).
-            let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
+            let resolver = ReferenceResolver::from_nodes(&all_nodes);
             crate::memstats::record("index:resolve:build_caches");
             let resolution = self
                 .cpu_usage()
@@ -1316,7 +1316,7 @@ impl TokenSave {
                 .unwrap_or_default();
             crate::memstats::set_graph_nodes(all_nodes.len() as u64);
             crate::memstats::record("sync:resolve:load_nodes");
-            let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
+            let resolver = ReferenceResolver::from_nodes(&all_nodes);
             crate::memstats::record("sync:resolve:build_caches");
             // Paged rather than materialised (#482), and narrowed to the
             // references this sync could have changed (#484).
@@ -1851,7 +1851,7 @@ impl TokenSave {
                     .unwrap_or_default();
                 crate::memstats::set_graph_nodes(all_nodes.len() as u64);
                 crate::memstats::record("sync:resolve:load_nodes");
-                let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
+                let resolver = ReferenceResolver::from_nodes(&all_nodes);
                 crate::memstats::record("sync:resolve:build_caches");
                 // Paged rather than materialised (#482), and narrowed to the
                 // references this sync could have changed (#484).

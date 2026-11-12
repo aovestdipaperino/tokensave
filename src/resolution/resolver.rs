@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
-use crate::db::Database;
 use crate::types::{
     AmbiguousCall, Edge, EdgeKind, Node, NodeKind, ResolutionResult, ResolvedBy, ResolvedRef,
     UnresolvedRef, Visibility,
@@ -682,16 +681,12 @@ fn go_file_in_package(file_path: &str, import_path: &str) -> bool {
 }
 
 /// Resolves unresolved references into concrete edges by matching them against
-/// known nodes loaded from the database.
+/// known nodes.
 ///
-/// Caches are built once at construction time by loading all nodes from the
-/// database and indexing them by `name` and `qualified_name`.
+/// Caches are built once at construction time from the caller's pre-loaded
+/// nodes, indexed by `name` and `qualified_name`; the resolver itself never
+/// queries the database.
 pub struct ReferenceResolver<'a> {
-    #[allow(
-        dead_code,
-        reason = "unread since resolution uses pre-loaded nodes; removing it changes the public `from_nodes` signature"
-    )]
-    db: &'a Database,
     /// Nodes grouped by their short name.
     ///
     /// Keys and values borrow from the caller's node slice rather than owning
@@ -733,7 +728,7 @@ type IndexedRefs<'r> = Vec<(usize, &'r UnresolvedRef)>;
 
 impl<'a> ReferenceResolver<'a> {
     /// Creates a resolver from pre-loaded nodes.
-    pub fn from_nodes(db: &'a Database, all_nodes: &'a [Node]) -> Self {
+    pub fn from_nodes(all_nodes: &'a [Node]) -> Self {
         let mut name_cache: HashMap<&'a str, Vec<&'a Node>> = HashMap::new();
         let mut qualified_name_cache: HashMap<&'a str, Vec<&'a Node>> = HashMap::new();
         let mut node_id_cache: HashMap<&'a str, &'a Node> = HashMap::new();
@@ -851,7 +846,6 @@ impl<'a> ReferenceResolver<'a> {
         }
 
         Self {
-            db,
             name_cache,
             qualified_name_cache,
             node_id_cache,

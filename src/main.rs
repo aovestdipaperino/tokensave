@@ -501,6 +501,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 profiler.shutdown();
             }
 
+            // Point out an installed Caveman and the opt-in cooperation
+            // setting (#797). Read-only; the setting is never changed here.
+            if let Some(notice) = tokensave::caveman::init_notice(&project_path) {
+                eprintln!("{notice}");
+            }
+
             // Offer this repository's own git hooks (#455). Local rather than
             // global, because the global path claims `core.hooksPath` — one
             // machine-wide setting that forces the same hook directory on

@@ -67,7 +67,7 @@ See [Automatic initialization](INDEXING.md#automatic-initialization) for the gua
 | `caveman_compatibility` | `~/.tokensave/config.toml` | `false` (default): the MCP instructions never mention Caveman. `true`: when a Caveman skill is installed for a supported agent, the MCP `initialize` instructions ask the agent to keep tokensave results exact. Read when the MCP server starts a session. |
 | `TOKENSAVE_CAVEMAN_COMPATIBILITY` | environment | Overrides `caveman_compatibility` for one run. `0`, `false`, `no`, `off` or empty turn it off; any other value turns it on. |
 
-See [Working alongside Caveman](AGENT-INTEGRATIONS.md#working-alongside-caveman).
+`tokensave init` reports an installed Caveman skill and, while the setting is off, how to turn it on; it never changes the setting. See [Working alongside Caveman](AGENT-INTEGRATIONS.md#working-alongside-caveman).
 
 ## Settings for the state location
 
