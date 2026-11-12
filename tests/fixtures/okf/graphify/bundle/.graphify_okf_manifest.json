@@ -1,0 +1,13 @@
+{
+  "files": [
+    "communities/Model_Architecture.md",
+    "communities/Paper_Concepts.md",
+    "communities/index.md",
+    "concepts/LayerNorm.md",
+    "concepts/MultiHeadAttention.md",
+    "concepts/Transformer.md",
+    "concepts/attention_mechanism.md",
+    "concepts/index.md",
+    "index.md"
+  ]
+}

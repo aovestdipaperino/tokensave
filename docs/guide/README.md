@@ -22,6 +22,7 @@ wiki.
 - [Multi-Branch Indexing](MULTI-BRANCH.md): per-branch graphs, automatic tracking, branch quality regressions
 - [Token Tracking and Cost](TOKEN-TRACKING.md): per-call metrics, savings ledger, cost, monitor, memory diagnostics
 - [CLI Reference](CLI-REFERENCE.md): every command at a glance
+- [Open Knowledge Format](OKF.md): validate, export and import OKF bundles; search imported knowledge
 - [Supported Languages](LANGUAGES.md): languages and feature tiers
 - [Network Calls and Privacy](PRIVACY.md): what leaves your machine and how to opt out
 - [Troubleshooting](TROUBLESHOOTING.md): `tokensave doctor` and common problems

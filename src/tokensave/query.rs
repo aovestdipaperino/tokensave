@@ -546,6 +546,11 @@ impl TokenSave {
         }
     }
 
+    /// Whether `path` (project-relative, `/`-separated) is an indexed file.
+    pub async fn is_indexed_file(&self, path: &str) -> bool {
+        matches!(self.db.get_file(path).await, Ok(Some(_)))
+    }
+
     /// Returns `impl` blocks matching the given trait and/or implementing type.
     ///
     /// Both filters are optional:

@@ -499,6 +499,7 @@ fn group_for(def: &ToolDefinition) -> &'static str {
         || n == "tokensave_session_recall"
         || n == "tokensave_session_start"
         || n == "tokensave_session_end"
+        || n == "tokensave_knowledge"
     {
         "memory & session"
     } else if n == "tokensave_health"

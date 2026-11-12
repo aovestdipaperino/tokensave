@@ -41,6 +41,11 @@ pub enum Commands {
         #[arg(long, default_value_t = 5000)]
         max_edges: usize,
     },
+    /// Validate or export Open Knowledge Format (OKF v0.2) bundles
+    Okf {
+        #[command(subcommand)]
+        action: OkfAction,
+    },
     /// Check index integrity without changing it
     Verify {
         /// Project path (default: current directory)
@@ -623,6 +628,86 @@ mod tests {
             err_kind
         );
     }
+}
+
+#[derive(Subcommand)]
+pub enum OkfAction {
+    /// Check a bundle against the OKF v0.2 conformance rules
+    ///
+    /// Exits 0 when the bundle is conformant, 1 when it is not (or, with
+    /// `--strict`, when there are warnings). Reads only the bundle.
+    Validate {
+        /// Bundle directory
+        path: std::path::PathBuf,
+        /// Output the report as JSON
+        #[arg(long)]
+        json: bool,
+        /// Treat warnings as failures
+        #[arg(long)]
+        strict: bool,
+        /// Also list info findings such as broken links (always in JSON)
+        #[arg(long)]
+        verbose: bool,
+    },
+    /// Export the code index as an OKF bundle (read-only; no sync)
+    Export {
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// New bundle directory; an existing path is refused
+        #[arg(long)]
+        output: std::path::PathBuf,
+        /// Refuse indexes with more source files than this
+        #[arg(long, default_value_t = 20_000)]
+        max_files: usize,
+        /// Symbols listed per file; the rest are counted only
+        #[arg(long, default_value_t = 500)]
+        max_symbols: usize,
+        /// Refuse indexes with more file-to-file dependencies than this
+        #[arg(long, default_value_t = 200_000)]
+        max_links: usize,
+    },
+    /// Import a bundle so the MCP server can search it
+    ///
+    /// Copies the bundle into the project's state directory and validates
+    /// the copy. Bundles that are not conformant are imported best-effort
+    /// unless `--strict` is given. The code index is not changed.
+    Import {
+        /// Bundle directory
+        path: std::path::PathBuf,
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// Name for the imported bundle (default: the directory name)
+        #[arg(long)]
+        name: Option<String>,
+        /// Replace an imported bundle with the same name
+        #[arg(long)]
+        replace: bool,
+        /// Refuse bundles that are not conformant
+        #[arg(long)]
+        strict: bool,
+        /// Output the result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the imported bundles of a project
+    List {
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove an imported bundle
+    Remove {
+        /// Name of the imported bundle
+        name: String,
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

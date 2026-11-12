@@ -46,9 +46,9 @@ appendix, so that count is unchanged.
 
 ## Inventory summary
 
-- SQL-bearing source files: **39**.
-- SQL literal/template occurrences: **356**.
-- Functions retained for construction/binding context: **178**.
+- SQL-bearing source files: **40**.
+- SQL literal/template occurrences: **361**.
+- Functions retained for construction/binding context: **179**.
 
 ## Source file index
 
@@ -85,6 +85,7 @@ appendix, so that count is unchanged.
 | [src/hooks.rs](../src/hooks.rs) | 1 |
 | [src/mcp/tools/definitions.rs](../src/mcp/tools/definitions.rs) | 4 |
 | [src/mcp/tools/handlers/workflow.rs](../src/mcp/tools/handlers/workflow.rs) | 1 |
+| [src/okf/export.rs](../src/okf/export.rs) | 5 |
 | [src/quality_diff.rs](../src/quality_diff.rs) | 2 |
 | [src/runtime_telemetry.rs](../src/runtime_telemetry.rs) | 4 |
 | [src/tokensave/memory.rs](../src/tokensave/memory.rs) | 7 |
@@ -13108,6 +13109,68 @@ SELECT substr(e.source,1,4097), substr(e.target,1,4097), substr(e.kind,1,4097), 
 ?1 is the same file for both endpoints; ?2 is max_edges + 1, integer <=5001. Extra row refuses export. id breaks ties without collapsing multiplicity; line and nullable numeric resolver provenance are retained.
 
 Construction context: max_nodes is validated in 1..=1000 and max_edges in 1..=5000 before integer conversion. SQL templates are fixed; no user text is interpolated. Queries Q0385–Q0388 use one read transaction for a consistent DB snapshot. Output is published only after successful reads, budget checks, source/branch rechecks and capped serialization. No migrations or writes occur.
+
+
+## OKF export additions (Refs #858)
+
+Source: [src/okf/export.rs](../src/okf/export.rs), `export`, `read_files` and
+`read_links`. This section adds five occurrences and one construction/binding
+context to the existing inventory. No existing query was changed, moved or
+removed. Snapshot inspected 2026-11-11. The export opens the branch database
+found by `graphify::database_path` read-only, after
+`compatibility::preflight`, like the Graphify export. The transaction API owns
+BEGIN, COMMIT and rollback on drop.
+
+#### Q0400 — `export`: Read-only connection limits
+
+```sql
+PRAGMA query_only=1; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192;
+```
+
+Fixed batch, no parameters; executes before the read transaction.
+
+#### Q0401 — `export`: Current-schema check
+
+```sql
+PRAGMA user_version
+```
+
+No bindings; exactly one scalar row. Versions unequal to latest_version() are
+refused; the export never migrates.
+
+#### Q0402 — `read_files`: Bounded source-file list
+
+```sql
+SELECT path, substr(content_hash,1,128), size, node_count FROM files WHERE kind = 'code' ORDER BY path LIMIT ?1
+```
+
+?1 is max_files + 1. An extra row refuses the export. Artifact rows are
+excluded.
+
+#### Q0403 — `read_links`: File-to-file dependency aggregation
+
+```sql
+SELECT s.file_path, t.file_path, substr(e.kind,1,64), COUNT(*) FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target WHERE s.file_path <> t.file_path GROUP BY s.file_path, t.file_path, e.kind ORDER BY s.file_path, t.file_path, e.kind LIMIT ?1
+```
+
+?1 is max_links + 1. An extra row refuses the export. Rows whose files are not
+in the Q0402 list are ignored.
+
+#### Q0404 — `export`: Symbols per file
+
+```sql
+SELECT n.file_path, substr(n.kind,1,64), substr(n.name,1,513), substr(n.qualified_name,1,513), n.start_line, n.end_line, substr(n.visibility,1,32) FROM nodes n JOIN files f ON f.path = n.file_path WHERE f.kind = 'code' AND n.kind NOT IN ('file', 'doc') ORDER BY n.file_path, n.start_line, n.id
+```
+
+No bindings. Rows are streamed in file order; each file keeps at most
+max_symbols_per_file rows in memory and counts the rest. No source body,
+signature or docstring is projected.
+
+Construction context: all templates are fixed and no user text is interpolated.
+Q0401–Q0404 run in one read transaction for a consistent snapshot. The bundle is
+written to a staging directory beside the output and renamed into place only
+after every read succeeds; an existing output path is refused. No writes or
+migrations reach the database.
 
 
 #### Q0390 — `migrate_turns_columns`
