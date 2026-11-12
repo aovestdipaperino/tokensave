@@ -39,6 +39,7 @@ jobs:
       pi: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.pi == 'true' }}
       agent_bench: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.agent_bench == 'true' }}
       caveman_bench: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.caveman_bench == 'true' }}
+      comparison_bench: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.comparison_bench == 'true' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -106,6 +107,10 @@ jobs:
             caveman_bench:
               - *ci
               - 'scripts/caveman_bench/**'
+            comparison_bench:
+              - *ci
+              - 'benchmarks/run_benchmarks.py'
+              - 'benchmarks/tests/**'
 
   test:
     name: Test ${{ matrix.name }}
@@ -257,12 +262,24 @@ jobs:
           python-version: '3.12'
       - run: python3 -B -m unittest discover -s scripts/caveman_bench -p 'test_*.py' -v
 
+  comparison-bench:
+    name: Python comparison benchmark
+    needs: changes
+    if: needs.changes.outputs.comparison_bench == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -B -m unittest discover -s benchmarks/tests -v
+
   # Single required check. A skipped matrix job reports under its unexpanded
   # name (`Test ${{ matrix.name }}`), so per-platform checks can't be required.
   ci-ok:
     name: CI OK
     if: always()
-    needs: [changes, test, clippy, msrv, fmt, features, pi-extension, agent-bench, caveman-bench]
+    needs: [changes, test, clippy, msrv, fmt, features, pi-extension, agent-bench, caveman-bench, comparison-bench]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if a gated job failed
