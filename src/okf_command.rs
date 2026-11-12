@@ -2,6 +2,9 @@
 
 use std::fmt::Write as _;
 
+use tokensave::okf::store;
+use tokensave::okf::store::ImportOptions;
+use tokensave::okf::store::ImportOutcome;
 use tokensave::okf::validate::Report;
 use tokensave::okf::validate::Severity;
 
@@ -52,7 +55,114 @@ pub(crate) async fn run(action: &OkfAction) -> tokensave::errors::Result<i32> {
             );
             Ok(0)
         }
+        OkfAction::Import {
+            path,
+            project,
+            name,
+            replace,
+            strict,
+            json,
+        } => {
+            let root = tokensave::config::resolve_path_with_discovery(project.clone());
+            tokensave::cancel::install_signal_handlers();
+            let options = ImportOptions {
+                name: name.clone(),
+                replace: *replace,
+                strict: *strict,
+                ..ImportOptions::default()
+            };
+            let outcome = store::import(&root, path, &options)?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&outcome)?);
+            } else {
+                print!("{}", render_import(&outcome));
+            }
+            Ok(0)
+        }
+        OkfAction::List { project, json } => {
+            let root = tokensave::config::resolve_path_with_discovery(project.clone());
+            let bundles = store::list(&root)?;
+            if *json {
+                let records: Vec<_> = bundles.iter().map(|b| &b.record).collect();
+                println!("{}", serde_json::to_string_pretty(&records)?);
+            } else if bundles.is_empty() {
+                println!("No OKF bundles imported. Run `tokensave okf import <dir>`.");
+            } else {
+                for b in &bundles {
+                    let r = &b.record;
+                    println!(
+                        "{}: {} concepts, {} files, imported {} from {} ({})",
+                        r.name,
+                        r.concepts,
+                        r.files,
+                        r.imported_at,
+                        r.source,
+                        if r.conformant {
+                            "conformant"
+                        } else {
+                            "not conformant"
+                        }
+                    );
+                }
+                println!("Stored in {}", store::store_dir(&root).display());
+            }
+            Ok(0)
+        }
+        OkfAction::Remove { name, project } => {
+            let root = tokensave::config::resolve_path_with_discovery(project.clone());
+            if store::remove(&root, name)? {
+                println!("Removed imported bundle `{name}`.");
+                Ok(0)
+            } else {
+                eprintln!("No imported bundle named `{name}`.");
+                Ok(1)
+            }
+        }
     }
+}
+
+fn render_import(outcome: &ImportOutcome) -> String {
+    let mut out = String::new();
+    let r = &outcome.record;
+    let _ = writeln!(
+        out,
+        "{} bundle `{}`: {} concepts, {} files, {} bytes{}.",
+        if outcome.replaced {
+            "Replaced"
+        } else {
+            "Imported"
+        },
+        r.name,
+        r.concepts,
+        r.files,
+        r.bytes,
+        if r.unreadable_concepts > 0 {
+            format!(
+                "; {} concept files without a readable `type` are not searchable",
+                r.unreadable_concepts
+            )
+        } else {
+            String::new()
+        }
+    );
+    if !r.conformant {
+        let _ = writeln!(
+            out,
+            "The bundle is not conformant ({} errors, {} warnings); it was imported \
+             best-effort. Run `tokensave okf validate` for details.",
+            r.errors, r.warnings
+        );
+    } else if r.warnings > 0 {
+        let _ = writeln!(
+            out,
+            "The bundle is conformant with {} warnings.",
+            r.warnings
+        );
+    }
+    for skipped in &outcome.skipped {
+        let _ = writeln!(out, "Skipped {skipped}");
+    }
+    out
 }
 
 fn render(report: &Report, verbose: bool) -> String {

@@ -199,7 +199,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         return tokensave::graphify::export_file(&root, file, output, *max_nodes, *max_edges).await;
     }
 
-    // OKF validation and export only read; skip startup maintenance.
+    // OKF commands never touch the code index or the user config (import
+    // writes only the project's `okf/` state); skip startup maintenance.
     if let Commands::Okf { action } = &command {
         let code = okf_command::run(action).await?;
         if code != 0 {

@@ -667,6 +667,47 @@ pub enum OkfAction {
         #[arg(long, default_value_t = 200_000)]
         max_links: usize,
     },
+    /// Import a bundle so the MCP server can search it
+    ///
+    /// Copies the bundle into the project's state directory and validates
+    /// the copy. Bundles that are not conformant are imported best-effort
+    /// unless `--strict` is given. The code index is not changed.
+    Import {
+        /// Bundle directory
+        path: std::path::PathBuf,
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// Name for the imported bundle (default: the directory name)
+        #[arg(long)]
+        name: Option<String>,
+        /// Replace an imported bundle with the same name
+        #[arg(long)]
+        replace: bool,
+        /// Refuse bundles that are not conformant
+        #[arg(long)]
+        strict: bool,
+        /// Output the result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the imported bundles of a project
+    List {
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove an imported bundle
+    Remove {
+        /// Name of the imported bundle
+        name: String,
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

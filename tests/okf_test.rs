@@ -3,8 +3,12 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use serde_json::json;
+use serde_json::Value;
+use tokensave::mcp::tools::handle_tool_call;
 use tokensave::okf::bundle;
 use tokensave::okf::export;
+use tokensave::okf::store;
 use tokensave::okf::validate;
 use tokensave::okf::validate::Report;
 use tokensave::okf::validate::Severity;
@@ -389,4 +393,295 @@ async fn export_truncates_long_symbol_lists() {
     assert!(text.contains("tokensave_symbols_truncated: true"), "{text}");
     assert!(text.contains("3 more symbols are not listed."), "{text}");
     assert!(check(&out).conformant);
+}
+
+// ---------------------------------------------------------------------------
+// Import, the `tokensave_knowledge` MCP tool and Graphify interoperability
+// ---------------------------------------------------------------------------
+
+fn graphify_bundle() -> PathBuf {
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for part in ["tests", "fixtures", "okf", "graphify", "bundle"] {
+        path.push(part);
+    }
+    path
+}
+
+fn named(name: &str) -> store::ImportOptions {
+    store::ImportOptions {
+        name: Some(name.to_string()),
+        ..store::ImportOptions::default()
+    }
+}
+
+async fn knowledge(project: &Project, args: Value) -> Value {
+    let result = handle_tool_call(&project.cg, "tokensave_knowledge", args, None, None)
+        .await
+        .expect("tokensave_knowledge succeeds");
+    let text = result.value["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    serde_json::from_str(text).expect("JSON result")
+}
+
+fn result_ids(output: &Value) -> Vec<String> {
+    output["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .map(|r| {
+            format!(
+                "{}:{}",
+                r["bundle"].as_str().unwrap_or(""),
+                r["id"].as_str().unwrap_or("")
+            )
+        })
+        .collect()
+}
+
+fn store_leftovers(project: &Project) -> Vec<String> {
+    std::fs::read_dir(store::store_dir(project.dir.path()))
+        .expect("store exists")
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with('.'))
+        .collect()
+}
+
+#[test]
+fn graphify_bundle_is_readable_but_not_conformant() {
+    let report = check(&graphify_bundle());
+    // Graphify adds `producer: graphify` to the root index (§8 allows only
+    // `okf_version`) and declares OKF 0.1.
+    assert_eq!(
+        codes(&report, Severity::Error),
+        [("OKF-E004", "index.md".to_string())]
+    );
+    assert_eq!(codes(&report, Severity::Warning), Vec::new());
+    assert_eq!(report.declared_version.as_deref(), Some("0.1"));
+    assert!(report.diagnostics.iter().any(|d| d.code == "OKF-I207"));
+    assert_eq!((report.concepts, report.index_files), (6, 3));
+    // Every standard markdown link Graphify writes resolves.
+    assert!(!report.diagnostics.iter().any(|d| d.code == "OKF-I201"));
+}
+
+#[tokio::test]
+async fn import_copies_a_bundle_best_effort_and_strict_refuses_it() {
+    let project = Project::new(&[("model.py", "class Transformer:\n    pass\n".into())]).await;
+    let outcome = store::import(project.dir.path(), &graphify_bundle(), &named("graphify"))
+        .expect("best-effort import succeeds");
+    let record = &outcome.record;
+    assert_eq!(record.name, "graphify");
+    assert!(!record.conformant);
+    assert_eq!(record.errors, 1);
+    assert_eq!(record.concepts, 6);
+    assert_eq!(record.unreadable_concepts, 0);
+    // Nine markdown files and Graphify's manifest, copied byte for byte.
+    assert_eq!(record.files, 10);
+    assert!(!outcome.replaced);
+    let stored = store::store_dir(project.dir.path()).join("graphify");
+    for rel in ["concepts/Transformer.md", ".graphify_okf_manifest.json"] {
+        assert_eq!(
+            std::fs::read(bundle::join(&stored.join(store::BUNDLE_DIR), rel)).expect("copied"),
+            std::fs::read(bundle::join(&graphify_bundle(), rel)).expect("source"),
+            "{rel}"
+        );
+    }
+
+    let strict = store::ImportOptions {
+        strict: true,
+        ..named("strict")
+    };
+    assert!(store::import(project.dir.path(), &graphify_bundle(), &strict).is_err());
+    assert!(!store::store_dir(project.dir.path()).join("strict").exists());
+    assert_eq!(store_leftovers(&project), Vec::<String>::new());
+
+    let listed = store::list(project.dir.path()).expect("list");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].record, outcome.record);
+}
+
+#[tokio::test]
+async fn import_names_replace_and_remove() {
+    let project = Project::new(&[("a.rs", "pub fn a() {}\n".into())]).await;
+    let root = project.dir.path();
+    // The default name is the directory name.
+    let first =
+        store::import(root, &official("ga4"), &store::ImportOptions::default()).expect("import");
+    assert_eq!(first.record.name, "ga4");
+    assert!(first.record.conformant);
+
+    assert!(store::import(root, &official("crypto_bitcoin"), &named("ga4")).is_err());
+    assert!(store::import(root, &official("ga4"), &named("../escape")).is_err());
+    assert!(store::import(root, &official("ga4"), &named("con")).is_err());
+
+    let replace = store::ImportOptions {
+        replace: true,
+        ..named("ga4")
+    };
+    let second = store::import(root, &official("crypto_bitcoin"), &replace).expect("replace");
+    assert!(second.replaced);
+    let listed = store::list(root).expect("list");
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].record.source.contains("crypto_bitcoin"));
+    assert_eq!(store_leftovers(&project), Vec::<String>::new());
+
+    assert!(store::remove(root, "ga4").expect("remove"));
+    assert!(!store::remove(root, "ga4").expect("second remove"));
+    assert!(store::list(root).expect("list").is_empty());
+    assert_eq!(store_leftovers(&project), Vec::<String>::new());
+}
+
+#[test]
+fn import_requires_an_initialized_project() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    assert!(store::import(dir.path(), &official("ga4"), &named("ga4")).is_err());
+}
+
+#[tokio::test]
+async fn knowledge_tool_lists_searches_and_reads_imported_concepts() {
+    let project = Project::new(&[("model.py", "class Transformer:\n    pass\n".into())]).await;
+    let empty = knowledge(&project, json!({})).await;
+    assert_eq!(empty["bundles"], json!([]));
+
+    store::import(project.dir.path(), &graphify_bundle(), &named("graphify")).expect("import");
+    store::import(
+        project.dir.path(),
+        &official("acme_retail"),
+        &store::ImportOptions::default(),
+    )
+    .expect("import");
+
+    let listing = knowledge(&project, json!({})).await;
+    let names: Vec<&str> = listing["bundles"]
+        .as_array()
+        .expect("bundles")
+        .iter()
+        .filter_map(|b| b["name"].as_str())
+        .collect();
+    assert_eq!(names, ["acme_retail", "graphify"]);
+
+    let found = knowledge(&project, json!({"query": "gross margin", "type": "metric"})).await;
+    let ids = result_ids(&found);
+    assert_eq!(
+        ids.first().map(String::as_str),
+        Some("acme_retail:metrics/gross-margin"),
+        "{ids:?}"
+    );
+
+    // Graphify concepts name their source file, which is indexed here.
+    let attention = knowledge(
+        &project,
+        json!({"query": "attention", "bundle": "graphify"}),
+    )
+    .await;
+    let ids = result_ids(&attention);
+    assert!(
+        ids.contains(&"graphify:concepts/attention_mechanism".to_string()),
+        "{ids:?}"
+    );
+    let multi = attention["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .find(|r| r["id"] == "concepts/MultiHeadAttention")
+        .expect("MultiHeadAttention found");
+    assert_eq!(
+        multi["code_files"],
+        json!([{"path": "model.py", "indexed": true}])
+    );
+    let paper = attention["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .find(|r| r["id"] == "concepts/attention_mechanism")
+        .expect("attention mechanism found");
+    assert_eq!(
+        paper["code_files"],
+        json!([{"path": "paper.md", "indexed": false}])
+    );
+
+    let by_file = knowledge(&project, json!({"file": "model.py"})).await;
+    assert_eq!(result_ids(&by_file).len(), 3);
+
+    let read = knowledge(&project, json!({"concept": "concepts/Transformer.md"})).await;
+    assert_eq!(read["bundle"], "graphify");
+    assert_eq!(read["type"], "Graphify Code Concept");
+    assert_eq!(read["frontmatter"]["graphify_id"], "n_transformer");
+    assert!(read["body"]
+        .as_str()
+        .expect("body")
+        .contains("## Connections"));
+    assert!(read["links"]
+        .as_array()
+        .expect("links")
+        .contains(&json!({"id": "concepts/LayerNorm", "exists": true})));
+    let backlinks = read["backlinks"].as_array().expect("backlinks");
+    assert!(
+        backlinks.contains(&json!("communities/Model_Architecture")),
+        "{backlinks:?}"
+    );
+    assert!(
+        backlinks.contains(&json!("concepts/MultiHeadAttention")),
+        "{backlinks:?}"
+    );
+
+    let missing = knowledge(&project, json!({"concept": "nope"})).await;
+    assert!(missing["error"].as_str().is_some());
+    assert!(handle_tool_call(
+        &project.cg,
+        "tokensave_knowledge",
+        json!({"query": "x", "bundle": "unknown"}),
+        None,
+        None
+    )
+    .await
+    .is_err());
+
+    // Removing a bundle is seen by the next call.
+    store::remove(project.dir.path(), "graphify").expect("remove");
+    let after = knowledge(&project, json!({"query": "attention"})).await;
+    assert!(result_ids(&after)
+        .iter()
+        .all(|id| !id.starts_with("graphify:")));
+}
+
+#[tokio::test]
+async fn exported_bundles_round_trip_through_import() {
+    let project = indexed_project().await;
+    let out = project.dir.path().join("okf-bundle");
+    export::export(project.dir.path(), &out, &options())
+        .await
+        .expect("export succeeds");
+    let outcome = store::import(project.dir.path(), &out, &named("self")).expect("import");
+    assert!(outcome.record.conformant);
+    assert_eq!(outcome.report.diagnostics, Vec::new());
+    assert_eq!(outcome.record.declared_version.as_deref(), Some("0.2"));
+
+    // A Source File concept maps back to its indexed file.
+    let by_file = knowledge(&project, json!({"file": "src/util.rs"})).await;
+    assert_eq!(result_ids(&by_file), ["self:files/src/util.rs"]);
+    assert_eq!(
+        by_file["results"][0]["code_files"],
+        json!([{"path": "src/util.rs", "indexed": true}])
+    );
+    // Symbol names in the concept body are searchable.
+    let helper = knowledge(&project, json!({"query": "helper"})).await;
+    assert_eq!(
+        result_ids(&helper).first().map(String::as_str),
+        Some("self:files/src/util.rs")
+    );
+    let read = knowledge(
+        &project,
+        json!({"concept": "files/src/lib.rs", "bundle": "self"}),
+    )
+    .await;
+    assert!(read["links"]
+        .as_array()
+        .expect("links")
+        .contains(&json!({"id": "files/src/util.rs", "exists": true})));
+    // The exported original path survives the round trip, including
+    // characters the bundle file names cannot hold.
+    let tool = knowledge(&project, json!({"file": "tools/a b(c).rs"})).await;
+    assert_eq!(result_ids(&tool), ["self:files/tools/a_b_c_.rs"]);
 }

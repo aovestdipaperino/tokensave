@@ -107,7 +107,7 @@ fn md_text(text: &str) -> String {
 
 /// A segment that is safe on every file system and matches the concept-ID
 /// segment rule of the OKF reference implementation: `[A-Za-z0-9_][A-Za-z0-9_.-]*`.
-fn safe_segment(segment: &str, is_leaf: bool) -> String {
+pub(crate) fn safe_segment(segment: &str, is_leaf: bool) -> String {
     let mut out: String = segment
         .chars()
         .map(|c| {

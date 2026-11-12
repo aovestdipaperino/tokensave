@@ -7,13 +7,17 @@
 //! - [`bundle`] reads a bundle with bounded resources;
 //! - [`validate`] checks it against the conformance rules (§11) and reports
 //!   actionable diagnostics;
-//! - [`export`] writes the indexed code graph as a bundle.
+//! - [`export`] writes the indexed code graph as a bundle;
+//! - [`store`] imports bundles into the project state directory;
+//! - [`knowledge`] searches imported bundles for the MCP server.
 //!
 //! The compliance matrix is in `docs/guide/OKF.md`.
 
 pub mod bundle;
 pub mod document;
 pub mod export;
+pub mod knowledge;
+pub mod store;
 pub mod time;
 pub mod validate;
 pub mod yaml;

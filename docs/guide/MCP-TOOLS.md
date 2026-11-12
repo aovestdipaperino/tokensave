@@ -203,6 +203,16 @@ Three MCP tools persist decisions and code-area context across sessions, stored 
 
 Use these so the agent doesn't have to re-explain architecture choices session-to-session.
 
+### Imported knowledge (OKF)
+
+| Tool | Purpose |
+|------|---------|
+| `tokensave_knowledge` | Search and read [Open Knowledge Format](OKF.md) bundles imported with `tokensave okf import`; lists the project files each concept refers to and whether they are indexed |
+
+It is read-only, is listed in the `memory` area of `tokensave_more`, and
+returns only a hint until a bundle is imported. See
+[Using imported knowledge](OKF.md#using-imported-knowledge).
+
 ## MCP resources
 
 Four resources are exposed via `resources/list` and `resources/read`:
