@@ -283,6 +283,14 @@ pub enum Commands {
         /// is waiting for a request, so it cannot interrupt one.
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
         idle_timeout_secs: Option<u64>,
+        /// Watch the project for file changes and sync them as they happen (#937)
+        ///
+        /// Off by default. Turns on the opt-in filesystem watcher for this run,
+        /// as `filesystem_watch_enabled = true` in `~/.tokensave/config.toml`
+        /// does for every run. The on-demand staleness check keeps running
+        /// either way.
+        #[arg(long)]
+        watch: bool,
     },
     /// List running `tokensave serve` processes and the index each one holds
     ///

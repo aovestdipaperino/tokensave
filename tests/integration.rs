@@ -82,6 +82,7 @@ mod fixture_extraction_test;
 mod flatbuffers_extraction_test;
 mod force_include_test;
 mod fortran_extraction_test;
+mod fs_watch_test;
 mod fstar_extraction_test;
 mod gain_test;
 mod gdscript_extraction_test;

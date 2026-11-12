@@ -33,7 +33,7 @@ tokensave affected <files...> [--stdin] [--depth N]        # Find affected test 
 tokensave install [--agent NAME]   # Configure agent integration
 tokensave reinstall                # Refresh settings for all installed agents
 tokensave uninstall [--agent NAME] # Remove agent integration
-tokensave serve [--idle-timeout-secs N]   # Start MCP server (N: exit after N idle seconds)
+tokensave serve [--idle-timeout-secs N] [--watch]   # Start MCP server (N: exit after N idle seconds; --watch: opt-in filesystem watcher)
 tokensave servers [--json]         # List running servers and the index each one holds
 tokensave monitor                  # Live TUI showing MCP calls across all projects
 tokensave memory [--clean]         # Per-instance RSS report for all tokensave processes
@@ -77,3 +77,13 @@ See [Automatic initialization](INDEXING.md#automatic-initialization) for the gua
 | `TOKENSAVE_STATE_DIR` | environment | Overrides `state_dir`. Empty selects the default layout. |
 
 See [Keeping state outside the repository](INDEXING.md#keeping-state-outside-the-repository) for how existing state is kept and how orphans are reported.
+
+## Settings for the filesystem watcher
+
+| Setting | Where | Effect |
+|---|---|---|
+| `filesystem_watch_enabled` | `~/.tokensave/config.toml` | `false` (default): `serve` creates no filesystem watcher. `true`: `serve` follows file changes through OS notifications and syncs them. |
+| `serve --watch` | command line | Turns the watcher on for one run, whatever `filesystem_watch_enabled` says. |
+| `watcher_debounce` | `~/.tokensave/config.toml` | Quiet period before a burst of changes is applied: `"500ms"`, `"2s"` (default), `"1m"`. Clamped to 50 ms – 60 s. Read only when the watcher is on. |
+
+See [Opt-in filesystem watcher](INDEXING.md#opt-in-filesystem-watcher) for scope, bounds and platform limits.
