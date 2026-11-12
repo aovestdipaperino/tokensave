@@ -69,6 +69,11 @@ def clone_root() -> Path:
 
 def clone_repo(name: str, url: str, skip_clone: bool) -> Path:
     dest = clone_root() / name
+    if (dest / ".bench-ref").exists():
+        raise FileExistsError(
+            f"Criterion cache (.bench-ref) at {dest}; "
+            "use a separate TOKENSAVE_BENCH_REPOS_DIR"
+        )
     if dest.exists():
         log(f"{name}: reusing existing clone at {dest}")
         return dest

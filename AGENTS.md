@@ -316,6 +316,7 @@ portable string formats, and documented path-syntax test fixtures.
 - `cargo clippy --workspace --all-targets` (CI runs it with `continue-on-error: true`).
 - `cargo fmt --all -- --check`.
 - Pi extension prompt/relay tests: `node --experimental-strip-types --test tests/pi_extension_test.mjs` (Node 22.6+ with TypeScript stripping support; separate from Cargo tests; run by the `Pi extension` CI job).
+- Python comparison benchmark tests: `python3 -B -m unittest discover -s benchmarks/tests -v` (POSIX, Python 3.12 in CI; no repository downloads or benchmark binaries; run by the `Python comparison benchmark` CI job).
 - Documentation checks: `python3 scripts/wiki/sync_wiki.py check` (links, anchors, wiki sidebar) and `python3 -m unittest discover -s scripts/wiki`; preview the wiki with `python3 scripts/wiki/sync_wiki.py build --out /tmp/tokensave-wiki`. Run by `.github/workflows/wiki.yml`, separate from Cargo tests.
 - `src/lib.rs` denies `clippy::all`, `clippy::unwrap_used`, and `clippy::expect_used`, and warns on `clippy::pedantic` — avoid `unwrap()`/`expect()` in library code.
 - Language-specific tests: `cargo test --test integration rust_extraction_test::`; single test: `cargo test test_find_stale_files`; filter: `cargo test sync`. Lite-only local loop: `cargo test-lite`.
