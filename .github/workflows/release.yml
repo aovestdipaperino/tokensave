@@ -98,7 +98,7 @@ jobs:
         with:
           ref: ${{ needs.setup.outputs.tag }}
 
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: ${{ matrix.target }}
 
@@ -452,7 +452,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Publish
         run: cargo publish --locked
