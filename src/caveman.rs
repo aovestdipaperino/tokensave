@@ -216,6 +216,49 @@ pub fn cooperation_enabled(project: Option<&Path>) -> bool {
     })
 }
 
+/// The note `tokensave init` prints about Caveman, or `None` when there is
+/// nothing to say. Searches every agent in [`AGENTS`] for an installed
+/// Caveman skill, read-only. It never changes the setting: cooperation stays
+/// opt-in, and this only tells the user that it exists.
+#[must_use]
+pub fn init_notice(project: &Path) -> Option<String> {
+    let home = crate::agents::home_dir()?;
+    let installed: Vec<&str> = AGENTS
+        .iter()
+        .copied()
+        .filter(|agent| {
+            inspect(&Scope::from_env(&home, project, agent), agent, None, false).installation
+                == Installation::Installed
+        })
+        .collect();
+    init_notice_text(&installed, enabled())
+}
+
+/// The text of [`init_notice`] for the agents where a Caveman skill was
+/// found and the effective `caveman_compatibility` value.
+#[must_use]
+pub fn init_notice_text(installed: &[&str], enabled: bool) -> Option<String> {
+    match (installed.is_empty(), enabled) {
+        (true, false) => None,
+        (true, true) => Some(
+            "caveman_compatibility is on, but no Caveman skill was found; \
+             the MCP instructions stay unchanged."
+                .to_owned(),
+        ),
+        (false, true) => Some(format!(
+            "Caveman found for {}; cooperation is on. Run `tokensave doctor --caveman` for details.",
+            installed.join(", ")
+        )),
+        (false, false) => Some(format!(
+            "Caveman found for {}. To have tokensave ask the agent to quote its results exactly \
+             while Caveman shortens prose, set `caveman_compatibility = true` in \
+             ~/.tokensave/config.toml (or {COMPATIBILITY_ENV}=1). \
+             Run `tokensave doctor --caveman` for details.",
+            installed.join(", ")
+        )),
+    }
+}
+
 /// Diagnostics for `agent`, or for every agent in [`AGENTS`].
 #[must_use]
 pub fn diagnostics(agent: Option<&str>, session_id: Option<&str>, project: &Path) -> Vec<Report> {

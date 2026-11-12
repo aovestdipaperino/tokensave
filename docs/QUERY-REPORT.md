@@ -2509,7 +2509,7 @@ SELECT kind, name, qualified_name FROM nodes WHERE file_path = ?1
 
 #### Q0198 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1120](../src/db/queries/nodes.rs#L1120).
+Source: [src/db/queries/nodes.rs:1123](../src/db/queries/nodes.rs#L1123).
 
 ```sql
 DELETE FROM executable_body_fts WHERE file_path = ?1
@@ -2517,7 +2517,7 @@ DELETE FROM executable_body_fts WHERE file_path = ?1
 
 #### Q0199 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1134](../src/db/queries/nodes.rs#L1134).
+Source: [src/db/queries/nodes.rs:1137](../src/db/queries/nodes.rs#L1137).
 
 ```sql
 SELECT id FROM nodes WHERE file_path = ?1
@@ -2525,7 +2525,7 @@ SELECT id FROM nodes WHERE file_path = ?1
 
 #### Q0200 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1171](../src/db/queries/nodes.rs#L1171).
+Source: [src/db/queries/nodes.rs:1174](../src/db/queries/nodes.rs#L1174).
 
 ```sql
 DELETE FROM edges WHERE source = ?1 OR target = ?1
@@ -2533,7 +2533,7 @@ DELETE FROM edges WHERE source = ?1 OR target = ?1
 
 #### Q0201 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1181](../src/db/queries/nodes.rs#L1181).
+Source: [src/db/queries/nodes.rs:1184](../src/db/queries/nodes.rs#L1184).
 
 ```sql
 DELETE FROM unresolved_refs WHERE from_node_id = ?1
@@ -2541,7 +2541,7 @@ DELETE FROM unresolved_refs WHERE from_node_id = ?1
 
 #### Q0202 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1191](../src/db/queries/nodes.rs#L1191).
+Source: [src/db/queries/nodes.rs:1194](../src/db/queries/nodes.rs#L1194).
 
 ```sql
 DELETE FROM vectors WHERE node_id = ?1
@@ -2549,7 +2549,7 @@ DELETE FROM vectors WHERE node_id = ?1
 
 #### Q0203 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1201](../src/db/queries/nodes.rs#L1201).
+Source: [src/db/queries/nodes.rs:1204](../src/db/queries/nodes.rs#L1204).
 
 ```sql
 DELETE FROM nodes WHERE file_path = ?1
@@ -2938,7 +2938,7 @@ SELECT id, from_node_id, reference_name, reference_kind, line, col, file_path
 
 #### Q0244 — `get_unresolved_refs_for_sources`
 
-Source: [src/db/queries/unresolved.rs:228](../src/db/queries/unresolved.rs#L228).
+Source: [src/db/queries/unresolved.rs:231](../src/db/queries/unresolved.rs#L231).
 
 ```sql
 SELECT from_node_id, reference_name, reference_kind, line, col, file_path
@@ -2947,7 +2947,7 @@ SELECT from_node_id, reference_name, reference_kind, line, col, file_path
 
 #### Q0245 — `clear_unresolved_refs`
 
-Source: [src/db/queries/unresolved.rs:259](../src/db/queries/unresolved.rs#L259).
+Source: [src/db/queries/unresolved.rs:262](../src/db/queries/unresolved.rs#L262).
 
 ```sql
 DELETE FROM unresolved_refs
@@ -9582,7 +9582,10 @@ Source: [src/db/queries/nodes.rs:1076](../src/db/queries/nodes.rs#L1076).
 
         let mut out = Vec::new();
         while let Ok(Some(row)) = rows.next().await {
-            let kind = NodeKind::from_str(&row.get::<String>(0).unwrap_or_default())
+            let kind = row
+                .get::<String>(0)
+                .unwrap_or_default()
+                .parse::<NodeKind>()
                 .unwrap_or(NodeKind::Function);
             out.push(TouchedNode {
                 kind,
@@ -9596,7 +9599,7 @@ Source: [src/db/queries/nodes.rs:1076](../src/db/queries/nodes.rs#L1076).
 
 ### `delete_nodes_by_file` — src/db/queries/nodes.rs:1103
 
-Source: [src/db/queries/nodes.rs:1103](../src/db/queries/nodes.rs#L1103).
+Source: [src/db/queries/nodes.rs:1106](../src/db/queries/nodes.rs#L1106).
 
 ```rust
     pub async fn delete_nodes_by_file(&self, file_path: &str) -> Result<()> {
@@ -10800,7 +10803,10 @@ Source: [src/db/queries/unresolved.rs:171](../src/db/queries/unresolved.rs#L171)
                 UnresolvedRef {
                     from_node_id: row.get::<String>(1).unwrap_or_default(),
                     reference_name: row.get::<String>(2).unwrap_or_default(),
-                    reference_kind: EdgeKind::from_str(&row.get::<String>(3).unwrap_or_default())
+                    reference_kind: row
+                        .get::<String>(3)
+                        .unwrap_or_default()
+                        .parse::<EdgeKind>()
                         .unwrap_or(EdgeKind::Calls),
                     line: row.get::<u32>(4).unwrap_or(0),
                     column: row.get::<u32>(5).unwrap_or(0),
@@ -10814,7 +10820,7 @@ Source: [src/db/queries/unresolved.rs:171](../src/db/queries/unresolved.rs#L171)
 
 ### `get_unresolved_refs_for_sources` — src/db/queries/unresolved.rs:220
 
-Source: [src/db/queries/unresolved.rs:220](../src/db/queries/unresolved.rs#L220).
+Source: [src/db/queries/unresolved.rs:223](../src/db/queries/unresolved.rs#L223).
 
 ```rust
     pub async fn get_unresolved_refs_for_sources(
@@ -10856,7 +10862,7 @@ Source: [src/db/queries/unresolved.rs:220](../src/db/queries/unresolved.rs#L220)
 
 ### `clear_unresolved_refs` — src/db/queries/unresolved.rs:257
 
-Source: [src/db/queries/unresolved.rs:257](../src/db/queries/unresolved.rs#L257).
+Source: [src/db/queries/unresolved.rs:260](../src/db/queries/unresolved.rs#L260).
 
 ```rust
     pub async fn clear_unresolved_refs(&self) -> Result<()> {

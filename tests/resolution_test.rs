@@ -90,7 +90,7 @@ async fn setup_db_with_nodes() -> (TempDir, Database) {
 async fn test_resolve_exact_name_match() {
     let (_dir, db) = setup_db_with_nodes().await;
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
 
     let uref = UnresolvedRef {
         from_node_id: generate_node_id("src/main.rs", &NodeKind::Function, "main", 1),
@@ -151,7 +151,7 @@ resource "aws_instance" "web" {
         db.insert_node(node).await.expect("failed to insert node");
     }
     let all_nodes = db.get_all_nodes().await.expect("failed to load nodes");
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
 
     assert_eq!(references.unresolved_refs.len(), 6);
     for reference in &references.unresolved_refs {
@@ -170,7 +170,7 @@ resource "aws_instance" "web" {
 async fn test_resolve_qualified_name_match() {
     let (_dir, db) = setup_db_with_nodes().await;
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
 
     let uref = UnresolvedRef {
         from_node_id: generate_node_id("src/main.rs", &NodeKind::Function, "main", 1),
@@ -196,7 +196,7 @@ async fn test_resolve_qualified_name_match() {
 async fn test_resolve_all() {
     let (_dir, db) = setup_db_with_nodes().await;
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
 
     let refs = vec![UnresolvedRef {
         from_node_id: generate_node_id("src/main.rs", &NodeKind::Function, "main", 1),
@@ -218,7 +218,7 @@ async fn test_resolve_all() {
 async fn test_unresolvable_reference() {
     let (_dir, db) = setup_db_with_nodes().await;
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
 
     let uref = UnresolvedRef {
         from_node_id: "function:caller".to_string(),
@@ -239,7 +239,7 @@ async fn test_unresolvable_reference() {
 async fn test_unresolvable_in_resolve_all() {
     let (_dir, db) = setup_db_with_nodes().await;
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
 
     let refs = vec![
         UnresolvedRef {
@@ -274,7 +274,7 @@ async fn test_unresolvable_in_resolve_all() {
 async fn test_creates_edges_from_resolved() {
     let (_dir, db) = setup_db_with_nodes().await;
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
 
     let resolved = ResolvedRef {
         original: UnresolvedRef {
@@ -416,7 +416,7 @@ async fn test_multiple_candidates_best_match_scoring() {
         .expect("failed to insert caller");
 
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
 
     // Reference from src/main.rs should prefer the same-file candidate.
     let uref = UnresolvedRef {
@@ -446,7 +446,7 @@ async fn test_multiple_candidates_best_match_scoring() {
 async fn test_create_edges_empty_input() {
     let (_dir, db) = setup_db_with_nodes().await;
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
 
     let edges = resolver.create_edges(&[]);
     assert!(edges.is_empty());
@@ -456,7 +456,7 @@ async fn test_create_edges_empty_input() {
 async fn test_resolve_all_empty_input() {
     let (_dir, db) = setup_db_with_nodes().await;
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
 
     let result = resolver.resolve_all(&[]);
     assert_eq!(result.total, 0);
@@ -473,7 +473,7 @@ async fn test_resolve_all_empty_input() {
 async fn test_resolve_all_self_qualified_call_not_dropped() {
     let (_dir, db) = setup_db_with_nodes().await;
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
 
     let refs = vec![UnresolvedRef {
         from_node_id: generate_node_id("src/main.rs", &NodeKind::Function, "main", 1),
@@ -502,7 +502,7 @@ async fn test_resolve_all_self_qualified_call_not_dropped() {
 async fn test_resolve_all_dotted_method_call() {
     let (_dir, db) = setup_db_with_nodes().await;
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
 
     let refs = vec![UnresolvedRef {
         from_node_id: generate_node_id("src/main.rs", &NodeKind::Function, "main", 1),
@@ -542,7 +542,7 @@ async fn test_ruby_receiver_calls_do_not_fall_back_to_bare_names() {
     db.insert_node(&ruby_helper).await.unwrap();
 
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
     let from_node_id = generate_node_id("app/service.rb", &NodeKind::Method, "run", 1);
 
     let names = [
@@ -788,7 +788,7 @@ async fn test_ruby_receiver_calls_resolve_only_with_explicit_singleton_evidence(
     }
 
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
     let reference = |from_node_id: &str, name: &str| UnresolvedRef {
         from_node_id: from_node_id.to_string(),
         reference_name: name.to_string(),
@@ -927,7 +927,7 @@ async fn test_ruby_receiver_calls_reject_ambiguous_owners_and_targets() {
     }
 
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
     let reference = |name: &str| UnresolvedRef {
         from_node_id: "caller".to_string(),
         reference_name: name.to_string(),
@@ -1028,7 +1028,7 @@ async fn test_ruby_receiver_calls_respect_lexical_constant_shadowing() {
     }
 
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
     let reference = |name: &str| UnresolvedRef {
         from_node_id: admin.id.clone(),
         reference_name: name.to_string(),
@@ -1151,7 +1151,7 @@ async fn test_ruby_receiver_calls_choose_the_innermost_lexical_constant() {
     }
 
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
     let reference = |name: &str| UnresolvedRef {
         from_node_id: caller.id.clone(),
         reference_name: name.to_string(),
@@ -1180,11 +1180,6 @@ async fn test_ruby_receiver_calls_choose_the_innermost_lexical_constant() {
 /// wasn't in the allowed target-kind list for `Implements` refs at all.
 #[tokio::test]
 async fn test_ruby_module_target_resolves_for_ruby_implements_ref() {
-    let dir = TempDir::new().expect("failed to create temp dir");
-    let (db, _) = Database::initialize(&dir.path().join("test.db"))
-        .await
-        .expect("failed to init db");
-
     let module_node = variant_node(
         &generate_node_id(
             "app/models/concerns/comparable.rb",
@@ -1198,7 +1193,7 @@ async fn test_ruby_module_target_resolves_for_ruby_implements_ref() {
         "app/models/concerns/comparable.rb",
     );
 
-    let resolver = ReferenceResolver::from_nodes(&db, std::slice::from_ref(&module_node));
+    let resolver = ReferenceResolver::from_nodes(std::slice::from_ref(&module_node));
 
     let uref = UnresolvedRef {
         from_node_id: "class:c".to_string(),
@@ -1224,11 +1219,6 @@ async fn test_ruby_module_target_resolves_for_ruby_implements_ref() {
 /// fails.
 #[tokio::test]
 async fn test_ruby_module_target_does_not_resolve_for_non_ruby_implements_ref() {
-    let dir = TempDir::new().expect("failed to create temp dir");
-    let (db, _) = Database::initialize(&dir.path().join("test.db"))
-        .await
-        .expect("failed to init db");
-
     let module_node = variant_node(
         &generate_node_id("src/comparable.rs", &NodeKind::Module, "comparable", 1),
         NodeKind::Module,
@@ -1237,7 +1227,7 @@ async fn test_ruby_module_target_does_not_resolve_for_non_ruby_implements_ref() 
         "src/comparable.rs",
     );
 
-    let resolver = ReferenceResolver::from_nodes(&db, std::slice::from_ref(&module_node));
+    let resolver = ReferenceResolver::from_nodes(std::slice::from_ref(&module_node));
 
     let uref = UnresolvedRef {
         from_node_id: "struct:c".to_string(),
@@ -1262,11 +1252,6 @@ async fn test_ruby_module_target_does_not_resolve_for_non_ruby_implements_ref() 
 /// (shared list `||` Module) rather than exclusive for Ruby.
 #[tokio::test]
 async fn test_ruby_implements_does_not_resolve_to_class() {
-    let dir = TempDir::new().expect("failed to create temp dir");
-    let (db, _) = Database::initialize(&dir.path().join("test.db"))
-        .await
-        .expect("failed to init db");
-
     let class_node = variant_node(
         &generate_node_id("app/models/foo.rb", &NodeKind::Class, "Foo", 1),
         NodeKind::Class,
@@ -1275,7 +1260,7 @@ async fn test_ruby_implements_does_not_resolve_to_class() {
         "app/models/foo.rb",
     );
 
-    let resolver = ReferenceResolver::from_nodes(&db, std::slice::from_ref(&class_node));
+    let resolver = ReferenceResolver::from_nodes(std::slice::from_ref(&class_node));
 
     let uref = UnresolvedRef {
         from_node_id: "class:c".to_string(),
@@ -1300,11 +1285,6 @@ async fn test_ruby_implements_does_not_resolve_to_class() {
 /// deterministically picks the class first.
 #[tokio::test]
 async fn test_ruby_implements_prefers_module_over_same_named_class() {
-    let dir = TempDir::new().expect("failed to create temp dir");
-    let (db, _) = Database::initialize(&dir.path().join("test.db"))
-        .await
-        .expect("failed to init db");
-
     let class_node = variant_node(
         &generate_node_id("app/models/a_klass.rb", &NodeKind::Class, "Foo", 1),
         NodeKind::Class,
@@ -1326,7 +1306,7 @@ async fn test_ruby_implements_prefers_module_over_same_named_class() {
     );
 
     let nodes = vec![class_node.clone(), module_node.clone()];
-    let resolver = ReferenceResolver::from_nodes(&db, &nodes);
+    let resolver = ReferenceResolver::from_nodes(&nodes);
 
     let uref = UnresolvedRef {
         from_node_id: "class:c".to_string(),
@@ -1356,11 +1336,6 @@ async fn test_ruby_implements_prefers_module_over_same_named_class() {
 /// a module.
 #[tokio::test]
 async fn test_ruby_extends_does_not_resolve_to_module() {
-    let dir = TempDir::new().expect("failed to create temp dir");
-    let (db, _) = Database::initialize(&dir.path().join("test.db"))
-        .await
-        .expect("failed to init db");
-
     let module_node = variant_node(
         &generate_node_id("app/models/concerns/bar.rb", &NodeKind::Module, "Bar", 1),
         NodeKind::Module,
@@ -1369,7 +1344,7 @@ async fn test_ruby_extends_does_not_resolve_to_module() {
         "app/models/concerns/bar.rb",
     );
 
-    let resolver = ReferenceResolver::from_nodes(&db, std::slice::from_ref(&module_node));
+    let resolver = ReferenceResolver::from_nodes(std::slice::from_ref(&module_node));
 
     let uref = UnresolvedRef {
         from_node_id: "class:c".to_string(),
@@ -1391,11 +1366,6 @@ async fn test_ruby_extends_does_not_resolve_to_module() {
 /// break the one Ruby `Extends` path, which has no other coverage.
 #[tokio::test]
 async fn test_ruby_extends_resolves_to_class() {
-    let dir = TempDir::new().expect("failed to create temp dir");
-    let (db, _) = Database::initialize(&dir.path().join("test.db"))
-        .await
-        .expect("failed to init db");
-
     let class_node = variant_node(
         &generate_node_id("app/models/bar.rb", &NodeKind::Class, "Bar", 1),
         NodeKind::Class,
@@ -1404,7 +1374,7 @@ async fn test_ruby_extends_resolves_to_class() {
         "app/models/bar.rb",
     );
 
-    let resolver = ReferenceResolver::from_nodes(&db, std::slice::from_ref(&class_node));
+    let resolver = ReferenceResolver::from_nodes(std::slice::from_ref(&class_node));
 
     let uref = UnresolvedRef {
         from_node_id: "class:c".to_string(),
@@ -1441,11 +1411,6 @@ async fn test_ruby_extends_resolves_to_class() {
 /// sibling (cross-node phantom).
 #[tokio::test]
 async fn test_annotation_ref_does_not_bind_to_sibling_usage() {
-    let dir = TempDir::new().expect("failed to create temp dir");
-    let (db, _) = Database::initialize(&dir.path().join("test.db"))
-        .await
-        .expect("failed to init db");
-
     let usage_a = variant_node(
         "au:override:a",
         NodeKind::AnnotationUsage,
@@ -1462,7 +1427,7 @@ async fn test_annotation_ref_does_not_bind_to_sibling_usage() {
     );
 
     let nodes = vec![usage_a.clone(), usage_b.clone()];
-    let resolver = ReferenceResolver::from_nodes(&db, &nodes);
+    let resolver = ReferenceResolver::from_nodes(&nodes);
 
     let uref_a = UnresolvedRef {
         from_node_id: usage_a.id.clone(),
@@ -1498,11 +1463,6 @@ async fn test_annotation_ref_does_not_bind_to_sibling_usage() {
 /// edge under this kind as attachment.
 #[tokio::test]
 async fn test_annotation_ref_does_not_bind_to_declaration() {
-    let dir = TempDir::new().expect("failed to create temp dir");
-    let (db, _) = Database::initialize(&dir.path().join("test.db"))
-        .await
-        .expect("failed to init db");
-
     let decl_node = variant_node(
         "an:JsonSerializable",
         NodeKind::Annotation,
@@ -1519,7 +1479,7 @@ async fn test_annotation_ref_does_not_bind_to_declaration() {
     );
 
     let nodes = vec![decl_node, usage_node];
-    let resolver = ReferenceResolver::from_nodes(&db, &nodes);
+    let resolver = ReferenceResolver::from_nodes(&nodes);
 
     let uref = UnresolvedRef {
         from_node_id: "au:JsonSerializable".to_string(),
@@ -1541,11 +1501,6 @@ async fn test_annotation_ref_does_not_bind_to_declaration() {
 /// valid `Annotates` target either.
 #[tokio::test]
 async fn test_annotation_ref_does_not_bind_to_decorator() {
-    let dir = TempDir::new().expect("failed to create temp dir");
-    let (db, _) = Database::initialize(&dir.path().join("test.db"))
-        .await
-        .expect("failed to init db");
-
     let decorator_node = variant_node(
         "dec:retry",
         NodeKind::Decorator,
@@ -1554,7 +1509,7 @@ async fn test_annotation_ref_does_not_bind_to_decorator() {
         "lib/decorators.py",
     );
 
-    let resolver = ReferenceResolver::from_nodes(&db, std::slice::from_ref(&decorator_node));
+    let resolver = ReferenceResolver::from_nodes(std::slice::from_ref(&decorator_node));
 
     let uref = UnresolvedRef {
         from_node_id: "fn:call_api".to_string(),
@@ -1915,7 +1870,7 @@ async fn test_cpp_call_resolves_to_header_declaration() {
     db.insert_node(&caller).await.expect("insert caller");
 
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
     let uref = UnresolvedRef {
         from_node_id: "fn:step".to_string(),
         reference_name: "CellToWorld".to_string(),
@@ -1961,7 +1916,7 @@ async fn test_cpp_call_resolves_into_a_template_implementation_header() {
     db.insert_node(&caller).await.expect("insert caller");
 
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
     let uref = UnresolvedRef {
         from_node_id: "fn:step".to_string(),
         reference_name: "Apply".to_string(),
@@ -2007,7 +1962,7 @@ async fn test_cross_language_single_candidate_still_penalised() {
     db.insert_node(&caller).await.expect("insert caller");
 
     let all_nodes = db.get_all_nodes().await.unwrap();
-    let resolver = ReferenceResolver::from_nodes(&db, &all_nodes);
+    let resolver = ReferenceResolver::from_nodes(&all_nodes);
     let uref = UnresolvedRef {
         from_node_id: "fn:step".to_string(),
         reference_name: "helper".to_string(),

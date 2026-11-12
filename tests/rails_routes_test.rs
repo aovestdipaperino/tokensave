@@ -485,12 +485,12 @@ async fn rails_route_references_bypass_generic_resolution() {
         .qualified_name
         .clone_from(&reference.reference_name);
     nodes.push(collision.clone());
-    let resolver = ReferenceResolver::from_nodes(graph.db(), &nodes);
+    let resolver = ReferenceResolver::from_nodes(&nodes);
     assert!(resolver.resolve_one(&reference).is_none());
 
     collision.id = "second-route-target-collision".into();
     nodes.push(collision);
-    let resolver = ReferenceResolver::from_nodes(graph.db(), &nodes);
+    let resolver = ReferenceResolver::from_nodes(&nodes);
     let result = resolver.resolve_all(&[reference]);
     assert!(result.resolved.is_empty());
     assert!(result.ambiguous.is_empty());
@@ -514,7 +514,7 @@ async fn rails_route_references_bypass_generic_resolution() {
         .qualified_name
         .clone_from(&reference.reference_name);
     nodes.push(collision);
-    let resolver = ReferenceResolver::from_nodes(graph.db(), &nodes);
+    let resolver = ReferenceResolver::from_nodes(&nodes);
     assert!(resolver.resolve_one(&reference).is_none());
 
     let inflections = RubyExtractor.extract(
@@ -539,7 +539,7 @@ async fn rails_route_references_bypass_generic_resolution() {
         .qualified_name
         .clone_from(&reference.reference_name);
     nodes.push(collision);
-    let resolver = ReferenceResolver::from_nodes(graph.db(), &nodes);
+    let resolver = ReferenceResolver::from_nodes(&nodes);
     assert!(resolver.resolve_one(&reference).is_none());
 }
 

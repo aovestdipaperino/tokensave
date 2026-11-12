@@ -35,6 +35,7 @@ mod rename;
 mod runtime;
 mod staleness;
 mod util;
+mod watch;
 
 pub(crate) use extract::*;
 pub(crate) use guard::*;
@@ -47,6 +48,7 @@ pub use runtime::BranchRuntime;
 pub use staleness::{AutoSyncScope, BranchDrift, DEFAULT_MAX_AUTO_SYNC_FILES};
 pub use util::is_test_file;
 pub(crate) use util::*;
+pub use watch::{is_transient_file_name, WatchPlan, WatchedChange};
 
 /// Central orchestrator that coordinates all subsystems of the code graph.
 ///

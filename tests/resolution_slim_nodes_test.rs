@@ -99,11 +99,11 @@ async fn slim_node_load_resolves_identically_to_the_full_load() {
     );
 
     let mut edges_full = {
-        let r = ReferenceResolver::from_nodes(db, &full);
+        let r = ReferenceResolver::from_nodes(&full);
         r.create_edges(&r.resolve_all(&unresolved).resolved)
     };
     let mut edges_slim = {
-        let r = ReferenceResolver::from_nodes(db, &slim);
+        let r = ReferenceResolver::from_nodes(&slim);
         r.create_edges(&r.resolve_all(&unresolved).resolved)
     };
 
