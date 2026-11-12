@@ -9,6 +9,7 @@ use tokensave::tokensave::TokenSave;
 mod cli;
 mod commands;
 mod global;
+mod okf_command;
 mod profile_command;
 mod serve;
 mod tool_command;
@@ -196,6 +197,15 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         let root = tokensave::config::resolve_path_with_discovery(project.clone());
         tokensave::cancel::install_signal_handlers();
         return tokensave::graphify::export_file(&root, file, output, *max_nodes, *max_edges).await;
+    }
+
+    // OKF validation and export only read; skip startup maintenance.
+    if let Commands::Okf { action } = &command {
+        let code = okf_command::run(action).await?;
+        if code != 0 {
+            process::exit(code);
+        }
+        return Ok(());
     }
 
     // Verification must bypass config saves, telemetry and agent maintenance.
@@ -679,6 +689,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
         }
         Commands::GraphifyExport { .. } => unreachable!("export dispatched before startup"),
+        Commands::Okf { .. } => unreachable!("okf dispatched before startup"),
         Commands::Verify { .. } => unreachable!("verify is dispatched before startup"),
         Commands::Status {
             path,

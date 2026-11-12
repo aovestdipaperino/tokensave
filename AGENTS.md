@@ -360,6 +360,7 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - `src/context/` — AI-ready context assembly (builder, formatter, ranking, read modes).
 - `src/mcp/` — stdio JSON-RPC server, tool definitions, handlers, transport.
 - `src/agents/` — agent integrations (Claude, Codex, Cursor, etc.) and git hooks.
+- `src/okf/` — Open Knowledge Format v0.2 (#858): bounded bundle reader, conformance validator and read-only index export (`tokensave okf validate|export`); official sample bundles in `tests/fixtures/okf/official/`; see `docs/guide/OKF.md`.
 - `src/caveman.rs` — opt-in, read-only Caveman discovery and the extra MCP `initialize` paragraph (#797); see `docs/CAVEMAN-COMPATIBILITY.md`.
 - `src/sync.rs` — incremental sync (content hashing, stale/new/removed detection).
 - `src/bench.rs` — `tokensave bench` harness.

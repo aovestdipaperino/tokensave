@@ -174,6 +174,7 @@ mirrored to the [GitHub Wiki](https://github.com/aovestdipaperino/tokensave/wiki
 | [Token Tracking and Cost](docs/guide/TOKEN-TRACKING.md) | Savings ledger, cost reports, live monitor, memory diagnostics |
 | [Performance Profiling](docs/PROFILING.md) | Opt-in latency attribution for database operations, MCP tool phases and indexing |
 | [CLI Reference](docs/guide/CLI-REFERENCE.md) | Every command at a glance |
+| [Open Knowledge Format](docs/guide/OKF.md) | Validate OKF bundles and export the code index as one |
 | [Supported Languages](docs/guide/LANGUAGES.md) | 50+ languages and their feature tiers |
 | [Network Calls and Privacy](docs/guide/PRIVACY.md) | What leaves your machine and how to opt out |
 | [Troubleshooting](docs/guide/TROUBLESHOOTING.md) | `tokensave doctor` and common problems |
