@@ -112,6 +112,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- **The index of a checkout no longer includes a linked worktree inside it (Refs #998).** After `git worktree add nested -b side` in an indexed repository, the scan entered `nested/`. The index then held each file twice, and it held files that exist only on the branch of the worktree. The scan now stays out of a directory whose `.git` file points to a `worktrees/` entry, also when an `include` or `force_include` glob names it. The next sync removes the rows that an earlier version made. A worktree below a hidden directory was not affected, because the scan skips hidden directories. A nested clone and a submodule are indexed as before.
+
 - **Make profiling reports honest about cancellations, engine filters, and DB coverage (Refs #885).** Dropped futures now retain their elapsed latency and increment a separate cancellation count instead of appearing as zero-latency errors. An unknown `profile report --engine` value names the requested engine and the engines with data. The report and guide disclose the remaining raw database paths excluded from the measured DB share; the existing MCP handler boxing keeps the instrumented request future off callers' stacks.
 
 - Run the Python comparison benchmark tests in CI and refuse Criterion clone caches marked with `.bench-ref`, with guidance to use a separate cache directory (Refs #881).

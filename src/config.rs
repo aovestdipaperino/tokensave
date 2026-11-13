@@ -892,6 +892,19 @@ fn git_marker(dir: &Path) -> Option<GitMarker> {
     })
 }
 
+/// Whether `dir` is the root of a linked worktree: its `.git` is a file that
+/// points into the `worktrees/` directory of a repository.
+///
+/// The scan uses this to stay out of a worktree that lies inside the checkout
+/// it indexes (#865). Such a directory is a second working tree of the same
+/// repository, not content of the first. A nested clone and a submodule are
+/// repositories of their own and give `false`.
+///
+/// Costs one `stat` for a directory with no `.git` entry.
+pub(crate) fn is_linked_worktree_root(dir: &Path) -> bool {
+    git_marker(dir) == Some(GitMarker::LinkedWorktree)
+}
+
 /// Returns the nearest initialized `TokenSave` project that owns `start`, or
 /// `None` when [`discover_project`] finds none (or only an incomplete one).
 pub fn discover_project_root(start: &Path) -> Option<PathBuf> {

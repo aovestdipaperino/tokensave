@@ -333,6 +333,12 @@ impl ScanDirPrune {
     /// Whether the walk descends into the directory at `path`, found at
     /// `depth` below the walk root.
     pub(super) fn keeps(&self, path: &Path, depth: usize, is_symlink: bool) -> bool {
+        // A linked worktree below the root is a second working tree of the
+        // same repository (#865). No include glob re-admits it. The root is
+        // exempt: a worktree with an index of its own is a project.
+        if depth > 0 && crate::config::is_linked_worktree_root(path) {
+            return false;
+        }
         let rel_str = path
             .strip_prefix(&self.root)
             .map(|rel| rel.to_string_lossy().replace('\\', "/"));
@@ -1198,6 +1204,27 @@ impl TokenSave {
         Ok(())
     }
 
+    /// Whether the project-relative `path` lies below a linked worktree that
+    /// is inside the project. The scan does not enter such a directory (#865).
+    pub(super) fn is_below_nested_worktree(&self, path: &str) -> bool {
+        if Path::new(path).is_absolute() {
+            return false;
+        }
+        let mut dir = self.project_root.clone();
+        let mut parts = path.split('/').peekable();
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                // The last part is the file name.
+                break;
+            }
+            dir.push(part);
+            if crate::config::is_linked_worktree_root(&dir) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Index/reexamine the given file paths, updating their graph nodes and edges.
     /// This is a focused, single-shot operation used by `sync_if_stale`.
     pub(crate) async fn sync_single_files(&self, file_paths: &[String]) -> Result<()> {
@@ -1228,7 +1255,9 @@ impl TokenSave {
         let mut existing: Vec<String> = Vec::with_capacity(file_paths.len());
         for path in file_paths {
             let absolute = project_root.join(&path);
-            if absolute.exists() {
+            // A file below a nested worktree is outside the scan (#865). Its
+            // row is from an earlier index, so it takes the removal branch.
+            if absolute.exists() && !self.is_below_nested_worktree(&path) {
                 // A previously detected source can become unsupported. Targeted
                 // MCP refreshes must remove its old symbols as full sync does.
                 if self.config.language_detection.enabled
@@ -2237,6 +2266,10 @@ impl TokenSave {
                 if !crate::config::is_force_included(&rel_str, config) {
                     continue;
                 }
+                // The worktree rule of the main walk applies here too (#865).
+                if self.is_below_nested_worktree(&rel_str) {
+                    continue;
+                }
                 if let Some(rel_str) = self.accept_file(entry.path(), supported_exts, &mut skipped)
                 {
                     files.push(rel_str);
@@ -2266,6 +2299,10 @@ impl TokenSave {
             .filter_entry(|e| {
                 if e.depth() == 0 {
                     return true;
+                }
+                // The same rule as `ScanDirPrune::keeps` (#865).
+                if e.file_type().is_dir() && crate::config::is_linked_worktree_root(e.path()) {
+                    return false;
                 }
                 // Checked before every other rule so no `include` glob or
                 // manifest entry can re-enable a link that swallows the
