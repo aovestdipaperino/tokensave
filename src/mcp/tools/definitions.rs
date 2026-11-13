@@ -2720,7 +2720,8 @@ fn def_knowledge() -> ToolDefinition {
          with `tokensave okf import` (docs, metrics, tables, Graphify or tokensave exports). \
          `query` matches concept titles, IDs, tags, types, descriptions and bodies; `file` \
          finds concepts about a project file; `concept` returns one concept in full with its \
-         links and backlinks. Results name the project files a concept refers to and whether \
+         links and backlinks; `related` traverses both directions of that graph. Results name \
+         the project files a concept refers to and whether \
          they are indexed. With no arguments, lists the imported bundles.",
         json!({
             "type": "object",
@@ -2736,6 +2737,14 @@ fn def_knowledge() -> ToolDefinition {
                 "concept": {
                     "type": "string",
                     "description": "Concept ID to read in full, e.g. \"metrics/revenue\"."
+                },
+                "related": {
+                    "type": "string",
+                    "description": "Concept ID whose links and backlinks to traverse."
+                },
+                "depth": {
+                    "type": "number",
+                    "description": "Relationship traversal depth (default: 1, max: 3); used with `related`."
                 },
                 "bundle": {
                     "type": "string",
