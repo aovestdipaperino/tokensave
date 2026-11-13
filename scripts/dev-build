@@ -1,0 +1,175 @@
+#!/bin/sh
+# Local build/test runner: Blaze first on Linux and macOS, Cargo otherwise (#984).
+#
+#   scripts/dev-build [--cargo | --blaze] <cargo subcommand> [cargo arguments...]
+#
+#   scripts/dev-build test --workspace --locked
+#   scripts/dev-build build --locked --no-default-features --features lite
+#   scripts/dev-build --cargo test --workspace --locked     # Cargo, even with Blaze installed
+#
+# For local development only. CI and releases never use this script or
+# Blaze, and Cargo stays the authoritative validation and release path: before
+# sending a change, run the documented `cargo` commands.
+#
+# Selection, from highest precedence:
+#   1. --cargo or --blaze as the first argument;
+#   2. TOKENSAVE_BUILD_RUNNER=auto|cargo|blaze (default: auto).
+#
+# In `auto`, Blaze runs when all of these hold, and Cargo otherwise:
+#   - the OS is Linux or macOS (Windows keeps Cargo);
+#   - `blaze --version` succeeds and the linker Blaze uses is present;
+#   - the subcommand is one Blaze answers (build, check, test, run, bench);
+#   - no argument names something Blaze does not build yet (see
+#     docs/BLAZE-EVALUATION.md, "Cases that use Cargo").
+# When Blaze fails a build, check, test or bench, the same command runs again
+# with Cargo, and its exit code is the result. `run` is not repeated, since the
+# program may have side effects. Forced `blaze` fails instead of falling back.
+#
+# Messages go to stderr with a `dev-build:` prefix; the command's own output
+# and exit code are passed through unchanged.
+
+set -u
+
+say() { printf 'dev-build: %s\n' "$*" >&2; }
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || exit 2
+
+mode="${TOKENSAVE_BUILD_RUNNER:-auto}"
+case "${1:-}" in
+    --cargo) mode=cargo; shift ;;
+    --blaze) mode=blaze; shift ;;
+esac
+case "$mode" in
+    auto | cargo | blaze) ;;
+    *)
+        say "TOKENSAVE_BUILD_RUNNER is '$mode'; use auto, cargo or blaze."
+        exit 2
+        ;;
+esac
+
+if [ $# -eq 0 ]; then
+    say "usage: scripts/dev-build [--cargo | --blaze] <subcommand> [arguments...]"
+    exit 2
+fi
+subcommand="$1"
+
+# Why Blaze cannot run this command, or nothing when it can.
+blaze_blocker() {
+    case "$(uname -s 2>/dev/null)" in
+        Linux | Darwin) ;;
+        *) echo "Blaze is used on Linux and macOS only"; return ;;
+    esac
+    if ! command -v blaze >/dev/null 2>&1; then
+        echo "blaze is not installed"; return
+    fi
+    if ! blaze --version >/dev/null 2>&1; then
+        echo "'blaze --version' failed"; return
+    fi
+    case "$(uname -s)" in
+        Linux)
+            command -v cc >/dev/null 2>&1 || { echo "Blaze links with cc, which is not installed"; return; }
+            ;;
+        Darwin)
+            xcode-select -p >/dev/null 2>&1 || { echo "Blaze links with Apple's command line tools, which are not installed"; return; }
+            ;;
+    esac
+    case "$subcommand" in
+        build | b | check | c | test | t | run | r | bench) ;;
+        *) echo "Blaze does not run 'cargo $subcommand'"; return ;;
+    esac
+    tests=0
+    targets=0
+    shift_args=1
+    for arg in "$@"; do
+        if [ "$shift_args" -eq 1 ]; then shift_args=0; continue; fi
+        case "$arg" in
+            --) break ;;
+            --target-dir | --target-dir=* | --all-targets | --bins | --tests | --examples | \
+                --benches | --message-format | --message-format=* | -Z | -Z* | \
+                --build-plan | --unit-graph | --doc)
+                echo "Blaze does not build '$arg' yet"; return
+                ;;
+            --test | --test=*) tests=$((tests + 1)) ;;
+            --target | --target=*) targets=$((targets + 1)) ;;
+        esac
+    done
+    if [ "$tests" -gt 1 ]; then echo "Blaze builds one --test at a time"; return; fi
+    if [ "$targets" -gt 1 ]; then echo "Blaze builds one --target at a time"; return; fi
+}
+
+# Exports the [env] table of the repository's .cargo/config.toml, as Cargo
+# applies it: a `force = false` entry only when the variable is unset. Blaze
+# 0.20261027.0 applies the table itself, but it carries the test isolation
+# that keeps the suite away from the developer's own agent configuration and
+# git hooks (#575, #381, #919), so that protection should not depend on a young
+# tool's Cargo compatibility. The values are the same either way.
+export_cargo_env() {
+    config="$root/.cargo/config.toml"
+    [ -f "$config" ] || return 0
+    entries=$(awk '
+        { sub(/\r$/, "") }
+        /^[ \t]*\[/ { in_env = ($0 ~ /^[ \t]*\[env\][ \t]*(#.*)?$/); next }
+        !in_env || /^[ \t]*(#|$)/ { next }
+        {
+            if (match($0, /^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=/) == 0) next
+            name = substr($0, RSTART, RLENGTH - 1); gsub(/[ \t]/, "", name)
+            rest = substr($0, RSTART + RLENGTH)
+            force = (rest ~ /force[ \t]*=[ \t]*true/) ? "1" : "0"
+            if (rest ~ /^[ \t]*\{/) {
+                if (match(rest, /value[ \t]*=[ \t]*"[^"]*"/) == 0) next
+                value = substr(rest, RSTART, RLENGTH); sub(/^value[ \t]*=[ \t]*"/, "", value)
+            } else {
+                if (match(rest, /^[ \t]*"[^"]*"/) == 0) next
+                value = substr(rest, RSTART, RLENGTH); sub(/^[ \t]*"/, "", value)
+            }
+            sub(/"$/, "", value)
+            printf "%s\t%s\t%s\n", name, force, value
+        }' "$config") || return 0
+    tab=$(printf '\t')
+    old_ifs=$IFS
+    IFS='
+'
+    for entry in $entries; do
+        IFS=$tab read -r name force value <<EOF
+$entry
+EOF
+        if [ "$force" = 1 ] || eval "[ -z \"\${$name+set}\" ]"; then
+            export "$name=$value"
+        fi
+    done
+    IFS=$old_ifs
+}
+
+run_cargo() {
+    exec cargo "$@"
+}
+
+case "$mode" in
+    cargo) run_cargo "$@" ;;
+    blaze)
+        blocker=$(blaze_blocker "$@")
+        if [ -n "$blocker" ]; then
+            say "cannot use Blaze: $blocker."
+            exit 2
+        fi
+        ;;
+    auto)
+        blocker=$(blaze_blocker "$@")
+        if [ -n "$blocker" ]; then
+            say "using cargo: $blocker."
+            run_cargo "$@"
+        fi
+        ;;
+esac
+
+export_cargo_env
+say "using blaze ($(blaze --version 2>/dev/null)); 'scripts/dev-build --cargo ...' uses Cargo."
+blaze "$@"
+status=$?
+if [ "$status" -eq 0 ]; then exit 0; fi
+if [ "$mode" = blaze ] || [ "$status" -gt 128 ]; then exit "$status"; fi
+case "$subcommand" in
+    run | r) exit "$status" ;;
+esac
+say "blaze exited with $status; running the same command with cargo, whose result counts."
+run_cargo "$@"

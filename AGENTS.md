@@ -322,8 +322,11 @@ portable string formats, and documented path-syntax test fixtures.
 - `src/lib.rs` denies `clippy::all`, `clippy::unwrap_used`, and `clippy::expect_used`, and warns on `clippy::pedantic` — avoid `unwrap()`/`expect()` in library code.
 - Language-specific tests: `cargo test --test integration rust_extraction_test::`; single test: `cargo test test_find_stale_files`; filter: `cargo test sync`. Lite-only local loop: `cargo test-lite`.
 - Integration tests live in `tests/` (one file per module/language) but compile into a single binary, `tests/integration.rs` (`autotests = false`): a new test file must be added there as a `mod`. Files that mutate env vars or the `cancel` flag are separate `[[test]]` targets in `Cargo.toml` instead. Helpers are shared via `crate::common` (`tests/common/mod.rs`); fixtures are in `tests/fixtures/`. See CONTRIBUTING.md "Test layout".
+- Optional local runner (#984): `scripts/dev-build <cargo subcommand> [args]` uses Blaze on Linux/macOS when it is installed and usable, and Cargo otherwise (Windows: always Cargo); `--cargo` or `TOKENSAVE_BUILD_RUNNER=cargo` forces Cargo. It is local only: never add Blaze to CI, releases or required tooling, and validate with plain `cargo` before a PR. Runner tests: `python3 -B -m unittest discover -s scripts/blaze-bench -p 'test_*.py'` (POSIX, not in CI). Keep the runner's `[env]` export in step with `.cargo/config.toml`; the tests compare them. Details: `docs/BLAZE-EVALUATION.md`.
 
 ### Non-standard test/bench harnesses
+
+- Cargo vs Blaze local benchmark (#984): `python3 scripts/blaze-bench/blaze_bench.py --source <repo> --rev <commit> --work <dir> --output <json> --markdown <md>`. Linux/WSL only; needs Cargo, Blaze and a C compiler. See `scripts/blaze-bench/README.md`; results in `docs/BLAZE-EVALUATION.md`.
 
 - Graphify coexistence evaluation (#791): `python3 scripts/graphify_probe.py --graphify /path/to/pinned/graphify --benchmark-repo "$PWD" --output /tmp/graphify-results.json`. Requires Linux, GNU time, git, both CLIs, and the Graphify revision in `docs/GRAPHIFY-EVALUATION.md`. Uses disposable copies; does not install assistant integrations. The evaluation records limits and outstanding checks.
 - Pi real-session regressions: `node scripts/pi-tests/run.mjs /path/to/prepared/pi`; see `scripts/pi-tests/README.md` for the pinned Pi prerequisites and offline scope.
