@@ -96,7 +96,8 @@ impl Database {
         sql: &str,
         params: impl IntoParams,
     ) -> libsql::Result<ProfiledRows> {
-        let span = profile::span(op);
+        let mut span = profile::span(op);
+        span.mark_cancellable();
         match self.conn().query(sql, params).await {
             Ok(rows) => Ok(ProfiledRows {
                 rows,
@@ -113,7 +114,8 @@ impl Database {
     /// Acquires the write lock (#563), measuring the wait as
     /// [`DbOp::WriteLockWait`].
     pub(crate) async fn lock_writes(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        let span = profile::span(DbOp::WriteLockWait);
+        let mut span = profile::span(DbOp::WriteLockWait);
+        span.mark_cancellable();
         let guard = self.write_lock.lock().await;
         span.finish();
         guard

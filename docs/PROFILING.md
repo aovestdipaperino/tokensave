@@ -27,13 +27,13 @@ New tokensave processes pick the change up. Restart running MCP servers to inclu
 
 | Series | Meaning |
 |---|---|
-| `db.*` | One per database query method: latency (execution plus reading rows), rows, errors, slow count. Also write-lock wait (`db.write_lock_wait`) and write transactions (`db.transaction`). |
+| `db.*` | Profiled database query methods: latency (execution plus reading rows), rows, errors, cancellations, slow count. Also write-lock wait (`db.write_lock_wait`) and write transactions (`db.transaction`). A few raw connection paths listed below are not attributed. |
 | `mcp.*` | Phases of a `tools/call`: `total`, `project_resolution`, `freshness`, `handler`, `graph_traversal`. |
 | `tool.<name>` | Per tool: end-to-end latency, database time and operations per call, response size, errors. |
 | `index.*`, `sync.*` | Phases of a full index and of an incremental sync. |
 | `run.*` | Whole runs bucketed by project file count, so latency can be compared across repository sizes. |
 
-Failed operations are counted as errors and kept out of the latency histograms. Execution and row decoding are reported together because libSQL performs them lazily inside the same call.
+Failed operations are counted as errors and kept out of the latency histograms. A dropped future is counted separately as a cancellation; its elapsed time remains in the histogram because cancelled slow work is part of the observed latency tail. Execution and row decoding are reported together because libSQL performs them lazily inside the same call.
 
 ## Reports
 
@@ -50,12 +50,13 @@ Example `report --mcp` (illustrative numbers):
 
 ```text
 Engine: libsql (window: 24h)
-OPERATION                                        COUNT    ERR    TOTAL ms      MEAN       P50        P95        P99       MAX
-tool.tokensave_context                             412      0     18233.0     44.25     38.91      97.28     151.55    402.10
-mcp.handler                                        961      3     31002.6     32.26     21.50      88.06     140.29    402.10
-tool.tokensave_search                              233      0      2410.7     10.35      8.19      22.14*     40.95*    61.20
+OPERATION                                        COUNT    ERR CANCEL    TOTAL ms      MEAN       P50        P95        P99       MAX
+tool.tokensave_context                             412      0      1     18233.0     44.25     38.91      97.28     151.55    402.10
+mcp.handler                                        961      3      1     31002.6     32.26     21.50      88.06     140.29    402.10
+tool.tokensave_search                              233      0      0      2410.7     10.35      8.19      22.14*     40.95*    61.20
 
 Database share of measured MCP time: 41% (outside DB: 59%)
+This share includes profiled query methods only; raw database access in memory reporting, quality diff, edge audit, import analysis, schema inspection, and Rails route edge insertion is not attributed to DB time.
 
 Times in ms. Percentiles are bucket upper bounds (<= 1.6% high). * = fewer than 100 samples, P95/P99 unreliable.
 ```

@@ -261,6 +261,7 @@ where
     F: std::future::Future<Output = Result<T, E>>,
 {
     let mut span = span(op);
+    span.mark_cancellable();
     let result = fut.await;
     match &result {
         Ok(value) => {
@@ -279,6 +280,7 @@ where
     F: std::future::Future<Output = Result<(), E>>,
 {
     let mut span = span(op);
+    span.mark_cancellable();
     let result = fut.await;
     if result.is_ok() {
         span.add_rows(0, affected as u64);
