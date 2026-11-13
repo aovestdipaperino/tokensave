@@ -626,6 +626,27 @@ async fn knowledge_tool_lists_searches_and_reads_imported_concepts() {
         "{backlinks:?}"
     );
 
+    let related = knowledge(
+        &project,
+        json!({"related": "concepts/Transformer", "bundle": "graphify", "depth": 2}),
+    )
+    .await;
+    assert_eq!(related["depth"], 2);
+    let related_ids = result_ids(&related);
+    assert!(
+        related_ids.contains(&"graphify:concepts/LayerNorm".to_string()),
+        "{related_ids:?}"
+    );
+    assert!(
+        related_ids.contains(&"graphify:communities/Model_Architecture".to_string()),
+        "{related_ids:?}"
+    );
+    assert!(related["results"]
+        .as_array()
+        .expect("related results")
+        .iter()
+        .any(|result| result["distance"] == 2));
+
     let missing = knowledge(&project, json!({"concept": "nope"})).await;
     assert!(missing["error"].as_str().is_some());
     assert!(handle_tool_call(

@@ -178,6 +178,7 @@ tool list does not change.
 | `type` | Only concepts of this `type`, ignoring case. |
 | `bundle` | Only this imported bundle. |
 | `concept` | Read one concept in full: frontmatter, body (up to 24,000 characters), links with whether their target exists, and backlinks. |
+| `related` | Traverse both links and backlinks from one concept. `depth` defaults to 1 and is capped at 3; results include their distance from the starting concept. |
 | `limit` | Results to return; default 10, at most 50. |
 
 A concept refers to a project file through one of these frontmatter keys:
