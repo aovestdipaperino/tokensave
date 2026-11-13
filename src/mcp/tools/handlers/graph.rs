@@ -1193,7 +1193,29 @@ async fn add_labelled_call_references(
         .into_iter()
         .map(|node| (node.id.clone(), node))
         .collect();
+    // Stored qualified names carry the file path; show them the way match
+    // headers do. Only `other` entries name their targets, since a
+    // confirmed target is the one requested.
+    let other_target_ids: Vec<String> = references
+        .iter()
+        .flat_map(|site| site.resolved_targets.iter().map(|(id, _)| id))
+        .filter(|id| !target_ids.contains(id.as_str()))
+        .cloned()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let other_targets: HashMap<String, Node> = cg
+        .db()
+        .get_nodes_by_ids(&other_target_ids)
+        .await?
+        .into_iter()
+        .map(|node| (node.id.clone(), node))
+        .collect();
 
+    // The extractor can record one call twice, as the receiver text and in
+    // type-qualified form, at the same position. Each call site is listed
+    // once, under its strongest label (lower rank wins).
+    let mut listed_sites: HashMap<(String, u32, u32), (usize, u8)> = HashMap::new();
     for site in references {
         let Some(source) = sources.get(&site.reference.from_node_id) else {
             continue;
@@ -1202,15 +1224,24 @@ async fn add_labelled_call_references(
             .resolved_targets
             .iter()
             .any(|(id, _)| target_ids.contains(id.as_str()));
-        let (status, to_read) = if confirmed {
-            ("confirmed", false)
+        let (status, to_read, rank) = if confirmed {
+            ("confirmed", false, 0_u8)
         } else if !site.resolved_targets.is_empty() {
-            ("other", false)
+            ("other", false, 1)
         } else if !site.ambiguous_candidate_ids.is_empty() {
-            ("ambiguous", true)
+            ("ambiguous", true, 2)
         } else {
-            ("unresolved", true)
+            ("unresolved", true, 3)
         };
+        let site_key = (
+            site.reference.from_node_id.clone(),
+            site.reference.line,
+            site.reference.column,
+        );
+        let listed = listed_sites.get(&site_key).copied();
+        if listed.is_some_and(|(_, listed_rank)| listed_rank <= rank) {
+            continue;
+        }
         let target_is_candidate = site
             .ambiguous_candidate_ids
             .iter()
@@ -1222,25 +1253,33 @@ async fn add_labelled_call_references(
             .strip_suffix(leaf)
             .map(|prefix| prefix.trim_end_matches(['.', ':']))
             .filter(|prefix| !prefix.is_empty());
-        let resolved_targets: Vec<Value> = site
-            .resolved_targets
-            .iter()
-            .map(|(node_id, qualified_name)| {
-                json!({"node_id": node_id, "qualified_name": qualified_name})
-            })
-            .collect();
         let mut reference = json!({
             "line": super::display_line(site.reference.line),
             "column": site.reference.column,
             "reference": site.reference.reference_name,
             "status": status,
-            "to_read": to_read,
         });
         if let Some(fields) = reference.as_object_mut() {
-            if let Some(receiver) = receiver {
-                fields.insert("receiver".to_string(), json!(receiver));
+            // Only entries the agent must read carry the flag and the
+            // receiver text; the rest stay compact so several matches fit
+            // in one response.
+            if to_read {
+                fields.insert("to_read".to_string(), json!(true));
+                if let Some(receiver) = receiver {
+                    fields.insert("receiver".to_string(), json!(receiver));
+                }
             }
-            if !resolved_targets.is_empty() {
+            if !confirmed && !site.resolved_targets.is_empty() {
+                let resolved_targets: Vec<Value> = site
+                    .resolved_targets
+                    .iter()
+                    .map(|(node_id, stored_name)| {
+                        let qualified_name = other_targets
+                            .get(node_id)
+                            .map_or(stored_name.as_str(), symbol_target::display_qualified_name);
+                        json!({"node_id": node_id, "qualified_name": qualified_name})
+                    })
+                    .collect();
                 fields.insert("resolved_targets".to_string(), json!(resolved_targets));
             }
             if !site.ambiguous_candidate_ids.is_empty() {
@@ -1287,7 +1326,16 @@ async fn add_labelled_call_references(
             .entry("references".to_string())
             .or_insert_with(|| Value::Array(Vec::new()));
         if let Some(references) = references.as_array_mut() {
-            references.push(reference);
+            match listed {
+                Some((slot, _)) => {
+                    references[slot] = reference;
+                    listed_sites.insert(site_key, (slot, rank));
+                }
+                None => {
+                    listed_sites.insert(site_key, (references.len(), rank));
+                    references.push(reference);
+                }
+            }
         }
     }
     Ok((total, returned))

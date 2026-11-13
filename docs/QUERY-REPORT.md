@@ -600,7 +600,7 @@ CREATE TABLE IF NOT EXISTS nodes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             from_node_id TEXT NOT NULL,
             reference_name TEXT NOT NULL,
-            reference_leaf TEXT NOT NULL,
+            reference_leaf TEXT NOT NULL DEFAULT '',
             reference_kind TEXT NOT NULL,
             line INTEGER NOT NULL,
             col INTEGER NOT NULL,
