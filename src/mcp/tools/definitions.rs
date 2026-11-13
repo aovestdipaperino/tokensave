@@ -976,8 +976,14 @@ fn def_callers() -> ToolDefinition {
     def(
         "tokensave_callers",
         "Callers",
-        "Find callers of a given node (function, method, etc.). Returns direct \
-         callers by default; pass max_depth > 1 to also follow the chain \
+        "Find callers of a given node (function, method, etc.). Direct results \
+         include every extracted call reference with the target's trailing name, \
+         not only resolved edges. Each caller's `references` label every site as \
+         `confirmed`, `other` (bound to a different same-named definition), \
+         `ambiguous` (with candidate count and whether this target is among them), \
+         or `unresolved`; uncertain sites carry `to_read: true`. Results report \
+         `reference_count`, `reference_total`, and `references_truncated` when \
+         the reference limit is reached. Pass max_depth > 1 to also follow the chain \
          transitively. Each result includes `depth` (1 = direct caller, 2+ = \
          transitive), `line` (the call-site line where the caller invokes the \
          target), `lines` (every line where the caller invokes the target, \
@@ -1006,7 +1012,7 @@ fn def_callers() -> ToolDefinition {
                 },
                 "limit": {
                     "type": "number",
-                    "description": "Maximum callers listed per match (default: 50, max: 500). When more exist, the result reports `count`, `total` and `truncated: true` (with node_id alone, the list is then wrapped as `{count, total, truncated, callers}`)."
+                    "description": "Maximum callers and direct call references inspected per match (default: 50, max: 500). When more exist, the result reports caller and reference counts plus truncation explicitly."
                 },
                 "max_depth": {
                     "type": "number",

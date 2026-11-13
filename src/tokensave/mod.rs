@@ -20,7 +20,7 @@ use crate::graph::{GraphQueryManager, GraphTraverser};
 use crate::resolution::{AmbiguityRefKey, ReferenceResolver, TouchedNode, TouchedSet};
 use crate::sync;
 use crate::types::{
-    AmbiguousCall, AstGrepResult, BuildContextOptions, Edge, EdgeKind, EditResult,
+    AmbiguousCall, AstGrepResult, BuildContextOptions, CallReference, Edge, EdgeKind, EditResult,
     ExecutableBodyDocument, ExtractionResult, FileKind, FileRecord, GraphStats, InsertResult,
     LineReplaceResult, MultiEditResult, Node, NodeKind, ResolvedRef, SearchResult, Subgraph,
     TaskContext, UnresolvedRef,
