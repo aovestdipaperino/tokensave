@@ -536,7 +536,7 @@ impl TokenSave {
         self.ensure_current_checkout()?;
         self.validate_manifest()?;
         let dispatch_revision = self.dispatch_revision();
-        write_dirty_sentinel(&self.project_root);
+        write_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         let start = Instant::now();
         // Profiling (#754): phase spans keep the verbose timings above
         // unchanged; an early `?` return records the open phase as failed.
@@ -834,7 +834,7 @@ impl TokenSave {
             result.duration_ms > 0 || result.file_count == 0,
             "non-empty index completed in zero milliseconds"
         );
-        clear_dirty_sentinel(&self.project_root);
+        clear_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         self.record_indexed_version();
         crate::memstats::record("index:done");
         Ok(result)
@@ -1235,7 +1235,7 @@ impl TokenSave {
         // crash contract: the sentinel is cleared only on the single success
         // exit below, and an interrupted pass is recovered on the next open
         // instead of silently losing resolver edges (#630, #450).
-        write_dirty_sentinel(&self.project_root);
+        write_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         let start = Instant::now();
         let project_root = &self.project_root;
         let registry = &self.registry;
@@ -1449,7 +1449,7 @@ impl TokenSave {
             )
             .await?;
 
-        clear_dirty_sentinel(&self.project_root);
+        clear_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         crate::memstats::record("sync:done");
         Ok(())
     }
@@ -1504,7 +1504,7 @@ impl TokenSave {
         self.ensure_current_checkout()?;
         self.validate_manifest()?;
         let dispatch_revision = self.dispatch_revision();
-        write_dirty_sentinel(&self.project_root);
+        write_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         let start = Instant::now();
         // Profiling (#754): see `index_all_with_progress_verbose`.
         let run_span = crate::profile::span(SyncPhase::Total);
@@ -1691,7 +1691,7 @@ impl TokenSave {
         if branch_transition {
             let count = new_files.len() + stale.len() + removed.len();
             if self.max_auto_sync_files > 0 && count > self.max_auto_sync_files {
-                clear_dirty_sentinel(&self.project_root);
+                clear_dirty_sentinel(&self.project_root, &self.dirty_database_name());
                 return Err(TokenSaveError::Config {
                     message: format!("branch context has {count} changed files, exceeding max_auto_sync_files={}; run `tokensave sync`", self.max_auto_sync_files),
                 });
@@ -2027,7 +2027,7 @@ impl TokenSave {
                 total_nodes + total_edges,
             );
         }
-        clear_dirty_sentinel(&self.project_root);
+        clear_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         crate::memstats::record("sync:done");
         Ok(SyncResult {
             files_added: new_files.len(),

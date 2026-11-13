@@ -5,35 +5,121 @@ use super::*;
 // Dirty sentinel — detects interrupted sync/index operations
 // ---------------------------------------------------------------------------
 
-/// Creates a `.tokensave/dirty` sentinel file before a sync or index begins.
+/// The key of a database line in the sentinel file.
+const DIRTY_DATABASE_KEY: &str = "db=";
+
+fn dirty_sentinel_path(project_root: &Path) -> PathBuf {
+    get_tokensave_dir(project_root).join("dirty")
+}
+
+/// The name that identifies a database in the sentinel file: its path below
+/// the project state directory, with `/` separators. This is the `db_file`
+/// form of the branch metadata, for example `branches/feature.db`.
+pub(crate) fn dirty_database_name(tokensave_dir: &Path, db_path: &Path) -> String {
+    let relative = db_path.strip_prefix(tokensave_dir).unwrap_or(db_path);
+    relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// The databases that a sentinel names. Empty for a sentinel in the old
+/// format, which names none and applies to each database.
+fn dirty_databases(contents: &str) -> Vec<&str> {
+    contents
+        .lines()
+        .filter_map(|line| line.strip_prefix(DIRTY_DATABASE_KEY))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// Writes the sentinel with `databases`. Removes it when the list is empty.
+fn store_dirty_databases(project_root: &Path, databases: &[&str]) {
+    let path = dirty_sentinel_path(project_root);
+    if databases.is_empty() {
+        let _ = std::fs::remove_file(path);
+        return;
+    }
+    let mut contents = format!(
+        "pid={}\ntime={}\nversion={}",
+        std::process::id(),
+        current_timestamp(),
+        env!("CARGO_PKG_VERSION"),
+    );
+    for database in databases {
+        contents.push('\n');
+        contents.push_str(DIRTY_DATABASE_KEY);
+        contents.push_str(database);
+    }
+    let _ = std::fs::write(path, contents);
+}
+
+/// Adds `database` to the `.tokensave/dirty` sentinel before a sync or index
+/// changes it.
+///
+/// The sentinel is one file for the project. A project in multi-branch mode
+/// has one database for each tracked branch. Thus the sentinel has one `db=`
+/// line for each database with an unfinished write (#865). A line whose
+/// database no longer exists is dropped here.
 ///
 /// This file is intentionally NOT cleaned up by a Drop guard — it must be
 /// removed explicitly by `clear_dirty_sentinel` after the operation succeeds.
 /// If the process is killed (SIGKILL, OOM), the sentinel survives and signals
 /// a potential crash on the next open.
-pub(crate) fn write_dirty_sentinel(project_root: &Path) {
-    let path = get_tokensave_dir(project_root).join("dirty");
-    let _ = std::fs::write(
-        &path,
-        format!(
-            "pid={}\ntime={}\nversion={}",
-            std::process::id(),
-            current_timestamp(),
-            env!("CARGO_PKG_VERSION"),
-        ),
-    );
+pub(crate) fn write_dirty_sentinel(project_root: &Path, database: &str) {
+    let tokensave_dir = get_tokensave_dir(project_root);
+    let path = dirty_sentinel_path(project_root);
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let named = dirty_databases(&existing);
+    if named.is_empty() && path.exists() {
+        // A sentinel in the old format already applies to each database.
+        // A name would narrow it to this one.
+        return;
+    }
+    let mut databases: Vec<&str> = named
+        .into_iter()
+        .filter(|name| *name != database && tokensave_dir.join(name).exists())
+        .collect();
+    databases.push(database);
+    store_dirty_databases(project_root, &databases);
 }
 
-/// Removes the dirty sentinel after a successful sync/index.
-pub(crate) fn clear_dirty_sentinel(project_root: &Path) {
-    let path = get_tokensave_dir(project_root).join("dirty");
-    let _ = std::fs::remove_file(path);
+/// Removes `database` from the dirty sentinel after a successful sync/index.
+/// Removes the file when it names no other database, and when it is in the
+/// old format.
+pub(crate) fn clear_dirty_sentinel(project_root: &Path, database: &str) {
+    let tokensave_dir = get_tokensave_dir(project_root);
+    let Ok(existing) = std::fs::read_to_string(dirty_sentinel_path(project_root)) else {
+        return;
+    };
+    let databases: Vec<&str> = dirty_databases(&existing)
+        .into_iter()
+        .filter(|name| *name != database && tokensave_dir.join(name).exists())
+        .collect();
+    store_dirty_databases(project_root, &databases);
 }
 
-/// Returns `true` if the dirty sentinel exists (previous operation was
-/// interrupted).
-pub(crate) fn has_dirty_sentinel(project_root: &Path) -> bool {
-    get_tokensave_dir(project_root).join("dirty").exists()
+/// Returns `true` if the dirty sentinel says that a previous operation on
+/// `database` was interrupted. A sentinel in the old format has no database
+/// name and applies to each database.
+pub(crate) fn has_dirty_sentinel(project_root: &Path, database: &str) -> bool {
+    let path = dirty_sentinel_path(project_root);
+    let Ok(contents) = std::fs::read(&path) else {
+        // A sentinel that exists and cannot be read applies to each database.
+        return path.exists();
+    };
+    let contents = String::from_utf8_lossy(&contents);
+    let databases = dirty_databases(&contents);
+    databases.is_empty() || databases.contains(&database)
+}
+
+impl TokenSave {
+    /// The name of the open database in the dirty sentinel.
+    pub(crate) fn dirty_database_name(&self) -> String {
+        dirty_database_name(&get_tokensave_dir(&self.project_root), &self.db_path())
+    }
 }
 
 /// Returns `true` if a sync or full reindex currently holds the sync lock
@@ -312,17 +398,93 @@ pub(crate) fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
+/// The branch that owns the open database, when that is not the checkout.
+///
+/// A branch with no database of its own, and a detached HEAD, are served from
+/// the database of another branch. In multi-branch mode that database belongs
+/// to its branch, and the working tree of a different checkout must not be
+/// written into it (#865).
+///
+/// Returns `None` for a project that tracks only its default branch. Such a
+/// project has one database for every branch by design, so a sync on each
+/// branch is correct there.
+///
+/// A pure function of its inputs, so that the rule can be tested without a
+/// repository.
+pub(crate) fn borrowed_index_owner<'a>(
+    meta: &branch_meta::BranchMeta,
+    active_branch: Option<&str>,
+    serving_branch: Option<&'a str>,
+) -> Option<&'a str> {
+    let owner = serving_branch?;
+    if active_branch == Some(owner) {
+        return None;
+    }
+    let multi_branch = meta
+        .branches
+        .keys()
+        .any(|name| *name != meta.default_branch);
+    multi_branch.then_some(owner)
+}
+
+/// The error for a write through a borrowed index. It names the remedy.
+pub(crate) fn borrowed_index_refusal(active_branch: Option<&str>, owner: &str) -> TokenSaveError {
+    let message = match active_branch {
+        Some(branch) => format!(
+            "branch '{branch}' has no index of its own. The open index belongs to '{owner}' \
+             and is read-only on this branch. Run `tokensave branch add {}` to track this \
+             branch, or set `auto_track` to true in the project configuration.",
+            shell_quote(branch)
+        ),
+        None => format!(
+            "HEAD is detached. The open index belongs to '{owner}' and is read-only on a \
+             detached HEAD. Check out a branch to sync."
+        ),
+    };
+    TokenSaveError::Config { message }
+}
+
 impl TokenSave {
-    /// Background tasks can retain a handle across a runtime transition. Never
-    /// let such a task start writing a different checkout into its old index.
+    /// The branch that owns the open database when this handle borrows it,
+    /// read from the current branch metadata. See [`borrowed_index_owner`].
+    pub(crate) fn borrowed_index_owner(&self) -> Option<String> {
+        if !self.tracks_checkout {
+            return None;
+        }
+        let meta = branch_meta::load_branch_meta(&get_tokensave_dir(&self.project_root))?;
+        borrowed_index_owner(
+            &meta,
+            self.active_branch.as_deref(),
+            self.serving_branch.as_deref(),
+        )
+        .map(str::to_owned)
+    }
+
+    /// Refuses a write that would put one checkout into the index of another.
+    ///
+    /// Two cases. A background task can retain a handle across a branch
+    /// change: never let such a task write the new checkout into its old
+    /// index. And a handle can serve a borrowed index from the start: see
+    /// [`borrowed_index_owner`].
     pub(crate) fn ensure_current_checkout(&self) -> Result<()> {
-        if self.tracks_checkout
-            && branch_meta::load_branch_meta(&get_tokensave_dir(&self.project_root)).is_some()
-            && branch::current_branch(&self.project_root) != self.active_branch
-        {
+        if !self.tracks_checkout {
+            return Ok(());
+        }
+        let Some(meta) = branch_meta::load_branch_meta(&get_tokensave_dir(&self.project_root))
+        else {
+            return Ok(());
+        };
+        if branch::current_branch(&self.project_root) != self.active_branch {
             return Err(TokenSaveError::Config {
                 message: "Git branch changed; acquire a fresh branch context before writing".into(),
             });
+        }
+        if let Some(owner) = borrowed_index_owner(
+            &meta,
+            self.active_branch.as_deref(),
+            self.serving_branch.as_deref(),
+        ) {
+            return Err(borrowed_index_refusal(self.active_branch.as_deref(), owner));
         }
         Ok(())
     }
@@ -348,6 +510,85 @@ mod tests {
         drop(second);
     }
 
+    /// A project state directory with the named database files in it.
+    fn project_with_databases(names: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let state = get_tokensave_dir(dir.path());
+        std::fs::create_dir_all(state.join("branches")).unwrap();
+        for name in names {
+            std::fs::write(state.join(name), "").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn the_sentinel_names_each_database_with_an_unfinished_write() {
+        let dir = project_with_databases(&["tokensave.db", "branches/feature.db"]);
+        let root = dir.path();
+        assert!(!has_dirty_sentinel(root, "tokensave.db"));
+
+        write_dirty_sentinel(root, "branches/feature.db");
+        assert!(has_dirty_sentinel(root, "branches/feature.db"));
+        assert!(!has_dirty_sentinel(root, "tokensave.db"));
+
+        write_dirty_sentinel(root, "tokensave.db");
+        write_dirty_sentinel(root, "tokensave.db");
+        assert!(has_dirty_sentinel(root, "branches/feature.db"));
+        assert!(has_dirty_sentinel(root, "tokensave.db"));
+
+        clear_dirty_sentinel(root, "branches/feature.db");
+        assert!(!has_dirty_sentinel(root, "branches/feature.db"));
+        assert!(has_dirty_sentinel(root, "tokensave.db"));
+
+        clear_dirty_sentinel(root, "tokensave.db");
+        assert!(!dirty_sentinel_path(root).exists());
+    }
+
+    /// A sentinel from an older version names no database. It applies to
+    /// each database, and one successful operation removes it, as before.
+    #[test]
+    fn a_sentinel_in_the_old_format_applies_to_each_database() {
+        let dir = project_with_databases(&["tokensave.db", "branches/feature.db"]);
+        let root = dir.path();
+        std::fs::write(dirty_sentinel_path(root), "pid=1\ntime=0\nversion=7.0.0").unwrap();
+        assert!(has_dirty_sentinel(root, "tokensave.db"));
+        assert!(has_dirty_sentinel(root, "branches/feature.db"));
+
+        write_dirty_sentinel(root, "tokensave.db");
+        assert!(
+            has_dirty_sentinel(root, "branches/feature.db"),
+            "a write must not narrow a sentinel in the old format"
+        );
+
+        clear_dirty_sentinel(root, "tokensave.db");
+        assert!(!dirty_sentinel_path(root).exists());
+    }
+
+    #[test]
+    fn a_line_for_a_removed_database_is_dropped() {
+        let dir = project_with_databases(&["tokensave.db", "branches/gone.db"]);
+        let root = dir.path();
+        write_dirty_sentinel(root, "branches/gone.db");
+        std::fs::remove_file(get_tokensave_dir(root).join("branches").join("gone.db")).unwrap();
+
+        write_dirty_sentinel(root, "tokensave.db");
+        clear_dirty_sentinel(root, "tokensave.db");
+        assert!(!dirty_sentinel_path(root).exists());
+    }
+
+    #[test]
+    fn the_database_name_is_its_path_below_the_state_directory() {
+        let state = Path::new("project").join(".tokensave");
+        assert_eq!(
+            dirty_database_name(&state, &state.join("tokensave.db")),
+            "tokensave.db"
+        );
+        assert_eq!(
+            dirty_database_name(&state, &state.join("branches").join("feature.db")),
+            "branches/feature.db"
+        );
+    }
+
     #[tokio::test]
     async fn branch_operation_lock_times_out_with_an_explicit_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -366,5 +607,62 @@ mod tests {
             message.contains("timed out"),
             "expected bounded timeout: {message}"
         );
+    }
+
+    fn multi_branch_meta() -> branch_meta::BranchMeta {
+        let mut meta = branch_meta::BranchMeta::new("master");
+        meta.add_branch("feature", "branches/feature.db", "master");
+        meta
+    }
+
+    #[test]
+    fn a_checkout_that_owns_the_index_is_not_borrowed() {
+        let meta = multi_branch_meta();
+        assert_eq!(
+            borrowed_index_owner(&meta, Some("feature"), Some("feature")),
+            None
+        );
+        assert_eq!(
+            borrowed_index_owner(&meta, Some("master"), Some("master")),
+            None
+        );
+    }
+
+    #[test]
+    fn an_untracked_branch_and_a_detached_head_borrow_the_index() {
+        let meta = multi_branch_meta();
+        assert_eq!(
+            borrowed_index_owner(&meta, Some("third"), Some("feature")),
+            Some("feature")
+        );
+        assert_eq!(
+            borrowed_index_owner(&meta, None, Some("master")),
+            Some("master")
+        );
+    }
+
+    /// One database serves every branch of a project that tracks only its
+    /// default branch, and a project with no metadata has no serving branch.
+    #[test]
+    fn a_single_database_project_has_no_borrowed_index() {
+        let meta = branch_meta::BranchMeta::new("master");
+        assert_eq!(
+            borrowed_index_owner(&meta, Some("third"), Some("master")),
+            None
+        );
+        assert_eq!(borrowed_index_owner(&meta, None, Some("master")), None);
+        assert_eq!(borrowed_index_owner(&meta, Some("third"), None), None);
+    }
+
+    #[test]
+    fn the_refusal_names_the_branch_and_the_remedy() {
+        let tracked = borrowed_index_refusal(Some("third"), "feature").to_string();
+        assert!(tracked.contains("'third'"), "{tracked}");
+        assert!(tracked.contains("'feature'"), "{tracked}");
+        assert!(tracked.contains("tokensave branch add"), "{tracked}");
+
+        let detached = borrowed_index_refusal(None, "master").to_string();
+        assert!(detached.contains("detached"), "{detached}");
+        assert!(detached.contains("'master'"), "{detached}");
     }
 }
