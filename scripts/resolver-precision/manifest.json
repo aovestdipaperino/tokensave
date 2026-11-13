@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "languages": [
+    {
+      "name": "rust",
+      "language_id": "rust",
+      "fixture": "fixtures/rust",
+      "fixture_sha256": "d0c9d6dd987775bdff79a00ecdee07d92212bab9cb5ab9ff30cf5856c8ca3c51",
+      "server_command": ["rust-analyzer"],
+      "version_command": ["rust-analyzer", "--version"],
+      "server_version": "0.3.3113",
+      "install_revision": "rust-analyzer release 2026-11-09, commit e5e7830"
+    },
+    {
+      "name": "typescript",
+      "language_id": "typescript",
+      "fixture": "fixtures/typescript",
+      "fixture_sha256": "23f2c9fb15d17ea4d6444a7291fde63a5cb7c98891e0170f03704f3dbc2b4e7c",
+      "server_command": ["typescript-language-server", "--stdio"],
+      "version_command": ["typescript-language-server", "--version"],
+      "server_version": "6.0.3",
+      "dependency_versions": [
+        {"command": ["tsc", "--version"], "version": "6.0.3"}
+      ],
+      "install_revision": "typescript-language-server 6.0.3 with typescript (tsserver) 6.0.3"
+    },
+    {
+      "name": "python",
+      "language_id": "python",
+      "fixture": "fixtures/python",
+      "fixture_sha256": "8e608275794537c4f8a02292f2334b6912eafe26bc19a7d82e2c4271810e0bd3",
+      "server_command": ["pyright-langserver", "--stdio"],
+      "version_command": ["pyright", "--version"],
+      "server_version": "1.1.414",
+      "install_revision": "pyright 1.1.414"
+    }
+  ]
+}

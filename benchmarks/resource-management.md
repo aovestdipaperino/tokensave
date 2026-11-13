@@ -43,7 +43,11 @@ The Python comparison harness now selects its persistent clone cache using:
    platform defaults), with a `tokensave-bench` child directory.
 
 On a usual Unix installation this preserves `/tmp/tokensave-bench`. Cached
-clones are reused without copying. Existing cache content is never relocated or
+clones are reused without copying, except directories containing Criterion's
+`.bench-ref` marker. The Python harness skips those directories, including with
+`--skip-clone`, because their pinned revision belongs to the Criterion benchmark.
+Set `TOKENSAVE_BENCH_REPOS_DIR` to a separate directory to run the comparison.
+Existing cache content is never relocated or
 deleted automatically. Clone and directory-creation errors name the destination
 and suggest checking space/permissions or relocating it. No hard-coded space
 threshold is introduced: repository size, graph size and Cargo artifacts are

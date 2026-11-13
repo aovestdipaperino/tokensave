@@ -318,6 +318,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_record_decision(),
         def_record_code_area(),
         def_session_recall(),
+        def_knowledge(),
         graph_scoped(def_read()),
         graph_scoped(def_entities()),
         graph_scoped(def_implementations()),
@@ -472,6 +473,7 @@ pub const TOOL_AREAS: &[(&str, &str, &[&str])] = &[
             "tokensave_session_recall",
             "tokensave_record_decision",
             "tokensave_record_code_area",
+            "tokensave_knowledge",
         ],
     ),
     (
@@ -974,19 +976,19 @@ fn def_callers() -> ToolDefinition {
     def(
         "tokensave_callers",
         "Callers",
-        "Find callers of a given node (function, method, etc.). Returns direct \
-         callers by default; pass max_depth > 1 to also follow the chain \
-         transitively. Each result includes `depth` (1 = direct caller, 2+ = \
-         transitive), `line` (the call-site line where the caller invokes the \
-         target), `lines` (every line where the caller invokes the target, \
-         ascending; a caller is listed once even when it calls the target \
-         several times), and `def_line`/`end_line` (the caller's own span). Generic \
-         callers through a trait are included for concrete impl methods and \
-         tagged with `dispatch_via_trait: true`; pass `resolve_dispatch: false` \
-         to disable reverse dispatch resolution. Pass `node_id`, or `symbol` to \
-         name the target directly: each match is answered in its own group \
-         (`symbol`, `match_count`, `matches[]` with the callers under `callers`), \
-         up to `max_matches`.",
+        "Find callers of a given node (function, method, etc.). Direct results \
+         list every extracted call to the target's name, not only resolved \
+         edges: each caller's `references` label every site `confirmed`, \
+         `other`, `ambiguous` or `unresolved`, and uncertain sites carry \
+         `to_read: true`. Pass max_depth > 1 to also follow the chain \
+         transitively. Each result includes `depth` (1 = direct caller), `line` \
+         (a call-site line), `lines` (every call-site line, ascending; a caller \
+         is listed once) and `def_line`/`end_line` (the caller's own span). \
+         Trait-dispatched callers of concrete impl methods are included and \
+         tagged `dispatch_via_trait: true`; pass `resolve_dispatch: false` to \
+         disable this. Pass `node_id`, or `symbol` to name the target directly: \
+         each match is answered in its own group (`symbol`, `match_count`, \
+         `matches[]` with `callers`), up to `max_matches`.",
         json!({
             "type": "object",
             "properties": {
@@ -1004,7 +1006,7 @@ fn def_callers() -> ToolDefinition {
                 },
                 "limit": {
                     "type": "number",
-                    "description": "Maximum callers listed per match (default: 50, max: 500). When more exist, the result reports `count`, `total` and `truncated: true` (with node_id alone, the list is then wrapped as `{count, total, truncated, callers}`)."
+                    "description": "Maximum callers and direct call references inspected per match (default: 50, max: 500). When more exist, the result reports caller and reference counts plus truncation explicitly."
                 },
                 "max_depth": {
                     "type": "number",
@@ -2710,6 +2712,57 @@ fn def_session_recall() -> ToolDefinition {
     )
 }
 
+fn def_knowledge() -> ToolDefinition {
+    def(
+        "tokensave_knowledge",
+        "Imported Knowledge",
+        "Search and read Open Knowledge Format (OKF) bundles imported into this project \
+         with `tokensave okf import` (docs, metrics, tables, Graphify or tokensave exports). \
+         `query` matches concept titles, IDs, tags, types, descriptions and bodies; `file` \
+         finds concepts about a project file; `concept` returns one concept in full with its \
+         links and backlinks; `related` traverses both directions of that graph. Results name \
+         the project files a concept refers to and whether \
+         they are indexed. With no arguments, lists the imported bundles.",
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Words to search for (all optional; concepts matching more words rank first)."
+                },
+                "file": {
+                    "type": "string",
+                    "description": "Project-relative file path; only concepts that refer to it."
+                },
+                "concept": {
+                    "type": "string",
+                    "description": "Concept ID to read in full, e.g. \"metrics/revenue\"."
+                },
+                "related": {
+                    "type": "string",
+                    "description": "Concept ID whose links and backlinks to traverse."
+                },
+                "depth": {
+                    "type": "number",
+                    "description": "Relationship traversal depth (default: 1, max: 3); used with `related`."
+                },
+                "bundle": {
+                    "type": "string",
+                    "description": "Imported bundle name to restrict to."
+                },
+                "type": {
+                    "type": "string",
+                    "description": "Concept `type` to restrict to (case-insensitive), e.g. \"Metric\"."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum results (default: 10, max: 50)."
+                }
+            }
+        }),
+    )
+}
+
 fn def_field_sites() -> ToolDefinition {
     def(
         "tokensave_field_sites",
@@ -3357,6 +3410,8 @@ mod tests {
             "tokensave_rename",
             "tokensave_insert_at",
             "tokensave_insert_at_symbol",
+            // Reads imported OKF bundles from project state, not the graph.
+            "tokensave_knowledge",
             "tokensave_log",
             "tokensave_multi_str_replace",
             "tokensave_replace_lines",

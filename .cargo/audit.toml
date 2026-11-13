@@ -1,0 +1,26 @@
+# cargo-audit configuration for the RustSec advisory check (#956).
+#
+# `cargo audit` reads this file when run from the repository root, both
+# locally and in .github/workflows/advisories.yml, so the two report the
+# same result.
+
+[advisories]
+# Advisory IDs that `cargo audit` must not report. An entry is accepted only
+# with a comment directly above it that states:
+#   - the affected crate and version, and the advisory title;
+#   - why tokensave is not affected (for example, the vulnerable API is never
+#     called), or why no fixed version can be adopted yet;
+#   - the issue that tracks removing the entry.
+# Remove the entry once Cargo.lock no longer contains an affected version.
+# Prefer upgrading the dependency to ignoring the advisory.
+#
+# No advisory is ignored at present.
+ignore = []
+
+[output]
+# Vulnerabilities always fail the check. Unsound and yanked crates fail it
+# too; unmaintained crates are reported as warnings only, because RustSec
+# usually lists no replacement for them.
+deny = ["unsound", "yanked"]
+# cargo-audit requires this key whenever the [output] table is present.
+quiet = false

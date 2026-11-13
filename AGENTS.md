@@ -310,12 +310,14 @@ use one component per `Path`/`PathBuf` `join` or `push` call for hard-coded
 relative filesystem paths, as in PR #738. Preserve external path inputs,
 portable string formats, and documented path-syntax test fixtures.
 
-- Toolchain is pinned by `rust-toolchain.toml` (Rust 1.99.0, clippy + rustfmt).
+- Toolchain is pinned by `rust-toolchain.toml` (Rust 1.100.0, clippy + rustfmt).
 - `cargo build` builds the default `full` feature set (50+ languages). For fast dev cycles use `cargo build --no-default-features --features lite` (or `medium`).
 - `cargo test --workspace --locked --features test-transport` is the CI test command; CI also runs `cargo test --workspace --locked --no-default-features --features lite` and `cargo check --workspace --all-targets --locked --no-default-features --features medium` on Linux. On Windows set `RUST_MIN_STACK=8388608` (CI does this; async-heavy tests overflow the 1 MB MSVC default).
 - `cargo clippy --workspace --all-targets` (CI runs it with `continue-on-error: true`).
 - `cargo fmt --all -- --check`.
+- RustSec advisories: `cargo audit` (install with `cargo install cargo-audit --locked`) from the repository root. `.cargo/audit.toml` sets the policy and lists ignored advisories, each with a written rationale and tracking issue. `.github/workflows/advisories.yml` runs it daily on `master` and `beta` and on changes to `Cargo.lock`/`Cargo.toml`; it is not part of `CI OK`. Run it locally when a change adds or upgrades dependencies, and report new findings in the PR.
 - Pi extension prompt/relay tests: `node --experimental-strip-types --test tests/pi_extension_test.mjs` (Node 22.6+ with TypeScript stripping support; separate from Cargo tests; run by the `Pi extension` CI job).
+- Python comparison benchmark tests: `python3 -B -m unittest discover -s benchmarks/tests -v` (POSIX, Python 3.12 in CI; no repository downloads or benchmark binaries; run by the `Python comparison benchmark` CI job).
 - Documentation checks: `python3 scripts/wiki/sync_wiki.py check` (links, anchors, wiki sidebar) and `python3 -m unittest discover -s scripts/wiki`; preview the wiki with `python3 scripts/wiki/sync_wiki.py build --out /tmp/tokensave-wiki`. Run by `.github/workflows/wiki.yml`, separate from Cargo tests.
 - `src/lib.rs` denies `clippy::all`, `clippy::unwrap_used`, and `clippy::expect_used`, and warns on `clippy::pedantic` — avoid `unwrap()`/`expect()` in library code.
 - Language-specific tests: `cargo test --test integration rust_extraction_test::`; single test: `cargo test test_find_stale_files`; filter: `cargo test sync`. Lite-only local loop: `cargo test-lite`.
@@ -327,6 +329,7 @@ portable string formats, and documented path-syntax test fixtures.
 - Pi real-session regressions: `node scripts/pi-tests/run.mjs /path/to/prepared/pi`; see `scripts/pi-tests/README.md` for the pinned Pi prerequisites and offline scope.
 - End-to-end agent workflow benchmark (#948): `python3 scripts/agent-bench/agent_bench.py prepare|run|report --work /private/dir ...`; see `scripts/agent-bench/README.md`. `run` makes paid real-model calls through Claude Code; `results.jsonl` holds metrics only unless `--keep-raw`. Synthetic tests: `python3 -m unittest discover -s scripts/agent-bench` (CI `Agent benchmark harness` job). Results and decision report: `docs/AGENT-WORKFLOW-BENCHMARK.md`.
 - Caveman benchmark harness (#797, draft PR #800): `python3 -m unittest discover -s scripts/caveman_bench -p 'test_*.py'` (synthetic provider responses only; Python 3.11+ and POSIX; CI `Caveman benchmark harness` job). The optional metered agent and manifest builder are `scripts/caveman_bench/anthropic_driver.py` and `configure_anthropic.py`; see `scripts/caveman_bench/README.md`. Never describe test results as paid trials or stock-agent activation evidence; paid runs need explicit model/pricing configuration and operator-provided credentials.
+- Resolver precision harness (#921): `python3 scripts/resolver-precision/resolver_precision.py --tokensave /path/to/tokensave --output /tmp/result.json --markdown /tmp/result.md`; see `scripts/resolver-precision/README.md`. Requires the pinned rust-analyzer, TypeScript/tsserver wrapper and Pyright versions. Once installed it runs offline against content-addressed fixtures. Matching tests: `python3 -m unittest discover -s scripts/resolver-precision`. Baseline: `docs/RESOLVER-PRECISION-BASELINE.md`.
 - Conditional Pi read-routing assessment: `python3 scripts/pi-eval/assess_reads.py --help`; see `scripts/pi-eval/READ-ROUTING.md`. This read-only assessment never enables interception; real-model traces and independent review are prerequisites for any later enforcement.
 
 - Criterion bench against large real repos: `TOKENSAVE_BENCH_REPOS_DIR=~/tokensave-bench-cache cargo bench --bench large_repos`. Without `TOKENSAVE_BENCH_REPOS_DIR` it registers zero benchmarks. Filter with `cargo bench --bench large_repos -- 'scipy/tokensave_search'`. Repos and pinned refs are in `benches/repos.rs`; delete the `<repo>/.bench-ref` marker to force a re-fetch.
@@ -360,6 +363,7 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - `src/context/` — AI-ready context assembly (builder, formatter, ranking, read modes).
 - `src/mcp/` — stdio JSON-RPC server, tool definitions, handlers, transport.
 - `src/agents/` — agent integrations (Claude, Codex, Cursor, etc.) and git hooks.
+- `src/okf/` — Open Knowledge Format v0.2 (#858): bounded bundle reader, conformance validator, read-only index export, and import into project state (`okf/<name>/`, no schema change) searched by the `tokensave_knowledge` MCP tool (`tokensave okf validate|export|import|list|remove`); official sample bundles in `tests/fixtures/okf/official/`, a reconstructed Graphify bundle in `tests/fixtures/okf/graphify/`; see `docs/guide/OKF.md`.
 - `src/caveman.rs` — opt-in, read-only Caveman discovery and the extra MCP `initialize` paragraph (#797); see `docs/CAVEMAN-COMPATIBILITY.md`.
 - `src/sync.rs` — incremental sync (content hashing, stale/new/removed detection).
 - `src/bench.rs` — `tokensave bench` harness.
@@ -383,7 +387,7 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 
 ## Setup and environment
 
-- Rust 1.99.0 pinned via `rust-toolchain.toml`.
+- Rust 1.100.0 pinned via `rust-toolchain.toml`.
 - `.cargo/config.toml` sets `CFLAGS`/`CXXFLAGS=-DNDEBUG` (disable C/C++ assertions in vendored grammars), isolates `core.hooksPath` for tests that create real git repos, and reserves an 8 MB main-thread stack on Windows MSVC.
 - Env-var policy: tokensave-owned variables must start with `TOKENSAVE_`; enforced by `tests/env_var_namespace_test.rs`. External (OS/Cargo/git/agent) vars need an explicit allowlist rationale. Never print env-var values (some carry auth material).
 - `TOKENSAVE_WORKER_TOKEN` — auth for the hidden `extract-worker` subcommand (256-bit token, also required as first 32 bytes on stdin). Direct invocation fails. `TOKENSAVE_DISABLE_SUBPROCESS=1` opts out of the worker pool.
@@ -403,7 +407,7 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - **CHANGELOG.md is huge (~500 KB).** The release workflow extracts the `## [<version>]` block; run `scripts/prepare-release.py` before a release to promote `[Unreleased]` content into it (idempotent).
 - **CI disk-space flake.** The Linux runner ships ~10 GB free; the ~713 MB cache restore plus the cargo target dir (34 tree-sitter parsers) can exceed it, so CI frees disk space first.
 - **CI jobs are gated per job by changed paths.** The `changes` job in `.github/workflows/ci.yml` runs `dorny/paths-filter`, and each job runs only when one of its inputs changed (for example, docs-only changes run no Rust job). When a change adds a file that a build or test reads outside the existing filters (a new `include_str!` source, a fixture directory), extend the matching filters in the same change. `CI OK` aggregates the results and is the check to require; `workflow_dispatch` runs every job.
-- **No daemon / file watcher.** Since 6.1.1 the design is on-demand staleness: every MCP tool call checks for stale files (30 s cooldown), and the server runs a catch-up sync on connect. CLI-only workflows rely on git hooks (`scripts/post-commit`, `scripts/post-checkout`) to keep the index fresh.
+- **No daemon; file watcher is opt-in.** Since 6.1.1 the design is on-demand staleness: every MCP tool call checks for stale files (30 s cooldown), and the server runs a catch-up sync on connect. CLI-only workflows rely on git hooks (`scripts/post-commit`, `scripts/post-checkout`) to keep the index fresh. An opt-in `notify` watcher (#937; `src/mcp/fs_watch.rs`, scoping in `src/tokensave/watch.rs`) runs inside `serve` only when `filesystem_watch_enabled = true` or `serve --watch`; it is off by default, must stay bounded, and feeds the existing sync rather than replacing the on-demand check.
 - **`init` vs `sync`.** `sync <path>` only updates already-initialized projects. A pathless `sync` (what the `post-commit`/`post-merge` hooks run) and `serve` initialize an uninitialized git repository top level when the user-level `auto_init` setting allows it (default on, #876); the gate and its guards (temp dir, `$HOME`, bare/subdirectory, `max_auto_sync_files`) live in `src/auto_init.rs`. Repositories under the system temp dir are always skipped, so tests that expect the old behavior keep it; tests of auto-init give the child its own `TMPDIR`.
 - **Multi-agent work assumes git worktrees.** tokensave detects nested worktrees and serves the correct branch graph; changes accumulate independently and reconcile via merge/rebase.
 - **`codegraph` is a git submodule** (`codegraph/`), not part of the crate.

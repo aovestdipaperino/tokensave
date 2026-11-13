@@ -41,6 +41,11 @@ pub enum Commands {
         #[arg(long, default_value_t = 5000)]
         max_edges: usize,
     },
+    /// Validate or export Open Knowledge Format (OKF v0.2) bundles
+    Okf {
+        #[command(subcommand)]
+        action: OkfAction,
+    },
     /// Check index integrity without changing it
     Verify {
         /// Project path (default: current directory)
@@ -283,6 +288,14 @@ pub enum Commands {
         /// is waiting for a request, so it cannot interrupt one.
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
         idle_timeout_secs: Option<u64>,
+        /// Watch the project for file changes and sync them as they happen (#937)
+        ///
+        /// Off by default. Turns on the opt-in filesystem watcher for this run,
+        /// as `filesystem_watch_enabled = true` in `~/.tokensave/config.toml`
+        /// does for every run. The on-demand staleness check keeps running
+        /// either way.
+        #[arg(long)]
+        watch: bool,
     },
     /// List running `tokensave serve` processes and the index each one holds
     ///
@@ -618,6 +631,86 @@ mod tests {
 }
 
 #[derive(Subcommand)]
+pub enum OkfAction {
+    /// Check a bundle against the OKF v0.2 conformance rules
+    ///
+    /// Exits 0 when the bundle is conformant, 1 when it is not (or, with
+    /// `--strict`, when there are warnings). Reads only the bundle.
+    Validate {
+        /// Bundle directory
+        path: std::path::PathBuf,
+        /// Output the report as JSON
+        #[arg(long)]
+        json: bool,
+        /// Treat warnings as failures
+        #[arg(long)]
+        strict: bool,
+        /// Also list info findings such as broken links (always in JSON)
+        #[arg(long)]
+        verbose: bool,
+    },
+    /// Export the code index as an OKF bundle (read-only; no sync)
+    Export {
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// New bundle directory; an existing path is refused
+        #[arg(long)]
+        output: std::path::PathBuf,
+        /// Refuse indexes with more source files than this
+        #[arg(long, default_value_t = 20_000)]
+        max_files: usize,
+        /// Symbols listed per file; the rest are counted only
+        #[arg(long, default_value_t = 500)]
+        max_symbols: usize,
+        /// Refuse indexes with more file-to-file dependencies than this
+        #[arg(long, default_value_t = 200_000)]
+        max_links: usize,
+    },
+    /// Import a bundle so the MCP server can search it
+    ///
+    /// Copies the bundle into the project's state directory and validates
+    /// the copy. Bundles that are not conformant are imported best-effort
+    /// unless `--strict` is given. The code index is not changed.
+    Import {
+        /// Bundle directory
+        path: std::path::PathBuf,
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// Name for the imported bundle (default: the directory name)
+        #[arg(long)]
+        name: Option<String>,
+        /// Replace an imported bundle with the same name
+        #[arg(long)]
+        replace: bool,
+        /// Refuse bundles that are not conformant
+        #[arg(long)]
+        strict: bool,
+        /// Output the result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the imported bundles of a project
+    List {
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove an imported bundle
+    Remove {
+        /// Name of the imported bundle
+        name: String,
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum ProfileAction {
     /// Show the profiling mode, storage use, recorded samples and overhead
     Status,
@@ -681,8 +774,12 @@ pub enum ProfileAction {
         #[arg(short, long)]
         output: Option<std::path::PathBuf>,
     },
-    /// Delete all recorded profile data
-    Reset,
+    /// Delete all recorded profile data (asks first unless `--force`)
+    Reset {
+        /// Delete without asking; required when stdin is not a terminal
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]

@@ -1,0 +1,1018 @@
+{
+  "schema_version": 1,
+  "manifest_sha256": "5e930d103e77e0f19f6f090b60e51086d5b2cbd3691df246e390b340f60dcd70",
+  "by_language_edge_kind": [
+    {
+      "language": "python",
+      "edge_kind": "calls",
+      "predicted": 2,
+      "oracle": 2,
+      "true_positive": 2,
+      "false_positive": 0,
+      "false_negative": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    {
+      "language": "python",
+      "edge_kind": "uses",
+      "predicted": 3,
+      "oracle": 3,
+      "true_positive": 3,
+      "false_positive": 0,
+      "false_negative": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    {
+      "language": "rust",
+      "edge_kind": "calls",
+      "predicted": 2,
+      "oracle": 2,
+      "true_positive": 2,
+      "false_positive": 0,
+      "false_negative": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    {
+      "language": "rust",
+      "edge_kind": "uses",
+      "predicted": 3,
+      "oracle": 3,
+      "true_positive": 3,
+      "false_positive": 0,
+      "false_negative": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    {
+      "language": "typescript",
+      "edge_kind": "calls",
+      "predicted": 2,
+      "oracle": 2,
+      "true_positive": 2,
+      "false_positive": 0,
+      "false_negative": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    {
+      "language": "typescript",
+      "edge_kind": "uses",
+      "predicted": 2,
+      "oracle": 2,
+      "true_positive": 2,
+      "false_positive": 0,
+      "false_negative": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    }
+  ],
+  "by_language_rename_class": [
+    {
+      "language": "python",
+      "rename_class": "ambiguous",
+      "predicted": 0,
+      "oracle": 5,
+      "true_positive": 0,
+      "false_positive": 0,
+      "false_negative": 5,
+      "precision": null,
+      "recall": 0.0,
+      "share": 0.0
+    },
+    {
+      "language": "python",
+      "rename_class": "exact",
+      "predicted": 2,
+      "oracle": 5,
+      "true_positive": 2,
+      "false_positive": 0,
+      "false_negative": 3,
+      "precision": 1.0,
+      "recall": 0.4,
+      "share": 0.4
+    },
+    {
+      "language": "python",
+      "rename_class": "heuristic",
+      "predicted": 0,
+      "oracle": 5,
+      "true_positive": 0,
+      "false_positive": 0,
+      "false_negative": 5,
+      "precision": null,
+      "recall": 0.0,
+      "share": 0.0
+    },
+    {
+      "language": "python",
+      "rename_class": "text_only",
+      "predicted": 3,
+      "oracle": 5,
+      "true_positive": 3,
+      "false_positive": 0,
+      "false_negative": 2,
+      "precision": 1.0,
+      "recall": 0.6,
+      "share": 0.6
+    },
+    {
+      "language": "rust",
+      "rename_class": "ambiguous",
+      "predicted": 0,
+      "oracle": 5,
+      "true_positive": 0,
+      "false_positive": 0,
+      "false_negative": 5,
+      "precision": null,
+      "recall": 0.0,
+      "share": 0.0
+    },
+    {
+      "language": "rust",
+      "rename_class": "exact",
+      "predicted": 4,
+      "oracle": 5,
+      "true_positive": 4,
+      "false_positive": 0,
+      "false_negative": 1,
+      "precision": 1.0,
+      "recall": 0.8,
+      "share": 0.8
+    },
+    {
+      "language": "rust",
+      "rename_class": "heuristic",
+      "predicted": 0,
+      "oracle": 5,
+      "true_positive": 0,
+      "false_positive": 0,
+      "false_negative": 5,
+      "precision": null,
+      "recall": 0.0,
+      "share": 0.0
+    },
+    {
+      "language": "rust",
+      "rename_class": "text_only",
+      "predicted": 1,
+      "oracle": 5,
+      "true_positive": 1,
+      "false_positive": 0,
+      "false_negative": 4,
+      "precision": 1.0,
+      "recall": 0.2,
+      "share": 0.2
+    },
+    {
+      "language": "typescript",
+      "rename_class": "ambiguous",
+      "predicted": 0,
+      "oracle": 4,
+      "true_positive": 0,
+      "false_positive": 0,
+      "false_negative": 4,
+      "precision": null,
+      "recall": 0.0,
+      "share": 0.0
+    },
+    {
+      "language": "typescript",
+      "rename_class": "exact",
+      "predicted": 4,
+      "oracle": 4,
+      "true_positive": 4,
+      "false_positive": 0,
+      "false_negative": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "share": 1.0
+    },
+    {
+      "language": "typescript",
+      "rename_class": "heuristic",
+      "predicted": 0,
+      "oracle": 4,
+      "true_positive": 0,
+      "false_positive": 0,
+      "false_negative": 4,
+      "precision": null,
+      "recall": 0.0,
+      "share": 0.0
+    },
+    {
+      "language": "typescript",
+      "rename_class": "text_only",
+      "predicted": 0,
+      "oracle": 4,
+      "true_positive": 0,
+      "false_positive": 0,
+      "false_negative": 4,
+      "precision": null,
+      "recall": 0.0,
+      "share": 0.0
+    }
+  ],
+  "probes": [
+    {
+      "language": "rust",
+      "edge_kind": "calls",
+      "symbol": "rust_target",
+      "predicted": 2,
+      "oracle": 2,
+      "true_positive": 2,
+      "false_positive": 0,
+      "false_negative": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    {
+      "language": "rust",
+      "edge_kind": "uses",
+      "symbol": "RustThing",
+      "predicted": 3,
+      "oracle": 3,
+      "true_positive": 3,
+      "false_positive": 0,
+      "false_negative": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    {
+      "language": "typescript",
+      "edge_kind": "calls",
+      "symbol": "tsTarget",
+      "predicted": 2,
+      "oracle": 2,
+      "true_positive": 2,
+      "false_positive": 0,
+      "false_negative": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    {
+      "language": "typescript",
+      "edge_kind": "uses",
+      "symbol": "TsThing",
+      "predicted": 2,
+      "oracle": 2,
+      "true_positive": 2,
+      "false_positive": 0,
+      "false_negative": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    {
+      "language": "python",
+      "edge_kind": "calls",
+      "symbol": "py_target",
+      "predicted": 2,
+      "oracle": 2,
+      "true_positive": 2,
+      "false_positive": 0,
+      "false_negative": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    },
+    {
+      "language": "python",
+      "edge_kind": "uses",
+      "symbol": "PyThing",
+      "predicted": 3,
+      "oracle": 3,
+      "true_positive": 3,
+      "false_positive": 0,
+      "false_negative": 0,
+      "precision": 1.0,
+      "recall": 1.0
+    }
+  ],
+  "raw": [
+    {
+      "language": "rust",
+      "fixture_sha256": "d0c9d6dd987775bdff79a00ecdee07d92212bab9cb5ab9ff30cf5856c8ca3c51",
+      "server_version_output": "rust-analyzer 0.3.3113-standalone (e5e7830640 2026-11-08)",
+      "dependency_version_outputs": [],
+      "probes": [
+        {
+          "probe": {
+            "symbol": "rust_target",
+            "file": "src/lib.rs",
+            "line": 3,
+            "column": 8,
+            "edge_kind": "calls"
+          },
+          "lsp_references": [
+            {
+              "file": "src/lib.rs",
+              "line": 3,
+              "column": 8
+            },
+            {
+              "file": "src/lib.rs",
+              "line": 8,
+              "column": 5
+            },
+            {
+              "file": "src/lib.rs",
+              "line": 12,
+              "column": 5
+            }
+          ],
+          "lsp_definitions": [
+            {
+              "file": "src/lib.rs",
+              "line": 3,
+              "column": 8
+            }
+          ],
+          "oracle_references": [
+            [
+              "src/lib.rs",
+              8,
+              5
+            ],
+            [
+              "src/lib.rs",
+              12,
+              5
+            ]
+          ],
+          "oracle_definitions": [
+            [
+              "src/lib.rs",
+              3,
+              8
+            ]
+          ],
+          "tokensave": {
+            "symbol": {
+              "id": "function:1abd935889656d4234e95f0c01b11f7c",
+              "name": "rust_target",
+              "kind": "function",
+              "qualified_name": "src/lib.rs::rust_target",
+              "file": "src/lib.rs",
+              "line": 3
+            },
+            "new_name": null,
+            "dry_run": true,
+            "allow_heuristic": false,
+            "note": "graph-based, not binding-aware: see the confidence classes in the tool description. line and column are 1-based; column counts bytes, not characters",
+            "counts": {
+              "ambiguous": 0,
+              "exact": 3,
+              "heuristic": 0,
+              "text_only": 0
+            },
+            "files": [
+              {
+                "file": "src/lib.rs",
+                "sites": [
+                  {
+                    "file": "src/lib.rs",
+                    "line": 3,
+                    "column": 8,
+                    "end_column": 19,
+                    "confidence": "exact",
+                    "kind": "definition"
+                  },
+                  {
+                    "file": "src/lib.rs",
+                    "line": 8,
+                    "column": 5,
+                    "end_column": 16,
+                    "confidence": "exact",
+                    "kind": "calls",
+                    "resolved_by": "exact-match",
+                    "from": "src/lib.rs::first_rust_call"
+                  },
+                  {
+                    "file": "src/lib.rs",
+                    "line": 12,
+                    "column": 5,
+                    "end_column": 16,
+                    "confidence": "exact",
+                    "kind": "calls",
+                    "resolved_by": "exact-match",
+                    "from": "src/lib.rs::second_rust_call"
+                  }
+                ]
+              }
+            ],
+            "text_only": [],
+            "apply": "pass new_name to preview and apply the edit",
+            "diff": []
+          }
+        },
+        {
+          "probe": {
+            "symbol": "RustThing",
+            "file": "src/lib.rs",
+            "line": 1,
+            "column": 12,
+            "edge_kind": "uses"
+          },
+          "lsp_references": [
+            {
+              "file": "src/lib.rs",
+              "line": 1,
+              "column": 12
+            },
+            {
+              "file": "src/lib.rs",
+              "line": 3,
+              "column": 23
+            },
+            {
+              "file": "src/lib.rs",
+              "line": 8,
+              "column": 17
+            },
+            {
+              "file": "src/lib.rs",
+              "line": 11,
+              "column": 32
+            }
+          ],
+          "lsp_definitions": [
+            {
+              "file": "src/lib.rs",
+              "line": 1,
+              "column": 12
+            }
+          ],
+          "oracle_references": [
+            [
+              "src/lib.rs",
+              3,
+              23
+            ],
+            [
+              "src/lib.rs",
+              8,
+              17
+            ],
+            [
+              "src/lib.rs",
+              11,
+              32
+            ]
+          ],
+          "oracle_definitions": [
+            [
+              "src/lib.rs",
+              1,
+              12
+            ]
+          ],
+          "tokensave": {
+            "symbol": {
+              "id": "struct:4ec04e3e0029f4422764bcaca1308827",
+              "name": "RustThing",
+              "kind": "struct",
+              "qualified_name": "src/lib.rs::RustThing",
+              "file": "src/lib.rs",
+              "line": 1
+            },
+            "new_name": null,
+            "dry_run": true,
+            "allow_heuristic": false,
+            "note": "graph-based, not binding-aware: see the confidence classes in the tool description. line and column are 1-based; column counts bytes, not characters",
+            "counts": {
+              "ambiguous": 0,
+              "exact": 3,
+              "heuristic": 0,
+              "text_only": 1
+            },
+            "files": [
+              {
+                "file": "src/lib.rs",
+                "sites": [
+                  {
+                    "file": "src/lib.rs",
+                    "line": 1,
+                    "column": 12,
+                    "end_column": 21,
+                    "confidence": "exact",
+                    "kind": "definition"
+                  },
+                  {
+                    "file": "src/lib.rs",
+                    "line": 3,
+                    "column": 23,
+                    "end_column": 32,
+                    "confidence": "exact",
+                    "kind": "type_of",
+                    "resolved_by": "exact-match",
+                    "from": "src/lib.rs::rust_target"
+                  },
+                  {
+                    "file": "src/lib.rs",
+                    "line": 11,
+                    "column": 32,
+                    "end_column": 41,
+                    "confidence": "exact",
+                    "kind": "type_of",
+                    "resolved_by": "exact-match",
+                    "from": "src/lib.rs::second_rust_call"
+                  }
+                ]
+              }
+            ],
+            "text_only": [
+              {
+                "file": "src/lib.rs",
+                "line": 8,
+                "column": 17,
+                "end_column": 26,
+                "confidence": "text_only",
+                "kind": "code",
+                "reason": "identifier not linked to this symbol by the graph: a missed reference, or a different symbol with the same name"
+              }
+            ],
+            "apply": "pass new_name to preview and apply the edit",
+            "diff": []
+          }
+        }
+      ]
+    },
+    {
+      "language": "typescript",
+      "fixture_sha256": "23f2c9fb15d17ea4d6444a7291fde63a5cb7c98891e0170f03704f3dbc2b4e7c",
+      "server_version_output": "6.0.3",
+      "dependency_version_outputs": [
+        "Version 6.0.3"
+      ],
+      "probes": [
+        {
+          "probe": {
+            "symbol": "tsTarget",
+            "file": "src/index.ts",
+            "line": 3,
+            "column": 17,
+            "edge_kind": "calls"
+          },
+          "lsp_references": [
+            {
+              "file": "src/index.ts",
+              "line": 3,
+              "column": 17
+            },
+            {
+              "file": "src/index.ts",
+              "line": 8,
+              "column": 10
+            },
+            {
+              "file": "src/index.ts",
+              "line": 12,
+              "column": 10
+            }
+          ],
+          "lsp_definitions": [
+            {
+              "file": "src/index.ts",
+              "line": 3,
+              "column": 17
+            }
+          ],
+          "oracle_references": [
+            [
+              "src/index.ts",
+              8,
+              10
+            ],
+            [
+              "src/index.ts",
+              12,
+              10
+            ]
+          ],
+          "oracle_definitions": [
+            [
+              "src/index.ts",
+              3,
+              17
+            ]
+          ],
+          "tokensave": {
+            "symbol": {
+              "id": "function:73016d297beeb1bca79b8e7e75fee2fa",
+              "name": "tsTarget",
+              "kind": "function",
+              "qualified_name": "src/index.ts::src/index.ts::tsTarget",
+              "file": "src/index.ts",
+              "line": 3
+            },
+            "new_name": null,
+            "dry_run": true,
+            "allow_heuristic": false,
+            "note": "graph-based, not binding-aware: see the confidence classes in the tool description. line and column are 1-based; column counts bytes, not characters",
+            "counts": {
+              "ambiguous": 0,
+              "exact": 3,
+              "heuristic": 0,
+              "text_only": 0
+            },
+            "files": [
+              {
+                "file": "src/index.ts",
+                "sites": [
+                  {
+                    "file": "src/index.ts",
+                    "line": 3,
+                    "column": 17,
+                    "end_column": 25,
+                    "confidence": "exact",
+                    "kind": "definition"
+                  },
+                  {
+                    "file": "src/index.ts",
+                    "line": 8,
+                    "column": 10,
+                    "end_column": 18,
+                    "confidence": "exact",
+                    "kind": "calls",
+                    "resolved_by": "exact-match",
+                    "from": "src/index.ts::src/index.ts::firstTsCall"
+                  },
+                  {
+                    "file": "src/index.ts",
+                    "line": 12,
+                    "column": 10,
+                    "end_column": 18,
+                    "confidence": "exact",
+                    "kind": "calls",
+                    "resolved_by": "exact-match",
+                    "from": "src/index.ts::src/index.ts::secondTsCall"
+                  }
+                ]
+              }
+            ],
+            "text_only": [],
+            "apply": "pass new_name to preview and apply the edit",
+            "diff": []
+          }
+        },
+        {
+          "probe": {
+            "symbol": "TsThing",
+            "file": "src/index.ts",
+            "line": 1,
+            "column": 18,
+            "edge_kind": "uses"
+          },
+          "lsp_references": [
+            {
+              "file": "src/index.ts",
+              "line": 1,
+              "column": 18
+            },
+            {
+              "file": "src/index.ts",
+              "line": 3,
+              "column": 33
+            },
+            {
+              "file": "src/index.ts",
+              "line": 11,
+              "column": 37
+            }
+          ],
+          "lsp_definitions": [
+            {
+              "file": "src/index.ts",
+              "line": 1,
+              "column": 18
+            }
+          ],
+          "oracle_references": [
+            [
+              "src/index.ts",
+              3,
+              33
+            ],
+            [
+              "src/index.ts",
+              11,
+              37
+            ]
+          ],
+          "oracle_definitions": [
+            [
+              "src/index.ts",
+              1,
+              18
+            ]
+          ],
+          "tokensave": {
+            "symbol": {
+              "id": "interface:739ce407aa5d1be76f5a6c03b8bb9816",
+              "name": "TsThing",
+              "kind": "interface",
+              "qualified_name": "src/index.ts::src/index.ts::TsThing",
+              "file": "src/index.ts",
+              "line": 1
+            },
+            "new_name": null,
+            "dry_run": true,
+            "allow_heuristic": false,
+            "note": "graph-based, not binding-aware: see the confidence classes in the tool description. line and column are 1-based; column counts bytes, not characters",
+            "counts": {
+              "ambiguous": 0,
+              "exact": 3,
+              "heuristic": 0,
+              "text_only": 0
+            },
+            "files": [
+              {
+                "file": "src/index.ts",
+                "sites": [
+                  {
+                    "file": "src/index.ts",
+                    "line": 1,
+                    "column": 18,
+                    "end_column": 25,
+                    "confidence": "exact",
+                    "kind": "definition"
+                  },
+                  {
+                    "file": "src/index.ts",
+                    "line": 3,
+                    "column": 33,
+                    "end_column": 40,
+                    "confidence": "exact",
+                    "kind": "uses",
+                    "resolved_by": "exact-match",
+                    "from": "src/index.ts::src/index.ts::tsTarget"
+                  },
+                  {
+                    "file": "src/index.ts",
+                    "line": 11,
+                    "column": 37,
+                    "end_column": 44,
+                    "confidence": "exact",
+                    "kind": "uses",
+                    "resolved_by": "exact-match",
+                    "from": "src/index.ts::src/index.ts::secondTsCall"
+                  }
+                ]
+              }
+            ],
+            "text_only": [],
+            "apply": "pass new_name to preview and apply the edit",
+            "diff": []
+          }
+        }
+      ]
+    },
+    {
+      "language": "python",
+      "fixture_sha256": "8e608275794537c4f8a02292f2334b6912eafe26bc19a7d82e2c4271810e0bd3",
+      "server_version_output": "pyright 1.1.414",
+      "dependency_version_outputs": [],
+      "probes": [
+        {
+          "probe": {
+            "symbol": "py_target",
+            "file": "src/sample.py",
+            "line": 5,
+            "column": 5,
+            "edge_kind": "calls"
+          },
+          "lsp_references": [
+            {
+              "file": "src/sample.py",
+              "line": 5,
+              "column": 5
+            },
+            {
+              "file": "src/sample.py",
+              "line": 10,
+              "column": 12
+            },
+            {
+              "file": "src/sample.py",
+              "line": 14,
+              "column": 12
+            }
+          ],
+          "lsp_definitions": [
+            {
+              "file": "src/sample.py",
+              "line": 5,
+              "column": 5
+            }
+          ],
+          "oracle_references": [
+            [
+              "src/sample.py",
+              10,
+              12
+            ],
+            [
+              "src/sample.py",
+              14,
+              12
+            ]
+          ],
+          "oracle_definitions": [
+            [
+              "src/sample.py",
+              5,
+              5
+            ]
+          ],
+          "tokensave": {
+            "symbol": {
+              "id": "function:046a3cc14a327f43dcfdaaaba4e83593",
+              "name": "py_target",
+              "kind": "function",
+              "qualified_name": "src/sample.py::src/sample.py::py_target",
+              "file": "src/sample.py",
+              "line": 5
+            },
+            "new_name": null,
+            "dry_run": true,
+            "allow_heuristic": false,
+            "note": "graph-based, not binding-aware: see the confidence classes in the tool description. line and column are 1-based; column counts bytes, not characters",
+            "counts": {
+              "ambiguous": 0,
+              "exact": 3,
+              "heuristic": 0,
+              "text_only": 0
+            },
+            "files": [
+              {
+                "file": "src/sample.py",
+                "sites": [
+                  {
+                    "file": "src/sample.py",
+                    "line": 5,
+                    "column": 5,
+                    "end_column": 14,
+                    "confidence": "exact",
+                    "kind": "definition"
+                  },
+                  {
+                    "file": "src/sample.py",
+                    "line": 10,
+                    "column": 12,
+                    "end_column": 21,
+                    "confidence": "exact",
+                    "kind": "calls",
+                    "resolved_by": "exact-match",
+                    "from": "src/sample.py::src/sample.py::first_py_call"
+                  },
+                  {
+                    "file": "src/sample.py",
+                    "line": 14,
+                    "column": 12,
+                    "end_column": 21,
+                    "confidence": "exact",
+                    "kind": "calls",
+                    "resolved_by": "exact-match",
+                    "from": "src/sample.py::src/sample.py::second_py_call"
+                  }
+                ]
+              }
+            ],
+            "text_only": [],
+            "apply": "pass new_name to preview and apply the edit",
+            "diff": []
+          }
+        },
+        {
+          "probe": {
+            "symbol": "PyThing",
+            "file": "src/sample.py",
+            "line": 1,
+            "column": 7,
+            "edge_kind": "uses"
+          },
+          "lsp_references": [
+            {
+              "file": "src/sample.py",
+              "line": 1,
+              "column": 7
+            },
+            {
+              "file": "src/sample.py",
+              "line": 5,
+              "column": 21
+            },
+            {
+              "file": "src/sample.py",
+              "line": 10,
+              "column": 22
+            },
+            {
+              "file": "src/sample.py",
+              "line": 13,
+              "column": 26
+            }
+          ],
+          "lsp_definitions": [
+            {
+              "file": "src/sample.py",
+              "line": 1,
+              "column": 7
+            }
+          ],
+          "oracle_references": [
+            [
+              "src/sample.py",
+              5,
+              21
+            ],
+            [
+              "src/sample.py",
+              10,
+              22
+            ],
+            [
+              "src/sample.py",
+              13,
+              26
+            ]
+          ],
+          "oracle_definitions": [
+            [
+              "src/sample.py",
+              1,
+              7
+            ]
+          ],
+          "tokensave": {
+            "symbol": {
+              "id": "class:360e8cc0a862718db5ce52ba773247cf",
+              "name": "PyThing",
+              "kind": "class",
+              "qualified_name": "src/sample.py::src/sample.py::PyThing",
+              "file": "src/sample.py",
+              "line": 1
+            },
+            "new_name": null,
+            "dry_run": true,
+            "allow_heuristic": false,
+            "note": "graph-based, not binding-aware: see the confidence classes in the tool description. line and column are 1-based; column counts bytes, not characters",
+            "counts": {
+              "ambiguous": 0,
+              "exact": 1,
+              "heuristic": 0,
+              "text_only": 3
+            },
+            "files": [
+              {
+                "file": "src/sample.py",
+                "sites": [
+                  {
+                    "file": "src/sample.py",
+                    "line": 1,
+                    "column": 7,
+                    "end_column": 14,
+                    "confidence": "exact",
+                    "kind": "definition"
+                  }
+                ]
+              }
+            ],
+            "text_only": [
+              {
+                "file": "src/sample.py",
+                "line": 5,
+                "column": 21,
+                "end_column": 28,
+                "confidence": "text_only",
+                "kind": "code",
+                "reason": "identifier not linked to this symbol by the graph: a missed reference, or a different symbol with the same name"
+              },
+              {
+                "file": "src/sample.py",
+                "line": 10,
+                "column": 22,
+                "end_column": 29,
+                "confidence": "text_only",
+                "kind": "code",
+                "reason": "identifier not linked to this symbol by the graph: a missed reference, or a different symbol with the same name"
+              },
+              {
+                "file": "src/sample.py",
+                "line": 13,
+                "column": 26,
+                "end_column": 33,
+                "confidence": "text_only",
+                "kind": "code",
+                "reason": "identifier not linked to this symbol by the graph: a missed reference, or a different symbol with the same name"
+              }
+            ],
+            "apply": "pass new_name to preview and apply the edit",
+            "diff": []
+          }
+        }
+      ]
+    }
+  ]
+}

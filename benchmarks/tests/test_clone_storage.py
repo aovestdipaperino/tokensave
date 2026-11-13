@@ -58,6 +58,26 @@ class CloneStorageTests(unittest.TestCase):
                     self.assertEqual(run.call_args.args[0][-1], str(dest))
                     self.assertTrue(root.is_dir())
 
+    def test_criterion_cache_is_refused_without_modification(self):
+        for skip_clone in (False, True):
+            for pinned_ref in ("", "v1.14.1"):
+                with self.subTest(skip_clone=skip_clone, pinned_ref=pinned_ref):
+                    with tempfile.TemporaryDirectory() as temp:
+                        cached = Path(temp) / "scipy"
+                        cached.mkdir()
+                        marker = cached / ".bench-ref"
+                        marker.write_text(pinned_ref)
+                        sentinel = cached / "keep.txt"
+                        sentinel.write_text("criterion-owned")
+                        with mock.patch.dict(os.environ, {"TOKENSAVE_BENCH_REPOS_DIR": temp}):
+                            with mock.patch.object(bench.subprocess, "run") as run:
+                                with self.assertRaisesRegex(OSError, r"\.bench-ref") as raised:
+                                    bench.clone_repo("scipy", "unused", skip_clone)
+                                run.assert_not_called()
+                        self.assertIn("TOKENSAVE_BENCH_REPOS_DIR", str(raised.exception))
+                        self.assertEqual(marker.read_text(), pinned_ref)
+                        self.assertEqual(sentinel.read_text(), "criterion-owned")
+
     def test_storage_failures_name_directory_and_workaround(self):
         failures = [OSError(errno.ENOSPC, "No space left on device"),
                     subprocess.CalledProcessError(128, ["git"], stderr="fatal: No space left on device")]

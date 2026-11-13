@@ -42,13 +42,28 @@ Q0273/Q0274 (`?1` project key, `?2` or `?1` start timestamp). They add two
 occurrences; like `savings_history`, the function is not in the construction
 appendix, so that count is unchanged.
 
+Labelled-callers context (#687, 2026-11-13): schema v19 adds the indexed
+`unresolved_refs.reference_leaf` column. Q0405–Q0408 add and backfill it in
+bounded keyset pages. Q0409 and Q0410 count and retrieve the matching call
+references; the retrieval CTE applies the caller-supplied hard limit before
+joining same-line edges, target names, and ambiguity evidence. Q0237 and Q0239
+now bind the leaf beside the full reference name, and Q0039 creates the column
+and index for a fresh database.
+
+Profiling coverage context (#885, 2026-11-13): the existing SQL and bindings in
+Q0204-Q0217, Q0253-Q0256, Q0296, and Q0308-Q0320 are unchanged,
+but their execution now goes through static `DbOp` labels in the profiled
+database API. The two quality-diff `BEGIN` statements use the profiled batch
+helper. Inventory IDs, occurrence counts, and construction contexts are
+unchanged.
+
 `?`, `?1`, and similar placeholders are bound by the caller. Rust format fields such as `{placeholders}`, `{where_clause}`, `{limit}`, and `{}` are preserved as templates; they are not executable SQL until constructed. Rust string escapes and backslash-newline continuations are decoded for readability. Dynamic SQL has potentially unlimited concrete instances, so the report includes its templates and complete builder functions in the construction appendix, including conditional clauses and parameter bindings. No SQL was executed to produce this report.
 
 ## Inventory summary
 
-- SQL-bearing source files: **39**.
-- SQL literal/template occurrences: **356**.
-- Functions retained for construction/binding context: **178**.
+- SQL-bearing source files: **40**.
+- SQL literal/template occurrences: **367**.
+- Functions retained for construction/binding context: **181**.
 
 ## Source file index
 
@@ -61,7 +76,7 @@ appendix, so that count is unchanged.
 | [src/branch.rs](../src/branch.rs) | 2 |
 | [src/db/compatibility.rs](../src/db/compatibility.rs) | 7 |
 | [src/db/connection.rs](../src/db/connection.rs) | 11 |
-| [src/db/migrations.rs](../src/db/migrations.rs) | 53 |
+| [src/db/migrations.rs](../src/db/migrations.rs) | 57 |
 | [src/db/queries/clear.rs](../src/db/queries/clear.rs) | 1 |
 | [src/db/queries/edges.rs](../src/db/queries/edges.rs) | 51 |
 | [src/db/queries/files.rs](../src/db/queries/files.rs) | 8 |
@@ -72,7 +87,7 @@ appendix, so that count is unchanged.
 | [src/db/queries/routes.rs](../src/db/queries/routes.rs) | 18 |
 | [src/db/queries/search.rs](../src/db/queries/search.rs) | 9 |
 | [src/db/queries/stats.rs](../src/db/queries/stats.rs) | 5 |
-| [src/db/queries/unresolved.rs](../src/db/queries/unresolved.rs) | 10 |
+| [src/db/queries/unresolved.rs](../src/db/queries/unresolved.rs) | 12 |
 | [src/doctor.rs](../src/doctor.rs) | 1 |
 | [src/edge_audit.rs](../src/edge_audit.rs) | 4 |
 | [src/extraction/fstar_extractor.rs](../src/extraction/fstar_extractor.rs) | 2 |
@@ -85,6 +100,7 @@ appendix, so that count is unchanged.
 | [src/hooks.rs](../src/hooks.rs) | 1 |
 | [src/mcp/tools/definitions.rs](../src/mcp/tools/definitions.rs) | 4 |
 | [src/mcp/tools/handlers/workflow.rs](../src/mcp/tools/handlers/workflow.rs) | 1 |
+| [src/okf/export.rs](../src/okf/export.rs) | 5 |
 | [src/quality_diff.rs](../src/quality_diff.rs) | 2 |
 | [src/runtime_telemetry.rs](../src/runtime_telemetry.rs) | 4 |
 | [src/tokensave/memory.rs](../src/tokensave/memory.rs) | 7 |
@@ -591,6 +607,7 @@ CREATE TABLE IF NOT EXISTS nodes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             from_node_id TEXT NOT NULL,
             reference_name TEXT NOT NULL,
+            reference_leaf TEXT NOT NULL DEFAULT '',
             reference_kind TEXT NOT NULL,
             line INTEGER NOT NULL,
             col INTEGER NOT NULL,
@@ -666,6 +683,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 
         CREATE INDEX IF NOT EXISTS idx_unresolved_refs_from_node_id ON unresolved_refs(from_node_id);
         CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_name ON unresolved_refs(reference_name);
+        CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_leaf ON unresolved_refs(reference_leaf);
         CREATE INDEX IF NOT EXISTS idx_unresolved_refs_file_path ON unresolved_refs(file_path);
 
         CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
@@ -1410,6 +1428,41 @@ Source: [src/db/migrations.rs:1794](../src/db/migrations.rs#L1794).
 
 ```sql
 ALTER TABLE edges ADD COLUMN resolved_by INTEGER;
+```
+
+#### Q0405 — `migrate_v19`
+
+Source: [src/db/migrations.rs:1819](../src/db/migrations.rs#L1819).
+
+```sql
+ALTER TABLE unresolved_refs
+                 ADD COLUMN reference_leaf TEXT NOT NULL DEFAULT '';
+```
+
+#### Q0406 — `migrate_v19`
+
+Source: [src/db/migrations.rs:1835](../src/db/migrations.rs#L1835).
+
+```sql
+SELECT id, reference_name FROM unresolved_refs
+                 WHERE id > ?1 ORDER BY id LIMIT 25000
+```
+
+#### Q0407 — `migrate_v19`
+
+Source: [src/db/migrations.rs:1858](../src/db/migrations.rs#L1858).
+
+```sql
+UPDATE unresolved_refs SET reference_leaf = ?1 WHERE id = ?2
+```
+
+#### Q0408 — `migrate_v19`
+
+Source: [src/db/migrations.rs:1878](../src/db/migrations.rs#L1878).
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_leaf
+             ON unresolved_refs(reference_leaf);
 ```
 
 ### src/db/queries/clear.rs
@@ -2508,7 +2561,7 @@ SELECT kind, name, qualified_name FROM nodes WHERE file_path = ?1
 
 #### Q0198 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1120](../src/db/queries/nodes.rs#L1120).
+Source: [src/db/queries/nodes.rs:1123](../src/db/queries/nodes.rs#L1123).
 
 ```sql
 DELETE FROM executable_body_fts WHERE file_path = ?1
@@ -2516,7 +2569,7 @@ DELETE FROM executable_body_fts WHERE file_path = ?1
 
 #### Q0199 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1134](../src/db/queries/nodes.rs#L1134).
+Source: [src/db/queries/nodes.rs:1137](../src/db/queries/nodes.rs#L1137).
 
 ```sql
 SELECT id FROM nodes WHERE file_path = ?1
@@ -2524,7 +2577,7 @@ SELECT id FROM nodes WHERE file_path = ?1
 
 #### Q0200 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1171](../src/db/queries/nodes.rs#L1171).
+Source: [src/db/queries/nodes.rs:1174](../src/db/queries/nodes.rs#L1174).
 
 ```sql
 DELETE FROM edges WHERE source = ?1 OR target = ?1
@@ -2532,7 +2585,7 @@ DELETE FROM edges WHERE source = ?1 OR target = ?1
 
 #### Q0201 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1181](../src/db/queries/nodes.rs#L1181).
+Source: [src/db/queries/nodes.rs:1184](../src/db/queries/nodes.rs#L1184).
 
 ```sql
 DELETE FROM unresolved_refs WHERE from_node_id = ?1
@@ -2540,7 +2593,7 @@ DELETE FROM unresolved_refs WHERE from_node_id = ?1
 
 #### Q0202 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1191](../src/db/queries/nodes.rs#L1191).
+Source: [src/db/queries/nodes.rs:1194](../src/db/queries/nodes.rs#L1194).
 
 ```sql
 DELETE FROM vectors WHERE node_id = ?1
@@ -2548,7 +2601,7 @@ DELETE FROM vectors WHERE node_id = ?1
 
 #### Q0203 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1201](../src/db/queries/nodes.rs#L1201).
+Source: [src/db/queries/nodes.rs:1204](../src/db/queries/nodes.rs#L1204).
 
 ```sql
 DELETE FROM nodes WHERE file_path = ?1
@@ -2874,17 +2927,17 @@ SELECT from_node_id, reference_name, line, col, file_path
 
 #### Q0237 — `insert_unresolved_ref`
 
-Source: [src/db/queries/unresolved.rs:47](../src/db/queries/unresolved.rs#L47).
+Source: [src/db/queries/unresolved.rs:49](../src/db/queries/unresolved.rs#L49).
 
 ```sql
 INSERT INTO unresolved_refs
-                (from_node_id, reference_name, reference_kind, line, col, file_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                (from_node_id, reference_name, reference_leaf, reference_kind, line, col, file_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
 ```
 
 #### Q0238 — `insert_unresolved_refs`
 
-Source: [src/db/queries/unresolved.rs:74](../src/db/queries/unresolved.rs#L74).
+Source: [src/db/queries/unresolved.rs:87](../src/db/queries/unresolved.rs#L87).
 
 ```sql
 BEGIN
@@ -2892,15 +2945,15 @@ BEGIN
 
 #### Q0239 — `insert_unresolved_refs`
 
-Source: [src/db/queries/unresolved.rs:82](../src/db/queries/unresolved.rs#L82).
+Source: [src/db/queries/unresolved.rs:95](../src/db/queries/unresolved.rs#L95).
 
 ```sql
-INSERT INTO unresolved_refs (from_node_id,reference_name,reference_kind,line,col,file_path) VALUES (?1,?2,?3,?4,?5,?6)
+INSERT INTO unresolved_refs (from_node_id,reference_name,reference_leaf,reference_kind,line,col,file_path) VALUES (?1,?2,?3,?4,?5,?6,?7)
 ```
 
 #### Q0240 — `insert_unresolved_refs`
 
-Source: [src/db/queries/unresolved.rs:107](../src/db/queries/unresolved.rs#L107).
+Source: [src/db/queries/unresolved.rs:121](../src/db/queries/unresolved.rs#L121).
 
 ```sql
 COMMIT
@@ -2937,7 +2990,7 @@ SELECT id, from_node_id, reference_name, reference_kind, line, col, file_path
 
 #### Q0244 — `get_unresolved_refs_for_sources`
 
-Source: [src/db/queries/unresolved.rs:228](../src/db/queries/unresolved.rs#L228).
+Source: [src/db/queries/unresolved.rs:231](../src/db/queries/unresolved.rs#L231).
 
 ```sql
 SELECT from_node_id, reference_name, reference_kind, line, col, file_path
@@ -2946,10 +2999,44 @@ SELECT from_node_id, reference_name, reference_kind, line, col, file_path
 
 #### Q0245 — `clear_unresolved_refs`
 
-Source: [src/db/queries/unresolved.rs:259](../src/db/queries/unresolved.rs#L259).
+Source: [src/db/queries/unresolved.rs:262](../src/db/queries/unresolved.rs#L262).
 
 ```sql
 DELETE FROM unresolved_refs
+```
+
+#### Q0409 — `get_call_references_by_name`
+
+Source: [src/db/queries/unresolved.rs:327](../src/db/queries/unresolved.rs#L327).
+
+```sql
+SELECT COUNT(*) FROM unresolved_refs
+                 WHERE reference_kind = 'calls' AND reference_leaf = ?1
+```
+
+#### Q0410 — `get_call_references_by_name`
+
+Source: [src/db/queries/unresolved.rs:351](../src/db/queries/unresolved.rs#L351).
+
+```sql
+WITH selected AS (
+                     SELECT from_node_id, reference_name, reference_kind, line, col, file_path
+                     FROM unresolved_refs
+                     WHERE reference_kind = 'calls' AND reference_leaf = ?1
+                     ORDER BY file_path, line, col, id
+                     LIMIT ?2
+                 )
+                 SELECT r.from_node_id, r.reference_name, r.line, r.col, r.file_path,
+                        t.id, t.qualified_name, a.candidate_node_ids
+                 FROM selected r
+                 LEFT JOIN edges e
+                   ON e.source = r.from_node_id AND e.line = r.line AND e.kind = 'calls'
+                 LEFT JOIN nodes t ON t.id = e.target AND t.name = ?1
+                 LEFT JOIN ambiguous_calls a
+                   ON a.from_node_id = r.from_node_id
+                  AND a.reference_name = r.reference_name
+                  AND a.line = r.line
+                 ORDER BY r.file_path, r.line, r.col, t.qualified_name
 ```
 
 ### src/doctor.rs
@@ -4104,6 +4191,33 @@ Source: [src/agents/hooks.rs:2342](../src/agents/hooks.rs#L2342).
         );
     }
 ```
+
+
+### `migrate_v19` — src/db/migrations.rs:1809
+
+Source: [src/db/migrations.rs:1809](../src/db/migrations.rs#L1809).
+
+Q0405 runs only when `table_columns` does not report `reference_leaf`. Q0406
+binds the last processed `id` as `?1` and reads at most 25,000 rows. For every
+row, Q0407 binds `simple_ref_name(reference_name)` as `?1` and the row id as
+`?2` through one reset prepared statement. The next page starts at the last id;
+the loop retains only one page. Q0408 creates the equality index after the
+backfill. All four statements run inside the migration transaction established
+by `migrate`.
+
+
+### `get_call_references_by_name` — src/db/queries/unresolved.rs:318
+
+Source: [src/db/queries/unresolved.rs:318](../src/db/queries/unresolved.rs#L318).
+
+Q0409 binds the requested trailing symbol name as `?1` and returns the full
+matching call-reference count. Q0410 binds the same name as `?1` and the hard
+result limit as `?2`. Its `selected` CTE orders and limits indexed
+`unresolved_refs` before joining: an edge must share the source node and line,
+and its target must share the trailing name; an ambiguity must share source,
+full reference name, and line. The Rust collector groups duplicate joined rows
+back into one reference and retains all same-named resolved targets for its
+`confirmed`/`other` classification.
 
 ### `cargo_build_binary_warning` — src/agents/mod.rs:207
 
@@ -9581,7 +9695,10 @@ Source: [src/db/queries/nodes.rs:1076](../src/db/queries/nodes.rs#L1076).
 
         let mut out = Vec::new();
         while let Ok(Some(row)) = rows.next().await {
-            let kind = NodeKind::from_str(&row.get::<String>(0).unwrap_or_default())
+            let kind = row
+                .get::<String>(0)
+                .unwrap_or_default()
+                .parse::<NodeKind>()
                 .unwrap_or(NodeKind::Function);
             out.push(TouchedNode {
                 kind,
@@ -9595,7 +9712,7 @@ Source: [src/db/queries/nodes.rs:1076](../src/db/queries/nodes.rs#L1076).
 
 ### `delete_nodes_by_file` — src/db/queries/nodes.rs:1103
 
-Source: [src/db/queries/nodes.rs:1103](../src/db/queries/nodes.rs#L1103).
+Source: [src/db/queries/nodes.rs:1106](../src/db/queries/nodes.rs#L1106).
 
 ```rust
     pub async fn delete_nodes_by_file(&self, file_path: &str) -> Result<()> {
@@ -10632,20 +10749,21 @@ Source: [src/db/queries/unresolved.rs:13](../src/db/queries/unresolved.rs#L13).
     }
 ```
 
-### `insert_unresolved_ref` — src/db/queries/unresolved.rs:44
+### `insert_unresolved_ref` — src/db/queries/unresolved.rs:46
 
-Source: [src/db/queries/unresolved.rs:44](../src/db/queries/unresolved.rs#L44).
+Source: [src/db/queries/unresolved.rs:46](../src/db/queries/unresolved.rs#L46).
 
 ```rust
     pub async fn insert_unresolved_ref(&self, uref: &UnresolvedRef) -> Result<()> {
         self.conn()
             .execute(
                 "INSERT INTO unresolved_refs
-                (from_node_id, reference_name, reference_kind, line, col, file_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (from_node_id, reference_name, reference_leaf, reference_kind, line, col, file_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     uref.from_node_id.as_str(),
                     uref.reference_name.as_str(),
+                    simple_ref_name(&uref.reference_name),
                     uref.reference_kind.as_str(),
                     i64::from(uref.line),
                     i64::from(uref.column),
@@ -10663,10 +10781,10 @@ Source: [src/db/queries/unresolved.rs:44](../src/db/queries/unresolved.rs#L44).
 
 ### `insert_unresolved_refs` — src/db/queries/unresolved.rs:68
 
-Source: [src/db/queries/unresolved.rs:68](../src/db/queries/unresolved.rs#L68).
+Source: [src/db/queries/unresolved.rs:81](../src/db/queries/unresolved.rs#L81).
 
 ```rust
-    pub async fn insert_unresolved_refs(&self, refs: &[UnresolvedRef]) -> Result<()> {
+    async fn insert_unresolved_refs_unprofiled(&self, refs: &[UnresolvedRef]) -> Result<()> {
         if refs.is_empty() {
             return Ok(());
         }
@@ -10680,7 +10798,7 @@ Source: [src/db/queries/unresolved.rs:68](../src/db/queries/unresolved.rs#L68).
             })?;
 
         let stmt = self.conn()
-            .prepare("INSERT INTO unresolved_refs (from_node_id,reference_name,reference_kind,line,col,file_path) VALUES (?1,?2,?3,?4,?5,?6)")
+            .prepare("INSERT INTO unresolved_refs (from_node_id,reference_name,reference_leaf,reference_kind,line,col,file_path) VALUES (?1,?2,?3,?4,?5,?6,?7)")
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to prepare: {e}"),
@@ -10691,6 +10809,7 @@ Source: [src/db/queries/unresolved.rs:68](../src/db/queries/unresolved.rs#L68).
             stmt.execute(params![
                 uref.from_node_id.as_str(),
                 uref.reference_name.as_str(),
+                simple_ref_name(&uref.reference_name),
                 uref.reference_kind.as_str(),
                 i64::from(uref.line),
                 i64::from(uref.column),
@@ -10799,7 +10918,10 @@ Source: [src/db/queries/unresolved.rs:171](../src/db/queries/unresolved.rs#L171)
                 UnresolvedRef {
                     from_node_id: row.get::<String>(1).unwrap_or_default(),
                     reference_name: row.get::<String>(2).unwrap_or_default(),
-                    reference_kind: EdgeKind::from_str(&row.get::<String>(3).unwrap_or_default())
+                    reference_kind: row
+                        .get::<String>(3)
+                        .unwrap_or_default()
+                        .parse::<EdgeKind>()
                         .unwrap_or(EdgeKind::Calls),
                     line: row.get::<u32>(4).unwrap_or(0),
                     column: row.get::<u32>(5).unwrap_or(0),
@@ -10813,7 +10935,7 @@ Source: [src/db/queries/unresolved.rs:171](../src/db/queries/unresolved.rs#L171)
 
 ### `get_unresolved_refs_for_sources` — src/db/queries/unresolved.rs:220
 
-Source: [src/db/queries/unresolved.rs:220](../src/db/queries/unresolved.rs#L220).
+Source: [src/db/queries/unresolved.rs:223](../src/db/queries/unresolved.rs#L223).
 
 ```rust
     pub async fn get_unresolved_refs_for_sources(
@@ -10855,7 +10977,7 @@ Source: [src/db/queries/unresolved.rs:220](../src/db/queries/unresolved.rs#L220)
 
 ### `clear_unresolved_refs` — src/db/queries/unresolved.rs:257
 
-Source: [src/db/queries/unresolved.rs:257](../src/db/queries/unresolved.rs#L257).
+Source: [src/db/queries/unresolved.rs:260](../src/db/queries/unresolved.rs#L260).
 
 ```rust
     pub async fn clear_unresolved_refs(&self) -> Result<()> {
@@ -13102,6 +13224,68 @@ SELECT substr(e.source,1,4097), substr(e.target,1,4097), substr(e.kind,1,4097), 
 ?1 is the same file for both endpoints; ?2 is max_edges + 1, integer <=5001. Extra row refuses export. id breaks ties without collapsing multiplicity; line and nullable numeric resolver provenance are retained.
 
 Construction context: max_nodes is validated in 1..=1000 and max_edges in 1..=5000 before integer conversion. SQL templates are fixed; no user text is interpolated. Queries Q0385–Q0388 use one read transaction for a consistent DB snapshot. Output is published only after successful reads, budget checks, source/branch rechecks and capped serialization. No migrations or writes occur.
+
+
+## OKF export additions (Refs #858)
+
+Source: [src/okf/export.rs](../src/okf/export.rs), `export`, `read_files` and
+`read_links`. This section adds five occurrences and one construction/binding
+context to the existing inventory. No existing query was changed, moved or
+removed. Snapshot inspected 2026-11-11. The export opens the branch database
+found by `graphify::database_path` read-only, after
+`compatibility::preflight`, like the Graphify export. The transaction API owns
+BEGIN, COMMIT and rollback on drop.
+
+#### Q0400 — `export`: Read-only connection limits
+
+```sql
+PRAGMA query_only=1; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192;
+```
+
+Fixed batch, no parameters; executes before the read transaction.
+
+#### Q0401 — `export`: Current-schema check
+
+```sql
+PRAGMA user_version
+```
+
+No bindings; exactly one scalar row. Versions unequal to latest_version() are
+refused; the export never migrates.
+
+#### Q0402 — `read_files`: Bounded source-file list
+
+```sql
+SELECT path, substr(content_hash,1,128), size, node_count FROM files WHERE kind = 'code' ORDER BY path LIMIT ?1
+```
+
+?1 is max_files + 1. An extra row refuses the export. Artifact rows are
+excluded.
+
+#### Q0403 — `read_links`: File-to-file dependency aggregation
+
+```sql
+SELECT s.file_path, t.file_path, substr(e.kind,1,64), COUNT(*) FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target WHERE s.file_path <> t.file_path GROUP BY s.file_path, t.file_path, e.kind ORDER BY s.file_path, t.file_path, e.kind LIMIT ?1
+```
+
+?1 is max_links + 1. An extra row refuses the export. Rows whose files are not
+in the Q0402 list are ignored.
+
+#### Q0404 — `export`: Symbols per file
+
+```sql
+SELECT n.file_path, substr(n.kind,1,64), substr(n.name,1,513), substr(n.qualified_name,1,513), n.start_line, n.end_line, substr(n.visibility,1,32) FROM nodes n JOIN files f ON f.path = n.file_path WHERE f.kind = 'code' AND n.kind NOT IN ('file', 'doc') ORDER BY n.file_path, n.start_line, n.id
+```
+
+No bindings. Rows are streamed in file order; each file keeps at most
+max_symbols_per_file rows in memory and counts the rest. No source body,
+signature or docstring is projected.
+
+Construction context: all templates are fixed and no user text is interpolated.
+Q0401–Q0404 run in one read transaction for a consistent snapshot. The bundle is
+written to a staging directory beside the output and renamed into place only
+after every read succeeds; an existing output path is refused. No writes or
+migrations reach the database.
 
 
 #### Q0390 — `migrate_turns_columns`

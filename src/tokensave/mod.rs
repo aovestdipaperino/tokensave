@@ -20,7 +20,7 @@ use crate::graph::{GraphQueryManager, GraphTraverser};
 use crate::resolution::{AmbiguityRefKey, ReferenceResolver, TouchedNode, TouchedSet};
 use crate::sync;
 use crate::types::{
-    AmbiguousCall, AstGrepResult, BuildContextOptions, Edge, EdgeKind, EditResult,
+    AmbiguousCall, AstGrepResult, BuildContextOptions, CallReference, Edge, EdgeKind, EditResult,
     ExecutableBodyDocument, ExtractionResult, FileKind, FileRecord, GraphStats, InsertResult,
     LineReplaceResult, MultiEditResult, Node, NodeKind, ResolvedRef, SearchResult, Subgraph,
     TaskContext, UnresolvedRef,
@@ -35,6 +35,7 @@ mod rename;
 mod runtime;
 mod staleness;
 mod util;
+mod watch;
 
 pub(crate) use extract::*;
 pub(crate) use guard::*;
@@ -47,6 +48,7 @@ pub use runtime::BranchRuntime;
 pub use staleness::{AutoSyncScope, BranchDrift, DEFAULT_MAX_AUTO_SYNC_FILES};
 pub use util::is_test_file;
 pub(crate) use util::*;
+pub use watch::{is_transient_file_name, WatchPlan, WatchedChange};
 
 /// Central orchestrator that coordinates all subsystems of the code graph.
 ///
@@ -247,9 +249,15 @@ impl TokenSave {
     /// added columns) signals that a forced reindex is needed to backfill the
     /// new schema. Falls back to `false` when the version cannot be read.
     pub async fn needs_schema_upgrade(&self) -> bool {
-        crate::db::migrations::read_schema_version(self.db.conn())
-            .await
-            .is_ok_and(|v| v < crate::db::migrations::latest_version())
+        let mut span = crate::profile::span(crate::profile::DbOp::ReadSchemaVersion);
+        span.mark_cancellable();
+        if let Ok(version) = crate::db::migrations::read_schema_version(self.db.conn()).await {
+            span.finish();
+            version < crate::db::migrations::latest_version()
+        } else {
+            span.fail();
+            false
+        }
     }
 
     /// Opens an existing `TokenSave` project at the given root.
@@ -358,7 +366,8 @@ impl TokenSave {
 
         // If the dirty sentinel exists, a previous sync/index was interrupted.
         // Check integrity and rebuild if necessary.
-        let crashed = has_dirty_sentinel(project_root);
+        let database = dirty_database_name(&tokensave_dir, &db_path);
+        let crashed = has_dirty_sentinel(project_root, &database);
         if crashed {
             eprintln!(
                 "[tokensave] previous operation was interrupted — checking database integrity…"
@@ -380,6 +389,17 @@ impl TokenSave {
                 if crate::db::migrations::is_environmental_error(&e) {
                     return Err(e);
                 }
+                // The rebuild indexes the working tree. Refuse before the
+                // delete when the database belongs to another branch (#865).
+                let meta = branch_meta::load_branch_meta(&tokensave_dir);
+                if let Some(owner) = meta.as_ref().and_then(|meta| {
+                    borrowed_index_owner(meta, active_branch.as_deref(), serving_branch.as_deref())
+                }) {
+                    let refusal = borrowed_index_refusal(active_branch.as_deref(), owner);
+                    return Err(TokenSaveError::Config {
+                        message: format!("{e}\nNot rebuilding the database: {refusal}"),
+                    });
+                }
                 let lock = match rebuild_refusal(project_root, &db_path) {
                     Ok(lock) => lock,
                     Err(refusal) => {
@@ -390,7 +410,7 @@ impl TokenSave {
                 };
                 eprintln!("[tokensave] {e}\n[tokensave] rebuilding the database…");
                 delete_db_files(&db_path);
-                clear_dirty_sentinel(project_root);
+                clear_dirty_sentinel(project_root, &database);
                 let (db, _) = Database::initialize(&db_path).await?;
                 // The index pass below takes the sync lock itself.
                 drop(lock);
@@ -425,7 +445,8 @@ impl TokenSave {
         };
         // Another writer may have completed between observing the sentinel
         // and acquiring the lock. Recheck while holding exclusive ownership.
-        let recover_interrupted = recovery_lock.is_some() && has_dirty_sentinel(project_root);
+        let recover_interrupted =
+            recovery_lock.is_some() && has_dirty_sentinel(project_root, &database);
         if (recover_interrupted || migrated)
             && serving_branch.is_some()
             && serving_branch != active_branch

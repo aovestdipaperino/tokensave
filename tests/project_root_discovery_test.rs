@@ -351,3 +351,107 @@ fn mcp_server_launched_from_a_subdirectory_serves_the_root_project() {
     );
     assert!(!tokensave::config::get_tokensave_dir(&cwd).exists());
 }
+
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "TokenSave Test")
+        .env("GIT_AUTHOR_EMAIL", "tokensave@example.com")
+        .env("GIT_COMMITTER_NAME", "TokenSave Test")
+        .env("GIT_COMMITTER_EMAIL", "tokensave@example.com")
+        .output()
+        .expect("git must be on PATH for this test");
+    assert!(
+        out.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        stderr(&out)
+    );
+}
+
+/// The start of the warning for an index that belongs to a different working
+/// tree (#312).
+const BORROWED_INDEX_WARNING: &str = "belongs to a different git working tree";
+
+/// A main checkout with an index, and a linked worktree inside it that has no
+/// index of its own. Returns the two roots.
+fn main_with_nested_worktree(fx: &Fixture) -> (PathBuf, PathBuf) {
+    let main = fx.dir(&["main"]);
+    git_repo(&main, "in_main");
+    git(&main, &["add", "-A"]);
+    git(&main, &["commit", "-q", "-m", "base"]);
+    init_at(fx, &main);
+    let nested = main.join("nested");
+    git(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "side",
+            &nested.to_string_lossy(),
+        ],
+    );
+    (main, nested)
+}
+
+/// A command in a linked worktree nested in its main checkout uses the index
+/// of the main checkout. The CLI must say so, as the MCP server does (#865).
+#[test]
+fn commands_in_a_nested_worktree_warn_about_the_borrowed_index() {
+    let fx = Fixture::new();
+    let (main, nested) = main_with_nested_worktree(&fx);
+
+    for args in [&["status"][..], &["sync"], &["tool", "search", "in_main"]] {
+        let out = fx.tokensave(&nested, args);
+        let err = stderr(&out);
+        assert!(out.status.success(), "{args:?} failed: {err}");
+        assert!(
+            err.contains(BORROWED_INDEX_WARNING),
+            "{args:?} must warn about the borrowed index: {err}"
+        );
+        assert!(err.contains(&nested.display().to_string()), "{err}");
+    }
+
+    // The main checkout and its subdirectories own the index.
+    for cwd in [main.clone(), main.join("src")] {
+        let out = fx.tokensave(&cwd, &["status"]);
+        let err = stderr(&out);
+        assert!(!err.contains(BORROWED_INDEX_WARNING), "{err}");
+    }
+}
+
+/// The warning tells the user to run `tokensave init` in the worktree. That
+/// command must create the index of the worktree (#865).
+#[test]
+fn init_in_a_nested_worktree_creates_the_worktree_index() {
+    let fx = Fixture::new();
+    let (main, nested) = main_with_nested_worktree(&fx);
+    let before = snapshot(&main);
+
+    // From a subdirectory, `init` targets the root of the worktree.
+    let out = fx.tokensave(&nested.join("src"), &["init"]);
+    let err = stderr(&out);
+    assert!(out.status.success(), "init failed: {err}");
+    assert!(
+        db_path(&nested).is_file(),
+        "init must create the index of the worktree: {err}"
+    );
+    assert!(!tokensave::config::get_tokensave_dir(&nested.join("src")).exists());
+    assert_eq!(
+        snapshot(&main),
+        before,
+        "the index of the main checkout must be untouched"
+    );
+
+    // The worktree now owns its index, so no command warns.
+    let out = fx.tokensave(&nested, &["tool", "search", "in_main"]);
+    assert!(stdout(&out).contains("src/lib.rs"), "{}", stdout(&out));
+    assert!(
+        !stderr(&out).contains(BORROWED_INDEX_WARNING),
+        "{}",
+        stderr(&out)
+    );
+}

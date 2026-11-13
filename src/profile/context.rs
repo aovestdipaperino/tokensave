@@ -200,13 +200,15 @@ pub(crate) fn scoped_sync<R>(f: impl FnOnce() -> R) -> (R, InvocationSummary) {
 
 /// Guard measuring one operation; see the module docs.
 ///
-/// Call [`Span::finish`] on success. A span dropped without it (an early
-/// return through `?`, a panic, a cancelled future) or ended with
-/// [`Span::fail`] counts as an error and stays out of the latency histogram;
-/// its time is still subtracted from the enclosing span.
+/// Call [`Span::finish`] on success. [`Span::fail`] counts an error and keeps
+/// its latency out of the histogram. A span marked cancellable and dropped
+/// without either call counts as a cancellation and keeps its elapsed time in
+/// the histogram. Other unfinished spans count as errors. All paths subtract
+/// their time from an enclosing span.
 #[must_use = "a span measures until it is finished or dropped"]
 pub struct Span {
     active: Option<Active>,
+    cancel_on_drop: bool,
 }
 
 struct Active {
@@ -227,7 +229,10 @@ struct Active {
 impl Span {
     /// A span that measures nothing (profiling off).
     pub const fn inert() -> Self {
-        Self { active: None }
+        Self {
+            active: None,
+            cancel_on_drop: false,
+        }
     }
 
     pub(crate) fn start(recorder: &'static Recorder, op: Op) -> Self {
@@ -241,7 +246,13 @@ impl Span {
                 rows_returned: 0,
                 rows_affected: 0,
             }),
+            cancel_on_drop: false,
         }
+    }
+
+    /// Treats an unfinished span as a cancelled asynchronous operation.
+    pub fn mark_cancellable(&mut self) {
+        self.cancel_on_drop = true;
     }
 
     /// Whether this span is measuring.
@@ -295,11 +306,34 @@ impl Span {
         }
         Some(inclusive_us)
     }
+
+    fn cancel(&mut self) -> Option<u64> {
+        let a = self.active.take()?;
+        let inclusive_us = u64::try_from(a.start.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let child_us = a
+            .slot
+            .and_then(|slot| with_context(|c| c.pop(slot, a.op, inclusive_us)))
+            .unwrap_or(0);
+        a.recorder.record_cancelled(
+            a.op,
+            Sample {
+                inclusive_us,
+                exclusive_us: inclusive_us.saturating_sub(child_us),
+                rows_returned: a.rows_returned,
+                rows_affected: a.rows_affected,
+            },
+        );
+        Some(inclusive_us)
+    }
 }
 
 impl Drop for Span {
     fn drop(&mut self) {
-        let _ = self.complete(false);
+        if self.cancel_on_drop {
+            let _ = self.cancel();
+        } else {
+            let _ = self.complete(false);
+        }
     }
 }
 
@@ -359,19 +393,23 @@ mod tests {
     }
 
     #[test]
-    fn dropped_span_is_an_error_but_still_a_child() {
+    fn dropped_span_records_cancellation_latency_and_is_still_a_child() {
         let r = recorder();
         scoped_sync(|| {
             let outer = Span::start(r, Op::Mcp(McpPhase::Total));
             {
-                let _failed = Span::start(r, Op::Db(DbOp::Open));
+                let mut cancelled = Span::start(r, Op::Db(DbOp::Open));
+                cancelled.mark_cancellable();
                 spin(Duration::from_millis(2));
             }
             outer.finish();
         });
         let snap = r.drain();
-        assert_eq!(snap["db.open"].errors, 1);
-        assert_eq!(snap["db.open"].count, 0);
+        assert_eq!(snap["db.open"].errors, 0);
+        assert_eq!(snap["db.open"].cancellations, 1);
+        assert_eq!(snap["db.open"].count, 1);
+        assert!(snap["db.open"].sum_us >= 2_000);
+        assert_eq!(snap["db.open"].histogram.count(), 1);
         let total = &snap["mcp.total"];
         assert!(total.sum_us - total.exclusive_sum_us >= 2_000);
     }

@@ -15,7 +15,7 @@ use crate::errors::{Result, TokenSaveError};
 
 /// The highest migration version defined in this file. Bump this and add a
 /// new entry to `run_migration` whenever the schema changes.
-const LATEST_VERSION: u32 = 18;
+const LATEST_VERSION: u32 = 19;
 
 /// Schema for the ambiguity record added in v17 (#412). Used by both
 /// `migrate_v17` and the fresh-schema path, which never replays migrations.
@@ -201,6 +201,7 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             from_node_id TEXT NOT NULL,
             reference_name TEXT NOT NULL,
+            reference_leaf TEXT NOT NULL DEFAULT '',
             reference_kind TEXT NOT NULL,
             line INTEGER NOT NULL,
             col INTEGER NOT NULL,
@@ -276,6 +277,7 @@ pub async fn create_schema(conn: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_unresolved_refs_from_node_id ON unresolved_refs(from_node_id);
         CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_name ON unresolved_refs(reference_name);
+        CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_leaf ON unresolved_refs(reference_leaf);
         CREATE INDEX IF NOT EXISTS idx_unresolved_refs_file_path ON unresolved_refs(file_path);
 
         CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
@@ -537,6 +539,7 @@ async fn run_migration(conn: &Connection, version: u32) -> Result<()> {
         16 => migrate_v16(conn).await,
         17 => migrate_v17(conn).await,
         18 => migrate_v18(conn).await,
+        19 => migrate_v19(conn).await,
         _ => Err(TokenSaveError::Database {
             message: format!("unknown migration version: {version}"),
             operation: "run_migration".to_string(),
@@ -1797,5 +1800,88 @@ async fn migrate_v18(conn: &Connection) -> Result<()> {
             message: format!("v18: failed to add edges.resolved_by: {e}"),
             operation: "migrate_v18".to_string(),
         })?;
+    Ok(())
+}
+
+/// v19: stores and indexes the trailing segment of every extracted reference
+/// so caller discovery can use equality instead of a leading-wildcard scan
+/// over the full unresolved-reference table (#687).
+async fn migrate_v19(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "unresolved_refs").await? {
+        return Ok(());
+    }
+    if !table_columns(conn, "unresolved_refs")
+        .await?
+        .iter()
+        .any(|column| column == "reference_leaf")
+    {
+        conn.execute_batch(
+            "ALTER TABLE unresolved_refs
+                 ADD COLUMN reference_leaf TEXT NOT NULL DEFAULT '';",
+        )
+        .await
+        .map_err(|e| TokenSaveError::Database {
+            message: format!("v19: failed to add unresolved_refs.reference_leaf: {e}"),
+            operation: "migrate_v19".to_string(),
+        })?;
+    }
+
+    // Bound migration memory: a mature index can hold hundreds of thousands
+    // of references. Read and update one keyset page at a time (#482).
+    let mut after_id = 0_i64;
+    loop {
+        let mut rows = conn
+            .query(
+                "SELECT id, reference_name FROM unresolved_refs
+                 WHERE id > ?1 ORDER BY id LIMIT 25000",
+                params![after_id],
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("v19: failed to page unresolved refs: {e}"),
+                operation: "migrate_v19".to_string(),
+            })?;
+        let mut page = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("v19: failed to read unresolved ref: {e}"),
+            operation: "migrate_v19".to_string(),
+        })? {
+            let id = row.get::<i64>(0).unwrap_or(0);
+            let name = row.get::<String>(1).unwrap_or_default();
+            page.push((id, name));
+        }
+        drop(rows);
+        if page.is_empty() {
+            break;
+        }
+        let statement = conn
+            .prepare("UPDATE unresolved_refs SET reference_leaf = ?1 WHERE id = ?2")
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("v19: failed to prepare reference-leaf update: {e}"),
+                operation: "migrate_v19".to_string(),
+            })?;
+        for (id, name) in &page {
+            statement
+                .execute(params![crate::resolution::simple_ref_name(name), *id])
+                .await
+                .map_err(|e| TokenSaveError::Database {
+                    message: format!("v19: failed to update reference leaf: {e}"),
+                    operation: "migrate_v19".to_string(),
+                })?;
+            statement.reset();
+        }
+        after_id = page.last().map_or(after_id, |(id, _)| *id);
+    }
+
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_leaf
+             ON unresolved_refs(reference_leaf);",
+    )
+    .await
+    .map_err(|e| TokenSaveError::Database {
+        message: format!("v19: failed to index unresolved_refs.reference_leaf: {e}"),
+        operation: "migrate_v19".to_string(),
+    })?;
     Ok(())
 }

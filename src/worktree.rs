@@ -127,6 +127,23 @@ pub fn detect_worktree_index_mismatch(
     })
 }
 
+/// The mismatch for a command that starts in `start_path` with no explicit
+/// project path, found with file checks only.
+///
+/// The MCP server asks git once at startup
+/// ([`detect_worktree_index_mismatch`]). A CLI command runs once and exits, so
+/// it uses [`config::borrowed_worktree_root`](crate::config::borrowed_worktree_root),
+/// which starts no process. That function covers the worktree nested in its
+/// main checkout, the one layout in which the CLI finds a borrowed index.
+pub fn borrowed_index_mismatch(start_path: &Path) -> Option<WorktreeIndexMismatch> {
+    let worktree_root = crate::config::borrowed_worktree_root(start_path)?;
+    let index_root = crate::config::discover_project_root(start_path)?;
+    Some(WorktreeIndexMismatch {
+        worktree_root,
+        index_root,
+    })
+}
+
 /// Verbose multi-line warning for `tokensave status` and similar contexts
 /// where the answer can sit alongside a heads-up block.
 pub fn worktree_mismatch_warning(m: &WorktreeIndexMismatch) -> String {

@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::context::format_context_as_markdown;
 use crate::cpu::CpuUsage;
@@ -977,15 +977,19 @@ pub(super) async fn handle_callers(
     let (output, touched_files) = match target {
         Target::NodeId(node_id) => {
             let _target = require_existing_node(cg, &node_id).await?;
-            let items = caller_items(cg, &[node_id], max_depth, resolve_dispatch).await?;
-            single_node_list("callers", items, limit)
+            let callers = caller_items(cg, &[node_id], max_depth, resolve_dispatch, limit).await?;
+            single_node_callers(callers, limit)
         }
         Target::Symbol(matches) => {
             let mut bodies = Vec::with_capacity(matches.answered.len());
             let mut files = Vec::new();
             for group in &matches.answered {
-                let items = caller_items(cg, &group.ids(), max_depth, resolve_dispatch).await?;
-                let body = symbol_target::capped_list("callers", items, limit);
+                let callers =
+                    caller_items(cg, &group.ids(), max_depth, resolve_dispatch, limit).await?;
+                let reference_total = callers.reference_total;
+                let reference_count = callers.reference_count;
+                let mut body = symbol_target::capped_list("callers", callers.items, limit);
+                insert_reference_summary(&mut body, reference_total, reference_count);
                 push_item_files(body.get("callers"), &mut files);
                 bodies.push(body);
             }
@@ -1087,7 +1091,8 @@ async fn caller_items(
     node_ids: &[String],
     max_depth: usize,
     resolve_dispatch: bool,
-) -> Result<Vec<Value>> {
+    reference_limit: usize,
+) -> Result<CallerItems> {
     let mut items: Vec<Value> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     for node_id in node_ids {
@@ -1114,7 +1119,226 @@ async fn caller_items(
             }
         }
     }
-    Ok(items)
+    let (reference_total, reference_count) =
+        add_labelled_call_references(cg, node_ids, reference_limit, &mut items, &mut index).await?;
+    Ok(CallerItems {
+        items,
+        reference_total,
+        reference_count,
+    })
+}
+
+struct CallerItems {
+    items: Vec<Value>,
+    reference_total: usize,
+    reference_count: usize,
+}
+
+fn insert_reference_summary(body: &mut Map<String, Value>, total: usize, count: usize) {
+    body.insert("reference_count".to_string(), json!(count));
+    body.insert("reference_total".to_string(), json!(total));
+    body.insert("references_truncated".to_string(), json!(count < total));
+}
+
+fn single_node_callers(callers: CallerItems, limit: usize) -> (Value, Vec<String>) {
+    if callers.reference_count < callers.reference_total {
+        let reference_total = callers.reference_total;
+        let reference_count = callers.reference_count;
+        let mut body = symbol_target::capped_list("callers", callers.items, limit);
+        insert_reference_summary(&mut body, reference_total, reference_count);
+        let output = Value::Object(body);
+        let mut files = Vec::new();
+        push_item_files(output.get("callers"), &mut files);
+        return (output, unique_file_paths(files.iter().map(String::as_str)));
+    }
+    single_node_list("callers", callers.items, limit)
+}
+
+async fn add_labelled_call_references(
+    cg: &TokenSave,
+    target_ids: &[String],
+    limit: usize,
+    items: &mut Vec<Value>,
+    index: &mut HashMap<String, usize>,
+) -> Result<(usize, usize)> {
+    let mut target_names = HashSet::new();
+    for target_id in target_ids {
+        if let Some(target) = cg.get_node(target_id).await? {
+            target_names.insert(target.name);
+        }
+    }
+    let target_ids: HashSet<&str> = target_ids.iter().map(String::as_str).collect();
+    let mut references = Vec::new();
+    let mut total = 0_usize;
+    for name in target_names {
+        let remaining = limit.saturating_sub(references.len());
+        let (name_total, mut named) = cg.get_call_references_by_name(&name, remaining).await?;
+        total = total.saturating_add(name_total);
+        references.append(&mut named);
+        if references.len() >= limit {
+            break;
+        }
+    }
+    let returned = references.len();
+    let source_ids: Vec<String> = references
+        .iter()
+        .map(|site| site.reference.from_node_id.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let sources: HashMap<String, Node> = cg
+        .db()
+        .get_nodes_by_ids(&source_ids)
+        .await?
+        .into_iter()
+        .map(|node| (node.id.clone(), node))
+        .collect();
+    // Stored qualified names carry the file path; show them the way match
+    // headers do. Only `other` entries name their targets, since a
+    // confirmed target is the one requested.
+    let other_target_ids: Vec<String> = references
+        .iter()
+        .flat_map(|site| site.resolved_targets.iter().map(|(id, _)| id))
+        .filter(|id| !target_ids.contains(id.as_str()))
+        .cloned()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let other_targets: HashMap<String, Node> = cg
+        .db()
+        .get_nodes_by_ids(&other_target_ids)
+        .await?
+        .into_iter()
+        .map(|node| (node.id.clone(), node))
+        .collect();
+
+    // The extractor can record one call twice, as the receiver text and in
+    // type-qualified form, at the same position. Each call site is listed
+    // once, under its strongest label (lower rank wins).
+    let mut listed_sites: HashMap<(String, u32, u32), (usize, u8)> = HashMap::new();
+    for site in references {
+        let Some(source) = sources.get(&site.reference.from_node_id) else {
+            continue;
+        };
+        let confirmed = site
+            .resolved_targets
+            .iter()
+            .any(|(id, _)| target_ids.contains(id.as_str()));
+        let (status, to_read, rank) = if confirmed {
+            ("confirmed", false, 0_u8)
+        } else if !site.resolved_targets.is_empty() {
+            ("other", false, 1)
+        } else if !site.ambiguous_candidate_ids.is_empty() {
+            ("ambiguous", true, 2)
+        } else {
+            ("unresolved", true, 3)
+        };
+        let site_key = (
+            site.reference.from_node_id.clone(),
+            site.reference.line,
+            site.reference.column,
+        );
+        let listed = listed_sites.get(&site_key).copied();
+        if listed.is_some_and(|(_, listed_rank)| listed_rank <= rank) {
+            continue;
+        }
+        let target_is_candidate = site
+            .ambiguous_candidate_ids
+            .iter()
+            .any(|id| target_ids.contains(id.as_str()));
+        let leaf = crate::resolution::simple_ref_name(&site.reference.reference_name);
+        let receiver = site
+            .reference
+            .reference_name
+            .strip_suffix(leaf)
+            .map(|prefix| prefix.trim_end_matches(['.', ':']))
+            .filter(|prefix| !prefix.is_empty());
+        let mut reference = json!({
+            "line": super::display_line(site.reference.line),
+            "column": site.reference.column,
+            "reference": site.reference.reference_name,
+            "status": status,
+        });
+        if let Some(fields) = reference.as_object_mut() {
+            // Only entries the agent must read carry the flag and the
+            // receiver text; the rest stay compact so several matches fit
+            // in one response.
+            if to_read {
+                fields.insert("to_read".to_string(), json!(true));
+                if let Some(receiver) = receiver {
+                    fields.insert("receiver".to_string(), json!(receiver));
+                }
+            }
+            if !confirmed && !site.resolved_targets.is_empty() {
+                let resolved_targets: Vec<Value> = site
+                    .resolved_targets
+                    .iter()
+                    .map(|(node_id, stored_name)| {
+                        let qualified_name = other_targets
+                            .get(node_id)
+                            .map_or(stored_name.as_str(), symbol_target::display_qualified_name);
+                        json!({"node_id": node_id, "qualified_name": qualified_name})
+                    })
+                    .collect();
+                fields.insert("resolved_targets".to_string(), json!(resolved_targets));
+            }
+            if !site.ambiguous_candidate_ids.is_empty() {
+                fields.insert(
+                    "candidate_count".to_string(),
+                    json!(site.ambiguous_candidate_ids.len()),
+                );
+                fields.insert(
+                    "target_is_candidate".to_string(),
+                    json!(target_is_candidate),
+                );
+            }
+        }
+
+        let at = if let Some(&at) = index.get(&source.id) {
+            at
+        } else {
+            let line = super::display_line(site.reference.line);
+            let item = json!({
+                "node_id": source.id,
+                "name": source.name,
+                "kind": source.kind.as_str(),
+                "file": source.file_path,
+                "line": line,
+                "lines": [line],
+                "def_line": super::display_line(source.start_line),
+                "end_line": super::display_line(source.end_line),
+                "depth": 1,
+                "edge_kind": "calls",
+                "dispatch_via_trait": false,
+                "dispatch_from": Value::Null,
+                "reference_only": true,
+            });
+            let at = items.len();
+            index.insert(source.id.clone(), at);
+            items.push(item);
+            at
+        };
+        let item = &mut items[at];
+        let Some(fields) = item.as_object_mut() else {
+            continue;
+        };
+        let references = fields
+            .entry("references".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if let Some(references) = references.as_array_mut() {
+            match listed {
+                Some((slot, _)) => {
+                    references[slot] = reference;
+                    listed_sites.insert(site_key, (slot, rank));
+                }
+                None => {
+                    listed_sites.insert(site_key, (references.len(), rank));
+                    references.push(reference);
+                }
+            }
+        }
+    }
+    Ok((total, returned))
 }
 
 /// Callers of one node, as `tokensave_callers` lists them.
@@ -1402,6 +1626,15 @@ pub(super) async fn handle_find_exact_symbol(
 /// Nodes whose edges a `follow: "any"` search may read. Every edge kind in
 /// both directions reaches well-connected nodes fast, so the hop limit alone
 /// does not bound the work.
+///
+/// This constant is the only place that sets the limit. The search and the
+/// `budget_exhausted` message take the number from here, and the guide does
+/// not repeat it.
+///
+/// The value is not tuned. On an index of 28,016 nodes, 2000 random pairs of
+/// functions needed at most 1326 nodes and 401 at the 95th percentile (#968
+/// follow-up). No larger index was measured. A search that reads the full
+/// budget makes two edge queries for each node.
 const CONNECTION_NODE_BUDGET: usize = 2000;
 
 /// One end of a `tokensave_call_chain` request.
@@ -1915,9 +2148,9 @@ pub(super) async fn handle_callers_for(cg: &TokenSave, args: Value) -> Result<To
     let kinds: Vec<EdgeKind> = if kind_arg.is_empty() {
         Vec::new()
     } else {
-        match EdgeKind::from_str(kind_arg) {
-            Some(k) => vec![k],
-            None => {
+        match kind_arg.parse::<EdgeKind>() {
+            Ok(k) => vec![k],
+            Err(_) => {
                 return Err(TokenSaveError::Config {
                     message: format!("unknown edge kind: {kind_arg}"),
                 });

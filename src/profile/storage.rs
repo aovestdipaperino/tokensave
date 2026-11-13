@@ -80,6 +80,9 @@ pub struct Store {
     process_tag: String,
     hour: u64,
     current: Snapshot,
+    /// `current` holds data its file does not have yet: new samples since
+    /// the last successful write, or a write that failed.
+    unsaved: bool,
 }
 
 impl Store {
@@ -94,6 +97,7 @@ impl Store {
             process_tag: format!("{}-{nonce:08x}", std::process::id()),
             hour: 0,
             current: Snapshot::new(),
+            unsaved: false,
         }
     }
 
@@ -102,17 +106,24 @@ impl Store {
     }
 
     /// Merges `drained` into the current hour and rewrites its file, then
-    /// enforces retention. Does no I/O when nothing has been recorded this
-    /// hour.
+    /// enforces retention. Does no I/O when nothing new has been recorded
+    /// since the last successful write, so an idle process does not rewrite
+    /// an unchanged file every flush interval.
     pub fn flush(&mut self, drained: &Snapshot, now_unix: u64) -> std::io::Result<()> {
         let started = Instant::now();
         let hour = now_unix / SECS_PER_HOUR;
         if hour != self.hour {
             self.hour = hour;
             self.current.clear();
+            // The previous hour's file is final; nothing of this hour is
+            // recorded yet.
+            self.unsaved = false;
         }
-        merge_snapshot(&mut self.current, drained);
-        if self.current.is_empty() {
+        if !drained.is_empty() {
+            merge_snapshot(&mut self.current, drained);
+            self.unsaved = true;
+        }
+        if !self.unsaved {
             return Ok(());
         }
 
@@ -133,6 +144,7 @@ impl Store {
         if !crate::user_config::write_atomic(&path, &json) {
             return Err(std::io::Error::other("profile write failed"));
         }
+        self.unsaved = false;
         BYTES_WRITTEN.fetch_add(json.len() as u64, Ordering::Relaxed);
         self.enforce_retention(&path);
 
@@ -193,12 +205,18 @@ fn list_files(dir: &Path) -> Vec<(u64, PathBuf)> {
         .collect()
 }
 
+/// Whether `path` is a finished aggregate file rather than a leftover temp
+/// file from an interrupted write.
+fn is_aggregate(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("json")
+}
+
 /// Reads and merges every aggregate file in `dir` from `since_hour` on, per
 /// engine. Unreadable or foreign-schema files are skipped.
 pub fn load(dir: &Path, since_hour: u64) -> BTreeMap<String, Snapshot> {
     let mut merged: BTreeMap<String, Snapshot> = BTreeMap::new();
     for (hour, path) in list_files(dir) {
-        if hour < since_hour || path.extension().and_then(|e| e.to_str()) != Some("json") {
+        if hour < since_hour || !is_aggregate(&path) {
             continue;
         }
         let Some(file) = std::fs::read_to_string(&path)
@@ -226,13 +244,18 @@ pub struct DirSummary {
     pub overhead: Overhead,
 }
 
-/// Summarizes the aggregate files in `dir`.
+/// Summarizes the aggregate files in `dir`. Leftover temp files are not
+/// counted, matching what [`load`] reads; retention and [`reset`] still
+/// remove them.
 pub fn summarize(dir: &Path) -> DirSummary {
     let mut summary = DirSummary::default();
     // Latest (hour, overhead) per process tag; overhead is cumulative per
     // process, so only the newest file of each process counts.
     let mut latest: BTreeMap<String, (u64, Overhead)> = BTreeMap::new();
     for (hour, path) in list_files(dir) {
+        if !is_aggregate(&path) {
+            continue;
+        }
         summary.files += 1;
         summary.bytes += std::fs::metadata(&path).map_or(0, |m| m.len());
         let Some(tag) = path
@@ -343,6 +366,35 @@ mod tests {
     }
 
     #[test]
+    fn idle_flushes_do_not_rewrite_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let mut store = Store::new(dir.clone(), 14, 0);
+        store.flush(&snapshot(2), 1000 * HOUR).unwrap();
+        let path = store.file_path(1000);
+        std::fs::remove_file(&path).unwrap();
+        // Nothing new: the (deleted) file is not written again.
+        store.flush(&Snapshot::new(), 1000 * HOUR + 60).unwrap();
+        assert!(!path.exists());
+        // New data rewrites the whole hour, including the earlier samples.
+        store.flush(&snapshot(3), 1000 * HOUR + 120).unwrap();
+        assert_eq!(load(&dir, 0)[ENGINE]["db.open"].count, 5);
+    }
+
+    #[test]
+    fn a_failed_write_is_retried_without_new_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("profile");
+        // A file where the directory should be makes the write fail.
+        std::fs::write(&dir, "blocker").unwrap();
+        let mut store = Store::new(dir.clone(), 14, 0);
+        assert!(store.flush(&snapshot(2), 1000 * HOUR).is_err());
+        std::fs::remove_file(&dir).unwrap();
+        store.flush(&Snapshot::new(), 1000 * HOUR + 60).unwrap();
+        assert_eq!(load(&dir, 0)[ENGINE]["db.open"].count, 2);
+    }
+
+    #[test]
     fn a_new_hour_starts_a_new_file_and_since_filters_it() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
@@ -417,5 +469,19 @@ mod tests {
         assert!(summary.overhead.flushes >= 1);
         assert_eq!(reset(&dir), 2);
         assert!(dir.join("notes.txt").exists());
+    }
+
+    #[test]
+    fn summary_skips_leftover_temp_files_that_reset_still_removes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let mut a = Store::new(dir.clone(), 30, 0);
+        a.flush(&snapshot(1), 10 * HOUR).unwrap();
+        std::fs::write(dir.join("10-1-old.tmp.1.0"), "partial").unwrap();
+        let summary = summarize(&dir);
+        assert_eq!(summary.files, 1);
+        let json_bytes = std::fs::metadata(a.file_path(10)).unwrap().len();
+        assert_eq!(summary.bytes, json_bytes);
+        assert_eq!(reset(&dir), 2);
     }
 }

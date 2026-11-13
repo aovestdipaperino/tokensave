@@ -1,6 +1,7 @@
 //! Unresolved-reference queries.
 use super::*;
 use crate::profile::DbOp;
+use crate::resolution::simple_ref_name;
 
 // ---------------------------------------------------------------------------
 // Unresolved reference operations
@@ -46,11 +47,12 @@ impl Database {
         self.conn()
             .execute(
                 "INSERT INTO unresolved_refs
-                (from_node_id, reference_name, reference_kind, line, col, file_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (from_node_id, reference_name, reference_leaf, reference_kind, line, col, file_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     uref.from_node_id.as_str(),
                     uref.reference_name.as_str(),
+                    simple_ref_name(&uref.reference_name),
                     uref.reference_kind.as_str(),
                     i64::from(uref.line),
                     i64::from(uref.column),
@@ -90,7 +92,7 @@ impl Database {
             })?;
 
         let stmt = self.conn()
-            .prepare("INSERT INTO unresolved_refs (from_node_id,reference_name,reference_kind,line,col,file_path) VALUES (?1,?2,?3,?4,?5,?6)")
+            .prepare("INSERT INTO unresolved_refs (from_node_id,reference_name,reference_leaf,reference_kind,line,col,file_path) VALUES (?1,?2,?3,?4,?5,?6,?7)")
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to prepare: {e}"),
@@ -101,6 +103,7 @@ impl Database {
             stmt.execute(params![
                 uref.from_node_id.as_str(),
                 uref.reference_name.as_str(),
+                simple_ref_name(&uref.reference_name),
                 uref.reference_kind.as_str(),
                 i64::from(uref.line),
                 i64::from(uref.column),
@@ -210,7 +213,10 @@ impl Database {
                 UnresolvedRef {
                     from_node_id: row.get::<String>(1).unwrap_or_default(),
                     reference_name: row.get::<String>(2).unwrap_or_default(),
-                    reference_kind: EdgeKind::from_str(&row.get::<String>(3).unwrap_or_default())
+                    reference_kind: row
+                        .get::<String>(3)
+                        .unwrap_or_default()
+                        .parse::<EdgeKind>()
                         .unwrap_or(EdgeKind::Calls),
                     line: row.get::<u32>(4).unwrap_or(0),
                     column: row.get::<u32>(5).unwrap_or(0),
@@ -301,6 +307,112 @@ impl Database {
             );
         }
         Ok(out)
+    }
+
+    /// Extracted call references whose trailing name is `name`, together with
+    /// the resolver outcome recorded at each site (#687).
+    ///
+    /// The `reference_leaf` equality uses its dedicated index. The previous
+    /// prototype searched `reference_name LIKE '%Name'`, which necessarily
+    /// scanned every extracted reference in a large repository.
+    pub async fn get_call_references_by_name(
+        &self,
+        name: &str,
+        limit: usize,
+    ) -> Result<(usize, Vec<CallReference>)> {
+        let op = "get_call_references_by_name";
+        let mut count_rows = self
+            .conn()
+            .query(
+                "SELECT COUNT(*) FROM unresolved_refs
+                 WHERE reference_kind = 'calls' AND reference_leaf = ?1",
+                params![name],
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to count call references by name: {e}"),
+                operation: op.to_string(),
+            })?;
+        let total = count_rows
+            .next()
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to read call-reference count: {e}"),
+                operation: op.to_string(),
+            })?
+            .and_then(|row| row.get::<i64>(0).ok())
+            .and_then(|count| usize::try_from(count).ok())
+            .unwrap_or(0);
+        drop(count_rows);
+
+        let mut rows = self
+            .conn()
+            .query(
+                "WITH selected AS (
+                     SELECT from_node_id, reference_name, reference_kind, line, col, file_path
+                     FROM unresolved_refs
+                     WHERE reference_kind = 'calls' AND reference_leaf = ?1
+                     ORDER BY file_path, line, col, id
+                     LIMIT ?2
+                 )
+                 SELECT r.from_node_id, r.reference_name, r.line, r.col, r.file_path,
+                        t.id, t.qualified_name, a.candidate_node_ids
+                 FROM selected r
+                 LEFT JOIN edges e
+                   ON e.source = r.from_node_id AND e.line = r.line AND e.kind = 'calls'
+                 LEFT JOIN nodes t ON t.id = e.target AND t.name = ?1
+                 LEFT JOIN ambiguous_calls a
+                   ON a.from_node_id = r.from_node_id
+                  AND a.reference_name = r.reference_name
+                  AND a.line = r.line
+                 ORDER BY r.file_path, r.line, r.col, t.qualified_name",
+                params![name, i64::try_from(limit).unwrap_or(i64::MAX)],
+            )
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query call references by name: {e}"),
+                operation: op.to_string(),
+            })?;
+
+        let mut out: Vec<CallReference> = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
+            message: format!("failed to read call-reference row: {e}"),
+            operation: op.to_string(),
+        })? {
+            let reference = UnresolvedRef {
+                from_node_id: get_string_lossy(&row, 0).unwrap_or_default(),
+                reference_name: get_string_lossy(&row, 1).unwrap_or_default(),
+                reference_kind: EdgeKind::Calls,
+                line: row.get::<i64>(2).unwrap_or(0) as u32,
+                column: row.get::<i64>(3).unwrap_or(0) as u32,
+                file_path: get_string_lossy(&row, 4).unwrap_or_default(),
+            };
+            let same_site = out.last().is_some_and(|item| {
+                item.reference.from_node_id == reference.from_node_id
+                    && item.reference.reference_name == reference.reference_name
+                    && item.reference.line == reference.line
+                    && item.reference.column == reference.column
+                    && item.reference.file_path == reference.file_path
+            });
+            if !same_site {
+                let encoded = get_string_lossy(&row, 7).unwrap_or_default();
+                out.push(CallReference {
+                    reference,
+                    resolved_targets: Vec::new(),
+                    ambiguous_candidate_ids: serde_json::from_str(&encoded).unwrap_or_default(),
+                });
+            }
+            let Some(item) = out.last_mut() else { continue };
+            if let (Some(id), Some(qualified_name)) = (
+                row.get::<Option<String>>(5).ok().flatten(),
+                row.get::<Option<String>>(6).ok().flatten(),
+            ) {
+                if !item.resolved_targets.iter().any(|(seen, _)| seen == &id) {
+                    item.resolved_targets.push((id, qualified_name));
+                }
+            }
+        }
+        Ok((total, out))
     }
 
     /// Removes all unresolved references.

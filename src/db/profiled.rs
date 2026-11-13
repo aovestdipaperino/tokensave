@@ -96,7 +96,8 @@ impl Database {
         sql: &str,
         params: impl IntoParams,
     ) -> libsql::Result<ProfiledRows> {
-        let span = profile::span(op);
+        let mut span = profile::span(op);
+        span.mark_cancellable();
         match self.conn().query(sql, params).await {
             Ok(rows) => Ok(ProfiledRows {
                 rows,
@@ -110,10 +111,51 @@ impl Database {
         }
     }
 
+    /// `conn().execute(sql, params)`, measured under `op`.
+    pub(crate) async fn profiled_execute(
+        &self,
+        op: DbOp,
+        sql: &str,
+        params: impl IntoParams,
+    ) -> libsql::Result<u64> {
+        let mut span = profile::span(op);
+        span.mark_cancellable();
+        match self.conn().execute(sql, params).await {
+            Ok(affected) => {
+                span.add_rows(0, affected);
+                span.finish();
+                Ok(affected)
+            }
+            Err(error) => {
+                span.fail();
+                Err(error)
+            }
+        }
+    }
+
+    /// `conn().execute_batch(sql)`, measured under `op`.
+    pub(crate) async fn profiled_execute_batch(&self, op: DbOp, sql: &str) -> libsql::Result<()> {
+        let mut span = profile::span(op);
+        span.mark_cancellable();
+        match self.conn().execute_batch(sql).await {
+            // The batch's rows are not needed; callers only run statements
+            // such as `BEGIN`.
+            Ok(_rows) => {
+                span.finish();
+                Ok(())
+            }
+            Err(error) => {
+                span.fail();
+                Err(error)
+            }
+        }
+    }
+
     /// Acquires the write lock (#563), measuring the wait as
     /// [`DbOp::WriteLockWait`].
     pub(crate) async fn lock_writes(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        let span = profile::span(DbOp::WriteLockWait);
+        let mut span = profile::span(DbOp::WriteLockWait);
+        span.mark_cancellable();
         let guard = self.write_lock.lock().await;
         span.finish();
         guard
@@ -180,6 +222,23 @@ mod tests {
         .await;
         assert!(s.errors >= 1);
         assert_eq!(s.histogram.count(), s.count);
+    }
+
+    #[tokio::test]
+    async fn execute_records_affected_rows() {
+        let (_dir, db) = temp_db().await;
+        let s = recorded(DbOp::RecordDecision, async {
+            db.profiled_execute(
+                DbOp::RecordDecision,
+                "INSERT INTO metadata(key, value) VALUES ('profiled-execute', '1')",
+                (),
+            )
+            .await
+            .unwrap();
+        })
+        .await;
+        assert!(s.count >= 1);
+        assert!(s.rows_affected >= 1);
     }
 
     #[tokio::test]

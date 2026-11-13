@@ -10,6 +10,7 @@ use tempfile::TempDir;
 use tokensave::config::{load_config, save_config};
 use tokensave::mcp::handle_tool_call;
 use tokensave::tokensave::TokenSave;
+use tokensave::types::{AmbiguousCall, Edge, EdgeKind, UnresolvedRef};
 
 // ---------------------------------------------------------------------------
 // Shared setup
@@ -462,6 +463,130 @@ pub fn once() {
     let once = items.iter().find(|i| i["name"] == "once").unwrap();
     assert_eq!(once["line"], 9);
     assert_eq!(once["lines"], json!([9]));
+}
+
+/// #687: callers reports every extracted same-named call, including the
+/// sites the resolver bound elsewhere or could not resolve.
+#[tokio::test]
+async fn test_callers_labels_every_same_named_reference() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src").join("lib.rs"),
+        "mod first { pub fn ping() {} }\n\
+         mod second { pub fn ping() {} }\n\
+         pub fn source() {}\n",
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let mut targets = cg.get_nodes_by_name("ping").await.unwrap();
+    targets.sort_by(|a, b| a.qualified_name.cmp(&b.qualified_name));
+    assert_eq!(targets.len(), 2, "fixture has two same-named targets");
+    let first = targets[0].clone();
+    let second = targets[1].clone();
+    let source = cg
+        .get_nodes_by_name("source")
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+
+    for (line, name) in [
+        (10, "first::ping"),
+        (11, "second::ping"),
+        (12, "value.ping"),
+        (13, "unknown.ping"),
+    ] {
+        cg.db()
+            .insert_unresolved_ref(&UnresolvedRef {
+                from_node_id: source.id.clone(),
+                reference_name: name.to_string(),
+                reference_kind: EdgeKind::Calls,
+                line,
+                column: 4,
+                file_path: "src/lib.rs".to_string(),
+            })
+            .await
+            .unwrap();
+    }
+    for (line, target) in [(10, &first), (11, &second)] {
+        cg.db()
+            .insert_edge(&Edge {
+                source: source.id.clone(),
+                target: target.id.clone(),
+                kind: EdgeKind::Calls,
+                line: Some(line),
+                resolved_by: None,
+            })
+            .await
+            .unwrap();
+    }
+    cg.db()
+        .replace_ambiguous_calls(
+            &["src/lib.rs".to_string()],
+            &[AmbiguousCall {
+                from_node_id: source.id.clone(),
+                reference_name: "value.ping".to_string(),
+                file_path: "src/lib.rs".to_string(),
+                line: 12,
+                column: 4,
+                candidate_node_ids: vec![first.id.clone(), second.id.clone()],
+            }],
+        )
+        .await
+        .unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_callers",
+        json!({"node_id": first.id}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let items: Vec<Value> = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let caller = items
+        .iter()
+        .find(|item| item["node_id"] == source.id)
+        .unwrap();
+    let references = caller["references"].as_array().unwrap();
+    assert_eq!(references.len(), 4, "{caller:#}");
+    let statuses: BTreeMap<u64, &str> = references
+        .iter()
+        .map(|reference| {
+            (
+                reference["line"].as_u64().unwrap(),
+                reference["status"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(statuses[&11], "confirmed");
+    assert_eq!(statuses[&12], "other");
+    assert_eq!(statuses[&13], "ambiguous");
+    assert_eq!(statuses[&14], "unresolved");
+    assert_eq!(references[2]["candidate_count"], 2);
+    assert_eq!(references[2]["target_is_candidate"], true);
+    assert_eq!(references[2]["to_read"], true);
+    assert_eq!(references[3]["receiver"], "unknown");
+
+    let limited = handle_tool_call(
+        &cg,
+        "tokensave_callers",
+        json!({"node_id": first.id, "limit": 2}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let limited: Value = serde_json::from_str(extract_text(&limited.value)).unwrap();
+    assert_eq!(limited["reference_count"], 2);
+    assert_eq!(limited["reference_total"], 4);
+    assert_eq!(limited["references_truncated"], true);
 }
 
 /// An edit through an edit tool re-indexes the file, and the file's symbols

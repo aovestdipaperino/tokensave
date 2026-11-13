@@ -4,7 +4,9 @@ use std::os::unix::fs::symlink;
 use tempfile::TempDir;
 use tokensave::config::{load_config, save_config};
 use tokensave::tokensave::TokenSave;
-use tokensave::types::{Edge, EdgeKind, Node, NodeKind};
+#[cfg(feature = "lang-ruby")]
+use tokensave::types::NodeKind;
+use tokensave::types::{Edge, EdgeKind, Node};
 
 async fn canonical_graph(cg: &TokenSave) -> (Vec<Node>, Vec<Edge>) {
     let mut nodes = cg.db().get_all_nodes().await.unwrap();

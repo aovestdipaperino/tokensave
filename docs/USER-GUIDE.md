@@ -580,9 +580,11 @@ purpose. To change the ceiling, set `max_auto_sync_files` in
 `.tokensave/config.json`; `0` disables the file-count check (the empty-index
 guard always applies).
 
-The `watcher_debounce` setting in `~/.tokensave/config.toml` is left over
-from that watcher. It is still accepted, but nothing reads it, and the
-30-second cooldown is not configurable.
+The 30-second cooldown is not configurable. The `watcher_debounce` setting in
+`~/.tokensave/config.toml` applies only to the opt-in filesystem watcher
+(`filesystem_watch_enabled = true` or `serve --watch`, #937), which is off by
+default and runs beside this check rather than replacing it; see
+[Opt-in filesystem watcher](guide/INDEXING.md#opt-in-filesystem-watcher).
 
 ### Interrupting a sync
 
@@ -1859,7 +1861,8 @@ The `config.toml` is plain TOML and fully transparent:
 
 ```toml
 upload_enabled = true        # set to false to stop uploading
-watcher_debounce = "2s"      # inert; left over from the watcher removed in 6.1.1
+filesystem_watch_enabled = false # true = `serve` follows file changes via OS notifications (#937)
+watcher_debounce = "2s"      # quiet period for the opt-in watcher; unused while it is off
 extraction_timeout_secs = 60 # per-file extraction timeout
 wildcard_permissions = false # true = grant Claude Code tools via one "mcp__tokensave__*" entry
 manage_rules = true          # false = leave ~/.claude/rules/tokensave.md and other rules files to you

@@ -435,6 +435,67 @@ fn lexical_project_rel<'a>(abs: &'a Path, project_root: &Path) -> Option<&'a Pat
     (plain && !rel.as_os_str().is_empty()).then_some(rel)
 }
 
+/// The directory-pruning rule of the gitignore-aware scan walk.
+///
+/// Shared by [`TokenSave::scan_files_with_gitignore`] and the opt-in
+/// filesystem watcher (#937), which registers only the directories this rule
+/// keeps, so a directory the scan never enters is never watched either.
+pub(super) struct ScanDirPrune {
+    root: PathBuf,
+    config: TokenSaveConfig,
+    canonical_root: Option<PathBuf>,
+    manifest: Option<std::sync::Arc<crate::project_manifest::CompiledManifest>>,
+}
+
+impl ScanDirPrune {
+    pub(super) fn new(cg: &TokenSave) -> Self {
+        Self {
+            root: cg.project_root.clone(),
+            config: cg.config.clone(),
+            canonical_root: cg.project_root.canonicalize().ok(),
+            manifest: cg.manifest(),
+        }
+    }
+
+    /// Whether the walk descends into the directory at `path`, found at
+    /// `depth` below the walk root.
+    pub(super) fn keeps(&self, path: &Path, depth: usize, is_symlink: bool) -> bool {
+        // A linked worktree below the root is a second working tree of the
+        // same repository (#865). No include glob re-admits it. The root is
+        // exempt: a worktree with an index of its own is a project.
+        if depth > 0 && crate::config::is_linked_worktree_root(path) {
+            return false;
+        }
+        let rel_str = path
+            .strip_prefix(&self.root)
+            .map(|rel| rel.to_string_lossy().replace('\\', "/"));
+        if let Ok(rel_str) = &rel_str {
+            if is_excluded_dir(rel_str, &self.config) {
+                return false;
+            }
+        }
+        // Hidden directories stay pruned exactly as the crate's disabled
+        // hidden filter pruned them; an include glob or manifest entry
+        // re-admits one (#194).
+        let hidden = path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with('.'));
+        if depth > 0 && hidden {
+            let rel_str = rel_str.unwrap_or_default();
+            let manifest_allows = self.manifest.as_deref().is_some_and(|m| {
+                m.matches_local_file(&rel_str) || m.local_dir_may_contain(&rel_str)
+            });
+            if !is_included(&rel_str, &self.config) && !manifest_allows {
+                return false;
+            }
+        }
+        // A link back onto the root or one of its ancestors would re-walk the
+        // project plus the rest of the filesystem (#327). The walk root itself
+        // is exempt so a project opened through a symlinked path still scans.
+        !(depth > 0 && is_symlink && reenters_project_root(path, self.canonical_root.as_deref()))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Indexing
 // ---------------------------------------------------------------------------
@@ -602,7 +663,7 @@ impl TokenSave {
         self.ensure_current_checkout()?;
         self.validate_manifest()?;
         let dispatch_revision = self.dispatch_revision();
-        write_dirty_sentinel(&self.project_root);
+        write_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         let start = Instant::now();
         // Profiling (#754): phase spans keep the verbose timings above
         // unchanged; an early `?` return records the open phase as failed.
@@ -744,7 +805,7 @@ impl TokenSave {
             // #253: `from_nodes` borrows from `all_nodes` rather than
             // cloning it into its caches; the remaining peak here is
             // `all_nodes` itself (#306).
-            let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
+            let resolver = ReferenceResolver::from_nodes(&all_nodes);
             crate::memstats::record("index:resolve:build_caches");
             let resolution = self
                 .cpu_usage()
@@ -900,7 +961,7 @@ impl TokenSave {
             result.duration_ms > 0 || result.file_count == 0,
             "non-empty index completed in zero milliseconds"
         );
-        clear_dirty_sentinel(&self.project_root);
+        clear_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         self.record_indexed_version();
         crate::memstats::record("index:done");
         Ok(result)
@@ -1270,6 +1331,27 @@ impl TokenSave {
         Ok(())
     }
 
+    /// Whether the project-relative `path` lies below a linked worktree that
+    /// is inside the project. The scan does not enter such a directory (#865).
+    pub(super) fn is_below_nested_worktree(&self, path: &str) -> bool {
+        if Path::new(path).is_absolute() {
+            return false;
+        }
+        let mut dir = self.project_root.clone();
+        let mut parts = path.split('/').peekable();
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                // The last part is the file name.
+                break;
+            }
+            dir.push(part);
+            if crate::config::is_linked_worktree_root(&dir) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Index/reexamine the given file paths, updating their graph nodes and edges.
     /// This is a focused, single-shot operation used by `sync_if_stale`.
     pub(crate) async fn sync_single_files(&self, file_paths: &[String]) -> Result<()> {
@@ -1280,7 +1362,7 @@ impl TokenSave {
         // crash contract: the sentinel is cleared only on the single success
         // exit below, and an interrupted pass is recovered on the next open
         // instead of silently losing resolver edges (#630, #450).
-        write_dirty_sentinel(&self.project_root);
+        write_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         let start = Instant::now();
         let project_root = &self.project_root;
         let registry = &self.registry;
@@ -1300,7 +1382,9 @@ impl TokenSave {
         let mut existing: Vec<String> = Vec::with_capacity(file_paths.len());
         for path in file_paths {
             let absolute = project_root.join(&path);
-            if absolute.exists() {
+            // A file below a nested worktree is outside the scan (#865). Its
+            // row is from an earlier index, so it takes the removal branch.
+            if absolute.exists() && !self.is_below_nested_worktree(&path) {
                 // A previously detected source can become unsupported. Targeted
                 // MCP refreshes must remove its old symbols as full sync does.
                 if self.config.language_detection.enabled
@@ -1443,7 +1527,7 @@ impl TokenSave {
                 .unwrap_or_default();
             crate::memstats::set_graph_nodes(all_nodes.len() as u64);
             crate::memstats::record("sync:resolve:load_nodes");
-            let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
+            let resolver = ReferenceResolver::from_nodes(&all_nodes);
             crate::memstats::record("sync:resolve:build_caches");
             // Paged rather than materialised (#482), and narrowed to the
             // references this sync could have changed (#484).
@@ -1492,7 +1576,7 @@ impl TokenSave {
             )
             .await?;
 
-        clear_dirty_sentinel(&self.project_root);
+        clear_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         crate::memstats::record("sync:done");
         Ok(())
     }
@@ -1547,7 +1631,7 @@ impl TokenSave {
         self.ensure_current_checkout()?;
         self.validate_manifest()?;
         let dispatch_revision = self.dispatch_revision();
-        write_dirty_sentinel(&self.project_root);
+        write_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         let start = Instant::now();
         // Profiling (#754): see `index_all_with_progress_verbose`.
         let run_span = crate::profile::span(SyncPhase::Total);
@@ -1734,7 +1818,7 @@ impl TokenSave {
         if branch_transition {
             let count = new_files.len() + stale.len() + removed.len();
             if self.max_auto_sync_files > 0 && count > self.max_auto_sync_files {
-                clear_dirty_sentinel(&self.project_root);
+                clear_dirty_sentinel(&self.project_root, &self.dirty_database_name());
                 return Err(TokenSaveError::Config {
                     message: format!("branch context has {count} changed files, exceeding max_auto_sync_files={}; run `tokensave sync`", self.max_auto_sync_files),
                 });
@@ -1978,7 +2062,7 @@ impl TokenSave {
                     .unwrap_or_default();
                 crate::memstats::set_graph_nodes(all_nodes.len() as u64);
                 crate::memstats::record("sync:resolve:load_nodes");
-                let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
+                let resolver = ReferenceResolver::from_nodes(&all_nodes);
                 crate::memstats::record("sync:resolve:build_caches");
                 // Paged rather than materialised (#482), and narrowed to the
                 // references this sync could have changed (#484).
@@ -2070,7 +2154,7 @@ impl TokenSave {
                 total_nodes + total_edges,
             );
         }
-        clear_dirty_sentinel(&self.project_root);
+        clear_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         crate::memstats::record("sync:done");
         Ok(SyncResult {
             files_added: new_files.len(),
@@ -2309,6 +2393,10 @@ impl TokenSave {
                 if !crate::config::is_force_included(&rel_str, config) {
                     continue;
                 }
+                // The worktree rule of the main walk applies here too (#865).
+                if self.is_below_nested_worktree(&rel_str) {
+                    continue;
+                }
                 if let Some(rel_str) = self.accept_file(entry.path(), supported_exts, &mut skipped)
                 {
                     files.push(rel_str);
@@ -2338,6 +2426,10 @@ impl TokenSave {
             .filter_entry(|e| {
                 if e.depth() == 0 {
                     return true;
+                }
+                // The same rule as `ScanDirPrune::keeps` (#865).
+                if e.file_type().is_dir() && crate::config::is_linked_worktree_root(e.path()) {
+                    return false;
                 }
                 // Checked before every other rule so no `include` glob or
                 // manifest entry can re-enable a link that swallows the
@@ -2427,10 +2519,7 @@ impl TokenSave {
         // gets walked (#170). Mirrors the `is_excluded_dir` prune in
         // `scan_files_walkdir` and applies equally to `--skip-folder`, which
         // feeds the same exclude list.
-        let root = self.project_root.clone();
-        let config = self.config.clone();
-        let canonical_root = self.project_root.canonicalize().ok();
-        let manifest_for_prune = manifest.clone();
+        let prune = ScanDirPrune::new(self);
         let walker = ignore::WalkBuilder::new(&self.project_root)
             .follow_links(true)
             .hidden(false) // hidden entries are filtered manually below
@@ -2441,38 +2530,7 @@ impl TokenSave {
             .filter_entry(move |e| {
                 // Only prune directories; files are filtered later by accept_file.
                 if e.file_type().is_some_and(|ft| ft.is_dir()) {
-                    if let Ok(rel) = e.path().strip_prefix(&root) {
-                        let rel_str = rel.to_string_lossy().replace('\\', "/");
-                        if is_excluded_dir(&rel_str, &config) {
-                            return false;
-                        }
-                    }
-                    // Hidden directories stay pruned exactly as the crate's
-                    // disabled hidden filter pruned them; an include glob or
-                    // manifest entry re-admits one (#194).
-                    if e.depth() > 0 && e.file_name().to_string_lossy().starts_with('.') {
-                        let rel_str = e
-                            .path()
-                            .strip_prefix(&root)
-                            .map(|rel| rel.to_string_lossy().replace('\\', "/"))
-                            .unwrap_or_default();
-                        let manifest_allows = manifest_for_prune.as_deref().is_some_and(|m| {
-                            m.matches_local_file(&rel_str) || m.local_dir_may_contain(&rel_str)
-                        });
-                        if !is_included(&rel_str, &config) && !manifest_allows {
-                            return false;
-                        }
-                    }
-                    // A link back onto the root or one of its ancestors would
-                    // re-walk the project plus the rest of the filesystem
-                    // (#327). The walk root itself is exempt so a project
-                    // opened through a symlinked path still scans.
-                    if e.depth() > 0
-                        && e.path_is_symlink()
-                        && reenters_project_root(e.path(), canonical_root.as_deref())
-                    {
-                        return false;
-                    }
+                    return prune.keeps(e.path(), e.depth(), e.path_is_symlink());
                 }
                 true
             })

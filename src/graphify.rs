@@ -41,13 +41,13 @@ fn source_hash(path: &Path) -> Result<String> {
     Ok(crate::sync::content_hash(source))
 }
 
-fn checkout_commit(root: &Path) -> Option<String> {
+pub(crate) fn checkout_commit(root: &Path) -> Option<String> {
     gix::open(root)
         .ok()
         .and_then(|repo| repo.head_id().ok().map(|id| id.to_string()))
 }
 
-fn database_path(root: &Path) -> Result<PathBuf> {
+pub(crate) fn database_path(root: &Path) -> Result<PathBuf> {
     let dir = crate::config::get_tokensave_dir(root);
     let metadata = dir.join("branch-meta.json");
     if !metadata.exists() {

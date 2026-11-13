@@ -261,6 +261,7 @@ where
     F: std::future::Future<Output = Result<T, E>>,
 {
     let mut span = span(op);
+    span.mark_cancellable();
     let result = fut.await;
     match &result {
         Ok(value) => {
@@ -279,6 +280,7 @@ where
     F: std::future::Future<Output = Result<(), E>>,
 {
     let mut span = span(op);
+    span.mark_cancellable();
     let result = fut.await;
     if result.is_ok() {
         span.add_rows(0, affected as u64);
@@ -326,10 +328,11 @@ pub struct Profiler {
 impl Profiler {
     /// Applies `settings` and, unless the mode is off, starts the flush
     /// thread writing to `dir`. Returns `None` (and creates nothing) when
-    /// profiling is off.
+    /// profiling is off. If the flush thread cannot be spawned, profiling
+    /// stays off: recording without a flusher would persist nothing.
     pub fn start(settings: &Settings, dir: PathBuf, interval: Duration) -> Option<Self> {
-        set_mode(settings.mode);
         if settings.mode == Mode::Off {
+            set_mode(Mode::Off);
             return None;
         }
         let recorder = RECORDER.get_or_init(Recorder::new);
@@ -350,8 +353,14 @@ impl Profiler {
                 if last {
                     break;
                 }
-            })
-            .ok()?;
+            });
+        let Ok(thread) = thread else {
+            set_mode(Mode::Off);
+            return None;
+        };
+        // Enabled only once the flusher exists, so a failed spawn never
+        // leaves the process recording with nothing to persist it.
+        set_mode(settings.mode);
         Some(Self {
             stop: Some(stop),
             thread: Some(thread),
@@ -409,6 +418,24 @@ mod tests {
         let s = Settings::resolve(&ProfilingPreferences::default(), None, 0);
         assert_eq!(s.mode, Mode::Off);
         assert_eq!(s.slow_threshold, Duration::from_millis(50));
+    }
+
+    /// Pins the defaults documented in docs/PROFILING.md, so a changed
+    /// default cannot drift from the guide silently.
+    #[test]
+    fn documented_defaults_are_pinned() {
+        let prefs = ProfilingPreferences::default();
+        assert_eq!(prefs.mode, Mode::Off);
+        assert_eq!(prefs.slow_query_ms, 50);
+        assert_eq!(prefs.retention_days, 14);
+        assert_eq!(prefs.max_bytes, 32 * 1024 * 1024);
+        assert_eq!(prefs.detailed_expires_at, None);
+        assert_eq!(
+            toml::from_str::<ProfilingPreferences>("").unwrap(),
+            prefs,
+            "an empty [profiling] table resolves to the same defaults"
+        );
+        assert_eq!(FLUSH_INTERVAL, Duration::from_secs(60));
     }
 
     #[test]
@@ -495,6 +522,9 @@ mod tests {
             include_str!("report.rs"),
             include_str!("export.rs"),
             include_str!("analysis.rs"),
+            // The CLI front end and the profiled database API.
+            include_str!("../profile_command.rs"),
+            include_str!("../db/profiled.rs"),
         ];
         // Built with concat! so this test's own source does not match.
         let forbidden = [

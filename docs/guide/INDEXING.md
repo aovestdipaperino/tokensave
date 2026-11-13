@@ -67,14 +67,15 @@ tokensave sync                     # syncs the repository's index
 The MCP server and the agent hooks resolve the project the same way. Search paths stay relative to the project root (`src/backend/db.rs`). Note that an MCP server launched from a subdirectory still uses that subdirectory as its default path filter for listing tools.
 
 - **Git repositories.** If no project exists yet, `init` from inside a git repository initializes the repository root (or the linked worktree root), not the current directory.
-- **Repository boundaries.** A git repository root is an isolation boundary. Inside a nested, independent repository (a nested clone or a submodule), commands never use an outer repository's index; run `tokensave init` there to give it its own. A linked worktree nested in its main checkout still borrows the main index, and the borrowed-worktree notice says so.
+- **Repository boundaries.** A git repository root is an isolation boundary. Inside a nested, independent repository (a nested clone or a submodule), commands never use an outer repository's index; run `tokensave init` there to give it its own. A linked worktree nested in its main checkout borrows the main index until it has an index of its own. The MCP server puts the borrowed-worktree notice on each response. `tokensave status`, `tokensave sync` and `tokensave tool` print it on stderr. Run `tokensave init` in the worktree to give it its own index.
 - **Non-git projects.** A `.tokensave/` in a folder that is not inside a git repository works the same way, including for any repositories inside that folder.
+- **Linked worktrees inside a checkout.** The index of a checkout does not include a linked worktree that lies inside it (`git worktree add <dir>` run in the repository). That directory is a second working tree of the same repository, so the scan does not enter it, and no `include` or `force_include` glob admits it. To index it, run `tokensave init` in the worktree. A nested clone and a submodule are repositories of their own, and the scan enters them as before.
 - **Explicit roots.** `tokensave init <path>`, `--path` (`-p`), and `tool --project <path>` use the directory you pass, with no discovery.
 - **Broken installs.** A `.tokensave/` with a `config.json` but no database is reported instead of being skipped in favor of an outer project. A config that cannot be parsed is an error that names the file to fix.
 
 ## Index freshness
 
-tokensave keeps the graph up to date without a background daemon or an OS-level file watcher.
+By default, tokensave keeps the graph up to date without a background daemon or an OS-level file watcher. An [opt-in filesystem watcher](#opt-in-filesystem-watcher) can be turned on for `tokensave serve`; it adds to the mechanisms below rather than replacing them.
 
 **On-demand staleness check.** Every MCP tool call checks whether any indexed files have been modified since the last sync. If stale files are found, they are re-extracted before the tool response is returned. A 30-second cooldown prevents back-to-back calls from re-walking the tree on every keystroke.
 
@@ -93,6 +94,45 @@ chmod +x .git/hooks/post-commit .git/hooks/post-checkout
 
 `tokensave install` can also set up global hooks; see
 [Keeping the Index Fresh](../USER-GUIDE.md#keeping-the-index-fresh) in the user guide.
+
+### Opt-in filesystem watcher
+
+The MCP server can follow file changes as they happen, through the operating system's file notifications (inotify on Linux, FSEvents on macOS, ReadDirectoryChangesW on Windows, kqueue on the BSDs). The watcher is **off by default**. With it off, `serve` creates no watcher, registers no directory and starts no watcher task.
+
+Turn it on for every `serve` in `~/.tokensave/config.toml`:
+
+```toml
+filesystem_watch_enabled = true   # default: false
+watcher_debounce = "2s"           # quiet period before a burst is applied
+```
+
+or for one run with `tokensave serve --watch`. `watcher_debounce` accepts `"500ms"`, `"2s"`, `"1m"` or a bare number of seconds, and is clamped to 50 ms – 60 s; an invalid value falls back to 2 s with a warning.
+
+```mermaid
+flowchart LR
+    OS[OS notifications] -->|drop .git, .tokensave,<br/>editor temp files| Q[bounded queue]
+    Q -->|debounce| B[batch]
+    B -->|in-scope files| S[incremental sync]
+    B -->|overflow, error,<br/>directory added/removed| R[bounded reconciliation scan]
+```
+
+How it behaves:
+
+- **Same pipeline, same scope.** A batch of changed files goes through the same incremental sync as the on-demand check. A new file is indexed only if a full scan would index it: exclude globs, `.gitignore` (including ignored parent directories), hidden directories, `force_include`, extension and size rules all apply. Changes inside `.git/` and tokensave's own `.tokensave/` directory are ignored, so the database writes cannot trigger new syncs.
+- **Debounced.** Events are collected until no new one arrives for `watcher_debounce`, and a continuous stream is applied at least every five debounce periods (between 5 and 60 seconds).
+- **Bounded.** The queue between the notification thread and the batcher holds at most 1,024 events, and one batch at most 4,096 distinct paths. When either fills, or the operating system reports dropped events or a watcher error, the batch becomes a reconciliation: the same bounded scan the startup catch-up runs, limited by `max_auto_sync_files` and refused on a branch drift. Reconciliations run at most once every 10 seconds; a later one is scheduled instead.
+- **Directories.** A created or renamed-in directory, or a removed one, triggers a reconciliation, because its contents arrive without events of their own.
+- **Starts after the catch-up.** The watcher starts once the startup catch-up sync finishes. Changes made while no server was running are reconciled by that scan, not by the watcher: notifications are not a durable log.
+- **Shutdown.** The watcher is stopped and all watches are released when the server shuts down, before the database is checkpointed.
+- **Observable.** `tokensave_status` reports a `filesystem_watch` object under `server`: its `state` (`off`, `starting`, `active`, `failed` or `stopped`), mode, number of watched directories, batches, reconciliations, dropped events, error count and the last error. Errors are also logged to stderr.
+
+Platform notes and limits:
+
+- **Linux and the BSDs** register one non-recursive watch per directory that a scan would enter, so ignored and excluded trees such as `node_modules/` or `target/` use no watches. New directories are added as they appear. The watcher does not start when the project has more than 16,384 such directories. If the kernel's watch limit is reached, the error names `fs.inotify.max_user_watches`. A gitignored directory admitted only by `force_include` is not watched; the on-demand check still covers it.
+- **macOS and Windows** register a single recursive watch on the project root, because the native APIs are recursive. Events from ignored directories still reach tokensave and are discarded there, so a large build writing into an ignored directory costs some CPU while it runs.
+- **Network and virtual filesystems** (NFS, SMB, some container mounts, WSL paths accessed from Windows) may deliver no notifications. The on-demand check keeps working there.
+- **Branch switches.** In multi-branch mode, the watcher pauses while the working tree is on a branch other than the one being served, like every automatic sync.
+- The watcher runs only inside `tokensave serve`. CLI-only workflows still rely on git hooks.
 
 ## Crash-resilient sync
 
