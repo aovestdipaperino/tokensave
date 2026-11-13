@@ -201,12 +201,14 @@ pub(crate) fn scoped_sync<R>(f: impl FnOnce() -> R) -> (R, InvocationSummary) {
 /// Guard measuring one operation; see the module docs.
 ///
 /// Call [`Span::finish`] on success. [`Span::fail`] counts an error and keeps
-/// its latency out of the histogram. A span dropped without either call (a
-/// panic or cancelled future) counts as a cancellation and keeps its elapsed
-/// time in the histogram; all paths subtract their time from an enclosing span.
+/// its latency out of the histogram. A span marked cancellable and dropped
+/// without either call counts as a cancellation and keeps its elapsed time in
+/// the histogram. Other unfinished spans count as errors. All paths subtract
+/// their time from an enclosing span.
 #[must_use = "a span measures until it is finished or dropped"]
 pub struct Span {
     active: Option<Active>,
+    cancel_on_drop: bool,
 }
 
 struct Active {
@@ -227,7 +229,10 @@ struct Active {
 impl Span {
     /// A span that measures nothing (profiling off).
     pub const fn inert() -> Self {
-        Self { active: None }
+        Self {
+            active: None,
+            cancel_on_drop: false,
+        }
     }
 
     pub(crate) fn start(recorder: &'static Recorder, op: Op) -> Self {
@@ -241,7 +246,13 @@ impl Span {
                 rows_returned: 0,
                 rows_affected: 0,
             }),
+            cancel_on_drop: false,
         }
+    }
+
+    /// Treats an unfinished span as a cancelled asynchronous operation.
+    pub fn mark_cancellable(&mut self) {
+        self.cancel_on_drop = true;
     }
 
     /// Whether this span is measuring.
@@ -318,7 +329,11 @@ impl Span {
 
 impl Drop for Span {
     fn drop(&mut self) {
-        let _ = self.cancel();
+        if self.cancel_on_drop {
+            let _ = self.cancel();
+        } else {
+            let _ = self.complete(false);
+        }
     }
 }
 
@@ -383,7 +398,8 @@ mod tests {
         scoped_sync(|| {
             let outer = Span::start(r, Op::Mcp(McpPhase::Total));
             {
-                let _failed = Span::start(r, Op::Db(DbOp::Open));
+                let mut cancelled = Span::start(r, Op::Db(DbOp::Open));
+                cancelled.mark_cancellable();
                 spin(Duration::from_millis(2));
             }
             outer.finish();
