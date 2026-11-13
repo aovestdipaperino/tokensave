@@ -450,6 +450,8 @@ fn store_leftovers(project: &Project) -> Vec<String> {
 
 #[test]
 fn graphify_bundle_is_readable_but_not_conformant() {
+    let obsidian_graph = graphify_bundle().join(".obsidian").join("graph.json");
+    assert!(obsidian_graph.is_file(), "fixture is real Graphify output");
     let report = check(&graphify_bundle());
     // Graphify adds `producer: graphify` to the root index (§8 allows only
     // `okf_version`) and declares OKF 0.1.
@@ -476,7 +478,8 @@ async fn import_copies_a_bundle_best_effort_and_strict_refuses_it() {
     assert_eq!(record.errors, 1);
     assert_eq!(record.concepts, 6);
     assert_eq!(record.unreadable_concepts, 0);
-    // Nine markdown files and Graphify's manifest, copied byte for byte.
+    // Nine markdown files and Graphify's manifest, copied byte for byte. The
+    // real export's hidden .obsidian directory is deliberately skipped.
     assert_eq!(record.files, 10);
     assert!(!outcome.replaced);
     let stored = store::store_dir(project.dir.path()).join("graphify");
