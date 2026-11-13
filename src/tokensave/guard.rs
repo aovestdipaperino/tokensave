@@ -5,35 +5,121 @@ use super::*;
 // Dirty sentinel — detects interrupted sync/index operations
 // ---------------------------------------------------------------------------
 
-/// Creates a `.tokensave/dirty` sentinel file before a sync or index begins.
+/// The key of a database line in the sentinel file.
+const DIRTY_DATABASE_KEY: &str = "db=";
+
+fn dirty_sentinel_path(project_root: &Path) -> PathBuf {
+    get_tokensave_dir(project_root).join("dirty")
+}
+
+/// The name that identifies a database in the sentinel file: its path below
+/// the project state directory, with `/` separators. This is the `db_file`
+/// form of the branch metadata, for example `branches/feature.db`.
+pub(crate) fn dirty_database_name(tokensave_dir: &Path, db_path: &Path) -> String {
+    let relative = db_path.strip_prefix(tokensave_dir).unwrap_or(db_path);
+    relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// The databases that a sentinel names. Empty for a sentinel in the old
+/// format, which names none and applies to each database.
+fn dirty_databases(contents: &str) -> Vec<&str> {
+    contents
+        .lines()
+        .filter_map(|line| line.strip_prefix(DIRTY_DATABASE_KEY))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// Writes the sentinel with `databases`. Removes it when the list is empty.
+fn store_dirty_databases(project_root: &Path, databases: &[&str]) {
+    let path = dirty_sentinel_path(project_root);
+    if databases.is_empty() {
+        let _ = std::fs::remove_file(path);
+        return;
+    }
+    let mut contents = format!(
+        "pid={}\ntime={}\nversion={}",
+        std::process::id(),
+        current_timestamp(),
+        env!("CARGO_PKG_VERSION"),
+    );
+    for database in databases {
+        contents.push('\n');
+        contents.push_str(DIRTY_DATABASE_KEY);
+        contents.push_str(database);
+    }
+    let _ = std::fs::write(path, contents);
+}
+
+/// Adds `database` to the `.tokensave/dirty` sentinel before a sync or index
+/// changes it.
+///
+/// The sentinel is one file for the project. A project in multi-branch mode
+/// has one database for each tracked branch. Thus the sentinel has one `db=`
+/// line for each database with an unfinished write (#865). A line whose
+/// database no longer exists is dropped here.
 ///
 /// This file is intentionally NOT cleaned up by a Drop guard — it must be
 /// removed explicitly by `clear_dirty_sentinel` after the operation succeeds.
 /// If the process is killed (SIGKILL, OOM), the sentinel survives and signals
 /// a potential crash on the next open.
-pub(crate) fn write_dirty_sentinel(project_root: &Path) {
-    let path = get_tokensave_dir(project_root).join("dirty");
-    let _ = std::fs::write(
-        &path,
-        format!(
-            "pid={}\ntime={}\nversion={}",
-            std::process::id(),
-            current_timestamp(),
-            env!("CARGO_PKG_VERSION"),
-        ),
-    );
+pub(crate) fn write_dirty_sentinel(project_root: &Path, database: &str) {
+    let tokensave_dir = get_tokensave_dir(project_root);
+    let path = dirty_sentinel_path(project_root);
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let named = dirty_databases(&existing);
+    if named.is_empty() && path.exists() {
+        // A sentinel in the old format already applies to each database.
+        // A name would narrow it to this one.
+        return;
+    }
+    let mut databases: Vec<&str> = named
+        .into_iter()
+        .filter(|name| *name != database && tokensave_dir.join(name).exists())
+        .collect();
+    databases.push(database);
+    store_dirty_databases(project_root, &databases);
 }
 
-/// Removes the dirty sentinel after a successful sync/index.
-pub(crate) fn clear_dirty_sentinel(project_root: &Path) {
-    let path = get_tokensave_dir(project_root).join("dirty");
-    let _ = std::fs::remove_file(path);
+/// Removes `database` from the dirty sentinel after a successful sync/index.
+/// Removes the file when it names no other database, and when it is in the
+/// old format.
+pub(crate) fn clear_dirty_sentinel(project_root: &Path, database: &str) {
+    let tokensave_dir = get_tokensave_dir(project_root);
+    let Ok(existing) = std::fs::read_to_string(dirty_sentinel_path(project_root)) else {
+        return;
+    };
+    let databases: Vec<&str> = dirty_databases(&existing)
+        .into_iter()
+        .filter(|name| *name != database && tokensave_dir.join(name).exists())
+        .collect();
+    store_dirty_databases(project_root, &databases);
 }
 
-/// Returns `true` if the dirty sentinel exists (previous operation was
-/// interrupted).
-pub(crate) fn has_dirty_sentinel(project_root: &Path) -> bool {
-    get_tokensave_dir(project_root).join("dirty").exists()
+/// Returns `true` if the dirty sentinel says that a previous operation on
+/// `database` was interrupted. A sentinel in the old format has no database
+/// name and applies to each database.
+pub(crate) fn has_dirty_sentinel(project_root: &Path, database: &str) -> bool {
+    let path = dirty_sentinel_path(project_root);
+    let Ok(contents) = std::fs::read(&path) else {
+        // A sentinel that exists and cannot be read applies to each database.
+        return path.exists();
+    };
+    let contents = String::from_utf8_lossy(&contents);
+    let databases = dirty_databases(&contents);
+    databases.is_empty() || databases.contains(&database)
+}
+
+impl TokenSave {
+    /// The name of the open database in the dirty sentinel.
+    pub(crate) fn dirty_database_name(&self) -> String {
+        dirty_database_name(&get_tokensave_dir(&self.project_root), &self.db_path())
+    }
 }
 
 /// Returns `true` if a sync or full reindex currently holds the sync lock
@@ -346,6 +432,85 @@ mod tests {
         let second = acquire_branch_operation_lock(dir.path()).await.unwrap();
         release.await.unwrap();
         drop(second);
+    }
+
+    /// A project state directory with the named database files in it.
+    fn project_with_databases(names: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let state = get_tokensave_dir(dir.path());
+        std::fs::create_dir_all(state.join("branches")).unwrap();
+        for name in names {
+            std::fs::write(state.join(name), "").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn the_sentinel_names_each_database_with_an_unfinished_write() {
+        let dir = project_with_databases(&["tokensave.db", "branches/feature.db"]);
+        let root = dir.path();
+        assert!(!has_dirty_sentinel(root, "tokensave.db"));
+
+        write_dirty_sentinel(root, "branches/feature.db");
+        assert!(has_dirty_sentinel(root, "branches/feature.db"));
+        assert!(!has_dirty_sentinel(root, "tokensave.db"));
+
+        write_dirty_sentinel(root, "tokensave.db");
+        write_dirty_sentinel(root, "tokensave.db");
+        assert!(has_dirty_sentinel(root, "branches/feature.db"));
+        assert!(has_dirty_sentinel(root, "tokensave.db"));
+
+        clear_dirty_sentinel(root, "branches/feature.db");
+        assert!(!has_dirty_sentinel(root, "branches/feature.db"));
+        assert!(has_dirty_sentinel(root, "tokensave.db"));
+
+        clear_dirty_sentinel(root, "tokensave.db");
+        assert!(!dirty_sentinel_path(root).exists());
+    }
+
+    /// A sentinel from an older version names no database. It applies to
+    /// each database, and one successful operation removes it, as before.
+    #[test]
+    fn a_sentinel_in_the_old_format_applies_to_each_database() {
+        let dir = project_with_databases(&["tokensave.db", "branches/feature.db"]);
+        let root = dir.path();
+        std::fs::write(dirty_sentinel_path(root), "pid=1\ntime=0\nversion=7.0.0").unwrap();
+        assert!(has_dirty_sentinel(root, "tokensave.db"));
+        assert!(has_dirty_sentinel(root, "branches/feature.db"));
+
+        write_dirty_sentinel(root, "tokensave.db");
+        assert!(
+            has_dirty_sentinel(root, "branches/feature.db"),
+            "a write must not narrow a sentinel in the old format"
+        );
+
+        clear_dirty_sentinel(root, "tokensave.db");
+        assert!(!dirty_sentinel_path(root).exists());
+    }
+
+    #[test]
+    fn a_line_for_a_removed_database_is_dropped() {
+        let dir = project_with_databases(&["tokensave.db", "branches/gone.db"]);
+        let root = dir.path();
+        write_dirty_sentinel(root, "branches/gone.db");
+        std::fs::remove_file(get_tokensave_dir(root).join("branches").join("gone.db")).unwrap();
+
+        write_dirty_sentinel(root, "tokensave.db");
+        clear_dirty_sentinel(root, "tokensave.db");
+        assert!(!dirty_sentinel_path(root).exists());
+    }
+
+    #[test]
+    fn the_database_name_is_its_path_below_the_state_directory() {
+        let state = Path::new("project").join(".tokensave");
+        assert_eq!(
+            dirty_database_name(&state, &state.join("tokensave.db")),
+            "tokensave.db"
+        );
+        assert_eq!(
+            dirty_database_name(&state, &state.join("branches").join("feature.db")),
+            "branches/feature.db"
+        );
     }
 
     #[tokio::test]

@@ -111,6 +111,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- **An interrupted sync is recovered on the database it interrupted (Refs #993).** A project in multi-branch mode has one database for each tracked branch and one `dirty` sentinel. The sentinel did not name a database, so the next open recovered the database it opened. After an interrupted sync on one branch and a checkout of a different branch, the second branch got a full index it did not need, and the first branch kept its unfinished state. The sentinel now has one `db=` line for each database with an unfinished write. An open recovers a database only when the sentinel names it. A sentinel from an older version applies to the database that opens next, as before.
+
 - **Make profiling reports honest about cancellations, engine filters, and DB coverage (Refs #885).** Dropped futures now retain their elapsed latency and increment a separate cancellation count instead of appearing as zero-latency errors. An unknown `profile report --engine` value names the requested engine and the engines with data. The report and guide disclose the remaining raw database paths excluded from the measured DB share; the existing MCP handler boxing keeps the instrumented request future off callers' stacks.
 
 - Run the Python comparison benchmark tests in CI and refuse Criterion clone caches marked with `.bench-ref`, with guidance to use a separate cache directory (Refs #881).

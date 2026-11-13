@@ -360,7 +360,8 @@ impl TokenSave {
 
         // If the dirty sentinel exists, a previous sync/index was interrupted.
         // Check integrity and rebuild if necessary.
-        let crashed = has_dirty_sentinel(project_root);
+        let database = dirty_database_name(&tokensave_dir, &db_path);
+        let crashed = has_dirty_sentinel(project_root, &database);
         if crashed {
             eprintln!(
                 "[tokensave] previous operation was interrupted — checking database integrity…"
@@ -392,7 +393,7 @@ impl TokenSave {
                 };
                 eprintln!("[tokensave] {e}\n[tokensave] rebuilding the database…");
                 delete_db_files(&db_path);
-                clear_dirty_sentinel(project_root);
+                clear_dirty_sentinel(project_root, &database);
                 let (db, _) = Database::initialize(&db_path).await?;
                 // The index pass below takes the sync lock itself.
                 drop(lock);
@@ -427,7 +428,8 @@ impl TokenSave {
         };
         // Another writer may have completed between observing the sentinel
         // and acquiring the lock. Recheck while holding exclusive ownership.
-        let recover_interrupted = recovery_lock.is_some() && has_dirty_sentinel(project_root);
+        let recover_interrupted =
+            recovery_lock.is_some() && has_dirty_sentinel(project_root, &database);
         if (recover_interrupted || migrated)
             && serving_branch.is_some()
             && serving_branch != active_branch
