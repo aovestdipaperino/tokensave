@@ -977,24 +977,18 @@ fn def_callers() -> ToolDefinition {
         "tokensave_callers",
         "Callers",
         "Find callers of a given node (function, method, etc.). Direct results \
-         include every extracted call reference with the target's trailing name, \
-         not only resolved edges. Each caller's `references` label every site as \
-         `confirmed`, `other` (bound to a different same-named definition), \
-         `ambiguous` (with candidate count and whether this target is among them), \
-         or `unresolved`; uncertain sites carry `to_read: true`. Results report \
-         `reference_count`, `reference_total`, and `references_truncated` when \
-         the reference limit is reached. Pass max_depth > 1 to also follow the chain \
-         transitively. Each result includes `depth` (1 = direct caller, 2+ = \
-         transitive), `line` (the call-site line where the caller invokes the \
-         target), `lines` (every line where the caller invokes the target, \
-         ascending; a caller is listed once even when it calls the target \
-         several times), and `def_line`/`end_line` (the caller's own span). Generic \
-         callers through a trait are included for concrete impl methods and \
-         tagged with `dispatch_via_trait: true`; pass `resolve_dispatch: false` \
-         to disable reverse dispatch resolution. Pass `node_id`, or `symbol` to \
-         name the target directly: each match is answered in its own group \
-         (`symbol`, `match_count`, `matches[]` with the callers under `callers`), \
-         up to `max_matches`.",
+         list every extracted call to the target's name, not only resolved \
+         edges: each caller's `references` label every site `confirmed`, \
+         `other`, `ambiguous` or `unresolved`, and uncertain sites carry \
+         `to_read: true`. Pass max_depth > 1 to also follow the chain \
+         transitively. Each result includes `depth` (1 = direct caller), `line` \
+         (a call-site line), `lines` (every call-site line, ascending; a caller \
+         is listed once) and `def_line`/`end_line` (the caller's own span). \
+         Trait-dispatched callers of concrete impl methods are included and \
+         tagged `dispatch_via_trait: true`; pass `resolve_dispatch: false` to \
+         disable this. Pass `node_id`, or `symbol` to name the target directly: \
+         each match is answered in its own group (`symbol`, `match_count`, \
+         `matches[]` with `callers`), up to `max_matches`.",
         json!({
             "type": "object",
             "properties": {

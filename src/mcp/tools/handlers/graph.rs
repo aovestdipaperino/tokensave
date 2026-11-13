@@ -1220,7 +1220,7 @@ async fn add_labelled_call_references(
             .reference
             .reference_name
             .strip_suffix(leaf)
-            .map(|prefix| prefix.trim_end_matches(|ch| ch == '.' || ch == ':'))
+            .map(|prefix| prefix.trim_end_matches(['.', ':']))
             .filter(|prefix| !prefix.is_empty());
         let resolved_targets: Vec<Value> = site
             .resolved_targets
