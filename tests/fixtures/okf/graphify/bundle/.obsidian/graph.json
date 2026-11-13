@@ -1,0 +1,18 @@
+{
+  "colorGroups": [
+    {
+      "query": "tag:#community/Model_Architecture",
+      "color": {
+        "a": 1,
+        "rgb": 5142951
+      }
+    },
+    {
+      "query": "tag:#community/Paper_Concepts",
+      "color": {
+        "a": 1,
+        "rgb": 15896107
+      }
+    }
+  ]
+}

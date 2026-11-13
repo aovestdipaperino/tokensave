@@ -210,9 +210,9 @@ bundles as Obsidian vaults (`to_okf_obsidian`). tokensave imports them:
 
 The fork has no OKF reader, so bundles written by `tokensave okf export`
 cannot be loaded back into Graphify yet. The test fixture in
-`tests/fixtures/okf/graphify/` was reconstructed from the fork's exporter
-source rather than produced by running Graphify; its README explains how to
-compare it with real Graphify output.
+`tests/fixtures/okf/graphify/` is output from the pinned Graphify exporter and
+is processed by tokensave's validation, import and knowledge-search tests. Its
+README records the exact producer commit, environment and reproduction command.
 
 ## Compliance matrix
 
@@ -260,9 +260,10 @@ footnotes such as `[^1]`.
 - **Search is a plain word match.** It ranks by where the words appear and
   has no stemming, synonyms or fuzzy matching. The server keeps the imported
   bundles of the current project in memory, about twice their size on disk.
-- **Graphify in one direction only.** tokensave imports Graphify bundles, but
-  the [Graphify OKF fork](https://github.com/alderac/graphify-okf) cannot read
-  OKF bundles, and no automated test runs Graphify itself; see
+- **Graphify in one direction only.** tokensave imports a real bundle from the
+  [Graphify OKF fork](https://github.com/alderac/graphify-okf), but the fork
+  cannot read OKF bundles. Graphify is pinned and run only when regenerating
+  the fixture, not as part of tokensave's test suite; see
   [Graphify interoperability](#graphify-interoperability).
 - **Markdown scanning is minimal.** Links, headings and footnotes are found by
   a small scanner covering the CommonMark forms OKF bundles use, not a full

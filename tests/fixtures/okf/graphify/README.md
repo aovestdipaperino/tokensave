@@ -1,21 +1,19 @@
 # Graphify OKF fixture
 
-`bundle/` is an OKF bundle in the form written by `to_okf_obsidian` in the
+`bundle/` is an OKF bundle written by `to_okf_obsidian` in the
 [Graphify OKF fork](https://github.com/alderac/graphify-okf) (MIT license) at
 commit `ec1252a11233e3aadae69f856e975ae83029f6af`, for the fork's own test
 graph `tests/fixtures/extraction.json` with the communities and labels used by
 its `tests/test_okf_export.py`.
 
-The files were **reconstructed by hand** from the exporter source at that
-commit, not produced by running Graphify. Two parts of the real output are
-left out:
+The files are output from a real run of that pinned exporter on 2026-11-13
+using Python 3.14.7, NetworkX 3.6.1 and PyYAML 6.0.3, with only a final newline
+added to its two JSON files. This replaced the earlier hand-reconstructed
+fixture and corrected its guessed `graphify_dominant_confidence` values. The
+committed output includes `.obsidian/graph.json`; tokensave deliberately skips
+that hidden directory.
 
-- `.obsidian/graph.json`, the Obsidian colour settings. tokensave skips hidden
-  directories, so it would not be read anyway.
-- The exact order of ties in `graphify_dominant_confidence`, which depends on
-  NetworkX adjacency order. The values here follow insertion order.
-
-To compare the fixture with real Graphify output, run
+To reproduce and compare the fixture with Graphify output, run
 `regenerate.py` with the fork checked out at the commit above and its
 dependencies installed:
 
