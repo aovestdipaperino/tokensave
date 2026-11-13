@@ -138,7 +138,9 @@ impl Database {
         let mut span = profile::span(op);
         span.mark_cancellable();
         match self.conn().execute_batch(sql).await {
-            Ok(()) => {
+            // The batch's rows are not needed; callers only run statements
+            // such as `BEGIN`.
+            Ok(_rows) => {
                 span.finish();
                 Ok(())
             }
