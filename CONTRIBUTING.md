@@ -34,6 +34,25 @@ whatever you last installed, and that is the signal the silent agent resync
 watches for. Unset it only if you are deliberately exercising that path, and
 not against your real home directory.
 
+### Optional: Blaze for local builds and tests
+
+On Linux and macOS, `scripts/dev-build` runs a Cargo command with
+[Blaze](https://github.com/indexable-inc/blaze) when Blaze is installed and
+usable, and with Cargo otherwise:
+
+```bash
+scripts/dev-build test --workspace --locked          # Blaze if available, else Cargo
+scripts/dev-build --cargo test --workspace --locked  # always Cargo
+```
+
+Blaze is optional and local only: nothing requires it, CI and releases never
+use it, and Windows always uses Cargo. When Blaze fails a build or test, the
+script runs the same command with Cargo and reports Cargo's result. Before you
+open a pull request, run the plain `cargo` commands above; they remain the
+authoritative check. Setup, the selection rules, the cases that need Cargo and
+local measurements are in
+[docs/BLAZE-EVALUATION.md](docs/BLAZE-EVALUATION.md).
+
 ## Project Structure
 
 ```
