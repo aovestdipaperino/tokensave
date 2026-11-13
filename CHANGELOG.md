@@ -111,6 +111,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- **A linked worktree nested in its main checkout: the CLI warns about the borrowed index, and `tokensave init` creates the worktree index (Refs #994).** Such a worktree uses the index of the main checkout until it has one of its own. Only the MCP server reported that. `tokensave status`, `tokensave sync` and `tokensave tool` now print the same warning on stderr when you give no explicit path. The warning tells you to run `tokensave init` in the worktree, but that command answered "already initialized" and did nothing. It now creates the index at the worktree root. The detection uses file checks only and starts no `git` process.
+
 - **Make profiling reports honest about cancellations, engine filters, and DB coverage (Refs #885).** Dropped futures now retain their elapsed latency and increment a separate cancellation count instead of appearing as zero-latency errors. An unknown `profile report --engine` value names the requested engine and the engines with data. The report and guide disclose the remaining raw database paths excluded from the measured DB share; the existing MCP handler boxing keeps the instrumented request future off callers' stacks.
 
 - Run the Python comparison benchmark tests in CI and refuse Criterion clone caches marked with `.bench-ref`, with guidance to use a separate cache directory (Refs #881).
