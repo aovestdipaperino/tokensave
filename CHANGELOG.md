@@ -111,6 +111,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- **A sync no longer writes the working tree into the index of a different branch (Refs #992).** When the checked-out branch had no index of its own, or HEAD was detached, tokensave served the index of a tracked branch. `tokensave sync`, the `post-commit` and `post-merge` hooks, and the per-file refresh of the MCP server then wrote the working tree into that index. The index of the tracked branch held files that exist only on a different branch, and `tokensave branch list` showed it as synced. tokensave now refuses these writes with an error that names `tokensave branch add`. Automatic syncs report the refusal and do not scan the tree. A project that tracks only its default branch keeps one index for all branches and syncs as before. **Behavior change:** with `auto_track` set to `false` and at least one tracked branch, tokensave does not refresh an untracked branch until you track it.
+
 - **Make profiling reports honest about cancellations, engine filters, and DB coverage (Refs #885).** Dropped futures now retain their elapsed latency and increment a separate cancellation count instead of appearing as zero-latency errors. An unknown `profile report --engine` value names the requested engine and the engines with data. The report and guide disclose the remaining raw database paths excluded from the measured DB share; the existing MCP handler boxing keeps the instrumented request future off callers' stacks.
 
 - Run the Python comparison benchmark tests in CI and refuse Criterion clone caches marked with `.bench-ref`, with guidance to use a separate cache directory (Refs #881).

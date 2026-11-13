@@ -382,6 +382,17 @@ impl TokenSave {
                 if crate::db::migrations::is_environmental_error(&e) {
                     return Err(e);
                 }
+                // The rebuild indexes the working tree. Refuse before the
+                // delete when the database belongs to another branch (#865).
+                let meta = branch_meta::load_branch_meta(&tokensave_dir);
+                if let Some(owner) = meta.as_ref().and_then(|meta| {
+                    borrowed_index_owner(meta, active_branch.as_deref(), serving_branch.as_deref())
+                }) {
+                    let refusal = borrowed_index_refusal(active_branch.as_deref(), owner);
+                    return Err(TokenSaveError::Config {
+                        message: format!("{e}\nNot rebuilding the database: {refusal}"),
+                    });
+                }
                 let lock = match rebuild_refusal(project_root, &db_path) {
                     Ok(lock) => lock,
                     Err(refusal) => {
