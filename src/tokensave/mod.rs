@@ -251,15 +251,12 @@ impl TokenSave {
     pub async fn needs_schema_upgrade(&self) -> bool {
         let mut span = crate::profile::span(crate::profile::DbOp::ReadSchemaVersion);
         span.mark_cancellable();
-        match crate::db::migrations::read_schema_version(self.db.conn()).await {
-            Ok(version) => {
-                span.finish();
-                version < crate::db::migrations::latest_version()
-            }
-            Err(_) => {
-                span.fail();
-                false
-            }
+        if let Ok(version) = crate::db::migrations::read_schema_version(self.db.conn()).await {
+            span.finish();
+            version < crate::db::migrations::latest_version()
+        } else {
+            span.fail();
+            false
         }
     }
 
