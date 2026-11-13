@@ -336,19 +336,25 @@ async fn an_untracked_symlinked_file_leading_outside_is_refused() {
 
 /// The indexer follows an in-root link into a disjoint tree (#34), so a file
 /// it tracks there stays editable through the link.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_tracked_file_behind_an_in_root_symlink_stays_editable() {
+    // Not `vendor/`: the default `exclude` list skips `**/vendor/**`, so a
+    // file behind a link with that name is never tracked.
+    let mut linked = false;
     let fx = Fixture::with_setup(|project, outside| {
         fs::write(outside.join("shared.rs"), "pub fn shared_fn() {}\n").expect("write shared.rs");
-        std::os::unix::fs::symlink(outside, project.join("vendor")).expect("symlink");
+        linked = symlink_dir_or_skip(outside, &project.join("linked"));
     })
     .await;
+    if !linked {
+        eprintln!("skipping: cannot create a directory link here");
+        return;
+    }
     let parsed = accepted(
         &fx.cg,
         "tokensave_str_replace",
         json!({
-            "path": "vendor/shared.rs",
+            "path": "linked/shared.rs",
             "old_str": "shared_fn",
             "new_str": "shared_fn_renamed",
         }),
@@ -364,7 +370,7 @@ async fn a_tracked_file_behind_an_in_root_symlink_stays_editable() {
     let message = refused(
         &fx.cg,
         "tokensave_str_replace",
-        json!({ "path": "vendor/notes.txt", "old_str": "do-not-touch", "new_str": "pwned" }),
+        json!({ "path": "linked/notes.txt", "old_str": "do-not-touch", "new_str": "pwned" }),
     )
     .await;
     assert_refusal(&message, "outside the project root");
