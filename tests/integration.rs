@@ -160,6 +160,7 @@ mod perl_extraction_test;
 mod php_extraction_test;
 mod plank_agent_test;
 mod powershell_extraction_test;
+mod profile_cli_test;
 mod project_manifest_test;
 mod project_root_discovery_test;
 mod proto_extraction_test;

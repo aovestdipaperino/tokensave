@@ -132,11 +132,7 @@ pub(crate) fn handle_profile_action(action: ProfileAction) -> Result<()> {
             }
             Ok(())
         }
-        ProfileAction::Reset => {
-            let removed = storage::reset(&profile_dir()?);
-            println!("Removed {removed} profile file(s).");
-            Ok(())
-        }
+        ProfileAction::Reset { force } => reset(force),
     }
 }
 
@@ -180,7 +176,7 @@ fn set_mode(mode: Mode, detailed_expires_at: Option<i64>) -> Result<()> {
         Mode::Light => println!("Profiling enabled (light)."),
         Mode::Detailed => println!(
             "Profiling enabled (detailed) until {}; it then falls back to light.",
-            detailed_expires_at.map_or_else(|| "-".to_string(), |t| format!("UNIX time {t}"))
+            detailed_expires_at.map_or_else(|| "-".to_string(), |t| describe_expiry(t, unix_now()))
         ),
     }
     if mode != Mode::Off {
@@ -189,6 +185,50 @@ fn set_mode(mode: Mode, detailed_expires_at: Option<i64>) -> Result<()> {
              this up; restart running MCP servers to include them."
         );
     }
+    Ok(())
+}
+
+/// `2026-11-13T22:00:00Z (in 2h 0m)`: the expiry as a UTC timestamp plus the
+/// time remaining from `now`.
+fn describe_expiry(expires_at: i64, now: u64) -> String {
+    let remaining = expires_at.saturating_sub(now as i64).max(0);
+    format!(
+        "{} (in {}h {}m)",
+        tokensave::okf::time::format_utc(expires_at),
+        remaining / 3600,
+        remaining % 3600 / 60
+    )
+}
+
+/// Deletes all recorded data. Without `--force` it asks first, and refuses
+/// when there is no terminal to ask on.
+fn reset(force: bool) -> Result<()> {
+    use std::io::{BufRead as _, IsTerminal as _, Write as _};
+    let dir = profile_dir()?;
+    if !force {
+        if !std::io::stdin().is_terminal() {
+            return Err(config_error(
+                "`tokensave profile reset` deletes all recorded profile data; \
+                 pass --force to confirm when not running interactively",
+            ));
+        }
+        eprint!(
+            "Delete all recorded profile data in {}? [y/N] ",
+            dir.display()
+        );
+        std::io::stderr().flush().ok();
+        let mut answer = String::new();
+        std::io::stdin()
+            .lock()
+            .read_line(&mut answer)
+            .map_err(|e| config_error(format!("failed to read stdin: {e}")))?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            eprintln!("Aborted; nothing was deleted.");
+            return Ok(());
+        }
+    }
+    let removed = storage::reset(&dir);
+    println!("Removed {removed} profile file(s).");
     Ok(())
 }
 
@@ -307,6 +347,24 @@ mod tests {
         ]);
         retain_engine(&mut merged, "libsql").unwrap();
         assert_eq!(merged.keys().collect::<Vec<_>>(), vec!["libsql"]);
+    }
+
+    #[test]
+    fn expiry_is_a_utc_timestamp_with_time_remaining() {
+        // 2026-11-13T00:00:00Z plus 2h.
+        let now = 1_794_528_000;
+        assert_eq!(
+            describe_expiry(now as i64 + 7_200, now),
+            "2026-11-13T02:00:00Z (in 2h 0m)"
+        );
+        assert!(describe_expiry(now as i64 - 60, now).ends_with("(in 0h 0m)"));
+    }
+
+    #[test]
+    fn detailed_default_duration_is_pinned() {
+        // docs/PROFILING.md: "falls back to light when `--for` runs out
+        // (default 24h)".
+        assert_eq!(DEFAULT_DETAILED_FOR, Duration::from_secs(24 * 3600));
     }
 
     #[test]
