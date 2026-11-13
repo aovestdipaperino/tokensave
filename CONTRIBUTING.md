@@ -294,6 +294,18 @@ cargo test-lite
 
 CI (`.github/workflows/ci.yml`) runs each job only when a file that job depends on changed. A change limited to documentation, `scripts/` or `assets/` starts no Rust build. Format runs for `.rs` changes, MSRV for library and Cargo changes, and the test matrix and feature tiers for anything a build or test reads, including `tests/fixtures/`. If your change makes a build or test read a file that the filters in the `changes` job do not cover, add it to the matching filters. The `CI OK` job reports the combined result. A manual run (`workflow_dispatch`) executes every job.
 
+### Dependency advisories
+
+The `Security advisories` workflow (`.github/workflows/advisories.yml`) checks `Cargo.lock` against the [RustSec advisory database](https://rustsec.org/) with `cargo audit`. It runs daily on `master` and `beta`, and on pushes and pull requests that change `Cargo.lock`, `Cargo.toml` or `.cargo/audit.toml`. Vulnerabilities, unsound crates and yanked crates fail it; unmaintained crates are reported as warnings. It is not part of `CI OK`, because a newly published advisory must not block unrelated pull requests.
+
+When your change adds or upgrades a dependency, run the check locally from the repository root and report new findings in the pull request:
+
+```bash
+cargo install cargo-audit --locked
+cargo audit
+```
+
+Prefer upgrading an affected dependency to ignoring its advisory. To ignore one, add its ID to `ignore` in `.cargo/audit.toml` with a comment that names the affected crate and version, explains why tokensave is not affected or why no fix can be adopted yet, and links the issue that tracks removing the entry.
 The `Python comparison benchmark` job runs `python3 -B -m unittest discover -s benchmarks/tests -v` on Linux with Python 3.12. Run the same command locally on a POSIX system; it needs neither repository downloads nor installed benchmark tools.
 
 ### Test layout
