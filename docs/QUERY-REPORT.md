@@ -50,6 +50,13 @@ joining same-line edges, target names, and ambiguity evidence. Q0237 and Q0239
 now bind the leaf beside the full reference name, and Q0039 creates the column
 and index for a fresh database.
 
+Legacy cache purge context (#866, 2026-11-13): Q0411-Q0414 run once per
+writable open in `purge_legacy_read_cache`. Q0411 short-circuits when the
+legacy `read_cache` table is empty or missing; otherwise Q0412 records the
+current `secure_delete` mode, Q0413 deletes every row with it on, and Q0414
+restores the recorded integer mode. Q0415-Q0418 are the inline test. No
+schema, binding or existing entry changes.
+
 Profiling coverage context (#885, 2026-11-13): the existing SQL and bindings in
 Q0204-Q0217, Q0253-Q0256, Q0296, and Q0308-Q0320 are unchanged,
 but their execution now goes through static `DbOp` labels in the profiled
@@ -62,7 +69,7 @@ unchanged.
 ## Inventory summary
 
 - SQL-bearing source files: **40**.
-- SQL literal/template occurrences: **367**.
+- SQL literal/template occurrences: **375**.
 - Functions retained for construction/binding context: **181**.
 
 ## Source file index
@@ -75,7 +82,7 @@ unchanged.
 | [src/blame_engine.rs](../src/blame_engine.rs) | 16 |
 | [src/branch.rs](../src/branch.rs) | 2 |
 | [src/db/compatibility.rs](../src/db/compatibility.rs) | 7 |
-| [src/db/connection.rs](../src/db/connection.rs) | 11 |
+| [src/db/connection.rs](../src/db/connection.rs) | 19 |
 | [src/db/migrations.rs](../src/db/migrations.rs) | 57 |
 | [src/db/queries/clear.rs](../src/db/queries/clear.rs) | 1 |
 | [src/db/queries/edges.rs](../src/db/queries/edges.rs) | 51 |
@@ -454,6 +461,70 @@ DELETE FROM edges
              INSERT INTO nodes_fts(rowid, name, qualified_name, docstring, signature, search_terms)
                  SELECT rowid, name, qualified_name, docstring, signature, search_terms FROM nodes;
              PRAGMA foreign_keys = ON;
+```
+
+#### Q0411 — `purge_legacy_read_cache`
+
+Source: [src/db/connection.rs:597](../src/db/connection.rs#L597).
+
+```sql
+SELECT EXISTS (SELECT 1 FROM read_cache)
+```
+
+#### Q0412 — `purge_legacy_read_cache`
+
+Source: [src/db/connection.rs:602](../src/db/connection.rs#L602).
+
+```sql
+PRAGMA secure_delete
+```
+
+#### Q0413 — `purge_legacy_read_cache`
+
+Source: [src/db/connection.rs:604](../src/db/connection.rs#L604).
+
+```sql
+PRAGMA secure_delete = ON; DELETE FROM read_cache;
+```
+
+#### Q0414 — `purge_legacy_read_cache`
+
+Source: [src/db/connection.rs:608](../src/db/connection.rs#L608).
+
+```sql
+PRAGMA secure_delete = {previous};
+```
+
+#### Q0415 — `writable_open_clears_legacy_read_cache_rows`
+
+Source: [src/db/connection.rs:630](../src/db/connection.rs#L630).
+
+```sql
+INSERT INTO read_cache (project_id, session_id, file_path, mtime_ns, mode, args_hash, digest, body, token_count, created_at) VALUES ('p', 's', 'src/secret.rs', 0, 'full', 'h', 'd', X'544f4b454e', 1, 0)
+```
+
+#### Q0416 — `writable_open_clears_legacy_read_cache_rows`
+
+Source: [src/db/connection.rs:639](../src/db/connection.rs#L639).
+
+```sql
+PRAGMA secure_delete
+```
+
+#### Q0417 — `writable_open_clears_legacy_read_cache_rows`
+
+Source: [src/db/connection.rs:646](../src/db/connection.rs#L646).
+
+```sql
+SELECT COUNT(*) FROM read_cache
+```
+
+#### Q0418 — `writable_open_clears_legacy_read_cache_rows`
+
+Source: [src/db/connection.rs:661](../src/db/connection.rs#L661).
+
+```sql
+PRAGMA secure_delete
 ```
 
 ### src/db/migrations.rs
