@@ -318,6 +318,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_record_decision(),
         def_record_code_area(),
         def_session_recall(),
+        def_knowledge(),
         graph_scoped(def_read()),
         graph_scoped(def_entities()),
         graph_scoped(def_implementations()),
@@ -472,6 +473,7 @@ pub const TOOL_AREAS: &[(&str, &str, &[&str])] = &[
             "tokensave_session_recall",
             "tokensave_record_decision",
             "tokensave_record_code_area",
+            "tokensave_knowledge",
         ],
     ),
     (
@@ -2710,6 +2712,48 @@ fn def_session_recall() -> ToolDefinition {
     )
 }
 
+fn def_knowledge() -> ToolDefinition {
+    def(
+        "tokensave_knowledge",
+        "Imported Knowledge",
+        "Search and read Open Knowledge Format (OKF) bundles imported into this project \
+         with `tokensave okf import` (docs, metrics, tables, Graphify or tokensave exports). \
+         `query` matches concept titles, IDs, tags, types, descriptions and bodies; `file` \
+         finds concepts about a project file; `concept` returns one concept in full with its \
+         links and backlinks. Results name the project files a concept refers to and whether \
+         they are indexed. With no arguments, lists the imported bundles.",
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Words to search for (all optional; concepts matching more words rank first)."
+                },
+                "file": {
+                    "type": "string",
+                    "description": "Project-relative file path; only concepts that refer to it."
+                },
+                "concept": {
+                    "type": "string",
+                    "description": "Concept ID to read in full, e.g. \"metrics/revenue\"."
+                },
+                "bundle": {
+                    "type": "string",
+                    "description": "Imported bundle name to restrict to."
+                },
+                "type": {
+                    "type": "string",
+                    "description": "Concept `type` to restrict to (case-insensitive), e.g. \"Metric\"."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum results (default: 10, max: 50)."
+                }
+            }
+        }),
+    )
+}
+
 fn def_field_sites() -> ToolDefinition {
     def(
         "tokensave_field_sites",
@@ -3357,6 +3401,8 @@ mod tests {
             "tokensave_rename",
             "tokensave_insert_at",
             "tokensave_insert_at_symbol",
+            // Reads imported OKF bundles from project state, not the graph.
+            "tokensave_knowledge",
             "tokensave_log",
             "tokensave_multi_str_replace",
             "tokensave_replace_lines",

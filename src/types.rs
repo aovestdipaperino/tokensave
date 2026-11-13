@@ -1,6 +1,33 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::str::FromStr;
+
+/// Error returned when a string names no [`NodeKind`], [`EdgeKind`] or
+/// [`Visibility`] variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseEnumError {
+    type_name: &'static str,
+    value: String,
+}
+
+impl ParseEnumError {
+    fn new(type_name: &'static str, value: &str) -> Self {
+        Self {
+            type_name,
+            value: value.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for ParseEnumError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown {}: {:?}", self.type_name, self.value)
+    }
+}
+
+impl std::error::Error for ParseEnumError {}
 
 /// Kinds of nodes in the code graph.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -93,10 +120,6 @@ pub enum NodeKind {
     Signal,
 }
 
-#[allow(
-    clippy::should_implement_trait,
-    reason = "returns `Option`, as every caller expects; `FromStr` would add an unused error type"
-)]
 impl NodeKind {
     /// Returns the string representation of this node kind.
     pub fn as_str(&self) -> &'static str {
@@ -174,82 +197,86 @@ impl NodeKind {
             NodeKind::Signal => "signal",
         }
     }
+}
 
-    /// Parses a string into a `NodeKind`, returning `None` for unrecognized values.
-    pub fn from_str(s: &str) -> Option<NodeKind> {
+impl FromStr for NodeKind {
+    type Err = ParseEnumError;
+
+    /// Parses the string written by [`NodeKind::as_str`].
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "file" => Some(NodeKind::File),
-            "doc" => Some(NodeKind::Doc),
-            "module" => Some(NodeKind::Module),
-            "struct" => Some(NodeKind::Struct),
-            "enum" => Some(NodeKind::Enum),
-            "enum_variant" => Some(NodeKind::EnumVariant),
-            "trait" => Some(NodeKind::Trait),
-            "function" => Some(NodeKind::Function),
-            "method" => Some(NodeKind::Method),
-            "singleton_method" => Some(NodeKind::SingletonMethod),
-            "route" => Some(NodeKind::Route),
-            "impl" => Some(NodeKind::Impl),
-            "const" => Some(NodeKind::Const),
-            "static" => Some(NodeKind::Static),
-            "type_alias" => Some(NodeKind::TypeAlias),
-            "field" => Some(NodeKind::Field),
-            "macro" => Some(NodeKind::Macro),
-            "use" => Some(NodeKind::Use),
-            "class" => Some(NodeKind::Class),
-            "interface" => Some(NodeKind::Interface),
-            "constructor" => Some(NodeKind::Constructor),
-            "annotation" => Some(NodeKind::Annotation),
-            "annotation_usage" => Some(NodeKind::AnnotationUsage),
-            "package" => Some(NodeKind::Package),
-            "inner_class" => Some(NodeKind::InnerClass),
-            "init_block" => Some(NodeKind::InitBlock),
-            "abstract_method" => Some(NodeKind::AbstractMethod),
-            "interface_type" => Some(NodeKind::InterfaceType),
-            "struct_method" => Some(NodeKind::StructMethod),
-            "go_package" => Some(NodeKind::GoPackage),
-            "struct_tag" => Some(NodeKind::StructTag),
-            "object" => Some(NodeKind::ScalaObject),
-            "case_class" => Some(NodeKind::CaseClass),
-            "scala_package" => Some(NodeKind::ScalaPackage),
-            "val" => Some(NodeKind::ValField),
-            "var" => Some(NodeKind::VarField),
-            "generic_param" => Some(NodeKind::GenericParam),
-            "arrow_function" => Some(NodeKind::ArrowFunction),
-            "decorator" => Some(NodeKind::Decorator),
-            "export" => Some(NodeKind::Export),
-            "namespace" => Some(NodeKind::Namespace),
-            "union" => Some(NodeKind::Union),
-            "typedef" => Some(NodeKind::Typedef),
-            "include" => Some(NodeKind::Include),
-            "preprocessor_def" => Some(NodeKind::PreprocessorDef),
-            "template" => Some(NodeKind::Template),
-            "data_class" => Some(NodeKind::DataClass),
-            "sealed_class" => Some(NodeKind::SealedClass),
-            "companion_object" => Some(NodeKind::CompanionObject),
-            "kotlin_object" => Some(NodeKind::KotlinObject),
-            "kotlin_package" => Some(NodeKind::KotlinPackage),
-            "property" => Some(NodeKind::Property),
-            "mixin" => Some(NodeKind::Mixin),
-            "extension" => Some(NodeKind::Extension),
-            "library" => Some(NodeKind::Library),
-            "delegate" => Some(NodeKind::Delegate),
-            "event" => Some(NodeKind::Event),
-            "record" => Some(NodeKind::Record),
-            "csharp_property" => Some(NodeKind::CSharpProperty),
-            "procedure" => Some(NodeKind::Procedure),
-            "pascal_unit" => Some(NodeKind::PascalUnit),
-            "pascal_program" => Some(NodeKind::PascalProgram),
-            "pascal_record" => Some(NodeKind::PascalRecord),
+            "file" => Ok(NodeKind::File),
+            "doc" => Ok(NodeKind::Doc),
+            "module" => Ok(NodeKind::Module),
+            "struct" => Ok(NodeKind::Struct),
+            "enum" => Ok(NodeKind::Enum),
+            "enum_variant" => Ok(NodeKind::EnumVariant),
+            "trait" => Ok(NodeKind::Trait),
+            "function" => Ok(NodeKind::Function),
+            "method" => Ok(NodeKind::Method),
+            "singleton_method" => Ok(NodeKind::SingletonMethod),
+            "route" => Ok(NodeKind::Route),
+            "impl" => Ok(NodeKind::Impl),
+            "const" => Ok(NodeKind::Const),
+            "static" => Ok(NodeKind::Static),
+            "type_alias" => Ok(NodeKind::TypeAlias),
+            "field" => Ok(NodeKind::Field),
+            "macro" => Ok(NodeKind::Macro),
+            "use" => Ok(NodeKind::Use),
+            "class" => Ok(NodeKind::Class),
+            "interface" => Ok(NodeKind::Interface),
+            "constructor" => Ok(NodeKind::Constructor),
+            "annotation" => Ok(NodeKind::Annotation),
+            "annotation_usage" => Ok(NodeKind::AnnotationUsage),
+            "package" => Ok(NodeKind::Package),
+            "inner_class" => Ok(NodeKind::InnerClass),
+            "init_block" => Ok(NodeKind::InitBlock),
+            "abstract_method" => Ok(NodeKind::AbstractMethod),
+            "interface_type" => Ok(NodeKind::InterfaceType),
+            "struct_method" => Ok(NodeKind::StructMethod),
+            "go_package" => Ok(NodeKind::GoPackage),
+            "struct_tag" => Ok(NodeKind::StructTag),
+            "object" => Ok(NodeKind::ScalaObject),
+            "case_class" => Ok(NodeKind::CaseClass),
+            "scala_package" => Ok(NodeKind::ScalaPackage),
+            "val" => Ok(NodeKind::ValField),
+            "var" => Ok(NodeKind::VarField),
+            "generic_param" => Ok(NodeKind::GenericParam),
+            "arrow_function" => Ok(NodeKind::ArrowFunction),
+            "decorator" => Ok(NodeKind::Decorator),
+            "export" => Ok(NodeKind::Export),
+            "namespace" => Ok(NodeKind::Namespace),
+            "union" => Ok(NodeKind::Union),
+            "typedef" => Ok(NodeKind::Typedef),
+            "include" => Ok(NodeKind::Include),
+            "preprocessor_def" => Ok(NodeKind::PreprocessorDef),
+            "template" => Ok(NodeKind::Template),
+            "data_class" => Ok(NodeKind::DataClass),
+            "sealed_class" => Ok(NodeKind::SealedClass),
+            "companion_object" => Ok(NodeKind::CompanionObject),
+            "kotlin_object" => Ok(NodeKind::KotlinObject),
+            "kotlin_package" => Ok(NodeKind::KotlinPackage),
+            "property" => Ok(NodeKind::Property),
+            "mixin" => Ok(NodeKind::Mixin),
+            "extension" => Ok(NodeKind::Extension),
+            "library" => Ok(NodeKind::Library),
+            "delegate" => Ok(NodeKind::Delegate),
+            "event" => Ok(NodeKind::Event),
+            "record" => Ok(NodeKind::Record),
+            "csharp_property" => Ok(NodeKind::CSharpProperty),
+            "procedure" => Ok(NodeKind::Procedure),
+            "pascal_unit" => Ok(NodeKind::PascalUnit),
+            "pascal_program" => Ok(NodeKind::PascalProgram),
+            "pascal_record" => Ok(NodeKind::PascalRecord),
             #[cfg(feature = "lang-protobuf")]
-            "proto_message" => Some(NodeKind::ProtoMessage),
+            "proto_message" => Ok(NodeKind::ProtoMessage),
             #[cfg(feature = "lang-protobuf")]
-            "proto_service" => Some(NodeKind::ProtoService),
+            "proto_service" => Ok(NodeKind::ProtoService),
             #[cfg(feature = "lang-protobuf")]
-            "proto_rpc" => Some(NodeKind::ProtoRpc),
+            "proto_rpc" => Ok(NodeKind::ProtoRpc),
             #[cfg(feature = "lang-gdscript")]
-            "signal" => Some(NodeKind::Signal),
-            _ => None,
+            "signal" => Ok(NodeKind::Signal),
+            _ => Err(ParseEnumError::new("node kind", s)),
         }
     }
 }
@@ -279,10 +306,6 @@ pub enum EdgeKind {
     Reopens,
 }
 
-#[allow(
-    clippy::should_implement_trait,
-    reason = "returns `Option`, as every caller expects; `FromStr` would add an unused error type"
-)]
 impl EdgeKind {
     /// Returns the string representation of this edge kind.
     pub fn as_str(&self) -> &'static str {
@@ -302,24 +325,28 @@ impl EdgeKind {
             EdgeKind::Reopens => "reopens",
         }
     }
+}
 
-    /// Parses a string into an `EdgeKind`, returning `None` for unrecognized values.
-    pub fn from_str(s: &str) -> Option<EdgeKind> {
+impl FromStr for EdgeKind {
+    type Err = ParseEnumError;
+
+    /// Parses the string written by [`EdgeKind::as_str`].
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "contains" => Some(EdgeKind::Contains),
-            "calls" => Some(EdgeKind::Calls),
-            "uses" => Some(EdgeKind::Uses),
-            "implements" => Some(EdgeKind::Implements),
-            "type_of" => Some(EdgeKind::TypeOf),
-            "returns" => Some(EdgeKind::Returns),
-            "derives_macro" => Some(EdgeKind::DerivesMacro),
-            "extends" => Some(EdgeKind::Extends),
-            "annotates" => Some(EdgeKind::Annotates),
-            "receives" => Some(EdgeKind::Receives),
-            "documents" => Some(EdgeKind::Documents),
-            "instantiates" => Some(EdgeKind::Instantiates),
-            "reopens" => Some(EdgeKind::Reopens),
-            _ => None,
+            "contains" => Ok(EdgeKind::Contains),
+            "calls" => Ok(EdgeKind::Calls),
+            "uses" => Ok(EdgeKind::Uses),
+            "implements" => Ok(EdgeKind::Implements),
+            "type_of" => Ok(EdgeKind::TypeOf),
+            "returns" => Ok(EdgeKind::Returns),
+            "derives_macro" => Ok(EdgeKind::DerivesMacro),
+            "extends" => Ok(EdgeKind::Extends),
+            "annotates" => Ok(EdgeKind::Annotates),
+            "receives" => Ok(EdgeKind::Receives),
+            "documents" => Ok(EdgeKind::Documents),
+            "instantiates" => Ok(EdgeKind::Instantiates),
+            "reopens" => Ok(EdgeKind::Reopens),
+            _ => Err(ParseEnumError::new("edge kind", s)),
         }
     }
 }
@@ -343,18 +370,20 @@ impl Visibility {
             Self::Private => "private",
         }
     }
+}
 
-    #[allow(
-        clippy::should_implement_trait,
-        reason = "returns `Option`, as every caller expects; `FromStr` would add an unused error type"
-    )]
-    pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for Visibility {
+    type Err = ParseEnumError;
+
+    /// Parses the string written by [`Visibility::as_str`]; `pub` is accepted
+    /// as an alias for `public`.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "public" | "pub" => Some(Self::Pub),
-            "pub_crate" => Some(Self::PubCrate),
-            "pub_super" => Some(Self::PubSuper),
-            "private" => Some(Self::Private),
-            _ => None,
+            "public" | "pub" => Ok(Self::Pub),
+            "pub_crate" => Ok(Self::PubCrate),
+            "pub_super" => Ok(Self::PubSuper),
+            "private" => Ok(Self::Private),
+            _ => Err(ParseEnumError::new("visibility", s)),
         }
     }
 }

@@ -107,7 +107,7 @@ See [TOKENSAVE-VERSIONING.md](../../TOKENSAVE-VERSIONING.md) for why tokensave d
 
 ### Upgrading from 5.x
 
-The standalone `tokensave daemon` command and its launchd/systemd/Windows Service autostart were removed in 6.0.0. The embedded OS-level file watcher that replaced the daemon was itself removed in 6.1.1 (it caused runaway CPU and memory on large monorepos with deep `node_modules` or `target` trees). The [on-demand staleness model](INDEXING.md#index-freshness) is the current design.
+The standalone `tokensave daemon` command and its launchd/systemd/Windows Service autostart were removed in 6.0.0. The embedded OS-level file watcher that replaced the daemon was itself removed in 6.1.1 (it caused runaway CPU and memory on large monorepos with deep `node_modules` or `target` trees). The [on-demand staleness model](INDEXING.md#index-freshness) is the current design; a bounded, [opt-in filesystem watcher](INDEXING.md#opt-in-filesystem-watcher) can be added to it and is off by default.
 
 If you still have a daemon autostart from 5.x, remove it:
 

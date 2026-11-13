@@ -178,6 +178,10 @@ tree-sitter-hcl = { version = "1.1", optional = true }
 tree-sitter-html = { version = "0.23", optional = true }
 tree-sitter-css = { version = "0.25", optional = true }
 tree-sitter-vhdl = { version = "1.4", optional = true }
+# Opt-in filesystem watcher for `serve` (#937). Off by default; nothing
+# constructs a watcher unless `filesystem_watch_enabled` or `serve --watch`
+# asks for one.
+notify = "8"
 
 [target.'cfg(unix)'.dependencies]
 # Its self-pipe falls back to write when a sandbox denies socket sends.
@@ -206,6 +210,8 @@ rustls-native-certs = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
+# Paused-clock tests of the filesystem watcher's debounce loop (#937).
+tokio = { version = "1", features = ["test-util"] }
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
 
 # All integration tests share one binary (tests/integration.rs). The targets

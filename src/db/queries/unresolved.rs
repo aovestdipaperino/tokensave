@@ -210,7 +210,10 @@ impl Database {
                 UnresolvedRef {
                     from_node_id: row.get::<String>(1).unwrap_or_default(),
                     reference_name: row.get::<String>(2).unwrap_or_default(),
-                    reference_kind: EdgeKind::from_str(&row.get::<String>(3).unwrap_or_default())
+                    reference_kind: row
+                        .get::<String>(3)
+                        .unwrap_or_default()
+                        .parse::<EdgeKind>()
                         .unwrap_or(EdgeKind::Calls),
                     line: row.get::<u32>(4).unwrap_or(0),
                     column: row.get::<u32>(5).unwrap_or(0),

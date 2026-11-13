@@ -10,8 +10,19 @@ use crate::agents::{self, DoctorCounters, HealthcheckContext};
 use crate::display::{format_bytes, format_token_count};
 use crate::tokensave::TokenSave;
 
+/// Options for the Caveman compatibility check (`doctor --caveman`, #797).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CavemanCheck<'a> {
+    /// Explicitly named Claude Code session whose Caveman mode to report.
+    pub session_id: Option<&'a str>,
+}
+
 /// Runs a comprehensive health check of the tokensave installation.
-pub async fn run_doctor(agent_filter: Option<&str>) {
+///
+/// With `caveman`, a Caveman compatibility section is added to the normal
+/// checks and the per-agent report is printed as JSON on stdout after the
+/// summary; the human-readable output stays on stderr.
+pub async fn run_doctor(agent_filter: Option<&str>, caveman: Option<CavemanCheck<'_>>) {
     debug_assert!(
         !env!("CARGO_PKG_VERSION").is_empty(),
         "CARGO_PKG_VERSION must not be empty"
@@ -70,8 +81,82 @@ pub async fn run_doctor(agent_filter: Option<&str>) {
         dc.fail("Could not determine home directory");
     }
 
+    let caveman_reports =
+        caveman.map(|check| check_caveman(&mut dc, agent_filter, check, &project_path));
+
     check_network(&mut dc);
     print_summary(&dc);
+
+    if let Some(reports) = caveman_reports {
+        match serde_json::to_string_pretty(&reports) {
+            Ok(json) => println!("{json}"),
+            Err(e) => eprintln!("Could not serialize the Caveman report: {e}"),
+        }
+    }
+}
+
+/// Reports Caveman compatibility for the selected agents. Read-only: no
+/// file is written and no Caveman code runs.
+fn check_caveman(
+    dc: &mut DoctorCounters,
+    agent_filter: Option<&str>,
+    check: CavemanCheck<'_>,
+    project_path: &Path,
+) -> Vec<crate::caveman::Report> {
+    use crate::caveman::{Activation, Installation};
+
+    eprintln!("\n\x1b[1mCaveman compatibility\x1b[0m");
+    let reports = crate::caveman::diagnostics(agent_filter, check.session_id, project_path);
+    let source = if std::env::var_os(crate::caveman::COMPATIBILITY_ENV).is_some() {
+        crate::caveman::COMPATIBILITY_ENV
+    } else {
+        "config.toml"
+    };
+    let enabled = reports
+        .first()
+        .map_or_else(crate::caveman::enabled, |r| r.enabled);
+    dc.info(&format!(
+        "caveman_compatibility {} ({source})",
+        if enabled { "on" } else { "off" }
+    ));
+    for report in &reports {
+        let agent = &report.agent;
+        match report.installation {
+            Installation::Absent => dc.info(&format!("{agent}: no Caveman skill found")),
+            Installation::Unsupported => {
+                dc.info(&format!("{agent}: no Caveman discovery adapter"));
+            }
+            Installation::Partial => {
+                dc.warn(&format!(
+                    "{agent}: Caveman installation incomplete or malformed"
+                ));
+            }
+            Installation::Installed => {
+                let version = report.version.as_deref().unwrap_or("unknown release");
+                let skill = report
+                    .skill
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                dc.pass(&format!("{agent}: Caveman skill ({version}) at {skill}"));
+            }
+        }
+        match report.activation {
+            Activation::Active => dc.info(&format!("{agent}: Caveman active in this session")),
+            Activation::Inactive => {
+                dc.info(&format!("{agent}: Caveman off in this session"));
+            }
+            Activation::Unknown => {}
+        }
+        if report.installation != Installation::Absent
+            && report.installation != Installation::Unsupported
+        {
+            for warning in &report.warnings {
+                dc.info(&format!("{agent}: {warning}"));
+            }
+        }
+    }
+    reports
 }
 
 /// Check database health: report size and run VACUUM to reclaim space.

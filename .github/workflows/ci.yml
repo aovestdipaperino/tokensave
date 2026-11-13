@@ -38,6 +38,8 @@ jobs:
       test: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.test == 'true' }}
       pi: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.pi == 'true' }}
       agent_bench: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.agent_bench == 'true' }}
+      caveman_bench: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.caveman_bench == 'true' }}
+      comparison_bench: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.comparison_bench == 'true' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -102,6 +104,13 @@ jobs:
             agent_bench:
               - *ci
               - 'scripts/agent-bench/**'
+            caveman_bench:
+              - *ci
+              - 'scripts/caveman_bench/**'
+            comparison_bench:
+              - *ci
+              - 'benchmarks/run_benchmarks.py'
+              - 'benchmarks/tests/**'
 
   test:
     name: Test ${{ matrix.name }}
@@ -136,7 +145,7 @@ jobs:
           large-packages: false
           swap-storage: false
 
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: rustfmt, clippy
 
@@ -162,7 +171,7 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -188,7 +197,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -202,7 +211,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.99.0
+      - uses: dtolnay/rust-toolchain@1.100.0
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: v1-rust-features
@@ -239,12 +248,38 @@ jobs:
           python-version: '3.12'
       - run: python3 -m unittest discover -s scripts/agent-bench -v
 
+  # Synthetic provider responses only: no model calls, no tokensave binary
+  # (#797). The harness needs POSIX process groups and Python 3.11+.
+  caveman-bench:
+    name: Caveman benchmark harness
+    needs: changes
+    if: needs.changes.outputs.caveman_bench == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -B -m unittest discover -s scripts/caveman_bench -p 'test_*.py' -v
+
+  comparison-bench:
+    name: Python comparison benchmark
+    needs: changes
+    if: needs.changes.outputs.comparison_bench == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -B -m unittest discover -s benchmarks/tests -v
+
   # Single required check. A skipped matrix job reports under its unexpanded
   # name (`Test ${{ matrix.name }}`), so per-platform checks can't be required.
   ci-ok:
     name: CI OK
     if: always()
-    needs: [changes, test, clippy, msrv, fmt, features, pi-extension, agent-bench]
+    needs: [changes, test, clippy, msrv, fmt, features, pi-extension, agent-bench, caveman-bench, comparison-bench]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if a gated job failed

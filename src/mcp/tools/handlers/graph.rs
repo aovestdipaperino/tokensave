@@ -1402,6 +1402,15 @@ pub(super) async fn handle_find_exact_symbol(
 /// Nodes whose edges a `follow: "any"` search may read. Every edge kind in
 /// both directions reaches well-connected nodes fast, so the hop limit alone
 /// does not bound the work.
+///
+/// This constant is the only place that sets the limit. The search and the
+/// `budget_exhausted` message take the number from here, and the guide does
+/// not repeat it.
+///
+/// The value is not tuned. On an index of 28,016 nodes, 2000 random pairs of
+/// functions needed at most 1326 nodes and 401 at the 95th percentile (#968
+/// follow-up). No larger index was measured. A search that reads the full
+/// budget makes two edge queries for each node.
 const CONNECTION_NODE_BUDGET: usize = 2000;
 
 /// One end of a `tokensave_call_chain` request.
@@ -1915,9 +1924,9 @@ pub(super) async fn handle_callers_for(cg: &TokenSave, args: Value) -> Result<To
     let kinds: Vec<EdgeKind> = if kind_arg.is_empty() {
         Vec::new()
     } else {
-        match EdgeKind::from_str(kind_arg) {
-            Some(k) => vec![k],
-            None => {
+        match kind_arg.parse::<EdgeKind>() {
+            Ok(k) => vec![k],
+            Err(_) => {
                 return Err(TokenSaveError::Config {
                     message: format!("unknown edge kind: {kind_arg}"),
                 });

@@ -23,6 +23,7 @@ pub mod blame_engine;
 pub mod branch;
 pub mod branch_meta;
 pub mod cancel;
+pub mod caveman;
 pub mod cloud;
 pub mod config;
 pub mod context;
@@ -70,3 +71,6 @@ pub mod verify;
 
 /// Experimental Graphify file interchange.
 pub mod graphify;
+
+/// Open Knowledge Format (OKF) bundle validation and export (#858).
+pub mod okf;

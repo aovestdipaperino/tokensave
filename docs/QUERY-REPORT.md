@@ -46,9 +46,9 @@ appendix, so that count is unchanged.
 
 ## Inventory summary
 
-- SQL-bearing source files: **39**.
-- SQL literal/template occurrences: **356**.
-- Functions retained for construction/binding context: **178**.
+- SQL-bearing source files: **40**.
+- SQL literal/template occurrences: **361**.
+- Functions retained for construction/binding context: **179**.
 
 ## Source file index
 
@@ -85,6 +85,7 @@ appendix, so that count is unchanged.
 | [src/hooks.rs](../src/hooks.rs) | 1 |
 | [src/mcp/tools/definitions.rs](../src/mcp/tools/definitions.rs) | 4 |
 | [src/mcp/tools/handlers/workflow.rs](../src/mcp/tools/handlers/workflow.rs) | 1 |
+| [src/okf/export.rs](../src/okf/export.rs) | 5 |
 | [src/quality_diff.rs](../src/quality_diff.rs) | 2 |
 | [src/runtime_telemetry.rs](../src/runtime_telemetry.rs) | 4 |
 | [src/tokensave/memory.rs](../src/tokensave/memory.rs) | 7 |
@@ -2508,7 +2509,7 @@ SELECT kind, name, qualified_name FROM nodes WHERE file_path = ?1
 
 #### Q0198 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1120](../src/db/queries/nodes.rs#L1120).
+Source: [src/db/queries/nodes.rs:1123](../src/db/queries/nodes.rs#L1123).
 
 ```sql
 DELETE FROM executable_body_fts WHERE file_path = ?1
@@ -2516,7 +2517,7 @@ DELETE FROM executable_body_fts WHERE file_path = ?1
 
 #### Q0199 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1134](../src/db/queries/nodes.rs#L1134).
+Source: [src/db/queries/nodes.rs:1137](../src/db/queries/nodes.rs#L1137).
 
 ```sql
 SELECT id FROM nodes WHERE file_path = ?1
@@ -2524,7 +2525,7 @@ SELECT id FROM nodes WHERE file_path = ?1
 
 #### Q0200 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1171](../src/db/queries/nodes.rs#L1171).
+Source: [src/db/queries/nodes.rs:1174](../src/db/queries/nodes.rs#L1174).
 
 ```sql
 DELETE FROM edges WHERE source = ?1 OR target = ?1
@@ -2532,7 +2533,7 @@ DELETE FROM edges WHERE source = ?1 OR target = ?1
 
 #### Q0201 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1181](../src/db/queries/nodes.rs#L1181).
+Source: [src/db/queries/nodes.rs:1184](../src/db/queries/nodes.rs#L1184).
 
 ```sql
 DELETE FROM unresolved_refs WHERE from_node_id = ?1
@@ -2540,7 +2541,7 @@ DELETE FROM unresolved_refs WHERE from_node_id = ?1
 
 #### Q0202 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1191](../src/db/queries/nodes.rs#L1191).
+Source: [src/db/queries/nodes.rs:1194](../src/db/queries/nodes.rs#L1194).
 
 ```sql
 DELETE FROM vectors WHERE node_id = ?1
@@ -2548,7 +2549,7 @@ DELETE FROM vectors WHERE node_id = ?1
 
 #### Q0203 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1201](../src/db/queries/nodes.rs#L1201).
+Source: [src/db/queries/nodes.rs:1204](../src/db/queries/nodes.rs#L1204).
 
 ```sql
 DELETE FROM nodes WHERE file_path = ?1
@@ -2937,7 +2938,7 @@ SELECT id, from_node_id, reference_name, reference_kind, line, col, file_path
 
 #### Q0244 — `get_unresolved_refs_for_sources`
 
-Source: [src/db/queries/unresolved.rs:228](../src/db/queries/unresolved.rs#L228).
+Source: [src/db/queries/unresolved.rs:231](../src/db/queries/unresolved.rs#L231).
 
 ```sql
 SELECT from_node_id, reference_name, reference_kind, line, col, file_path
@@ -2946,7 +2947,7 @@ SELECT from_node_id, reference_name, reference_kind, line, col, file_path
 
 #### Q0245 — `clear_unresolved_refs`
 
-Source: [src/db/queries/unresolved.rs:259](../src/db/queries/unresolved.rs#L259).
+Source: [src/db/queries/unresolved.rs:262](../src/db/queries/unresolved.rs#L262).
 
 ```sql
 DELETE FROM unresolved_refs
@@ -9581,7 +9582,10 @@ Source: [src/db/queries/nodes.rs:1076](../src/db/queries/nodes.rs#L1076).
 
         let mut out = Vec::new();
         while let Ok(Some(row)) = rows.next().await {
-            let kind = NodeKind::from_str(&row.get::<String>(0).unwrap_or_default())
+            let kind = row
+                .get::<String>(0)
+                .unwrap_or_default()
+                .parse::<NodeKind>()
                 .unwrap_or(NodeKind::Function);
             out.push(TouchedNode {
                 kind,
@@ -9595,7 +9599,7 @@ Source: [src/db/queries/nodes.rs:1076](../src/db/queries/nodes.rs#L1076).
 
 ### `delete_nodes_by_file` — src/db/queries/nodes.rs:1103
 
-Source: [src/db/queries/nodes.rs:1103](../src/db/queries/nodes.rs#L1103).
+Source: [src/db/queries/nodes.rs:1106](../src/db/queries/nodes.rs#L1106).
 
 ```rust
     pub async fn delete_nodes_by_file(&self, file_path: &str) -> Result<()> {
@@ -10799,7 +10803,10 @@ Source: [src/db/queries/unresolved.rs:171](../src/db/queries/unresolved.rs#L171)
                 UnresolvedRef {
                     from_node_id: row.get::<String>(1).unwrap_or_default(),
                     reference_name: row.get::<String>(2).unwrap_or_default(),
-                    reference_kind: EdgeKind::from_str(&row.get::<String>(3).unwrap_or_default())
+                    reference_kind: row
+                        .get::<String>(3)
+                        .unwrap_or_default()
+                        .parse::<EdgeKind>()
                         .unwrap_or(EdgeKind::Calls),
                     line: row.get::<u32>(4).unwrap_or(0),
                     column: row.get::<u32>(5).unwrap_or(0),
@@ -10813,7 +10820,7 @@ Source: [src/db/queries/unresolved.rs:171](../src/db/queries/unresolved.rs#L171)
 
 ### `get_unresolved_refs_for_sources` — src/db/queries/unresolved.rs:220
 
-Source: [src/db/queries/unresolved.rs:220](../src/db/queries/unresolved.rs#L220).
+Source: [src/db/queries/unresolved.rs:223](../src/db/queries/unresolved.rs#L223).
 
 ```rust
     pub async fn get_unresolved_refs_for_sources(
@@ -10855,7 +10862,7 @@ Source: [src/db/queries/unresolved.rs:220](../src/db/queries/unresolved.rs#L220)
 
 ### `clear_unresolved_refs` — src/db/queries/unresolved.rs:257
 
-Source: [src/db/queries/unresolved.rs:257](../src/db/queries/unresolved.rs#L257).
+Source: [src/db/queries/unresolved.rs:260](../src/db/queries/unresolved.rs#L260).
 
 ```rust
     pub async fn clear_unresolved_refs(&self) -> Result<()> {
@@ -13102,6 +13109,68 @@ SELECT substr(e.source,1,4097), substr(e.target,1,4097), substr(e.kind,1,4097), 
 ?1 is the same file for both endpoints; ?2 is max_edges + 1, integer <=5001. Extra row refuses export. id breaks ties without collapsing multiplicity; line and nullable numeric resolver provenance are retained.
 
 Construction context: max_nodes is validated in 1..=1000 and max_edges in 1..=5000 before integer conversion. SQL templates are fixed; no user text is interpolated. Queries Q0385–Q0388 use one read transaction for a consistent DB snapshot. Output is published only after successful reads, budget checks, source/branch rechecks and capped serialization. No migrations or writes occur.
+
+
+## OKF export additions (Refs #858)
+
+Source: [src/okf/export.rs](../src/okf/export.rs), `export`, `read_files` and
+`read_links`. This section adds five occurrences and one construction/binding
+context to the existing inventory. No existing query was changed, moved or
+removed. Snapshot inspected 2026-11-11. The export opens the branch database
+found by `graphify::database_path` read-only, after
+`compatibility::preflight`, like the Graphify export. The transaction API owns
+BEGIN, COMMIT and rollback on drop.
+
+#### Q0400 — `export`: Read-only connection limits
+
+```sql
+PRAGMA query_only=1; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192;
+```
+
+Fixed batch, no parameters; executes before the read transaction.
+
+#### Q0401 — `export`: Current-schema check
+
+```sql
+PRAGMA user_version
+```
+
+No bindings; exactly one scalar row. Versions unequal to latest_version() are
+refused; the export never migrates.
+
+#### Q0402 — `read_files`: Bounded source-file list
+
+```sql
+SELECT path, substr(content_hash,1,128), size, node_count FROM files WHERE kind = 'code' ORDER BY path LIMIT ?1
+```
+
+?1 is max_files + 1. An extra row refuses the export. Artifact rows are
+excluded.
+
+#### Q0403 — `read_links`: File-to-file dependency aggregation
+
+```sql
+SELECT s.file_path, t.file_path, substr(e.kind,1,64), COUNT(*) FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target WHERE s.file_path <> t.file_path GROUP BY s.file_path, t.file_path, e.kind ORDER BY s.file_path, t.file_path, e.kind LIMIT ?1
+```
+
+?1 is max_links + 1. An extra row refuses the export. Rows whose files are not
+in the Q0402 list are ignored.
+
+#### Q0404 — `export`: Symbols per file
+
+```sql
+SELECT n.file_path, substr(n.kind,1,64), substr(n.name,1,513), substr(n.qualified_name,1,513), n.start_line, n.end_line, substr(n.visibility,1,32) FROM nodes n JOIN files f ON f.path = n.file_path WHERE f.kind = 'code' AND n.kind NOT IN ('file', 'doc') ORDER BY n.file_path, n.start_line, n.id
+```
+
+No bindings. Rows are streamed in file order; each file keeps at most
+max_symbols_per_file rows in memory and counts the rest. No source body,
+signature or docstring is projected.
+
+Construction context: all templates are fixed and no user text is interpolated.
+Q0401–Q0404 run in one read transaction for a consistent snapshot. The bundle is
+written to a staging directory beside the output and renamed into place only
+after every read succeeds; an existing output path is refused. No writes or
+migrations reach the database.
 
 
 #### Q0390 — `migrate_turns_columns`

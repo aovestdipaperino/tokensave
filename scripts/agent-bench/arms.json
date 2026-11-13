@@ -23,6 +23,25 @@
       "description": "As tokensave, plus the rules text `tokensave install` writes for Claude Code, appended to the system prompt. Tests whether guidance changes tool use.",
       "tokensave": true,
       "append_system_prompt_file": "~/.claude/rules/tokensave.md"
+    },
+    "caveman": {
+      "description": "No TokenSave; the pinned Caveman skill passed with --caveman-skill, appended to the system prompt (#797).",
+      "tokensave": false,
+      "caveman_skill": true
+    },
+    "tokensave-caveman-nocoop": {
+      "description": "As caveman, plus the TokenSave MCP server with Caveman cooperation off. Measures TokenSave's effect while Caveman is on.",
+      "tokensave": true,
+      "caveman_skill": true,
+      "caveman_cooperation": false,
+      "reference": "caveman"
+    },
+    "tokensave-caveman": {
+      "description": "As tokensave-caveman-nocoop, with Caveman cooperation on: the server finds the pinned skill and adds its cooperation paragraph. Measures that paragraph's effect.",
+      "tokensave": true,
+      "caveman_skill": true,
+      "caveman_cooperation": true,
+      "reference": "tokensave-caveman-nocoop"
     }
   }
 }

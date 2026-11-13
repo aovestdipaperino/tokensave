@@ -1094,7 +1094,10 @@ impl Database {
 
         let mut out = Vec::new();
         while let Ok(Some(row)) = rows.next().await {
-            let kind = NodeKind::from_str(&row.get::<String>(0).unwrap_or_default())
+            let kind = row
+                .get::<String>(0)
+                .unwrap_or_default()
+                .parse::<NodeKind>()
                 .unwrap_or(NodeKind::Function);
             out.push(TouchedNode {
                 kind,

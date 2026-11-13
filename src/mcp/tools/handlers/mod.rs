@@ -12,6 +12,7 @@ pub mod git;
 pub mod graph;
 pub mod health;
 pub mod info;
+pub mod knowledge;
 pub mod memory;
 pub mod receiver_type;
 pub mod redundancy;
@@ -804,6 +805,7 @@ pub async fn handle_tool_call_with_session(
         "tokensave_record_decision" => memory::handle_record_decision(cg, args).await,
         "tokensave_record_code_area" => memory::handle_record_code_area(cg, args).await,
         "tokensave_session_recall" => memory::handle_session_recall(cg, args).await,
+        "tokensave_knowledge" => knowledge::handle_knowledge(cg, args).await,
         _ => Err(TokenSaveError::Config {
             message: format!("unknown tool: {tool_name}"),
         }),
@@ -937,9 +939,9 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            89
+            90
         } else {
-            88
+            89
         };
         assert_eq!(tools.len(), expected_total);
 
@@ -1017,6 +1019,7 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_record_decision"));
         assert!(tool_names.contains(&"tokensave_record_code_area"));
         assert!(tool_names.contains(&"tokensave_session_recall"));
+        assert!(tool_names.contains(&"tokensave_knowledge"));
         assert!(tool_names.contains(&"tokensave_read"));
         assert!(tool_names.contains(&"tokensave_entities"));
         assert!(!tool_names.contains(&"tokensave_outline"));

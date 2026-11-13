@@ -363,7 +363,7 @@ pub(super) async fn handle_port_status(cg: &TokenSave, args: Value) -> Result<To
 
     let kinds: Vec<NodeKind> = kind_strs
         .iter()
-        .filter_map(|s| NodeKind::from_str(s))
+        .filter_map(|s| s.parse::<NodeKind>().ok())
         .collect();
 
     if kinds.is_empty() {
@@ -512,7 +512,7 @@ pub(super) async fn handle_port_order(cg: &TokenSave, args: Value) -> Result<Too
 
     let kinds: Vec<NodeKind> = kind_strs
         .iter()
-        .filter_map(|s| NodeKind::from_str(s))
+        .filter_map(|s| s.parse::<NodeKind>().ok())
         .collect();
 
     if kinds.is_empty() {

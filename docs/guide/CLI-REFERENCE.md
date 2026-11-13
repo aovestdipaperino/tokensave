@@ -33,13 +33,14 @@ tokensave affected <files...> [--stdin] [--depth N]        # Find affected test 
 tokensave install [--agent NAME]   # Configure agent integration
 tokensave reinstall                # Refresh settings for all installed agents
 tokensave uninstall [--agent NAME] # Remove agent integration
-tokensave serve [--idle-timeout-secs N]   # Start MCP server (N: exit after N idle seconds)
+tokensave serve [--idle-timeout-secs N] [--watch]   # Start MCP server (N: exit after N idle seconds; --watch: opt-in filesystem watcher)
 tokensave servers [--json]         # List running servers and the index each one holds
 tokensave monitor                  # Live TUI showing MCP calls across all projects
 tokensave memory [--clean]         # Per-instance RSS report for all tokensave processes
 tokensave upgrade                  # Self-update to latest version
 tokensave channel [stable|beta]    # Show or switch update channel
 tokensave doctor [--agent NAME]    # Check installation health
+tokensave doctor --caveman [--session-id ID]  # Also check Caveman compatibility; JSON report on stdout
 tokensave githooks [on|off] [--local]  # Manage git hooks (--local: this repo only, no core.hooksPath)
 tokensave branch add|list|remove|removeall|gc|set-default   # Multi-branch management
 tokensave current-counter          # Show per-project token counter
@@ -48,7 +49,14 @@ tokensave disable-upload-counter   # Opt out of worldwide counter uploads
 tokensave enable-upload-counter    # Re-enable worldwide counter uploads
 tokensave state list               # List relocated project state and the project of each
 tokensave state prune [--dry-run]  # Delete relocated state whose project directory is gone
+tokensave okf validate <dir> [--json] [--strict] [--verbose]  # Check an OKF v0.2 bundle
+tokensave okf export --output <dir> [--project P]  # Export the code index as an OKF bundle (no sync)
+tokensave okf import <dir> [--name N] [--replace] [--strict] [--json] [--project P]  # Import a bundle for tokensave_knowledge
+tokensave okf list [--json] [--project P]          # List imported bundles
+tokensave okf remove <name> [--project P]          # Remove an imported bundle
 ```
+
+See [Open Knowledge Format](OKF.md) for the `okf` commands, their findings, the export layout and imported knowledge.
 
 ## Settings for automatic initialization
 
@@ -59,6 +67,15 @@ tokensave state prune [--dry-run]  # Delete relocated state whose project direct
 
 See [Automatic initialization](INDEXING.md#automatic-initialization) for the guards that apply.
 
+## Settings for Caveman cooperation
+
+| Setting | Where | Effect |
+|---|---|---|
+| `caveman_compatibility` | `~/.tokensave/config.toml` | `false` (default): the MCP instructions never mention Caveman. `true`: when a Caveman skill is installed for a supported agent, the MCP `initialize` instructions ask the agent to keep tokensave results exact. Read when the MCP server starts a session. |
+| `TOKENSAVE_CAVEMAN_COMPATIBILITY` | environment | Overrides `caveman_compatibility` for one run. `0`, `false`, `no`, `off` or empty turn it off; any other value turns it on. |
+
+`tokensave init` reports an installed Caveman skill and, while the setting is off, how to turn it on; it never changes the setting. See [Working alongside Caveman](AGENT-INTEGRATIONS.md#working-alongside-caveman).
+
 ## Settings for the state location
 
 | Setting | Where | Effect |
@@ -67,3 +84,13 @@ See [Automatic initialization](INDEXING.md#automatic-initialization) for the gua
 | `TOKENSAVE_STATE_DIR` | environment | Overrides `state_dir`. Empty selects the default layout. |
 
 See [Keeping state outside the repository](INDEXING.md#keeping-state-outside-the-repository) for how existing state is kept and how orphans are reported.
+
+## Settings for the filesystem watcher
+
+| Setting | Where | Effect |
+|---|---|---|
+| `filesystem_watch_enabled` | `~/.tokensave/config.toml` | `false` (default): `serve` creates no filesystem watcher. `true`: `serve` follows file changes through OS notifications and syncs them. |
+| `serve --watch` | command line | Turns the watcher on for one run, whatever `filesystem_watch_enabled` says. |
+| `watcher_debounce` | `~/.tokensave/config.toml` | Quiet period before a burst of changes is applied: `"500ms"`, `"2s"` (default), `"1m"`. Clamped to 50 ms – 60 s. Read only when the watcher is on. |
+
+See [Opt-in filesystem watcher](INDEXING.md#opt-in-filesystem-watcher) for scope, bounds and platform limits.

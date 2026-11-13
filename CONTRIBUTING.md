@@ -11,7 +11,7 @@ cargo build --locked
 cargo test --workspace --locked
 ```
 
-Requires **Rust 1.95.0+** (edition 2021). The CI and release toolchain is pinned to **1.99.0**.
+Requires **Rust 1.95.0+** (edition 2021). The CI and release toolchain is pinned to **1.100.0**.
 
 ## Build and Artifact Lifecycle
 
@@ -306,6 +306,7 @@ cargo audit
 ```
 
 Prefer upgrading an affected dependency to ignoring its advisory. To ignore one, add its ID to `ignore` in `.cargo/audit.toml` with a comment that names the affected crate and version, explains why tokensave is not affected or why no fix can be adopted yet, and links the issue that tracks removing the entry.
+The `Python comparison benchmark` job runs `python3 -B -m unittest discover -s benchmarks/tests -v` on Linux with Python 3.12. Run the same command locally on a POSIX system; it needs neither repository downloads nor installed benchmark tools.
 
 ### Test layout
 

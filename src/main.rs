@@ -9,6 +9,7 @@ use tokensave::tokensave::TokenSave;
 mod cli;
 mod commands;
 mod global;
+mod okf_command;
 mod profile_command;
 mod serve;
 mod tool_command;
@@ -196,6 +197,16 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         let root = tokensave::config::resolve_path_with_discovery(project.clone());
         tokensave::cancel::install_signal_handlers();
         return tokensave::graphify::export_file(&root, file, output, *max_nodes, *max_edges).await;
+    }
+
+    // OKF commands never touch the code index or the user config (import
+    // writes only the project's `okf/` state); skip startup maintenance.
+    if let Commands::Okf { action } = &command {
+        let code = okf_command::run(action).await?;
+        if code != 0 {
+            process::exit(code);
+        }
+        return Ok(());
     }
 
     // Verification must bypass config saves, telemetry and agent maintenance.
@@ -501,6 +512,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 profiler.shutdown();
             }
 
+            // Point out an installed Caveman and the opt-in cooperation
+            // setting (#797). Read-only; the setting is never changed here.
+            if let Some(notice) = tokensave::caveman::init_notice(&project_path) {
+                eprintln!("{notice}");
+            }
+
             // Offer this repository's own git hooks (#455). Local rather than
             // global, because the global path claims `core.hooksPath` — one
             // machine-wide setting that forces the same hook directory on
@@ -679,6 +696,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
         }
         Commands::GraphifyExport { .. } => unreachable!("export dispatched before startup"),
+        Commands::Okf { .. } => unreachable!("okf dispatched before startup"),
         Commands::Verify { .. } => unreachable!("verify is dispatched before startup"),
         Commands::Status {
             path,
@@ -1311,6 +1329,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             path,
             timings,
             idle_timeout_secs,
+            watch,
         } => {
             let canonical_disable = std::env::var("TOKENSAVE_DISABLE_SERVER").ok();
             let legacy_disable = std::env::var("DISABLE_TOKENSAVE").ok();
@@ -1461,6 +1480,17 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             } else {
                 tokensave::mcp::McpServer::new(cg, scope_prefix).await
             };
+            // Opt-in filesystem watcher (#937): off unless the user config or
+            // `--watch` turns it on, in which case nothing below changes but a
+            // watcher task is added beside the on-demand staleness check.
+            let user_config = tokensave::user_config::UserConfig::load();
+            if watch || user_config.filesystem_watch_enabled {
+                server.start_filesystem_watch(
+                    tokensave::mcp::fs_watch::WatchSettings::from_debounce_setting(
+                        &user_config.watcher_debounce,
+                    ),
+                );
+            }
             run_mcp_server(&server, timings, peeked_line, idle_timeout_secs).await?;
             // A hard kill skips this; that is what reaping on startup and on
             // read is for.
@@ -1689,8 +1719,15 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 );
             }
         }
-        Commands::Doctor { agent } => {
-            tokensave::doctor::run_doctor(agent.as_deref()).await;
+        Commands::Doctor {
+            agent,
+            caveman,
+            session_id,
+        } => {
+            let caveman = caveman.then_some(tokensave::doctor::CavemanCheck {
+                session_id: session_id.as_deref(),
+            });
+            tokensave::doctor::run_doctor(agent.as_deref(), caveman).await;
         }
         Commands::Cost {
             range,
@@ -2366,6 +2403,8 @@ mod startup_tests {
     fn doctor_skips_agent_install_maintenance() {
         let command = Commands::Doctor {
             agent: Some("kiro".to_string()),
+            caveman: false,
+            session_id: None,
         };
         assert!(should_skip_agent_install_maintenance(&command));
     }
@@ -2415,6 +2454,7 @@ mod startup_tests {
             path: None,
             timings: false,
             idle_timeout_secs: None,
+            watch: false,
         }));
     }
 
