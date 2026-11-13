@@ -148,6 +148,7 @@ mod module_imports_test;
 mod monitor_test;
 mod msbasic2_extraction_test;
 mod multi_mcp_coordination_test;
+mod nested_worktree_scan_test;
 mod nix_extraction_test;
 mod node_filter_test;
 mod objc_extraction_test;
