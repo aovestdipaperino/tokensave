@@ -38,6 +38,10 @@ pub enum AutoSyncScope {
     /// the one this handle resolved. Syncing would write the new branch's
     /// files into the old branch's database. See [`BranchDrift`].
     BranchDrifted(BranchDrift),
+    /// The open database belongs to `owner`, and the checkout is a branch
+    /// with no database of its own or a detached HEAD. Syncing would write
+    /// the working tree into `owner`'s index (#865).
+    BorrowedIndex { owner: String },
 }
 
 /// A handle resolved to one branch while the working tree sits on another.
@@ -258,7 +262,7 @@ impl TokenSave {
     /// startup catch-up and its per-`tools/call` staleness check — must use
     /// this; explicit `tokensave sync` deliberately stays unbounded.
     ///
-    /// Three guards, in order (see [`AutoSyncScope`] for why):
+    /// Four guards, in order (see [`AutoSyncScope`] for why):
     ///
     /// 1. A working tree checked out onto a different branch than this handle
     ///    serves yields [`AutoSyncScope::BranchDrifted`]. Syncing would write
@@ -277,6 +281,9 @@ impl TokenSave {
     pub async fn find_stale_files_bounded(&self) -> AutoSyncScope {
         if let Some(drift) = self.branch_drift() {
             return AutoSyncScope::BranchDrifted(drift);
+        }
+        if let Some(owner) = self.borrowed_index_owner() {
+            return AutoSyncScope::BorrowedIndex { owner };
         }
 
         // Checked before the walk: when the index is empty there is nothing

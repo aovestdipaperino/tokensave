@@ -130,6 +130,7 @@ CREATE TABLE unresolved_refs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     from_node_id    TEXT NOT NULL,       -- FK → nodes(id): the calling/referencing node
     reference_name  TEXT NOT NULL,       -- symbol name as written in source
+    reference_leaf  TEXT NOT NULL,       -- trailing segment, indexed for caller lookup
     reference_kind  TEXT NOT NULL,       -- edge kind to create if resolved (e.g. "calls")
     line            INTEGER NOT NULL,
     col             INTEGER NOT NULL,
@@ -138,7 +139,7 @@ CREATE TABLE unresolved_refs (
 );
 ```
 
-**Lifecycle.** Unresolved refs are created during extraction and consumed during reference resolution. The CASCADE ensures they are cleaned up when their owning node is deleted during re-indexing.
+**Lifecycle.** Unresolved refs are created during extraction and retained after reference resolution as the source evidence behind resolved edges and ambiguity records. The CASCADE ensures they are cleaned up when their owning node is deleted during re-indexing. `reference_leaf` is the final segment after `::` or `.` (`Type::run` and `value.run` both store `run`) and has its own equality index. `tokensave_callers` uses it to retrieve every same-named call without a leading-wildcard scan of this table (schema v19).
 
 #### `ambiguous_calls`
 
