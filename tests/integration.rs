@@ -67,6 +67,7 @@ mod dead_code_call_attribution_test;
 mod derive_table_test;
 mod diagnose_test;
 mod diagnostics_test;
+mod dirty_sentinel_database_test;
 mod discover_test;
 mod display_test;
 mod dockerfile_extraction_test;
