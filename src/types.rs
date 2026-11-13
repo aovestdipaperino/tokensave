@@ -1011,6 +1011,19 @@ pub struct AmbiguousCall {
     pub candidate_node_ids: Vec<String>,
 }
 
+/// One extracted call reference together with the resolver's recorded result.
+///
+/// Unlike a `calls` edge, this record exists even when resolution chose a
+/// different same-named definition or could not choose a target (#687).
+#[derive(Debug, Clone)]
+pub struct CallReference {
+    pub reference: UnresolvedRef,
+    /// Same-named targets reached by call edges at this source location.
+    pub resolved_targets: Vec<(String, String)>,
+    /// Candidate node ids recorded when resolution ended in a tie.
+    pub ambiguous_candidate_ids: Vec<String>,
+}
+
 /// A reference that has been resolved to a target node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedRef {

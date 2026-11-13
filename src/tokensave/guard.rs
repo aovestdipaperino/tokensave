@@ -398,17 +398,93 @@ pub(crate) fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
+/// The branch that owns the open database, when that is not the checkout.
+///
+/// A branch with no database of its own, and a detached HEAD, are served from
+/// the database of another branch. In multi-branch mode that database belongs
+/// to its branch, and the working tree of a different checkout must not be
+/// written into it (#865).
+///
+/// Returns `None` for a project that tracks only its default branch. Such a
+/// project has one database for every branch by design, so a sync on each
+/// branch is correct there.
+///
+/// A pure function of its inputs, so that the rule can be tested without a
+/// repository.
+pub(crate) fn borrowed_index_owner<'a>(
+    meta: &branch_meta::BranchMeta,
+    active_branch: Option<&str>,
+    serving_branch: Option<&'a str>,
+) -> Option<&'a str> {
+    let owner = serving_branch?;
+    if active_branch == Some(owner) {
+        return None;
+    }
+    let multi_branch = meta
+        .branches
+        .keys()
+        .any(|name| *name != meta.default_branch);
+    multi_branch.then_some(owner)
+}
+
+/// The error for a write through a borrowed index. It names the remedy.
+pub(crate) fn borrowed_index_refusal(active_branch: Option<&str>, owner: &str) -> TokenSaveError {
+    let message = match active_branch {
+        Some(branch) => format!(
+            "branch '{branch}' has no index of its own. The open index belongs to '{owner}' \
+             and is read-only on this branch. Run `tokensave branch add {}` to track this \
+             branch, or set `auto_track` to true in the project configuration.",
+            shell_quote(branch)
+        ),
+        None => format!(
+            "HEAD is detached. The open index belongs to '{owner}' and is read-only on a \
+             detached HEAD. Check out a branch to sync."
+        ),
+    };
+    TokenSaveError::Config { message }
+}
+
 impl TokenSave {
-    /// Background tasks can retain a handle across a runtime transition. Never
-    /// let such a task start writing a different checkout into its old index.
+    /// The branch that owns the open database when this handle borrows it,
+    /// read from the current branch metadata. See [`borrowed_index_owner`].
+    pub(crate) fn borrowed_index_owner(&self) -> Option<String> {
+        if !self.tracks_checkout {
+            return None;
+        }
+        let meta = branch_meta::load_branch_meta(&get_tokensave_dir(&self.project_root))?;
+        borrowed_index_owner(
+            &meta,
+            self.active_branch.as_deref(),
+            self.serving_branch.as_deref(),
+        )
+        .map(str::to_owned)
+    }
+
+    /// Refuses a write that would put one checkout into the index of another.
+    ///
+    /// Two cases. A background task can retain a handle across a branch
+    /// change: never let such a task write the new checkout into its old
+    /// index. And a handle can serve a borrowed index from the start: see
+    /// [`borrowed_index_owner`].
     pub(crate) fn ensure_current_checkout(&self) -> Result<()> {
-        if self.tracks_checkout
-            && branch_meta::load_branch_meta(&get_tokensave_dir(&self.project_root)).is_some()
-            && branch::current_branch(&self.project_root) != self.active_branch
-        {
+        if !self.tracks_checkout {
+            return Ok(());
+        }
+        let Some(meta) = branch_meta::load_branch_meta(&get_tokensave_dir(&self.project_root))
+        else {
+            return Ok(());
+        };
+        if branch::current_branch(&self.project_root) != self.active_branch {
             return Err(TokenSaveError::Config {
                 message: "Git branch changed; acquire a fresh branch context before writing".into(),
             });
+        }
+        if let Some(owner) = borrowed_index_owner(
+            &meta,
+            self.active_branch.as_deref(),
+            self.serving_branch.as_deref(),
+        ) {
+            return Err(borrowed_index_refusal(self.active_branch.as_deref(), owner));
         }
         Ok(())
     }
@@ -531,5 +607,62 @@ mod tests {
             message.contains("timed out"),
             "expected bounded timeout: {message}"
         );
+    }
+
+    fn multi_branch_meta() -> branch_meta::BranchMeta {
+        let mut meta = branch_meta::BranchMeta::new("master");
+        meta.add_branch("feature", "branches/feature.db", "master");
+        meta
+    }
+
+    #[test]
+    fn a_checkout_that_owns_the_index_is_not_borrowed() {
+        let meta = multi_branch_meta();
+        assert_eq!(
+            borrowed_index_owner(&meta, Some("feature"), Some("feature")),
+            None
+        );
+        assert_eq!(
+            borrowed_index_owner(&meta, Some("master"), Some("master")),
+            None
+        );
+    }
+
+    #[test]
+    fn an_untracked_branch_and_a_detached_head_borrow_the_index() {
+        let meta = multi_branch_meta();
+        assert_eq!(
+            borrowed_index_owner(&meta, Some("third"), Some("feature")),
+            Some("feature")
+        );
+        assert_eq!(
+            borrowed_index_owner(&meta, None, Some("master")),
+            Some("master")
+        );
+    }
+
+    /// One database serves every branch of a project that tracks only its
+    /// default branch, and a project with no metadata has no serving branch.
+    #[test]
+    fn a_single_database_project_has_no_borrowed_index() {
+        let meta = branch_meta::BranchMeta::new("master");
+        assert_eq!(
+            borrowed_index_owner(&meta, Some("third"), Some("master")),
+            None
+        );
+        assert_eq!(borrowed_index_owner(&meta, None, Some("master")), None);
+        assert_eq!(borrowed_index_owner(&meta, Some("third"), None), None);
+    }
+
+    #[test]
+    fn the_refusal_names_the_branch_and_the_remedy() {
+        let tracked = borrowed_index_refusal(Some("third"), "feature").to_string();
+        assert!(tracked.contains("'third'"), "{tracked}");
+        assert!(tracked.contains("'feature'"), "{tracked}");
+        assert!(tracked.contains("tokensave branch add"), "{tracked}");
+
+        let detached = borrowed_index_refusal(None, "master").to_string();
+        assert!(detached.contains("detached"), "{detached}");
+        assert!(detached.contains("'master'"), "{detached}");
     }
 }

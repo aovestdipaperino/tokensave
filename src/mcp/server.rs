@@ -650,6 +650,12 @@ fn auto_sync_refusal(scope: &crate::tokensave::AutoSyncScope) -> String {
              {limit}-file limit for a background sync. Run `tokensave sync` to \
              index them, or raise `max_auto_sync_files` in .tokensave/config.json."
         ),
+        crate::tokensave::AutoSyncScope::BorrowedIndex { owner } => format!(
+            "skipping automatic sync: the checkout has no index of its own and is \
+             served from the index of '{owner}'. Syncing would write this working \
+             tree into that index. Run `tokensave branch add` to track the \
+             checked-out branch (#865)."
+        ),
         // Not a refusal; kept total so a new variant cannot silently become
         // an empty message.
         crate::tokensave::AutoSyncScope::Sync(_) => "automatic sync proceeding".to_string(),
