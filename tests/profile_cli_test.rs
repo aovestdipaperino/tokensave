@@ -120,7 +120,12 @@ fn detailed_for_records_an_expiry_that_status_reports_and_honours() {
     let output = tokensave(home.path(), &["profile", "status"]);
     let text = stdout(&output);
     assert!(text.starts_with("Profiling: detailed\n"), "{text}");
-    assert!(text.contains("Detailed mode expires in 1h"), "{text}");
+    // Exactly 2h remain when `status` runs in the same second as `enable`.
+    assert!(
+        text.contains("Detailed mode expires in 1h")
+            || text.contains("Detailed mode expires in 2h 0m"),
+        "{text}"
+    );
 
     // Move the recorded expiry into the past: the configured mode stays
     // `detailed`, but it now runs as `light`.
