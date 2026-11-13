@@ -63,6 +63,7 @@ pub struct Row {
     pub name: String,
     pub count: u64,
     pub errors: u64,
+    pub cancellations: u64,
     pub total_ms: f64,
     pub exclusive_ms: f64,
     pub mean_ms: Option<f64>,
@@ -94,6 +95,7 @@ impl Row {
             name: name.to_string(),
             count: s.count,
             errors: s.errors,
+            cancellations: s.cancellations,
             total_ms: ms(s.sum_us),
             exclusive_ms: ms(s.exclusive_sum_us),
             mean_ms: s.mean_us().map(|us| us / 1000.0),
@@ -161,17 +163,18 @@ pub fn render_text(merged: &BTreeMap<String, Snapshot>, section: Section, window
         let _ = writeln!(out, "Engine: {engine} (window: {window})");
         let _ = writeln!(
             out,
-            "{:<44} {:>9} {:>6} {:>11} {:>9} {:>9} {:>10} {:>10} {:>9}",
-            "OPERATION", "COUNT", "ERR", "TOTAL ms", "MEAN", "P50", "P95", "P99", "MAX"
+            "{:<44} {:>9} {:>6} {:>6} {:>11} {:>9} {:>9} {:>10} {:>10} {:>9}",
+            "OPERATION", "COUNT", "ERR", "CANCEL", "TOTAL ms", "MEAN", "P50", "P95", "P99", "MAX"
         );
         for row in &rows {
             let mark = if row.tail_reliable { "" } else { "*" };
             let _ = writeln!(
                 out,
-                "{:<44} {:>9} {:>6} {:>11.1} {:>9} {:>9} {:>10} {:>10} {:>9.2}",
+                "{:<44} {:>9} {:>6} {:>6} {:>11.1} {:>9} {:>9} {:>10} {:>10} {:>9.2}",
                 row.name,
                 row.count,
                 row.errors,
+                row.cancellations,
                 row.total_ms,
                 fmt_opt(row.mean_ms),
                 fmt_opt(row.p50_ms),
@@ -187,6 +190,10 @@ pub fn render_text(merged: &BTreeMap<String, Snapshot>, section: Section, window
                     "\nDatabase share of measured MCP time: {:.0}% (outside DB: {:.0}%)",
                     100.0 * db / total,
                     100.0 * (total - db) / total
+                );
+                let _ = writeln!(
+                    out,
+                    "This share includes profiled query methods only; raw database access in memory reporting, quality diff, edge audit, import analysis, schema inspection, and Rails route edge insertion is not attributed to DB time."
                 );
             }
         }
@@ -275,6 +282,7 @@ mod tests {
         snap.insert("db.get_node_by_id".into(), series(&[1_000; 150]));
         snap.insert("index.scan".into(), series(&[50_000]));
         let mut tool = series(&[10_000, 20_000]);
+        tool.cancellations = 1;
         tool.db_us = 12_000;
         tool.db_ops = 6;
         tool.db_ops_per_call.record(2);
@@ -304,6 +312,7 @@ mod tests {
         let mcp = rows(snap, Section::Mcp);
         assert_eq!(mcp[0].name, "tool.tokensave_search");
         assert_eq!(mcp[0].db_share, Some(0.4));
+        assert_eq!(mcp[0].cancellations, 1);
         assert!(mcp[0].median_db_ops_per_call.is_some());
     }
 
@@ -317,6 +326,7 @@ mod tests {
         let text = render_text(&m, Section::All, "24h");
         assert!(text.contains('*'));
         assert!(text.contains("Database share of measured MCP time: 40%"));
+        assert!(text.contains("raw database access"));
     }
 
     #[test]

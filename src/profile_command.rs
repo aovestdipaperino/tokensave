@@ -64,7 +64,7 @@ pub(crate) fn handle_profile_action(action: ProfileAction) -> Result<()> {
             };
             let mut merged = storage::load(&profile_dir()?, since_hour(window(&since)?));
             if let Some(engine) = engine {
-                merged.retain(|name, _| *name == engine);
+                retain_engine(&mut merged, &engine)?;
             }
             if json {
                 println!(
@@ -138,6 +138,20 @@ pub(crate) fn handle_profile_action(action: ProfileAction) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn retain_engine(
+    merged: &mut std::collections::BTreeMap<String, profile::Snapshot>,
+    engine: &str,
+) -> Result<()> {
+    if merged.is_empty() || merged.contains_key(engine) {
+        merged.retain(|name, _| name == engine);
+        return Ok(());
+    }
+    let available = merged.keys().cloned().collect::<Vec<_>>().join(", ");
+    Err(config_error(format!(
+        "no profile data for engine '{engine}'; available engines: {available}"
+    )))
 }
 
 fn enable(detailed: bool, duration: Option<&str>) -> Result<()> {
@@ -272,6 +286,28 @@ fn render_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn engine_filter_names_available_engines() {
+        let mut merged = std::collections::BTreeMap::from([
+            ("libsql".to_string(), profile::Snapshot::new()),
+            ("sqlite".to_string(), profile::Snapshot::new()),
+        ]);
+        let error = retain_engine(&mut merged, "libsq1").unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("no profile data for engine 'libsq1'"));
+        assert!(message.contains("available engines: libsql, sqlite"));
+    }
+
+    #[test]
+    fn engine_filter_keeps_requested_engine() {
+        let mut merged = std::collections::BTreeMap::from([
+            ("libsql".to_string(), profile::Snapshot::new()),
+            ("sqlite".to_string(), profile::Snapshot::new()),
+        ]);
+        retain_engine(&mut merged, "libsql").unwrap();
+        assert_eq!(merged.keys().collect::<Vec<_>>(), vec!["libsql"]);
+    }
 
     #[test]
     fn status_reports_override_without_the_value() {

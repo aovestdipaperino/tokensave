@@ -200,10 +200,10 @@ pub(crate) fn scoped_sync<R>(f: impl FnOnce() -> R) -> (R, InvocationSummary) {
 
 /// Guard measuring one operation; see the module docs.
 ///
-/// Call [`Span::finish`] on success. A span dropped without it (an early
-/// return through `?`, a panic, a cancelled future) or ended with
-/// [`Span::fail`] counts as an error and stays out of the latency histogram;
-/// its time is still subtracted from the enclosing span.
+/// Call [`Span::finish`] on success. [`Span::fail`] counts an error and keeps
+/// its latency out of the histogram. A span dropped without either call (a
+/// panic or cancelled future) counts as a cancellation and keeps its elapsed
+/// time in the histogram; all paths subtract their time from an enclosing span.
 #[must_use = "a span measures until it is finished or dropped"]
 pub struct Span {
     active: Option<Active>,
@@ -295,11 +295,30 @@ impl Span {
         }
         Some(inclusive_us)
     }
+
+    fn cancel(&mut self) -> Option<u64> {
+        let a = self.active.take()?;
+        let inclusive_us = u64::try_from(a.start.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let child_us = a
+            .slot
+            .and_then(|slot| with_context(|c| c.pop(slot, a.op, inclusive_us)))
+            .unwrap_or(0);
+        a.recorder.record_cancelled(
+            a.op,
+            Sample {
+                inclusive_us,
+                exclusive_us: inclusive_us.saturating_sub(child_us),
+                rows_returned: a.rows_returned,
+                rows_affected: a.rows_affected,
+            },
+        );
+        Some(inclusive_us)
+    }
 }
 
 impl Drop for Span {
     fn drop(&mut self) {
-        let _ = self.complete(false);
+        let _ = self.cancel();
     }
 }
 
@@ -359,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn dropped_span_is_an_error_but_still_a_child() {
+    fn dropped_span_records_cancellation_latency_and_is_still_a_child() {
         let r = recorder();
         scoped_sync(|| {
             let outer = Span::start(r, Op::Mcp(McpPhase::Total));
@@ -370,8 +389,11 @@ mod tests {
             outer.finish();
         });
         let snap = r.drain();
-        assert_eq!(snap["db.open"].errors, 1);
-        assert_eq!(snap["db.open"].count, 0);
+        assert_eq!(snap["db.open"].errors, 0);
+        assert_eq!(snap["db.open"].cancellations, 1);
+        assert_eq!(snap["db.open"].count, 1);
+        assert!(snap["db.open"].sum_us >= 2_000);
+        assert_eq!(snap["db.open"].histogram.count(), 1);
         let total = &snap["mcp.total"];
         assert!(total.sum_us - total.exclusive_sum_us >= 2_000);
     }

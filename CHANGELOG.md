@@ -110,6 +110,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- **Make profiling reports honest about cancellations, engine filters, and DB coverage (Refs #885).** Dropped futures now retain their elapsed latency and increment a separate cancellation count instead of appearing as zero-latency errors. An unknown `profile report --engine` value names the requested engine and the engines with data. The report and guide disclose the remaining raw database paths excluded from the measured DB share; the existing MCP handler boxing keeps the instrumented request future off callers' stacks.
+
 - Run the Python comparison benchmark tests in CI and refuse Criterion clone caches marked with `.bench-ref`, with guidance to use a separate cache directory (Refs #881).
 
 - **`tokensave_call_chain` with `follow: "any"` no longer stops at its node budget on ordinary connections (Refs #980).** The search ran from the start only, so one well-connected node near the start used the whole budget of 2000 nodes. It now runs from both ends and meets in the middle. On this repository's index (28,016 nodes), 150 of 300 random function pairs stopped at the budget before and none do now, and the 95th percentile time for one search fell from 154 ms to 7 ms. The result is still a shortest path. The budget and `budget_exhausted` are unchanged.
