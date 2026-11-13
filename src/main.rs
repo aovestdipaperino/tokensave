@@ -555,6 +555,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // rather than at the end (#450).
             tokensave::cancel::install_signal_handlers();
             let explicit_path = path.is_some();
+            commands::warn_borrowed_worktree_index(explicit_path);
             let project_path = tokensave::config::resolve_path_with_discovery(path);
             // #876: the installed `post-commit` and `post-merge` hooks run a
             // pathless `sync`, so a repository started with `git init` reaches
@@ -705,6 +706,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             details,
             runtime,
         } => {
+            commands::warn_borrowed_worktree_index(path.is_some());
             let project_path = tokensave::config::resolve_path_with_discovery(path);
             let cg = if TokenSave::is_initialized(&project_path) {
                 TokenSave::open(&project_path).await?

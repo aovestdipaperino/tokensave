@@ -78,6 +78,7 @@ pub(crate) async fn run(name: Option<String>, args: Vec<String>) -> Result<()> {
         return Ok(());
     }
 
+    crate::commands::warn_borrowed_worktree_index(parsed.project.is_some());
     let project_path = tokensave::config::resolve_path_with_discovery(parsed.project.clone());
     let cg = serve::ensure_initialized(&project_path).await?;
     // The 15,000-character cap protects an agent's context window; the CLI's
