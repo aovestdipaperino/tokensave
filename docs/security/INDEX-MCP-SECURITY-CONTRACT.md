@@ -4,7 +4,7 @@ Status: **security regression plan, not a claim that the system is hardened**.
 
 ## Existing threat surface
 
-`SECURITY.md` documents that the local index contains full source in FTS, and older databases may retain source in `read_cache`. The MCP server uses stdio and exposes both read and edit tools. Repository content and tool results are untrusted input to an agent.
+`SECURITY.md` documents that the local index contains full source in FTS, and older databases may retain source in `read_cache` until their next writable open clears it (#866). The MCP server uses stdio and exposes both read and edit tools. Repository content and tool results are untrusted input to an agent.
 
 ## Security boundaries to test
 
@@ -39,3 +39,15 @@ Status: **security regression plan, not a claim that the system is hardened**.
 2. Add tests exposing current behavior; distinguish security vulnerabilities from documented choices.
 3. Fix proven escapes and leaks in narrowly scoped code PRs.
 4. Update `SECURITY.md` with precise limitations and remaining risks.
+
+## Status
+
+| Boundary | Covered by |
+| --- | --- |
+| 1. Index inclusion | `tests/security_boundaries_test.rs`: gitignored and `exclude`d files stay out of every index-backed tool. Following in-root symlinks out of the root (#34) remains implicit. |
+| 2. Disclosure | `tests/security_boundaries_test.rs`: `tokensave_read` reads ignored and excluded files inside the project by design and refuses `.git`; documented in `SECURITY.md`. |
+| 3. Path safety | `tests/edit_containment_test.rs` (#975) for the edit tools; `tokensave_read` containment from #636. |
+| 4. Prompt injection | The `initialize` instructions and the canonical rules text tell the agent to treat repository content as data (#866), with unit tests in `src/mcp/server.rs` and `src/agents/rules.rs`. |
+| 5. Local storage | A writable open clears legacy `read_cache` rows with `secure_delete` on (#866), tested in `src/db/connection.rs`. |
+| 6. Observability | `tests/security_boundaries_test.rs` checks CLI output while indexing and syncing and the `status` and runtime telemetry output against synthetic secrets (Linux and macOS). The profile export has its own allowlist (#754). |
+| 7. Edit boundaries | `tests/edit_containment_test.rs` (#975). |

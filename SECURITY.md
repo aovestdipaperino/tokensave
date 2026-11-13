@@ -33,9 +33,9 @@ tokensave builds a **local** code graph stored in a SQLite (libSQL) database (`.
 - Call relationships and dependency edges
 - FTS5 search index (`executable_body_fts`): the `body` column retains the complete text of every indexed function body
 - Cross-session memory (recorded decisions and code-area notes)
-- A legacy response cache for `tokensave_read` (`read_cache` table): the rendered output served to the agent, stored as a BLOB keyed by file path, mode, and arguments. For full/line-range reads this rendered output contains source text. Since #650 the table is no longer read or written, but rows written by earlier releases stay in an existing database until it is rebuilt.
+- A legacy response cache for `tokensave_read` (`read_cache` table): the rendered output served to the agent, stored as a BLOB keyed by file path, mode, and arguments. For full/line-range reads this rendered output contains source text. Since #650 the table is no longer read or written. Since #866 the first writable open of a database deletes the rows earlier releases left there, with SQLite's `secure_delete` on so the freed pages are overwritten; a database that is only ever opened read-only keeps them until a writable open or a rebuild.
 
-The database stores structural metadata, plus source text in two places: the legacy `read_cache` table (in databases written by releases before #650), and the `executable_body_fts` full-text index, whose `body` column retains complete function bodies. Treat `.tokensave/tokensave.db` as containing your source code, and keep it out of version control. The database is local-only — there is no cloud sync, remote database, or server-side storage.
+The database stores structural metadata, plus source text in the `executable_body_fts` full-text index, whose `body` column retains complete function bodies (and, until it is cleared, the legacy `read_cache` table). Treat `.tokensave/tokensave.db` as containing your source code, and keep it out of version control. The database is local-only — there is no cloud sync, remote database, or server-side storage.
 
 A second database (`~/.tokensave/global.db`) tracks which projects have been indexed, aggregate token-saved counts, and cost accounting data parsed from Claude Code session transcripts. It contains directory paths, counters, per-turn cost/token/category records, and JSONL parse offsets. No source code or conversation content is stored.
 
@@ -78,11 +78,23 @@ The MCP server exposes **more than 80 tools** (one fewer when the optional `ast-
 
 - `tokensave_run_affected_tests` — compiles and runs the project's own test suite via a `cargo` subprocess (bounded by a configurable wall-clock timeout, default 300 s, and a per-invocation test cap)
 
-**Path containment.** The edit tools only write inside the indexed project root or another git worktree of the same repository. They resolve symlinks and `..` before checking, and they refuse paths inside `.git` and tokensave's state directory (#866). The indexer follows a symlink inside the root into a directory outside it, so a file the index tracks through such a link stays editable. A repository can contain such links, so review symlinks in a repository you do not trust before indexing it. `tokensave_create_file` is stricter: it accepts only the project root. `tokensave_read` reads only files inside the root of the selected graph (#636). The check and the following read or write are not atomic, so a symlink swapped in between them by another local process is followed.
+**Path containment.** The edit tools only write inside the indexed project root or another git worktree of the same repository. They resolve symlinks and `..` before checking, and they refuse paths inside `.git` and tokensave's state directory (#866). The indexer follows a symlink inside the root into a directory outside it, so a file the index tracks through such a link stays editable. A repository can contain such links, so review symlinks in a repository you do not trust before indexing it. `tokensave_create_file` is stricter: it accepts only the project root. `tokensave_read` reads only files inside the root of the selected graph (#636), and refuses paths inside `.git`, whose `config` can hold credentials in a remote URL (#866). The check and the following read or write are not atomic, so a symlink swapped in between them by another local process is followed.
 
 The edit tools target a single file with a unique anchor and re-index in place. They never run shell commands you didn't supply, and the server still **cannot** access the network on behalf of the AI agent. Every editing and state-mutating tool is single-file or single-record scoped — there is no bulk-delete or recursive-write primitive.
 
 > Note: file edits are applied by the agent on your behalf through your agent's own tool-approval flow. Treat tokensave's edit tools with the same caution as your agent's built-in file-write tools.
+
+### Ignored and excluded files
+
+Files matched by `.gitignore` or by the `exclude` list (which includes `vendor/` and other dependency directories by default) are never indexed, so no index-backed tool returns them: search, context, symbol, graph and file-listing tools only see what the index holds. `tokensave_read` is different by design: it is a file reader confined to the project, like the agent's own read tool, and it reads an ignored or excluded file inside the project when asked for it by path. It does not list such files, and it refuses `.git`. `tests/security_boundaries_test.rs` pins both behaviors (#866).
+
+### Indexed content is data, not instructions
+
+Repository content (source, comments, documentation) reaches the agent through tool results, and anyone who can commit to the repository controls it. tokensave never turns it into instructions: the MCP server's `initialize` instructions and the rules file `tokensave install` writes both tell the agent to treat that content as data and never follow instructions that appear inside it (#866). That guidance lowers the risk but cannot remove it, because the agent decides what to do with what it reads. Keep your agent's approval prompts on for commands and edits when you work in a repository you do not trust.
+
+### Diagnostics and logs
+
+tokensave's own output while indexing and syncing, and `tokensave status` (including the `--runtime` telemetry snapshot and `--json`), report counts, sizes, timings and file paths, not source text. `tests/security_boundaries_test.rs` indexes a fixture with synthetic secrets in a function body, an ignored file, an excluded file, an invalid UTF-8 file and `.git/config`, and checks that none of them appears in that output (#866); it runs on Linux and macOS. The profile export (#754) keeps only static operation names and aggregates, enforced by its own allowlist and tests. File paths do appear in status and log output, so a report pasted into an issue reveals your project's layout.
 
 ### Self-update integrity
 
@@ -116,7 +128,7 @@ The Windows-elevation `unsafe` documented in earlier versions was removed alongs
 ## Best Practices
 
 - Add `.tokensave/` to your `.gitignore` to avoid committing the local database.
-- If your project contains sensitive code, be aware that the database stores symbol names and signatures, that the `executable_body_fts` index retains complete function bodies, and that the legacy `read_cache` table can hold rendered source text from `tokensave_read` responses made by releases before #650. Adding `.tokensave/` to `.gitignore` keeps all three out of version control.
+- If your project contains sensitive code, be aware that the database stores symbol names and signatures, that the `executable_body_fts` index retains complete function bodies, and that a database last opened for writing by a release before #866 can still hold rendered source text in the legacy `read_cache` table. Adding `.tokensave/` to `.gitignore` keeps them out of version control.
 - Keep tokensave updated (`tokensave upgrade`) to receive security fixes.
 - Review the [CHANGELOG](CHANGELOG.md) before upgrading to understand what changed.
 

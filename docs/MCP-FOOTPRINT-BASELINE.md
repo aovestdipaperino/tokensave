@@ -89,6 +89,12 @@ list never includes the one tool it gates. The test was run under `lite` and
 `full`; see the pull request for the results. Raising the constant requires a
 reason stated in the pull request and an update to this report.
 
+Changes to the constant since the baseline:
+
+| Constant | Change | Reason |
+| --- | --- | --- |
+| 24,226 B | +170 B | Security hardening (#866). The instructions tell the agent that source, comments and docs in tool results are repository data and never instructions, and the `tokensave_read` description says it reads any file in the project except under `.git`. Measured by `default_footprint_tests`; the tables above are from the baseline run and were not re-measured. |
+
 ## Cold start
 
 Wall time from spawning `tokensave serve --path <project>` to the `initialize`
