@@ -50,6 +50,13 @@ joining same-line edges, target names, and ambiguity evidence. Q0237 and Q0239
 now bind the leaf beside the full reference name, and Q0039 creates the column
 and index for a fresh database.
 
+Profiling coverage context (#885, 2026-11-13): the existing SQL and bindings in
+Q0204-Q0217, Q0253-Q0256, Q0296, and Q0308-Q0320 are unchanged,
+but their execution now goes through static `DbOp` labels in the profiled
+database API. The two quality-diff `BEGIN` statements use the profiled batch
+helper. Inventory IDs, occurrence counts, and construction contexts are
+unchanged.
+
 `?`, `?1`, and similar placeholders are bound by the caller. Rust format fields such as `{placeholders}`, `{where_clause}`, `{limit}`, and `{}` are preserved as templates; they are not executable SQL until constructed. Rust string escapes and backslash-newline continuations are decoded for readability. Dynamic SQL has potentially unlimited concrete instances, so the report includes its templates and complete builder functions in the construction appendix, including conditional clauses and parameter bindings. No SQL was executed to produce this report.
 
 ## Inventory summary

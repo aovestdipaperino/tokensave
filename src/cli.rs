@@ -774,8 +774,12 @@ pub enum ProfileAction {
         #[arg(short, long)]
         output: Option<std::path::PathBuf>,
     },
-    /// Delete all recorded profile data
-    Reset,
+    /// Delete all recorded profile data (asks first unless `--force`)
+    Reset {
+        /// Delete without asking; required when stdin is not a terminal
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]

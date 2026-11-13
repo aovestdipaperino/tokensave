@@ -112,6 +112,28 @@ op_enum! {
         GetFileDependents => "get_file_dependents",
         /// File-level dependency adjacency.
         BuildFileAdjacency => "build_file_adjacency",
+        /// Agent-memory decision insert.
+        RecordDecision => "record_decision",
+        /// Agent-memory decision recall.
+        SessionRecall => "session_recall",
+        /// Agent-memory code-area upsert.
+        RecordCodeArea => "record_code_area",
+        /// Agent-memory code-area listing.
+        ListCodeAreas => "list_code_areas",
+        /// Quality-diff read transaction setup.
+        QualityDiffSnapshot => "quality_diff_snapshot",
+        /// Edge-audit source queries.
+        EdgeAudit => "edge_audit",
+        /// Module import-graph query.
+        BuildModuleImportGraph => "build_module_import_graph",
+        /// Reading the current schema version.
+        ReadSchemaVersion => "read_schema_version",
+        /// Rails route/evidence reads.
+        RailsRoutes => "rails_routes",
+        /// Rails route-derived edge and metadata writes.
+        RebuildRailsRoutes => "rebuild_rails_routes",
+        /// Runtime-telemetry database samples (journal mode, sizes, counts).
+        RuntimeTelemetry => "runtime_telemetry",
     }
 }
 
