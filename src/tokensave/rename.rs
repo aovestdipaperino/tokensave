@@ -1577,7 +1577,15 @@ impl TokenSave {
         root_override: Option<&str>,
     ) -> Option<&'a FileText> {
         if !files.contains_key(path) {
-            let (abs, rel) = self.resolve_edit_target(path, root_override);
+            // A refused target blocks the whole rename: skipping the file
+            // would leave its references to the old name behind (#866).
+            let (abs, rel) = match self.resolve_edit_target(path, root_override).await {
+                Ok(target) => target,
+                Err(e) => {
+                    plan.blockers.push(e.to_string());
+                    return None;
+                }
+            };
             let source = match std::fs::read_to_string(&abs) {
                 Ok(source) => source,
                 Err(e) => {
@@ -1624,7 +1632,13 @@ impl TokenSave {
                 continue;
             }
             if !files.contains_key(&record.path) {
-                let (abs, _) = self.resolve_edit_target(&record.path, root_override);
+                let abs = match self.resolve_edit_target(&record.path, root_override).await {
+                    Ok((abs, _)) => abs,
+                    Err(e) => {
+                        plan.unscanned.push(format!("{} ({e})", record.path));
+                        continue;
+                    }
+                };
                 let source = match std::fs::read(&abs) {
                     Ok(bytes) => bytes,
                     Err(e) => {

@@ -308,6 +308,133 @@ pub(crate) fn resolve_new_file_target(
     Ok((project_root.join(rel), rel_str))
 }
 
+/// The canonical location an edit of `abs` would touch, with every symlink
+/// resolved.
+///
+/// A target that does not exist yet resolves through its nearest existing
+/// ancestor, so the containment check still applies and the caller's own read
+/// reports the missing file. A missing tail that contains `..` cannot be
+/// resolved without following it, so it is an error.
+fn canonicalize_edit_target(abs: &Path) -> std::io::Result<PathBuf> {
+    match abs.canonicalize() {
+        Ok(target) => return Ok(target),
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+        Err(_) => {}
+    }
+    let mut existing = abs;
+    let mut missing = Vec::new();
+    while std::fs::symlink_metadata(existing).is_err() {
+        let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no existing ancestor",
+            ));
+        };
+        missing.push(name);
+        existing = parent;
+    }
+    let mut target = existing.canonicalize()?;
+    for name in missing.iter().rev() {
+        target.push(name);
+    }
+    Ok(target)
+}
+
+/// Why the edit tools refuse `rel`, a path relative to the project root or a
+/// worktree root whose resolved form is `target`: it is inside `.git` or
+/// tokensave's state, which `tokensave_create_file` refuses too (#920).
+/// `None` when neither applies.
+fn protected_edit_path(rel: &Path, target: &Path, state_dir: &Path) -> Option<&'static str> {
+    use std::path::Component;
+    // Case-insensitive, as `.GIT` is `.git` on Windows and default macOS.
+    let named = |component: Component<'_>, name: &str| {
+        component
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(name)
+    };
+    if rel.components().any(|component| named(component, ".git")) {
+        return Some("it is inside .git");
+    }
+    let in_state_dir = rel
+        .components()
+        .next()
+        .is_some_and(|first| named(first, crate::config::TOKENSAVE_DIR))
+        || state_dir
+            .canonicalize()
+            .is_ok_and(|state| target.starts_with(state));
+    in_state_dir.then_some("it is inside tokensave's state")
+}
+
+/// Decides whether the edit tools may write `target`, a canonical path (see
+/// [`canonicalize_edit_target`]), for the project whose canonical root is
+/// `canonical_root` (#866).
+///
+/// Allowed: a path under the project root, or under one of `worktrees` (the
+/// other checkouts of the same git repository, listed only when the target is
+/// outside the root). Refused: anything else, and any path inside `.git` or
+/// tokensave's state.
+///
+/// Returns the target's root-relative, forward-slash path, the key the index
+/// stores it under, or `None` for a target in another worktree, which the
+/// index does not cover.
+pub(crate) fn check_edit_target(
+    target: &Path,
+    canonical_root: &Path,
+    state_dir: &Path,
+    worktrees: impl FnOnce() -> Vec<PathBuf>,
+) -> std::result::Result<Option<String>, EditRefusal> {
+    let (base, in_project) = if target.starts_with(canonical_root) {
+        (canonical_root.to_path_buf(), true)
+    } else {
+        let worktree = worktrees()
+            .iter()
+            .filter_map(|root| root.canonicalize().ok())
+            .find(|root| target.starts_with(root))
+            .ok_or(EditRefusal::Outside)?;
+        (worktree, false)
+    };
+    let rel = target
+        .strip_prefix(&base)
+        .map_err(|_| EditRefusal::Outside)?;
+    if let Some(reason) = protected_edit_path(rel, target, state_dir) {
+        return Err(EditRefusal::Protected(reason));
+    }
+    Ok(in_project.then(|| crate::tokensave::normalize_rel_path(&rel.to_string_lossy())))
+}
+
+/// Why [`check_edit_target`] refused a target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditRefusal {
+    /// Outside the project root and every worktree of its repository.
+    Outside,
+    /// Inside `.git` or tokensave's state; the reason names which.
+    Protected(&'static str),
+}
+
+impl EditRefusal {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Outside => {
+                "it resolves outside the project root and the repository's git worktrees"
+            }
+            Self::Protected(reason) => reason,
+        }
+    }
+}
+
+/// `abs` relative to `project_root` when it names a path below the root
+/// without any `..` or `.` component, before symlinks are resolved. `None`
+/// otherwise.
+fn lexical_project_rel<'a>(abs: &'a Path, project_root: &Path) -> Option<&'a Path> {
+    use std::path::Component;
+    let rel = abs.strip_prefix(project_root).ok()?;
+    let plain = rel
+        .components()
+        .all(|component| matches!(component, Component::Normal(_)));
+    (plain && !rel.as_os_str().is_empty()).then_some(rel)
+}
+
 /// The directory-pruning rule of the gitignore-aware scan walk.
 ///
 /// Shared by [`TokenSave::scan_files_with_gitignore`] and the opt-in
@@ -2968,32 +3095,35 @@ impl TokenSave {
     /// read/written, plus — when that location falls under the *indexed*
     /// project root — the root-relative path used as the DB reindex key.
     ///
-    /// Resolution rules (fixes the "wrong-tree write" bug where a caller
-    /// working in a git worktree got edits silently redirected into the
-    /// primary checkout):
+    /// Resolution rules:
     ///
-    /// - An **absolute** `path` is honored verbatim, even when it points
-    ///   outside the indexed project root. Passing an absolute path is
-    ///   itself the caller's explicit, deliberate statement of where the
-    ///   write should land, so no separate opt-out flag is needed. The
-    ///   previous behavior rejected out-of-root absolute paths with a "path
-    ///   is not within the project" error, which is safe but unhelpful for
-    ///   worktree callers; verbatim honoring plus the `resolved_path` echoed
-    ///   back in every result is the cheaper, equally-safe guard (caller can
-    ///   verify the target instead of being blocked from a legitimate one).
-    /// - A **relative** `path` resolves against `root_override` when given
-    ///   (a worktree caller's per-call retarget), falling back to the
-    ///   indexed project root otherwise — unchanged default behavior.
-    /// - The DB reindex key is only populated when the resolved absolute
-    ///   path is actually under the indexed project root; writes that land
-    ///   elsewhere (verbatim absolute path, or a `root_override` pointing
-    ///   outside the index) skip reindexing since the DB has no record of
-    ///   that tree.
-    pub(crate) fn resolve_edit_target(
+    /// - An **absolute** `path` is taken as given; a **relative** `path`
+    ///   resolves against `root_override` when given (a worktree caller's
+    ///   per-call retarget), falling back to the indexed project root. This
+    ///   keeps a caller working in a git worktree from having edits silently
+    ///   redirected into the primary checkout.
+    /// - The result, with symlinks and `..` resolved, must lie inside the
+    ///   indexed project root or inside another worktree of the same git
+    ///   repository, and not inside `.git` or tokensave's state (#866; see
+    ///   [`check_edit_target`]). Anything else is refused with an error, so
+    ///   an absolute path, a `..` escape, a symlink or a `project_root`
+    ///   override cannot point an edit at an arbitrary file.
+    /// - One exception keeps the edit scope equal to the index scope: the
+    ///   indexer follows a symlink inside the root into a tree outside it
+    ///   (#34), so a file the index tracks under a plain root-relative path
+    ///   (no `..`) stays editable through that link, unless it resolves
+    ///   into a `.git` directory.
+    /// - The DB reindex key is only populated when the target is under the
+    ///   indexed project root; writes to another worktree skip reindexing
+    ///   since the DB has no record of that tree.
+    ///
+    /// The check and the caller's later read and write are not atomic: a
+    /// symlink swapped in between them is followed.
+    pub(crate) async fn resolve_edit_target(
         &self,
         path: &str,
         root_override: Option<&str>,
-    ) -> (PathBuf, Option<String>) {
+    ) -> Result<(PathBuf, Option<String>)> {
         let p = Path::new(path);
         let abs_path = if p.is_absolute() {
             p.to_path_buf()
@@ -3003,11 +3133,52 @@ impl TokenSave {
                 None => self.project_root.join(p),
             }
         };
-        let rel_for_index = abs_path
-            .strip_prefix(&self.project_root)
-            .ok()
-            .map(|rel| rel.to_string_lossy().replace('\\', "/"));
-        (abs_path, rel_for_index)
+        let refuse = |reason: String| TokenSaveError::Config {
+            message: format!("refusing to edit {path}: {reason}"),
+        };
+        let canonical_root = self
+            .project_root
+            .canonicalize()
+            .map_err(|e| refuse(format!("cannot resolve the project root: {e}")))?;
+        let target = canonicalize_edit_target(&abs_path)
+            .map_err(|e| refuse(format!("cannot resolve {}: {e}", abs_path.display())))?;
+        let state_dir = crate::config::get_tokensave_dir(&self.project_root);
+        let refusal = match check_edit_target(&target, &canonical_root, &state_dir, || {
+            crate::worktree::repository_worktree_roots(&self.project_root)
+        }) {
+            Ok(rel_for_index) => return Ok((abs_path, rel_for_index)),
+            Err(refusal) => refusal,
+        };
+        if refusal == EditRefusal::Outside {
+            if let Some(key) = self.indexed_link_key(&abs_path, &target, &state_dir).await {
+                return Ok((abs_path, Some(key)));
+            }
+        }
+        Err(refuse(refusal.reason().to_string()))
+    }
+
+    /// The index key of `abs` when it names a file the index tracks through a
+    /// symlink inside the project root that leads outside it (#34), and
+    /// `target`, its resolved form, is not inside a `.git` directory. See
+    /// [`Self::resolve_edit_target`].
+    async fn indexed_link_key(
+        &self,
+        abs: &Path,
+        target: &Path,
+        state_dir: &Path,
+    ) -> Option<String> {
+        let rel = lexical_project_rel(abs, &self.project_root)?;
+        let into_git = target
+            .components()
+            .any(|component| component.as_os_str().eq_ignore_ascii_case(".git"));
+        if into_git || protected_edit_path(rel, target, state_dir).is_some() {
+            return None;
+        }
+        let key = crate::tokensave::normalize_rel_path(&rel.to_string_lossy());
+        match self.db.get_file(&key).await {
+            Ok(Some(_)) => Some(key),
+            _ => None,
+        }
     }
 
     async fn rebuild_rails_routes_best_effort(&self, ruby_changed: bool) {
@@ -3038,7 +3209,7 @@ impl TokenSave {
     /// #920).
     ///
     /// Stricter than [`Self::resolve_edit_target`]: the file must land inside
-    /// the indexed project root, so an absolute path outside it, a `..`
+    /// the indexed project root, so a path in another git worktree, a `..`
     /// component and a symlink leaving the root are refused (see
     /// [`resolve_new_file_target`]). An existing file is replaced only with
     /// `overwrite`; a directory or a symlink never is. Content is bounded by
@@ -3173,7 +3344,7 @@ impl TokenSave {
         new_str: &str,
         root_override: Option<&str>,
     ) -> Result<EditResult> {
-        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override);
+        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override).await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
 
@@ -3274,7 +3445,7 @@ impl TokenSave {
         replacements: &[(&str, &str)],
         root_override: Option<&str>,
     ) -> Result<MultiEditResult> {
-        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override);
+        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override).await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
 
@@ -3338,7 +3509,7 @@ impl TokenSave {
         before: bool,
         root_override: Option<&str>,
     ) -> Result<InsertResult> {
-        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override);
+        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override).await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
 
@@ -3475,7 +3646,9 @@ impl TokenSave {
         root_override: Option<&str>,
     ) -> Result<EditResult> {
         let target = resolve_symbol_for_edit(self, symbol).await?;
-        let (abs_path, rel_path) = self.resolve_edit_target(&target.file_path, root_override);
+        let (abs_path, rel_path) = self
+            .resolve_edit_target(&target.file_path, root_override)
+            .await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
         let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
@@ -3556,7 +3729,9 @@ impl TokenSave {
         root_override: Option<&str>,
     ) -> Result<EditResult> {
         let target = resolve_symbol_for_edit(self, symbol).await?;
-        let (abs_path, rel_path) = self.resolve_edit_target(&target.file_path, root_override);
+        let (abs_path, rel_path) = self
+            .resolve_edit_target(&target.file_path, root_override)
+            .await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
         let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
@@ -3669,7 +3844,7 @@ impl TokenSave {
         expected_digest: Option<&str>,
         root_override: Option<&str>,
     ) -> Result<LineReplaceResult> {
-        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override);
+        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override).await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
         let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
@@ -3760,7 +3935,9 @@ impl TokenSave {
             }
         };
         let target = resolve_symbol_for_edit(self, symbol).await?;
-        let (abs_path, rel_path) = self.resolve_edit_target(&target.file_path, root_override);
+        let (abs_path, rel_path) = self
+            .resolve_edit_target(&target.file_path, root_override)
+            .await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
         let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
@@ -3842,7 +4019,7 @@ impl TokenSave {
     ) -> Result<AstGrepResult> {
         use std::process::Command;
 
-        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override);
+        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override).await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
 
