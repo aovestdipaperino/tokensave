@@ -33,6 +33,10 @@ Three MCP tools enable cross-branch queries without switching your checkout:
 
 When the MCP server can't find a database for the current branch, it serves from the nearest ancestor branch's DB and includes a warning in every tool response suggesting you run `tokensave branch add`.
 
+A fallback index is read-only on the branch that borrows it. It belongs to the branch it was built from. `tokensave sync`, the git hooks and the automatic syncs of the MCP server do not write the working tree into it. Thus the index of a tracked branch never holds files from a different branch. `tokensave sync` stops with an error that names the branch. To get an index that follows the branch, run `tokensave branch add` or keep `auto_track` enabled.
+
+The same rule applies to a detached HEAD, which uses the index of the default branch. A project that tracks only its default branch is not affected. It has one index for all branches, and a sync updates that index on each branch.
+
 `tokensave_status` (and the CLI `tokensave status`) also explain *why* the branch is untracked. The status response gains `auto_track` (the effective setting) and `auto_track_hint`, which says whether automatic tracking is disabled, turned off for this run by `TOKENSAVE_AUTO_TRACK`, failed, or does not apply to a read-only view, and how to track the branch or enable automatic tracking. The hint itself is reported by the status tool only; the one exception is a tracking *failure*, whose reason is appended to the shared fallback warning so that MCP clients, which never see stderr, learn about it too.
 
 ## Default branch
