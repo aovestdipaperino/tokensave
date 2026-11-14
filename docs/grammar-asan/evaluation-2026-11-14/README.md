@@ -30,6 +30,9 @@ inputs unprocessed; a failed sanitizer run must not be read as clean.
   one input per process; exact commands are in
   [isolated reproductions](isolated-reproductions.json).
 
+Diagnostic text copies trim trailing whitespace and blank lines; the raw logs
+and their recorded hashes remain unchanged. The native audit is copied verbatim.
+
 Paths in native commands and stacks refer to the evaluation container, not
 portable cache locations. These files are evidence, not build inputs. Use
 [the runner guide](../../../scripts/grammar-asan/README.md) to repeat the run
