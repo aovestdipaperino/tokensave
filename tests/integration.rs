@@ -204,6 +204,7 @@ mod staleness_out_of_root_test;
 mod state_dir_test;
 mod strict_tree_mismatch_test;
 mod svelte_extraction_test;
+mod swift_calls_outside_functions_test;
 mod swift_extraction_test;
 mod swift_protocol_conformance_test;
 mod symbol_target_669_test;

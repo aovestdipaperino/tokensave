@@ -111,7 +111,16 @@ impl SwiftExtractor {
             "init_declaration" => Self::visit_init(state, node),
             "property_declaration" => Self::visit_property(state, node),
             "typealias_declaration" => Self::visit_typealias(state, node),
-            _ => {}
+            // Any other statement (top-level code in `main.swift`, a `deinit`
+            // or `subscript` in a type body) can hold call sites. Attribute
+            // them to the enclosing scope: the File node at top level, the
+            // type in a type body. `extract_call_sites` stops at nested
+            // declarations, so their bodies are not attributed here.
+            _ => {
+                if let Some(scope_id) = state.parent_node_id().map(str::to_string) {
+                    Self::extract_call_sites(state, node, &scope_id);
+                }
+            }
         }
     }
 
@@ -971,6 +980,10 @@ impl SwiftExtractor {
                 resolved_by: None,
             });
         }
+
+        // Calls in an initializer (`let x = Foo.make()`), a computed
+        // property body or an accessor belong to the property.
+        Self::extract_call_sites(state, node, &id);
 
         // Extract attribute annotations.
         Self::extract_annotations_from_modifiers(state, node, &id);
