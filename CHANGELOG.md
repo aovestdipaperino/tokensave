@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Internal
+
+- Add an opt-in direct-parser ASan audit with C/C++ calibration controls, native object instrumentation checks, bounded corpus runs and Linux findings (Refs #958).
+
 ### Security
 
 - **Edit tools no longer write outside the project and its git worktrees (Refs #866).** `tokensave_str_replace`, `tokensave_multi_str_replace`, `tokensave_insert_at`, `tokensave_replace_lines`, `tokensave_ast_grep_rewrite`, `tokensave_replace_symbol`, `tokensave_insert_at_symbol`, `tokensave_delete_symbol` and `tokensave_rename` used to honor any absolute path, `..` escape or `project_root` override, so text in an indexed file could steer an agent into editing a file anywhere the user can write. Each edit tool now resolves symlinks and `..`, then accepts the target only inside the project root or another worktree of the same git repository, as `git worktree list` run in the project root reports it. Paths inside `.git` and tokensave's state are refused too. A file the index tracks through an in-root symlink into another tree (#34) stays editable. A refused edit fails with a `refusing to edit` error, and a rename that would touch a refused file is blocked as a whole. An agent editing a worktree is unaffected. Editing a file in an unrelated directory now needs the agent's own file tools.

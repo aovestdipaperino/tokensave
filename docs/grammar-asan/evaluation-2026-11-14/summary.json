@@ -1,0 +1,1798 @@
+{
+  "evaluation_date": "2026-11-14",
+  "scope": "Direct raw-parser ASan audit; no production extraction or worker test",
+  "upstream_base": "b1c48fb05bb4ac64c714964d2ab3a57d092419f0",
+  "container_snapshot_revision": "1bbe90b6a6dec2ce0635631ee05e86ce99313b2b",
+  "snapshot_note": "Synthetic container commit includes the uncommitted harness; source hashes identify the evaluated files.",
+  "source_sha256": {
+    "Cargo.toml": "15cd36c60b0f3323621f8249c58b5245cfc1d5b7c1ed852a9e5e04f89b1df4b2",
+    "Cargo.lock": "86fd2ae25f121bd715e8f85236199755c7235c4386d1923296e37b655168b404",
+    "examples/grammar_asan.rs": "8a02d6582e06a7523c8986a16fe9a7626c0bf9b93578d16cbcffc167ef42b2a1",
+    "scripts/grammar-asan/run.py": "53220a00c645fe1814e503a64169eb8349d117ebdabf01cc450ab93b0021531d",
+    "scripts/grammar-asan/compiler.py": "9809323004437bfea24140c620d198e91e123b0467f8c426338773264bb96784",
+    "scripts/grammar-asan/control.c": "df31b84692f84c3e8f4e6999c3a5e478b9c787476c14d9d905574057d1db3c15"
+  },
+  "raw_report_sha256": "77b8e88a8c86920a85570aa8f1aa88cec8aca29293094cc7eb0e9196c553c9b9",
+  "native_audit_sha256": "e57444f44fb2ad06af01dfb3e9e53b8693c7846498c9c284547f0cfc56facde4",
+  "platform": "Linux-6.8.0-117-generic-aarch64-with-glibc2.36",
+  "target": "aarch64-unknown-linux-gnu",
+  "toolchain": "nightly-2026-11-11",
+  "asan_options": "detect_leaks=1:halt_on_error=1:abort_on_error=0",
+  "status": "incomplete",
+  "error": "grammar evaluation has failures or incomplete runs; inspect per-grammar logs",
+  "total_seconds": 1223.111,
+  "build_jobs": 1,
+  "native_compilations": 249,
+  "native_objects": 194,
+  "audited_linked_symbols": 284,
+  "steps": [
+    {
+      "name": "rust-version",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.348,
+      "command": [
+        "rustc",
+        "+nightly-2026-11-11",
+        "-Vv"
+      ]
+    },
+    {
+      "name": "clang-version",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.204,
+      "command": [
+        "clang",
+        "--version"
+      ]
+    },
+    {
+      "name": "clang-cxx-version",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.023,
+      "command": [
+        "clang++",
+        "--version"
+      ]
+    },
+    {
+      "name": "control-build-c",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.164,
+      "command": [
+        "clang",
+        "-DNDEBUG",
+        "-fsanitize=address",
+        "-fno-omit-frame-pointer",
+        "-g",
+        "-O1",
+        "/work-current/scripts/grammar-asan/control.c",
+        "-o",
+        "/results/evaluation-05/native-control-c"
+      ]
+    },
+    {
+      "name": "control-c",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 0.048,
+      "command": [
+        "/results/evaluation-05/native-control-c"
+      ]
+    },
+    {
+      "name": "negative-control-build-c",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.034,
+      "command": [
+        "clang",
+        "-O1",
+        "/work-current/scripts/grammar-asan/control.c",
+        "-o",
+        "/results/evaluation-05/negative-control-c"
+      ]
+    },
+    {
+      "name": "negative-control-c",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.0,
+      "command": [
+        "/results/evaluation-05/negative-control-c"
+      ]
+    },
+    {
+      "name": "control-build-cxx",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.101,
+      "command": [
+        "clang++",
+        "-x",
+        "c++",
+        "-DNDEBUG",
+        "-fsanitize=address",
+        "-fno-omit-frame-pointer",
+        "-g",
+        "-O1",
+        "/work-current/scripts/grammar-asan/control.c",
+        "-o",
+        "/results/evaluation-05/native-control-cxx"
+      ]
+    },
+    {
+      "name": "control-cxx",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 0.019,
+      "command": [
+        "/results/evaluation-05/native-control-cxx"
+      ]
+    },
+    {
+      "name": "negative-control-build-cxx",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.047,
+      "command": [
+        "clang++",
+        "-x",
+        "c++",
+        "-O1",
+        "/work-current/scripts/grammar-asan/control.c",
+        "-o",
+        "/results/evaluation-05/negative-control-cxx"
+      ]
+    },
+    {
+      "name": "negative-control-cxx",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.001,
+      "command": [
+        "/results/evaluation-05/negative-control-cxx"
+      ]
+    },
+    {
+      "name": "build",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 968.974,
+      "command": [
+        "cargo",
+        "+nightly-2026-11-11",
+        "build",
+        "--locked",
+        "--example",
+        "grammar_asan",
+        "--target",
+        "aarch64-unknown-linux-gnu",
+        "-Zbuild-std",
+        "--config",
+        "profile.dev.package.compiler_builtins.opt-level=1",
+        "--config",
+        "profile.test.package.compiler_builtins.opt-level=1",
+        "-vv"
+      ]
+    },
+    {
+      "name": "driver-tests",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 166.932,
+      "command": [
+        "cargo",
+        "+nightly-2026-11-11",
+        "test",
+        "--locked",
+        "--example",
+        "grammar_asan",
+        "--target",
+        "aarch64-unknown-linux-gnu",
+        "-Zbuild-std",
+        "--config",
+        "profile.dev.package.compiler_builtins.opt-level=1",
+        "--config",
+        "profile.test.package.compiler_builtins.opt-level=1"
+      ]
+    },
+    {
+      "name": "native-symbols",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.228
+    },
+    {
+      "name": "linked-symbols",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.219
+    },
+    {
+      "name": "grammars",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.122,
+      "command": [
+        "/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan",
+        "--list"
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "name": "0000-julia_module.jl",
+      "source": "tests/fixtures/julia_module.jl",
+      "bytes": 159,
+      "sha256": "aaef570a41db1dd1ac60bfe267e8b2751f7dc3e729e690a2221252f489362414"
+    },
+    {
+      "name": "0001-config.json",
+      "source": "tests/fixtures/legacy_perl/.tokensave/config.json",
+      "bytes": 232,
+      "sha256": "b76b5277c467221494fee2e72a172753c8c0f6c42e21a116496b7dd64ec9c6c0"
+    },
+    {
+      "name": "0002-Example.pm",
+      "source": "tests/fixtures/legacy_perl/lib/Example.pm",
+      "bytes": 46,
+      "sha256": "e1ec3f0bf8e7c043b980c058ae8d0a10f9baccc4d2de9d0e30a24c325217ccc2"
+    },
+    {
+      "name": "0003-basic.t",
+      "source": "tests/fixtures/legacy_perl/t/basic.t",
+      "bytes": 29,
+      "sha256": "87c7825167157bb93d7688bc9a53b36da832ebaaaeb7a4efda98aec3c55e6fc3"
+    },
+    {
+      "name": "0004-integration.t",
+      "source": "tests/fixtures/legacy_perl/t/integration.t",
+      "bytes": 35,
+      "sha256": "f43877cf43fbe105d59d4f23a84e8dc517aad7a2328a28f27611fa04288bec1e"
+    },
+    {
+      "name": "0005-markdown_yaml_frontmatter_hang.md",
+      "source": "tests/fixtures/markdown_yaml_frontmatter_hang.md",
+      "bytes": 4383,
+      "sha256": "6263ef67795c10e8a393df7dacc7373d254f3e6113bfd8c27aa68f3c541872d4"
+    },
+    {
+      "name": "0006-README.md",
+      "source": "tests/fixtures/okf/graphify/README.md",
+      "bytes": 1620,
+      "sha256": "57261413e7dfad22387773a9841eb7bbc0208a4797117e7bb237cf0ad245f881"
+    },
+    {
+      "name": "0007-.graphify_okf_manifest.json",
+      "source": "tests/fixtures/okf/graphify/bundle/.graphify_okf_manifest.json",
+      "bytes": 332,
+      "sha256": "804419340b8f4f3b6b2c5aad456b4df78282b67f46d2c9b2d2641437678c6a75"
+    },
+    {
+      "name": "0008-graph.json",
+      "source": "tests/fixtures/okf/graphify/bundle/.obsidian/graph.json",
+      "bytes": 281,
+      "sha256": "4c0edf7d204fdfc9ee948531c291821135b225812ee142cbf41c6270f8e15872"
+    },
+    {
+      "name": "0009-Model_Architecture.md",
+      "source": "tests/fixtures/okf/graphify/bundle/communities/Model_Architecture.md",
+      "bytes": 554,
+      "sha256": "0778b8c93fd70b937b6303c00f1df42c3757cd4d2389e682b2a1425cb468976f"
+    },
+    {
+      "name": "0010-Paper_Concepts.md",
+      "source": "tests/fixtures/okf/graphify/bundle/communities/Paper_Concepts.md",
+      "bytes": 540,
+      "sha256": "0dccafafbdde43add256fdb2e8f389b5c66f59b8015afdb698b85af9c4ebcd43"
+    },
+    {
+      "name": "0011-index.md",
+      "source": "tests/fixtures/okf/graphify/bundle/communities/index.md",
+      "bytes": 124,
+      "sha256": "b33c3bbe2e5ea296902e16c6b4d2363277d5da180832b996887be16acc71c908"
+    },
+    {
+      "name": "0012-LayerNorm.md",
+      "source": "tests/fixtures/okf/graphify/bundle/concepts/LayerNorm.md",
+      "bytes": 807,
+      "sha256": "4e0e98ad56dc6ea0d2a9edfdd6f17e2cffa6b105edf07722f1d46359c394a181"
+    },
+    {
+      "name": "0013-MultiHeadAttention.md",
+      "source": "tests/fixtures/okf/graphify/bundle/concepts/MultiHeadAttention.md",
+      "bytes": 841,
+      "sha256": "402a928ac7866315f879942545757a298c6ccae72c2de0eb8ad4093907135ec5"
+    },
+    {
+      "name": "0014-Transformer.md",
+      "source": "tests/fixtures/okf/graphify/bundle/concepts/Transformer.md",
+      "bytes": 823,
+      "sha256": "82ac92dfb64501b5d79a792499a9b944d54d140fde6fc26b1fc65b813de894ba"
+    },
+    {
+      "name": "0015-attention_mechanism.md",
+      "source": "tests/fixtures/okf/graphify/bundle/concepts/attention_mechanism.md",
+      "bytes": 846,
+      "sha256": "56607ec63ccc5717a5c166d825d5d5ea6449e7cea4d0d9e7c87161963ce670a1"
+    },
+    {
+      "name": "0016-index.md",
+      "source": "tests/fixtures/okf/graphify/bundle/concepts/index.md",
+      "bytes": 257,
+      "sha256": "56598a55894607b8576d50f5c2b5fc12bf18709212e36831d7c4b55dde5169ad"
+    },
+    {
+      "name": "0017-index.md",
+      "source": "tests/fixtures/okf/graphify/bundle/index.md",
+      "bytes": 154,
+      "sha256": "4ddc43e79ce72567799e478a6f8f698d0769d581b60566872350a0204c5d798d"
+    },
+    {
+      "name": "0018-regenerate.py",
+      "source": "tests/fixtures/okf/graphify/regenerate.py",
+      "bytes": 1249,
+      "sha256": "25dc501950e8f880dd7286b60a7067fb20eb34d04fbbbf6f6476b00e92df639b"
+    },
+    {
+      "name": "0019-LICENSE.txt",
+      "source": "tests/fixtures/okf/official/LICENSE.txt",
+      "bytes": 11359,
+      "sha256": "8c6db340475136df3c1201d458fa5755698eace76e510471ecc9d857d6083dac"
+    },
+    {
+      "name": "0020-README.md",
+      "source": "tests/fixtures/okf/official/README.md",
+      "bytes": 589,
+      "sha256": "81827e42ab56d8c5c7d7cf0aa56f8db76e17f8de8b01633131ee8120c1ace532"
+    },
+    {
+      "name": "0021-index.md",
+      "source": "tests/fixtures/okf/official/acme_retail/attesters/index.md",
+      "bytes": 136,
+      "sha256": "f0cfe692f3026cad2b123a4240eb762109ed205edd13d937ffa4446ca700af5e"
+    },
+    {
+      "name": "0022-sql_equality.py",
+      "source": "tests/fixtures/okf/official/acme_retail/attesters/sql_equality.py",
+      "bytes": 4496,
+      "sha256": "ef41f8497de5ea3a4415bebc9222424576bfb56e114b2eacab53256aa86c1955"
+    },
+    {
+      "name": "0023-gross-margin-period.md",
+      "source": "tests/fixtures/okf/official/acme_retail/computations/gross-margin-period.md",
+      "bytes": 3307,
+      "sha256": "5e96ae11835ad328ccc94d29ae4bc7cc40176758cbcbad63231d0461c1f8f0e7"
+    },
+    {
+      "name": "0024-index.md",
+      "source": "tests/fixtures/okf/official/acme_retail/computations/index.md",
+      "bytes": 232,
+      "sha256": "35a5fd6695d62d793d0f1ec430f11b82f6845e04e950a4df29e98a0771bdc609"
+    },
+    {
+      "name": "0025-revenue-ytd.md",
+      "source": "tests/fixtures/okf/official/acme_retail/computations/revenue-ytd.md",
+      "bytes": 2738,
+      "sha256": "d4584e831dff9f6a284b1f9116ca41a16cfc5c26ca377fa6faa46ea0e9b5c5e7"
+    },
+    {
+      "name": "0026-index.md",
+      "source": "tests/fixtures/okf/official/acme_retail/index.md",
+      "bytes": 536,
+      "sha256": "02e3207cffe6169ef056b0ff5f0e76311116f5ca7d8b0cc9ab4301dc01a398c1"
+    },
+    {
+      "name": "0027-log.md",
+      "source": "tests/fixtures/okf/official/acme_retail/log.md",
+      "bytes": 1070,
+      "sha256": "def518ddaa234f4a6533b9ca530622d39816d1a767de77ae489f43a538354005"
+    },
+    {
+      "name": "0028-gross-margin-legacy.md",
+      "source": "tests/fixtures/okf/official/acme_retail/metrics/gross-margin-legacy.md",
+      "bytes": 1561,
+      "sha256": "138e8f1391ebb7edb4d2911ca43eb358901e1e039922cd8800a83e3ba84db15c"
+    },
+    {
+      "name": "0029-gross-margin.md",
+      "source": "tests/fixtures/okf/official/acme_retail/metrics/gross-margin.md",
+      "bytes": 2656,
+      "sha256": "912be604fe7f681322b2ba6414b5791e9eb91b73aad1cae7afa666cedfe7d3c9"
+    },
+    {
+      "name": "0030-index.md",
+      "source": "tests/fixtures/okf/official/acme_retail/metrics/index.md",
+      "bytes": 304,
+      "sha256": "2c8c23b90486c642b21b5d427cb64275d5804e1634fbfd74a18084844f854959"
+    },
+    {
+      "name": "0031-revenue.md",
+      "source": "tests/fixtures/okf/official/acme_retail/metrics/revenue.md",
+      "bytes": 1866,
+      "sha256": "1b9c033d2c715fa8beecfa0f371fafa1e70f64f1eeeac2a873ef5389389376b2"
+    },
+    {
+      "name": "0032-index.md",
+      "source": "tests/fixtures/okf/official/acme_retail/policies/index.md",
+      "bytes": 249,
+      "sha256": "6b99c48d9f8d45e6ec4036cc30c66079f96f82579baee3067b72e52ced818949"
+    },
+    {
+      "name": "0033-margin-standard.md",
+      "source": "tests/fixtures/okf/official/acme_retail/policies/margin-standard.md",
+      "bytes": 2416,
+      "sha256": "fad81a5eabc286913a4d9436c2d36d31bcfb1494659c4110900ec2569bc6e42c"
+    },
+    {
+      "name": "0034-revenue-recognition.md",
+      "source": "tests/fixtures/okf/official/acme_retail/policies/revenue-recognition.md",
+      "bytes": 2340,
+      "sha256": "7660f72336e41c8af22a5910934d4903e502c9e2c1248409249e5dc5393107f3"
+    },
+    {
+      "name": "0035-index.md",
+      "source": "tests/fixtures/okf/official/acme_retail/skills/index.md",
+      "bytes": 128,
+      "sha256": "cd753f631320876fcca592823c32f55813419d00b4a14acf807d75aa8a0855fd"
+    },
+    {
+      "name": "0036-run-on-bq.md",
+      "source": "tests/fixtures/okf/official/acme_retail/skills/run-on-bq.md",
+      "bytes": 2592,
+      "sha256": "419ee7a107af4f14c407968f571ce2f387d6ff93756d39126b735e40818b159d"
+    },
+    {
+      "name": "0037-index.md",
+      "source": "tests/fixtures/okf/official/acme_retail/tables/index.md",
+      "bytes": 134,
+      "sha256": "f0a8344e59cc7e4e05addd2fc1793fb817369a1f043fd45b59935b08b1c7acb0"
+    },
+    {
+      "name": "0038-orders.md",
+      "source": "tests/fixtures/okf/official/acme_retail/tables/orders.md",
+      "bytes": 3111,
+      "sha256": "bfeecd29df0033a3fa441e42412ac7c5b64457e2b1b07c214318f91618058476"
+    },
+    {
+      "name": "0039-crypto_bitcoin.md",
+      "source": "tests/fixtures/okf/official/crypto_bitcoin/datasets/crypto_bitcoin.md",
+      "bytes": 3148,
+      "sha256": "32a5a8b38a374ad5e0d3070efefe45681a88a9c72cde461ad0bda1adba1cab22"
+    },
+    {
+      "name": "0040-index.md",
+      "source": "tests/fixtures/okf/official/crypto_bitcoin/datasets/index.md",
+      "bytes": 193,
+      "sha256": "4f066fd764750316a33d5ddf138b238b8f1fd79f1480a3c8b8cf864d8b00bb42"
+    },
+    {
+      "name": "0041-index.md",
+      "source": "tests/fixtures/okf/official/crypto_bitcoin/index.md",
+      "bytes": 551,
+      "sha256": "834b69b238d77263e1822035cfe4183dc78e904d18b1b82ed35555230a6bbaaf"
+    },
+    {
+      "name": "0042-index.md",
+      "source": "tests/fixtures/okf/official/crypto_bitcoin/references/index.md",
+      "bytes": 328,
+      "sha256": "2fc2085f9ada40f240214d0c365ac419b8aef37499f79cfe3f722ef602d56cc3"
+    },
+    {
+      "name": "0043-blocks___transactions.md",
+      "source": "tests/fixtures/okf/official/crypto_bitcoin/references/joins/blocks___transactions.md",
+      "bytes": 1010,
+      "sha256": "06afd3140a3a4e12cc17a6e26d6748ba3ddade2dcdc2388efb9942d91a5e5b6f"
+    },
+    {
+      "name": "0044-index.md",
+      "source": "tests/fixtures/okf/official/crypto_bitcoin/references/joins/index.md",
+      "bytes": 471,
+      "sha256": "368c94e0f22ef4142ab4772dba38ac259a168ae2728ab154476bc5c338bc2f3b"
+    },
+    {
+      "name": "0045-inputs___transactions.md",
+      "source": "tests/fixtures/okf/official/crypto_bitcoin/references/joins/inputs___transactions.md",
+      "bytes": 1058,
+      "sha256": "42be03d31ee10b7b8997aacf847d0ce1138741f78e8fa31d7ea88424d88350f6"
+    },
+    {
+      "name": "0046-outputs___transactions.md",
+      "source": "tests/fixtures/okf/official/crypto_bitcoin/references/joins/outputs___transactions.md",
+      "bytes": 987,
+      "sha256": "f5c9e5e9f0227c82f30b2e70fc5089201722490ca12f2b8c55930247fe852bff"
+    },
+    {
+      "name": "0047-duplicate_transactions.md",
+      "source": "tests/fixtures/okf/official/crypto_bitcoin/references/metrics/duplicate_transactions.md",
+      "bytes": 1326,
+      "sha256": "1365084f2855e7b9b49613a310cb562618182691493a60ddb430372401a8f1e4"
+    },
+    {
+      "name": "0048-index.md",
+      "source": "tests/fixtures/okf/official/crypto_bitcoin/references/metrics/index.md",
+      "bytes": 171,
+      "sha256": "c76ac125ba35316465c164b44d9597231fdff76d038044273b0c931b616f9229"
+    },
+    {
+      "name": "0049-blocks.md",
+      "source": "tests/fixtures/okf/official/crypto_bitcoin/tables/blocks.md",
+      "bytes": 4564,
+      "sha256": "5c56bf632c099cf41803aa3adf8b18efb93d5a2fcaef9f7d741349fc9eea744c"
+    },
+    {
+      "name": "0050-index.md",
+      "source": "tests/fixtures/okf/official/crypto_bitcoin/tables/index.md",
+      "bytes": 525,
+      "sha256": "3a82504f2790e9d2f0dc19738a4f7b323f2c2e0df4c7283e0bd418bdcb62f77e"
+    },
+    {
+      "name": "0051-inputs.md",
+      "source": "tests/fixtures/okf/official/crypto_bitcoin/tables/inputs.md",
+      "bytes": 4770,
+      "sha256": "9a0f2fc801451b78fdd264fba1d3c09f9439d3c8798b09aa2d9b9f974100461e"
+    },
+    {
+      "name": "0052-outputs.md",
+      "source": "tests/fixtures/okf/official/crypto_bitcoin/tables/outputs.md",
+      "bytes": 4570,
+      "sha256": "e1fde5e6d1f5b3a5ddce3a943a561446487761f1bc5eb6583fda4f3286d38cde"
+    },
+    {
+      "name": "0053-transactions.md",
+      "source": "tests/fixtures/okf/official/crypto_bitcoin/tables/transactions.md",
+      "bytes": 7417,
+      "sha256": "425040d0fec3278658eedf24b6afca6ea323fe9a2ebef0ab12a5f3b076855b69"
+    },
+    {
+      "name": "0054-ga4_obfuscated_sample_ecommerce.md",
+      "source": "tests/fixtures/okf/official/ga4/datasets/ga4_obfuscated_sample_ecommerce.md",
+      "bytes": 2910,
+      "sha256": "a8ae74f4040553b1571d72c96d26653e00702b1c85581176f3ae638a2c90191e"
+    },
+    {
+      "name": "0055-index.md",
+      "source": "tests/fixtures/okf/official/ga4/datasets/index.md",
+      "bytes": 214,
+      "sha256": "f1fd3a751ee6dc68a7691ab59c9150848ebdfc6a49a2353dba8e3b8fac09bf9f"
+    },
+    {
+      "name": "0056-index.md",
+      "source": "tests/fixtures/okf/official/ga4/index.md",
+      "bytes": 495,
+      "sha256": "d6eed548e707e356ea12bc4d8fb797a0669ba4f570eff8530f32bf56d8867f28"
+    },
+    {
+      "name": "0057-index.md",
+      "source": "tests/fixtures/okf/official/ga4/references/index.md",
+      "bytes": 220,
+      "sha256": "085edc6e6ea8998bb1ea0d63e36041196a78e89aa685b7315165f6a1c9ccf817"
+    },
+    {
+      "name": "0058-acquired_users.md",
+      "source": "tests/fixtures/okf/official/ga4/references/metrics/acquired_users.md",
+      "bytes": 1354,
+      "sha256": "ec75c1a4e685e22ef0a6a1e276d969d5580ddf06323a6c4d9143700b00f4892a"
+    },
+    {
+      "name": "0059-frequently_active_users.md",
+      "source": "tests/fixtures/okf/official/ga4/references/metrics/frequently_active_users.md",
+      "bytes": 1889,
+      "sha256": "7472d92619d892cf94cbe1c8ad9bce67bd555c11ec9f7fde7b886f914b907ab2"
+    },
+    {
+      "name": "0060-google_acquired_cohorts.md",
+      "source": "tests/fixtures/okf/official/ga4/references/metrics/google_acquired_cohorts.md",
+      "bytes": 1801,
+      "sha256": "8d4065d422184d05a97543c5fb8816b1a2d3e153760cdaf4bfac4559965636c6"
+    },
+    {
+      "name": "0061-highly_active_users.md",
+      "source": "tests/fixtures/okf/official/ga4/references/metrics/highly_active_users.md",
+      "bytes": 1847,
+      "sha256": "99dbb6bbad8a0899b0d98d26894714b358fbb66e3b86af65f23805d5b4e2d8ef"
+    },
+    {
+      "name": "0062-index.md",
+      "source": "tests/fixtures/okf/official/ga4/references/metrics/index.md",
+      "bytes": 1020,
+      "sha256": "63dbfb6af5f8fa271af1a9cca602b8294419785708070507d7bb6a7e62973c6f"
+    },
+    {
+      "name": "0063-n_day_active_users.md",
+      "source": "tests/fixtures/okf/official/ga4/references/metrics/n_day_active_users.md",
+      "bytes": 1584,
+      "sha256": "12bca0da054455b9e8c6ab6c0b9bee3bf3ed9dd69e9b5acc076c08cbb8c23f97"
+    },
+    {
+      "name": "0064-n_day_inactive_users.md",
+      "source": "tests/fixtures/okf/official/ga4/references/metrics/n_day_inactive_users.md",
+      "bytes": 2329,
+      "sha256": "75c9cbf2d6df62f5125e02f9554bb1eeae926e4b07d1e561f9e4d8f1d4d489c1"
+    },
+    {
+      "name": "0065-purchasers.md",
+      "source": "tests/fixtures/okf/official/ga4/references/metrics/purchasers.md",
+      "bytes": 1256,
+      "sha256": "9c7b14b95d950b43cfea890bed46e62cd7f64ce032f2f38e3df627603e927f85"
+    },
+    {
+      "name": "0066-events_.md",
+      "source": "tests/fixtures/okf/official/ga4/tables/events_.md",
+      "bytes": 10337,
+      "sha256": "d1e0be86c4674a2e6900fede2f3e218e35cfd7f6bc3a1705f732ac57bda74fcb"
+    },
+    {
+      "name": "0067-index.md",
+      "source": "tests/fixtures/okf/official/ga4/tables/index.md",
+      "bytes": 147,
+      "sha256": "d04cb9006bfa76d27393d025750eb0b825f75d4f046c408a425504c9f6133e06"
+    },
+    {
+      "name": "0068-index.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/datasets/index.md",
+      "bytes": 240,
+      "sha256": "6c781ffc123b03c772c7c7ec809b95427f74feb1098223ab7b8a184bcfead8fd"
+    },
+    {
+      "name": "0069-stackoverflow.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/datasets/stackoverflow.md",
+      "bytes": 3040,
+      "sha256": "652dc378975cd87e553aabf5669ef20edbad6c6c2f1120ee5543b57aca4e963c"
+    },
+    {
+      "name": "0070-index.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/index.md",
+      "bytes": 576,
+      "sha256": "2666a6f6481d5901d136e56fdaf74d2eeb5a100ed9fc9c3d5fc60bdd1c9a2181"
+    },
+    {
+      "name": "0071-content_licenses.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/references/content_licenses.md",
+      "bytes": 1492,
+      "sha256": "a4b12b2b3c9e5f87753d6c6917d6878aae6ec9e183ee84f9be30c2ff0436d048"
+    },
+    {
+      "name": "0072-index.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/references/index.md",
+      "bytes": 762,
+      "sha256": "3785a4d6110c18c1d0aeab513fd157156d27d4490581db5c0d0c1f4c702d0baa"
+    },
+    {
+      "name": "0073-comments__posts.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/references/joins/comments__posts.md",
+      "bytes": 1122,
+      "sha256": "c86d71aabc44807d419f61a363ca43a371f74ef53751e7cf77f4ed5da73927d7"
+    },
+    {
+      "name": "0074-index.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/references/joins/index.md",
+      "bytes": 447,
+      "sha256": "2c42b998c82eb1068f376968c6453c3d1f2c99c901b6a280e786b68a6d972648"
+    },
+    {
+      "name": "0075-post_links__posts.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/references/joins/post_links__posts.md",
+      "bytes": 1057,
+      "sha256": "845dfdc34faf5e0101901c90c405c38df574ddaeefdf4a42c8f9ce36be64bbf2"
+    },
+    {
+      "name": "0076-posts__votes.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/references/joins/posts__votes.md",
+      "bytes": 1036,
+      "sha256": "635086a603639d66a583232c5ba87a5a50a5bdce21c46eaf47380cb7ec960ca4"
+    },
+    {
+      "name": "0077-posts_answers__posts_questions.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/references/joins/posts_answers__posts_questions.md",
+      "bytes": 1168,
+      "sha256": "ce61d16247dae1a1d75ae0aaf45e2f1dd725d70bcbd4d7ea06a6eb9036a336ec"
+    },
+    {
+      "name": "0078-accepted_answer_rate.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/references/metrics/accepted_answer_rate.md",
+      "bytes": 1126,
+      "sha256": "3661b9eb86066ab1c84297341da5439726365a021103839e9b16d1bb23a18b58"
+    },
+    {
+      "name": "0079-bad_question_flag_ratio.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/references/metrics/bad_question_flag_ratio.md",
+      "bytes": 1234,
+      "sha256": "2f68ae9e83d3df5d110edf1df2139daa5dd4b75b133300e4b86d219be20da3b7"
+    },
+    {
+      "name": "0080-index.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/references/metrics/index.md",
+      "bytes": 276,
+      "sha256": "5e540de081637d5bada62b64a1d0631f42d19e00abd8d693bf3b5a17b5835732"
+    },
+    {
+      "name": "0081-post_types.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/references/post_types.md",
+      "bytes": 2512,
+      "sha256": "40bacc9531bdf53683efa36ed02c9440095461ba1b6f47dd8edb6acfa0e564c1"
+    },
+    {
+      "name": "0082-vote_types.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/references/vote_types.md",
+      "bytes": 2823,
+      "sha256": "9e7cf32d809c43069d6d56053bc9e3430e1ade1cff9e993768d6a9025700e0b7"
+    },
+    {
+      "name": "0083-badges.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/badges.md",
+      "bytes": 2427,
+      "sha256": "d45407c130fcdc5c2d3ed359baeee246dc9b479d920669911da0d35221917876"
+    },
+    {
+      "name": "0084-comments.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/comments.md",
+      "bytes": 2804,
+      "sha256": "946ac8c49c4c9310fc3cd6747aaae6b5c748056d0b293765844c8de9ea0a45ec"
+    },
+    {
+      "name": "0085-index.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/index.md",
+      "bytes": 2083,
+      "sha256": "381cc4fa2ea8ff7ba17d7e8529bddfb3c0b086541a5036d9649c9acada5ab6a9"
+    },
+    {
+      "name": "0086-post_history.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/post_history.md",
+      "bytes": 3271,
+      "sha256": "b065a009b4c94d09d5886310f7df6b946b8421674b02fe67bcdd94a156d25355"
+    },
+    {
+      "name": "0087-post_links.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/post_links.md",
+      "bytes": 2127,
+      "sha256": "b1fb23e0d2cc7e8a67bc47cf99ab3b8bc0f8679ee63c78189d72b0c2c56d403e"
+    },
+    {
+      "name": "0088-posts_answers.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/posts_answers.md",
+      "bytes": 3419,
+      "sha256": "f7815477c909e2fa232da6b1c78cee54128c545885743d19783b44144ce20dfa"
+    },
+    {
+      "name": "0089-posts_moderator_nomination.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/posts_moderator_nomination.md",
+      "bytes": 2167,
+      "sha256": "4ad34227093939a030e7198566abdf880d43b5d951c7fcc3540d0ab227dd6868"
+    },
+    {
+      "name": "0090-posts_orphaned_tag_wiki.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/posts_orphaned_tag_wiki.md",
+      "bytes": 2678,
+      "sha256": "529f27bc2b4eefbea215a7a430165e9b1ce0d028b37544ef6de100633261cf08"
+    },
+    {
+      "name": "0091-posts_privilege_wiki.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/posts_privilege_wiki.md",
+      "bytes": 2964,
+      "sha256": "31d1a5b0aeebe5ac74b9d57931d5dffe576eb71d461189a7ecb84fcd98222681"
+    },
+    {
+      "name": "0092-posts_questions.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/posts_questions.md",
+      "bytes": 4521,
+      "sha256": "6cdc47a540c341a82b3d80f643e2c06bdc87aada7097e8c5383d6ee0ae8ff46f"
+    },
+    {
+      "name": "0093-posts_tag_wiki.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/posts_tag_wiki.md",
+      "bytes": 2933,
+      "sha256": "67d787e2d99b5cb43afbcfe0afd191ec967f368f1342ede741e295180a8271f0"
+    },
+    {
+      "name": "0094-posts_tag_wiki_excerpt.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/posts_tag_wiki_excerpt.md",
+      "bytes": 2846,
+      "sha256": "d3720dd8cd21518dd20556e92d6c4ebfeb5673583085a91c9f1ec0b40a644cf2"
+    },
+    {
+      "name": "0095-posts_wiki_placeholder.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/posts_wiki_placeholder.md",
+      "bytes": 3059,
+      "sha256": "8a20e10b4da3cf33f4cc53863cf0289183c7f1add652778d1c0c9feabc6928a8"
+    },
+    {
+      "name": "0096-stackoverflow_posts.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/stackoverflow_posts.md",
+      "bytes": 3173,
+      "sha256": "8e4d32024966f2403dca801ac5b5fd1e41b21fde1c972b2088f3a69a92478662"
+    },
+    {
+      "name": "0097-tags.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/tags.md",
+      "bytes": 2278,
+      "sha256": "e5c0309cd1eebb0373b16bc9193b5c21102bbf60ed5d656753c63981df22082d"
+    },
+    {
+      "name": "0098-users.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/users.md",
+      "bytes": 2550,
+      "sha256": "cb81d762fe3a3a4468563536ccf5378090c35896a5378cb8a1f408e8958265fc"
+    },
+    {
+      "name": "0099-votes.md",
+      "source": "tests/fixtures/okf/official/stackoverflow/tables/votes.md",
+      "bytes": 3048,
+      "sha256": "4179725997f711d913ae8eee321dbc43d64e3dfc3fe71fbef98bf2e757041565"
+    },
+    {
+      "name": "0100-rails_routes.rb",
+      "source": "tests/fixtures/rails_routes.rb",
+      "bytes": 415,
+      "sha256": "33d504efbee0108f9bdade97fa276b718bcd5ca7d6948328c2ff256c1bb7b43e"
+    },
+    {
+      "name": "0101-rails_routes_comments.rb",
+      "source": "tests/fixtures/rails_routes_comments.rb",
+      "bytes": 388,
+      "sha256": "ef04b7789892d04c766586707e7311e93a19ab3108a6ffd4417206be8c840386"
+    },
+    {
+      "name": "0102-rails_routes_dsl.rb",
+      "source": "tests/fixtures/rails_routes_dsl.rb",
+      "bytes": 1363,
+      "sha256": "be9436cde25d8a0c9cdf3c8f5f07870f98fa5f1b08b39bae2eb89ab0ddb9a95d"
+    },
+    {
+      "name": "0103-ruby_receiver_calls.rb",
+      "source": "tests/fixtures/ruby_receiver_calls.rb",
+      "bytes": 1078,
+      "sha256": "082b34443e6af5d94ebcb3813a9a5e64316e5a7e08545fac9bdc57844fea729a"
+    },
+    {
+      "name": "0104-sample-flake.nix",
+      "source": "tests/fixtures/sample-flake.nix",
+      "bytes": 1265,
+      "sha256": "e2ebc953abb9607c3e2b5c6e69bf2b6b1ee293b8cb0e74958172bfb350d69787"
+    },
+    {
+      "name": "0105-sample.as",
+      "source": "tests/fixtures/sample.as",
+      "bytes": 1092,
+      "sha256": "5025a3c4b248f595bffe15195c8c04d9594b2547479b8efc7a64ee4351210b99"
+    },
+    {
+      "name": "0106-sample.astro",
+      "source": "tests/fixtures/sample.astro",
+      "bytes": 578,
+      "sha256": "a3dc36fdd885918f1b52ddc49e61e51594e33a3a917d690a8dc4ac11805169b0"
+    },
+    {
+      "name": "0107-sample.bas",
+      "source": "tests/fixtures/sample.bas",
+      "bytes": 461,
+      "sha256": "fa8e4a22a19ec783560b0351c386b399488fc2c271b74a5fc761f75a2e7aa09c"
+    },
+    {
+      "name": "0108-sample.bat",
+      "source": "tests/fixtures/sample.bat",
+      "bytes": 1007,
+      "sha256": "ec38a30b7ffb2afb3ce98f25abde01146078565e3dc6bda3722a9fb38d582b51"
+    },
+    {
+      "name": "0109-sample.bi",
+      "source": "tests/fixtures/sample.bi",
+      "bytes": 922,
+      "sha256": "06ca5bfee217b6fc6eeb6dcd831a46703d87aacf30909e0ac053f135ecd5c4b7"
+    },
+    {
+      "name": "0110-sample.c",
+      "source": "tests/fixtures/sample.c",
+      "bytes": 1999,
+      "sha256": "b882ed6450403f99e706eae76a06bb992a4c073525898660010517c86ac344fa"
+    },
+    {
+      "name": "0111-sample.cob",
+      "source": "tests/fixtures/sample.cob",
+      "bytes": 2186,
+      "sha256": "c56e9bbdcf0b01f368e64a446c628e3c9814802e0af41d602bb11263a276b3bb"
+    },
+    {
+      "name": "0112-sample.cpp",
+      "source": "tests/fixtures/sample.cpp",
+      "bytes": 3030,
+      "sha256": "f1fefa75b17b9ec5bfa1e8fe59d7b111741ae264da9de649d015a897f2d48409"
+    },
+    {
+      "name": "0113-sample.cs",
+      "source": "tests/fixtures/sample.cs",
+      "bytes": 3613,
+      "sha256": "dbedef84e4d1eadda8a60b40c6ca21bfba61e73dee7ceca46f21f9d03e572f4d"
+    },
+    {
+      "name": "0114-sample.cu",
+      "source": "tests/fixtures/sample.cu",
+      "bytes": 898,
+      "sha256": "fc3301c139cb72391b0551cfd9f66fea617cb774a38aae9ea3f12fef45f1dc33"
+    },
+    {
+      "name": "0115-sample.dart",
+      "source": "tests/fixtures/sample.dart",
+      "bytes": 2273,
+      "sha256": "d175d4c898760614a27c61a89543278d7fcfc3e3ae847bc62e63edeb3c264a40"
+    },
+    {
+      "name": "0116-sample.dockerfile",
+      "source": "tests/fixtures/sample.dockerfile",
+      "bytes": 754,
+      "sha256": "ce03208a1aab2f4a82fef7d8f2dbe13b9522641912535ef271bf60f9df90003d"
+    },
+    {
+      "name": "0117-sample.f90",
+      "source": "tests/fixtures/sample.f90",
+      "bytes": 2242,
+      "sha256": "54ce1f081be9bc57eb1dcaf2fad694ce51a2a0587c2d707798fbc0876cfe69e4"
+    },
+    {
+      "name": "0118-sample.fst",
+      "source": "tests/fixtures/sample.fst",
+      "bytes": 3885,
+      "sha256": "198aa1ea0ac741b0e1697b3791f80d51a7e5f8ba5eea27db9dd2f01901a296a3"
+    },
+    {
+      "name": "0119-sample.gdshader",
+      "source": "tests/fixtures/sample.gdshader",
+      "bytes": 596,
+      "sha256": "a9ba48792c87c3e28f1efa0169f00bb4334743f760084fe75ea87f02d71366bc"
+    },
+    {
+      "name": "0120-sample.glsl",
+      "source": "tests/fixtures/sample.glsl",
+      "bytes": 2907,
+      "sha256": "8f98b64095283fd16f5585a6f3eeac25b77e8d9de1b773f1756e971964bd688e"
+    },
+    {
+      "name": "0121-sample.gw",
+      "source": "tests/fixtures/sample.gw",
+      "bytes": 756,
+      "sha256": "0692eacfe26267b64c404c202026a73d205a394d1def4db5604009a41700cda0"
+    },
+    {
+      "name": "0122-sample.h",
+      "source": "tests/fixtures/sample.h",
+      "bytes": 621,
+      "sha256": "ead68933717c9751a5245ba05150c5070fa1f46e61dcae3e847e0a7cd978565b"
+    },
+    {
+      "name": "0123-sample.html.erb",
+      "source": "tests/fixtures/sample.html.erb",
+      "bytes": 262,
+      "sha256": "211c3fbc0f9cdb533dec4255089cc12c03e5a2e24176169f805cece6ee41deaa"
+    },
+    {
+      "name": "0124-sample.html.slim",
+      "source": "tests/fixtures/sample.html.slim",
+      "bytes": 213,
+      "sha256": "29e22fd97dd714c36c94b193a9c63e3fc9d78b2a9db7cf16d9c5402a200520a4"
+    },
+    {
+      "name": "0125-sample.js",
+      "source": "tests/fixtures/sample.js",
+      "bytes": 743,
+      "sha256": "e1cddd8121c9588282cff7103aad5368947a3bc5546232c7da2927b66e5b6c2b"
+    },
+    {
+      "name": "0126-sample.kt",
+      "source": "tests/fixtures/sample.kt",
+      "bytes": 2450,
+      "sha256": "6b0fc6bcf45275dae7606fd196aa42876982492c36af2caea6ed49e9d8ed1181"
+    },
+    {
+      "name": "0127-sample.lua",
+      "source": "tests/fixtures/sample.lua",
+      "bytes": 1860,
+      "sha256": "474fb7e9efc81fb45135913a092b73414543cd5e859ea6359e5d6058dd5744cb"
+    },
+    {
+      "name": "0128-sample.m",
+      "source": "tests/fixtures/sample.m",
+      "bytes": 2312,
+      "sha256": "f68bc3294bd1df8301ae398c0089e5a0e5a024ea588948938c215ee0817d5ef1"
+    },
+    {
+      "name": "0129-sample.mjs",
+      "source": "tests/fixtures/sample.mjs",
+      "bytes": 260,
+      "sha256": "8cc6637aacd59dd1a7a74eaab11695ae287213ebab795e220aebd3135fe9bbac"
+    },
+    {
+      "name": "0130-sample.nix",
+      "source": "tests/fixtures/sample.nix",
+      "bytes": 1260,
+      "sha256": "19ca9b2d3ba3ff2b03a9d94befc5f0bb3de5bb5a648a1040c5b2efff076fd3b2"
+    },
+    {
+      "name": "0131-sample.pas",
+      "source": "tests/fixtures/sample.pas",
+      "bytes": 2751,
+      "sha256": "091919c1753b486e2755e5e0c64ee5f508a8452f9a6700bf1c062659fc822b21"
+    },
+    {
+      "name": "0132-sample.php",
+      "source": "tests/fixtures/sample.php",
+      "bytes": 2584,
+      "sha256": "41da90164596bb07aee0ebac6bb40d2f8f20e0557e0106bb04653ddf7cfd582d"
+    },
+    {
+      "name": "0133-sample.pl",
+      "source": "tests/fixtures/sample.pl",
+      "bytes": 1769,
+      "sha256": "96aedfa592382b48488f9f72028f6eb0f9ded92bb46598ff77a8bee5d8db62f0"
+    },
+    {
+      "name": "0134-sample.proto",
+      "source": "tests/fixtures/sample.proto",
+      "bytes": 1427,
+      "sha256": "bfaa186ad3a00ee6356a7ab0cf1c98bf798d0569352db7d585814e50a13ad495"
+    },
+    {
+      "name": "0135-sample.ps1",
+      "source": "tests/fixtures/sample.ps1",
+      "bytes": 1767,
+      "sha256": "80d57bb7ae753a3a508721d150c0fa10628c4057ea05225fdf73265380c51b9d"
+    },
+    {
+      "name": "0136-sample.py",
+      "source": "tests/fixtures/sample.py",
+      "bytes": 2532,
+      "sha256": "16da1b59d9b0715a74c97761128793015b3bdda62d7fe8493e54dd61728f51e2"
+    },
+    {
+      "name": "0137-sample.qb",
+      "source": "tests/fixtures/sample.qb",
+      "bytes": 1681,
+      "sha256": "df6311be4b3970211222524c26f8ebcc4960995308131a1b2f6edee4c6c73cb8"
+    },
+    {
+      "name": "0138-sample.rake",
+      "source": "tests/fixtures/sample.rake",
+      "bytes": 236,
+      "sha256": "c5e279a5b00f3fe170e94e0938d9ac507c019d7dc04bd4b015425d9f91260aa6"
+    },
+    {
+      "name": "0139-sample.rb",
+      "source": "tests/fixtures/sample.rb",
+      "bytes": 1763,
+      "sha256": "06270e39c23fd35dd59699dabdd03046699369a8ba5df41846b0a5ebefebb075"
+    },
+    {
+      "name": "0140-sample.sh",
+      "source": "tests/fixtures/sample.sh",
+      "bytes": 1219,
+      "sha256": "df22473ea81556c5c620418bd7477a1720856144da576bb55f01a6dc5309a2fd"
+    },
+    {
+      "name": "0141-sample.sql",
+      "source": "tests/fixtures/sample.sql",
+      "bytes": 558,
+      "sha256": "38db63aa1afffe5b11ac82e1c10d0a1cba9c48cd9ec52fdfb3f0d704cb0722ae"
+    },
+    {
+      "name": "0142-sample.svelte",
+      "source": "tests/fixtures/sample.svelte",
+      "bytes": 614,
+      "sha256": "a005dcb07d045a84e5c483882666cee0640b4402204dbdfc31bc11fc47051531"
+    },
+    {
+      "name": "0143-sample.swift",
+      "source": "tests/fixtures/sample.swift",
+      "bytes": 1603,
+      "sha256": "9af88641eb37b20c0f1c0faa926620d565afd71bdef3b2f348735fb39c18d089"
+    },
+    {
+      "name": "0144-sample.ts",
+      "source": "tests/fixtures/sample.ts",
+      "bytes": 1847,
+      "sha256": "b9297eeca2d282cb4916c9c551c86080cc2c11b45496d48d474cebe84668bbb9"
+    },
+    {
+      "name": "0145-sample.vb",
+      "source": "tests/fixtures/sample.vb",
+      "bytes": 1974,
+      "sha256": "ffff2d48b3ff1af77a77245105e8c4440dcf960f73c37883faee8722b1cc77d0"
+    },
+    {
+      "name": "0146-sample.zig",
+      "source": "tests/fixtures/sample.zig",
+      "bytes": 1885,
+      "sha256": "ecbeee51ca1bfe38429e97a0ac2e91a813d90d7ea81f33e1be404e973ed048ae"
+    },
+    {
+      "name": "0147-sample_layout.html.slim",
+      "source": "tests/fixtures/sample_layout.html.slim",
+      "bytes": 216,
+      "sha256": "d716872e143deb8a4493c070044819e621a88e2ac41a94889b28152325c8a6dc"
+    },
+    {
+      "name": "seed-empty",
+      "source": "generated",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "seed-delimiters",
+      "source": "generated",
+      "bytes": 576,
+      "sha256": "8eebc70de3c651604440024bf48c3518f80f85ead4c84d52988a869790198152"
+    },
+    {
+      "name": "seed-binary",
+      "source": "generated",
+      "bytes": 256,
+      "sha256": "40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880"
+    },
+    {
+      "name": "seed-nul",
+      "source": "generated",
+      "bytes": 256,
+      "sha256": "5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1"
+    },
+    {
+      "name": "seed-unicode",
+      "source": "generated",
+      "bytes": 1280,
+      "sha256": "3de7ca7a9b62827c6dc8457ef3374a378ad29706cf5c87698566163c74ed2c52"
+    },
+    {
+      "name": "seed-nested",
+      "source": "generated",
+      "bytes": 512,
+      "sha256": "dee37499d860518a146119cea501e72ac77ee958c93bfa4881a23dd1a27d02d7"
+    },
+    {
+      "name": "seed-long-string",
+      "source": "generated",
+      "bytes": 16386,
+      "sha256": "f04077c41b0f2c5af1a855e7fddbd3c3fc20e67f44bc355752235cc687243aac"
+    }
+  ],
+  "runs": [
+    {
+      "grammar": "actionscript",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.349,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "940e122bfb252e669267472e55c148fb0d516e41416745ac2bf17ba975f848bb"
+    },
+    {
+      "grammar": "awk",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.279,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "3289d2ffede34fe13638324ea25c1cddc3d4e5ff45f72cd2c14f1f10af4b733b"
+    },
+    {
+      "grammar": "bash",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.189,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "00eeb7915f5a63b9b0fc3b54d44183168959241d3b5842aa4ec0e4ed4090fcbe"
+    },
+    {
+      "grammar": "batch",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.131,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "03ca032460cd7de98053bdeb2fe53fff339a864f80c982af5839eae67bc40339"
+    },
+    {
+      "grammar": "c",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.451,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "801c5d333e7b689e440bf1027b5b0eef6d6c9351b0012de606398f8a8c327a09"
+    },
+    {
+      "grammar": "c_sharp",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.772,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "e48b537ea27e36350650002d13b46c9e712edc7e2f0b49de994b6f41b53728bc"
+    },
+    {
+      "grammar": "clojure",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.145,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "0c954b933a5da000ca6d4808db4dee6ffaf55974b4e935b441e3f3971da34e9c"
+    },
+    {
+      "grammar": "cobol",
+      "status": "timed_out",
+      "returncode": -9,
+      "seconds": 60.004,
+      "inputs_started": 1,
+      "inputs_completed": 0,
+      "diagnostics": [],
+      "raw_log_sha256": "4a013c428d7f1dab76b06f8c5e04f4d707514b77e5d7b2c3d877ace2dff6a40e"
+    },
+    {
+      "grammar": "commonlisp",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.146,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "d17810630e8b851366e036da4c898ffc32883cce1cae201218677fdbadb7b98b"
+    },
+    {
+      "grammar": "cpp",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.56,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "fff0b8c01b92b9ac2abd3a92af18c94af85a4d82c4cc7c32ea77a65d29c7b52b"
+    },
+    {
+      "grammar": "css",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.162,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "169261d69e51f3935f8c5fe131892faea9c128f9bf6e881a8d9f3ef08257708c"
+    },
+    {
+      "grammar": "cuda",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.558,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "cd56ca973c1738871d736483172027160a14506d36d9dacdd7874e4231257531"
+    },
+    {
+      "grammar": "dart",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.637,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "1f92e7190c50e7c4ac020c01bcfdc1e621ab02d59a174e5e89f3ec0b040cbbd3"
+    },
+    {
+      "grammar": "dockerfile",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.133,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "f54aacc1b02de95455a264f7e4f353bc34d7276b22c6c56e968acc7e979a132b"
+    },
+    {
+      "grammar": "elixir",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.553,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "1cbd4ae8b1ca2fec42620cd93d4a3768b9d8cbbe36fe736276fa402a5b25556e"
+    },
+    {
+      "grammar": "erlang",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.287,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "5f0cbd31f8208d41e5fd0cfc6ce5fb129c431af43e2aa37e15292361c9ead9d8"
+    },
+    {
+      "grammar": "flatbuffers",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.118,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "bc4db053c9714e8974218471689af606dca2a87ce457ba6a40205824d0bafe87"
+    },
+    {
+      "grammar": "fortran",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.555,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "af59472fc64e1c37b585fdf3298120834af16d8fddd20eccd618a6c3d4570b98"
+    },
+    {
+      "grammar": "fsharp",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.711,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "edebcec84d548b7776904e66f5ca3def76cb619c7d79e6b6ed80a7462706ac2f"
+    },
+    {
+      "grammar": "gdscript",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.318,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "54f49b11e96f218fded01c0deec2d242fe06166cd2927c048c8457a42437e5af"
+    },
+    {
+      "grammar": "glsl",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.477,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "9303f24254b99dfc2b9b599066df80394aafc989d0009e90be115f55f54aed02"
+    },
+    {
+      "grammar": "go",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.456,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "9ef94b9bcec4db1cfac2852acbcaf9b4ea1355c543d687cbda528866e84596cc"
+    },
+    {
+      "grammar": "groovy",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.23,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "70d95cc5ab30badbbef409bc64114cf5ae97a3bbc96d8151dffed5b6280ecd97"
+    },
+    {
+      "grammar": "gwbasic",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.213,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "e6ca0e59a89157ecb1720358a2ba02b1aa6f7449327f1e746f0f9e0b55a23951"
+    },
+    {
+      "grammar": "haskell",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.353,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "4c420a068dd71e61dd02cbd2ac9cdb38346e78e72962473444aa0cef319e6e18"
+    },
+    {
+      "grammar": "hcl",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.404,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "f0782f8d0db3f42eb8144613958fc4ace2b30d7f60a662fcb5f26a05f3d5b24e"
+    },
+    {
+      "grammar": "hlsl",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.578,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "1afe142b438deb8a999f36af8802d92466f4006f0f46faa4a1ee9538d9cd2a0a"
+    },
+    {
+      "grammar": "html",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.045,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "7808bebc399bd2edf4f46a4df65cb33bde403074beb155b107dce6abf5212f64"
+    },
+    {
+      "grammar": "java",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.352,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "cfd32e7ce9b6770b62530b88239443119cce997122c593c6fd26051977c064da"
+    },
+    {
+      "grammar": "javascript",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.513,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "6015020a1f15ed6c6ddccc157e24e776027f3240c6e3028dc1f3d5f657aa1bcb"
+    },
+    {
+      "grammar": "julia",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.742,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "a26eff6b10b0000ab1f3cb42f91e56126ac6f2fa4fe19d78f55a064443d3f5f6"
+    },
+    {
+      "grammar": "kotlin",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.369,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "c0c867dccf19d10629dc86dcadaf4b1f2888ec1a24c4b2add2ceb76bb1124253"
+    },
+    {
+      "grammar": "lean",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.224,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "e590d2e5f5594ef5bfa1fdb14f06b856cd201e17360a1c4b7c16238647eb298c"
+    },
+    {
+      "grammar": "lua",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.64,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "cc5a1d82c070258533bbefc5c3adb6e4cacf6647c0ff10b506f612dd4c33c879"
+    },
+    {
+      "grammar": "markdown",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.168,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "297648bf5a31e7bd939daca57759ffff368a6e467b0f598acbf1e2a81d797298"
+    },
+    {
+      "grammar": "msbasic2",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.25,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "f16f4d8eae27cc2f4b4affdbb9ecbeee788ab20ad217c00587bf7409c55f1cc4"
+    },
+    {
+      "grammar": "nix",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.255,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "97f6aab59a9ccd7cf476274701cb08d8a5995a19fab6c3aecac1895d5daf2609"
+    },
+    {
+      "grammar": "objc",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.542,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "497d53e5ae6fe0872fb965c880b670975202ac19be6bb48e7e03a08e012c016d"
+    },
+    {
+      "grammar": "ocaml",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.422,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "dc3d7ebcd3bdd18f82de619067027c144455e1f2adeefdbd68c57d41ce2488a6"
+    },
+    {
+      "grammar": "pascal",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.172,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "a8800528f0f6f45a3d08c9991b211827cf229ef0a0d130016e2aa363db99f194"
+    },
+    {
+      "grammar": "perl",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 0.674,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [
+        "==10619==ERROR: LeakSanitizer: detected memory leaks",
+        "SUMMARY: AddressSanitizer: 9472 byte(s) leaked in 467 allocation(s)."
+      ],
+      "raw_log_sha256": "560996b7206392d5b9b6f6ebe3dd9c23f28eaa0a297930ec3d98ba1bd7be5948"
+    },
+    {
+      "grammar": "php",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.041,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "843b948d617becfd973d799fbd0954dc7a81fa183919cdbb877272ea5107e990"
+    },
+    {
+      "grammar": "powershell",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.353,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "784bed022951d7e24355f29ea8bb2703b4f330da36c9e4e67ea19b9f18813c28"
+    },
+    {
+      "grammar": "protobuf",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.111,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "d60d9ec994b932e16b815e1fef95e05e532fb1964910478a3b72da21b78569c1"
+    },
+    {
+      "grammar": "python",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.448,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "b0c8281212db0c1f3cd27c620d07aeb17363a6877aced20e7e6fb92ba802584f"
+    },
+    {
+      "grammar": "qbasic",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.347,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "05c24537d1cc8305c376c87714dcc2d29c8856ace879b2c099d7c7292d2b4ca3"
+    },
+    {
+      "grammar": "quint",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.089,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "1c24c23169915f18876fc08d20efcb2ae8e168194dd960cc6e9a567aa9c402b7"
+    },
+    {
+      "grammar": "r",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.177,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "395dc3f5ad0c81199394df169ccf7bd54426fb7da535979734b1dafd7c9a3296"
+    },
+    {
+      "grammar": "ruby",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.544,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "2b8a7e56410b8d032aa0b5d77d5789376eca6ec11be4bb9e3ea38462d94f2ada"
+    },
+    {
+      "grammar": "rust",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.643,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "143572ccef21baf6764c02c7fd4fd6a1ae670dbefe5d15c425737a0f4061761e"
+    },
+    {
+      "grammar": "scala",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.379,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "3b69729febbb486452aa636bcb9ec070e878f8518aa6f212d2292d42b32ff267"
+    },
+    {
+      "grammar": "scheme",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.131,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "332264097faae8d430c520b37fa112592bbfc8d429b5e46741f96fd2473e8573"
+    },
+    {
+      "grammar": "sql",
+      "status": "failed",
+      "returncode": 1,
+      "seconds": 0.375,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [
+        "==10656==ERROR: LeakSanitizer: detected memory leaks",
+        "SUMMARY: AddressSanitizer: 780 byte(s) leaked in 156 allocation(s)."
+      ],
+      "raw_log_sha256": "bbeb0e371eb840e15df5173239892787b163cbe4cf0b034b04a542217bbb69f0"
+    },
+    {
+      "grammar": "swift",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.533,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "c19dd44bccdb4b65fdbfd3498b9d7de059af7b3e1582575d353aa6f1a99a91e2"
+    },
+    {
+      "grammar": "systemverilog",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 1.458,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "38f031069721ecabf74205c2793a8d9426217485be9d2a96cbca948719a01a74"
+    },
+    {
+      "grammar": "toml",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.258,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "bd1c861744cd4f5205a7dec9b3fb1d1a987745439f1787a5c4768759039fd7e4"
+    },
+    {
+      "grammar": "tsx",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.55,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "2d49dbde8eada3f4556b839ca55613878d796d82b3ef61e92bc8d5fe11ad7435"
+    },
+    {
+      "grammar": "typescript",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.556,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "80f3195626023eb4d6fec74ffb1151c8c8e4c533d7e5462a83edf5c2a484bd06"
+    },
+    {
+      "grammar": "vbnet",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.345,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "d7f1f2e64f7975be17bc5c5522b8e735eebcffa561a67ed84bbae0a089a05918"
+    },
+    {
+      "grammar": "vhdl",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 1.192,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "31d8d3b66ec607664e87dd2f707bc65b213339763d283457262725f1587c0146"
+    },
+    {
+      "grammar": "wgsl",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.437,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "8651731557f4607ceff5ebc4bd96869dd82b2ee3d16d2c3b96eec588bbffd6f6"
+    },
+    {
+      "grammar": "wolfram",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.179,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "ae8840e70a02f4bb5a594f8a4a83da0725839a7eb8b73d18fd680623e2347afa"
+    },
+    {
+      "grammar": "zig",
+      "status": "passed",
+      "returncode": 0,
+      "seconds": 0.732,
+      "inputs_started": 155,
+      "inputs_completed": 155,
+      "diagnostics": [],
+      "raw_log_sha256": "d745e0df07fe74011b79aeb49556a11966c013d508db94204292db92787d0423"
+    }
+  ],
+  "rustflags": "-Zsanitizer=address -Cforce-frame-pointers=yes -Cdebuginfo=1",
+  "native_flags": "-DNDEBUG -fsanitize=address -fno-omit-frame-pointer -g -O1"
+}
