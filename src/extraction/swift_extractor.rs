@@ -350,6 +350,9 @@ impl SwiftExtractor {
             });
         }
 
+        // Extract protocol conformances (struct Foo: Bar).
+        Self::extract_inheritance(state, node, &id);
+
         // Extract attribute annotations.
         Self::extract_annotations_from_modifiers(state, node, &id);
 
@@ -417,6 +420,9 @@ impl SwiftExtractor {
                 resolved_by: None,
             });
         }
+
+        // Extract raw type and protocol conformances (enum Foo: String, Bar).
+        Self::extract_inheritance(state, node, &id);
 
         // Visit enum body (enum_class_body with enum_entry children).
         state.node_stack.push((name.clone(), id));
@@ -578,6 +584,9 @@ impl SwiftExtractor {
             });
         }
 
+        // Extract protocol conformances added by the extension (extension Foo: Bar).
+        Self::extract_inheritance(state, node, &id);
+
         // Visit extension body.
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
@@ -649,6 +658,9 @@ impl SwiftExtractor {
                 resolved_by: None,
             });
         }
+
+        // Extract inherited protocols (protocol Foo: Bar). These stay `Extends`.
+        Self::extract_inheritance(state, node, &id);
 
         // Extract attribute annotations.
         Self::extract_annotations_from_modifiers(state, node, &id);
@@ -1051,9 +1063,11 @@ impl SwiftExtractor {
         )
     }
 
-    /// Extract inheritance specifiers (e.g. `class Foo: Bar`).
+    /// Extract inheritance specifiers (e.g. `class Foo: Bar`, `struct Foo: P`).
     ///
-    /// Creates Extends `UnresolvedRef` for each inherited type.
+    /// Creates Extends `UnresolvedRef` for each inherited type. A Swift
+    /// inheritance clause cannot tell a superclass from a protocol, so the
+    /// resolver turns an `Extends` that lands on a protocol into `Implements`.
     fn extract_inheritance(state: &mut ExtractionState, node: TsNode<'_>, class_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
