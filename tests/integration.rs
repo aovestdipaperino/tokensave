@@ -192,6 +192,7 @@ mod rust_extraction_test;
 mod scala_extraction_test;
 mod scheme_extraction_test;
 mod search_ids_truncation_test;
+mod security_boundaries_test;
 mod serve_disable_test;
 mod serve_idle_timeout_test;
 mod serve_sigterm_test;

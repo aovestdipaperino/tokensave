@@ -3056,7 +3056,8 @@ fn def_read() -> ToolDefinition {
          slice from 120 starts at 120). The body is always returned, with a \
          'digest' of it. To skip re-sending content you still hold, pass that \
          digest as 'if_digest': when it matches the current body for the same \
-         mode and range, a tiny stub with 'unchanged: true' is returned instead.",
+         mode and range, a tiny stub with 'unchanged: true' is returned instead. \
+         Reads any file inside the project, ignored or not, except under '.git'.",
         json!({
             "type": "object",
             "properties": {
