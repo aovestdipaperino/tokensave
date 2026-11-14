@@ -1267,14 +1267,20 @@ impl SwiftExtractor {
     ///
     /// In Swift, `call_expression` children are: callee (`simple_identifier` or `navigation_expression`)
     /// followed by `call_suffix` with `value_arguments`.
+    ///
+    /// A call through a type name (`Cache.open(...)`, `Outer.Inner.make(...)`)
+    /// keeps its receiver as `Cache::open` so the resolver can match the
+    /// method's qualified name. A bare `open` is too common a name to resolve
+    /// across files. Instance receivers (`worker.start()`) stay bare: their
+    /// type is not known here.
     fn extract_callee_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
-        let first_child = node.named_child(0)?;
-        match first_child.kind() {
+        let callee = Self::callee_expression(node.named_child(0)?)?;
+        match callee.kind() {
             "navigation_expression" => {
                 // For chained calls like `super.init(...)` or `foo.bar(...)`,
                 // get the suffix (last navigation_suffix child's simple_identifier).
                 let mut last_name = None;
-                let mut cursor = first_child.walk();
+                let mut cursor = callee.walk();
                 if cursor.goto_first_child() {
                     loop {
                         let child = cursor.node();
@@ -1290,10 +1296,59 @@ impl SwiftExtractor {
                         }
                     }
                 }
-                last_name
+                let method = last_name?;
+                match Self::receiver_type_name(state, callee) {
+                    Some(type_name) => Some(format!("{type_name}::{method}")),
+                    None => Some(method),
+                }
             }
-            _ => Some(state.node_text(first_child)),
+            _ => Some(state.node_text(callee)),
         }
+    }
+
+    /// The expression a call suffix actually applies to.
+    ///
+    /// tree-sitter-swift attaches the call suffix of `48 + Double(x)` or
+    /// `!ok && items.allSatisfy { ... }` to the whole binary expression, and
+    /// of `await f(x) { ... }` to the `await`. The callee is the rightmost
+    /// operand. When that operand is itself a call, the call is on a call's
+    /// result and the inner call is recorded on its own, so there is no name.
+    fn callee_expression(node: TsNode<'_>) -> Option<TsNode<'_>> {
+        let mut current = node;
+        loop {
+            let next = match current.kind() {
+                "await_expression" | "try_expression" => current.child_by_field_name("expr"),
+                _ => current.child_by_field_name("rhs"),
+            };
+            match next {
+                Some(inner) => current = inner,
+                None => break,
+            }
+        }
+        (current.kind() != "call_expression").then_some(current)
+    }
+
+    /// The type name a navigation callee is called through, if its receiver
+    /// is spelled as a type: `Cache` in `Cache.open`, `Inner` in
+    /// `Outer.Inner.make`. Swift types are capitalised by convention, so a
+    /// lowercase receiver is a value. `Self` is left out: it names the
+    /// enclosing type, which the bare method name already resolves within.
+    fn receiver_type_name(state: &ExtractionState, nav: TsNode<'_>) -> Option<String> {
+        let target = nav.child_by_field_name("target")?;
+        let ident = match target.kind() {
+            "simple_identifier" => target,
+            "navigation_expression" => {
+                let suffix = target.child_by_field_name("suffix")?;
+                suffix.child_by_field_name("suffix")?
+            }
+            _ => return None,
+        };
+        if ident.kind() != "simple_identifier" {
+            return None;
+        }
+        let name = state.node_text(ident);
+        let is_type = name.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+        (is_type && name != "Self").then_some(name)
     }
 
     /// Walk previous siblings of a declaration looking for `attribute` nodes

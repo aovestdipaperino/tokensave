@@ -298,6 +298,34 @@ func main() {
     );
 }
 
+/// Catches: call names that keep raw expression text (`48 + Double`,
+/// `await poll(x)`) or drop the type receiver of a static call.
+#[test]
+fn test_swift_callee_names_by_receiver_shape() {
+    let source = include_str!("fixtures/swift_callee_shapes.swift");
+    let result = SwiftExtractor.extract("swift_callee_shapes.swift", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let mut names: Vec<&str> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Calls)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec![
+            "Cache::open",
+            "Double",
+            "Inner::make",
+            "allSatisfy",
+            "helper",
+            "poll",
+            "start"
+        ]
+    );
+}
+
 #[test]
 fn test_swift_docstrings() {
     let source = r#"/// Initializes the system.
