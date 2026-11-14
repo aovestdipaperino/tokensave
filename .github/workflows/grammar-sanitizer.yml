@@ -1,0 +1,37 @@
+name: Grammar sanitizer evaluation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  address-sanitizer:
+    name: AddressSanitizer grammar fixtures
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "2"
+      RUST_TEST_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install pinned nightly
+        run: |
+          rustup toolchain install nightly-2026-11-10 --profile minimal
+          rustup target add x86_64-unknown-linux-gnu --toolchain nightly-2026-11-10
+      - name: Run sanitized extraction fixtures
+        run: |
+          python3 scripts/grammar-sanitizer/grammar_sanitizer.py \
+            --work-dir "$RUNNER_TEMP/tokensave-grammar-asan" \
+            --output "$RUNNER_TEMP/tokensave-grammar-asan/result.json"
+      - name: Upload report and logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: grammar-address-sanitizer-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/tokensave-grammar-asan/result.json
+            ${{ runner.temp }}/tokensave-grammar-asan/logs
+          if-no-files-found: warn
+          retention-days: 14
