@@ -1,0 +1,104 @@
+{"phase":"start","input":"/results/evaluation-05/inputs/seed-empty"}
+{"phase":"done","input":"/results/evaluation-05/inputs/seed-empty","syntax_error":false}
+{"grammar":"perl","inputs":1}
+
+=================================================================
+==10534==ERROR: LeakSanitizer: detected memory leaks
+
+Direct leak of 16 byte(s) in 1 object(s) allocated from:
+    #0 0xc90f14ff5948 in malloc (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0xfc5948) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+    #1 0xc90f166b44b0 in create_queue /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:146:29
+    #2 0xc90f166b44b0 in heredoc_new /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:365:39
+    #3 0xc90f166b44b0 in tree_sitter_perl_external_scanner_create /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:1198:22
+    #4 0xc90f1701a9d8 in ts_parser__external_scanner_create /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:369:40
+    #5 0xc90f1701a9d8 in ts_parser_parse /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:2097:5
+    #6 0xc90f1702999c in ts_parser_parse_with_options /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:2209:20
+    #7 0xc90f15a90bdc in <tree_sitter::Parser>::parse_with_options::<&[u8], <tree_sitter::Parser>::parse<&alloc::vec::Vec<u8>>::{closure#0}> /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/binding_rust/lib.rs:948:30
+    #8 0xc90f15a91334 in <tree_sitter::Parser>::parse::<&alloc::vec::Vec<u8>> /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/binding_rust/lib.rs:859:14
+    #9 0xc90f15046034 in grammar_asan::run /work-current/examples/grammar_asan.rs:59:14
+    #10 0xc90f15046e64 in grammar_asan::main /work-current/examples/grammar_asan.rs:78:25
+    #11 0xc90f1502f550 in <fn() as core::ops::function::FnOnce<()>>::call_once /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+    #12 0xc90f15024254 in std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/sys/backtrace.rs:166:18
+    #13 0xc90f1504f5e0 in std::rt::lang_start::<()>::{closure#0} /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:206:18
+    #14 0xc90f18f8052c in <&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe as core::ops::function::FnOnce<()>>::call_once /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ops/function.rs:287:21
+    #15 0xc90f18fc2aa4 in std::panicking::catch_unwind::do_call::<&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe, i32> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #16 0xc90f18fd6960 in __rust_try std.56e1cf2c4c15511b-cgu.12
+    #17 0xc90f18fc2088 in std::panicking::catch_unwind::<i32, &dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #18 0xc90f1900908c in std::panic::catch_unwind::<&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe, i32> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #19 0xc90f18ea0818 in std::rt::lang_start_internal::{closure#0} /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:175:24
+    #20 0xc90f18fc28ec in std::panicking::catch_unwind::do_call::<std::rt::lang_start_internal::{closure#0}, isize> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #21 0xc90f18fd6960 in __rust_try std.56e1cf2c4c15511b-cgu.12
+    #22 0xc90f18fc1dd0 in std::panicking::catch_unwind::<isize, std::rt::lang_start_internal::{closure#0}> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #23 0xc90f19008ff4 in std::panic::catch_unwind::<std::rt::lang_start_internal::{closure#0}, isize> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #24 0xc90f18ea5254 in std::rt::lang_start_internal /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:171:5
+    #25 0xc90f1504cbe8 in std::rt::lang_start::<()> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:205:5
+    #26 0xc90f1504b710 in main (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0x101b710) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+    #27 0xeb42fbb67740  (/lib/aarch64-linux-gnu/libc.so.6+0x27740) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #28 0xeb42fbb67814 in __libc_start_main (/lib/aarch64-linux-gnu/libc.so.6+0x27814) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #29 0xc90f14f613ac in _start (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0xf313ac) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+
+Direct leak of 16 byte(s) in 1 object(s) allocated from:
+    #0 0xc90f14ff5948 in malloc (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0xfc5948) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+    #1 0xc90f166b44c8 in create_queue /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:146:29
+    #2 0xc90f166b44c8 in heredoc_new /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:366:32
+    #3 0xc90f166b44c8 in tree_sitter_perl_external_scanner_create /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:1198:22
+    #4 0xc90f1701a9d8 in ts_parser__external_scanner_create /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:369:40
+    #5 0xc90f1701a9d8 in ts_parser_parse /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:2097:5
+    #6 0xc90f1702999c in ts_parser_parse_with_options /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:2209:20
+    #7 0xc90f15a90bdc in <tree_sitter::Parser>::parse_with_options::<&[u8], <tree_sitter::Parser>::parse<&alloc::vec::Vec<u8>>::{closure#0}> /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/binding_rust/lib.rs:948:30
+    #8 0xc90f15a91334 in <tree_sitter::Parser>::parse::<&alloc::vec::Vec<u8>> /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/binding_rust/lib.rs:859:14
+    #9 0xc90f15046034 in grammar_asan::run /work-current/examples/grammar_asan.rs:59:14
+    #10 0xc90f15046e64 in grammar_asan::main /work-current/examples/grammar_asan.rs:78:25
+    #11 0xc90f1502f550 in <fn() as core::ops::function::FnOnce<()>>::call_once /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+    #12 0xc90f15024254 in std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/sys/backtrace.rs:166:18
+    #13 0xc90f1504f5e0 in std::rt::lang_start::<()>::{closure#0} /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:206:18
+    #14 0xc90f18f8052c in <&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe as core::ops::function::FnOnce<()>>::call_once /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ops/function.rs:287:21
+    #15 0xc90f18fc2aa4 in std::panicking::catch_unwind::do_call::<&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe, i32> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #16 0xc90f18fd6960 in __rust_try std.56e1cf2c4c15511b-cgu.12
+    #17 0xc90f18fc2088 in std::panicking::catch_unwind::<i32, &dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #18 0xc90f1900908c in std::panic::catch_unwind::<&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe, i32> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #19 0xc90f18ea0818 in std::rt::lang_start_internal::{closure#0} /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:175:24
+    #20 0xc90f18fc28ec in std::panicking::catch_unwind::do_call::<std::rt::lang_start_internal::{closure#0}, isize> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #21 0xc90f18fd6960 in __rust_try std.56e1cf2c4c15511b-cgu.12
+    #22 0xc90f18fc1dd0 in std::panicking::catch_unwind::<isize, std::rt::lang_start_internal::{closure#0}> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #23 0xc90f19008ff4 in std::panic::catch_unwind::<std::rt::lang_start_internal::{closure#0}, isize> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #24 0xc90f18ea5254 in std::rt::lang_start_internal /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:171:5
+    #25 0xc90f1504cbe8 in std::rt::lang_start::<()> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:205:5
+    #26 0xc90f1504b710 in main (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0x101b710) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+    #27 0xeb42fbb67740  (/lib/aarch64-linux-gnu/libc.so.6+0x27740) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #28 0xeb42fbb67814 in __libc_start_main (/lib/aarch64-linux-gnu/libc.so.6+0x27814) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #29 0xc90f14f613ac in _start (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0xf313ac) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+
+Direct leak of 16 byte(s) in 1 object(s) allocated from:
+    #0 0xc90f14ff5948 in malloc (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0xfc5948) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+    #1 0xc90f166b4498 in create_queue /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:146:29
+    #2 0xc90f166b4498 in heredoc_new /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:364:35
+    #3 0xc90f166b4498 in tree_sitter_perl_external_scanner_create /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:1198:22
+    #4 0xc90f1701a9d8 in ts_parser__external_scanner_create /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:369:40
+    #5 0xc90f1701a9d8 in ts_parser_parse /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:2097:5
+    #6 0xc90f1702999c in ts_parser_parse_with_options /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:2209:20
+    #7 0xc90f15a90bdc in <tree_sitter::Parser>::parse_with_options::<&[u8], <tree_sitter::Parser>::parse<&alloc::vec::Vec<u8>>::{closure#0}> /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/binding_rust/lib.rs:948:30
+    #8 0xc90f15a91334 in <tree_sitter::Parser>::parse::<&alloc::vec::Vec<u8>> /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/binding_rust/lib.rs:859:14
+    #9 0xc90f15046034 in grammar_asan::run /work-current/examples/grammar_asan.rs:59:14
+    #10 0xc90f15046e64 in grammar_asan::main /work-current/examples/grammar_asan.rs:78:25
+    #11 0xc90f1502f550 in <fn() as core::ops::function::FnOnce<()>>::call_once /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+    #12 0xc90f15024254 in std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/sys/backtrace.rs:166:18
+    #13 0xc90f1504f5e0 in std::rt::lang_start::<()>::{closure#0} /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:206:18
+    #14 0xc90f18f8052c in <&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe as core::ops::function::FnOnce<()>>::call_once /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ops/function.rs:287:21
+    #15 0xc90f18fc2aa4 in std::panicking::catch_unwind::do_call::<&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe, i32> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #16 0xc90f18fd6960 in __rust_try std.56e1cf2c4c15511b-cgu.12
+    #17 0xc90f18fc2088 in std::panicking::catch_unwind::<i32, &dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #18 0xc90f1900908c in std::panic::catch_unwind::<&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe, i32> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #19 0xc90f18ea0818 in std::rt::lang_start_internal::{closure#0} /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:175:24
+    #20 0xc90f18fc28ec in std::panicking::catch_unwind::do_call::<std::rt::lang_start_internal::{closure#0}, isize> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #21 0xc90f18fd6960 in __rust_try std.56e1cf2c4c15511b-cgu.12
+    #22 0xc90f18fc1dd0 in std::panicking::catch_unwind::<isize, std::rt::lang_start_internal::{closure#0}> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #23 0xc90f19008ff4 in std::panic::catch_unwind::<std::rt::lang_start_internal::{closure#0}, isize> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #24 0xc90f18ea5254 in std::rt::lang_start_internal /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:171:5
+    #25 0xc90f1504cbe8 in std::rt::lang_start::<()> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:205:5
+    #26 0xc90f1504b710 in main (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0x101b710) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+    #27 0xeb42fbb67740  (/lib/aarch64-linux-gnu/libc.so.6+0x27740) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #28 0xeb42fbb67814 in __libc_start_main (/lib/aarch64-linux-gnu/libc.so.6+0x27814) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #29 0xc90f14f613ac in _start (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0xf313ac) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+
+SUMMARY: AddressSanitizer: 48 byte(s) leaked in 3 allocation(s).

@@ -1,0 +1,49 @@
+=================================================================
+==41==ERROR: AddressSanitizer: heap-buffer-overflow on address 0xf808f96007b9 at pc 0xc68bbdc941c4 bp 0xffffc4f3bc90 sp 0xffffc4f3bc88
+WRITE of size 1 at 0xf808f96007b9 thread T0
+    #0 0xc68bbdc941c0 in main /work-current/scripts/grammar-asan/control.c:7:21
+    #1 0xf808fc727740  (/lib/aarch64-linux-gnu/libc.so.6+0x27740) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #2 0xf808fc727814 in __libc_start_main (/lib/aarch64-linux-gnu/libc.so.6+0x27814) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #3 0xc68bbdbe60ac in _start (/results/evaluation-05/native-control-c+0x260ac) (BuildId: 82057c86ce3a905bf97276ab8d2f223f54d23f3e)
+
+0xf808f96007b9 is located 1 bytes to the right of 8-byte region [0xf808f96007b0,0xf808f96007b8)
+allocated by thread T0 here:
+    #0 0xc68bbdc5d260 in __interceptor_malloc (/results/evaluation-05/native-control-c+0x9d260) (BuildId: 82057c86ce3a905bf97276ab8d2f223f54d23f3e)
+    #1 0xc68bbdc9416c in main /work-current/scripts/grammar-asan/control.c:5:45
+    #2 0xf808fc727740  (/lib/aarch64-linux-gnu/libc.so.6+0x27740) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #3 0xf808fc727814 in __libc_start_main (/lib/aarch64-linux-gnu/libc.so.6+0x27814) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #4 0xc68bbdbe60ac in _start (/results/evaluation-05/native-control-c+0x260ac) (BuildId: 82057c86ce3a905bf97276ab8d2f223f54d23f3e)
+
+SUMMARY: AddressSanitizer: heap-buffer-overflow /work-current/scripts/grammar-asan/control.c:7:21 in main
+Shadow bytes around the buggy address:
+  0x1f111f2c00a0: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x1f111f2c00b0: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x1f111f2c00c0: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x1f111f2c00d0: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x1f111f2c00e0: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+=>0x1f111f2c00f0: fa fa fa fa fa fa 00[fa]fa fa fa fa fa fa fa fa
+  0x1f111f2c0100: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x1f111f2c0110: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x1f111f2c0120: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x1f111f2c0130: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x1f111f2c0140: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Partially addressable: 01 02 03 04 05 06 07
+  Heap left redzone:       fa
+  Freed heap region:       fd
+  Stack left redzone:      f1
+  Stack mid redzone:       f2
+  Stack right redzone:     f3
+  Stack after return:      f5
+  Stack use after scope:   f8
+  Global redzone:          f9
+  Global init order:       f6
+  Poisoned by user:        f7
+  Container overflow:      fc
+  Array cookie:            ac
+  Intra object redzone:    bb
+  ASan internal:           fe
+  Left alloca redzone:     ca
+  Right alloca redzone:    cb
+==41==ABORTING

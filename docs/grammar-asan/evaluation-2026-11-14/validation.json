@@ -1,0 +1,53 @@
+{
+  "date": "2026-11-14",
+  "host": "macOS aarch64; Rust1.100.0",
+  "results": [
+    {
+      "command": "cargo test --workspace --locked --features test-transport",
+      "exit_code": 0,
+      "result": {
+        "passed": 5074,
+        "failed": 0,
+        "ignored": 4
+      },
+      "raw_log_sha256": "692c83c526bb2b38cf42fe366f268b6549d6cfda7e88881a0a70ff6ae66d0af2"
+    },
+    {
+      "command": "cargo clippy --workspace --all-targets --locked",
+      "exit_code": 0,
+      "result": {
+        "notes": "Warnings in unchanged sources/manifest entries; no diagnostic references examples/grammar_asan.rs."
+      },
+      "raw_log_sha256": "ac69dceaffa3f7d2959299cd9fef80234552a5c7eea1f83a54ae311904d60361"
+    },
+    {
+      "command": "python3 -B -m unittest discover -s scripts/grammar-asan -v (Linux non-root)",
+      "exit_code": 0,
+      "result": {
+        "passed": 13,
+        "skipped": 0
+      },
+      "raw_log_sha256": "6bd567d6fef1e779cc9c8f2bd39a506c83de25e0fb363fec1df8f5366b0ffea7"
+    },
+    {
+      "command": "python3 -B -m unittest discover -s scripts/grammar-asan -v (macOS)",
+      "exit_code": 0,
+      "result": {
+        "passed": 12,
+        "skipped": 1
+      },
+      "raw_log_sha256": "038f97b8b4c2bd7fad2099bb849990c998f937b77b38af256f09678f1290f024"
+    }
+  ],
+  "other_checks": [
+    "cargo fmt --all -- --check: passed",
+    "python3 scripts/wiki/sync_wiki.py check: passed",
+    "python3 -m unittest discover -s scripts/wiki: 11passed",
+    "git diff --check: passed"
+  ],
+  "limits": [
+    "Normal Linux/Windows workspace suites were not run locally.",
+    "The raw-parser Linux ASan result is incomplete due to two leaks and a timeout.",
+    "No GitHub sanitizer workflow was run."
+  ]
+}
