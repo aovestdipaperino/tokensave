@@ -6,10 +6,11 @@ the functions an edit changed. This document records how TokenSave uses it
 for local development, what was found when it was tried, and how to measure
 it against Cargo.
 
-**Status: draft.** The runner and the benchmark harness are implemented and
-tested. The compatibility findings below are from one Linux machine. The
-TokenSave build and test timings are still being collected and will be added
-to [Measurements](#measurements).
+**Implementation:** [PR #990](https://github.com/aovestdipaperino/tokensave/pull/990),
+[issue #984](https://github.com/aovestdipaperino/tokensave/issues/984), targeting
+`master`. The PR is open and unmerged; no release is implied. The local runner
+and benchmark harness are implemented. Linux measurements and remaining
+platform limitations are recorded below. CI and release workflows use Cargo.
 
 ## Scope
 
@@ -136,15 +137,73 @@ integration tests with and without an edit. It records wall time, CPU time
 (including the Blaze daemon's), peak memory and disk use. See
 [its README](../scripts/blaze-bench/README.md) for the method and options.
 
-Results for TokenSave `57a92b2` with the `lite` features are pending. The
-first run failed before any comparison because the machine lacked
-`pkg-config` and `libssl-dev` (see [Setup](#setup)), and the measured run is in
-progress.
+Recorded on 2026-11-15 on native Linux (kernel `7.0.0-38-generic`, 8 logical
+CPUs, 30.22 GiB RAM), at TokenSave
+`a1e87d652c7f00d134268fb9fadcb16d56fa7bc7`, using `lite`, Cargo 1.100.0 and
+Blaze 0.20261027.0 (`49ca152`). This was a single run on a shared desktop;
+there is no statistical speedup claim. Registry fetches and toolchain setup
+were outside the timed steps.
+
+| Step | Cargo wall time | Outcome |
+|---|---:|---|
+| Cold build | 130.38 s | Passed |
+| Unchanged build | 0.352 s | Passed |
+| Function edit build, two runs | 9.02 s median (7.82–10.22 s) | Passed |
+| First integration `sync` run | 73.47 s | 84 passed |
+| Unchanged integration `sync` run | 3.63 s | 84 passed |
+| Edited integration `sync` run | 68.24 s | 84 passed |
+| Blaze cold build | 147.80 s | Failed, exit 101 |
+| Blaze confirmation, populated shared cache | 4.26 s | Same failure, exit 101 |
+
+Blaze failed while running `faster-hex`'s build script: `autocfg` panicked
+with `could not execute rustc`. Cargo built and tested the same source with
+the pinned compiler. This confirms a compatibility blocker in the evaluated
+Blaze workflow, not its root cause. Because Blaze could not build TokenSave,
+its unchanged/edit builds and tests were not attempted; no successful Blaze
+build or test comparison is claimed.
+
+Cargo cold-build CPU time was 666.32 s and peak sampled memory was 2.67 GiB.
+Its target directory grew from 2.61 GiB after the cold build to 3.43 GiB after
+tests. The initial failed Blaze build peaked at 2.27 GiB sampled RSS and left
+3.79 GiB in its target directory. Its separate shared store reported 834 MB.
+Tool-home growth does not include that store. Initial Blaze CPU accounting
+missed reaped daemon workers; the corrected confirmation is recorded separately
+and is not comparable to a fresh-store run.
+
+[Detailed measurements](blaze/evaluation-2026-11-15/measurements.md),
+[initial JSON](blaze/evaluation-2026-11-15/initial.json),
+[confirmation JSON](blaze/evaluation-2026-11-15/confirmation.json) and
+[retained evidence and reproduction commands](blaze/evaluation-2026-11-15/README.md)
+record wall time, CPU, RSS, disk, tool versions, status and failure logs.
+A real `scripts/dev-build build --locked --no-default-features --features lite`
+run also reproduced the Blaze failure, retried with Cargo and returned 0; see
+[the runner log](blaze/evaluation-2026-11-15/runner-fallback.log). Both daemons
+were stopped afterward.
+
+## Validation and remaining work
+
+- Runner and harness: 45 tests pass under Linux `/bin/sh` and `bash --posix`.
+  These include fallback exit codes, explicit tool selection, Windows routing,
+  macOS command-line-tools detection, Cargo environment parity, timeout process
+  cleanup, failed-cold-build daemon cleanup, source restoration, input validation,
+  and unchanged-test scheduling. Stub tests are not native macOS validation.
+- Documentation: wiki link/sidebar check and all 11 wiki tests pass.
+- Resource review: the sampler retains one process table per 200 ms sample;
+  failure tails retain 15 log lines; compiler process groups are killed and
+  the command is reaped on timeout or Python interruption. Edited source is
+  restored and Blaze shutdown is attempted in `finally`, including cold-build
+  failures. These checks do not establish absence of leaks in Blaze itself.
+- No new SQL, Rust dependencies or unsafe sites are introduced by this change.
+- Remaining coverage: native macOS builds/tests and measurements, medium/full
+  feature measurements, multiple cold runs and longer repeated/idle workloads.
+  A compatible Blaze release is needed for successful Blaze test comparisons
+  on the environments where the failures below occur. Keep #984 open for the
+  maintainer to review these limits; implementation is not a merged result.
 
 ## Limitations
 
-- Measured on one WSL 2 machine only. macOS and native Linux have not been
-  tried; the runner's macOS path is covered by tests with stub programs only.
+- Earlier probes used WSL 2; the recorded TokenSave timings use one native
+  Linux desktop. macOS is covered by stub programs only.
 - The runner's fallback costs a failed Blaze attempt before Cargo runs. With
   Blaze 0.20261027.0 that happens for every `test` command (see above).
 - Blaze builds with its own nightly, not the pinned toolchain, and its

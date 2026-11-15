@@ -175,6 +175,15 @@ class DevBuildTest(unittest.TestCase):
         self.assertEqual(done.returncode, 2)
         self.assertEqual(self.tools_called(), [])
 
+    def test_invalid_variable_value_is_not_disclosed(self):
+        done = self.run_script("build", env={"TOKENSAVE_BUILD_RUNNER": "private-value"})
+        self.assertEqual(done.returncode, 2)
+        self.assertNotIn("private-value", done.stderr)
+
+    def test_empty_unforced_values_are_preserved(self):
+        self.run_script("test", env={"CFLAGS": ""})
+        self.assertEqual(self.calls()[0]["env"]["CFLAGS"], "")
+
     def test_no_arguments_is_an_error(self):
         self.assertEqual(self.run_script().returncode, 2)
         self.assertEqual(self.tools_called(), [])
@@ -259,6 +268,20 @@ class DevBuildTest(unittest.TestCase):
         self.assertEqual(self.tools_called(), [])
 
     # The [env] table of .cargo/config.toml -------------------------------
+
+    def test_environment_export_failure_uses_cargo(self):
+        (self.bin / "awk").unlink()
+        self.stub("awk", "#!/bin/sh\nexit 1\n")
+        done = self.run_script("build")
+        self.assertEqual(done.returncode, 0)
+        self.assertEqual(self.tools_called(), ["cargo"])
+
+    def test_forced_blaze_environment_export_failure_is_an_error(self):
+        (self.bin / "awk").unlink()
+        self.stub("awk", "#!/bin/sh\nexit 1\n")
+        done = self.run_script("--blaze", "build")
+        self.assertEqual(done.returncode, 2)
+        self.assertEqual(self.tools_called(), [])
 
     def cargo_env_table(self) -> dict:
         if sys.version_info < (3, 11):

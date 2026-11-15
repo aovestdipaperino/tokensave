@@ -42,7 +42,7 @@ esac
 case "$mode" in
     auto | cargo | blaze) ;;
     *)
-        say "TOKENSAVE_BUILD_RUNNER is '$mode'; use auto, cargo or blaze."
+        say "invalid TOKENSAVE_BUILD_RUNNER; use auto, cargo or blaze."
         exit 2
         ;;
 esac
@@ -124,20 +124,16 @@ export_cargo_env() {
             }
             sub(/"$/, "", value)
             printf "%s\t%s\t%s\n", name, force, value
-        }' "$config") || return 0
+        }' "$config") || return 1
     tab=$(printf '\t')
-    old_ifs=$IFS
-    IFS='
-'
-    for entry in $entries; do
-        IFS=$tab read -r name force value <<EOF
-$entry
-EOF
+    while IFS="$tab" read -r name force value; do
+        [ -n "$name" ] || continue
         if [ "$force" = 1 ] || eval "[ -z \"\${$name+set}\" ]"; then
             export "$name=$value"
         fi
-    done
-    IFS=$old_ifs
+    done <<EOF
+$entries
+EOF
 }
 
 run_cargo() {
@@ -162,7 +158,14 @@ case "$mode" in
         ;;
 esac
 
-export_cargo_env
+if ! export_cargo_env; then
+    if [ "$mode" = blaze ]; then
+        say "cannot export repository build environment for Blaze."
+        exit 2
+    fi
+    say "using cargo: cannot export repository build environment for Blaze."
+    run_cargo "$@"
+fi
 say "using blaze ($(blaze --version 2>/dev/null)); 'scripts/dev-build --cargo ...' uses Cargo."
 blaze "$@"
 status=$?

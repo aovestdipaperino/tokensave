@@ -17,11 +17,13 @@ Linux only (it reads /proc). Python 3.9+, standard library only.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 import os
 import platform
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -172,9 +174,11 @@ def render_markdown(result: dict) -> str:
     if failures:
         lines += ["", "## Failed steps", ""]
         for tool, step in failures:
+            excerpt = " ".join(step.get("error_tail", "").split())[-500:]
+            excerpt = excerpt.replace("`", "'")
             lines.append(
                 f"- {tool} `{step['name']}` exit {step['exit_code']}: "
-                f"`{step.get('error_tail', '').strip()[:300]}`"
+                f"`{excerpt}`"
             )
     status = result["tools"].get("blaze", {}).get("status")
     if status:
@@ -196,7 +200,9 @@ def _read_proc_stat(pid: int) -> tuple[str, int, float] | None:
     comm = raw[raw.find("(") + 1 : close]
     fields = raw[close + 2 :].split()
     ticks = os.sysconf("SC_CLK_TCK")
-    return comm, int(fields[1]), (int(fields[11]) + int(fields[12])) / ticks
+    # Include reaped workers: daemon CPU must not vanish when a compiler exits.
+    cpu_ticks = sum(int(fields[index]) for index in (11, 12, 13, 14))
+    return comm, int(fields[1]), cpu_ticks / ticks
 
 
 def _rss_mib(pid: int) -> float:
@@ -248,8 +254,9 @@ def _descendants(table: dict[int, tuple[str, int, float]], root: int) -> set[int
 class PeakSampler:
     """Samples the RSS of a process tree plus Blaze processes until stopped."""
 
-    def __init__(self, root_pid: int):
+    def __init__(self, root_pid: int, include_blaze: bool = False):
         self.root_pid = root_pid
+        self.include_blaze = include_blaze
         self.peak_mib = 0.0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -266,7 +273,8 @@ class PeakSampler:
         while not self._stop.is_set():
             table = _process_table()
             pids = _descendants(table, self.root_pid)
-            pids |= {pid for pid, (comm, _, _) in table.items() if _is_blaze(comm)}
+            if self.include_blaze:
+                pids |= {pid for pid, (comm, _, _) in table.items() if _is_blaze(comm)}
             total = sum(_rss_mib(pid) for pid in pids)
             self.peak_mib = max(self.peak_mib, total)
             self._stop.wait(SAMPLE_INTERVAL_S)
@@ -288,11 +296,11 @@ def child_env() -> dict[str, str]:
     Under WSL the Windows PATH is appended to Linux's, and a Windows
     `cargo.exe` there could shadow the Linux one, so PATH is rebuilt.
     """
-    home = Path.home()
     env = {k: v for k, v in os.environ.items() if not k.startswith("TOKENSAVE_")}
-    env["PATH"] = os.pathsep.join([
-        str(home / ".cargo" / "bin"), "/usr/local/bin", "/usr/bin", "/bin",
-    ])
+    env["PATH"] = os.pathsep.join(
+        part for part in os.environ.get("PATH", "").split(os.pathsep)
+        if part and not part.startswith("/mnt/")
+    )
     env.pop("RUSTFLAGS", None)
     env.pop("CARGO_TARGET_DIR", None)
     env["CARGO_TERM_COLOR"] = "never"
@@ -308,18 +316,30 @@ def run_step(name: str, argv: list[str], cwd: Path, env: dict[str, str],
         log.write("$ " + " ".join(argv) + "\n")
         log.flush()
         proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=log,
-                                stderr=subprocess.STDOUT)
+                                stderr=subprocess.STDOUT, start_new_session=True)
         timed_out = False
-        with PeakSampler(proc.pid) as sampler:
-            deadline = start + timeout_s
-            while True:
-                pid, status, usage = os.wait4(proc.pid, os.WNOHANG)
-                if pid:
-                    break
-                if time.monotonic() > deadline:
-                    proc.kill()
-                    timed_out = True
-                time.sleep(0.05)
+        try:
+            with PeakSampler(proc.pid, include_blaze=tool == "blaze") as sampler:
+                deadline = start + timeout_s
+                while True:
+                    pid, status, usage = os.wait4(proc.pid, os.WNOHANG)
+                    if pid:
+                        proc.returncode = os.waitstatus_to_exitcode(status)
+                        break
+                    if time.monotonic() > deadline:
+                        timed_out = True
+                        break
+                    time.sleep(0.05)
+        finally:
+            # Cargo's compiler children must not survive timeout/interruption.
+            # Blaze's detached daemon is stopped by bench_tool's finally block.
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            if proc.returncode is None:
+                _, status, usage = os.wait4(proc.pid, 0)
+                proc.returncode = os.waitstatus_to_exitcode(status)
     wall = time.monotonic() - start
     exit_code = os.waitstatus_to_exitcode(status)
     proc.returncode = exit_code
@@ -328,7 +348,8 @@ def run_step(name: str, argv: list[str], cwd: Path, env: dict[str, str],
         cpu += max(0.0, blaze_daemon_cpu_s() - daemon_before)
     tail = ""
     if exit_code != 0:
-        tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-15:])
+        with log_path.open(errors="replace") as log:
+            tail = "".join(deque(log, maxlen=15))
     return {
         "name": name,
         "argv": argv,
@@ -368,10 +389,14 @@ def bench_tool(tool: str, args, tree: Path, env: dict[str, str], log_dir: Path) 
     test = [tool, "test", "--locked", *features, "--test", "integration",
             args.test_filter]
     edit_path = tree / args.edit_file
+    if not edit_path.resolve().is_relative_to(tree.resolve()):
+        raise ValueError("edit-file resolves outside the disposable checkout")
     original = edit_path.read_text(encoding="utf-8")
     steps: list[dict] = []
     index = 0
-    tool_home = Path.home() / (".blaze" if tool == "blaze" else ".cargo")
+    home_key = "BLAZE_HOME" if tool == "blaze" else "CARGO_HOME"
+    default_home = Path.home() / (".blaze" if tool == "blaze" else ".cargo")
+    tool_home = Path(env.get(home_key, str(default_home)))
     home_before = dir_size_mib(tool_home)
     disk: dict[str, float | None] = {}
 
@@ -389,6 +414,8 @@ def bench_tool(tool: str, args, tree: Path, env: dict[str, str], log_dir: Path) 
         edit_path.write_text(apply_edit(original, args.edit_anchor, counter),
                              encoding="utf-8")
 
+    status = None
+    outcome = {"steps": steps, "disk": disk, "status": None}
     try:
         for cold in range(args.cold_runs):
             if tool == "blaze":
@@ -397,10 +424,8 @@ def bench_tool(tool: str, args, tree: Path, env: dict[str, str], log_dir: Path) 
             step("cold-build", build)
             if cold == 0:
                 disk["target_after_cold_mib"] = dir_size_mib(tree / "target")
-        if not any(s["ok"] for s in steps):
-            return {"steps": steps, "disk": disk,
-                    "status": capture(["blaze", "status"], tree, env)
-                    if tool == "blaze" else None}
+        if not steps[-1]["ok"]:
+            return outcome
         step("noop-build", build)
         for counter in range(1, args.edits + 1):
             edit(counter)
@@ -408,29 +433,38 @@ def bench_tool(tool: str, args, tree: Path, env: dict[str, str], log_dir: Path) 
         edit_path.write_text(original, encoding="utf-8")
         if not args.skip_tests:
             step("test-first", test)
+            step("test-noop", test)
             for counter in range(1, args.test_edits + 1):
                 edit(1000 + counter)
                 step("edit-test", test)
     finally:
-        edit_path.write_text(original, encoding="utf-8")
-        disk["target_at_end_mib"] = dir_size_mib(tree / "target")
-        home_after = dir_size_mib(tool_home)
-        if home_before is not None and home_after is not None:
-            disk["tool_home_growth_mib"] = round(home_after - home_before, 1)
-    status = None
-    if tool == "blaze":
-        status = capture(["blaze", "status"], tree, env)
-        if not args.keep_daemon:
-            capture(["blaze", "stop"], tree, env)
-    return {"steps": steps, "disk": disk, "status": status}
+        try:
+            edit_path.write_text(original, encoding="utf-8")
+            disk["target_at_end_mib"] = dir_size_mib(tree / "target")
+            home_after = dir_size_mib(tool_home)
+            if home_before is not None and home_after is not None:
+                disk["tool_home_growth_mib"] = round(home_after - home_before, 1)
+        finally:
+            if tool == "blaze":
+                try:
+                    status = capture(["blaze", "status"], tree, env)
+                finally:
+                    if not args.keep_daemon:
+                        capture(["blaze", "stop"], tree, env)
+            outcome["status"] = status
+    return outcome
 
 
 def prepare_tree(source: str, revision: str, work: Path, tool: str,
                  env: dict[str, str]) -> Path:
     tree = work / f"tree-{tool}"
+    marker = work / f".owned-tree-{tool}"
+    if tree.exists() and (tree.is_symlink() or not marker.is_file()):
+        raise ValueError(f"refusing to modify an unowned checkout: {tree}")
     if not (tree / ".git").exists():
         subprocess.run(["git", "clone", "--quiet", "--no-checkout", source, str(tree)],
                        check=True, env=env)
+        marker.write_text("blaze-bench disposable checkout\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(tree), "fetch", "--quiet", "origin", revision],
                    check=False, env=env)
     subprocess.run(["git", "-C", str(tree), "checkout", "--quiet", "--force",
@@ -490,6 +524,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("this harness reads /proc and runs on Linux (or WSL) only")
     tools = [t.strip() for t in args.tools.split(",") if t.strip()]
     unknown = [t for t in tools if t not in TOOLS]
+    if not tools or len(tools) != len(set(tools)):
+        parser.error("select at least one tool without duplicates")
+    if args.cold_runs < 1 or args.edits < 0 or args.test_edits < 0 or args.timeout < 1:
+        parser.error("cold-runs and timeout must be positive; edit counts must be nonnegative")
+    if Path(args.edit_file).is_absolute() or ".." in Path(args.edit_file).parts:
+        parser.error("edit-file must stay inside the disposable checkout")
     if unknown:
         parser.error(f"unknown tools: {', '.join(unknown)}")
 
@@ -512,6 +552,8 @@ def main(argv: list[str] | None = None) -> int:
             result["environment"] = environment(env, tree)
         print(f"{tool}: {tree}", flush=True)
         result["tools"][tool] = bench_tool(tool, args, tree, env, log_dir)
+        if args.output:
+            args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
     if args.output:
         args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
@@ -519,7 +561,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.markdown:
         args.markdown.write_text(report, encoding="utf-8")
     print(report)
-    return 0
+    return int(any(not step["ok"] for data in result["tools"].values()
+                   for step in data["steps"]))
 
 
 if __name__ == "__main__":

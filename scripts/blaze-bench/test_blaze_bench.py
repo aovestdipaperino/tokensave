@@ -103,5 +103,108 @@ class RenderTest(unittest.TestCase):
         self.assertIn("| cargo | 2.00 GiB |", report)
 
 
+class LifecycleTest(unittest.TestCase):
+    def test_failed_cold_build_stops_daemon_and_restores_source(self):
+        import tempfile
+        from types import SimpleNamespace
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as directory:
+            tree = Path(directory)
+            source = tree / 'sample.rs'
+            source.write_text(SOURCE)
+            args = SimpleNamespace(features='lite', edit_file='sample.rs',
+                                   edit_anchor=ANCHOR, timeout=1, cold_runs=1,
+                                   keep_daemon=False, skip_tests=False,
+                                   edits=1, test_edits=1, test_filter='sync')
+            failed = step('cold-build', ok=False, exit_code=1)
+            with mock.patch.object(blaze_bench, 'run_step', return_value=failed), \
+                 mock.patch.object(blaze_bench, 'dir_size_mib', return_value=0), \
+                 mock.patch.object(blaze_bench, 'capture', return_value='status') as capture:
+                result = blaze_bench.bench_tool('blaze', args, tree, {}, tree)
+            self.assertEqual(source.read_text(), SOURCE)
+            self.assertEqual(result['status'], 'status')
+            self.assertEqual(capture.call_args_list[-1].args[0], ['blaze', 'stop'])
+
+    def test_benchmark_includes_cached_tests_and_restores_edits(self):
+        import tempfile
+        from types import SimpleNamespace
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as directory:
+            tree = Path(directory)
+            source = tree / 'sample.rs'
+            source.write_text(SOURCE)
+            args = SimpleNamespace(features='lite', edit_file='sample.rs',
+                                   edit_anchor=ANCHOR, timeout=1, cold_runs=1,
+                                   keep_daemon=False, skip_tests=False,
+                                   edits=1, test_edits=1, test_filter='sync')
+            def measured(name, *args):
+                return step(name)
+            with mock.patch.object(blaze_bench, 'run_step', side_effect=measured), \
+                 mock.patch.object(blaze_bench, 'dir_size_mib', return_value=0):
+                result = blaze_bench.bench_tool('cargo', args, tree, {}, tree)
+            self.assertEqual([s['name'] for s in result['steps']],
+                             ['cold-build', 'noop-build', 'edit-build',
+                              'test-first', 'test-noop', 'edit-test'])
+            self.assertEqual(source.read_text(), SOURCE)
+
+    def test_invalid_benchmark_arguments_fail_before_setup(self):
+        from unittest import mock
+        for extra in (['--tools', ''], ['--tools', 'cargo,cargo'],
+                      ['--cold-runs', '0'], ['--timeout', '0'],
+                      ['--edits', '-1'], ['--edit-file', '../outside.rs']):
+            with self.subTest(extra=extra), \
+                 mock.patch('sys.stderr'), \
+                 mock.patch.object(blaze_bench, 'prepare_tree') as prepare:
+                with self.assertRaises(SystemExit) as error:
+                    blaze_bench.main(['--source', '.', '--work', '/tmp/unused', *extra])
+                self.assertEqual(error.exception.code, 2)
+                prepare.assert_not_called()
+
+    def test_daemon_cpu_includes_reaped_compiler_workers(self):
+        from unittest import mock
+        fields = ['S', '1'] + ['0'] * 9 + ['100', '200', '300', '400']
+        with mock.patch.object(Path, 'read_text', return_value='42 (ra-jit worker) ' + ' '.join(fields)), \
+             mock.patch.object(blaze_bench.os, 'sysconf', return_value=100):
+            self.assertEqual(blaze_bench._read_proc_stat(42), ('ra-jit worker', 1, 10.0))
+
+    def test_refuses_unowned_checkout(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            (work / 'tree-cargo').mkdir()
+            with self.assertRaisesRegex(ValueError, 'unowned'):
+                blaze_bench.prepare_tree('.', 'HEAD', work, 'cargo', {})
+
+    @unittest.skipUnless(sys.platform == 'linux', 'requires Linux process accounting')
+    def test_timeout_kills_compiler_descendants(self):
+        import os
+        import tempfile
+        import time
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            pidfile = work / 'child.pid'
+            program = ('import subprocess, time; from pathlib import Path; '
+                       'p = subprocess.Popen(["sleep", "60"]); '
+                       f'Path({str(pidfile)!r}).write_text(str(p.pid)); time.sleep(60)')
+            result = blaze_bench.run_step('timeout', [sys.executable, '-c', program],
+                                         work, dict(os.environ), work, 'cargo', 1, 1)
+            self.assertTrue(result['timed_out'])
+            self.assertFalse(result['ok'])
+            pid = int(pidfile.read_text())
+            for _ in range(20):
+                stat = blaze_bench._read_proc_stat(pid)
+                if stat is None:
+                    break
+                # A zombie has stopped and holds no compiler resources.
+                raw = Path(f'/proc/{pid}/stat').read_text()
+                if raw[raw.rfind(')') + 2:].startswith('Z'):
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail('compiler descendant survived timeout')
+
+
 if __name__ == "__main__":
     unittest.main()

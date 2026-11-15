@@ -26,7 +26,8 @@ selection and fallback rules.
 ## `blaze_bench.py`: Cargo versus Blaze measurements
 
 Linux (or WSL) only, Python 3.9+, standard library only. It needs `git`, `du`,
-Cargo (rustup) and Blaze on `~/.cargo/bin`, and a C compiler.
+Cargo (rustup), Blaze on `PATH`, and a C compiler. Native POSIX `PATH`
+entries are preserved; WSL `/mnt/` entries are excluded.
 
 ```sh
 python3 scripts/blaze-bench/blaze_bench.py \
@@ -44,6 +45,7 @@ download is timed, and then times:
 | `noop-build` | the same build again, with nothing changed |
 | `edit-build` | the build after a one-line change to a function body (`--edits` times, 5 by default) |
 | `test-first` | `<tool> test --locked <features> --test integration <filter>` |
+| `test-noop` | the same tests again with no source change |
 | `edit-test` | the same tests after another body edit (`--test-edits` times, 2 by default) |
 
 Each step records its wall time, CPU time, and peak memory. CPU time covers
@@ -59,10 +61,24 @@ Options: `--tools cargo,blaze`, `--features lite|medium|full|default`
 `--edit-file` and `--edit-anchor` (the line after which the edit goes),
 `--timeout` per step, `--keep-daemon`.
 
-The run removes and rebuilds `target/` in its own clones only. It does not
-stop or reset Blaze's shared store in `~/.blaze`, so a "cold" Blaze build
+The run removes and rebuilds `target/` in its own clones only. Existing
+checkout directories are refused unless this harness created their ownership
+marker. Timeouts and interruptions kill the command process group and reap the
+command; a `finally` block restores edited source and stops Blaze, including
+after a failed cold build (unless `--keep-daemon`). A failed timed step makes
+the harness exit nonzero, while preserving the JSON report.
+
+The memory sampler scans `/proc` every 200 ms and retains one process table
+per sample. Cargo measurements exclude Blaze processes outside the command
+tree; Blaze measurements include all Blaze processes, so run on an otherwise
+idle machine without other Blaze sessions. Tool-home growth honors
+`CARGO_HOME` and `BLAZE_HOME`. Blaze can keep a separate shared store
+(for the evaluated stable release, `~/.cache/ra-jit/store`); that store is
+reported by `blaze status` and is outside the tool-home growth metric.
+
+The run does not stop or reset Blaze's shared store in `~/.blaze`, so a "cold" Blaze build
 after an earlier run may reuse cached work there; the report records the
-store's growth. Stop the daemon afterwards with `blaze stop` if you used
+store size in `blaze status`. Stop the daemon afterwards with `blaze stop` if you used
 `--keep-daemon`, and delete `--work` when done.
 
 ## Tests
