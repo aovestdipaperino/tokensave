@@ -7,8 +7,8 @@ use super::connection::{CachedTraitDispatchCaller, Database};
 use crate::errors::{Result, TokenSaveError};
 use crate::resolution::{AmbiguityRefKey, TouchedNode};
 use crate::types::{
-    AmbiguousCall, Edge, EdgeKind, ExecutableBodyDocument, FileRecord, GraphStats, Node, NodeKind,
-    ResolvedBy, SearchResult, UnresolvedRef, Visibility, EDGE_UPSERT_CLAUSE,
+    AmbiguousCall, CallReference, Edge, EdgeKind, ExecutableBodyDocument, FileRecord, GraphStats,
+    Node, NodeKind, ResolvedBy, SearchResult, UnresolvedRef, Visibility, EDGE_UPSERT_CLAUSE,
 };
 
 mod clear;

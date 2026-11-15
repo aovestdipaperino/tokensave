@@ -189,6 +189,7 @@ impl Database {
         let file_size = std::fs::metadata(db_path).map_or(0, |m| m.len());
         Self::apply_pragmas(&conn, file_size).await?;
         let migrated = migrations::migrate(&conn).await?;
+        purge_legacy_read_cache(&conn).await;
 
         let database = Self {
             conn,
@@ -568,10 +569,102 @@ impl Database {
     }
 }
 
+/// Deletes the rows that releases before #650 wrote to `read_cache` (#866).
+///
+/// Those rows are rendered `tokensave_read` responses, so they hold source
+/// text, and nothing has read or written the table since #650. A writable
+/// open clears them once. The table itself stays, because an older build
+/// opening the same database still expects it, and no schema version is
+/// bumped, because a newer `user_version` makes older builds refuse the
+/// database. The delete runs with `secure_delete` on, so the freed pages are
+/// overwritten instead of keeping the text until they are reused. With the
+/// table already empty, this costs one indexed `EXISTS` query.
+///
+/// Best effort: a failure (another process holding the write lock past the
+/// busy timeout, a read-only file) is reported and the open goes on; the next
+/// writable open tries again.
+async fn purge_legacy_read_cache(conn: &Connection) {
+    async fn scalar(conn: &Connection, sql: &str) -> libsql::Result<i64> {
+        let mut rows = conn.query(sql, ()).await?;
+        match rows.next().await? {
+            Some(row) => row.get::<i64>(0),
+            None => Ok(0),
+        }
+    }
+    // A database too old to have the table, or one without rows, has
+    // nothing to clear.
+    if !matches!(
+        scalar(conn, "SELECT EXISTS (SELECT 1 FROM read_cache)").await,
+        Ok(1)
+    ) {
+        return;
+    }
+    let previous = scalar(conn, "PRAGMA secure_delete").await.unwrap_or(0);
+    let purge = conn
+        .execute_batch("PRAGMA secure_delete = ON; DELETE FROM read_cache;")
+        .await;
+    // 0 (off), 1 (on) or 2 (fast); an integer, so formatting it is safe.
+    let _ = conn
+        .execute_batch(&format!("PRAGMA secure_delete = {previous};"))
+        .await;
+    if let Err(error) = purge {
+        eprintln!("[tokensave] could not clear the legacy read_cache table: {error}");
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// Rows a pre-#650 release left in `read_cache` are deleted by the next
+    /// writable open, and a read-only open leaves the database unchanged.
+    #[tokio::test]
+    async fn writable_open_clears_legacy_read_cache_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("tokensave.db");
+        let secure_before = {
+            let (db, _) = Database::initialize(&path).await.unwrap();
+            db.conn()
+                .execute(
+                    "INSERT INTO read_cache (project_id, session_id, file_path, mtime_ns, \
+                     mode, args_hash, digest, body, token_count, created_at) \
+                     VALUES ('p', 's', 'src/secret.rs', 0, 'full', 'h', 'd', \
+                     X'544f4b454e', 1, 0)",
+                    (),
+                )
+                .await
+                .unwrap();
+            db.checkpoint().await.unwrap();
+            let mut rows = db.conn().query("PRAGMA secure_delete", ()).await.unwrap();
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap()
+        };
+        let count = |db: &Database| {
+            let conn = db.conn().clone();
+            async move {
+                let mut rows = conn
+                    .query("SELECT COUNT(*) FROM read_cache", ())
+                    .await
+                    .unwrap();
+                rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap()
+            }
+        };
+        let read_only = Database::open_read_only(&path).await.unwrap();
+        assert_eq!(
+            count(&read_only).await,
+            1,
+            "a read-only open writes nothing"
+        );
+        drop(read_only);
+        let (db, _) = Database::open(&path).await.unwrap();
+        assert_eq!(count(&db).await, 0);
+        let mut rows = db.conn().query("PRAGMA secure_delete", ()).await.unwrap();
+        let secure = rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap();
+        assert_eq!(
+            secure, secure_before,
+            "secure_delete is restored after the purge"
+        );
+    }
 
     const KB: u64 = 1024;
     const MB: u64 = 1024 * 1024;

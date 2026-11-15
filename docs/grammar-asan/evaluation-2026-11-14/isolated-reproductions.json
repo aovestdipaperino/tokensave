@@ -1,0 +1,28 @@
+[
+  {
+    "grammar": "perl",
+    "input": "/results/evaluation-05/inputs/seed-empty",
+    "command": [
+      "/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan",
+      "perl",
+      "/results/evaluation-05/inputs/seed-empty"
+    ],
+    "status": "failed",
+    "returncode": 1,
+    "seconds": 0.388,
+    "log": "/results/evaluation-05/repro-perl-empty.log"
+  },
+  {
+    "grammar": "sql",
+    "input": "/results/evaluation-05/inputs/0121-sample.gw",
+    "command": [
+      "/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan",
+      "sql",
+      "/results/evaluation-05/inputs/0121-sample.gw"
+    ],
+    "status": "failed",
+    "returncode": 1,
+    "seconds": 0.262,
+    "log": "/results/evaluation-05/repro-sql-sample.log"
+  }
+]

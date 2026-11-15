@@ -892,6 +892,50 @@ fn git_marker(dir: &Path) -> Option<GitMarker> {
     })
 }
 
+/// Whether `dir` is the root of a linked worktree: its `.git` is a file that
+/// points into the `worktrees/` directory of a repository.
+///
+/// The scan uses this to stay out of a worktree that lies inside the checkout
+/// it indexes (#865). Such a directory is a second working tree of the same
+/// repository, not content of the first. A nested clone and a submodule are
+/// repositories of their own and give `false`.
+///
+/// Costs one `stat` for a directory with no `.git` entry.
+pub(crate) fn is_linked_worktree_root(dir: &Path) -> bool {
+    git_marker(dir) == Some(GitMarker::LinkedWorktree)
+}
+
+/// The root of the linked worktree that `start` is in, when the project that
+/// owns `start` is the index of the checkout around that worktree.
+///
+/// A linked worktree's `.git` file is not a boundary for [`discover_project`],
+/// so a worktree nested in its main checkout borrows the index of that
+/// checkout. This function reports that case with file checks only, and it
+/// does not start a `git` process.
+///
+/// Returns `None` when the worktree has an index of its own, when `start` is
+/// not below a linked worktree root, and when the project is a plain folder
+/// outside each git working tree. Such a folder indexes the checkouts below
+/// it, so its index is not borrowed.
+pub fn borrowed_worktree_root(start: &Path) -> Option<PathBuf> {
+    borrowed_worktree_root_from(start, crate::agents::home_dir().as_deref())
+}
+
+/// [`borrowed_worktree_root`] with the home directory passed in.
+fn borrowed_worktree_root_from(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let ProjectDiscovery::Initialized(project) = discover_project_from(start, home) else {
+        return None;
+    };
+    let worktree = start
+        .ancestors()
+        .take_while(|dir| *dir != project)
+        .find(|dir| git_marker(dir) == Some(GitMarker::LinkedWorktree))?;
+    project
+        .ancestors()
+        .any(|dir| git_marker(dir).is_some())
+        .then(|| worktree.to_path_buf())
+}
+
 /// Returns the nearest initialized `TokenSave` project that owns `start`, or
 /// `None` when [`discover_project`] finds none (or only an incomplete one).
 pub fn discover_project_root(start: &Path) -> Option<PathBuf> {
@@ -919,6 +963,23 @@ pub fn resolve_path_with_discovery(path: Option<String>) -> PathBuf {
             ProjectDiscovery::Uninitialized { .. } => cwd,
         }
     }
+}
+
+/// Resolve the repository root for a pathless sync started by a git hook.
+///
+/// Git hooks belong to the repository that fired them. They must not borrow an
+/// initialized plain workspace above that repository: doing so can turn a
+/// small commit into an unbounded sync of an unrelated, much larger index.
+pub fn resolve_git_hook_sync_root() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    git_hook_sync_root_from(&cwd)
+}
+
+fn git_hook_sync_root_from(start: &Path) -> PathBuf {
+    start
+        .ancestors()
+        .find(|directory| git_marker(directory).is_some())
+        .map_or_else(|| start.to_path_buf(), Path::to_path_buf)
 }
 
 /// Basename of the dependency lockfile Terraform and `OpenTofu` share.
@@ -1423,7 +1484,10 @@ mod tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod discovery_tests {
-    use super::{discover_project_from, get_tokensave_dir, ProjectDiscovery};
+    use super::{
+        borrowed_worktree_root_from, discover_project_from, get_tokensave_dir,
+        git_hook_sync_root_from, ProjectDiscovery,
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;
@@ -1517,6 +1581,18 @@ mod discovery_tests {
     }
 
     #[test]
+    fn git_hook_sync_stays_at_nested_repository_root() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        init_project(&workspace);
+        let repository = mkdirs(&workspace, &["repos", "app"]);
+        init_repo(&repository);
+        let start = mkdirs(&repository, &["src", "nested"]);
+
+        assert_eq!(git_hook_sync_root_from(&start), repository);
+    }
+
+    #[test]
     fn submodule_git_file_is_a_repository_boundary() {
         let tmp = TempDir::new().unwrap();
         let outer = tmp.path().to_path_buf();
@@ -1571,6 +1647,83 @@ mod discovery_tests {
                 git_root: Some(worktree)
             }
         );
+    }
+
+    /// A linked worktree at `parts` below `main`, with the `.git` file that
+    /// `git worktree add` writes.
+    fn nested_worktree(main: &Path, parts: &[&str]) -> PathBuf {
+        let worktree = mkdirs(main, parts);
+        let gitdir = main.join(".git").join("worktrees").join("feature");
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .unwrap();
+        worktree
+    }
+
+    #[test]
+    fn nested_worktree_without_an_index_borrows_the_main_index() {
+        let tmp = TempDir::new().unwrap();
+        let main = tmp.path().to_path_buf();
+        init_repo(&main);
+        init_project(&main);
+        let worktree = nested_worktree(&main, &[".worktrees", "feature"]);
+        let start = mkdirs(&worktree, &["src"]);
+        assert_eq!(
+            borrowed_worktree_root_from(&worktree, None),
+            Some(worktree.clone())
+        );
+        assert_eq!(borrowed_worktree_root_from(&start, None), Some(worktree));
+    }
+
+    #[test]
+    fn nested_worktree_with_an_index_borrows_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let main = tmp.path().to_path_buf();
+        init_repo(&main);
+        init_project(&main);
+        let worktree = nested_worktree(&main, &[".worktrees", "feature"]);
+        init_project(&worktree);
+        let start = mkdirs(&worktree, &["src"]);
+        assert_eq!(borrowed_worktree_root_from(&start, None), None);
+    }
+
+    #[test]
+    fn main_checkout_and_its_subdirectories_borrow_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let main = tmp.path().to_path_buf();
+        init_repo(&main);
+        init_project(&main);
+        let start = mkdirs(&main, &["src", "component"]);
+        assert_eq!(borrowed_worktree_root_from(&main, None), None);
+        assert_eq!(borrowed_worktree_root_from(&start, None), None);
+    }
+
+    /// A plain folder that indexes the checkouts below it owns their files.
+    #[test]
+    fn worktree_below_a_non_git_workspace_project_borrows_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        init_project(&workspace);
+        let worktree = mkdirs(&workspace, &["dev", "wt"]);
+        fs::write(worktree.join(".git"), "gitdir: /repo/.git/worktrees/wt\n").unwrap();
+        assert_eq!(borrowed_worktree_root_from(&worktree, None), None);
+    }
+
+    #[test]
+    fn worktree_and_submodule_without_a_project_above_borrow_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let worktree = mkdirs(tmp.path(), &["wt"]);
+        fs::write(worktree.join(".git"), "gitdir: /repo/.git/worktrees/wt\n").unwrap();
+        assert_eq!(borrowed_worktree_root_from(&worktree, None), None);
+
+        let outer = mkdirs(tmp.path(), &["outer"]);
+        init_repo(&outer);
+        init_project(&outer);
+        let sub = mkdirs(&outer, &["deps", "sub"]);
+        fs::write(sub.join(".git"), "gitdir: ../../.git/modules/sub\n").unwrap();
+        assert_eq!(borrowed_worktree_root_from(&sub, None), None);
     }
 
     #[test]

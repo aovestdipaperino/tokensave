@@ -17,6 +17,8 @@ const DEFAULT_LIMIT: usize = 10;
 const MAX_LIMIT: usize = 50;
 const MAX_BODY_CHARS: usize = 24_000;
 const MAX_LISTED_LINKS: usize = 100;
+const DEFAULT_RELATED_DEPTH: usize = 1;
+const MAX_RELATED_DEPTH: usize = 3;
 
 fn text_result(value: &Value) -> ToolResult {
     let formatted = serde_json::to_string_pretty(value).unwrap_or_default();
@@ -107,6 +109,52 @@ async fn read_concept(
     }))
 }
 
+async fn related_concepts(
+    cg: &TokenSave,
+    knowledge: &knowledge::Knowledge,
+    bundle: Option<&str>,
+    id: &str,
+    depth: usize,
+    limit: usize,
+) -> Result<Value> {
+    let matches = knowledge.find(bundle, id);
+    let start = match matches.as_slice() {
+        [one] => *one,
+        [] => {
+            return Ok(json!({
+                "error": format!("no imported concept `{id}`{}", bundle.map(|b| format!(" in bundle `{b}`")).unwrap_or_default()),
+                "hint": "search with `query` to find concept IDs",
+            }))
+        }
+        many => {
+            return Ok(json!({
+                "error": format!("concept `{id}` exists in several bundles; pass `bundle`"),
+                "bundles": many.iter().map(|c| c.bundle.as_str()).collect::<Vec<_>>(),
+            }))
+        }
+    };
+    let related = knowledge.related(start, depth, limit);
+    let mut results = Vec::with_capacity(related.len());
+    for item in related {
+        let concept = item.concept;
+        results.push(json!({
+            "bundle": concept.bundle,
+            "id": concept.id,
+            "type": concept.concept_type,
+            "title": concept.title,
+            "distance": item.distance,
+            "code_files": code_files(cg, concept).await,
+        }));
+    }
+    Ok(json!({
+        "bundle": start.bundle,
+        "concept": start.id,
+        "depth": depth,
+        "results": results,
+        "hint": "read a related concept in full with `concept` (and `bundle`)",
+    }))
+}
+
 /// Handles `tokensave_knowledge`.
 pub(super) async fn handle_knowledge(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     // Reading bundles is blocking file I/O; keep it off the async workers.
@@ -145,6 +193,24 @@ pub(super) async fn handle_knowledge(cg: &TokenSave, args: Value) -> Result<Tool
         ));
     }
 
+    if let Some(id) = str_arg(&args, "related") {
+        let depth = args
+            .get("depth")
+            .and_then(Value::as_u64)
+            .map_or(DEFAULT_RELATED_DEPTH, |n| {
+                usize::try_from(n).unwrap_or(MAX_RELATED_DEPTH)
+            })
+            .clamp(1, MAX_RELATED_DEPTH);
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_u64)
+            .map_or(DEFAULT_LIMIT, |n| usize::try_from(n).unwrap_or(MAX_LIMIT))
+            .clamp(1, MAX_LIMIT);
+        return Ok(text_result(
+            &related_concepts(cg, &knowledge, bundle, id, depth, limit).await?,
+        ));
+    }
+
     let query = str_arg(&args, "query").unwrap_or_default();
     let file = str_arg(&args, "file").map(|f| f.trim_start_matches("./").replace('\\', "/"));
     let filter = Filter {
@@ -160,7 +226,7 @@ pub(super) async fn handle_knowledge(cg: &TokenSave, args: Value) -> Result<Tool
         return Ok(text_result(&json!({
             "bundles": bundles_summary(&knowledge),
             "hint": "pass `query` to search concepts, `file` to find concepts about a \
-                     project file, or `concept` to read one",
+                     project file, `concept` to read one, or `related` to traverse links",
         })));
     }
     let limit = args

@@ -191,10 +191,6 @@ pub fn render_text(merged: &BTreeMap<String, Snapshot>, section: Section, window
                     100.0 * db / total,
                     100.0 * (total - db) / total
                 );
-                let _ = writeln!(
-                    out,
-                    "This share includes profiled query methods only; raw database access in memory reporting, quality diff, edge audit, import analysis, schema inspection, and Rails route edge insertion is not attributed to DB time."
-                );
             }
         }
         let _ = writeln!(out);
@@ -326,7 +322,6 @@ mod tests {
         let text = render_text(&m, Section::All, "24h");
         assert!(text.contains('*'));
         assert!(text.contains("Database share of measured MCP time: 40%"));
-        assert!(text.contains("raw database access"));
     }
 
     #[test]

@@ -82,7 +82,7 @@ and not a fallback to a parent branch's index).
 
 | Tool | Purpose |
 |------|---------|
-| `tokensave_callers` | Find what calls a function |
+| `tokensave_callers` | Find every extracted call sharing a function's trailing name, labelled by what resolution established |
 | `tokensave_callees` | Find what a function calls |
 | `tokensave_impact` | See what's affected by changing a symbol |
 | `tokensave_call_chain` | Shortest path between two symbols, named by symbol (`from`, `to`) or node ID. Default: a directed call chain. `follow: "any"`: the shortest connection over every edge kind in either direction |
@@ -91,6 +91,8 @@ and not a fallback to a parent branch's index).
 | `tokensave_hotspots` | Most connected symbols (highest call count) |
 
 **Edge provenance.** `tokensave_callers`, `tokensave_callees` and `tokensave_call_chain` show how the resolver bound each edge they return. `resolved_by` names the resolver path, for example `exact-match`, `qualified-match` or `simple-name-match`. `resolved_exact` is `false` when the resolver picked the target by name alone, so a symbol of the same name elsewhere could be the real target; read the call site before you rely on such an edge. When one function reaches a target from several call sites, the strongest provenance is reported. Both fields are absent for an edge that an extractor read directly from the syntax tree. `tokensave_impact` reports `heuristic_edge_count`: the number of edges in the radius with `resolved_exact: false`.
+
+**Complete caller evidence.** Direct `tokensave_callers` results do not stop at resolved edges. For every extracted call whose trailing name matches the requested symbol, the containing caller has a `references` entry labelled `confirmed`, `other`, `ambiguous`, or `unresolved`. `other` names the same-named definition the resolver selected. An ambiguous entry reports its candidate count and whether the requested definition is among them. Ambiguous and unresolved entries carry `to_read: true`; their receiver text is included when the reference had one. The tool keeps the existing caller grouping, graph depth, dispatch and provenance fields. `limit` also bounds the reference evidence; a cut reports `reference_count`, `reference_total`, and `references_truncated` instead of silently omitting sites.
 
 **Paths between two symbols.** `tokensave_call_chain` answers "how does A reach B?". Pass `from` and `to` as symbol names, or `from_id` and `to_id` as node IDs; an ID wins over a name. A name must match one symbol. When it matches several, or none, the tool does not pick one: it returns `found: false` and lists the candidates under `unresolved`, and you call again with the node ID of one of them. With `follow: "calls"` (the default) the path follows outgoing `calls` edges only, so it is a chain of execution. With `follow: "any"` the path follows every stored edge kind in either direction, which shows how two symbols are connected when neither calls the other; each step then reports `edge_direction` (`forward`: from the previous step to this one, `reverse`: the opposite). `max_depth` limits the path length (default 8, maximum 20). A `follow: "any"` search runs from both ends and meets in the middle, so a well-connected node near one end costs little. It also stops after it has read the edges of a fixed number of nodes. The result then has `budget_exhausted: true` and a message that gives that number; this means "not found within the budget" and not "not connected".
 
@@ -143,7 +145,18 @@ Writer tools that let agents modify files without regex or shell-quoting hazards
 | `tokensave_insert_at` | Insert content before or after a unique anchor string or line number |
 | `tokensave_ast_grep_rewrite` | Structural code rewrite via the `ast-grep` CLI in `--rewrite` mode |
 
-`tokensave_create_file` (`path`, `content`, optional `overwrite`) creates a new file and indexes it at once, so it is searchable right after the call. It is in the `edit` area, so it is listed after `tokensave_more` with `edit` or `all`, and is not marked read-only. Its path rules are stricter than the other edit tools', which honor an absolute path outside the project verbatim:
+**Where the edit tools write.** Every edit tool (the ones above, `tokensave_replace_lines`, the symbol edits `tokensave_replace_symbol`, `tokensave_insert_at_symbol` and `tokensave_delete_symbol`, and `tokensave_rename`) resolves its target and refuses it unless it lies inside one of these:
+
+- the indexed project root, or
+- another git worktree of the same repository, as `git worktree list` reports it from the project root. This is how an agent working in a worktree edits its own checkout: pass an absolute path there, or a relative `path` with `project_root` (alias `cwd`) set to the worktree.
+
+Symlinks and `..` are resolved before the check, so neither can point an edit outside those directories. There is one exception. The indexer follows a symlink inside the root into a directory outside it, so a file the index tracks under such a link (a plain path with no `..`) stays editable through it. Paths inside `.git` and tokensave's own state directory are refused as well. A refused edit fails with a `refusing to edit` error and leaves the file untouched. A rename that would touch a refused file is blocked as a whole. The check and the write are not atomic, so a symlink swapped in between them is followed.
+
+**What `tokensave_read` reads.** `tokensave_read` reads any file inside the project root, whether the index tracks it or not. That includes files matched by `.gitignore` or by the `exclude` list, such as `vendor/`. The index-backed tools (search, context, symbol, graph and file-listing tools) never return those files, because they are never indexed. `tokensave_read` refuses paths inside `.git`, since `.git/config` can hold credentials, and paths that resolve outside the root (#636, #866).
+
+**Repository content is data.** Source, comments and documentation in tool results come from the repository, and anyone who can commit to it controls them. The `initialize` instructions and the rules file `tokensave install` writes tell the agent to treat that content as data and never follow instructions that appear inside it (#866). See [SECURITY.md](../../SECURITY.md#indexed-content-is-data-not-instructions) for what that guidance can and cannot prevent.
+
+`tokensave_create_file` (`path`, `content`, optional `overwrite`) creates a new file and indexes it at once, so it is searchable right after the call. It is in the `edit` area, so it is listed after `tokensave_more` with `edit` or `all`, and is not marked read-only. Its path rules are stricter than the other edit tools', which also accept another worktree of the repository:
 
 - The file must land inside the indexed project root. An absolute path elsewhere, any `..` component, and a path through a symlinked directory that leaves the root are refused. Symlinks are resolved on the nearest existing directory above the file.
 - Paths inside `.git` and tokensave's own state directory are refused.
