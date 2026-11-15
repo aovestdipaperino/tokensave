@@ -298,6 +298,34 @@ func main() {
     );
 }
 
+/// Catches: call names that keep raw expression text (`48 + Double`,
+/// `await poll(x)`) or drop the type receiver of a static call.
+#[test]
+fn test_swift_callee_names_by_receiver_shape() {
+    let source = include_str!("fixtures/swift_callee_shapes.swift");
+    let result = SwiftExtractor.extract("swift_callee_shapes.swift", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let mut names: Vec<&str> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.reference_kind == EdgeKind::Calls)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec![
+            "Cache::open",
+            "Double",
+            "Inner::make",
+            "allSatisfy",
+            "helper",
+            "poll",
+            "start"
+        ]
+    );
+}
+
 #[test]
 fn test_swift_docstrings() {
     let source = r#"/// Initializes the system.
@@ -514,4 +542,22 @@ fn test_swift_annotation_extraction() {
         annots.len(),
         "each AnnotationUsage should have an Annotates unresolved ref"
     );
+}
+
+/// Catches: `max_nesting` staying 0 for every Swift function because the
+/// nesting node kind did not exist in tree-sitter-swift.
+#[test]
+fn test_swift_max_nesting() {
+    let source = include_str!("fixtures/swift_nesting.swift");
+    let result = SwiftExtractor.extract("swift_nesting.swift", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let nesting = |name: &str| {
+        result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Function && n.name == name)
+            .map(|n| n.max_nesting)
+    };
+    assert_eq!(nesting("deep"), Some(4), "function body, if, for, if");
+    assert_eq!(nesting("flat"), Some(1), "function body only");
 }

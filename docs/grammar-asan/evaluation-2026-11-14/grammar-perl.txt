@@ -1,0 +1,446 @@
+{"phase":"start","input":"/results/evaluation-05/inputs/0000-julia_module.jl"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0000-julia_module.jl","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0001-config.json"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0001-config.json","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0002-Example.pm"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0002-Example.pm","syntax_error":false}
+{"phase":"start","input":"/results/evaluation-05/inputs/0003-basic.t"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0003-basic.t","syntax_error":false}
+{"phase":"start","input":"/results/evaluation-05/inputs/0004-integration.t"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0004-integration.t","syntax_error":false}
+{"phase":"start","input":"/results/evaluation-05/inputs/0005-markdown_yaml_frontmatter_hang.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0005-markdown_yaml_frontmatter_hang.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0006-README.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0006-README.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0007-.graphify_okf_manifest.json"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0007-.graphify_okf_manifest.json","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0008-graph.json"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0008-graph.json","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0009-Model_Architecture.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0009-Model_Architecture.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0010-Paper_Concepts.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0010-Paper_Concepts.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0011-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0011-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0012-LayerNorm.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0012-LayerNorm.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0013-MultiHeadAttention.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0013-MultiHeadAttention.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0014-Transformer.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0014-Transformer.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0015-attention_mechanism.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0015-attention_mechanism.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0016-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0016-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0017-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0017-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0018-regenerate.py"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0018-regenerate.py","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0019-LICENSE.txt"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0019-LICENSE.txt","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0020-README.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0020-README.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0021-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0021-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0022-sql_equality.py"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0022-sql_equality.py","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0023-gross-margin-period.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0023-gross-margin-period.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0024-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0024-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0025-revenue-ytd.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0025-revenue-ytd.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0026-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0026-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0027-log.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0027-log.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0028-gross-margin-legacy.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0028-gross-margin-legacy.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0029-gross-margin.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0029-gross-margin.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0030-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0030-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0031-revenue.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0031-revenue.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0032-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0032-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0033-margin-standard.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0033-margin-standard.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0034-revenue-recognition.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0034-revenue-recognition.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0035-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0035-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0036-run-on-bq.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0036-run-on-bq.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0037-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0037-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0038-orders.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0038-orders.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0039-crypto_bitcoin.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0039-crypto_bitcoin.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0040-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0040-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0041-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0041-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0042-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0042-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0043-blocks___transactions.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0043-blocks___transactions.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0044-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0044-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0045-inputs___transactions.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0045-inputs___transactions.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0046-outputs___transactions.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0046-outputs___transactions.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0047-duplicate_transactions.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0047-duplicate_transactions.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0048-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0048-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0049-blocks.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0049-blocks.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0050-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0050-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0051-inputs.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0051-inputs.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0052-outputs.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0052-outputs.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0053-transactions.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0053-transactions.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0054-ga4_obfuscated_sample_ecommerce.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0054-ga4_obfuscated_sample_ecommerce.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0055-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0055-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0056-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0056-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0057-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0057-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0058-acquired_users.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0058-acquired_users.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0059-frequently_active_users.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0059-frequently_active_users.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0060-google_acquired_cohorts.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0060-google_acquired_cohorts.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0061-highly_active_users.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0061-highly_active_users.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0062-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0062-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0063-n_day_active_users.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0063-n_day_active_users.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0064-n_day_inactive_users.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0064-n_day_inactive_users.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0065-purchasers.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0065-purchasers.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0066-events_.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0066-events_.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0067-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0067-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0068-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0068-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0069-stackoverflow.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0069-stackoverflow.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0070-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0070-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0071-content_licenses.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0071-content_licenses.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0072-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0072-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0073-comments__posts.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0073-comments__posts.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0074-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0074-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0075-post_links__posts.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0075-post_links__posts.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0076-posts__votes.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0076-posts__votes.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0077-posts_answers__posts_questions.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0077-posts_answers__posts_questions.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0078-accepted_answer_rate.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0078-accepted_answer_rate.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0079-bad_question_flag_ratio.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0079-bad_question_flag_ratio.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0080-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0080-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0081-post_types.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0081-post_types.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0082-vote_types.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0082-vote_types.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0083-badges.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0083-badges.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0084-comments.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0084-comments.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0085-index.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0085-index.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0086-post_history.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0086-post_history.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0087-post_links.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0087-post_links.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0088-posts_answers.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0088-posts_answers.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0089-posts_moderator_nomination.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0089-posts_moderator_nomination.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0090-posts_orphaned_tag_wiki.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0090-posts_orphaned_tag_wiki.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0091-posts_privilege_wiki.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0091-posts_privilege_wiki.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0092-posts_questions.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0092-posts_questions.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0093-posts_tag_wiki.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0093-posts_tag_wiki.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0094-posts_tag_wiki_excerpt.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0094-posts_tag_wiki_excerpt.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0095-posts_wiki_placeholder.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0095-posts_wiki_placeholder.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0096-stackoverflow_posts.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0096-stackoverflow_posts.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0097-tags.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0097-tags.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0098-users.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0098-users.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0099-votes.md"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0099-votes.md","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0100-rails_routes.rb"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0100-rails_routes.rb","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0101-rails_routes_comments.rb"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0101-rails_routes_comments.rb","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0102-rails_routes_dsl.rb"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0102-rails_routes_dsl.rb","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0103-ruby_receiver_calls.rb"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0103-ruby_receiver_calls.rb","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0104-sample-flake.nix"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0104-sample-flake.nix","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0105-sample.as"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0105-sample.as","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0106-sample.astro"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0106-sample.astro","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0107-sample.bas"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0107-sample.bas","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0108-sample.bat"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0108-sample.bat","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0109-sample.bi"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0109-sample.bi","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0110-sample.c"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0110-sample.c","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0111-sample.cob"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0111-sample.cob","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0112-sample.cpp"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0112-sample.cpp","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0113-sample.cs"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0113-sample.cs","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0114-sample.cu"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0114-sample.cu","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0115-sample.dart"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0115-sample.dart","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0116-sample.dockerfile"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0116-sample.dockerfile","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0117-sample.f90"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0117-sample.f90","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0118-sample.fst"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0118-sample.fst","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0119-sample.gdshader"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0119-sample.gdshader","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0120-sample.glsl"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0120-sample.glsl","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0121-sample.gw"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0121-sample.gw","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0122-sample.h"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0122-sample.h","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0123-sample.html.erb"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0123-sample.html.erb","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0124-sample.html.slim"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0124-sample.html.slim","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0125-sample.js"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0125-sample.js","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0126-sample.kt"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0126-sample.kt","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0127-sample.lua"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0127-sample.lua","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0128-sample.m"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0128-sample.m","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0129-sample.mjs"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0129-sample.mjs","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0130-sample.nix"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0130-sample.nix","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0131-sample.pas"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0131-sample.pas","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0132-sample.php"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0132-sample.php","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0133-sample.pl"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0133-sample.pl","syntax_error":false}
+{"phase":"start","input":"/results/evaluation-05/inputs/0134-sample.proto"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0134-sample.proto","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0135-sample.ps1"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0135-sample.ps1","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0136-sample.py"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0136-sample.py","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0137-sample.qb"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0137-sample.qb","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0138-sample.rake"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0138-sample.rake","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0139-sample.rb"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0139-sample.rb","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0140-sample.sh"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0140-sample.sh","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0141-sample.sql"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0141-sample.sql","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0142-sample.svelte"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0142-sample.svelte","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0143-sample.swift"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0143-sample.swift","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0144-sample.ts"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0144-sample.ts","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0145-sample.vb"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0145-sample.vb","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0146-sample.zig"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0146-sample.zig","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/0147-sample_layout.html.slim"}
+{"phase":"done","input":"/results/evaluation-05/inputs/0147-sample_layout.html.slim","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/seed-empty"}
+{"phase":"done","input":"/results/evaluation-05/inputs/seed-empty","syntax_error":false}
+{"phase":"start","input":"/results/evaluation-05/inputs/seed-delimiters"}
+{"phase":"done","input":"/results/evaluation-05/inputs/seed-delimiters","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/seed-binary"}
+{"phase":"done","input":"/results/evaluation-05/inputs/seed-binary","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/seed-nul"}
+{"phase":"done","input":"/results/evaluation-05/inputs/seed-nul","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/seed-unicode"}
+{"phase":"done","input":"/results/evaluation-05/inputs/seed-unicode","syntax_error":true}
+{"phase":"start","input":"/results/evaluation-05/inputs/seed-nested"}
+{"phase":"done","input":"/results/evaluation-05/inputs/seed-nested","syntax_error":false}
+{"phase":"start","input":"/results/evaluation-05/inputs/seed-long-string"}
+{"phase":"done","input":"/results/evaluation-05/inputs/seed-long-string","syntax_error":false}
+{"grammar":"perl","inputs":155}
+
+=================================================================
+==10619==ERROR: LeakSanitizer: detected memory leaks
+
+Direct leak of 2480 byte(s) in 155 object(s) allocated from:
+    #0 0xc708fe405948 in malloc (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0xfc5948) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+    #1 0xc708ffac4498 in create_queue /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:146:29
+    #2 0xc708ffac4498 in heredoc_new /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:364:35
+    #3 0xc708ffac4498 in tree_sitter_perl_external_scanner_create /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:1198:22
+    #4 0xc7090042a9d8 in ts_parser__external_scanner_create /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:369:40
+    #5 0xc7090042a9d8 in ts_parser_parse /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:2097:5
+    #6 0xc7090043999c in ts_parser_parse_with_options /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:2209:20
+    #7 0xc708feea0bdc in <tree_sitter::Parser>::parse_with_options::<&[u8], <tree_sitter::Parser>::parse<&alloc::vec::Vec<u8>>::{closure#0}> /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/binding_rust/lib.rs:948:30
+    #8 0xc708feea1334 in <tree_sitter::Parser>::parse::<&alloc::vec::Vec<u8>> /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/binding_rust/lib.rs:859:14
+    #9 0xc708fe456034 in grammar_asan::run /work-current/examples/grammar_asan.rs:59:14
+    #10 0xc708fe456e64 in grammar_asan::main /work-current/examples/grammar_asan.rs:78:25
+    #11 0xc708fe43f550 in <fn() as core::ops::function::FnOnce<()>>::call_once /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+    #12 0xc708fe434254 in std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/sys/backtrace.rs:166:18
+    #13 0xc708fe45f5e0 in std::rt::lang_start::<()>::{closure#0} /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:206:18
+    #14 0xc7090239052c in <&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe as core::ops::function::FnOnce<()>>::call_once /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ops/function.rs:287:21
+    #15 0xc709023d2aa4 in std::panicking::catch_unwind::do_call::<&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe, i32> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #16 0xc709023e6960 in __rust_try std.56e1cf2c4c15511b-cgu.12
+    #17 0xc709023d2088 in std::panicking::catch_unwind::<i32, &dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #18 0xc7090241908c in std::panic::catch_unwind::<&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe, i32> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #19 0xc709022b0818 in std::rt::lang_start_internal::{closure#0} /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:175:24
+    #20 0xc709023d28ec in std::panicking::catch_unwind::do_call::<std::rt::lang_start_internal::{closure#0}, isize> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #21 0xc709023e6960 in __rust_try std.56e1cf2c4c15511b-cgu.12
+    #22 0xc709023d1dd0 in std::panicking::catch_unwind::<isize, std::rt::lang_start_internal::{closure#0}> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #23 0xc70902418ff4 in std::panic::catch_unwind::<std::rt::lang_start_internal::{closure#0}, isize> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #24 0xc709022b5254 in std::rt::lang_start_internal /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:171:5
+    #25 0xc708fe45cbe8 in std::rt::lang_start::<()> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:205:5
+    #26 0xc708fe45b710 in main (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0x101b710) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+    #27 0xe9b269897740  (/lib/aarch64-linux-gnu/libc.so.6+0x27740) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #28 0xe9b269897814 in __libc_start_main (/lib/aarch64-linux-gnu/libc.so.6+0x27814) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #29 0xc708fe3713ac in _start (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0xf313ac) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+
+Direct leak of 2480 byte(s) in 155 object(s) allocated from:
+    #0 0xc708fe405948 in malloc (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0xfc5948) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+    #1 0xc708ffac44c8 in create_queue /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:146:29
+    #2 0xc708ffac44c8 in heredoc_new /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:366:32
+    #3 0xc708ffac44c8 in tree_sitter_perl_external_scanner_create /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:1198:22
+    #4 0xc7090042a9d8 in ts_parser__external_scanner_create /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:369:40
+    #5 0xc7090042a9d8 in ts_parser_parse /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:2097:5
+    #6 0xc7090043999c in ts_parser_parse_with_options /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:2209:20
+    #7 0xc708feea0bdc in <tree_sitter::Parser>::parse_with_options::<&[u8], <tree_sitter::Parser>::parse<&alloc::vec::Vec<u8>>::{closure#0}> /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/binding_rust/lib.rs:948:30
+    #8 0xc708feea1334 in <tree_sitter::Parser>::parse::<&alloc::vec::Vec<u8>> /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/binding_rust/lib.rs:859:14
+    #9 0xc708fe456034 in grammar_asan::run /work-current/examples/grammar_asan.rs:59:14
+    #10 0xc708fe456e64 in grammar_asan::main /work-current/examples/grammar_asan.rs:78:25
+    #11 0xc708fe43f550 in <fn() as core::ops::function::FnOnce<()>>::call_once /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+    #12 0xc708fe434254 in std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/sys/backtrace.rs:166:18
+    #13 0xc708fe45f5e0 in std::rt::lang_start::<()>::{closure#0} /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:206:18
+    #14 0xc7090239052c in <&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe as core::ops::function::FnOnce<()>>::call_once /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ops/function.rs:287:21
+    #15 0xc709023d2aa4 in std::panicking::catch_unwind::do_call::<&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe, i32> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #16 0xc709023e6960 in __rust_try std.56e1cf2c4c15511b-cgu.12
+    #17 0xc709023d2088 in std::panicking::catch_unwind::<i32, &dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #18 0xc7090241908c in std::panic::catch_unwind::<&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe, i32> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #19 0xc709022b0818 in std::rt::lang_start_internal::{closure#0} /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:175:24
+    #20 0xc709023d28ec in std::panicking::catch_unwind::do_call::<std::rt::lang_start_internal::{closure#0}, isize> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #21 0xc709023e6960 in __rust_try std.56e1cf2c4c15511b-cgu.12
+    #22 0xc709023d1dd0 in std::panicking::catch_unwind::<isize, std::rt::lang_start_internal::{closure#0}> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #23 0xc70902418ff4 in std::panic::catch_unwind::<std::rt::lang_start_internal::{closure#0}, isize> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #24 0xc709022b5254 in std::rt::lang_start_internal /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:171:5
+    #25 0xc708fe45cbe8 in std::rt::lang_start::<()> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:205:5
+    #26 0xc708fe45b710 in main (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0x101b710) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+    #27 0xe9b269897740  (/lib/aarch64-linux-gnu/libc.so.6+0x27740) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #28 0xe9b269897814 in __libc_start_main (/lib/aarch64-linux-gnu/libc.so.6+0x27814) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #29 0xc708fe3713ac in _start (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0xf313ac) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+
+Direct leak of 2480 byte(s) in 155 object(s) allocated from:
+    #0 0xc708fe405948 in malloc (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0xfc5948) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+    #1 0xc708ffac44b0 in create_queue /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:146:29
+    #2 0xc708ffac44b0 in heredoc_new /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:365:39
+    #3 0xc708ffac44b0 in tree_sitter_perl_external_scanner_create /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:1198:22
+    #4 0xc7090042a9d8 in ts_parser__external_scanner_create /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:369:40
+    #5 0xc7090042a9d8 in ts_parser_parse /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:2097:5
+    #6 0xc7090043999c in ts_parser_parse_with_options /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:2209:20
+    #7 0xc708feea0bdc in <tree_sitter::Parser>::parse_with_options::<&[u8], <tree_sitter::Parser>::parse<&alloc::vec::Vec<u8>>::{closure#0}> /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/binding_rust/lib.rs:948:30
+    #8 0xc708feea1334 in <tree_sitter::Parser>::parse::<&alloc::vec::Vec<u8>> /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/binding_rust/lib.rs:859:14
+    #9 0xc708fe456034 in grammar_asan::run /work-current/examples/grammar_asan.rs:59:14
+    #10 0xc708fe456e64 in grammar_asan::main /work-current/examples/grammar_asan.rs:78:25
+    #11 0xc708fe43f550 in <fn() as core::ops::function::FnOnce<()>>::call_once /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+    #12 0xc708fe434254 in std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/sys/backtrace.rs:166:18
+    #13 0xc708fe45f5e0 in std::rt::lang_start::<()>::{closure#0} /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:206:18
+    #14 0xc7090239052c in <&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe as core::ops::function::FnOnce<()>>::call_once /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ops/function.rs:287:21
+    #15 0xc709023d2aa4 in std::panicking::catch_unwind::do_call::<&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe, i32> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #16 0xc709023e6960 in __rust_try std.56e1cf2c4c15511b-cgu.12
+    #17 0xc709023d2088 in std::panicking::catch_unwind::<i32, &dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #18 0xc7090241908c in std::panic::catch_unwind::<&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe, i32> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #19 0xc709022b0818 in std::rt::lang_start_internal::{closure#0} /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:175:24
+    #20 0xc709023d28ec in std::panicking::catch_unwind::do_call::<std::rt::lang_start_internal::{closure#0}, isize> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #21 0xc709023e6960 in __rust_try std.56e1cf2c4c15511b-cgu.12
+    #22 0xc709023d1dd0 in std::panicking::catch_unwind::<isize, std::rt::lang_start_internal::{closure#0}> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #23 0xc70902418ff4 in std::panic::catch_unwind::<std::rt::lang_start_internal::{closure#0}, isize> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #24 0xc709022b5254 in std::rt::lang_start_internal /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:171:5
+    #25 0xc708fe45cbe8 in std::rt::lang_start::<()> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:205:5
+    #26 0xc708fe45b710 in main (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0x101b710) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+    #27 0xe9b269897740  (/lib/aarch64-linux-gnu/libc.so.6+0x27740) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #28 0xe9b269897814 in __libc_start_main (/lib/aarch64-linux-gnu/libc.so.6+0x27814) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #29 0xc708fe3713ac in _start (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0xf313ac) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+
+Indirect leak of 2032 byte(s) in 2 object(s) allocated from:
+    #0 0xc708fe405948 in malloc (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0xfc5948) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+    #1 0xc708ffac63d4 in advance_word /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c
+    #2 0xc708ffac63d4 in scan /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:1038:28
+    #3 0xc708ffac63d4 in tree_sitter_perl_external_scanner_scan /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-perl-1.1.2/src/scanner.c:1222:10
+    #4 0xc7090042e96c in ts_parser__external_scanner_scan /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:462:12
+    #5 0xc7090042e96c in ts_parser__lex /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:545:21
+    #6 0xc7090042e96c in ts_parser__advance /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:1591:19
+    #7 0xc7090042e96c in ts_parser_parse /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:2140:14
+    #8 0xc7090043999c in ts_parser_parse_with_options /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/src/./parser.c:2209:20
+    #9 0xc708feea0bdc in <tree_sitter::Parser>::parse_with_options::<&[u8], <tree_sitter::Parser>::parse<&alloc::vec::Vec<u8>>::{closure#0}> /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/binding_rust/lib.rs:948:30
+    #10 0xc708feea1334 in <tree_sitter::Parser>::parse::<&alloc::vec::Vec<u8>> /usr/local/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-0.26.9/binding_rust/lib.rs:859:14
+    #11 0xc708fe456034 in grammar_asan::run /work-current/examples/grammar_asan.rs:59:14
+    #12 0xc708fe456e64 in grammar_asan::main /work-current/examples/grammar_asan.rs:78:25
+    #13 0xc708fe43f550 in <fn() as core::ops::function::FnOnce<()>>::call_once /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ops/function.rs:250:5
+    #14 0xc708fe434254 in std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/sys/backtrace.rs:166:18
+    #15 0xc708fe45f5e0 in std::rt::lang_start::<()>::{closure#0} /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:206:18
+    #16 0xc7090239052c in <&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe as core::ops::function::FnOnce<()>>::call_once /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ops/function.rs:287:21
+    #17 0xc709023d2aa4 in std::panicking::catch_unwind::do_call::<&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe, i32> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #18 0xc709023e6960 in __rust_try std.56e1cf2c4c15511b-cgu.12
+    #19 0xc709023d2088 in std::panicking::catch_unwind::<i32, &dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #20 0xc7090241908c in std::panic::catch_unwind::<&dyn core::ops::function::Fn<(), Output = i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe, i32> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #21 0xc709022b0818 in std::rt::lang_start_internal::{closure#0} /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:175:24
+    #22 0xc709023d28ec in std::panicking::catch_unwind::do_call::<std::rt::lang_start_internal::{closure#0}, isize> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:573:43
+    #23 0xc709023e6960 in __rust_try std.56e1cf2c4c15511b-cgu.12
+    #24 0xc709023d1dd0 in std::panicking::catch_unwind::<isize, std::rt::lang_start_internal::{closure#0}> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panicking.rs:541:19
+    #25 0xc70902418ff4 in std::panic::catch_unwind::<std::rt::lang_start_internal::{closure#0}, isize> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/panic.rs:359:14
+    #26 0xc709022b5254 in std::rt::lang_start_internal /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:171:5
+    #27 0xc708fe45cbe8 in std::rt::lang_start::<()> /usr/local/rustup/toolchains/nightly-2026-11-11-aarch64-unknown-linux-gnu/lib/rustlib/src/rust/library/std/src/rt.rs:205:5
+    #28 0xc708fe45b710 in main (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0x101b710) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+    #29 0xe9b269897740  (/lib/aarch64-linux-gnu/libc.so.6+0x27740) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #30 0xe9b269897814 in __libc_start_main (/lib/aarch64-linux-gnu/libc.so.6+0x27814) (BuildId: 6f268ff546c56d7f14e9501a55698cc2d0ab4732)
+    #31 0xc708fe3713ac in _start (/results/evaluation-05/target/aarch64-unknown-linux-gnu/debug/examples/grammar_asan+0xf313ac) (BuildId: c460852faf4ad940e051f27664c58faf3ed584e8)
+
+SUMMARY: AddressSanitizer: 9472 byte(s) leaked in 467 allocation(s).

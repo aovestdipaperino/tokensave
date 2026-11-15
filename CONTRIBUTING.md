@@ -292,6 +292,13 @@ cargo test-lite
 
 ### What CI runs
 
+The optional direct-parser ASan audit checks native instrumentation and exercises
+all linked grammars against fixtures and bounded malformed inputs. See
+[the runner guide](scripts/grammar-asan/README.md) for Linux prerequisites,
+commands, retained evidence and limits. It complements the extraction-path
+harness proposed in [PR #1005](https://github.com/aovestdipaperino/tokensave/pull/1005)
+and adds no CI workflow.
+
 CI (`.github/workflows/ci.yml`) runs each job only when a file that job depends on changed. A change limited to documentation, `scripts/` or `assets/` starts no Rust build. Format runs for `.rs` changes, MSRV for library and Cargo changes, and the test matrix and feature tiers for anything a build or test reads, including `tests/fixtures/`. If your change makes a build or test read a file that the filters in the `changes` job do not cover, add it to the matching filters. The `CI OK` job reports the combined result. A manual run (`workflow_dispatch`) executes every job.
 
 ### Dependency advisories

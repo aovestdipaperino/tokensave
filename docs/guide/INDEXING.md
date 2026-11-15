@@ -48,6 +48,13 @@ Both apply only when every guard passes. Otherwise `sync` fails as it always has
 
 To turn it off, set `auto_init = false` in `~/.tokensave/config.toml`. `TOKENSAVE_AUTO_INIT` overrides the setting for one run: `0`, `false`, `no`, `off` or an empty value turn it off, and any other value turns it on. `tokensave doctor` reports the effective value.
 
+Hook-triggered syncs are single-flight per project: if one is already running,
+later hook processes exit before opening the database. When global hooks chain
+to a repository's own hook, only the global tokensave block starts a sync; the
+repository hook still runs all of its non-tokensave commands. A hook always
+targets the repository that fired it and never falls back to an initialized
+workspace above that repository.
+
 ## Running from subdirectories
 
 Every command finds the project that owns the current directory by walking up to the nearest `.tokensave/`, so you can run it from anywhere inside the project:

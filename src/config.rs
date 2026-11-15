@@ -965,6 +965,23 @@ pub fn resolve_path_with_discovery(path: Option<String>) -> PathBuf {
     }
 }
 
+/// Resolve the repository root for a pathless sync started by a git hook.
+///
+/// Git hooks belong to the repository that fired them. They must not borrow an
+/// initialized plain workspace above that repository: doing so can turn a
+/// small commit into an unbounded sync of an unrelated, much larger index.
+pub fn resolve_git_hook_sync_root() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    git_hook_sync_root_from(&cwd)
+}
+
+fn git_hook_sync_root_from(start: &Path) -> PathBuf {
+    start
+        .ancestors()
+        .find(|directory| git_marker(directory).is_some())
+        .map_or_else(|| start.to_path_buf(), Path::to_path_buf)
+}
+
 /// Basename of the dependency lockfile Terraform and `OpenTofu` share.
 ///
 /// `OpenTofu` kept Terraform's lockfile name and format, so one basename
@@ -1468,7 +1485,8 @@ mod tests {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod discovery_tests {
     use super::{
-        borrowed_worktree_root_from, discover_project_from, get_tokensave_dir, ProjectDiscovery,
+        borrowed_worktree_root_from, discover_project_from, get_tokensave_dir,
+        git_hook_sync_root_from, ProjectDiscovery,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1560,6 +1578,18 @@ mod discovery_tests {
                 git_root: Some(nested)
             }
         );
+    }
+
+    #[test]
+    fn git_hook_sync_stays_at_nested_repository_root() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        init_project(&workspace);
+        let repository = mkdirs(&workspace, &["repos", "app"]);
+        init_repo(&repository);
+        let start = mkdirs(&repository, &["src", "nested"]);
+
+        assert_eq!(git_hook_sync_root_from(&start), repository);
     }
 
     #[test]

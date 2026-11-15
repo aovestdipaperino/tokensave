@@ -220,12 +220,84 @@ impl Drop for SyncLockGuard {
     }
 }
 
+/// RAII guard that prevents hook-triggered sync processes from piling up
+/// before they reach the database writer lock.
+#[doc(hidden)]
+pub struct AutoSyncLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for AutoSyncLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Try to claim the single hook-triggered sync slot for `project_root`.
+///
+/// This is deliberately separate from `sync.lock`: it is acquired before the
+/// database is opened, while the writer lock remains the authority protecting
+/// indexing itself. A second hook exits before loading a potentially large
+/// database. Dead-process locks are reclaimed with the same PID check as the
+/// writer lock.
+#[doc(hidden)]
+pub fn try_acquire_auto_sync_lock(project_root: &Path) -> Result<AutoSyncLockGuard> {
+    use std::io::Write;
+    let lock_path = get_tokensave_dir(project_root).join("auto-sync.lock");
+    let pid = std::process::id();
+
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+    {
+        Ok(mut file) => {
+            let _ = write!(file, "{pid}");
+            return Ok(AutoSyncLockGuard { path: lock_path });
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            return Err(TokenSaveError::AutoSyncLock {
+                message: format!("could not create lockfile: {error}"),
+            });
+        }
+    }
+
+    let contents =
+        std::fs::read_to_string(&lock_path).map_err(|error| TokenSaveError::AutoSyncLock {
+            message: format!("existing lockfile could not be read: {error}"),
+        })?;
+    let existing_pid =
+        contents
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| TokenSaveError::AutoSyncLock {
+                message: "existing lockfile has no valid PID; refusing to break it".into(),
+            })?;
+    if is_pid_alive(existing_pid) {
+        return Err(TokenSaveError::AutoSyncLock {
+            message: format!("another hook-triggered sync is already running (PID {existing_pid})"),
+        });
+    }
+
+    let _ = std::fs::remove_file(&lock_path);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+        .map_err(|error| TokenSaveError::AutoSyncLock {
+            message: format!("could not reclaim lockfile: {error}"),
+        })?;
+    let _ = write!(file, "{pid}");
+    Ok(AutoSyncLockGuard { path: lock_path })
+}
+
 /// Try to acquire the sync lock for `project_root`.
 ///
 /// Creates `.tokensave/sync.lock` containing the current PID. If the file
 /// already exists and the PID inside is still alive, returns a `SyncLock`
-/// error. Stale lockfiles (dead PID or unreadable content) are reclaimed
-/// automatically.
+/// error. Stale lockfiles are reclaimed only after their recorded PID is
+/// confirmed dead; unreadable or malformed lockfiles are never broken.
 ///
 /// Internal: exposed for integration tests; not part of the stable public API.
 #[doc(hidden)]
@@ -255,17 +327,27 @@ pub fn try_acquire_sync_lock(project_root: &Path) -> Result<SyncLockGuard> {
     }
 
     // Lockfile exists — check if the owning process is still alive.
-    let contents = std::fs::read_to_string(&lock_path).unwrap_or_default();
-    if let Ok(existing_pid) = contents.trim().parse::<u32>() {
-        if is_pid_alive(existing_pid) {
-            return Err(TokenSaveError::SyncLock {
-                message: format!(
-                    "another sync is already in progress (PID {existing_pid}). \
-                     If this is stale, remove {}",
-                    lock_path.display()
-                ),
-            });
-        }
+    let contents =
+        std::fs::read_to_string(&lock_path).map_err(|error| TokenSaveError::SyncLock {
+            message: format!("existing lockfile could not be read: {error}"),
+        })?;
+    let existing_pid = contents
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| TokenSaveError::SyncLock {
+            message: format!(
+                "existing lockfile has no valid PID; refusing to break {}",
+                lock_path.display()
+            ),
+        })?;
+    if is_pid_alive(existing_pid) {
+        return Err(TokenSaveError::SyncLock {
+            message: format!(
+                "another sync is already in progress (PID {existing_pid}). \
+                 If this is stale, remove {}",
+                lock_path.display()
+            ),
+        });
     }
 
     // Stale lock — reclaim it.
