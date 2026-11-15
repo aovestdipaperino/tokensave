@@ -92,6 +92,7 @@ async fn fixture() -> TempDir {
         "\u{feff}pub fn with_bom() -> i32 {\n    1\n}\n",
     )
     .expect("bom.rs");
+    fs::write(src.join("color.rs"), "pub enum Color {\n    Red,\n}\n").expect("color.rs");
     fs::write(root.join("notes.txt"), "add_one is the entry point\n").expect("notes.txt");
     fs::write(root.join(".gitignore"), ".tokensave/\n").expect(".gitignore");
     git(root, &["init", "-q", "-b", "main"]);
@@ -225,6 +226,18 @@ async fn each_kind_of_fact_is_reported() {
         "src/lib.rs:18:pub fn reset(counter: &mut Counter) {\t#ts defines function reset (18–20); \
          reference -> Counter (src/lib.rs:8–10)\n",
         "an edge that is not a call is a reference"
+    );
+}
+
+/// The kind is the name that the index and the MCP tools use, for example
+/// `enum_variant`.
+#[tokio::test]
+async fn a_definition_shows_the_kind_name_of_the_index() {
+    let dir = fixture().await;
+    let out = tokensave_grep(dir.path(), &["git", "grep", "-n", "Red"]);
+    assert_eq!(
+        text(&out.stdout),
+        "src/color.rs:2:    Red,\t#ts defines enum_variant Color::Red (2)\n"
     );
 }
 

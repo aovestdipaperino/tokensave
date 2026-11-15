@@ -496,7 +496,7 @@ impl Index {
         if let Some(symbol) = defined {
             parts.push(format!(
                 "defines {} {} ({})",
-                symbol.kind.replace('_', " "),
+                symbol.kind,
                 symbol.display,
                 span(symbol.start, symbol.end)
             ));
