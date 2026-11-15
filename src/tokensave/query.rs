@@ -153,6 +153,16 @@ impl TokenSave {
             .await
     }
 
+    /// Returns extracted calls whose trailing name matches `name`, including
+    /// sites that did not produce an edge to the requested definition (#687).
+    pub async fn get_call_references_by_name(
+        &self,
+        name: &str,
+        limit: usize,
+    ) -> Result<(usize, Vec<CallReference>)> {
+        self.db.get_call_references_by_name(name, limit).await
+    }
+
     #[must_use]
     pub fn has_trait_dispatch_callers(&self, node_id: &str) -> bool {
         self.db.has_trait_dispatch_callers(node_id)

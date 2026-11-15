@@ -976,19 +976,19 @@ fn def_callers() -> ToolDefinition {
     def(
         "tokensave_callers",
         "Callers",
-        "Find callers of a given node (function, method, etc.). Returns direct \
-         callers by default; pass max_depth > 1 to also follow the chain \
-         transitively. Each result includes `depth` (1 = direct caller, 2+ = \
-         transitive), `line` (the call-site line where the caller invokes the \
-         target), `lines` (every line where the caller invokes the target, \
-         ascending; a caller is listed once even when it calls the target \
-         several times), and `def_line`/`end_line` (the caller's own span). Generic \
-         callers through a trait are included for concrete impl methods and \
-         tagged with `dispatch_via_trait: true`; pass `resolve_dispatch: false` \
-         to disable reverse dispatch resolution. Pass `node_id`, or `symbol` to \
-         name the target directly: each match is answered in its own group \
-         (`symbol`, `match_count`, `matches[]` with the callers under `callers`), \
-         up to `max_matches`.",
+        "Find callers of a given node (function, method, etc.). Direct results \
+         list every extracted call to the target's name, not only resolved \
+         edges: each caller's `references` label every site `confirmed`, \
+         `other`, `ambiguous` or `unresolved`, and uncertain sites carry \
+         `to_read: true`. Pass max_depth > 1 to also follow the chain \
+         transitively. Each result includes `depth` (1 = direct caller), `line` \
+         (a call-site line), `lines` (every call-site line, ascending; a caller \
+         is listed once) and `def_line`/`end_line` (the caller's own span). \
+         Trait-dispatched callers of concrete impl methods are included and \
+         tagged `dispatch_via_trait: true`; pass `resolve_dispatch: false` to \
+         disable this. Pass `node_id`, or `symbol` to name the target directly: \
+         each match is answered in its own group (`symbol`, `match_count`, \
+         `matches[]` with `callers`), up to `max_matches`.",
         json!({
             "type": "object",
             "properties": {
@@ -1006,7 +1006,7 @@ fn def_callers() -> ToolDefinition {
                 },
                 "limit": {
                     "type": "number",
-                    "description": "Maximum callers listed per match (default: 50, max: 500). When more exist, the result reports `count`, `total` and `truncated: true` (with node_id alone, the list is then wrapped as `{count, total, truncated, callers}`)."
+                    "description": "Maximum callers and direct call references inspected per match (default: 50, max: 500). When more exist, the result reports caller and reference counts plus truncation explicitly."
                 },
                 "max_depth": {
                     "type": "number",
@@ -1909,7 +1909,7 @@ fn def_str_replace() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                    "description": "Absolute or project-relative file path inside the indexed project or another git worktree of the same repository; other paths are refused."
                 },
                 "old_str": {
                     "type": "string",
@@ -1947,7 +1947,7 @@ fn def_multi_str_replace() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                    "description": "Absolute or project-relative file path inside the indexed project or another git worktree of the same repository; other paths are refused."
                 },
                 "replacements": {
                     "type": "array",
@@ -1983,7 +1983,7 @@ fn def_insert_at() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                    "description": "Absolute or project-relative file path inside the indexed project or another git worktree of the same repository; other paths are refused."
                 },
                 "anchor": {
                     "type": "string",
@@ -2038,7 +2038,7 @@ fn def_create_file() -> ToolDefinition {
     def_rw(
         "tokensave_create_file",
         "Create File",
-        "Create a new file inside the indexed project and index it at once, so it is searchable right after the call. Refuses an existing file unless `overwrite` is true, a directory, a symlink, a path outside the project root (absolute, `..`, or through a symlink), and paths inside `.git` or tokensave's own state. Unlike the other edit tools, an absolute path outside the project is never honored. Missing parent directories are created.",
+        "Create a new file inside the indexed project and index it at once, so it is searchable right after the call. Refuses an existing file unless `overwrite` is true, a directory, a symlink, a path outside the project root (absolute, `..`, or through a symlink), and paths inside `.git` or tokensave's own state. Unlike the other edit tools, a path in another git worktree is refused too. Missing parent directories are created.",
         json!({
             "type": "object",
             "properties": {
@@ -2473,7 +2473,7 @@ fn def_ast_grep_rewrite() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                    "description": "Absolute or project-relative file path inside the indexed project or another git worktree of the same repository; other paths are refused."
                 },
                 "pattern": {
                     "type": "string",
@@ -2720,7 +2720,8 @@ fn def_knowledge() -> ToolDefinition {
          with `tokensave okf import` (docs, metrics, tables, Graphify or tokensave exports). \
          `query` matches concept titles, IDs, tags, types, descriptions and bodies; `file` \
          finds concepts about a project file; `concept` returns one concept in full with its \
-         links and backlinks. Results name the project files a concept refers to and whether \
+         links and backlinks; `related` traverses both directions of that graph. Results name \
+         the project files a concept refers to and whether \
          they are indexed. With no arguments, lists the imported bundles.",
         json!({
             "type": "object",
@@ -2736,6 +2737,14 @@ fn def_knowledge() -> ToolDefinition {
                 "concept": {
                     "type": "string",
                     "description": "Concept ID to read in full, e.g. \"metrics/revenue\"."
+                },
+                "related": {
+                    "type": "string",
+                    "description": "Concept ID whose links and backlinks to traverse."
+                },
+                "depth": {
+                    "type": "number",
+                    "description": "Relationship traversal depth (default: 1, max: 3); used with `related`."
                 },
                 "bundle": {
                     "type": "string",
@@ -3047,7 +3056,8 @@ fn def_read() -> ToolDefinition {
          slice from 120 starts at 120). The body is always returned, with a \
          'digest' of it. To skip re-sending content you still hold, pass that \
          digest as 'if_digest': when it matches the current body for the same \
-         mode and range, a tiny stub with 'unchanged: true' is returned instead.",
+         mode and range, a tiny stub with 'unchanged: true' is returned instead. \
+         Reads any file inside the project, ignored or not, except under '.git'.",
         json!({
             "type": "object",
             "properties": {

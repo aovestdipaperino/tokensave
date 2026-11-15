@@ -1603,6 +1603,40 @@ async fn test_migrate_v18_is_idempotent() {
     );
 }
 
+/// V19 adds and backfills the indexed trailing reference name used by
+/// labelled caller discovery (#687).
+#[tokio::test]
+async fn test_migrate_v19_adds_and_backfills_reference_leaf() {
+    let (_dir, conn, _db) = create_raw_db().await;
+    create_schema(&conn).await.expect("create_schema");
+    conn.execute_batch(
+        "DROP INDEX idx_unresolved_refs_reference_leaf;
+         ALTER TABLE unresolved_refs DROP COLUMN reference_leaf;",
+    )
+    .await
+    .expect("simulate v18 unresolved_refs");
+    insert_node_pair(&conn).await;
+    conn.execute(
+        "INSERT INTO unresolved_refs
+         (from_node_id, reference_name, reference_kind, line, col, file_path)
+         VALUES ('a', 'receiver::run', 'calls', 7, 3, 'src/lib.rs')",
+        (),
+    )
+    .await
+    .expect("insert v18 reference");
+    set_user_version(&conn, 18).await;
+
+    assert!(migrate(&conn).await.expect("v19 migration"));
+    assert_eq!(get_user_version(&conn).await, latest_version());
+    assert!(index_exists(&conn, "idx_unresolved_refs_reference_leaf").await);
+    let mut rows = conn
+        .query("SELECT reference_leaf FROM unresolved_refs", ())
+        .await
+        .expect("select reference leaf");
+    let row = rows.next().await.expect("row").expect("one reference");
+    assert_eq!(row.get::<String>(0).expect("reference leaf"), "run");
+}
+
 /// A failed migration names the way out, and `sync --force`'s open rebuilds
 /// the database instead of failing the same way again.
 #[tokio::test]

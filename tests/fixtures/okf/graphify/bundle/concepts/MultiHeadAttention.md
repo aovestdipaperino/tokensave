@@ -4,7 +4,7 @@ title: MultiHeadAttention
 description: Graphify code node extracted from model.py.
 tags:
 - graphify/code
-- graphify/EXTRACTED
+- graphify/INFERRED
 - community/Model_Architecture
 graphify_id: n_attention
 graphify_file_type: code
@@ -12,11 +12,11 @@ graphify_source_file: model.py
 graphify_source_location: L10
 graphify_community_id: 0
 graphify_community: Model Architecture
-graphify_dominant_confidence: EXTRACTED
+graphify_dominant_confidence: INFERRED
 graphify_degree: 2
 graphify_tags:
 - graphify/code
-- graphify/EXTRACTED
+- graphify/INFERRED
 - community/Model_Architecture
 ---
 

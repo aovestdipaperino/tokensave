@@ -27,7 +27,7 @@ New tokensave processes pick the change up. Restart running MCP servers to inclu
 
 | Series | Meaning |
 |---|---|
-| `db.*` | Profiled database query methods: latency (execution plus reading rows), rows, errors, cancellations, slow count. Also write-lock wait (`db.write_lock_wait`) and write transactions (`db.transaction`). A few raw connection paths listed below are not attributed. |
+| `db.*` | Database query methods: latency (execution plus reading rows), rows, errors, cancellations, slow count. Also write-lock wait (`db.write_lock_wait`) and write transactions (`db.transaction`). |
 | `mcp.*` | Phases of a `tools/call`: `total`, `project_resolution`, `freshness`, `handler`, `graph_traversal`. |
 | `tool.<name>` | Per tool: end-to-end latency, database time and operations per call, response size, errors. |
 | `index.*`, `sync.*` | Phases of a full index and of an incremental sync. |
@@ -43,7 +43,7 @@ tokensave profile report [--mcp|--database|--indexing] [--since 24h] [--engine l
 tokensave profile analyze [--since 7d] [--top 10] [--json]
 tokensave profile slow-queries [--since 24h]
 tokensave profile export [--since 7d] [-o profile.json]
-tokensave profile reset
+tokensave profile reset [--force]         # asks first; --force when not interactive
 ```
 
 Example `report --mcp` (illustrative numbers):
@@ -56,7 +56,6 @@ mcp.handler                                        961      3      1     31002.6
 tool.tokensave_search                              233      0      0      2410.7     10.35      8.19      22.14*     40.95*    61.20
 
 Database share of measured MCP time: 41% (outside DB: 59%)
-This share includes profiled query methods only; raw database access in memory reporting, quality diff, edge audit, import analysis, schema inspection, and Rails route edge insertion is not attributed to DB time.
 
 Times in ms. Percentiles are bucket upper bounds (<= 1.6% high). * = fewer than 100 samples, P95/P99 unreliable.
 ```
@@ -82,4 +81,4 @@ Findings use exclusive time for phases, so nothing is counted twice, and the evi
 
 ## Storage and overhead
 
-Each process keeps fixed-size in-memory aggregates (about 1 MiB, plus about 21 KiB per registered tool in an MCP server). A background thread writes one small JSON file per process per hour under `~/.tokensave/profile/`, every 60 s and at exit, enforcing `retention_days` and `max_bytes` as it writes. Nothing is written while nothing has been recorded. `profile status` shows the profiler's own flush cost. With profiling off, each instrumented site costs one atomic load.
+Each process keeps fixed-size in-memory aggregates (about 1 MiB, plus about 21 KiB per registered tool in an MCP server). A background thread writes one small JSON file per process per hour under `~/.tokensave/profile/`, every 60 s and at exit, enforcing `retention_days` and `max_bytes` as it writes. Nothing is written while nothing new has been recorded since the last write. `profile status` shows the profiler's own flush cost. With profiling off, each instrumented site costs one atomic load.

@@ -65,7 +65,7 @@ pub enum Commands {
         /// Project path (default: current directory)
         path: Option<String>,
         /// Folders to skip during indexing (can be repeated)
-        #[arg(long = "skip-folder", num_args = 1..)]
+        #[arg(long = "skip-folder", num_args = 1, action = ArgAction::Append)]
         skip_folders: Vec<String>,
         /// Install this repository's own git hooks without asking (#455)
         #[arg(long, conflicts_with = "no_git_hook")]
@@ -107,7 +107,7 @@ pub enum Commands {
         #[arg(short, long)]
         force: bool,
         /// Folders to skip during indexing (can be repeated)
-        #[arg(long = "skip-folder", num_args = 1..)]
+        #[arg(long = "skip-folder", num_args = 1, action = ArgAction::Append)]
         skip_folders: Vec<String>,
         /// List added, modified, and removed files after sync
         #[arg(long)]
@@ -525,6 +525,46 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn parse_init_skip_folder_before_path() {
+        let cli = Cli::try_parse_from(["tokensave", "init", "--skip-folder", "build", "project"])
+            .expect("parse failed");
+
+        match cli.command {
+            Some(Commands::Init {
+                path, skip_folders, ..
+            }) => {
+                assert_eq!(path.as_deref(), Some("project"));
+                assert_eq!(skip_folders, ["build"]);
+            }
+            _ => panic!("expected Init command"),
+        }
+    }
+
+    #[test]
+    fn parse_sync_repeated_skip_folders_before_path() {
+        let cli = Cli::try_parse_from([
+            "tokensave",
+            "sync",
+            "--skip-folder",
+            "build",
+            "--skip-folder",
+            "generated",
+            "project",
+        ])
+        .expect("parse failed");
+
+        match cli.command {
+            Some(Commands::Sync {
+                path, skip_folders, ..
+            }) => {
+                assert_eq!(path.as_deref(), Some("project"));
+                assert_eq!(skip_folders, ["build", "generated"]);
+            }
+            _ => panic!("expected Sync command"),
+        }
+    }
+
+    #[test]
     fn parse_cost_by_agent() {
         let cli =
             Cli::try_parse_from(["tokensave", "cost", "30d", "--by-agent"]).expect("parse failed");
@@ -774,8 +814,12 @@ pub enum ProfileAction {
         #[arg(short, long)]
         output: Option<std::path::PathBuf>,
     },
-    /// Delete all recorded profile data
-    Reset,
+    /// Delete all recorded profile data (asks first unless `--force`)
+    Reset {
+        /// Delete without asking; required when stdin is not a terminal
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]

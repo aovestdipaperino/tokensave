@@ -15,7 +15,13 @@ Bulk loading drops secondary indexes and FTS triggers temporarily; a valid
 SQLite B-tree alone does not prove that the source graph is complete.
 
 Indexing and synchronization write a project dirty sentinel before changing
-the graph and remove it only after success. On reopen, an abandoned sentinel
+the graph and remove it only after success. The sentinel is the file `dirty`
+in the project state directory. A project in multi-branch mode has one
+database for each tracked branch. Thus the sentinel has one `db=` line for
+each database with an unfinished write (#865). An open recovers a database only when the
+sentinel names it, and removes only that line after success. A sentinel from
+an older version has no `db=` line and applies to the database that opens
+next, as before. On reopen, an abandoned sentinel
 triggers an integrity check, finalization of any interrupted bulk load, and a
 full source reindex. Finalization restores external-content FTS before it can
 be cleared again without error. The reindex recreates

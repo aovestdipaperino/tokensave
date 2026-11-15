@@ -7,6 +7,8 @@
 //! no database and no index.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -62,6 +64,13 @@ pub struct Concept {
 pub struct Knowledge {
     pub bundles: Vec<ImportRecord>,
     pub concepts: Vec<Concept>,
+}
+
+/// A concept reached while traversing links and backlinks.
+#[derive(Debug, Clone, Copy)]
+pub struct Related<'a> {
+    pub concept: &'a Concept,
+    pub distance: usize,
 }
 
 fn string_field(frontmatter: &Value, key: &str) -> Option<String> {
@@ -409,6 +418,50 @@ impl Knowledge {
         self.concepts
             .iter()
             .filter(move |c| c.bundle == concept.bundle && c.links.contains(&concept.id))
+    }
+
+    /// Traverse both links and backlinks within one bundle. The starting
+    /// concept is not returned; cycles are visited once.
+    pub fn related<'a>(
+        &'a self,
+        start: &'a Concept,
+        max_depth: usize,
+        limit: usize,
+    ) -> Vec<Related<'a>> {
+        let concepts_by_id: BTreeMap<&str, &Concept> = self
+            .concepts
+            .iter()
+            .filter(|concept| concept.bundle == start.bundle)
+            .map(|concept| (concept.id.as_str(), concept))
+            .collect();
+        let mut visited = BTreeSet::from([start.id.as_str()]);
+        let mut queue = VecDeque::from([(start, 0usize)]);
+        let mut out = Vec::new();
+        while let Some((concept, distance)) = queue.pop_front() {
+            if distance >= max_depth {
+                continue;
+            }
+            let neighbors = concept
+                .links
+                .iter()
+                .filter_map(|id| concepts_by_id.get(id.as_str()).copied())
+                .chain(self.backlinks(concept));
+            for neighbor in neighbors {
+                if !visited.insert(neighbor.id.as_str()) {
+                    continue;
+                }
+                let next_distance = distance + 1;
+                out.push(Related {
+                    concept: neighbor,
+                    distance: next_distance,
+                });
+                if out.len() >= limit {
+                    return out;
+                }
+                queue.push_back((neighbor, next_distance));
+            }
+        }
+        out
     }
 
     /// Number of searchable concepts per bundle.

@@ -1306,18 +1306,31 @@ impl<'a> ReferenceResolver<'a> {
     /// first base as `Extends`. Once the target is known, an `Extends` that
     /// lands on an interface is really an `Implements`, which is what
     /// `tokensave_implementations` reads (#643).
+    ///
+    /// Swift has the same ambiguity in every inheritance clause (`class A:
+    /// Base, P`, `struct S: P`, `actor X: P`, `extension T: P`), so its
+    /// `Extends` refs get the same treatment. A protocol inheriting another
+    /// protocol (`protocol P: Q`) is not a conformance and stays `Extends`.
     fn edge_kind_for(&self, r: &ResolvedRef) -> EdgeKind {
         let kind = r.original.reference_kind;
-        if kind == EdgeKind::Extends
-            && lang_from_path(&r.original.file_path) == "csharp"
-            && self
-                .node_id_cache
-                .get(r.target_node_id.as_str())
-                .is_some_and(|n| n.kind == NodeKind::Interface)
-        {
-            return EdgeKind::Implements;
+        if kind != EdgeKind::Extends {
+            return kind;
         }
-        kind
+        let is_interface = |id: &str| {
+            self.node_id_cache
+                .get(id)
+                .is_some_and(|n| n.kind == NodeKind::Interface)
+        };
+        let upgrades = match lang_from_path(&r.original.file_path) {
+            "csharp" => is_interface(&r.target_node_id),
+            "swift" => is_interface(&r.target_node_id) && !is_interface(&r.original.from_node_id),
+            _ => false,
+        };
+        if upgrades {
+            EdgeKind::Implements
+        } else {
+            kind
+        }
     }
 
     /// Strategy 1: try matching the reference name against qualified names.

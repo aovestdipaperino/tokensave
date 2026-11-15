@@ -48,6 +48,13 @@ Both apply only when every guard passes. Otherwise `sync` fails as it always has
 
 To turn it off, set `auto_init = false` in `~/.tokensave/config.toml`. `TOKENSAVE_AUTO_INIT` overrides the setting for one run: `0`, `false`, `no`, `off` or an empty value turn it off, and any other value turns it on. `tokensave doctor` reports the effective value.
 
+Hook-triggered syncs are single-flight per project: if one is already running,
+later hook processes exit before opening the database. When global hooks chain
+to a repository's own hook, only the global tokensave block starts a sync; the
+repository hook still runs all of its non-tokensave commands. A hook always
+targets the repository that fired it and never falls back to an initialized
+workspace above that repository.
+
 ## Running from subdirectories
 
 Every command finds the project that owns the current directory by walking up to the nearest `.tokensave/`, so you can run it from anywhere inside the project:
@@ -67,8 +74,9 @@ tokensave sync                     # syncs the repository's index
 The MCP server and the agent hooks resolve the project the same way. Search paths stay relative to the project root (`src/backend/db.rs`). Note that an MCP server launched from a subdirectory still uses that subdirectory as its default path filter for listing tools.
 
 - **Git repositories.** If no project exists yet, `init` from inside a git repository initializes the repository root (or the linked worktree root), not the current directory.
-- **Repository boundaries.** A git repository root is an isolation boundary. Inside a nested, independent repository (a nested clone or a submodule), commands never use an outer repository's index; run `tokensave init` there to give it its own. A linked worktree nested in its main checkout still borrows the main index, and the borrowed-worktree notice says so.
+- **Repository boundaries.** A git repository root is an isolation boundary. Inside a nested, independent repository (a nested clone or a submodule), commands never use an outer repository's index; run `tokensave init` there to give it its own. A linked worktree nested in its main checkout borrows the main index until it has an index of its own. The MCP server puts the borrowed-worktree notice on each response. `tokensave status`, `tokensave sync` and `tokensave tool` print it on stderr. Run `tokensave init` in the worktree to give it its own index.
 - **Non-git projects.** A `.tokensave/` in a folder that is not inside a git repository works the same way, including for any repositories inside that folder.
+- **Linked worktrees inside a checkout.** The index of a checkout does not include a linked worktree that lies inside it (`git worktree add <dir>` run in the repository). That directory is a second working tree of the same repository, so the scan does not enter it, and no `include` or `force_include` glob admits it. To index it, run `tokensave init` in the worktree. A nested clone and a submodule are repositories of their own, and the scan enters them as before.
 - **Explicit roots.** `tokensave init <path>`, `--path` (`-p`), and `tool --project <path>` use the directory you pass, with no discovery.
 - **Broken installs.** A `.tokensave/` with a `config.json` but no database is reported instead of being skipped in favor of an outer project. A config that cannot be parsed is an error that names the file to fix.
 

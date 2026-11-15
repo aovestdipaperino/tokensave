@@ -90,9 +90,8 @@ struct EdgeRow {
     dst_parent: Option<String>,
 }
 
-async fn query_rows(db: &Database, sql: &str) -> Result<libsql::Rows> {
-    db.conn()
-        .query(sql, ())
+async fn query_rows(db: &Database, sql: &str) -> Result<crate::db::ProfiledRows> {
+    db.profiled_query(crate::profile::DbOp::EdgeAudit, sql, ())
         .await
         .map_err(|e| TokenSaveError::Database {
             message: format!("edge audit query failed: {e}"),

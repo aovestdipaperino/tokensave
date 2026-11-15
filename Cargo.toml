@@ -125,6 +125,10 @@ name = "tokensave"
 name = "tokensave"
 path = "src/main.rs"
 
+[[example]]
+name = "grammar_asan"
+required-features = ["full"]
+
 [dependencies]
 # Only the local-file engine (`core`). libsql's default `replication`,
 # `remote`, `sync` and `tls` features pull in a hyper 0.14 / rustls 0.22 /

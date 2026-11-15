@@ -552,8 +552,7 @@ pub async fn compare(
     let base_cg = TokenSave::open_read_only(root, Some(&base_name)).await?;
     base_cg
         .db()
-        .conn()
-        .execute_batch("BEGIN")
+        .profiled_execute_batch(crate::profile::DbOp::QualityDiffSnapshot, "BEGIN")
         .await
         .map_err(|e| error(e.to_string()))?;
     let mut stale = verify(&base_cg, &base_commit).await?;
@@ -582,8 +581,7 @@ pub async fn compare(
         let target_cg = TokenSave::open_read_only(root, Some(&target_name)).await?;
         target_cg
             .db()
-            .conn()
-            .execute_batch("BEGIN")
+            .profiled_execute_batch(crate::profile::DbOp::QualityDiffSnapshot, "BEGIN")
             .await
             .map_err(|e| error(e.to_string()))?;
         let target_stale = verify(&target_cg, &target_commit).await?;

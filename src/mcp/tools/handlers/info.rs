@@ -1612,6 +1612,23 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
             ),
         }
     })?;
+    // `.git` holds repository metadata, not source, and `.git/config` can
+    // carry credentials in a remote URL. Indexed content could ask an agent to
+    // fetch it, so `tokensave_read` refuses it, as the edit tools and
+    // `tokensave_create_file` do (#866). Case-insensitive: `.GIT` is `.git` on
+    // Windows and default macOS. The path is the canonical one, so a symlink
+    // into `.git` is refused too.
+    if display_file
+        .split('/')
+        .any(|component| component.eq_ignore_ascii_case(".git"))
+    {
+        return Err(TokenSaveError::Config {
+            message: format!(
+                "tokensave_read refuses '{file}': it is inside .git, which holds repository \
+                 metadata rather than source"
+            ),
+        });
+    }
     abs_path = canonical_path;
 
     let mtime_ns = read_cache::file_mtime_ns(&abs_path).map_err(|e| TokenSaveError::Config {

@@ -238,8 +238,11 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 async fn read_journal_mode(cg: &crate::tokensave::TokenSave) -> Result<String> {
     let mut rows = cg
         .db()
-        .conn()
-        .query("PRAGMA journal_mode", ())
+        .profiled_query(
+            crate::profile::DbOp::RuntimeTelemetry,
+            "PRAGMA journal_mode",
+            (),
+        )
         .await
         .map_err(|e| TokenSaveError::Database {
             message: format!("failed to read journal_mode: {e}"),
@@ -265,8 +268,11 @@ async fn read_journal_mode(cg: &crate::tokensave::TokenSave) -> Result<String> {
 async fn read_source_total_bytes(cg: &crate::tokensave::TokenSave) -> Result<u64> {
     let mut rows = cg
         .db()
-        .conn()
-        .query("SELECT COALESCE(SUM(size), 0) FROM files", ())
+        .profiled_query(
+            crate::profile::DbOp::RuntimeTelemetry,
+            "SELECT COALESCE(SUM(size), 0) FROM files",
+            (),
+        )
         .await
         .map_err(|e| TokenSaveError::Database {
             message: format!("failed to sum source bytes: {e}"),
@@ -299,8 +305,7 @@ async fn read_graph_counts(cg: &crate::tokensave::TokenSave) -> Result<(u64, u64
 async fn scalar_count(cg: &crate::tokensave::TokenSave, sql: &str) -> Result<u64> {
     let mut rows = cg
         .db()
-        .conn()
-        .query(sql, ())
+        .profiled_query(crate::profile::DbOp::RuntimeTelemetry, sql, ())
         .await
         .map_err(|e| TokenSaveError::Database {
             message: format!("scalar query failed: {e}"),

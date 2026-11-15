@@ -111,7 +111,16 @@ impl SwiftExtractor {
             "init_declaration" => Self::visit_init(state, node),
             "property_declaration" => Self::visit_property(state, node),
             "typealias_declaration" => Self::visit_typealias(state, node),
-            _ => {}
+            // Any other statement (top-level code in `main.swift`, a `deinit`
+            // or `subscript` in a type body) can hold call sites. Attribute
+            // them to the enclosing scope: the File node at top level, the
+            // type in a type body. `extract_call_sites` stops at nested
+            // declarations, so their bodies are not attributed here.
+            _ => {
+                if let Some(scope_id) = state.parent_node_id().map(str::to_string) {
+                    Self::extract_call_sites(state, node, &scope_id);
+                }
+            }
         }
     }
 
@@ -350,6 +359,9 @@ impl SwiftExtractor {
             });
         }
 
+        // Extract protocol conformances (struct Foo: Bar).
+        Self::extract_inheritance(state, node, &id);
+
         // Extract attribute annotations.
         Self::extract_annotations_from_modifiers(state, node, &id);
 
@@ -417,6 +429,9 @@ impl SwiftExtractor {
                 resolved_by: None,
             });
         }
+
+        // Extract raw type and protocol conformances (enum Foo: String, Bar).
+        Self::extract_inheritance(state, node, &id);
 
         // Visit enum body (enum_class_body with enum_entry children).
         state.node_stack.push((name.clone(), id));
@@ -578,6 +593,9 @@ impl SwiftExtractor {
             });
         }
 
+        // Extract protocol conformances added by the extension (extension Foo: Bar).
+        Self::extract_inheritance(state, node, &id);
+
         // Visit extension body.
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
@@ -649,6 +667,9 @@ impl SwiftExtractor {
                 resolved_by: None,
             });
         }
+
+        // Extract inherited protocols (protocol Foo: Bar). These stay `Extends`.
+        Self::extract_inheritance(state, node, &id);
 
         // Extract attribute annotations.
         Self::extract_annotations_from_modifiers(state, node, &id);
@@ -960,6 +981,10 @@ impl SwiftExtractor {
             });
         }
 
+        // Calls in an initializer (`let x = Foo.make()`), a computed
+        // property body or an accessor belong to the property.
+        Self::extract_call_sites(state, node, &id);
+
         // Extract attribute annotations.
         Self::extract_annotations_from_modifiers(state, node, &id);
     }
@@ -1051,9 +1076,11 @@ impl SwiftExtractor {
         )
     }
 
-    /// Extract inheritance specifiers (e.g. `class Foo: Bar`).
+    /// Extract inheritance specifiers (e.g. `class Foo: Bar`, `struct Foo: P`).
     ///
-    /// Creates Extends `UnresolvedRef` for each inherited type.
+    /// Creates Extends `UnresolvedRef` for each inherited type. A Swift
+    /// inheritance clause cannot tell a superclass from a protocol, so the
+    /// resolver turns an `Extends` that lands on a protocol into `Implements`.
     fn extract_inheritance(state: &mut ExtractionState, node: TsNode<'_>, class_id: &str) {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
@@ -1240,14 +1267,20 @@ impl SwiftExtractor {
     ///
     /// In Swift, `call_expression` children are: callee (`simple_identifier` or `navigation_expression`)
     /// followed by `call_suffix` with `value_arguments`.
+    ///
+    /// A call through a type name (`Cache.open(...)`, `Outer.Inner.make(...)`)
+    /// keeps its receiver as `Cache::open` so the resolver can match the
+    /// method's qualified name. A bare `open` is too common a name to resolve
+    /// across files. Instance receivers (`worker.start()`) stay bare: their
+    /// type is not known here.
     fn extract_callee_name(state: &ExtractionState, node: TsNode<'_>) -> Option<String> {
-        let first_child = node.named_child(0)?;
-        match first_child.kind() {
+        let callee = Self::callee_expression(node.named_child(0)?)?;
+        match callee.kind() {
             "navigation_expression" => {
                 // For chained calls like `super.init(...)` or `foo.bar(...)`,
                 // get the suffix (last navigation_suffix child's simple_identifier).
                 let mut last_name = None;
-                let mut cursor = first_child.walk();
+                let mut cursor = callee.walk();
                 if cursor.goto_first_child() {
                     loop {
                         let child = cursor.node();
@@ -1263,10 +1296,59 @@ impl SwiftExtractor {
                         }
                     }
                 }
-                last_name
+                let method = last_name?;
+                match Self::receiver_type_name(state, callee) {
+                    Some(type_name) => Some(format!("{type_name}::{method}")),
+                    None => Some(method),
+                }
             }
-            _ => Some(state.node_text(first_child)),
+            _ => Some(state.node_text(callee)),
         }
+    }
+
+    /// The expression a call suffix actually applies to.
+    ///
+    /// tree-sitter-swift attaches the call suffix of `48 + Double(x)` or
+    /// `!ok && items.allSatisfy { ... }` to the whole binary expression, and
+    /// of `await f(x) { ... }` to the `await`. The callee is the rightmost
+    /// operand. When that operand is itself a call, the call is on a call's
+    /// result and the inner call is recorded on its own, so there is no name.
+    fn callee_expression(node: TsNode<'_>) -> Option<TsNode<'_>> {
+        let mut current = node;
+        loop {
+            let next = match current.kind() {
+                "await_expression" | "try_expression" => current.child_by_field_name("expr"),
+                _ => current.child_by_field_name("rhs"),
+            };
+            match next {
+                Some(inner) => current = inner,
+                None => break,
+            }
+        }
+        (current.kind() != "call_expression").then_some(current)
+    }
+
+    /// The type name a navigation callee is called through, if its receiver
+    /// is spelled as a type: `Cache` in `Cache.open`, `Inner` in
+    /// `Outer.Inner.make`. Swift types are capitalised by convention, so a
+    /// lowercase receiver is a value. `Self` is left out: it names the
+    /// enclosing type, which the bare method name already resolves within.
+    fn receiver_type_name(state: &ExtractionState, nav: TsNode<'_>) -> Option<String> {
+        let target = nav.child_by_field_name("target")?;
+        let ident = match target.kind() {
+            "simple_identifier" => target,
+            "navigation_expression" => {
+                let suffix = target.child_by_field_name("suffix")?;
+                suffix.child_by_field_name("suffix")?
+            }
+            _ => return None,
+        };
+        if ident.kind() != "simple_identifier" {
+            return None;
+        }
+        let name = state.node_text(ident);
+        let is_type = name.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+        (is_type && name != "Self").then_some(name)
     }
 
     /// Walk previous siblings of a declaration looking for `attribute` nodes

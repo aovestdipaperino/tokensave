@@ -196,8 +196,7 @@ impl Database {
                    AND n1.file_path != n2.file_path";
 
         let mut rows = self
-            .conn()
-            .query(sql, ())
+            .profiled_query(crate::profile::DbOp::BuildModuleImportGraph, sql, ())
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query import graph: {e}"),

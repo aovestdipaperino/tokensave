@@ -621,6 +621,12 @@ pub(crate) fn resolve_init_root(
         return Ok(Some(tokensave::config::resolve_path(path)));
     }
     let cwd = tokensave::config::resolve_path(None);
+    // A linked worktree nested in its main checkout borrows that checkout's
+    // index until it has one of its own. The borrowed-index warning tells the
+    // user to run `init` there, so `init` must create that index (#865).
+    if let Some(worktree) = tokensave::config::borrowed_worktree_root(&cwd) {
+        return Ok(Some(worktree));
+    }
     match discover_project(&cwd) {
         ProjectDiscovery::Initialized(root) if root != cwd => {
             // Reporting a project whose config cannot load as "usable" would
@@ -644,6 +650,26 @@ pub(crate) fn resolve_init_root(
             Ok(None)
         }
         discovery => Ok(Some(init_target(cwd, discovery))),
+    }
+}
+
+/// Warns on stderr when the command runs in a linked worktree and uses the
+/// index of the checkout around it (#865).
+///
+/// An explicit project path is the user's choice, so it gets no warning. The
+/// text goes to stderr only: stdout can be JSON that a script parses.
+pub(crate) fn warn_borrowed_worktree_index(explicit_path: bool) {
+    if explicit_path {
+        return;
+    }
+    let Ok(cwd) = std::env::current_dir() else {
+        return;
+    };
+    if let Some(mismatch) = tokensave::worktree::borrowed_index_mismatch(&cwd) {
+        eprintln!(
+            "\x1b[33mWarning: {}\x1b[0m",
+            tokensave::worktree::worktree_mismatch_warning(&mismatch)
+        );
     }
 }
 
