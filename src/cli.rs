@@ -60,6 +60,24 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Run grep, rg or git grep and add index facts to each hit
+    ///
+    /// The search command runs unchanged, with its own flags and exit code.
+    /// Each `path:line:` hit keeps its bytes and gains a tab and a `#ts`
+    /// suffix with what the index knows about that line.
+    Grep {
+        /// `none` prints the search output with no index facts
+        #[arg(long, value_name = "SPEC")]
+        graph: Option<String>,
+        /// The search command: `grep ...`, `rg ...` or `git grep ...`
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            required = true,
+            value_name = "COMMAND"
+        )]
+        command: Vec<std::ffi::OsString>,
+    },
     /// Initialize a new TokenSave project (full index)
     Init {
         /// Project path (default: current directory)

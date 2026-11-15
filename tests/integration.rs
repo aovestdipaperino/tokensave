@@ -104,6 +104,7 @@ mod godot_bind_methods_test;
 mod godot_engine_virtuals_dead_code_test;
 mod graph_federation_test;
 mod graph_test;
+mod grep_annotate_test;
 mod gwbasic_extraction_test;
 mod hook_451_test;
 mod hook_452_test;

@@ -9,6 +9,7 @@ use tokensave::tokensave::TokenSave;
 mod cli;
 mod commands;
 mod global;
+mod grep_command;
 mod okf_command;
 mod profile_command;
 mod serve;
@@ -207,6 +208,13 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             process::exit(code);
         }
         return Ok(());
+    }
+
+    // The search wrapper only reads the index and must start fast, so it
+    // skips startup maintenance.
+    if let Commands::Grep { graph, command } = &command {
+        let code = grep_command::run(graph.as_deref(), command).await?;
+        process::exit(code);
     }
 
     // Verification must bypass config saves, telemetry and agent maintenance.
@@ -721,6 +729,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         }
         Commands::GraphifyExport { .. } => unreachable!("export dispatched before startup"),
         Commands::Okf { .. } => unreachable!("okf dispatched before startup"),
+        Commands::Grep { .. } => unreachable!("grep is dispatched before startup"),
         Commands::Verify { .. } => unreachable!("verify is dispatched before startup"),
         Commands::Status {
             path,

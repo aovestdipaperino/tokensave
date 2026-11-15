@@ -57,6 +57,11 @@ current `secure_delete` mode, Q0413 deletes every row with it on, and Q0414
 restores the recorded integer mode. Q0415-Q0418 are the inline test. No
 schema, binding or existing entry changes.
 
+Search-annotation context (#688, 2026-11-15): Q0419-Q0425 are the read-only
+lookups of `tokensave grep`, in the section "`tokensave grep` additions" at
+the end of the SQL sections. They add seven occurrences, one source file and
+one construction context. No schema, binding or existing entry changes.
+
 Profiling coverage context (#885, 2026-11-13): the existing SQL and bindings in
 Q0204-Q0217, Q0253-Q0256, Q0296, and Q0308-Q0320 are unchanged,
 but their execution now goes through static `DbOp` labels in the profiled
@@ -68,9 +73,9 @@ unchanged.
 
 ## Inventory summary
 
-- SQL-bearing source files: **40**.
-- SQL literal/template occurrences: **375**.
-- Functions retained for construction/binding context: **181**.
+- SQL-bearing source files: **41**.
+- SQL literal/template occurrences: **382**.
+- Functions retained for construction/binding context: **182**.
 
 ## Source file index
 
@@ -104,6 +109,7 @@ unchanged.
 | [src/global_db.rs](../src/global_db.rs) | 50 |
 | [src/graph/imports.rs](../src/graph/imports.rs) | 1 |
 | [src/graph/queries.rs](../src/graph/queries.rs) | 5 |
+| [src/grep_annotate/index.rs](../src/grep_annotate/index.rs) | 7 |
 | [src/hooks.rs](../src/hooks.rs) | 1 |
 | [src/mcp/tools/definitions.rs](../src/mcp/tools/definitions.rs) | 4 |
 | [src/mcp/tools/handlers/workflow.rs](../src/mcp/tools/handlers/workflow.rs) | 1 |
@@ -13357,6 +13363,93 @@ Q0401–Q0404 run in one read transaction for a consistent snapshot. The bundle 
 written to a staging directory beside the output and renamed into place only
 after every read succeeds; an existing output path is refused. No writes or
 migrations reach the database.
+
+
+## `tokensave grep` additions (Refs #688)
+
+Source: [src/grep_annotate/index.rs](../src/grep_annotate/index.rs), `Index`.
+This section adds seven occurrences and one construction/binding context to
+the existing inventory. No existing query was changed, moved or removed.
+Snapshot inspected 2026-11-15. `Index::try_open` opens the database that
+`TokenSave::resolve_db_for_branch` selects, read-only, after
+`compatibility::preflight`. There is no transaction: each statement is one
+read, and the facts of a file are read one time and kept in memory.
+
+#### Q0419 — `try_open`: Read-only connection limits
+
+```sql
+PRAGMA query_only=1; PRAGMA busy_timeout=1000;
+```
+
+Fixed batch, no parameters; executes one time, before the lookups.
+
+#### Q0420 — `try_open`: Current-schema check
+
+```sql
+PRAGMA user_version
+```
+
+No bindings; exactly one scalar row. With a version unequal to
+latest_version(), the command adds no facts and reports the two versions on
+standard error; it never migrates.
+
+#### Q0421 — `file_state`: Index entry of one file
+
+```sql
+SELECT modified_at, size FROM files WHERE path = ?1
+```
+
+?1 is a project-relative path with `/` separators. At most one row, by primary
+key. The caller compares the values with the modification time and the size on
+disk. After a full index, `size` is the length of the decoded text, which is
+not the size on disk for a file with a byte order mark. So when the sizes
+differ, the caller decodes the file before it reports a change. It runs for a
+file with a hit, and for the file of a call or reference target in a different
+file.
+
+#### Q0422 — `read_file_facts`: Symbols of one file
+
+```sql
+SELECT kind, name, qualified_name, start_line, end_line FROM nodes WHERE file_path = ?1 LIMIT ?2
+```
+
+?1 is the file; ?2 is the constant 20000. Uses `idx_nodes_file_path`. No source
+body, signature or docstring is projected.
+
+#### Q0423 — `read_file_facts`: Edges that start in one file
+
+```sql
+SELECT e.line, e.kind, t.id, t.name, t.qualified_name, t.file_path, t.start_line, t.end_line FROM nodes s JOIN edges e ON e.source = s.id JOIN nodes t ON t.id = e.target WHERE s.file_path = ?1 AND e.line IS NOT NULL AND e.kind != 'contains' ORDER BY e.line, e.id LIMIT ?2
+```
+
+?1 is the file; ?2 is the constant 50000. Source nodes come from
+`idx_nodes_file_path`, their edges from `idx_edges_source_kind`, and each
+target by primary key.
+
+#### Q0424 — `read_file_facts`: Ambiguous calls of one file
+
+```sql
+SELECT line, reference_name, candidate_node_ids FROM ambiguous_calls WHERE file_path = ?1
+```
+
+?1 is the file. Uses `idx_ambiguous_calls_file`. `candidate_node_ids` is the
+stored JSON array of node IDs.
+
+#### Q0425 — `candidate_names`: Name of one candidate
+
+```sql
+SELECT qualified_name, file_path FROM nodes WHERE id = ?1
+```
+
+?1 is a node ID from Q0424. At most one row, by primary key. It runs for at
+most three candidates of an ambiguous call on a hit line.
+
+Construction context: all templates are fixed and no user text is
+interpolated. The only values bound from outside are file paths taken from the
+output of the search command; they are bound as parameters, checked to be
+regular files below the project root before Q0421, and never formatted into
+SQL. Q0422-Q0424 run one time for each file with a hit, and at most 2048 files
+stay in memory. No writes or migrations reach the database.
 
 
 #### Q0390 — `migrate_turns_columns`
