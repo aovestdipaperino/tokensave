@@ -1223,6 +1223,28 @@ async fn test_concurrent_sync_is_rejected() {
     cg.sync().await.unwrap();
 }
 
+#[test]
+fn test_concurrent_hook_sync_is_rejected_before_database_open() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(tokensave::config::get_tokensave_dir(project)).unwrap();
+
+    let first = tokensave::tokensave::try_acquire_auto_sync_lock(project).unwrap();
+    let error = tokensave::tokensave::try_acquire_auto_sync_lock(project)
+        .err()
+        .expect("second hook-triggered sync must not acquire the lock");
+    assert!(
+        error
+            .to_string()
+            .contains("another hook-triggered sync is already running"),
+        "unexpected error: {error}"
+    );
+
+    drop(first);
+    tokensave::tokensave::try_acquire_auto_sync_lock(project)
+        .expect("dropping the first guard must release the hook sync slot");
+}
+
 /// Regression test for the incremental-sync edge-resolution gap: when a
 /// *callee* file changes, `delete_nodes_by_file` cascades away every edge
 /// that touches its (about-to-be-replaced) node ids — including inbound

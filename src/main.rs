@@ -555,8 +555,14 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // rather than at the end (#450).
             tokensave::cancel::install_signal_handlers();
             let explicit_path = path.is_some();
+            let git_hook_sync = !explicit_path
+                && std::env::var("TOKENSAVE_GIT_HOOK").is_ok_and(|value| value == "1");
             commands::warn_borrowed_worktree_index(explicit_path);
-            let project_path = tokensave::config::resolve_path_with_discovery(path);
+            let project_path = if git_hook_sync {
+                tokensave::config::resolve_git_hook_sync_root()
+            } else {
+                tokensave::config::resolve_path_with_discovery(path)
+            };
             // #876: the installed `post-commit` and `post-merge` hooks run a
             // pathless `sync`, so a repository started with `git init` reaches
             // here on its first commit. With `auto_init` on, initialize it
@@ -587,6 +593,23 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     }
                 }
             }
+            // Hook processes contend before opening the database. The normal
+            // writer lock is acquired inside `sync`, after `TokenSave::open`;
+            // on a very large index many losing processes could otherwise all
+            // spend hours loading the same database before one reaches it.
+            let _auto_sync_lock = if git_hook_sync && !auto_initialize {
+                match tokensave::tokensave::try_acquire_auto_sync_lock(&project_path) {
+                    Ok(lock) => Some(lock),
+                    Err(tokensave::errors::TokenSaveError::AutoSyncLock { message })
+                        if message.starts_with("another hook-triggered sync") =>
+                    {
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                }
+            } else {
+                None
+            };
             // Warn if legacy .codegraph directory exists
             if project_path.join(".codegraph").is_dir() {
                 eprintln!(
