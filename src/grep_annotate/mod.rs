@@ -5,7 +5,7 @@
 //! here as `<TAB>`:
 //!
 //! ```text
-//! src/cli.rs:24:    let b = get_string(args);<TAB>#ts in run (18–40); call -> get_string (src/args.rs:310–322)
+//! src/cli.rs:24:    let b = get_string(args);<TAB>#ts [in run, 18-40] [calls get_string, src/args.rs:310-322]
 //! ```
 //!
 //! The parts of this module:

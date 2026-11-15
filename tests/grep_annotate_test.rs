@@ -189,11 +189,11 @@ async fn each_kind_of_fact_is_reported() {
     assert_eq!(
         text(&out.stdout),
         "notes.txt:1:add_one is the entry point\n\
-         src/lib.rs:4:pub fn add_one(value: i32) -> i32 {\t#ts defines function add_one (4–6)\n\
-         src/lib.rs:14:        self.total = add_one(self.total);\t#ts in Counter::bump (13–15); \
-         call -> add_one (src/lib.rs:4–6)\n\
-         src/lib.rs:19:    counter.total = add_one(-1);\t#ts in reset (18–20); \
-         call -> add_one (src/lib.rs:4)\n\
+         src/lib.rs:4:pub fn add_one(value: i32) -> i32 {\t#ts [defines add_one (function), 4-6]\n\
+         src/lib.rs:14:        self.total = add_one(self.total);\t#ts [in Counter::bump, 13-15] \
+         [calls add_one, src/lib.rs:4-6]\n\
+         src/lib.rs:19:    counter.total = add_one(-1);\t#ts [in reset, 18-20] \
+         [calls add_one, src/lib.rs:4]\n\
          src/lib.rs:22:// add_one has no other user\n",
         "a definition, the enclosing symbol, a call with the line span of its target on the \
          first hit and the first line on a later hit, and no facts for an unindexed file or a \
@@ -203,9 +203,9 @@ async fn each_kind_of_fact_is_reported() {
     let out = tokensave_grep(root, &["git", "grep", "-n", "clamp"]);
     assert_eq!(
         text(&out.stdout),
-        "src/lib.rs:5:    util::clamp(value + 1)\t#ts in add_one (4–6); \
-         call -> clamp (src/util.rs:1–3)\n\
-         src/util.rs:1:pub fn clamp(value: i32) -> i32 {\t#ts defines function clamp (1–3)\n",
+        "src/lib.rs:5:    util::clamp(value + 1)\t#ts [in add_one, 4-6] \
+         [calls clamp, src/util.rs:1-3]\n\
+         src/util.rs:1:pub fn clamp(value: i32) -> i32 {\t#ts [defines clamp (function), 1-3]\n",
         "a call names a target in a different file"
     );
 
@@ -215,17 +215,17 @@ async fn each_kind_of_fact_is_reported() {
     );
     assert_eq!(
         text(&out.stdout),
-        "src/extension.ts:3:        thing.dispose();\t#ts in Extension::deactivate (2–4); \
-         call -> ? (2 candidates: ProviderManager::dispose, StatusBar::dispose)\n",
+        "src/extension.ts:3:        thing.dispose();\t#ts [in Extension::deactivate, 2-4] \
+         [ambiguous dispose, 2 candidates: ProviderManager::dispose, StatusBar::dispose]\n",
         "a call that the resolver could not bind lists its candidates"
     );
 
     let out = tokensave_grep(root, &["git", "grep", "-n", "counter: &mut Counter"]);
     assert_eq!(
         text(&out.stdout),
-        "src/lib.rs:18:pub fn reset(counter: &mut Counter) {\t#ts defines function reset (18–20); \
-         reference -> Counter (src/lib.rs:8–10)\n",
-        "an edge that is not a call is a reference"
+        "src/lib.rs:18:pub fn reset(counter: &mut Counter) {\t#ts [defines reset (function), 18-20] \
+         [type_of Counter, src/lib.rs:8-10]\n",
+        "an edge that is not a call shows the name of its kind"
     );
 }
 
@@ -237,7 +237,7 @@ async fn a_definition_shows_the_kind_name_of_the_index() {
     let out = tokensave_grep(dir.path(), &["git", "grep", "-n", "Red"]);
     assert_eq!(
         text(&out.stdout),
-        "src/color.rs:2:    Red,\t#ts defines enum_variant Color::Red (2)\n"
+        "src/color.rs:2:    Red,\t#ts [defines Color::Red (enum_variant), 2]\n"
     );
 }
 
@@ -248,7 +248,7 @@ async fn a_name_that_the_search_does_not_ask_for_is_not_reported() {
     let out = tokensave_grep(dir.path(), &["git", "grep", "-n", "self.total"]);
     assert_eq!(
         text(&out.stdout),
-        "src/lib.rs:14:        self.total = add_one(self.total);\t#ts in Counter::bump (13–15)\n"
+        "src/lib.rs:14:        self.total = add_one(self.total);\t#ts [in Counter::bump, 13-15]\n"
     );
 }
 
@@ -302,7 +302,7 @@ async fn context_lines_carry_no_facts() {
     );
     assert_eq!(
         text(&out.stdout),
-        "src/util.rs:1:pub fn clamp(value: i32) -> i32 {\t#ts defines function clamp (1–3)\n\
+        "src/util.rs:1:pub fn clamp(value: i32) -> i32 {\t#ts [defines clamp (function), 1-3]\n\
          src/util.rs-2-    value.min(100)\n"
     );
 }
@@ -473,8 +473,8 @@ async fn a_changed_file_is_stale_and_has_no_other_fact() {
     let out = tokensave_grep(root, &["git", "grep", "-n", "clamp"]);
     assert_eq!(
         text(&out.stdout),
-        "src/lib.rs:5:    util::clamp(value + 1)\t#ts in add_one (4–6); call -> clamp\n\
-         src/util.rs:1:pub fn clamp(value: i32) -> i32 {\t#ts stale\n",
+        "src/lib.rs:5:    util::clamp(value + 1)\t#ts [in add_one, 4-6] [calls clamp]\n\
+         src/util.rs:1:pub fn clamp(value: i32) -> i32 {\t#ts [stale]\n",
         "the changed file is stale, and a call into it gives no line span"
     );
 }
@@ -499,7 +499,7 @@ async fn a_file_with_an_old_time_and_a_new_size_is_stale() {
     let out = tokensave_grep(root, &["git", "grep", "-n", "pub fn clamp"]);
     assert_eq!(
         text(&out.stdout),
-        "src/util.rs:2:pub fn clamp(value: i32) -> i32 {\t#ts stale\n"
+        "src/util.rs:2:pub fn clamp(value: i32) -> i32 {\t#ts [stale]\n"
     );
 }
 
@@ -511,7 +511,7 @@ async fn a_file_with_a_byte_order_mark_is_not_stale() {
     let out = tokensave_grep(dir.path(), &["git", "grep", "-n", "1", "--", "src/bom.rs"]);
     assert_eq!(
         text(&out.stdout),
-        "src/bom.rs:2:    1\t#ts in with_bom (1–3)\n"
+        "src/bom.rs:2:    1\t#ts [in with_bom, 1-3]\n"
     );
 }
 
@@ -523,14 +523,14 @@ async fn paths_are_read_from_the_directory_of_the_search() {
     let out = tokensave_grep(&src, &["git", "grep", "-n", "clamp"]);
     assert_eq!(
         text(&out.stdout),
-        "lib.rs:5:    util::clamp(value + 1)\t#ts in add_one (4–6); \
-         call -> clamp (src/util.rs:1–3)\n\
-         util.rs:1:pub fn clamp(value: i32) -> i32 {\t#ts defines function clamp (1–3)\n"
+        "lib.rs:5:    util::clamp(value + 1)\t#ts [in add_one, 4-6] \
+         [calls clamp, src/util.rs:1-3]\n\
+         util.rs:1:pub fn clamp(value: i32) -> i32 {\t#ts [defines clamp (function), 1-3]\n"
     );
     let out = tokensave_grep(root, &["git", "-C", "src", "grep", "-n", "value.min"]);
     assert_eq!(
         text(&out.stdout),
-        "util.rs:2:    value.min(100)\t#ts in clamp (1–3)\n"
+        "util.rs:2:    value.min(100)\t#ts [in clamp, 1-3]\n"
     );
     // The search is in the project, and the command starts outside it.
     let outside = tempdir().expect("temp dir");
@@ -541,12 +541,12 @@ async fn paths_are_read_from_the_directory_of_the_search() {
     );
     assert_eq!(
         text(&out.stdout),
-        "src/util.rs:2:    value.min(100)\t#ts in clamp (1–3)\n"
+        "src/util.rs:2:    value.min(100)\t#ts [in clamp, 1-3]\n"
     );
     let out = tokensave_grep(&src, &["git", "grep", "-n", "--full-name", "value.min"]);
     assert_eq!(
         text(&out.stdout),
-        "src/util.rs:2:    value.min(100)\t#ts in clamp (1–3)\n"
+        "src/util.rs:2:    value.min(100)\t#ts [in clamp, 1-3]\n"
     );
 }
 
@@ -568,7 +568,7 @@ async fn an_absolute_path_names_the_same_file() {
     assert_eq!(
         text(&out.stdout),
         format!(
-            "{}:2:    value.min(100)\t#ts in clamp (1–3)\n",
+            "{}:2:    value.min(100)\t#ts [in clamp, 1-3]\n",
             util.display()
         )
     );

@@ -25,6 +25,8 @@ const MAX_SYMBOLS: i64 = 20_000;
 const MAX_EDGES: i64 = 50_000;
 /// Maximum number of call and reference facts on one hit.
 const MAX_TARGET_FACTS: usize = 3;
+/// The edge kind of a call.
+const CALLS: &str = "calls";
 /// Maximum number of candidate names on one ambiguous call.
 const MAX_CANDIDATE_NAMES: usize = 3;
 
@@ -52,7 +54,8 @@ struct Symbol {
 /// The target of an edge that starts on a line of a file.
 struct Target {
     line: u32,
-    is_call: bool,
+    /// The edge kind, for example `calls` or `uses`.
+    kind: String,
     id: String,
     name: String,
     display: String,
@@ -133,7 +136,7 @@ fn span(start: u32, end: u32) -> String {
     if start == end {
         format!("{}", start + 1)
     } else {
-        format!("{}–{}", start + 1, end + 1)
+        format!("{}-{}", start + 1, end + 1)
     }
 }
 
@@ -405,7 +408,7 @@ impl Index {
             let target_file: String = row.get(5)?;
             facts.targets.push(Target {
                 line: stored_line(&row, 0)?,
-                is_call: kind == "calls",
+                kind,
                 id: row.get(2)?,
                 name: row.get(3)?,
                 display: display_name(&qualified_name, &target_file),
@@ -472,11 +475,17 @@ impl Index {
     }
 
     /// Builds the facts for the hit on 1-based line `number` of `file`.
+    ///
+    /// The fact forms are specific to this command. They follow the
+    /// conventions of the text search results: a fact is in square brackets,
+    /// as in `[in name, id: ...]`. A line span is `a-b`. A kind is in
+    /// parentheses after the name. An edge has the name of its kind, such as
+    /// `calls` or `uses`. A call with more than one candidate is `ambiguous`.
     async fn describe(&mut self, file: &str, number: u32, plan: &AnnotatePlan) -> Option<String> {
         let line = number.checked_sub(1)?;
         let facts = self.files.get(file)?.as_ref()?;
         if facts.stale {
-            return Some("stale".to_string());
+            return Some("[stale]".to_string());
         }
         let mut parts = Vec::new();
 
@@ -495,9 +504,9 @@ impl Index {
             });
         if let Some(symbol) = defined {
             parts.push(format!(
-                "defines {} {} ({})",
-                symbol.kind,
+                "[defines {} ({}), {}]",
                 symbol.display,
+                symbol.kind,
                 span(symbol.start, symbol.end)
             ));
         } else if let Some(symbol) = facts
@@ -507,7 +516,7 @@ impl Index {
             .min_by_key(|symbol| (symbol.end.saturating_sub(symbol.start), symbol.start))
         {
             parts.push(format!(
-                "in {} ({})",
+                "[in {}, {}]",
                 symbol.display,
                 span(symbol.start, symbol.end)
             ));
@@ -525,7 +534,7 @@ impl Index {
             }
         }
         // Calls come first. The sort is stable, so line order stays.
-        targets.sort_by_key(|target| !target.is_call);
+        targets.sort_by_key(|target| target.kind != CALLS);
         targets.truncate(MAX_TARGET_FACTS);
         let ambiguous: Vec<(String, Vec<String>)> = facts
             .ambiguous
@@ -534,16 +543,16 @@ impl Index {
             .filter(|call| {
                 !targets
                     .iter()
-                    .any(|target| target.is_call && target.name == call.leaf)
+                    .any(|target| target.kind == CALLS && target.name == call.leaf)
             })
             .take(MAX_TARGET_FACTS.saturating_sub(targets.len()))
             .map(|call| (call.leaf.clone(), call.candidates.clone()))
             .collect();
-        let targets: Vec<(bool, String, String, String, u32, u32)> = targets
+        let targets: Vec<(String, String, String, String, u32, u32)> = targets
             .into_iter()
             .map(|target| {
                 (
-                    target.is_call,
+                    target.kind.clone(),
                     target.id.clone(),
                     target.display.clone(),
                     target.file.clone(),
@@ -553,11 +562,10 @@ impl Index {
             })
             .collect();
 
-        for (is_call, id, display, target_file, start, end) in targets {
-            let relation = if is_call { "call" } else { "reference" };
+        for (kind, id, display, target_file, start, end) in targets {
             // The lines of a definition in a changed file can be wrong.
             if target_file != file && !self.is_fresh(&target_file).await {
-                parts.push(format!("{relation} -> {display}"));
+                parts.push(format!("[{kind} {display}]"));
                 continue;
             }
             // The first hit on a definition gives its line span. Later hits
@@ -567,23 +575,23 @@ impl Index {
             } else {
                 span(start, start)
             };
-            parts.push(format!("{relation} -> {display} ({target_file}:{lines})"));
+            parts.push(format!("[{kind} {display}, {target_file}:{lines}]"));
         }
-        for (_, candidates) in ambiguous {
+        for (leaf, candidates) in ambiguous {
             let names = self.candidate_names(&candidates).await;
             let more = if candidates.len() > names.len() {
-                ", …"
+                ", ..."
             } else {
                 ""
             };
             parts.push(format!(
-                "call -> ? ({} candidates: {}{more})",
+                "[ambiguous {leaf}, {} candidates: {}{more}]",
                 candidates.len(),
                 names.join(", ")
             ));
         }
 
-        (!parts.is_empty()).then(|| parts.join("; "))
+        (!parts.is_empty()).then(|| parts.join(" "))
     }
 }
 
@@ -606,7 +614,7 @@ mod tests {
 
     #[test]
     fn span_shows_editor_lines() {
-        assert_eq!(span(17, 39), "18–40");
+        assert_eq!(span(17, 39), "18-40");
         assert_eq!(span(4, 4), "5");
     }
 
