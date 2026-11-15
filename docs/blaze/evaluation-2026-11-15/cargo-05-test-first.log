@@ -1,0 +1,142 @@
+$ cargo test --locked --no-default-features --features lite --test integration sync
+warning: `package.homepage` is redundant with `package.repository`
+  --> Cargo.toml:11:12
+   |
+10 | repository = "https://github.com/aovestdipaperino/tokensave"
+   |              -----------------------------------------------
+11 | homepage = "https://github.com/aovestdipaperino/tokensave"
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::redundant_homepage` is set to `warn` by default
+help: consider removing `package.homepage`
+warning: `tokensave` (manifest) generated 1 warning
+warning: `package.homepage` is redundant with `package.repository`
+  --> $CHECKOUT/Cargo.toml:11:12
+   |
+10 | repository = "https://github.com/aovestdipaperino/tokensave"
+   |              -----------------------------------------------
+11 | homepage = "https://github.com/aovestdipaperino/tokensave"
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::redundant_homepage` is set to `warn` by default
+help: consider removing `package.homepage`
+warning: `tokensave` (manifest) generated 1 warning
+   Compiling num-traits v0.2.19
+   Compiling either v1.16.0
+   Compiling zerocopy v0.8.52
+   Compiling zerocopy-derive v0.8.52
+   Compiling tokio v1.54.1
+   Compiling tokensave v7.17.0 ($CHECKOUT/.blaze-eval/run/tree-cargo)
+   Compiling ciborium-io v0.2.2
+   Compiling plotters-backend v0.3.7
+   Compiling libsql v0.9.30 ($CHECKOUT/.blaze-eval/run/tree-cargo/vendor/libsql)
+   Compiling rayon v1.12.0
+   Compiling plotters-svg v0.3.7
+   Compiling itertools v0.10.5
+   Compiling cast v0.3.0
+   Compiling tinytemplate v1.2.1
+   Compiling is-terminal v0.4.17
+   Compiling anes v0.1.6
+   Compiling oorandom v11.1.5
+   Compiling num-integer v0.1.46
+   Compiling num-complex v0.4.6
+   Compiling plotters v0.3.7
+   Compiling ndarray v0.17.2
+   Compiling criterion-plot v0.5.0
+   Compiling tokio-util v0.7.18
+   Compiling ort v2.0.0-rc.12
+   Compiling half v2.7.1
+   Compiling ciborium-ll v0.2.2
+   Compiling ciborium v0.2.2
+   Compiling criterion v0.5.1
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 09s
+     Running tests/integration.rs (target/debug/build/tokensave/fb0d87b938b1da1a/out/integration-fb0d87b938b1da1a)
+
+running 84 tests
+test auto_init_test::explicit_sync_path_is_not_auto_initialized ... ok
+test auto_sync_bound_test::a_change_larger_than_the_cap_is_refused ... ok
+test auto_sync_bound_test::a_cap_of_zero_disables_the_file_count_guard ... ok
+test auto_init_test::repository_above_max_auto_sync_files_is_deferred_with_a_hint ... ok
+test auto_sync_bound_test::empty_index_does_not_trigger_an_automatic_full_index ... ok
+test artifact_indexing_test::sync_adds_a_new_artifact ... ok
+test auto_sync_bound_test::an_ordinary_change_still_syncs_automatically ... ok
+test artifact_indexing_test::sync_removes_a_deleted_artifact ... ok
+test auto_init_test::pathless_sync_initializes_a_new_repository ... ok
+test branch_auto_gc_test::gc_refuses_concurrent_sync_and_recovers_after_lock_release ... ok
+test borrowed_branch_index_test::a_sync_on_a_detached_head_does_not_write_into_the_default_branch ... ok
+test borrowed_branch_index_test::a_sync_does_not_write_an_untracked_branch_into_its_ancestor ... ok
+test borrowed_branch_index_test::a_single_database_project_syncs_on_any_branch ... ok
+test borrowed_branch_index_test::an_automatic_sync_refuses_a_borrowed_index ... ok
+test branch_last_synced_test::a_sync_advances_last_synced_at ... ok
+test auto_init_test::existing_index_is_synced_not_reinitialized ... ok
+test corruption_test::bulk_load_preserves_synchronous_normal ... ok
+test csharp_extraction_test::test_cs_async_method ... ok
+test display_test::test_print_status_header_never_synced ... ok
+test display_test::test_print_status_table_recent_sync_times ... ok
+test extraction_test::test_extract_async_function ... ok
+test branch_drift_test::an_automatic_sync_refuses_while_the_branch_has_drifted ... ok
+test corruption_test::live_sync_defers_dirty_recovery ... ok
+test context_test::executable_body_index_is_replaced_by_incremental_sync ... ok
+test integration_test::test_concurrent_hook_sync_is_rejected_before_database_open ... ok
+test branch_last_synced_test::a_sync_advances_only_the_serving_branch ... ok
+test branch_last_synced_test::an_incremental_sync_advances_last_synced_at ... ok
+test integration_test::test_concurrent_sync_is_rejected ... ok
+test integration_test::test_file_removal_sync ... ok
+test integration_test::test_incremental_sync ... ok
+test fs_watch_test::batches_apply_through_the_sync_pipeline ... ok
+test integration_test::test_sync_no_changes ... ok
+test integration_test::test_sync_produces_call_edges ... ok
+test csharp_receiver_types_test::typed_receiver_edges_match_between_incremental_and_full_sync ... ok
+test integration_test::test_sync_does_not_duplicate_edges ... ok
+test agent_maintenance_env_test::without_the_env_var_the_resync_still_refreshes_the_file ... ok
+test integration_test::test_sync_produces_call_edges_after_file_modification ... ok
+test integration_test::test_verbose_sync_reports_skipped_extensions ... ok
+test integration_test::test_sync_resolves_cross_file_call_edges_for_new_files ... ok
+test integration_test::test_sync_reresolves_inbound_edges_after_callee_change ... ok
+test lockfile_indexing_test::sync_picks_up_a_newly_written_lockfile ... ok
+test integration_test::test_incremental_sync_graph_matches_full_reindex ... ok
+test mcp_handler_test::test_status_stale_commits_after_last_sync_with_empty_files ... ok
+test mcp_handler_test::test_status_stale_commits_cleared_by_no_change_sync ... ok
+test mcp_handler_test::test_status_staleness_falls_back_to_last_sync_at_when_files_empty ... ok
+test mcp_handler_test::test_status_stale_commits_excludes_commit_in_sync_second ... ok
+test language_detection_test::indexes_symbols_syncs_edits_deletes_and_forced_reindex ... ok
+test python_extraction_test::test_py_async_function ... ok
+test python_extraction_test::test_py_async_method ... ok
+test migration_test::test_forced_rebuild_is_refused_while_the_sync_lock_is_held ... ok
+test project_manifest_test::unknown_language_fails_the_sync_loudly ... ok
+test reinstall_githooks_624_test::the_upgrade_resync_does_not_install_hooks ... ok
+test reinstall_githooks_624_test::the_upgrade_resync_refreshes_existing_hooks ... ok
+test rust_extraction_test::test_rust_async_function ... ok
+test language_aliases_test::repeated_sync_preserves_fixed_workload ... ok
+test swift_extraction_test::test_swift_async_function ... ok
+test multi_mcp_coordination_test::two_mcps_on_same_project_coordinate_via_sync_lock ... ok
+test sync_test::test_content_hash_deterministic ... ok
+test sync_test::test_content_hash_different ... ok
+test sync_test::test_file_stat_nonexistent ... ok
+test sync_test::test_file_stat_returns_mtime_and_size ... ok
+test sync_test::test_read_source_file_replaces_invalid_utf8 ... ok
+test sync_test::test_read_source_file_utf16_be ... ok
+test sync_test::test_read_source_file_utf16_le ... ok
+test sync_test::test_read_source_file_utf8 ... ok
+test sync_test::test_read_source_file_utf8_bom ... ok
+test nested_worktree_scan_test::a_sync_removes_the_rows_of_a_directory_that_is_a_worktree ... ok
+test index_consistency_test::an_incremental_sync_equals_a_full_index_after_the_tree_changes ... ok
+test tokensave_test::last_sync_timestamp_falls_back_to_indexed_at_without_metadata ... ok
+test tokensave_test::last_sync_timestamp_uses_metadata_not_indexed_at ... ok
+test symlink_walk_scope_test::full_sync_removes_rows_reached_through_an_ancestor_link ... ok
+test tokensave_test::mtime_only_sync_clears_staleness_without_reindexing ... ok
+test tokensave_test::sync_if_stale_prunes_deleted_files ... ok
+test tokensave_test::sync_if_stale_silent_prunes_deleted_files ... ok
+test skipped_summary_cli_test::sync_reports_the_unsupported_source_file ... ok
+test typescript_extraction_test::test_ts_async_arrow_function ... ok
+test typescript_extraction_test::test_ts_async_function ... ok
+test ts_js_specifier_647_test::incremental_sync_keeps_js_specifier_import_edge ... ok
+test ts_js_specifier_647_test::incremental_sync_binds_specifier_when_target_appears ... ok
+test tokensave_test::sync_if_stale_silent_waits_for_peer_then_returns_ok ... ok
+test resolved_by_test::full_index_and_incremental_sync_agree_on_labels ... ok
+test resolved_by_test::incremental_sync_persists_resolved_by ... ok
+test project_root_discovery_test::sync_and_status_from_a_subdirectory_use_the_root_index ... ok
+test tokensave_test::sync_if_stale_silent_does_not_create_duplicate_row_for_backslash_path ... ok
+
+test result: ok. 84 passed; 0 failed; 0 ignored; 0 measured; 2311 filtered out; finished in 3.39s
+

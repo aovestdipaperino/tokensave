@@ -131,3 +131,12 @@ cargo clippy --workspace --all-targets --locked
 
 Development commands use debug builds; installation uses optimized release output
 only (`cargo install --path . --locked`). `target/debug` is never an installation input.
+
+For local development on Linux and macOS, the optional
+[`scripts/dev-build` runner](../../CONTRIBUTING.md#optional-blaze-for-local-builds-and-tests)
+prefers Blaze when it is installed and usable, with Cargo fallback.
+`scripts/dev-build --cargo test --workspace --locked` explicitly selects Cargo;
+`TOKENSAVE_BUILD_RUNNER=cargo` selects it for a shell session. Windows keeps
+Cargo. CI, releases, installation and final PR validation use the Cargo commands
+above. See the [Blaze evaluation](../BLAZE-EVALUATION.md) for setup, command
+selection, compatibility coverage and measurements.
