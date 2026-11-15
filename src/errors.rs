@@ -32,6 +32,9 @@ pub enum TokenSaveError {
     #[error("sync lock: {message}")]
     SyncLock { message: String },
 
+    #[error("auto-sync lock: {message}")]
+    AutoSyncLock { message: String },
+
     #[error("branch operation lock: {message}")]
     BranchLock { message: String },
 
