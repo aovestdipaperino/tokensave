@@ -1,4 +1,3 @@
-// Rust guideline compliant 2025-10-17
 //! Mode-aware file reads for `tokensave_read`.
 //!
 //! Four modes are implemented in 5.0:
@@ -11,10 +10,8 @@
 //! - `signatures` — `map` filtered to function/type kinds, with the cached
 //!   `signature` column included
 //!
-//! Each function returns the rendered body as a `String`. Token-counting and
-//! cache I/O happen one layer up, in the MCP handler.
-
-use std::fmt::Write as _;
+//! Source renderers return a `String`; graph renderers return a JSON value.
+//! The MCP handler assembles the response and handles conditional reads.
 
 use serde_json::{json, Value};
 
@@ -32,6 +29,7 @@ pub enum ReadMode {
 }
 
 impl ReadMode {
+    /// JSON mode name accepted by the MCP read tool.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Full => "full",
@@ -41,6 +39,9 @@ impl ReadMode {
         }
     }
 
+    /// Parses an exact, lowercase mode name; returns `None` for unknown names.
+    // The MCP handler already supplies the user-facing error. Keep this optional
+    // parser API rather than adding an otherwise unused FromStr error type.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "full" => Some(Self::Full),
@@ -56,11 +57,17 @@ impl ReadMode {
 /// single line). Out-of-range values are clamped at render time.
 #[derive(Debug, Clone, Copy)]
 pub struct LineRange {
+    /// First line to include, numbered from one.
     pub start: u32,
+    /// Last line to include, numbered from one.
     pub end: u32,
 }
 
 impl LineRange {
+    /// Parses `A-B` or `A`, allowing surrounding whitespace.
+    /// Returns `None` for zero, reversed ranges, or invalid integers.
+    // Like ReadMode::parse, this compatibility API leaves error reporting to
+    // the MCP handler; callers only need to distinguish valid and invalid input.
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
         if let Some((a, b)) = s.split_once('-') {
@@ -90,7 +97,9 @@ const LINE_NUMBER_WIDTH: usize = 6;
 /// Prefixes each line with its 1-based number, right-aligned, then a tab —
 /// the format agents already parse from the raw `Read` tool (#652). `first`
 /// is the real file line number of the first item.
-fn number_lines<'a>(lines: impl Iterator<Item = &'a str>, first: usize) -> String {
+fn number_lines<'line>(lines: impl Iterator<Item = &'line str>, first: usize) -> String {
+    use std::fmt::Write as _;
+
     let mut out = String::new();
     for (i, line) in lines.enumerate() {
         if i > 0 {
@@ -223,7 +232,11 @@ fn is_signature_kind(kind: &NodeKind) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "tests fail immediately if a valid fixture cannot be parsed"
+)]
 mod tests {
     use super::*;
 

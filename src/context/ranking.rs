@@ -1,3 +1,9 @@
+//! Structural ranking factors shared by search and context retrieval.
+
+use std::cmp::Ordering;
+use std::collections::HashMap;
+use std::hash::BuildHasher;
+
 use crate::types::{Node, NodeKind, SearchResult, Visibility};
 
 /// Boost factor based on node kind.
@@ -207,9 +213,9 @@ pub fn path_rank_multiplier(file_path: &str) -> f64 {
 
 /// Applies a log-scale connectivity boost based on incoming call counts.
 /// `call_counts` maps `node_id` → incoming "calls" edge count.
-pub fn apply_connectivity_boost<S: std::hash::BuildHasher>(
+pub fn apply_connectivity_boost<S: BuildHasher>(
     candidates: &mut [SearchResult],
-    call_counts: &std::collections::HashMap<String, u64, S>,
+    call_counts: &HashMap<String, u64, S>,
 ) {
     for candidate in candidates.iter_mut() {
         let count = call_counts.get(&candidate.node.id).copied().unwrap_or(0);
@@ -217,14 +223,9 @@ pub fn apply_connectivity_boost<S: std::hash::BuildHasher>(
         let boost = 1.0 + (count as f64 + 1.0).log2().min(4.0) / 4.0;
         candidate.score *= boost;
     }
-    candidates.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
 }
 
-/// Re-ranks search result candidates using structural signals.
 /// True for a VHDL or Verilog source file.
 fn is_hdl_path(path: &str) -> bool {
     let ext = path.rsplit('.').next().unwrap_or("");
@@ -249,6 +250,7 @@ pub fn node_kind_boost(node: &Node) -> f64 {
     kind_boost(&node.kind)
 }
 
+/// Applies structural factors, then sorts highest scores first.
 pub fn rerank_candidates(candidates: &mut [SearchResult]) {
     for candidate in candidates.iter_mut() {
         let boost = node_kind_boost(&candidate.node)
@@ -258,11 +260,7 @@ pub fn rerank_candidates(candidates: &mut [SearchResult]) {
             * test_symbol_penalty(&candidate.node.name, &candidate.node.qualified_name);
         candidate.score *= boost;
     }
-    candidates.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
 }
 
 /// Applies an additional ranking signal when a task explicitly asks about
@@ -306,11 +304,7 @@ pub fn apply_executable_intent_boost(candidates: &mut [SearchResult], query: &st
             candidate.score *= 0.1;
         }
     }
-    candidates.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
 }
 
 #[cfg(test)]
@@ -318,7 +312,11 @@ pub fn apply_executable_intent_boost(candidates: &mut [SearchResult], query: &st
     clippy::float_cmp,
     reason = "tests assert exact scores computed from constant weights"
 )]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "tests fail immediately when expected ranking fixtures are missing"
+)]
 mod tests {
     use super::*;
     use crate::types::Node;
@@ -676,7 +674,7 @@ mod tests {
         let base_score = candidates[0].score;
         assert_eq!(candidates[1].score, base_score, "same base score");
 
-        let mut counts = std::collections::HashMap::new();
+        let mut counts = HashMap::new();
         counts.insert("test:src/a.rs".to_string(), 15u64);
 
         apply_connectivity_boost(&mut candidates, &counts);

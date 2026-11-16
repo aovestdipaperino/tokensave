@@ -1,10 +1,12 @@
-use std::collections::HashMap;
+//! Markdown and JSON rendering for task context.
+
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-use crate::context::ranking::is_test_path;
+use crate::context::ranking;
 use crate::types::TaskContext;
 
-/// Longest signature rendered inline for an entry point, in bytes.
+/// Maximum characters retained from the first signature line before an ellipsis.
 pub const MAX_SIGNATURE_LEN: usize = 200;
 
 /// Renders a signature as one bounded line.
@@ -127,9 +129,9 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
     } else {
         let mut by_file: HashMap<&str, Vec<(&str, u32)>> = HashMap::new();
         let mut test_symbols = 0usize;
-        let mut test_files: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut test_files: HashSet<&str> = HashSet::new();
         for node in &context.subgraph.nodes {
-            if is_test_path(&node.file_path) {
+            if ranking::is_test_path(&node.file_path) {
                 test_symbols += 1;
                 test_files.insert(&node.file_path);
                 continue;
@@ -144,7 +146,7 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
         files.sort();
 
         for file in files {
-            let symbols = by_file.get(*file).unwrap_or(&Vec::new()).clone();
+            let symbols = by_file.get(*file).map_or(&[][..], Vec::as_slice);
             let formatted: Vec<String> = symbols
                 .iter()
                 .map(|(name, line)| format!("{name}:{line}"))
@@ -175,9 +177,9 @@ pub fn format_context_as_markdown(context: &TaskContext) -> String {
                     .entry_points
                     .iter()
                     .find(|n| &n.id == node_id)
-                    .map_or_else(|| node_id.clone(), |n| n.name.clone())
+                    .map_or(node_id.as_str(), |n| n.name.as_str())
             } else {
-                "unknown".to_string()
+                "unknown"
             };
 
             let _ = writeln!(
@@ -284,7 +286,11 @@ pub fn format_context_as_json(context: &TaskContext) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "tests fail immediately when fixture output violates the expected format"
+)]
 mod tests {
     use super::*;
     use crate::types::{CodeBlock, Node, NodeKind, RetrievalDiagnostics, Subgraph, Visibility};
