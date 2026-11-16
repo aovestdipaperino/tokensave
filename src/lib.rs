@@ -43,6 +43,7 @@ pub mod global_benchmark;
 pub mod global_db;
 pub mod go_import;
 pub mod graph;
+pub mod grep_annotate;
 pub mod hardware;
 pub mod hooks;
 pub mod index_scope;

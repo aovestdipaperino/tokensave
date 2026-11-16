@@ -515,7 +515,7 @@ impl TokenSave {
     /// Returns `(db_path, serving_branch, fallback_warning)`.
     /// `serving_branch` is the branch whose DB is actually opened.
     /// The warning is `Some` when falling back to an ancestor branch's DB.
-    fn resolve_db_for_branch(
+    pub(crate) fn resolve_db_for_branch(
         project_root: &Path,
         tokensave_dir: &Path,
         branch: Option<&str>,

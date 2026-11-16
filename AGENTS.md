@@ -370,6 +370,7 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - `src/agents/` — agent integrations (Claude, Codex, Cursor, etc.) and git hooks.
 - `src/okf/` — Open Knowledge Format v0.2 (#858): bounded bundle reader, conformance validator, read-only index export, and import into project state (`okf/<name>/`, no schema change) searched by the `tokensave_knowledge` MCP tool (`tokensave okf validate|export|import|list|remove`); official sample bundles in `tests/fixtures/okf/official/`, a reconstructed Graphify bundle in `tests/fixtures/okf/graphify/`; see `docs/guide/OKF.md`.
 - `src/caveman.rs` — opt-in, read-only Caveman discovery and the extra MCP `initialize` paragraph (#797); see `docs/CAVEMAN-COMPATIBILITY.md`.
+- `src/grep_annotate/` — `tokensave grep` (#688): argument classification for `grep`, `rg` and `git grep`, hit parsing, and read-only index lookups that add `#ts` facts to each `path:line:` hit; the runner is `src/grep_command.rs`. It is dispatched before startup maintenance, runs the named search binary unchanged, and must not sync, migrate or write. Focused checks: `cargo test --test integration grep_annotate_test::` and `cargo test --lib grep_annotate`; see `docs/guide/CLI-REFERENCE.md`.
 - `src/sync.rs` — incremental sync (content hashing, stale/new/removed detection).
 - `src/bench.rs` — `tokensave bench` harness.
 - `build.rs` compiles vendored grammars (WGSL, ActionScript, GDScript) only when their feature is enabled.
