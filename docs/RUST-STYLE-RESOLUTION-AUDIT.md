@@ -1,7 +1,7 @@
 # Resolution style audit
 
 Refs [#912](https://github.com/aovestdipaperino/tokensave/issues/912).
-This manual-review pass is published as draft
+This manual-review pass is published and ready for review as
 [PR #1029](https://github.com/aovestdipaperino/tokensave/pull/1029), targeting
 `master` from `atontini:refactor/resolution-style-audit`, and remains unmerged.
 `beta` is excluded. The
@@ -93,7 +93,8 @@ than omitted. Logs: `/tmp/resolution-style-validation-*.log`.
 
 Independent static review found no concrete behavioral defect in the call-site
 keys, enum mappings, or borrowed directory comparison. This is not an exhaustive
-correctness or soundness proof. Full-feature/workspace tests, sanitizers, memory
-benchmarks, and Windows checks were not run. Upstream `master` AGENTS.md matched
+correctness or soundness proof. At initial publication, full-feature/workspace tests, sanitizers, memory
+benchmarks and Windows checks had not been run locally. Additional validation
+and current CI results are recorded in the linked PR. Upstream `master` AGENTS.md matched
 the local file (`1712682f4e5222e70fd7a6798095ddf11feddb1f`); no shared guidance
 change was needed. No beta files changed.
