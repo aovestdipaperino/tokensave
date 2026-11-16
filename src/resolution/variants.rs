@@ -1,4 +1,3 @@
-// Rust guideline compliant 2026-06-17
 //! Build-variant edge propagation.
 //!
 //! Conditionally-compiled code defines the *same logical symbol* more than
@@ -23,6 +22,8 @@
 //! deliberately scoped to genuine build variants, not arbitrary name clashes.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasher;
+use std::path::Path;
 
 use crate::types::{Edge, EdgeKind, Node, NodeKind, ResolvedBy};
 
@@ -81,7 +82,7 @@ pub fn propagate_variant_edges(nodes: &[Node], edges: &[Edge]) -> Vec<Edge> {
         if !is_callable(&n.kind) {
             continue;
         }
-        let ext = std::path::Path::new(&n.file_path).extension();
+        let ext = Path::new(&n.file_path).extension();
         if ext.is_some_and(|e| e.eq_ignore_ascii_case("rs")) {
             // Rust variants share a qualified_name and are both cfg-gated.
             if cfg_gated.contains(n.id.as_str()) {
@@ -131,6 +132,10 @@ pub const CALLABLE_KIND_NAMES: &[&str] = &[
 /// *name* because SQLite has no `dirname` — so the exact `(directory, name)`
 /// grouping happens here, matching what the whole-graph pass builds.
 ///
+/// The tuple inputs retain the public SQL-row contract: Rust rows are
+/// `(group_key, node_id)` and Go rows are `(file_path, name, node_id)`. Named
+/// wrapper types would require callers to allocate a converted row collection.
+///
 /// Groups with a single member are dropped: they cannot propagate anything,
 /// and dropping them here is what keeps the follow-up edge query small.
 pub fn variant_groups_from_candidates<'a>(
@@ -162,7 +167,7 @@ pub fn variant_groups_from_candidates<'a>(
 /// Both uses are member-targeted: `incoming` is keyed by member, and the
 /// duplicate check asks whether `(source, sibling)` already exists, where
 /// `sibling` is itself a member of the same group.
-pub fn emit_variant_edges<S: std::hash::BuildHasher>(
+pub fn emit_variant_edges<S: BuildHasher>(
     groups: &HashMap<String, Vec<&str>, S>,
     edges: &[Edge],
 ) -> Vec<Edge> {

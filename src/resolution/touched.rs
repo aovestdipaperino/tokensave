@@ -29,7 +29,7 @@
 
 use std::collections::HashSet;
 
-use crate::types::{Node, NodeKind};
+use crate::types::{Node, NodeKind, UnresolvedRef};
 
 /// The identity of one reference, for scoping the ambiguity replacement to the
 /// references a pass actually re-resolved (#484 phase 3).
@@ -41,14 +41,18 @@ use crate::types::{Node, NodeKind};
 /// missing delete gets wrong.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AmbiguityRefKey {
+    /// Graph ID of the node containing the reference.
     pub from_node_id: String,
+    /// Reference spelling recorded during extraction.
     pub reference_name: String,
+    /// Project-relative path of the source file.
     pub file_path: String,
+    /// Zero-based source line used by the ambiguity table key.
     pub line: u32,
 }
 
-impl From<&crate::types::UnresolvedRef> for AmbiguityRefKey {
-    fn from(uref: &crate::types::UnresolvedRef) -> Self {
+impl From<&UnresolvedRef> for AmbiguityRefKey {
+    fn from(uref: &UnresolvedRef) -> Self {
         Self {
             from_node_id: uref.from_node_id.clone(),
             reference_name: uref.reference_name.clone(),
@@ -63,8 +67,11 @@ impl From<&crate::types::UnresolvedRef> for AmbiguityRefKey {
 /// the whole row.
 #[derive(Debug, Clone)]
 pub struct TouchedNode {
+    /// Controls whether the resolver admits the node to its name indexes.
     pub kind: NodeKind,
+    /// Short name indexed for exact-name matching.
     pub name: String,
+    /// Full name from which qualified-name suffix keys are derived.
     pub qualified_name: String,
 }
 
@@ -115,6 +122,7 @@ pub struct TouchedSet {
 }
 
 impl TouchedSet {
+    /// Starts an empty invalidation set for one synchronization pass.
     pub fn new() -> Self {
         Self::default()
     }
@@ -169,6 +177,7 @@ impl TouchedSet {
         &self.files
     }
 
+    /// Number of distinct name-index keys affected by this pass.
     pub fn name_count(&self) -> usize {
         self.names.len()
     }
