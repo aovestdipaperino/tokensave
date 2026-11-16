@@ -162,8 +162,9 @@ pub(crate) fn extract_files_in_process(
             let mut result = safe_extract(extractor, file_path, &source)?;
             result.sanitize();
             let hash = sync::content_hash(&source);
-            let size = source.len() as u64;
-            let mtime = sync::file_stat(&abs_path).map_or_else(current_timestamp, |(m, _)| m);
+            // Persist disk bytes, since decoding can remove a BOM or change encoding.
+            let (mtime, size) = sync::file_stat(&abs_path)
+                .unwrap_or_else(|| (current_timestamp(), source.len() as u64));
             Some((file_path.clone(), result, hash, size, mtime))
         })
         .collect()
