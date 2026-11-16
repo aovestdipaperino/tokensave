@@ -1,3 +1,5 @@
+//! Graph traversal, structural analysis, and dependency projections.
+
 /// Graph traversal algorithms for the code graph.
 pub mod traversal;
 

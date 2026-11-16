@@ -4,8 +4,11 @@
 //! Tarjan's SCC-based acyclicity scoring, dependency depth analysis,
 //! modularity estimation, and composite health scoring.
 
+use std::cmp::{Ordering, Reverse};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::BuildHasher;
+
+use super::scc;
 
 // ---------------------------------------------------------------------------
 // Task 2: Gini Coefficient
@@ -26,7 +29,7 @@ pub fn gini_coefficient(values: &[f64]) -> f64 {
 
     let n = values.len() as f64;
     let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
 
     // G = (2 * Σ(i * x_i)) / (n * Σ(x_i)) - (n + 1) / n  (i is 1-indexed)
     let weighted_sum: f64 = sorted
@@ -59,11 +62,12 @@ pub fn gini_label(gini: f64) -> &'static str {
 // Task 3: Tarjan's SCC / Acyclicity Score
 // ---------------------------------------------------------------------------
 
-use super::scc::tarjan_scc;
-
 /// Computes the acyclicity score for a directed graph.
 /// Uses Tarjan's SCC algorithm. Score = 1.0 - (`edges_in_nontrivial_SCCs` / `total_edges`).
 /// Returns (score, `number_of_edges_in_cycles`).
+///
+/// This existing public pair is kept for caller compatibility; both values are
+/// calculated together and their order is part of the documented contract.
 pub fn acyclicity_score<S1: BuildHasher, S2: BuildHasher>(
     adj: &HashMap<String, HashSet<String, S2>, S1>,
 ) -> (f64, usize) {
@@ -73,7 +77,7 @@ pub fn acyclicity_score<S1: BuildHasher, S2: BuildHasher>(
         return (1.0, 0);
     }
 
-    let sccs = tarjan_scc(adj);
+    let sccs = scc::tarjan_scc(adj);
 
     // Build a set of nodes in nontrivial SCCs (size > 1)
     let mut in_cycle: HashSet<&str> = HashSet::new();
@@ -107,16 +111,21 @@ pub fn acyclicity_score<S1: BuildHasher, S2: BuildHasher>(
 
 /// A chain entry representing a file and the longest dependency chain reaching it.
 pub struct DepthChain {
+    /// Representative file of the final strongly connected component.
     pub file: String,
+    /// Number of dependency edges between components in the chain.
     pub depth: usize,
+    /// Representative file of each component, from root to this file.
     pub chain: Vec<String>,
 }
 
 /// Result of the dependency depth analysis.
 pub struct DepthResult {
+    /// Longest dependency chain across the whole condensed graph.
     pub max_depth: usize,
     /// `ceil(log2(file_count))`
     pub ideal_depth: usize,
+    /// Up to the requested limit of reconstructed chains, sorted by depth.
     pub chains: Vec<DepthChain>,
 }
 
@@ -148,7 +157,7 @@ pub fn dependency_depth<S1: BuildHasher, S2: BuildHasher>(
     };
 
     // Step 1: Run iterative Tarjan directly on the caller's graph.
-    let sccs = tarjan_scc(adj);
+    let sccs = scc::tarjan_scc(adj);
     let mut node_to_scc: HashMap<String, usize> = HashMap::new();
     for (idx, scc) in sccs.iter().enumerate() {
         for node in scc {
@@ -244,7 +253,7 @@ pub fn dependency_depth<S1: BuildHasher, S2: BuildHasher>(
     }
 
     // Sort by depth descending for convenience
-    results.sort_by_key(|ch| std::cmp::Reverse(ch.depth));
+    results.sort_by_key(|ch| Reverse(ch.depth));
 
     DepthResult {
         max_depth,
@@ -270,6 +279,8 @@ pub fn depth_score(max_depth: usize, ideal_depth: usize) -> f64 {
 /// Hub nodes = files with (fan\_in + fan\_out) > mean + 2\*stddev.
 /// Score = 1.0 - (1.0 / component\_count), clamped to \[0, 1\].
 /// Returns (score, component\_count\_after\_hub\_removal).
+///
+/// The documented pair preserves the same public result shape as acyclicity.
 pub fn modularity_score<S1: BuildHasher, S2: BuildHasher>(
     adj: &HashMap<String, HashSet<String, S2>, S1>,
 ) -> (f64, usize) {
@@ -380,13 +391,18 @@ pub fn modularity_score<S1: BuildHasher, S2: BuildHasher>(
 // Task 6: Composite Health Score
 // ---------------------------------------------------------------------------
 
-/// All five health dimensions, each in \[0.0, 1.0\].
+/// The five structural dimensions and coverage discipline, each in \[0.0, 1.0\].
 #[derive(Debug, Clone)]
 pub struct HealthDimensions {
+    /// Factor measuring freedom from dependency cycles.
     pub acyclicity: f64,
+    /// Factor rewarding shallow dependency chains.
     pub depth: f64,
+    /// Factor rewarding an even distribution of file complexity.
     pub equality: f64,
+    /// Factor rewarding low code duplication.
     pub redundancy: f64,
+    /// Factor measuring separation after removing hub files.
     pub modularity: f64,
     /// Penalty for overuse of `/// skip-test-coverage` annotations.
     /// 1.0 = no skips, decays towards 0.0 as skip ratio increases.
@@ -397,7 +413,7 @@ pub struct HealthDimensions {
 /// Formula: `(product of all 5).powf(1.0/5.0) * 10000.0`, rounded.
 /// Zero in any dimension → 0.
 /// A low-weight multiplicative penalty for `coverage_discipline` reduces
-/// the score by up to 10% when skip-test-coverage is overused.
+/// the score by up to 2% when skip-test-coverage is overused.
 pub fn compute_composite_health(dims: &HealthDimensions) -> u32 {
     let product = dims.acyclicity * dims.depth * dims.equality * dims.redundancy * dims.modularity;
 
@@ -412,13 +428,18 @@ pub fn compute_composite_health(dims: &HealthDimensions) -> u32 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests must fail if the worker panics or cannot be created"
+)]
 mod performance_tests {
     use super::*;
 
     #[test]
     fn deep_health_graph_fits_small_thread_stack() {
-        std::thread::Builder::new()
+        use std::thread::Builder;
+
+        Builder::new()
             .stack_size(256 * 1024)
             .spawn(|| {
                 let adj: HashMap<String, HashSet<String>> = (0..20_000)
@@ -437,12 +458,15 @@ mod performance_tests {
     #[test]
     #[ignore = "manual scaling benchmark; run with --ignored --nocapture"]
     fn benchmark_health_graph_scaling() {
+        use std::hint;
+        use std::time::Instant;
+
         for size in [1_000, 5_000, 20_000] {
             let adj: HashMap<String, HashSet<String>> = (0..size)
                 .map(|i| (i.to_string(), HashSet::from([(i + 1).to_string()])))
                 .collect();
-            let start = std::time::Instant::now();
-            let result = dependency_depth(std::hint::black_box(&adj), 1);
+            let start = Instant::now();
+            let result = dependency_depth(hint::black_box(&adj), 1);
             assert_eq!(result.max_depth, size);
             eprintln!("health chain {size}: {:?}", start.elapsed());
         }
