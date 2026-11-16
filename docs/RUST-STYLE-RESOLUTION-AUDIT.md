@@ -1,8 +1,12 @@
 # Resolution style audit
 
 Refs [#912](https://github.com/aovestdipaperino/tokensave/issues/912).
-This is a local, unmerged manual-review pass for `master`; `beta` is excluded.
-The consolidated implementation status lives in `RUST-STYLE-AUDIT.md`.
+This manual-review pass is published as draft
+[PR #1029](https://github.com/aovestdipaperino/tokensave/pull/1029), targeting
+`master` from `atontini:refactor/resolution-style-audit`, and remains unmerged.
+`beta` is excluded. The
+[consolidated audit record](https://github.com/atontini/tokensave/blob/refactor/context-style-audit/docs/RUST-STYLE-AUDIT.md)
+tracks related PRs, validation and remaining work.
 
 ## Scope and changes
 
