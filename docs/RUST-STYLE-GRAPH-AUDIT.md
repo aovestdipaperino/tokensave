@@ -2,7 +2,9 @@
 
 Module-scoped continuation of [#912](https://github.com/aovestdipaperino/tokensave/issues/912),
 reviewed on 2026-11-16. Scope: the seven files under `src/graph/`, including
-inline tests. This is a local, unmerged candidate on `refactor/graph-style-audit`;
+inline tests. This candidate is published as draft
+[PR #1028](https://github.com/aovestdipaperino/tokensave/pull/1028), targeting
+`master` from `atontini:refactor/graph-style-audit`, and remains unmerged;
 it does not establish repository-wide compliance.
 
 ## Manual checklist
@@ -66,3 +68,6 @@ No full-feature/workspace suite, sanitizer, Miri, long-running resource benchmar
 or Windows run was performed. Upstream `master` AGENTS.md was checked and its
 blob matched the local file (`1712682f4e5222e70fd7a6798095ddf11feddb1f`);
 no shared guidance change was needed. No beta files changed.
+
+The [consolidated audit record](https://github.com/atontini/tokensave/blob/refactor/context-style-audit/docs/RUST-STYLE-AUDIT.md)
+tracks the related context and resolution PRs and remaining work.
