@@ -1,29 +1,36 @@
-// Rust guideline compliant 2025-10-17
+//! Search, graph expansion, and source snippets for task context.
+
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
+use std::iter;
 use std::path::Path;
 
-use crate::context::ranking::{
-    apply_connectivity_boost, apply_executable_intent_boost, rerank_candidates,
-};
+use crate::context::ranking;
 use crate::db::Database;
 use crate::errors::Result;
 use crate::graph::GraphTraverser;
-use crate::text::{is_camel_case, split_compound};
+use crate::text;
 use crate::types::{
     BuildContextOptions, CodeBlock, Edge, Node, NodeKind, RetrievalDiagnostics, SearchResult,
     Subgraph, TaskContext, TraversalDirection, TraversalOptions, Visibility,
 };
 
 /// Builds AI-ready context by combining search, graph traversal, and source code extraction.
-pub struct ContextBuilder<'a> {
-    db: &'a Database,
-    project_root: &'a Path,
+pub struct ContextBuilder<'context> {
+    db: &'context Database,
+    project_root: &'context Path,
 }
 
-impl<'a> ContextBuilder<'a> {
+/// Entry points and the evidence used to explain their retrieval.
+struct EntryPointSearch {
+    entry_points: Vec<Node>,
+    diagnostics: RetrievalDiagnostics,
+}
+
+impl<'context> ContextBuilder<'context> {
     /// Creates a new `ContextBuilder` backed by the given database and project root.
-    pub fn new(db: &'a Database, project_root: &'a Path) -> Self {
+    pub fn new(db: &'context Database, project_root: &'context Path) -> Self {
         Self { db, project_root }
     }
 
@@ -44,7 +51,10 @@ impl<'a> ContextBuilder<'a> {
         debug_assert!(options.max_nodes > 0, "max_nodes must be positive");
         // Step 1-3: find relevant subgraph and entry points
         let symbols = extract_symbols_from_query(query);
-        let (entry_points, diagnostics) = self.find_entry_points(query, &symbols, options).await?;
+        let EntryPointSearch {
+            entry_points,
+            diagnostics,
+        } = self.find_entry_points(query, &symbols, options).await?;
         let subgraph = self.expand_subgraph(&entry_points, options).await?;
 
         // Step 4: extract code blocks from source files
@@ -92,8 +102,8 @@ impl<'a> ContextBuilder<'a> {
         options: &BuildContextOptions,
     ) -> Result<Subgraph> {
         let symbols = extract_symbols_from_query(query);
-        let (entry_points, _) = self.find_entry_points(query, &symbols, options).await?;
-        self.expand_subgraph(&entry_points, options).await
+        let search = self.find_entry_points(query, &symbols, options).await?;
+        self.expand_subgraph(&search.entry_points, options).await
     }
 
     /// Reads the source file and extracts the code for a node.
@@ -193,7 +203,7 @@ impl<'a> ContextBuilder<'a> {
         query: &str,
         symbols: &[String],
         options: &BuildContextOptions,
-    ) -> Result<(Vec<Node>, RetrievalDiagnostics)> {
+    ) -> Result<EntryPointSearch> {
         // Base score for an exact name match. Negated-BM25 scores from
         // `search_nodes_bounded` run roughly 5–30 before structural boosts,
         // so this must sit well above that band for a perfect name match to
@@ -209,7 +219,7 @@ impl<'a> ContextBuilder<'a> {
         debug_assert!(options.search_limit > 0, "search_limit must be positive");
         // `excluded` is the hard exclusion set: nodes here never enter
         // `candidates`, regardless of which channel surfaces them.
-        let excluded: HashSet<String> = options.exclude_node_ids.clone();
+        let excluded = &options.exclude_node_ids;
         // `index_of` maps an already-collected node id to its slot in
         // `candidates`, so a node surfaced by multiple channels (FTS + exact
         // name) is merged in place via MAX score rather than first-seen-wins.
@@ -385,10 +395,10 @@ impl<'a> ContextBuilder<'a> {
         // path to the behavioral owner without promoting local variables to
         // first-class graph nodes.
         if body_terms.len() >= 2 {
-            for sr in self
+            let body_candidates = self
                 .find_executable_body_candidates(&body_terms, options)
-                .await?
-            {
+                .await?;
+            for sr in body_candidates {
                 if excluded.contains(&sr.node.id) {
                     continue;
                 }
@@ -407,17 +417,14 @@ impl<'a> ContextBuilder<'a> {
         // just the declaration. Promote executable children of strongly
         // matched owner types so their methods remain discoverable even when
         // method names use domain-specific vocabulary absent from the query.
-        let owner_candidates: Vec<SearchResult> = candidates
+        let owner_scores: HashMap<String, f64> = candidates
             .iter()
             .filter(|candidate| is_api_owner_kind(&candidate.node.kind))
-            .cloned()
-            .collect();
-        let owner_scores: HashMap<String, f64> = owner_candidates
-            .iter()
             .map(|owner| (owner.node.id.clone(), owner.score))
             .collect();
         let owner_ids: Vec<String> = owner_scores.keys().cloned().collect();
-        for child in self.db.get_children_of_many(&owner_ids).await? {
+        let children = self.db.get_children_of_many(&owner_ids).await?;
+        for child in children {
             if !is_executable_kind(&child.kind) || excluded.contains(&child.id) {
                 continue;
             }
@@ -466,13 +473,13 @@ impl<'a> ContextBuilder<'a> {
         }
 
         // --- Re-rank with structural signals (kind, visibility, path) ---
-        rerank_candidates(&mut candidates);
-        apply_executable_intent_boost(&mut candidates, query);
+        ranking::rerank_candidates(&mut candidates);
+        ranking::apply_executable_intent_boost(&mut candidates, query);
 
         // --- Connectivity boost (batch edge-count query) ---
         let node_ids: Vec<String> = candidates.iter().map(|c| c.node.id.clone()).collect();
         if let Ok(call_counts) = self.db.batch_incoming_call_counts(&node_ids).await {
-            apply_connectivity_boost(&mut candidates, &call_counts);
+            ranking::apply_connectivity_boost(&mut candidates, &call_counts);
         }
 
         // --- Co-occurrence boost for multi-term queries ---
@@ -536,11 +543,7 @@ impl<'a> ContextBuilder<'a> {
         let (mut exact_candidates, semantic_candidates): (Vec<_>, Vec<_>) = candidates
             .into_iter()
             .partition(|candidate| exact_source_ids.contains(&candidate.node.id));
-        exact_candidates.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        exact_candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
         let mut entry_points: Vec<Node> = exact_candidates
             .into_iter()
             .take(options.max_nodes)
@@ -561,7 +564,10 @@ impl<'a> ContextBuilder<'a> {
             entry_points.len() <= options.max_nodes,
             "entry_points exceeds max_nodes"
         );
-        Ok((entry_points, diagnostics))
+        Ok(EntryPointSearch {
+            entry_points,
+            diagnostics,
+        })
     }
 
     /// Finds the innermost indexed symbol enclosing each exact qualified
@@ -605,7 +611,8 @@ impl<'a> ContextBuilder<'a> {
             }
 
             let nodes = self.db.get_nodes_by_file(&file.path).await?;
-            for (line_index, line) in source.lines().enumerate() {
+            let numbered_lines = source.lines().enumerate();
+            for (line_index, line) in numbered_lines {
                 let hit_count = terms.iter().filter(|term| line.contains(*term)).count();
                 if hit_count == 0 {
                     continue;
@@ -637,7 +644,7 @@ impl<'a> ContextBuilder<'a> {
         candidates.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .unwrap_or(Ordering::Equal)
                 .then_with(|| a.node.file_path.cmp(&b.node.file_path))
                 .then_with(|| a.node.start_line.cmp(&b.node.start_line))
         });
@@ -652,30 +659,30 @@ impl<'a> ContextBuilder<'a> {
         terms: &[String],
         options: &BuildContextOptions,
     ) -> Result<Vec<SearchResult>> {
-        let mut results = self
+        let body_matches = self
             .db
             .search_executable_bodies(terms, options.max_nodes.saturating_mul(4))
-            .await?
-            .into_iter()
-            .filter(|(node, _)| {
-                path_lists_keep(
-                    &node.file_path,
-                    &options.path_include,
-                    &options.path_exclude,
-                ) && !options.query_ignore.is_ignored(&node.file_path)
-                    && options.path_prefix.as_ref().is_none_or(|prefix| {
-                        let with_slash = format!("{}/", prefix.trim_end_matches('/'));
-                        node.file_path == *prefix || node.file_path.starts_with(&with_slash)
-                    })
-            })
-            .map(|(node, hits)| {
-                let control_flow_boost = f64::from(node.branches + node.loops).min(4.0) * 0.25;
-                SearchResult {
-                    node,
-                    score: 1.5 + hits as f64 + control_flow_boost,
-                }
-            })
-            .collect::<Vec<_>>();
+            .await?;
+        let mut results = Vec::new();
+        for (node, hits) in body_matches {
+            if !path_lists_keep(
+                &node.file_path,
+                &options.path_include,
+                &options.path_exclude,
+            ) || options.query_ignore.is_ignored(&node.file_path)
+                || options.path_prefix.as_ref().is_some_and(|prefix| {
+                    let with_slash = format!("{}/", prefix.trim_end_matches('/'));
+                    node.file_path != *prefix && !node.file_path.starts_with(&with_slash)
+                })
+            {
+                continue;
+            }
+            let control_flow_boost = f64::from(node.branches + node.loops).min(4.0) * 0.25;
+            results.push(SearchResult {
+                node,
+                score: 1.5 + hits as f64 + control_flow_boost,
+            });
+        }
         results.truncate(options.max_nodes * 2);
         Ok(results)
     }
@@ -817,8 +824,7 @@ impl<'a> ContextBuilder<'a> {
         }
 
         // Group by file_path
-        let mut by_file: std::collections::HashMap<String, Vec<CodeBlock>> =
-            std::collections::HashMap::new();
+        let mut by_file: HashMap<String, Vec<CodeBlock>> = HashMap::new();
         for block in blocks {
             by_file
                 .entry(block.file_path.clone())
@@ -964,7 +970,7 @@ pub fn extract_symbols_from_query(query: &str) -> Vec<String> {
             let cap = |w: &str| {
                 let mut c = w.chars();
                 c.next().map_or_else(String::new, |f| {
-                    f.to_ascii_uppercase().to_string() + c.as_str()
+                    format!("{}{rest}", f.to_ascii_uppercase(), rest = c.as_str())
                 })
             };
             let pascal = format!("{}{}", cap(a), cap(b));
@@ -1129,7 +1135,7 @@ fn classify_token(
             symbols.push(clean.to_string());
         }
         // Also emit individual segments for FTS matching.
-        for part in split_compound(clean) {
+        for part in text::split_compound(clean) {
             if part.len() >= 3
                 && !stop_words.contains(part.to_lowercase().as_str())
                 && seen.insert(part.to_string())
@@ -1141,12 +1147,12 @@ fn classify_token(
     }
 
     // CamelCase
-    if is_camel_case(clean) {
+    if text::is_camel_case(clean) {
         if !stop_words.contains(clean.to_lowercase().as_str()) && seen.insert(clean.to_string()) {
             symbols.push(clean.to_string());
         }
         // Also emit individual segments for FTS matching.
-        for part in split_compound(clean) {
+        for part in text::split_compound(clean) {
             if part.len() >= 3
                 && !stop_words.contains(part.to_lowercase().as_str())
                 && seen.insert(part.to_string())
@@ -1163,16 +1169,13 @@ fn classify_token(
 /// explicitly supplied extra keyword. Single-word segments produced by
 /// compound-splitting fail all three tests and are rejected.
 fn is_authored_symbol(symbol: &str, query: &str, extra_keywords: &[String]) -> bool {
-    split_compound(symbol).len() >= 2
+    text::split_compound(symbol).len() >= 2
         || query
             .split_whitespace()
             .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '_') == symbol)
         || extra_keywords.iter().any(|k| k == symbol)
 }
 
-/// Extracts exact, namespace-qualified source tokens from the task and extra
-/// keywords. Surrounding prose punctuation and Markdown backticks are removed,
-/// but the original case is retained for case-sensitive literal matching.
 /// Shortest phrase accepted as exact-copy evidence. Two short words ("is not")
 /// would match half a codebase and turn the source scan into noise.
 const MIN_EXACT_PHRASE_LEN: usize = 8;
@@ -1225,16 +1228,20 @@ fn exact_phrase_terms(query: &str, extra_keywords: &[String]) -> Vec<String> {
     phrases
 }
 
+/// Extracts namespace-qualified tokens, preserving case for literal matching.
+/// Surrounding prose punctuation and Markdown backticks are removed.
 fn exact_source_terms(query: &str, extra_keywords: &[String]) -> Vec<String> {
     let mut seen = HashSet::new();
-    std::iter::once(query)
-        .chain(extra_keywords.iter().map(String::as_str))
-        .flat_map(str::split_whitespace)
-        .filter_map(|word| {
+    let mut terms = Vec::new();
+    let inputs = iter::once(query).chain(extra_keywords.iter().map(String::as_str));
+    for input in inputs {
+        for word in input.split_whitespace() {
             let token = word
                 .trim_matches(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':' || c == '#'));
             let mut segments = token.split("::");
-            let first = segments.next()?;
+            let Some(first) = segments.next() else {
+                continue;
+            };
             let rest: Vec<&str> = segments.collect();
             let valid_segment = |segment: &str| {
                 !segment.is_empty()
@@ -1242,13 +1249,16 @@ fn exact_source_terms(query: &str, extra_keywords: &[String]) -> Vec<String> {
                         .chars()
                         .all(|c| c.is_alphanumeric() || c == '_' || c == '#')
             };
-            (!rest.is_empty()
+            if !rest.is_empty()
                 && valid_segment(first)
                 && rest.iter().all(|segment| valid_segment(segment))
-                && seen.insert(token.to_string()))
-            .then(|| token.to_string())
-        })
-        .collect()
+                && seen.insert(token.to_string())
+            {
+                terms.push(token.to_string());
+            }
+        }
+    }
+    terms
 }
 
 /// Extracts lower-case concept words suitable for body co-occurrence search.
@@ -1260,21 +1270,24 @@ fn conceptual_query_terms(query: &str, extra_keywords: &[String]) -> Vec<String>
         "near", "request", "that", "their", "then", "this", "with",
     ];
     let mut seen = HashSet::new();
-    query
-        .split_whitespace()
-        .chain(extra_keywords.iter().flat_map(|s| s.split_whitespace()))
-        .filter_map(|word| {
+    let mut terms = Vec::new();
+    let inputs = iter::once(query).chain(extra_keywords.iter().map(String::as_str));
+    for input in inputs {
+        for word in input.split_whitespace() {
             let normalized: String = word
                 .chars()
                 .filter(|c| c.is_alphanumeric() || *c == '_')
                 .flat_map(char::to_lowercase)
                 .collect();
-            (normalized.len() >= 4
+            if normalized.len() >= 4
                 && !STOP.contains(&normalized.as_str())
-                && seen.insert(normalized.clone()))
-            .then_some(normalized)
-        })
-        .collect()
+                && seen.insert(normalized.clone())
+            {
+                terms.push(normalized);
+            }
+        }
+    }
+    terms
 }
 
 fn is_executable_kind(kind: &NodeKind) -> bool {
@@ -1328,11 +1341,7 @@ fn apply_cooccurrence_boost(candidates: &mut [SearchResult], query_terms: &[Stri
             candidate.score *= 1.0 + (hits as f64 - 1.0) * 0.3;
         }
     }
-    candidates.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
 }
 
 /// Returns `true` if `path` survives the include/exclude substring filters.
@@ -1431,7 +1440,7 @@ fn truncate_code_block(
             with_body_handle(capped, node_id)
         };
     }
-    let prefix = crate::text::utf8_prefix_at_or_before(capped, max_size);
+    let prefix = text::utf8_prefix_at_or_before(capped, max_size);
     let end = prefix.rfind('\n').unwrap_or(prefix.len());
     with_body_handle(&prefix[..end], node_id)
 }
@@ -1461,7 +1470,11 @@ fn with_body_handle(body: &str, node_id: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "tests fail immediately when fixture setup or extraction violates its invariant"
+)]
 #[allow(
     clippy::float_cmp,
     reason = "tests assert exact scores computed from constant weights"
@@ -1818,7 +1831,7 @@ mod tests {
 
     #[test]
     fn test_truncated_code_block_points_at_tokensave_body() {
-        let code = "fn wide() {\n".to_string() + &"    line();\n".repeat(50);
+        let code = format!("fn wide() {{\n{}", "    line();\n".repeat(50));
         let out = truncate_code_block(&code, 60, None, "abc123");
         assert!(
             out.contains("tokensave_body node_id=abc123"),
@@ -1848,7 +1861,7 @@ mod tests {
 
     #[test]
     fn test_max_code_lines_caps_the_snippet() {
-        let code = "fn wide() {\n".to_string() + &"    line();\n".repeat(50);
+        let code = format!("fn wide() {{\n{}", "    line();\n".repeat(50));
         let out = truncate_code_block(&code, usize::MAX, Some(3), "abc123");
         let body = out.split("\n... [truncated").next().unwrap();
         assert_eq!(body.lines().count(), 3, "{out}");
@@ -1870,7 +1883,7 @@ mod tests {
     fn test_byte_limit_still_applies_under_a_line_cap() {
         // The line cap keeps 10 lines, but the byte budget only fits ~2 — the
         // tighter of the two has to win.
-        let code = "fn wide() {\n".to_string() + &"    line();\n".repeat(50);
+        let code = format!("fn wide() {{\n{}", "    line();\n".repeat(50));
         let out = truncate_code_block(&code, 30, Some(10), "n1");
         let body = out.split("\n... [truncated").next().unwrap();
         assert!(body.len() <= 30, "byte cap ignored: {body:?}");
