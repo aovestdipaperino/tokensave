@@ -1542,6 +1542,41 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
         self, render_full, render_lines, render_map, render_signatures, ReadMode,
     };
 
+    // Validate before file I/O or digest checks so a misspelled range cannot
+    // silently become a full-file read or an unchanged response.
+    if let Some(parameters) = args.as_object() {
+        let unknown: Vec<&str> = parameters
+            .keys()
+            .map(String::as_str)
+            .filter(|key| {
+                !matches!(
+                    *key,
+                    "file"
+                        | "path"
+                        | "mode"
+                        | "lines"
+                        | "start"
+                        | "end"
+                        | "if_digest"
+                        | "force"
+                        | "format"
+                        | "graph_root"
+                        | "graph_branch"
+                )
+            })
+            .collect();
+        if !unknown.is_empty() {
+            return Err(TokenSaveError::Config {
+                message: format!(
+                    "unknown tokensave_read parameter(s): {}; accepted parameters: file (alias: path), \
+                     mode, lines, start, end, if_digest, force, format, graph_root, graph_branch; \
+                     mode='lines' takes 'lines' (e.g. '120-180') or 'start'/'end'",
+                    unknown.join(", ")
+                ),
+            });
+        }
+    }
+
     let file = file_arg(&args).ok_or_else(|| TokenSaveError::Config {
         message: "missing required parameter: file (alias: path)".to_string(),
     })?;
