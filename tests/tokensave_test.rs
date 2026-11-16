@@ -1353,3 +1353,88 @@ async fn last_sync_timestamp_falls_back_to_indexed_at_without_metadata() {
     let fallback = cg.last_index_time().await.unwrap();
     assert_eq!(observed, fallback);
 }
+
+/// Restoring an older copy must refresh both targeted and project-wide reads (#1020).
+#[tokio::test]
+async fn test_staleness_older_replacement_and_preserved_mtime() {
+    use std::fs::File;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    for preserve_mtime in [false, true] {
+        let (dir, cg) = setup().await;
+        let path = dir.path().join("src").join("lib.rs");
+        let original_mtime = fs::metadata(&path).unwrap().modified().unwrap();
+        let replacement = dir.path().join("replacement");
+        let mut source = "pub fn restored_symbol() {}\n".to_string();
+        if !preserve_mtime {
+            source
+                .push_str(&" ".repeat(fs::metadata(&path).unwrap().len() as usize - source.len()));
+        }
+        fs::write(&replacement, source).unwrap();
+        File::options()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_modified(if preserve_mtime {
+                original_mtime
+            } else {
+                UNIX_EPOCH + Duration::from_secs(1_000_000)
+            })
+            .unwrap();
+        // Remove first for Windows, where rename cannot replace an existing file.
+        fs::remove_file(&path).unwrap();
+        fs::rename(&replacement, &path).unwrap();
+        let expected = vec!["src/lib.rs".to_string()];
+        assert_eq!(cg.check_file_staleness(&expected).await, expected);
+        assert_eq!(cg.find_stale_files().await, expected);
+        cg.sync_if_stale_silent(&expected).await.unwrap();
+        assert!(cg.check_file_staleness(&expected).await.is_empty());
+        assert!(cg.find_stale_files().await.is_empty());
+        assert!(!cg.search("restored_symbol", 10).await.unwrap().is_empty());
+        assert!(cg
+            .search("foo", 10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|hit| { hit.node.file_path != "src/lib.rs" || hit.node.name != "foo" }));
+    }
+}
+
+#[tokio::test]
+async fn test_staleness_bom_files_use_disk_size() {
+    for bytes in [
+        b"\xef\xbb\xbfpub fn bom_symbol() {}\n".to_vec(),
+        [
+            vec![0xff, 0xfe],
+            "pub fn bom_symbol() {}\n"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect(),
+        ]
+        .concat(),
+        [
+            vec![0xfe, 0xff],
+            "pub fn bom_symbol() {}\n"
+                .encode_utf16()
+                .flat_map(u16::to_be_bytes)
+                .collect(),
+        ]
+        .concat(),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("bom.rs");
+        fs::write(&path, &bytes).unwrap();
+        let cg = TokenSave::init(dir.path()).await.unwrap();
+        cg.index_all().await.unwrap();
+        let files = cg.get_all_files().await.unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].size, bytes.len() as u64);
+        for _ in 0..3 {
+            assert!(cg
+                .check_file_staleness(&["bom.rs".to_string()])
+                .await
+                .is_empty());
+            assert!(cg.find_stale_files().await.is_empty());
+        }
+    }
+}

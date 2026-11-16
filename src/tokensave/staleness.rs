@@ -92,7 +92,7 @@ impl TokenSave {
     /// into agreement with the filesystem.
     ///
     /// A file is reported stale when any of:
-    /// - it is in the DB and has been modified on disk since `modified_at`,
+    /// - it is in the DB and its on-disk modification time or size differs,
     /// - it is in the DB but no longer exists on disk (deletion — DB needs cleanup),
     /// - it exists on disk but has no DB record (new file — needs indexing).
     ///
@@ -127,8 +127,8 @@ impl TokenSave {
                     if !file_exists {
                         // Indexed but deleted — DB needs cleanup.
                         stale.push(normalized);
-                    } else if let Some((mtime, _)) = crate::sync::file_stat(&abs_path) {
-                        if mtime > record.modified_at {
+                    } else if let Some((mtime, size)) = crate::sync::file_stat(&abs_path) {
+                        if mtime != record.modified_at || size != record.size {
                             stale.push(normalized);
                         }
                     }
@@ -165,8 +165,8 @@ impl TokenSave {
         stale
     }
 
-    /// Returns every file whose on-disk mtime is newer than its recorded
-    /// timestamp, plus on-disk files the DB doesn't know about yet, plus
+    /// Returns every file whose on-disk mtime or size differs from its recorded
+    /// metadata, plus on-disk files the DB doesn't know about yet, plus
     /// DB-known files that no longer exist on disk (so a follow-up sync
     /// can prune them).
     ///
@@ -192,9 +192,9 @@ impl TokenSave {
             stale.dedup();
             return stale;
         }
-        let modified_map: HashMap<&str, i64> = indexed
+        let modified_map: HashMap<&str, (i64, u64)> = indexed
             .iter()
-            .map(|f| (f.path.as_str(), f.modified_at))
+            .map(|f| (f.path.as_str(), (f.modified_at, f.size)))
             .collect();
         let on_disk_set: HashSet<&str> = on_disk.iter().map(String::as_str).collect();
 
@@ -202,9 +202,9 @@ impl TokenSave {
 
         for rel in &on_disk {
             let abs = self.project_root.join(rel);
-            let mtime = crate::sync::file_stat(&abs).map_or(0, |(mtime, _)| mtime);
+            let stat = crate::sync::file_stat(&abs);
             match modified_map.get(rel.as_str()) {
-                Some(&modified_at) if mtime <= modified_at => {}
+                Some(&recorded) if stat == Some(recorded) => {}
                 _ => stale.push(rel.clone()),
             }
         }
