@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+
+- `tokensave_read` rejects unknown parameters by name and lists the accepted range syntax, so guessed names such as `start_line`/`end_line` no longer disappear behind a missing-range error or silently produce a full-file read (Refs #1023).
+
 ### Internal
 
 - Add an opt-in direct-parser ASan audit with C/C++ calibration controls, native object instrumentation checks, bounded corpus runs and Linux findings (Refs #958).
