@@ -3,7 +3,7 @@
 Tracking issue: [#912](https://github.com/aovestdipaperino/tokensave/issues/912).
 This record covers `master` only. It does not establish repository-wide
 compliance. Reviews use CONTRIBUTING.md's manual checklist and the project
-exceptions in AGENTS.md. The three local branches start at `7796fddf`; their
+exceptions in AGENTS.md. The three audit branches start at `7796fddf`; their
 baseline module sources match the locally fetched `origin/master` at `6a9a8e54`.
 
 ## Related implementations
@@ -16,7 +16,7 @@ into `master`; merge status does not establish release publication.
 | Feature gates for lite-only extraction code | [#974](https://github.com/aovestdipaperino/tokensave/pull/974) | [5f8d06ee](https://github.com/aovestdipaperino/tokensave/commit/5f8d06ee149750cd96b8342ee3403391aa8f3d37) | Lite tests and feature checks passed; doctests passed on retry; full suite not run locally. |
 | Standard string parsing for node/edge kinds and visibility | [#976](https://github.com/aovestdipaperino/tokensave/pull/976) | [40b44015](https://github.com/aovestdipaperino/tokensave/commit/40b44015069a6457d0819b88885801bd77e7aacd) | Formatting/checks passed; local full tests blocked by a Windows file lock. Library API change. |
 | Remove unused resolver database field | [#977](https://github.com/aovestdipaperino/tokensave/pull/977) | [7656f098](https://github.com/aovestdipaperino/tokensave/commit/7656f098fe3d93f4dee18f35c6e777f123fa2d50) | Formatting/checks passed; unrelated Clippy findings; local tests not run. Library API change. |
-| Context manual-review cleanup | Local branch `refactor/context-style-audit`; no PR yet | Unmerged | Validation below. Depends only on the existing context APIs, not the other audit draft changes. |
+| Context manual-review cleanup | [#1027](https://github.com/aovestdipaperino/tokensave/pull/1027) (`refactor/context-style-audit`), draft | Unmerged | Validation below. Depends only on the existing context APIs, not the other audit draft changes. |
 
 ## Context review, 2026-11-16
 
@@ -57,7 +57,8 @@ new macros were introduced; existing formatting/JSON macros express output.
 
 ## Parallel module reviews
 
-Each implementation uses a separate branch/worktree and is unmerged. Their
+Each implementation is published from the user fork in a separate draft PR
+targeting upstream `master` and is unmerged. Their
 reports describe their own source only; context validation does not validate
 the other branches. Independent static review found no concrete behavior
 regression in the graph or resolution record/enum migrations; tests below are
@@ -65,9 +66,9 @@ reported separately from that static review.
 
 | Scope | Local branch | Status and dependencies |
 | --- | --- | --- |
-| Context | `refactor/context-style-audit` | Manual follow-up implemented; current validation below. |
-| Graph | `refactor/graph-style-audit` | Commit `dcffca46` in `/tmp/tokensave-graph-style`; 12 library tests and 59 integration tests passed (one manual benchmark ignored); formatting, Clippy and wiki checks passed. Independent of context. |
-| Resolution | `refactor/resolution-style-audit` | Commit `7a171c0e` in `/tmp/tokensave-resolution-style`; 6 library, 90 scoped lite integration, and 87 Ruby/GDScript-enabled integration tests passed; formatting, Clippy and wiki checks passed. Independent of context. |
+| Context | [#1027](https://github.com/aovestdipaperino/tokensave/pull/1027), `refactor/context-style-audit` | Manual follow-up implemented; current validation below. |
+| Graph | [#1028](https://github.com/aovestdipaperino/tokensave/pull/1028), `refactor/graph-style-audit` | Commit `dcffca46` in `/tmp/tokensave-graph-style`; 12 library tests and 59 integration tests passed (one manual benchmark ignored); formatting, Clippy and wiki checks passed. Independent of context. |
+| Resolution | [#1029](https://github.com/aovestdipaperino/tokensave/pull/1029), `refactor/resolution-style-audit` | Commit `7a171c0e` in `/tmp/tokensave-resolution-style`; 6 library, 90 scoped lite integration, and 87 Ruby/GDScript-enabled integration tests passed; formatting, Clippy and wiki checks passed. Independent of context. |
 
 The graph review found a separate functional defect:
 [#1026](https://github.com/aovestdipaperino/tokensave/issues/1026). A one-way edge
