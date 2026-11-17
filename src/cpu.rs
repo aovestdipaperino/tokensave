@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn nested_parallel_work_uses_selected_pool() -> Result<()> {
-        use rayon::prelude::*;
+        use rayon::iter::{IntoParallelIterator, ParallelIterator};
         for profile in [CpuUsage::Low, CpuUsage::Balanced, CpuUsage::Performance] {
             let counts = profile.run(|| {
                 (0..128)

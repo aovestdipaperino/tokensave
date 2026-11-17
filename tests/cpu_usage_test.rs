@@ -89,6 +89,8 @@ async fn profiles_preserve_full_and_incremental_graphs() {
         let incremental = snapshot().await;
         cg.index_all().await.unwrap();
         assert_eq!(incremental, snapshot().await);
-        assert!(!dir.path().join(".tokensave").join("dirty").exists());
+        assert!(!tokensave::config::get_tokensave_dir(dir.path())
+            .join("dirty")
+            .exists());
     }
 }

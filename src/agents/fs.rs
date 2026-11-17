@@ -857,9 +857,14 @@ mod jsonc_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod safe_config_tests {
-    use crate::agents::fs::MAX_SYMLINK_HOPS;
-    use crate::agents::*;
+    use crate::agents::fs::{
+        backup_and_write_json, backup_config_file, json_file_is_current, load_json_file,
+        load_json_file_strict, load_jsonc_file_strict, safe_write_json_file, safe_write_text_file,
+        write_json_file, MAX_SYMLINK_HOPS,
+    };
+    use crate::agents::rules::{remove_legacy_rules_block, remove_managed_rules_file};
     use std::fs;
+    use std::path::{Path, PathBuf};
 
     /// Create a temp directory that is cleaned up on drop.
     fn tmpdir() -> tempfile::TempDir {

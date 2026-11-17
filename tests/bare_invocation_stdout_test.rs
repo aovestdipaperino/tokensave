@@ -90,7 +90,7 @@ fn bare_invocation_uninitialized_with_piped_stdin_does_not_prompt_or_init() {
         "a non-interactive bare invocation must not prompt: {stderr:?}"
     );
     assert!(
-        !dir.path().join(".tokensave").exists(),
+        !tokensave::config::get_tokensave_dir(dir.path()).exists(),
         "the piped 'y' must not be taken as consent to initialize"
     );
 }

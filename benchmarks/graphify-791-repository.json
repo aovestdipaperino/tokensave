@@ -1,0 +1,280 @@
+{
+  "measurements": [
+    {
+      "step": "tokensave-version",
+      "wall_seconds": 0.0,
+      "cpu_seconds": 0.01,
+      "peak_rss_kib": 7496,
+      "status": 0
+    },
+    {
+      "step": "graphify-version",
+      "wall_seconds": 0.46,
+      "cpu_seconds": 0.45999999999999996,
+      "peak_rss_kib": 24236,
+      "status": 0
+    },
+    {
+      "step": "tokensave-init",
+      "wall_seconds": 0.1,
+      "cpu_seconds": 0.04,
+      "peak_rss_kib": 19900,
+      "status": 0
+    },
+    {
+      "step": "graphify-extract",
+      "wall_seconds": 0.61,
+      "cpu_seconds": 1.1400000000000001,
+      "peak_rss_kib": 63000,
+      "status": 0
+    },
+    {
+      "step": "tokensave-search",
+      "wall_seconds": 0.06,
+      "cpu_seconds": 0.0,
+      "peak_rss_kib": 17452,
+      "status": 0
+    },
+    {
+      "step": "graphify-explain",
+      "wall_seconds": 0.19,
+      "cpu_seconds": 0.18,
+      "peak_rss_kib": 40660,
+      "status": 0
+    },
+    {
+      "step": "tokensave-noop-0",
+      "wall_seconds": 0.09,
+      "cpu_seconds": 0.01,
+      "peak_rss_kib": 18808,
+      "status": 0
+    },
+    {
+      "step": "graphify-noop-0",
+      "wall_seconds": 0.38,
+      "cpu_seconds": 0.95,
+      "peak_rss_kib": 62284,
+      "status": 0
+    },
+    {
+      "step": "tokensave-noop-1",
+      "wall_seconds": 0.09,
+      "cpu_seconds": 0.02,
+      "peak_rss_kib": 19124,
+      "status": 0
+    },
+    {
+      "step": "graphify-noop-1",
+      "wall_seconds": 0.43,
+      "cpu_seconds": 1.1,
+      "peak_rss_kib": 62368,
+      "status": 0
+    },
+    {
+      "step": "tokensave-noop-2",
+      "wall_seconds": 0.09,
+      "cpu_seconds": 0.02,
+      "peak_rss_kib": 19356,
+      "status": 0
+    },
+    {
+      "step": "graphify-noop-2",
+      "wall_seconds": 0.36,
+      "cpu_seconds": 1.01,
+      "peak_rss_kib": 62036,
+      "status": 0
+    },
+    {
+      "step": "tokensave-edit",
+      "wall_seconds": 0.09,
+      "cpu_seconds": 0.02,
+      "peak_rss_kib": 20340,
+      "status": 0
+    },
+    {
+      "step": "graphify-edit",
+      "wall_seconds": 0.53,
+      "cpu_seconds": 1.1800000000000002,
+      "peak_rss_kib": 63096,
+      "status": 0
+    },
+    {
+      "step": "graphify-file-rename",
+      "wall_seconds": 0.45,
+      "cpu_seconds": 1.08,
+      "peak_rss_kib": 62952,
+      "status": 0
+    },
+    {
+      "step": "graphify-delete",
+      "wall_seconds": 0.38,
+      "cpu_seconds": 1.03,
+      "peak_rss_kib": 62936,
+      "status": 0
+    },
+    {
+      "step": "graphify-worktree",
+      "wall_seconds": 0.48,
+      "cpu_seconds": 1.1,
+      "peak_rss_kib": 63140,
+      "status": 0
+    },
+    {
+      "step": "benchmark-tokensave-init",
+      "wall_seconds": 8.04,
+      "cpu_seconds": 8.11,
+      "peak_rss_kib": 191244,
+      "status": 0
+    },
+    {
+      "step": "benchmark-graphify-extract",
+      "wall_seconds": 26.24,
+      "cpu_seconds": 27.0,
+      "peak_rss_kib": 175968,
+      "status": 0
+    },
+    {
+      "step": "benchmark-tokensave-noop-0",
+      "wall_seconds": 0.41,
+      "cpu_seconds": 0.38999999999999996,
+      "peak_rss_kib": 37176,
+      "status": 0
+    },
+    {
+      "step": "benchmark-graphify-noop-0",
+      "wall_seconds": 9.51,
+      "cpu_seconds": 10.26,
+      "peak_rss_kib": 196984,
+      "status": 0
+    },
+    {
+      "step": "benchmark-tokensave-noop-1",
+      "wall_seconds": 0.42,
+      "cpu_seconds": 0.36,
+      "peak_rss_kib": 36660,
+      "status": 0
+    },
+    {
+      "step": "benchmark-graphify-noop-1",
+      "wall_seconds": 8.01,
+      "cpu_seconds": 8.45,
+      "peak_rss_kib": 196756,
+      "status": 0
+    },
+    {
+      "step": "benchmark-tokensave-noop-2",
+      "wall_seconds": 0.25,
+      "cpu_seconds": 0.2,
+      "peak_rss_kib": 35820,
+      "status": 0
+    },
+    {
+      "step": "benchmark-graphify-noop-2",
+      "wall_seconds": 6.77,
+      "cpu_seconds": 7.53,
+      "peak_rss_kib": 196456,
+      "status": 0
+    }
+  ],
+  "checks": {
+    "code_only_skips_document": true,
+    "uncommitted_symbol_rename": true,
+    "file_rename_prunes_old_source": true,
+    "deletion": true,
+    "separate_worktree_output": true
+  },
+  "tokensave_version": "tokensave 7.16.0",
+  "graphify_version": "graphify 0.9.95",
+  "initial_graph": {
+    "nodes": 3,
+    "edges": 3,
+    "metadata": {
+      "schema_version": 1,
+      "graphify_version": "0.9.95"
+    },
+    "sample_nodes": [
+      {
+        "id": "app_entry",
+        "label": "entry()",
+        "_callable": true,
+        "_origin": "ast",
+        "community": 0,
+        "file_type": "code",
+        "norm_label": "entry()",
+        "source_file": "app.py",
+        "source_location": "L4"
+      },
+      {
+        "id": "app_helper",
+        "label": "helper()",
+        "_callable": true,
+        "_origin": "ast",
+        "community": 0,
+        "file_type": "code",
+        "norm_label": "helper()",
+        "source_file": "app.py",
+        "source_location": "L1"
+      },
+      {
+        "id": "app",
+        "label": "app.py",
+        "_origin": "ast",
+        "community": 0,
+        "file_type": "code",
+        "norm_label": "app.py",
+        "source_file": "app.py",
+        "source_location": "L1"
+      }
+    ],
+    "sample_edges": [
+      {
+        "source": "app_entry",
+        "target": "app_helper",
+        "relation": "calls",
+        "_origin": "ast",
+        "confidence": "EXTRACTED",
+        "confidence_score": 1.0,
+        "context": "call",
+        "source_file": "app.py",
+        "source_location": "L5",
+        "weight": 1.0
+      },
+      {
+        "source": "app",
+        "target": "app_helper",
+        "relation": "contains",
+        "_origin": "ast",
+        "confidence": "EXTRACTED",
+        "confidence_score": 1.0,
+        "source_file": "app.py",
+        "source_location": "L1",
+        "weight": 1.0
+      },
+      {
+        "source": "app",
+        "target": "app_entry",
+        "relation": "contains",
+        "_origin": "ast",
+        "confidence": "EXTRACTED",
+        "confidence_score": 1.0,
+        "source_file": "app.py",
+        "source_location": "L4",
+        "weight": 1.0
+      }
+    ]
+  },
+  "artifact_bytes": {
+    ".tokensave": 476578,
+    "graphify-out": 5335
+  },
+  "benchmark_corpus": {
+    "revision": "ed7ae0f49d4ee4442fceb00770c657789dffdc3e",
+    "files": 524,
+    "source_bytes": 10591839,
+    "scope": "tracked .rs/.py working-tree contents"
+  },
+  "benchmark_artifact_bytes": {
+    ".tokensave": 105727222,
+    "graphify-out": 36661750
+  }
+}

@@ -1,7 +1,7 @@
 use tokensave::extraction::CppExtractor;
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::LanguageRegistry;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, NodeKind, Visibility};
 
 #[test]
 fn test_cpp_file_node_is_root() {

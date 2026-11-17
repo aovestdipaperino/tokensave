@@ -1,5 +1,6 @@
 //! Subprocess-isolated extraction and path normalization helpers.
 use super::*;
+use rayon::iter::IndexedParallelIterator;
 
 /// Convert any backslash in a *relative* project-root-relative path to a
 /// forward slash, matching the canonical form the walker
@@ -35,6 +36,12 @@ pub(crate) fn safe_extract(
         extractor.extract(file_path, source)
     }))
     .map_err(|_| {
+        crate::debug_log::event(
+            crate::debug_log::Level::Warn,
+            "index",
+            "extract_failure",
+            || serde_json::json!({ "reason": "extractor_panic" }),
+        );
         eprintln!("[tokensave] extraction panicked for {file_path}, skipping");
     })
     .ok()
@@ -94,6 +101,13 @@ fn extract_files_with_headroom(
     if files.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
+    use crate::debug_log::{event, Level};
+    event(
+        Level::Debug,
+        "index",
+        "extract_batch",
+        || serde_json::json!({ "selected": files.len() }),
+    );
     let requested = memory_usage.workers(cpu_usage.workers()).min(files.len());
     let parser_limit = crate::memory::workers_for_headroom(requested, available);
     if parser_limit < requested {
@@ -106,7 +120,16 @@ fn extract_files_with_headroom(
         );
         match crate::extraction_worker::WorkerPool::new(workers, project_root.to_path_buf()) {
             Ok(pool) => {
+                let total = files.len();
                 let outcome = pool.extract_files(files, |_, _, _| {}, timeout);
+                event(Level::Debug, "index", "extract_batch_finish", || {
+                    serde_json::json!({
+                        "mode": "worker",
+                        "selected": total,
+                        "extracted": outcome.results.len(),
+                        "worker_failures": outcome.skipped.len(),
+                    })
+                });
                 return Ok((outcome.results, outcome.skipped));
             }
             Err(e) => eprintln!(
@@ -139,9 +162,11 @@ pub(crate) fn extract_files_in_process(
     registry: &crate::extraction::LanguageRegistry,
     files: &[String],
 ) -> Vec<ExtractTuple> {
+    use crate::debug_log::{event, Level};
     files
         .par_iter()
-        .filter_map(|file_path| {
+        .enumerate()
+        .filter_map(|(idx, file_path)| {
             // Cheapest place to observe a shutdown: the parallel extraction
             // pass is the long phase of a large sync, and a per-file atomic
             // load is nothing against reading and parsing a source file
@@ -152,18 +177,37 @@ pub(crate) fn extract_files_in_process(
                 return None;
             }
             let abs_path = project_root.join(file_path);
-            let source = sync::read_source_file(&abs_path).ok()?;
-            let extractor = crate::project_manifest::resolve_extractor_for_source(
+            let log_file = |status| {
+                event(
+                    Level::Trace,
+                    "index",
+                    "extract_file",
+                    || serde_json::json!({ "slice_position": idx, "status": status }),
+                );
+            };
+            let Ok(source) = sync::read_source_file(&abs_path) else {
+                log_file("read_failed");
+                return None;
+            };
+            let Some(extractor) = crate::project_manifest::resolve_extractor_for_source(
                 registry,
                 project_root,
                 file_path,
                 &source,
-            )?;
-            let mut result = safe_extract(extractor, file_path, &source)?;
+            ) else {
+                log_file("no_extractor");
+                return None;
+            };
+            let Some(mut result) = safe_extract(extractor, file_path, &source) else {
+                log_file("extractor_panic");
+                return None;
+            };
+            log_file("extracted");
             result.sanitize();
             let hash = sync::content_hash(&source);
-            let size = source.len() as u64;
-            let mtime = sync::file_stat(&abs_path).map_or_else(current_timestamp, |(m, _)| m);
+            // Persist disk bytes, since decoding can remove a BOM or change encoding.
+            let (mtime, size) = sync::file_stat(&abs_path)
+                .unwrap_or_else(|| (current_timestamp(), source.len() as u64));
             Some((file_path.clone(), result, hash, size, mtime))
         })
         .collect()

@@ -19,12 +19,40 @@ pub use tokensave::agents::GitHookMode;
     version
 )]
 pub struct Cli {
+    /// Emit structured debug diagnostics on stderr
+    #[arg(long, global = true)]
+    pub debug: bool,
+    /// Set stderr diagnostic verbosity (overrides --debug and TOKENSAVE_LOG)
+    #[arg(long, global = true, value_enum)]
+    pub log_level: Option<tokensave::debug_log::Level>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Export one indexed file as an experimental Graphify snapshot (no sync)
+    GraphifyExport {
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// Repository-relative source file using / separators
+        #[arg(long)]
+        file: String,
+        /// New output JSON path; existing files are refused
+        #[arg(long)]
+        output: std::path::PathBuf,
+        #[arg(long, default_value_t = 1000)]
+        max_nodes: usize,
+        #[arg(long, default_value_t = 5000)]
+        max_edges: usize,
+    },
+    /// Validate or export Open Knowledge Format (OKF v0.2) bundles
+    Okf {
+        #[command(subcommand)]
+        action: OkfAction,
+    },
     /// Check index integrity without changing it
     Verify {
         /// Project path (default: current directory)
@@ -39,12 +67,30 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Run grep, rg or git grep and add index facts to each hit
+    ///
+    /// The search command runs unchanged, with its own flags and exit code.
+    /// Each `path:line:` hit keeps its bytes and gains a tab and a `#ts`
+    /// suffix with what the index knows about that line.
+    Grep {
+        /// `none` prints the search output with no index facts
+        #[arg(long, value_name = "SPEC")]
+        graph: Option<String>,
+        /// The search command: `grep ...`, `rg ...` or `git grep ...`
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            required = true,
+            value_name = "COMMAND"
+        )]
+        command: Vec<std::ffi::OsString>,
+    },
     /// Initialize a new TokenSave project (full index)
     Init {
         /// Project path (default: current directory)
         path: Option<String>,
         /// Folders to skip during indexing (can be repeated)
-        #[arg(long = "skip-folder", num_args = 1..)]
+        #[arg(long = "skip-folder", num_args = 1, action = ArgAction::Append)]
         skip_folders: Vec<String>,
         /// Install this repository's own git hooks without asking (#455)
         #[arg(long, conflicts_with = "no_git_hook")]
@@ -86,7 +132,7 @@ pub enum Commands {
         #[arg(short, long)]
         force: bool,
         /// Folders to skip during indexing (can be repeated)
-        #[arg(long = "skip-folder", num_args = 1..)]
+        #[arg(long = "skip-folder", num_args = 1, action = ArgAction::Append)]
         skip_folders: Vec<String>,
         /// List added, modified, and removed files after sync
         #[arg(long)]
@@ -240,6 +286,12 @@ pub enum Commands {
     /// Factory Droid PreToolUse hook handler (called by Droid, not by users directly)
     #[command(name = "hook-droid-pre-tool-use", hide = true)]
     HookDroidPreToolUse,
+    /// Pi tool-call guardrail handler (called by the Pi extension, not by users directly)
+    #[command(name = "hook-pi-pre-tool-use", hide = true)]
+    HookPiPreToolUse,
+    /// Pi session-settled handler (called by the Pi extension, not by users directly)
+    #[command(name = "hook-pi-stop", hide = true)]
+    HookPiStop,
     /// Start MCP server over stdio
     Serve {
         /// Project path
@@ -261,6 +313,14 @@ pub enum Commands {
         /// is waiting for a request, so it cannot interrupt one.
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
         idle_timeout_secs: Option<u64>,
+        /// Watch the project for file changes and sync them as they happen (#937)
+        ///
+        /// Off by default. Turns on the opt-in filesystem watcher for this run,
+        /// as `filesystem_watch_enabled = true` in `~/.tokensave/config.toml`
+        /// does for every run. The on-demand staleness check keeps running
+        /// either way.
+        #[arg(long)]
+        watch: bool,
     },
     /// List running `tokensave serve` processes and the index each one holds
     ///
@@ -355,6 +415,13 @@ pub enum Commands {
         /// Check only this agent (default: all agents)
         #[arg(long, value_parser = agent_value_parser())]
         agent: Option<String>,
+        /// Also check Caveman compatibility (read-only) and print the
+        /// per-agent report as JSON on stdout
+        #[arg(long)]
+        caveman: bool,
+        /// Claude Code session whose Caveman mode to report; never inferred
+        #[arg(long, requires = "caveman")]
+        session_id: Option<String>,
     },
     /// Token cost summary from supported local agent sessions
     Cost {
@@ -406,6 +473,9 @@ pub enum Commands {
         /// Print per-day history instead of a single total.
         #[arg(long)]
         history: bool,
+        /// Print calls and tokens saved per tool instead of a single total.
+        #[arg(long, conflicts_with = "history")]
+        by_tool: bool,
         /// Time range: "today", "7d", "30d", "month", or "all" (default: "30d").
         #[arg(long, default_value = "30d")]
         range: String,
@@ -420,6 +490,12 @@ pub enum Commands {
         /// Purge slots left behind by dead processes
         #[arg(long)]
         clean: bool,
+    },
+    /// List or prune project state kept under a base state directory
+    /// (`TOKENSAVE_STATE_DIR` or `state_dir`, #919)
+    State {
+        #[command(subcommand)]
+        action: StateAction,
     },
     /// Opt-in performance profiling: status, reports and sanitized export (#754)
     Profile {
@@ -475,6 +551,46 @@ pub enum Commands {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn parse_init_skip_folder_before_path() {
+        let cli = Cli::try_parse_from(["tokensave", "init", "--skip-folder", "build", "project"])
+            .expect("parse failed");
+
+        match cli.command {
+            Some(Commands::Init {
+                path, skip_folders, ..
+            }) => {
+                assert_eq!(path.as_deref(), Some("project"));
+                assert_eq!(skip_folders, ["build"]);
+            }
+            _ => panic!("expected Init command"),
+        }
+    }
+
+    #[test]
+    fn parse_sync_repeated_skip_folders_before_path() {
+        let cli = Cli::try_parse_from([
+            "tokensave",
+            "sync",
+            "--skip-folder",
+            "build",
+            "--skip-folder",
+            "generated",
+            "project",
+        ])
+        .expect("parse failed");
+
+        match cli.command {
+            Some(Commands::Sync {
+                path, skip_folders, ..
+            }) => {
+                assert_eq!(path.as_deref(), Some("project"));
+                assert_eq!(skip_folders, ["build", "generated"]);
+            }
+            _ => panic!("expected Sync command"),
+        }
+    }
 
     #[test]
     fn parse_cost_by_agent() {
@@ -583,6 +699,86 @@ mod tests {
 }
 
 #[derive(Subcommand)]
+pub enum OkfAction {
+    /// Check a bundle against the OKF v0.2 conformance rules
+    ///
+    /// Exits 0 when the bundle is conformant, 1 when it is not (or, with
+    /// `--strict`, when there are warnings). Reads only the bundle.
+    Validate {
+        /// Bundle directory
+        path: std::path::PathBuf,
+        /// Output the report as JSON
+        #[arg(long)]
+        json: bool,
+        /// Treat warnings as failures
+        #[arg(long)]
+        strict: bool,
+        /// Also list info findings such as broken links (always in JSON)
+        #[arg(long)]
+        verbose: bool,
+    },
+    /// Export the code index as an OKF bundle (read-only; no sync)
+    Export {
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// New bundle directory; an existing path is refused
+        #[arg(long)]
+        output: std::path::PathBuf,
+        /// Refuse indexes with more source files than this
+        #[arg(long, default_value_t = 20_000)]
+        max_files: usize,
+        /// Symbols listed per file; the rest are counted only
+        #[arg(long, default_value_t = 500)]
+        max_symbols: usize,
+        /// Refuse indexes with more file-to-file dependencies than this
+        #[arg(long, default_value_t = 200_000)]
+        max_links: usize,
+    },
+    /// Import a bundle so the MCP server can search it
+    ///
+    /// Copies the bundle into the project's state directory and validates
+    /// the copy. Bundles that are not conformant are imported best-effort
+    /// unless `--strict` is given. The code index is not changed.
+    Import {
+        /// Bundle directory
+        path: std::path::PathBuf,
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// Name for the imported bundle (default: the directory name)
+        #[arg(long)]
+        name: Option<String>,
+        /// Replace an imported bundle with the same name
+        #[arg(long)]
+        replace: bool,
+        /// Refuse bundles that are not conformant
+        #[arg(long)]
+        strict: bool,
+        /// Output the result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the imported bundles of a project
+    List {
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove an imported bundle
+    Remove {
+        /// Name of the imported bundle
+        name: String,
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum ProfileAction {
     /// Manage separate consent for sanitized performance data sharing
     Share {
@@ -651,8 +847,12 @@ pub enum ProfileAction {
         #[arg(short, long)]
         output: Option<std::path::PathBuf>,
     },
-    /// Delete all recorded profile data
-    Reset,
+    /// Delete all recorded profile data (asks first unless `--force`)
+    Reset {
+        /// Delete without asking; required when stdin is not a terminal
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -693,6 +893,22 @@ pub enum ConfigAction {
 }
 
 #[derive(Subcommand)]
+pub enum StateAction {
+    /// List relocated project state directories and the project each belongs to
+    List,
+    /// Delete relocated state whose project directory no longer exists
+    ///
+    /// Only directories with a recorded origin whose project root is gone
+    /// are removed. State under a project root (`.tokensave/`) is never
+    /// touched.
+    Prune {
+        /// List what would be deleted without deleting anything
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum BranchAction {
     /// List tracked branches and their DB sizes
     List {
@@ -721,6 +937,18 @@ pub enum BranchAction {
     /// Remove a tracked branch and delete its DB
     Remove {
         /// Branch name to remove
+        name: String,
+        /// Project path (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+    },
+    /// Make a branch the default, keeping the data already indexed
+    ///
+    /// An untracked branch takes over the current default's entry and
+    /// database. A tracked branch becomes the default with its own
+    /// database; the previous default stays as an ordinary branch entry.
+    SetDefault {
+        /// Branch to make the default
         name: String,
         /// Project path (default: current directory)
         #[arg(short, long)]

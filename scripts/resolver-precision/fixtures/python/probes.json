@@ -1,0 +1,4 @@
+[
+  {"symbol": "py_target", "file": "src/sample.py", "line": 5, "column": 5, "edge_kind": "calls"},
+  {"symbol": "PyThing", "file": "src/sample.py", "line": 1, "column": 7, "edge_kind": "uses"}
+]

@@ -70,7 +70,7 @@ fn relative(path: &str) -> bool {
 }
 
 fn database_path(root: &Path, report: &mut Report) -> Result<Option<PathBuf>> {
-    let directory = root.join(".tokensave");
+    let directory = crate::config::get_tokensave_dir(root);
     let metadata = directory.join("branch-meta.json");
     if !metadata.exists() {
         return Ok(Some(directory.join("tokensave.db")));
@@ -95,6 +95,17 @@ fn database_path(root: &Path, report: &mut Report) -> Result<Option<PathBuf>> {
             "Restore the default branch entry from a known-good backup.",
         );
         return Ok(None);
+    }
+    if crate::branch::default_branch_state(root, &meta)
+        .warning()
+        .is_some()
+    {
+        report.add(
+            "BRANCH_DEFAULT_STALE",
+            "warning",
+            &meta.default_branch,
+            "The recorded default branch no longer exists; run `tokensave branch list` for the fix, or `tokensave branch set-default <branch>`.",
+        );
     }
     let canonical_directory = directory.canonicalize()?;
     for (name, entry) in &meta.branches {
@@ -176,7 +187,10 @@ pub async fn verify(root: &Path, deep: bool, repair: bool) -> Report {
 }
 
 async fn inspect(root: &Path, deep: bool, report: &mut Report) -> Result<bool> {
-    if !root.join(".tokensave").join("config.json").is_file() {
+    if !crate::config::get_tokensave_dir(root)
+        .join("config.json")
+        .is_file()
+    {
         report.add(
             "PROJECT_NOT_INITIALIZED",
             "error",
@@ -197,6 +211,7 @@ async fn inspect(root: &Path, deep: bool, report: &mut Report) -> Result<bool> {
         );
         return Ok(false);
     }
+    crate::db::compatibility::preflight(&path, u32::MAX).await?;
     let db = libsql::Builder::new_local(&path)
         .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .build()

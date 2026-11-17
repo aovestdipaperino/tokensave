@@ -48,6 +48,9 @@ struct Counters {
 
 struct Series {
     shards: [Counters; SHARDS],
+    // Cancellation is rare and does not justify another counter in every
+    // cache-line-aligned shard (which would double each shard's size).
+    cancellations: AtomicU64,
     histogram: AtomicHistogram,
 }
 
@@ -80,6 +83,7 @@ impl Recorder {
             series: (0..Op::COUNT)
                 .map(|_| Series {
                     shards: Default::default(),
+                    cancellations: AtomicU64::new(0),
                     histogram: AtomicHistogram::new(),
                 })
                 .collect(),
@@ -123,12 +127,24 @@ impl Recorder {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Records a future that was dropped before it returned. Its elapsed time
+    /// is a real latency sample, but it is not an operation error.
+    pub fn record_cancelled(&self, op: Op, sample: Sample) {
+        self.series[op.index()]
+            .cancellations
+            .fetch_add(1, Ordering::Relaxed);
+        self.record(op, sample);
+    }
+
     /// Moves everything recorded so far into a snapshot and resets the
     /// recorder. Ops with nothing recorded are omitted.
     pub fn drain(&self) -> Snapshot {
         let mut out = Snapshot::new();
         for (index, series) in self.series.iter().enumerate() {
-            let mut s = SeriesSnapshot::default();
+            let mut s = SeriesSnapshot {
+                cancellations: series.cancellations.swap(0, Ordering::Relaxed),
+                ..SeriesSnapshot::default()
+            };
             for c in &series.shards {
                 s.count += c.count.swap(0, Ordering::Relaxed);
                 s.errors += c.errors.swap(0, Ordering::Relaxed);
@@ -161,8 +177,12 @@ impl Recorder {
 /// processes and windows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeriesSnapshot {
-    /// Successful samples (the histogram's population).
+    /// Completed latency samples (the histogram's population).
     pub count: u64,
+    /// Futures dropped before completion. These are included in `count` and
+    /// the latency histogram, but not in `errors`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cancellations: u64,
     pub errors: u64,
     pub sum_us: u64,
     pub exclusive_sum_us: u64,
@@ -212,6 +232,7 @@ impl SeriesSnapshot {
 
     pub fn merge(&mut self, other: &Self) {
         self.count = self.count.saturating_add(other.count);
+        self.cancellations = self.cancellations.saturating_add(other.cancellations);
         self.errors = self.errors.saturating_add(other.errors);
         self.sum_us = self.sum_us.saturating_add(other.sum_us);
         self.exclusive_sum_us = self.exclusive_sum_us.saturating_add(other.exclusive_sum_us);
@@ -303,6 +324,20 @@ mod tests {
         r.record(op, ok(49_999));
         r.record(op, ok(50_000));
         assert_eq!(r.drain()["index.scan"].slow, 1);
+    }
+
+    #[test]
+    fn cancellation_is_a_latency_sample_not_an_error() {
+        let r = Recorder::new();
+        let op = Op::Db(DbOp::Open);
+        r.record_cancelled(op, ok(12_000));
+        let snap = r.drain();
+        let s = &snap["db.open"];
+        assert_eq!(s.count, 1);
+        assert_eq!(s.cancellations, 1);
+        assert_eq!(s.errors, 0);
+        assert_eq!(s.sum_us, 12_000);
+        assert_eq!(s.histogram.count(), 1);
     }
 
     #[test]

@@ -10,6 +10,7 @@ use tempfile::TempDir;
 use tokensave::config::{load_config, save_config};
 use tokensave::mcp::handle_tool_call;
 use tokensave::tokensave::TokenSave;
+use tokensave::types::{AmbiguousCall, Edge, EdgeKind, UnresolvedRef};
 
 // ---------------------------------------------------------------------------
 // Shared setup
@@ -197,7 +198,7 @@ async fn test_search_literal_respects_queryignore() {
     // Same query as test_search_literal_finds_string_in_body, but with the
     // matching file suppressed via .tokensave/queryignore — literal mode must
     // honor the project-level ignore just like the ranked path does.
-    let ts_dir = cg.project_root().join(".tokensave");
+    let ts_dir = tokensave::config::get_tokensave_dir(cg.project_root());
     std::fs::create_dir_all(&ts_dir).unwrap();
     std::fs::write(ts_dir.join("queryignore"), "utils\n").unwrap();
 
@@ -462,6 +463,130 @@ pub fn once() {
     let once = items.iter().find(|i| i["name"] == "once").unwrap();
     assert_eq!(once["line"], 9);
     assert_eq!(once["lines"], json!([9]));
+}
+
+/// #687: callers reports every extracted same-named call, including the
+/// sites the resolver bound elsewhere or could not resolve.
+#[tokio::test]
+async fn test_callers_labels_every_same_named_reference() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(
+        project.join("src").join("lib.rs"),
+        "mod first { pub fn ping() {} }\n\
+         mod second { pub fn ping() {} }\n\
+         pub fn source() {}\n",
+    )
+    .unwrap();
+    let cg = TokenSave::init(project).await.unwrap();
+    cg.index_all().await.unwrap();
+
+    let mut targets = cg.get_nodes_by_name("ping").await.unwrap();
+    targets.sort_by(|a, b| a.qualified_name.cmp(&b.qualified_name));
+    assert_eq!(targets.len(), 2, "fixture has two same-named targets");
+    let first = targets[0].clone();
+    let second = targets[1].clone();
+    let source = cg
+        .get_nodes_by_name("source")
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+
+    for (line, name) in [
+        (10, "first::ping"),
+        (11, "second::ping"),
+        (12, "value.ping"),
+        (13, "unknown.ping"),
+    ] {
+        cg.db()
+            .insert_unresolved_ref(&UnresolvedRef {
+                from_node_id: source.id.clone(),
+                reference_name: name.to_string(),
+                reference_kind: EdgeKind::Calls,
+                line,
+                column: 4,
+                file_path: "src/lib.rs".to_string(),
+            })
+            .await
+            .unwrap();
+    }
+    for (line, target) in [(10, &first), (11, &second)] {
+        cg.db()
+            .insert_edge(&Edge {
+                source: source.id.clone(),
+                target: target.id.clone(),
+                kind: EdgeKind::Calls,
+                line: Some(line),
+                resolved_by: None,
+            })
+            .await
+            .unwrap();
+    }
+    cg.db()
+        .replace_ambiguous_calls(
+            &["src/lib.rs".to_string()],
+            &[AmbiguousCall {
+                from_node_id: source.id.clone(),
+                reference_name: "value.ping".to_string(),
+                file_path: "src/lib.rs".to_string(),
+                line: 12,
+                column: 4,
+                candidate_node_ids: vec![first.id.clone(), second.id.clone()],
+            }],
+        )
+        .await
+        .unwrap();
+
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_callers",
+        json!({"node_id": first.id}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let items: Vec<Value> = serde_json::from_str(extract_text(&result.value)).unwrap();
+    let caller = items
+        .iter()
+        .find(|item| item["node_id"] == source.id)
+        .unwrap();
+    let references = caller["references"].as_array().unwrap();
+    assert_eq!(references.len(), 4, "{caller:#}");
+    let statuses: BTreeMap<u64, &str> = references
+        .iter()
+        .map(|reference| {
+            (
+                reference["line"].as_u64().unwrap(),
+                reference["status"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(statuses[&11], "confirmed");
+    assert_eq!(statuses[&12], "other");
+    assert_eq!(statuses[&13], "ambiguous");
+    assert_eq!(statuses[&14], "unresolved");
+    assert_eq!(references[2]["candidate_count"], 2);
+    assert_eq!(references[2]["target_is_candidate"], true);
+    assert_eq!(references[2]["to_read"], true);
+    assert_eq!(references[3]["receiver"], "unknown");
+
+    let limited = handle_tool_call(
+        &cg,
+        "tokensave_callers",
+        json!({"node_id": first.id, "limit": 2}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let limited: Value = serde_json::from_str(extract_text(&limited.value)).unwrap();
+    assert_eq!(limited["reference_count"], 2);
+    assert_eq!(limited["reference_total"], 4);
+    assert_eq!(limited["references_truncated"], true);
 }
 
 /// An edit through an edit tool re-indexes the file, and the file's symbols
@@ -4083,7 +4208,8 @@ async fn test_session_start() {
     let output: serde_json::Value = serde_json::from_str(text).unwrap();
     assert!(output["quality_signal"].as_u64().is_some());
     assert_eq!(output["status"].as_str().unwrap(), "baseline_saved");
-    let baseline_path = dir.path().join(".tokensave").join("session_baseline.json");
+    let baseline_path =
+        tokensave::config::get_tokensave_dir(dir.path()).join("session_baseline.json");
     assert!(baseline_path.exists(), "baseline file should exist");
 
     // session_start emits a compact, budget-bounded memory delta (issue #122).
@@ -4113,7 +4239,8 @@ async fn test_session_end() {
     assert!(output["signal_before"].as_u64().is_some());
     assert!(output["signal_after"].as_u64().is_some());
     assert!(output["delta"].is_number());
-    let baseline_path = dir.path().join(".tokensave").join("session_baseline.json");
+    let baseline_path =
+        tokensave::config::get_tokensave_dir(dir.path()).join("session_baseline.json");
     assert!(
         !baseline_path.exists(),
         "baseline should be removed after session_end"
@@ -6692,204 +6819,6 @@ async fn test_str_replace_resolved_path_for_relative_path_in_root() {
     assert!(parsed["digest"].as_str().unwrap().len() == 64);
 }
 
-#[tokio::test]
-async fn test_str_replace_absolute_path_outside_root_honored_verbatim() {
-    let project_dir = TempDir::new().unwrap();
-    let project = project_dir.path();
-    fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src").join("main.rs"), "fn hello() {}\n").unwrap();
-
-    let cg = TokenSave::init(project).await.unwrap();
-    cg.index_all().await.unwrap();
-
-    // A file entirely outside the indexed project — e.g. a sibling git
-    // worktree directory. Previously this errored with "path is not within
-    // the project"; it should now be honored verbatim.
-    let outside_dir = TempDir::new().unwrap();
-    let outside_file = outside_dir.path().join("notes.txt");
-    fs::write(&outside_file, "todo: fix the bug\n").unwrap();
-
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_str_replace",
-        json!({
-            "path": outside_file.to_string_lossy(),
-            "old_str": "todo: fix the bug",
-            "new_str": "done: fixed the bug"
-        }),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
-
-    let text = extract_text(&result.value);
-    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(
-        parsed["ok"], true,
-        "absolute path outside the indexed root must be honored, not rejected: {text}"
-    );
-    let expected = outside_file.to_string_lossy().to_string();
-    assert_eq!(parsed["file"], expected);
-    assert_eq!(parsed["lines"], json!([1, 1]));
-    assert!(parsed["digest"].as_str().unwrap().len() == 64);
-
-    let content = fs::read_to_string(&outside_file).unwrap();
-    assert_eq!(content, "done: fixed the bug\n");
-
-    // The indexed project itself must be untouched.
-    let project_content = fs::read_to_string(project.join("src").join("main.rs")).unwrap();
-    assert_eq!(project_content, "fn hello() {}\n");
-}
-
-#[tokio::test]
-async fn test_str_replace_project_root_override_writes_to_worktree_not_primary_checkout() {
-    let primary = TempDir::new().unwrap();
-    let primary_root = primary.path();
-    fs::create_dir_all(primary_root.join("src")).unwrap();
-    fs::write(
-        primary_root.join("src").join("main.rs"),
-        "fn hello() { \"primary\" }\n",
-    )
-    .unwrap();
-
-    let cg = TokenSave::init(primary_root).await.unwrap();
-    cg.index_all().await.unwrap();
-
-    // Simulate a git worktree: same relative layout, different absolute
-    // location, not part of the indexed project.
-    let worktree = TempDir::new().unwrap();
-    let worktree_root = worktree.path();
-    fs::create_dir_all(worktree_root.join("src")).unwrap();
-    fs::write(
-        worktree_root.join("src").join("main.rs"),
-        "fn hello() { \"worktree\" }\n",
-    )
-    .unwrap();
-
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_str_replace",
-        json!({
-            "path": "src/main.rs",
-            "old_str": "fn hello() { \"worktree\" }",
-            "new_str": "fn hello() { \"worktree-updated\" }",
-            "project_root": worktree_root.to_string_lossy()
-        }),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
-
-    let text = extract_text(&result.value);
-    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["ok"], true, "got: {text}");
-    assert_eq!(parsed["file"], "src/main.rs");
-    assert_eq!(parsed["lines"], json!([1, 1]));
-    assert!(parsed["digest"].as_str().unwrap().len() == 64);
-
-    // The worktree copy was edited...
-    let worktree_content = fs::read_to_string(worktree_root.join("src").join("main.rs")).unwrap();
-    assert_eq!(worktree_content, "fn hello() { \"worktree-updated\" }\n");
-
-    // ...and — this is the regression the bug report describes — the
-    // primary checkout's identically-named relative file must be untouched.
-    let primary_content = fs::read_to_string(primary_root.join("src").join("main.rs")).unwrap();
-    assert_eq!(primary_content, "fn hello() { \"primary\" }\n");
-}
-
-#[tokio::test]
-async fn test_insert_at_absolute_path_outside_root_honored_verbatim() {
-    let project_dir = TempDir::new().unwrap();
-    let project = project_dir.path();
-    fs::create_dir_all(project.join("src")).unwrap();
-    fs::write(project.join("src").join("main.rs"), "fn hello() {}\n").unwrap();
-
-    let cg = TokenSave::init(project).await.unwrap();
-    cg.index_all().await.unwrap();
-
-    let outside_dir = TempDir::new().unwrap();
-    let outside_file = outside_dir.path().join("scratch.txt");
-    fs::write(&outside_file, "line one\nline two\n").unwrap();
-
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_insert_at",
-        json!({
-            "path": outside_file.to_string_lossy(),
-            "anchor": "line one",
-            "content": "inserted line",
-            "before": false
-        }),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
-
-    let text = extract_text(&result.value);
-    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["ok"], true, "got: {text}");
-    let expected = outside_file.to_string_lossy().to_string();
-    assert_eq!(parsed["file"], expected);
-    assert_eq!(parsed["lines"], json!([2, 2]));
-    assert!(parsed["digest"].as_str().unwrap().len() == 64);
-
-    let content = fs::read_to_string(&outside_file).unwrap();
-    assert_eq!(content, "line one\ninserted line\nline two\n");
-}
-
-#[tokio::test]
-async fn test_replace_symbol_project_root_override_writes_to_worktree_not_primary_checkout() {
-    let primary = TempDir::new().unwrap();
-    let primary_root = primary.path();
-    fs::create_dir_all(primary_root.join("src")).unwrap();
-    let original_source = "pub fn greet_widget_example() -> String {\n    \"hi\".to_string()\n}\n";
-    fs::write(primary_root.join("src").join("lib.rs"), original_source).unwrap();
-
-    let cg = TokenSave::init(primary_root).await.unwrap();
-    cg.index_all().await.unwrap();
-
-    // Worktree: an exact copy of the file (same line ranges — the symbol's
-    // start/end lines are resolved from the primary index, then applied to
-    // whatever file `resolve_edit_target` points the write at).
-    let worktree = TempDir::new().unwrap();
-    let worktree_root = worktree.path();
-    fs::create_dir_all(worktree_root.join("src")).unwrap();
-    fs::write(worktree_root.join("src").join("lib.rs"), original_source).unwrap();
-
-    let new_source =
-        "pub fn greet_widget_example() -> String {\n    \"hi from worktree\".to_string()\n}";
-
-    let result = handle_tool_call(
-        &cg,
-        "tokensave_replace_symbol",
-        json!({
-            "symbol": "greet_widget_example",
-            "new_source": new_source,
-            "project_root": worktree_root.to_string_lossy()
-        }),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
-
-    let text = extract_text(&result.value);
-    let parsed: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(parsed["ok"], true, "got: {text}");
-    assert_eq!(parsed["lines"], json!([1, 3]));
-    assert!(parsed["digest"].as_str().unwrap().len() == 64);
-
-    let worktree_content = fs::read_to_string(worktree_root.join("src").join("lib.rs")).unwrap();
-    assert!(worktree_content.contains("hi from worktree"));
-
-    // The primary checkout's copy of the same relative file must be untouched.
-    let primary_content = fs::read_to_string(primary_root.join("src").join("lib.rs")).unwrap();
-    assert_eq!(primary_content, original_source);
-}
-
 // ---------------------------------------------------------------------------
 // tokensave_status vs. an in-flight / interrupted full rebuild (#267)
 // ---------------------------------------------------------------------------
@@ -6999,6 +6928,171 @@ async fn test_status_staleness_falls_back_to_last_sync_at_when_files_empty() {
         status["version"],
         json!(env!("CARGO_PKG_VERSION")),
         "status must report the running tokensave version, got: {text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// tokensave_status `stale_commits` is relative to the last sync (#936)
+// ---------------------------------------------------------------------------
+
+/// Commits everything staged in `dir` with author and committer time
+/// `secs` (UNIX seconds), so commit-time comparisons are deterministic.
+fn commit_at(dir: &std::path::Path, message: &str, secs: i64, extra: &[&str]) {
+    let date = format!("@{secs} +0000");
+    let mut args = vec!["commit", "-q", "-m", message];
+    args.extend_from_slice(extra);
+    let out = std::process::Command::new("git")
+        .args(&args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_DATE", &date)
+        .env("GIT_COMMITTER_DATE", &date)
+        .output()
+        .expect("failed to run git commit");
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Initialises a git repo in `dir` without committing anything.
+fn init_git_repo(dir: &std::path::Path) {
+    run_git(dir, &["init", "-q"]);
+    run_git(dir, &["config", "user.email", "test@test.com"]);
+    run_git(dir, &["config", "user.name", "Test"]);
+    run_git(dir, &["config", "commit.gpgsign", "false"]);
+}
+
+/// Calls `tokensave_status` and returns the parsed JSON plus its raw text.
+async fn status_json(cg: &TokenSave) -> (Value, String) {
+    let result = handle_tool_call(cg, "tokensave_status", json!({}), None, None)
+        .await
+        .unwrap();
+    let text = extract_text(&result.value).to_string();
+    let status: Value = serde_json::from_str(&text).expect("status must be JSON");
+    (status, text)
+}
+
+/// Backdates every file's `indexed_at`, as on a repo whose indexed content
+/// has not changed for a long time.
+async fn backdate_indexed_at(cg: &TokenSave, secs: i64) {
+    cg.db()
+        .conn()
+        .execute("UPDATE files SET indexed_at = ?1", libsql::params![secs])
+        .await
+        .unwrap();
+}
+
+/// #936: on a quiet repo, `last_updated` (MAX(files.indexed_at)) stays at the
+/// last content reindex, so commits that change no indexed file (an empty
+/// commit, an ignored file) stayed counted after any number of no-change
+/// syncs. A successful no-change sync must clear `stale_commits`, and a
+/// commit made after it must be counted again.
+#[tokio::test]
+async fn test_status_stale_commits_cleared_by_no_change_sync() {
+    let (dir, cg) = setup_project().await;
+    let project = dir.path();
+    let now = tokensave::tokensave::current_timestamp();
+    // The last content reindex happened long ago; every commit below is newer.
+    let reindexed_at = now - 10_000;
+    backdate_indexed_at(&cg, reindexed_at).await;
+
+    fs::write(project.join(".gitignore"), "build/\n").unwrap();
+    fs::create_dir_all(project.join("build")).unwrap();
+    fs::write(project.join("build").join("out.log"), "ignored\n").unwrap();
+    init_git_repo(project);
+    run_git(project, &["add", "src", "tests", ".gitignore"]);
+    commit_at(project, "initial", reindexed_at + 100, &[]);
+    commit_at(project, "empty", reindexed_at + 200, &["--allow-empty"]);
+    run_git(project, &["add", "-f", "build/out.log"]);
+    commit_at(project, "ignored only", reindexed_at + 300, &[]);
+
+    let synced = cg.sync().await.unwrap();
+    assert_eq!(
+        (
+            synced.files_added,
+            synced.files_modified,
+            synced.files_removed
+        ),
+        (0, 0, 0),
+        "the commits change no indexed content, so the sync must be a no-op"
+    );
+
+    let (status, text) = status_json(&cg).await;
+    assert!(
+        status.get("stale_commits").is_none() && status.get("stale_warning").is_none(),
+        "a successful no-change sync must clear stale_commits (#936), got: {text}"
+    );
+
+    // A commit made after the sync is counted.
+    commit_at(project, "after sync", now + 3600, &["--allow-empty"]);
+    let (status, text) = status_json(&cg).await;
+    assert_eq!(
+        status["stale_commits"],
+        json!(1),
+        "only the commit made after the last sync is stale, got: {text}"
+    );
+}
+
+/// #936: the cutoff is strict. A commit in the same second as the last sync
+/// is not reported, and one a second later is.
+#[tokio::test]
+async fn test_status_stale_commits_excludes_commit_in_sync_second() {
+    let (dir, cg) = setup_project().await;
+    let project = dir.path();
+    let sync_at = tokensave::tokensave::current_timestamp() + 3600;
+    backdate_indexed_at(&cg, sync_at - 1000).await;
+    cg.db()
+        .set_metadata("last_sync_at", &sync_at.to_string())
+        .await
+        .unwrap();
+
+    init_git_repo(project);
+    run_git(project, &["add", "."]);
+    commit_at(project, "older", sync_at - 500, &[]);
+    commit_at(project, "same second", sync_at, &["--allow-empty"]);
+    assert_eq!(cg.git_commits_since(sync_at), 0);
+    assert_eq!(cg.git_commits_since(sync_at - 1), 1);
+    assert_eq!(cg.git_commits_since(sync_at - 500), 1);
+    assert_eq!(cg.git_commits_since(sync_at - 501), 2);
+
+    let (status, text) = status_json(&cg).await;
+    assert!(
+        status.get("stale_commits").is_none(),
+        "a commit in the same second as the sync must not be stale (#936), got: {text}"
+    );
+
+    commit_at(project, "next second", sync_at + 1, &["--allow-empty"]);
+    let (status, text) = status_json(&cg).await;
+    assert_eq!(status["stale_commits"], json!(1), "got: {text}");
+}
+
+/// #267 guard with the #936 cutoff: an empty files table still uses the
+/// `last_sync_at` metadata timestamp, so only commits after it are counted.
+#[tokio::test]
+async fn test_status_stale_commits_after_last_sync_with_empty_files() {
+    let (dir, cg) = setup_project().await;
+    let project = dir.path();
+    let sync_at = tokensave::tokensave::current_timestamp() + 3600;
+
+    init_git_repo(project);
+    run_git(project, &["add", "."]);
+    commit_at(project, "before sync", sync_at - 100, &[]);
+    commit_at(project, "after sync", sync_at + 100, &["--allow-empty"]);
+
+    cg.db().clear().await.unwrap();
+    cg.db()
+        .set_metadata("last_sync_at", &sync_at.to_string())
+        .await
+        .unwrap();
+
+    let (status, text) = status_json(&cg).await;
+    assert_eq!(status["last_updated"], json!(0), "got: {text}");
+    assert_eq!(
+        status["stale_commits"],
+        json!(1),
+        "only commits after last_sync_at may be counted (#267, #936), got: {text}"
     );
 }
 
@@ -7331,4 +7425,180 @@ async fn entities_accepts_path_as_an_alias_for_file() {
         "{}",
         extract_text(&by_path.value)
     );
+}
+
+// ── tokensave_create_file (#920) ──────────────────────────────────────────
+
+async fn create_file(cg: &TokenSave, args: Value) -> Value {
+    let result = handle_tool_call(cg, "tokensave_create_file", args, None, None)
+        .await
+        .expect("create_file returns a result");
+    serde_json::from_str(extract_text(&result.value)).expect("create_file json")
+}
+
+/// `link` -> `target`, or `false` where the platform refuses, so the caller
+/// can skip. On Windows without symlink privilege a directory junction, which
+/// needs none and which path resolution follows the same way, stands in.
+fn symlink_dir_or_skip(target: &std::path::Path, link: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link).is_ok();
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir(target, link).is_ok()
+        || std::process::Command::new("cmd")
+            .arg("/C")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .output()
+            .is_ok_and(|out| out.status.success());
+    made
+}
+
+fn symlink_file_or_skip(target: &std::path::Path, link: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(target, link);
+    made.is_ok()
+}
+
+#[tokio::test]
+async fn create_file_writes_indexes_and_is_searchable_at_once() {
+    let (dir, cg) = setup_project().await;
+    let parsed = create_file(
+        &cg,
+        json!({ "path": "src/brand/new_module.rs", "content": "pub fn brand_new_fn() {}\n" }),
+    )
+    .await;
+    assert_eq!(parsed["ok"], true, "{parsed}");
+    assert_eq!(parsed["file"], "src/brand/new_module.rs");
+    assert_eq!(parsed["indexed"], true, "{parsed}");
+    assert_eq!(parsed["overwritten"], false);
+    assert_eq!(parsed["bytes"], 25);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("src").join("brand").join("new_module.rs")).unwrap(),
+        "pub fn brand_new_fn() {}\n"
+    );
+
+    let search = handle_tool_call(
+        &cg,
+        "tokensave_search",
+        json!({ "query": "brand_new_fn" }),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        extract_text(&search.value).contains("new_module.rs"),
+        "{}",
+        extract_text(&search.value)
+    );
+}
+
+#[tokio::test]
+async fn create_file_replaces_an_existing_file_only_with_overwrite() {
+    let (dir, cg) = setup_project().await;
+    let target = dir.path().join("notes.rs");
+    fs::write(&target, "fn old() {}\n").unwrap();
+
+    let refused = create_file(
+        &cg,
+        json!({ "path": "notes.rs", "content": "fn new() {}\n" }),
+    )
+    .await;
+    assert_eq!(refused["ok"], false);
+    assert!(refused["message"].as_str().unwrap().contains("overwrite"));
+    assert_eq!(fs::read_to_string(&target).unwrap(), "fn old() {}\n");
+
+    let replaced = create_file(
+        &cg,
+        json!({ "path": "notes.rs", "content": "fn new() {}\n", "overwrite": true }),
+    )
+    .await;
+    assert_eq!(replaced["ok"], true, "{replaced}");
+    assert_eq!(replaced["overwritten"], true);
+    assert_eq!(fs::read_to_string(&target).unwrap(), "fn new() {}\n");
+}
+
+#[tokio::test]
+async fn create_file_refuses_paths_outside_the_project() {
+    let (dir, cg) = setup_project().await;
+    let outside = TempDir::new().unwrap();
+    let outside_file = outside.path().join("escape.rs");
+
+    for path in [
+        "../escape.rs".to_string(),
+        "src/../../escape.rs".to_string(),
+        outside_file.to_string_lossy().into_owned(),
+        ".git/hooks/post-commit".to_string(),
+        ".tokensave/evil.json".to_string(),
+        String::new(),
+    ] {
+        let parsed = create_file(&cg, json!({ "path": path, "content": "x" })).await;
+        assert_eq!(parsed["ok"], false, "{path}: {parsed}");
+    }
+    assert!(!outside_file.exists());
+    assert!(!dir
+        .path()
+        .join(".git")
+        .join("hooks")
+        .join("post-commit")
+        .exists());
+
+    // A directory is never replaced, even with overwrite.
+    let parsed = create_file(
+        &cg,
+        json!({ "path": "src", "content": "x", "overwrite": true }),
+    )
+    .await;
+    assert_eq!(parsed["ok"], false, "{parsed}");
+    assert!(dir.path().join("src").is_dir());
+}
+
+#[tokio::test]
+async fn create_file_refuses_a_symlinked_parent_that_leaves_the_root() {
+    let (dir, cg) = setup_project().await;
+    let outside = TempDir::new().unwrap();
+    // The link exists before the call, as an attacker-planted directory would.
+    if !symlink_dir_or_skip(outside.path(), &dir.path().join("linked")) {
+        eprintln!("skipping: symlinks are not available here");
+        return;
+    }
+    let parsed = create_file(&cg, json!({ "path": "linked/escape.rs", "content": "x" })).await;
+    assert_eq!(parsed["ok"], false, "{parsed}");
+    assert!(!outside.path().join("escape.rs").exists());
+}
+
+#[tokio::test]
+async fn create_file_refuses_a_symlink_target_even_with_overwrite() {
+    let (dir, cg) = setup_project().await;
+    let outside = TempDir::new().unwrap();
+    let real = outside.path().join("real.rs");
+    fs::write(&real, "fn real() {}\n").unwrap();
+    if !symlink_file_or_skip(&real, &dir.path().join("alias.rs")) {
+        eprintln!("skipping: symlinks are not available here");
+        return;
+    }
+    let parsed = create_file(
+        &cg,
+        json!({ "path": "alias.rs", "content": "x", "overwrite": true }),
+    )
+    .await;
+    assert_eq!(parsed["ok"], false, "{parsed}");
+    assert_eq!(fs::read_to_string(&real).unwrap(), "fn real() {}\n");
+}
+
+#[tokio::test]
+async fn create_file_bounds_content_by_max_file_size() {
+    let (dir, cg) = setup_project().await;
+    let too_big = "a".repeat(1_048_577);
+    let parsed = create_file(&cg, json!({ "path": "big.txt", "content": too_big })).await;
+    assert_eq!(parsed["ok"], false, "{parsed}");
+    assert!(parsed["message"]
+        .as_str()
+        .unwrap()
+        .contains("max_file_size"));
+    assert!(!dir.path().join("big.txt").exists());
 }

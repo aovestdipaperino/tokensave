@@ -76,9 +76,13 @@ async fn drifted_server(strict: bool) -> (TempDir, Arc<McpServer>) {
     drop(cg);
 
     git(&root, &["checkout", "-b", "feature"]);
-    tokensave::branch::track_branch_copy(&root, &root.join(".tokensave"), "feature")
-        .await
-        .unwrap();
+    tokensave::branch::track_branch_copy(
+        &root,
+        &tokensave::config::get_tokensave_dir(&root),
+        "feature",
+    )
+    .await
+    .unwrap();
     git(&root, &["checkout", "master"]);
 
     if strict {

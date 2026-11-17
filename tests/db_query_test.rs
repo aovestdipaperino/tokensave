@@ -1,6 +1,6 @@
 use tempfile::TempDir;
 use tokensave::db::Database;
-use tokensave::types::*;
+use tokensave::types::{Edge, EdgeKind, FileRecord, Node, NodeKind, UnresolvedRef, Visibility};
 
 /// Helper: create a temp database and return (TempDir, Database).
 ///

@@ -359,7 +359,7 @@ pub(super) async fn handle_dead_code(
         },
         |arr| {
             arr.iter()
-                .filter_map(|v| v.as_str().and_then(NodeKind::from_str))
+                .filter_map(|v| v.as_str()?.parse::<NodeKind>().ok())
                 .collect()
         },
     );
@@ -899,7 +899,7 @@ pub(super) async fn handle_rank(
             message: "missing required parameter: edge_kind".to_string(),
         })?;
 
-    let edge_kind = EdgeKind::from_str(edge_kind_str).ok_or_else(|| TokenSaveError::Config {
+    let edge_kind = edge_kind_str.parse::<EdgeKind>().map_err(|_| TokenSaveError::Config {
         message: format!(
             "invalid edge_kind '{edge_kind_str}'. Valid values: implements, extends, calls, uses, contains, annotates, derives_macro, instantiates, reopens"
         ),
@@ -925,7 +925,7 @@ pub(super) async fn handle_rank(
     let node_kind = args
         .get("node_kind")
         .and_then(|v| v.as_str())
-        .and_then(NodeKind::from_str);
+        .and_then(|s| s.parse::<NodeKind>().ok());
 
     let limit = args
         .get("limit")
@@ -980,7 +980,7 @@ pub(super) async fn handle_largest(
     let node_kind = args
         .get("node_kind")
         .and_then(|v| v.as_str())
-        .and_then(NodeKind::from_str);
+        .and_then(|s| s.parse::<NodeKind>().ok());
 
     let limit = args
         .get("limit")
@@ -1559,7 +1559,7 @@ pub(super) async fn handle_complexity(
     let node_kind = args
         .get("node_kind")
         .and_then(|v| v.as_str())
-        .and_then(NodeKind::from_str);
+        .and_then(|s| s.parse::<NodeKind>().ok());
 
     let limit = args
         .get("limit")

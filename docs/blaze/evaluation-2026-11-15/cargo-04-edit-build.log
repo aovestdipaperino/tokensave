@@ -1,0 +1,48 @@
+$ cargo build --locked --no-default-features --features lite
+warning: `package.homepage` is redundant with `package.repository`
+  --> Cargo.toml:11:12
+   |
+10 | repository = "https://github.com/aovestdipaperino/tokensave"
+   |              -----------------------------------------------
+11 | homepage = "https://github.com/aovestdipaperino/tokensave"
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::redundant_homepage` is set to `warn` by default
+help: consider removing `package.homepage`
+warning: `tokensave` (manifest) generated 1 warning
+warning: `package.homepage` is redundant with `package.repository`
+  --> $CHECKOUT/Cargo.toml:11:12
+   |
+10 | repository = "https://github.com/aovestdipaperino/tokensave"
+   |              -----------------------------------------------
+11 | homepage = "https://github.com/aovestdipaperino/tokensave"
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::redundant_homepage` is set to `warn` by default
+help: consider removing `package.homepage`
+warning: `tokensave` (manifest) generated 1 warning
+   Compiling tokensave v7.17.0 ($CHECKOUT/.blaze-eval/run/tree-cargo)
+warning: unused dependency `ort`
+   --> Cargo.toml:149:1
+    |
+149 | ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `cargo::unused_dependencies` is set to `warn` by default
+help: consider removing the dependency on `ort`
+warning: unused dependency `tracing-subscriber`
+   --> Cargo.toml:161:1
+    |
+161 | tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the dependency on `tracing-subscriber`
+warning: unused dependency `tree-sitter-dart`
+   --> Cargo.toml:147:1
+    |
+147 | tree-sitter-dart = "0.2"
+    | ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the dependency on `tree-sitter-dart`
+warning: `tokensave` (manifest) generated 3 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.70s

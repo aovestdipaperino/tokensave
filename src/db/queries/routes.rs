@@ -198,8 +198,8 @@ impl Database {
         // Metadata shares the transaction connection, so unlocked writes can be rolled back by another task.
         let _guard = self.lock_writes().await;
         let mut rows = self
-            .conn()
-            .query(
+            .profiled_query(
+                crate::profile::DbOp::RailsRoutes,
                 "SELECT EXISTS (SELECT 1 FROM nodes WHERE kind = 'route')
                     OR EXISTS (SELECT 1 FROM unresolved_refs WHERE reference_name >= ?1 AND reference_name < ?2)",
                 params![
@@ -260,14 +260,14 @@ impl Database {
             .await?
             .is_empty();
         // By source, so the delete uses the edges source index.
-        self.conn()
-            .execute(
-                "DELETE FROM edges WHERE resolved_by = ?1
+        self.profiled_execute(
+            crate::profile::DbOp::RebuildRailsRoutes,
+            "DELETE FROM edges WHERE resolved_by = ?1
                     AND source IN (SELECT id FROM nodes WHERE kind = 'route')",
-                params![ResolvedBy::RailsRoute.code()],
-            )
-            .await
-            .map_err(|error| route_error(&error))?;
+            params![ResolvedBy::RailsRoute.code()],
+        )
+        .await
+        .map_err(|error| route_error(&error))?;
         let routes = self.route_rows().await?;
         let contexts = self.route_contexts().await?;
         let mut status_by_route: Vec<(&RouteRow, RouteStatus<'_>)> = Vec::new();
@@ -344,7 +344,13 @@ impl Database {
                     } else if unresolved_visibility {
                         "unresolved-visibility"
                     } else {
-                        self.conn().execute("INSERT INTO edges(source,target,kind,line,resolved_by) VALUES (?1,?2,'calls',?3,?4)", params![route.id.as_str(), targets[0].0.as_str(), i64::from(route.line), ResolvedBy::RailsRoute.code()]).await.map_err(|error| route_error(&error))?;
+                        self.profiled_execute(
+                            crate::profile::DbOp::RebuildRailsRoutes,
+                            "INSERT INTO edges(source,target,kind,line,resolved_by) VALUES (?1,?2,'calls',?3,?4)",
+                            params![route.id.as_str(), targets[0].0.as_str(), i64::from(route.line), ResolvedBy::RailsRoute.code()],
+                        )
+                        .await
+                        .map_err(|error| route_error(&error))?;
                         "resolved"
                     }
                 }
@@ -356,13 +362,13 @@ impl Database {
             message: e.to_string(),
         })?;
         self.set_metadata("rails_route_counts", &counts).await?;
-        self.conn()
-            .execute(
-                "INSERT OR REPLACE INTO metadata(key,value) VALUES ('rails_routes_pending','0')",
-                (),
-            )
-            .await
-            .map_err(|error| route_error(&error))?;
+        self.profiled_execute(
+            crate::profile::DbOp::RebuildRailsRoutes,
+            "INSERT OR REPLACE INTO metadata(key,value) VALUES ('rails_routes_pending','0')",
+            (),
+        )
+        .await
+        .map_err(|error| route_error(&error))?;
 
         self.set_metadata(
             "rails_route_duration_ms",
@@ -469,8 +475,8 @@ impl Database {
 
     async fn route_rows(&self) -> Result<Vec<RouteRow>> {
         let mut rows = self
-            .conn()
-            .query(
+            .profiled_query(
+                crate::profile::DbOp::RailsRoutes,
                 "SELECT n.id, n.file_path, n.start_line, r.reference_name
                  FROM nodes n JOIN unresolved_refs r ON r.from_node_id = n.id
                  WHERE n.kind = 'route' AND r.reference_kind = 'calls'
@@ -507,8 +513,11 @@ impl Database {
             )
         };
         let mut rows = self
-            .conn()
-            .query(sql, libsql::params_from_iter(params))
+            .profiled_query(
+                crate::profile::DbOp::RailsRoutes,
+                sql,
+                libsql::params_from_iter(params),
+            )
             .await
             .map_err(|error| route_error(&error))?;
         let mut evidence = Vec::new();
@@ -624,8 +633,8 @@ impl Database {
                 build_qmark_placeholders(chunk.len())
             );
             let mut rows = self
-                .conn()
-                .query(
+                .profiled_query(
+                    crate::profile::DbOp::RailsRoutes,
                     &sql,
                     libsql::params_from_iter(chunk.iter().cloned().map(text)),
                 )
@@ -665,8 +674,8 @@ impl Database {
                 build_qmark_placeholders(chunk.len())
             );
             let mut rows = self
-                .conn()
-                .query(
+                .profiled_query(
+                    crate::profile::DbOp::RailsRoutes,
                     &sql,
                     libsql::params_from_iter(chunk.iter().cloned().map(text)),
                 )
@@ -706,8 +715,11 @@ impl Database {
                 text(prefix_end(RUBY_VISIBILITY_REFERENCE_PREFIX)),
             ]);
             let mut rows = self
-                .conn()
-                .query(&sql, libsql::params_from_iter(params))
+                .profiled_query(
+                    crate::profile::DbOp::RailsRoutes,
+                    &sql,
+                    libsql::params_from_iter(params),
+                )
                 .await
                 .map_err(|error| route_error(&error))?;
             while let Some(row) = rows.next().await.map_err(|error| route_error(&error))? {

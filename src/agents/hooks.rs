@@ -401,7 +401,7 @@ fn chain_repo_hook_snippet(hook_name: &str) -> String {
         "{HOOK_MARKER_CHAIN}\n\
          repo_hook=\"$(git rev-parse --git-common-dir 2>/dev/null)/hooks/{hook_name}\"\n\
          if [ -x \"$repo_hook\" ] && [ \"$repo_hook\" != \"$0\" ]; then\n\
-         \t\"$repo_hook\" \"$@\"\n\
+         \tTOKENSAVE_GIT_HOOK_FORWARDING=1 \"$repo_hook\" \"$@\"\n\
          fi\n"
     )
 }
@@ -427,10 +427,13 @@ fn migrate_chain_repo_hook(contents: &str, hook_name: &str) -> Option<String> {
             break;
         }
     }
-    if !found_fi || !section[..section_end].contains("git rev-parse --git-dir") {
+    if !found_fi {
         return None;
     }
     let replacement_body = chain_repo_hook_snippet(hook_name);
+    if section[..section_end] == replacement_body {
+        return None;
+    }
     Some(format!(
         "{}{}{}",
         &contents[..marker_start],
@@ -582,7 +585,9 @@ fn post_commit_snippet(tokensave_bin: &str) -> String {
     let bin = shell_quote(&tokensave_bin.replace('\\', "/"));
     format!(
         "{HOOK_MARKER}\n\
-         {bin} sync >/dev/null 2>&1 &\n\
+         if [ \"${{TOKENSAVE_GIT_HOOK_FORWARDING:-}}\" != \"1\" ]; then\n\
+         \tTOKENSAVE_GIT_HOOK=1 {bin} sync >/dev/null 2>&1 &\n\
+         fi\n\
          {HOOK_MARKER_END}\n"
     )
 }
@@ -594,7 +599,9 @@ fn post_merge_snippet(tokensave_bin: &str) -> String {
     let bin = shell_quote(&tokensave_bin.replace('\\', "/"));
     format!(
         "{HOOK_MARKER_MERGE}\n\
-         {bin} sync >/dev/null 2>&1 &\n\
+         if [ \"${{TOKENSAVE_GIT_HOOK_FORWARDING:-}}\" != \"1\" ]; then\n\
+         \tTOKENSAVE_GIT_HOOK=1 {bin} sync >/dev/null 2>&1 &\n\
+         fi\n\
          {HOOK_MARKER_MERGE_END}\n"
     )
 }
@@ -1951,7 +1958,9 @@ fn insert_gitconfig_value(contents: &str, section: &str, key: &str, value: &str)
 #[allow(clippy::unwrap_used)]
 mod git_hook_tests {
     use super::*;
-    use crate::agents::*;
+    use crate::agents::{
+        command_resolves_to_tokensave_in, preserve_mcp_command, preserve_mcp_command_str,
+    };
     use std::path::Path;
     use std::process::Command;
 
@@ -2131,6 +2140,8 @@ mod git_hook_tests {
             s.contains("'/usr/local/bin/tokensave' sync"),
             "must run `sync` with the resolved binary so a `git pull` reindexes teammates' changes, got: {s}"
         );
+        assert!(s.contains("TOKENSAVE_GIT_HOOK=1"));
+        assert!(s.contains("TOKENSAVE_GIT_HOOK_FORWARDING"));
     }
 
     #[test]
@@ -2581,6 +2592,7 @@ mod git_hook_tests {
         assert!(s.contains("/hooks/post-checkout"));
         // Args must be forwarded (post-checkout receives old/new/flag).
         assert!(s.contains("\"$@\""));
+        assert!(s.contains("TOKENSAVE_GIT_HOOK_FORWARDING=1"));
     }
 
     #[test]
@@ -2606,6 +2618,22 @@ mod git_hook_tests {
             None,
             "a second migration must be a no-op"
         );
+    }
+
+    #[test]
+    fn migrate_chain_snippet_marks_repo_hook_as_forwarded() {
+        let old = "#!/bin/sh\n\
+                   # tokensave: chain-repo-hook\n\
+                   repo_hook=\"$(git rev-parse --git-common-dir 2>/dev/null)/hooks/post-commit\"\n\
+                   if [ -x \"$repo_hook\" ] && [ \"$repo_hook\" != \"$0\" ]; then\n\
+                   \t\"$repo_hook\" \"$@\"\n\
+                   fi\n\
+                   # user content\n";
+
+        let migrated = migrate_chain_repo_hook(old, "post-commit").unwrap();
+        assert!(migrated.contains("TOKENSAVE_GIT_HOOK_FORWARDING=1"));
+        assert!(migrated.ends_with("# user content\n"));
+        assert_eq!(migrate_chain_repo_hook(&migrated, "post-commit"), None);
     }
 
     #[test]

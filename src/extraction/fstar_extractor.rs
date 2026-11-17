@@ -313,7 +313,10 @@ impl ExtractionState {
             .map_or_else(|| self.file_path.clone(), |(qn, _)| qn.clone())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is a separate field of the node being emitted"
+    )]
     fn emit_node(
         &mut self,
         kind: NodeKind,
@@ -635,7 +638,10 @@ fn handle_module(state: &mut ExtractionState, d: &DeclStart, total: usize) {
 /// Handles a `type` or `class` declaration: distinguishes records (→ `Struct` /
 /// `Trait` with `Field` children), variants (→ `Enum` with `EnumVariant`
 /// children), and abbreviations (→ `TypeAlias`).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the arguments are the already-parsed parts of one type declaration"
+)]
 fn handle_type(
     state: &mut ExtractionState,
     d: &DeclStart,

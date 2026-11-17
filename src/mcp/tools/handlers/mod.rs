@@ -12,6 +12,7 @@ pub mod git;
 pub mod graph;
 pub mod health;
 pub mod info;
+pub mod knowledge;
 pub mod memory;
 pub mod receiver_type;
 pub mod redundancy;
@@ -756,6 +757,7 @@ pub async fn handle_tool_call_with_session(
         "tokensave_insert_at" => edit::handle_insert_at(cg, args).await,
         "tokensave_delete_symbol" => edit::handle_delete_symbol(cg, args).await,
         "tokensave_replace_lines" => edit::handle_replace_lines(cg, args).await,
+        "tokensave_create_file" => edit::handle_create_file(cg, args).await,
         "tokensave_ast_grep_rewrite" => edit::handle_ast_grep_rewrite(cg, args).await,
         "tokensave_gini" => health::handle_gini(cg, args, scope_prefix).await,
         "tokensave_dependency_depth" => {
@@ -786,7 +788,7 @@ pub async fn handle_tool_call_with_session(
         "tokensave_constructors" => analysis::handle_constructors(cg, args, scope_prefix).await,
         "tokensave_field_sites" => analysis::handle_field_sites(cg, args, scope_prefix).await,
         "tokensave_callers_for" => graph::handle_callers_for(cg, args).await,
-        "tokensave_call_chain" => graph::handle_call_chain(cg, args).await,
+        "tokensave_call_chain" => graph::handle_call_chain(cg, args, scope_prefix).await,
         "tokensave_file_dependents" => graph::handle_file_dependents(cg, args).await,
         "tokensave_replace_symbol" => edit::handle_replace_symbol(cg, args).await,
         "tokensave_insert_at_symbol" => edit::handle_insert_at_symbol(cg, args).await,
@@ -803,6 +805,7 @@ pub async fn handle_tool_call_with_session(
         "tokensave_record_decision" => memory::handle_record_decision(cg, args).await,
         "tokensave_record_code_area" => memory::handle_record_code_area(cg, args).await,
         "tokensave_session_recall" => memory::handle_session_recall(cg, args).await,
+        "tokensave_knowledge" => knowledge::handle_knowledge(cg, args).await,
         _ => Err(TokenSaveError::Config {
             message: format!("unknown tool: {tool_name}"),
         }),
@@ -936,14 +939,15 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            88
+            90
         } else {
-            87
+            89
         };
         assert_eq!(tools.len(), expected_total);
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"tokensave_doc"));
+        assert!(tool_names.contains(&"tokensave_create_file"));
         assert!(tool_names.contains(&"tokensave_search"));
         assert!(tool_names.contains(&"tokensave_context"));
         assert!(tool_names.contains(&"tokensave_callers"));
@@ -1015,6 +1019,7 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_record_decision"));
         assert!(tool_names.contains(&"tokensave_record_code_area"));
         assert!(tool_names.contains(&"tokensave_session_recall"));
+        assert!(tool_names.contains(&"tokensave_knowledge"));
         assert!(tool_names.contains(&"tokensave_read"));
         assert!(tool_names.contains(&"tokensave_entities"));
         assert!(!tool_names.contains(&"tokensave_outline"));
@@ -1065,6 +1070,7 @@ mod tests {
             "tokensave_delete_symbol",
             "tokensave_replace_lines",
             "tokensave_rename",
+            "tokensave_create_file",
         ];
         for tool in &tools {
             let ann = tool

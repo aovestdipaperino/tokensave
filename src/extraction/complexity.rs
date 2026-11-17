@@ -1149,7 +1149,9 @@ pub static SWIFT_COMPLEXITY: ComplexityConfig = ComplexityConfig {
         "repeat_while_statement",
     ],
     return_types: &["control_transfer_statement"],
-    nesting_types: &["code_block"],
+    // tree-sitter-swift has no block node: every body (function, `if`,
+    // loop, closure) wraps its statements in a `statements` node.
+    nesting_types: &["statements"],
     unsafe_types: &[],
     unchecked_types: &["force_unwrap_expression"],
     unchecked_methods: &[],

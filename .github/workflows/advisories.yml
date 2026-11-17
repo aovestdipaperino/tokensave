@@ -1,0 +1,83 @@
+name: Security advisories
+
+# RustSec advisory check (#956): runs `cargo audit` against Cargo.lock.
+# GitHub runs scheduled workflows only from the default branch, so scheduled
+# and manual runs audit both `master` and `beta`. Push and pull request runs
+# audit the changed ref when its dependency set or the audit configuration
+# changes. Ignored advisories and the failure policy live in
+# .cargo/audit.toml, which local `cargo audit` runs also read.
+#
+# New advisories appear without any change to this repository, so this
+# workflow is kept out of `CI OK` in ci.yml: a new advisory must not block
+# unrelated pull requests.
+on:
+  schedule:
+    - cron: '41 5 * * *' # daily
+  push:
+    branches: [master, beta]
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '.cargo/audit.toml'
+      - '.github/workflows/advisories.yml'
+  pull_request:
+    branches: [master, beta]
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '.cargo/audit.toml'
+      - '.github/workflows/advisories.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: advisories-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: cargo audit (${{ matrix.ref }})
+    # Forks would otherwise audit the upstream branches on their own schedule.
+    if: github.event_name != 'schedule' || github.repository == 'aovestdipaperino/tokensave'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["master","beta"]' || format('["{0}"]', github.ref)) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      # Prebuilt binary from the official rustsec/rustsec release, so the job
+      # compiles nothing and needs no Rust toolchain.
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-audit@0.22.2
+      - name: Audit Cargo.lock
+        env:
+          AUDIT_REF: ${{ matrix.ref }}
+        # Calls the binary directly: `cargo audit` would go through the rustup
+        # proxy and install the toolchain pinned in rust-toolchain.toml.
+        run: |
+          set +e
+          cargo-audit audit 2>&1 | tee audit.txt
+          status=${PIPESTATUS[0]}
+          set -e
+          {
+            if [ "$status" -eq 0 ]; then
+              echo "### RustSec advisories: \`$AUDIT_REF\` passed"
+            else
+              echo "### RustSec advisories: \`$AUDIT_REF\` failed"
+            fi
+            echo
+            echo 'Policy and ignored advisories: `.cargo/audit.toml`.'
+            echo
+            echo '```text'
+            cat audit.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
