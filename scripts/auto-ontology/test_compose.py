@@ -15,13 +15,7 @@ class ComposeTest(unittest.TestCase):
     def test_launches_both_servers_in_the_current_project(self):
         with tempfile.TemporaryDirectory(prefix="ontology compose ") as temp:
             project = Path(temp)
-            claude = project / "claude"
-            claude.write_text(
-                f"#!{sys.executable}\nimport json, os, sys\n"
-                "print(json.dumps([os.getcwd(), sys.argv[1:]]))\nsys.exit(17)\n",
-                encoding="utf-8",
-            )
-            claude.chmod(0o700)
+            self.stub_agent(project / "claude")
             tokensave = project / "tokensave"
             tokensave.touch(mode=0o700)
             result = self.run_launcher("http://127.0.0.1:3003/mcp", project)
@@ -61,12 +55,49 @@ class ComposeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             result = self.run_launcher("https://catalog.example/mcp", Path(temp))
         self.assertEqual(result.returncode, 2)
-        self.assertIn("both claude and tokensave must be on PATH", result.stderr)
+        self.assertIn("codex was not found on PATH", result.stderr)
+
+    def test_falls_back_to_codex_and_prompts_for_catalog_calls(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            self.stub_agent(project / "codex")
+            tokensave = project / "tokensave"
+            tokensave.touch(mode=0o700)
+            result = self.run_launcher("https://catalog.example/mcp", project)
+
+        self.assertEqual(result.returncode, 17, result.stderr)
+        cwd, args = json.loads(result.stdout)
+        self.assertEqual(cwd, temp)
+        self.assertEqual(args[1], f'mcp_servers.tokensave={{command="{tokensave}", args=["serve"]}}')
+        self.assertEqual(args[3], 'mcp_servers.tokensave_ontology={url="https://catalog.example/mcp", '
+                         'default_tools_approval_mode="prompt", scopes=["openid"]}')
+        self.assertEqual(args[5], 'approvals_reviewer="user"')
+        self.assertIn("Wait for my first task", args[6])
+
+    def test_codex_login_uses_session_endpoint_without_launching_tokensave(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp)
+            self.stub_agent(project / "codex")
+            result = self.run_launcher("https://catalog.example/mcp", project, "--login")
+
+        self.assertEqual(result.returncode, 17, result.stderr)
+        _, args = json.loads(result.stdout)
+        self.assertIn('url="https://catalog.example/mcp"', args[1])
+        self.assertEqual(args[4:], ["mcp", "login", "tokensave_ontology"])
 
     @staticmethod
-    def run_launcher(url, directory):
+    def stub_agent(path):
+        path.write_text(
+            f"#!{sys.executable}\nimport json, os, sys\n"
+            "print(json.dumps([os.getcwd(), sys.argv[1:]]))\nsys.exit(17)\n",
+            encoding="utf-8",
+        )
+        path.chmod(0o700)
+
+    @staticmethod
+    def run_launcher(url, directory, *options):
         return subprocess.run(
-            [sys.executable, SCRIPT, "--url", url],
+            [sys.executable, SCRIPT, "--url", url, *options],
             cwd=directory,
             env={**os.environ, "PATH": str(directory)},
             capture_output=True,

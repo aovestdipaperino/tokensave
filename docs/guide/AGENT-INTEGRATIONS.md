@@ -155,13 +155,14 @@ This runs the normal `doctor` checks and adds a **Caveman compatibility** sectio
 
 Caveman's optional proxy or input compression can rewrite tool results after tokensave has returned them, and tokensave cannot prevent that. If you need exact results in a run, turn off lossy input compression with Caveman's own controls. `doctor --caveman` says so whenever a Caveman skill is found. The design notes and findings are in [Caveman compatibility](../CAVEMAN-COMPATIBILITY.md).
 
-## Using Auto Ontology with Claude Code
+## Using Auto Ontology with an agent
 
 The optional launcher in a TokenSave source checkout starts one interactive
-Claude Code session with both MCP servers. It uses local TokenSave stdio for
+Claude Code or Codex CLI session with both MCP servers. It uses local TokenSave stdio for
 symbols and source. Auto Ontology runs separately and serves the catalog over
-HTTP, with Claude Code handling OAuth. Install Python 3, `claude`, and
-`tokensave`, put both binaries on `PATH`, and run this from your indexed project.
+HTTP, with the selected client handling OAuth. Install Python 3 and put
+`tokensave` and either `claude` or `codex` on `PATH`. Run this from your
+indexed project.
 
 ```sh
 python3 /path/to/tokensave/scripts/auto-ontology/compose.py \
@@ -169,15 +170,22 @@ python3 /path/to/tokensave/scripts/auto-ontology/compose.py \
 ```
 
 Supply the Auto Ontology MCP endpoint, including `/mcp`. Use HTTPS for a remote
-server or HTTP for a loopback test server. In Claude Code, open `/mcp` and sign
-in under `auto-ontology`. For a mixed question, ask the agent to locate the
+server or HTTP for a loopback test server. The launcher prefers Claude Code
+when both clients are present. Pass `--agent codex` or `--agent claude` to select
+a client explicitly.
+
+- In Claude Code, open `/mcp` and sign in under `auto-ontology`.
+- For Codex CLI, run the same command with `--agent codex --login` once to sign
+  in, then start the session with `--agent codex`.
+
+For a mixed question, ask the agent to locate the
 implementation and explain the corresponding business term. The launcher
-provides routing instructions and configures Claude Code to ask before
+provides routing instructions and configures the client to ask before
 executing Auto Ontology tools. Review the arguments and approve any transfer
 of local source or metadata explicitly. Your agent's model provider and
 organization-managed settings still apply.
 
 The launcher's MCP settings apply to this session. It invokes TokenSave in the
-project you started from and passes the two server definitions directly to
-Claude Code. See the [interoperability evaluation](../AUTO-ONTOLOGY-EVALUATION.md)
+project you started from and passes the two server definitions directly to the
+client. See the [interoperability evaluation](../AUTO-ONTOLOGY-EVALUATION.md)
 for deployment requirements and the offline OKF workflow.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch an interactive Claude Code session with TokenSave and Auto Ontology."""
+"""Launch an interactive agent session with TokenSave and Auto Ontology."""
 import argparse
 import ipaddress
 import json
@@ -50,32 +50,67 @@ def endpoint(value):
     raise argparse.ArgumentTypeError(message)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", required=True, type=endpoint, help="Auto Ontology MCP endpoint")
-    args = parser.parse_args()
-
-    claude = shutil.which("claude")
-    tokensave = shutil.which("tokensave")
-    if claude is None or tokensave is None:
-        parser.error("both claude and tokensave must be on PATH")
-
+def claude_arguments(tokensave, url):
     config = {
         "mcpServers": {
             "tokensave": {"type": "stdio", "command": tokensave, "args": ["serve"]},
-            "auto-ontology": {"type": "http", "url": args.url},
+            "auto-ontology": {"type": "http", "url": url},
         }
     }
     permissions = {"permissions": {"ask": ["mcp__auto-ontology__*"]}}
+    return [
+        "--strict-mcp-config", "--mcp-config", json.dumps(config),
+        "--settings", json.dumps(permissions),
+        "--permission-mode", "default",
+        "--append-system-prompt", ROUTING,
+    ]
+
+
+def codex_arguments(tokensave, url, login):
+    endpoint = json.dumps(url, ensure_ascii=False)
+    remote = [
+        "-c", f'mcp_servers.tokensave_ontology={{url={endpoint}, '
+        'default_tools_approval_mode="prompt", scopes=["openid"]}',
+        "-c", 'approvals_reviewer="user"',
+    ]
+    if login:
+        return [*remote, "mcp", "login", "tokensave_ontology"]
+    command = json.dumps(tokensave, ensure_ascii=False)
+    return [
+        "-c", f'mcp_servers.tokensave={{command={command}, args=["serve"]}}',
+        *remote, ROUTING + "\nWait for my first task before calling either server.",
+    ]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--url", required=True, type=endpoint, help="Auto Ontology MCP endpoint")
+    parser.add_argument("--agent", choices=("claude", "codex"),
+                        help="use Claude Code or Codex CLI (detects either by default)")
+    parser.add_argument("--login", action="store_true", help="sign in to Auto Ontology via Codex")
+    args = parser.parse_args()
+
+    agent = args.agent
+    if agent is None:
+        agent = "codex" if args.login or not shutil.which("claude") else "claude"
+    if args.login and agent != "codex":
+        parser.error("sign in to Auto Ontology using /mcp inside Claude Code")
+
+    executable = shutil.which(agent)
+    if executable is None:
+        parser.error(f"{agent} was not found on PATH")
+    tokensave = shutil.which("tokensave")
+    if tokensave is None and not args.login:
+        parser.error("tokensave was not found on PATH")
+
+    if agent == "codex":
+        arguments = codex_arguments(tokensave, args.url, args.login)
+    else:
+        arguments = claude_arguments(tokensave, args.url)
     try:
-        os.execv(claude, [
-            claude, "--strict-mcp-config", "--mcp-config", json.dumps(config),
-            "--settings", json.dumps(permissions),
-            "--permission-mode", "default",
-            "--append-system-prompt", ROUTING,
-        ])
+        os.execv(executable, [executable, *arguments])
     except OSError as error:
-        parser.exit(1, f"cannot launch Claude Code: {error.strerror}\n")
+        parser.exit(1, f"cannot launch {agent}: {error.strerror}\n")
 
 
 if __name__ == "__main__":
