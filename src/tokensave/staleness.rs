@@ -282,6 +282,33 @@ impl TokenSave {
     ///    materialises the whole node graph at once (#306) that cost is
     ///    graph-proportional. A limit of `0` disables this third guard.
     pub async fn find_stale_files_bounded(&self) -> AutoSyncScope {
+        use crate::debug_log::{event, Level};
+        let scope = self.auto_sync_scope().await;
+        event(
+            Level::Debug,
+            "index",
+            "automatic_sync_scope",
+            || match &scope {
+                AutoSyncScope::BranchDrifted(_) => {
+                    serde_json::json!({ "decision": "branch_drift" })
+                }
+                AutoSyncScope::BorrowedIndex { .. } => {
+                    serde_json::json!({ "decision": "borrowed_index" })
+                }
+                AutoSyncScope::Uninitialized => serde_json::json!({ "decision": "uninitialized" }),
+                AutoSyncScope::TooManyStale { count, limit } => serde_json::json!({
+                    "decision": "over_budget", "stale": count, "limit": limit,
+                }),
+                AutoSyncScope::Sync(stale) => serde_json::json!({
+                    "decision": if stale.is_empty() { "up_to_date" } else { "sync" },
+                    "stale": stale.len(),
+                }),
+            },
+        );
+        scope
+    }
+
+    async fn auto_sync_scope(&self) -> AutoSyncScope {
         if let Some(drift) = self.branch_drift() {
             return AutoSyncScope::BranchDrifted(drift);
         }

@@ -19,6 +19,7 @@
 use libsql::params::IntoParams;
 use libsql::{Row, Rows};
 
+use crate::debug_log::{event, Level};
 use crate::profile::{self, DbOp, Span};
 
 use super::Database;
@@ -42,6 +43,7 @@ impl RowSource for Rows {
 /// the first row), which counts as success.
 pub(crate) struct ProfiledRows {
     rows: Rows,
+    op: DbOp,
     span: Option<Span>,
     read: u64,
 }
@@ -58,6 +60,7 @@ impl ProfiledRows {
                 Ok(None)
             }
             Err(e) => {
+                log_statement_failure(self.op, "iterate");
                 if let Some(span) = self.span.take() {
                     span.fail();
                 }
@@ -88,6 +91,15 @@ impl Drop for ProfiledRows {
     }
 }
 
+fn log_statement_failure(op: DbOp, phase: &'static str) {
+    event(
+        Level::Error,
+        "database",
+        "statement_failed",
+        || serde_json::json!({ "statement": op.name(), "phase": phase }),
+    );
+}
+
 impl Database {
     /// `conn().query(sql, params)`, measured under `op`.
     pub(crate) async fn profiled_query(
@@ -101,10 +113,12 @@ impl Database {
         match self.conn().query(sql, params).await {
             Ok(rows) => Ok(ProfiledRows {
                 rows,
+                op,
                 span: span.is_active().then_some(span),
                 read: 0,
             }),
             Err(e) => {
+                log_statement_failure(op, "query");
                 span.fail();
                 Err(e)
             }
@@ -127,6 +141,7 @@ impl Database {
                 Ok(affected)
             }
             Err(error) => {
+                log_statement_failure(op, "execute");
                 span.fail();
                 Err(error)
             }
@@ -145,6 +160,7 @@ impl Database {
                 Ok(())
             }
             Err(error) => {
+                log_statement_failure(op, "execute_batch");
                 span.fail();
                 Err(error)
             }

@@ -1,6 +1,7 @@
 //! Full and incremental indexing.
 use super::query::resolve_symbol_for_edit;
 use super::*;
+use crate::debug_log::{event, Level};
 use crate::profile::{IndexPhase, SyncPhase};
 
 const RAILS_ROUTE_REFERENCES_METADATA: &str = "rails_route_references_v3";
@@ -685,6 +686,12 @@ impl TokenSave {
         let scan_span = crate::profile::span(IndexPhase::Scan);
         let detection_before = crate::language_detection::statistics();
         let (files, skipped_extensions) = self.scan_files_diagnostics();
+        event(Level::Debug, "index", "full_scan", || {
+            serde_json::json!({
+                "selected": files.len(),
+                "unsupported": skipped_extensions.iter().map(|(_, count)| count).sum::<usize>(),
+            })
+        });
         let total = files.len();
         scan_span.finish();
         on_verbose(&format!(
@@ -1642,6 +1649,12 @@ impl TokenSave {
         let scan_span = crate::profile::span(SyncPhase::Scan);
         let detection_before = crate::language_detection::statistics();
         let (current_files, skipped_extensions) = self.scan_files_diagnostics();
+        event(Level::Debug, "index", "sync_scan", || {
+            serde_json::json!({
+                "selected": current_files.len(),
+                "unsupported": skipped_extensions.iter().map(|(_, count)| count).sum::<usize>(),
+            })
+        });
         if self.config.language_detection.enabled {
             let d = crate::language_detection::statistics() - detection_before;
             on_verbose(&format!("automatic language detection: {} examined, {} shebang, {} content, {} unsupported, {} cache hits, {:.3}ms (process-local counters)", d.examined, d.shebang, d.content, d.unsupported, d.cache_hits, d.micros as f64 / 1000.0));
@@ -1815,6 +1828,13 @@ impl TokenSave {
                 }
             }
         }
+        event(Level::Debug, "index", "sync_changes", || {
+            serde_json::json!({
+                "new": new_files.len(), "changed": stale.len(),
+                "removed": removed.len(), "metadata_only": mtime_only_changed.len(),
+                "read_failures": skipped.len(), "branch_transition": branch_transition,
+            })
+        });
         if branch_transition {
             let count = new_files.len() + stale.len() + removed.len();
             if self.max_auto_sync_files > 0 && count > self.max_auto_sync_files {

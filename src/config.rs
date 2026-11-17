@@ -283,13 +283,28 @@ fn default_max_auto_sync_files() -> usize {
 /// (`0`, `false`, `no`, `off`, or empty); absence falls back to `config_value`.
 /// This is the convention `TOKENSAVE_AUTO_TRACK` established.
 pub fn env_bool_override(var: &str, config_value: bool) -> bool {
-    match std::env::var(var) {
-        Ok(v) => !matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "no" | "off" | ""
+    let (value, source) = match std::env::var(var) {
+        Ok(v) => (
+            !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off" | ""
+            ),
+            "environment",
         ),
-        Err(_) => config_value,
-    }
+        Err(_) => (config_value, "configured_value"),
+    };
+    use crate::debug_log::{event, Level};
+    event(Level::Debug, "config", "boolean_setting", || match var {
+        "TOKENSAVE_AUTO_TRACK"
+        | "TOKENSAVE_REPORT_SAVINGS"
+        | "TOKENSAVE_AUTO_INIT"
+        | "TOKENSAVE_AUTO_GC"
+        | "TOKENSAVE_CAVEMAN_COMPATIBILITY" => {
+            serde_json::json!({ "setting": var, "source": source, "value": value })
+        }
+        _ => serde_json::json!({ "setting": "other", "source": source }),
+    });
+    value
 }
 
 impl Default for TokenSaveConfig {
@@ -436,10 +451,12 @@ pub fn load_config(project_root: &Path) -> Result<TokenSaveConfig> {
     let config_path = get_config_path(project_root);
 
     if !config_path.exists() {
-        return Ok(TokenSaveConfig {
+        let config = TokenSaveConfig {
             root_dir: project_root.to_string_lossy().to_string(),
             ..TokenSaveConfig::default()
-        });
+        };
+        log_config(&config, "defaults");
+        return Ok(config);
     }
 
     let contents = fs::read_to_string(&config_path).map_err(|e| TokenSaveError::Config {
@@ -459,8 +476,20 @@ pub fn load_config(project_root: &Path) -> Result<TokenSaveConfig> {
             ),
         })?;
     migrate_config(&mut config);
+    log_config(&config, "project_file");
 
     Ok(config)
+}
+
+fn log_config(config: &TokenSaveConfig, source: &'static str) {
+    use crate::debug_log::{event, Level};
+    event(Level::Debug, "config", "project_settings", || {
+        serde_json::json!({
+            "source": source,
+            "strict_tree": config.strict_tree,
+            "max_auto_sync_files": config.max_auto_sync_files,
+        })
+    });
 }
 
 /// The `cpu_usage` explicitly present in the project's config file, if any.

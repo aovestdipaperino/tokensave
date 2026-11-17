@@ -14,6 +14,55 @@ Checks: binary location, project index, global DB, user config, where project st
 
 Doctor also validates that each installed hook uses the correct tokensave subcommand and auto-repairs broken hooks.
 
+## Debug diagnostics
+
+Diagnostic events are off by default. Use `--debug` for one command or set
+`TOKENSAVE_LOG=debug` in the environment before starting an agent, so new
+TokenSave MCP servers and hooks inherit it. An explicit `--log-level` takes
+precedence over `--debug`, which takes precedence over `TOKENSAVE_LOG`. Levels
+are `off`, `error`, `warn`, `info`, `debug`, and `trace`. Use `trace` only for
+short captures that need per-file extraction outcomes. Unset the variable or
+set it to `off`, then restart the agent to turn logging off.
+
+For example, capture a sync or an MCP session from the project
+directory. Choose a file outside the indexed checkout if the capture will
+outlive the command.
+
+```bash
+tokensave --debug sync 2> /path/to/private/sync.stderr
+TOKENSAVE_LOG=debug tokensave serve 2> /path/to/private/mcp.stderr
+```
+
+For an agent-managed server, keep its normal stdio connection and use the
+agent's MCP stderr log. Stdout still carries the MCP JSON-RPC protocol.
+
+To reproduce a Claude-compatible Bash hook decision, run this from an indexed
+project with a known symbol and adjust the example to match the search:
+
+```bash
+printf '%s\n' '{"tool_name":"Bash","tool_input":{"command":"rg KnownSymbol src/lib.rs"}}' |
+  TOKENSAVE_LOG=debug tokensave hook-pre-tool-use 2> /path/to/private/hook.stderr
+```
+
+Look for `grep_check`, `grep_classification`, `grep_index_probe`, and
+`grep_decision` events. Together they show the recognized grep program, code
+target eligibility, pattern shape, index lookup result, and final redirect
+decision. The index probe also identifies failures that trigger the hook's
+fail-closed policy.
+
+Each diagnostic event is a JSON line with a Unix timestamp in milliseconds,
+severity, subsystem, operation, process ID, and request ID. Match an MCP request's
+events using the process and request IDs together. Process-level and background
+events use request ID `0`. Diagnostic fields include counts, flags, and outcomes.
+They omit raw commands, query text, branch names, paths, configuration secrets,
+source contents, MCP payloads, SQL text, and bound values.
+
+Before attaching logs to a GitHub bug report, extract the relevant diagnostic
+lines and review them. The full stderr capture also includes ordinary errors and
+status messages, which can contain local paths or input values. Share the
+sanitized excerpt, the TokenSave version, and a minimal reproduction with
+private inputs replaced.
+
 ## "tokensave not initialized"
 
 The `.tokensave/` directory doesn't exist in your project, or, with a base state directory set, the project has no state there yet.

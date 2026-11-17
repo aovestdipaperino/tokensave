@@ -103,6 +103,14 @@ pub(super) async fn handle_search(
     let path_include = parse_string_array(&args, "path_include");
     let path_exclude = parse_string_array(&args, "path_exclude");
 
+    use crate::debug_log::{event, Level};
+    event(Level::Debug, "search", "parameters", || {
+        serde_json::json!({
+            "limit": limit, "literal": literal, "ids": ids,
+            "include_filters": path_include.len(), "exclude_filters": path_exclude.len(),
+        })
+    });
+
     if literal {
         // Literal mode reads the project's files rather than its symbols, so
         // it has two options the ranked path does not need (#685): whether to

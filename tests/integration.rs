@@ -64,6 +64,7 @@ mod database_channel_test;
 mod db_query_test;
 mod db_test;
 mod dead_code_call_attribution_test;
+mod debug_log_test;
 mod derive_table_test;
 mod diagnose_test;
 mod diagnostics_test;

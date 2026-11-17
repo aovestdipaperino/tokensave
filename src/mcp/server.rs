@@ -1076,6 +1076,12 @@ impl McpServer {
         selection: &super::graph_scope::GraphSelection,
     ) -> JsonRpcResponse {
         let (kept, collapsed) = collapse_worktree_roots(selection.roots.clone());
+        crate::debug_log::event(
+            crate::debug_log::Level::Debug,
+            "mcp",
+            "graph_selected",
+            || json!({ "selection": "federated", "roots": kept.len(), "branch_requested": selection.branch.is_some() }),
+        );
         let branch = selection.branch.clone();
 
         let mut parts: Vec<(String, crate::mcp::tools::ToolResult)> = Vec::new();
@@ -2517,6 +2523,27 @@ impl McpServer {
         self: &Arc<Self>,
         request: &JsonRpcRequest,
     ) -> Option<JsonRpcResponse> {
+        crate::debug_log::request(self.dispatch_request(request), |result, elapsed_us| {
+            use crate::debug_log::{event, Level};
+            let success = result.as_ref().is_none_or(tool_call_succeeded);
+            event(if success { Level::Info } else { Level::Error }, "mcp", "request_finish", || {
+                let error_code = result.as_ref().and_then(|reply| reply.error.as_ref()).map(|error| error.code);
+                json!({ "method": diagnostic_method(&request.method), "success": success, "error_code": error_code, "elapsed_us": elapsed_us })
+            });
+        })
+        .await
+    }
+
+    async fn dispatch_request(
+        self: &Arc<Self>,
+        request: &JsonRpcRequest,
+    ) -> Option<JsonRpcResponse> {
+        crate::debug_log::event(
+            crate::debug_log::Level::Debug,
+            "mcp",
+            "request_start",
+            || json!({ "method": diagnostic_method(&request.method), "notification": request.is_notification() }),
+        );
         debug_assert!(
             !request.method.is_empty(),
             "handle_request called with empty method"
@@ -3060,7 +3087,21 @@ impl McpServer {
         // and misdirecting the diagnosis. Entry and dispatch are separate
         // lines so a tail ending in `tool call:` with no matching `dispatch:`
         // localises the hang to the pre-dispatch work.
-        eprintln!("[tokensave] tool call: {tool_name}");
+        let diagnostic_tool =
+            if tool_name == MORE_TOOL || crate::profile::tools::is_registered(tool_name) {
+                tool_name
+            } else {
+                "unknown"
+            };
+        eprintln!("[tokensave] tool call: {diagnostic_tool}");
+        crate::debug_log::event(crate::debug_log::Level::Debug, "mcp", "tool_start", || {
+            let args = params.get("arguments");
+            json!({
+                "tool": diagnostic_tool,
+                "graph_root_requested": args.and_then(|v| v.get("graph_root")).is_some(),
+                "graph_branch_requested": args.and_then(|v| v.get("graph_branch")).is_some(),
+            })
+        });
 
         let mut arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
@@ -3271,7 +3312,7 @@ impl McpServer {
             freshness.finish();
         }
 
-        eprintln!("[tokensave] dispatch: {tool_name}");
+        eprintln!("[tokensave] dispatch: {diagnostic_tool}");
 
         let server_stats = if selected.is_none() && tool_name == "tokensave_status" {
             Some(self.server_stats_json().await)
@@ -3297,6 +3338,18 @@ impl McpServer {
                 }
             }
         }
+        crate::debug_log::event(
+            crate::debug_log::Level::Debug,
+            "mcp",
+            "graph_selected",
+            || {
+                json!({
+                    "selection": if selected.is_some() { "explicit" } else { "session" },
+                    "branch_index": dispatch_graph.serving_branch().is_some(),
+                    "fallback": dispatch_graph.is_fallback(),
+                })
+            },
+        );
         let baseline = baseline_policy(tool_name, &arguments);
         let dispatch_outcome = handle_tool_call_with_session(
             dispatch_graph,
@@ -3847,6 +3900,22 @@ impl McpServer {
         }
 
         stats
+    }
+}
+
+fn diagnostic_method(method: &str) -> &str {
+    match method {
+        "initialize"
+        | "initialized"
+        | "notifications/initialized"
+        | "notifications/roots/list_changed"
+        | "tools/list"
+        | "tools/call"
+        | "resources/list"
+        | "resources/read"
+        | "ping"
+        | "logging/setLevel" => method,
+        _ => "unknown",
     }
 }
 

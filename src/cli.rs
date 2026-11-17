@@ -19,6 +19,13 @@ pub use tokensave::agents::GitHookMode;
     version
 )]
 pub struct Cli {
+    /// Emit structured debug diagnostics on stderr
+    #[arg(long, global = true)]
+    pub debug: bool,
+    /// Set stderr diagnostic verbosity (overrides --debug and TOKENSAVE_LOG)
+    #[arg(long, global = true, value_enum)]
+    pub log_level: Option<tokensave::debug_log::Level>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

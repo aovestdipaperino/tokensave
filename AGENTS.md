@@ -407,6 +407,7 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - Rust 1.100.0 pinned via `rust-toolchain.toml`.
 - `.cargo/config.toml` sets `CFLAGS`/`CXXFLAGS=-DNDEBUG` (disable C/C++ assertions in vendored grammars), isolates `core.hooksPath` for tests that create real git repos, and reserves an 8 MB main-thread stack on Windows MSVC.
 - Env-var policy: tokensave-owned variables must start with `TOKENSAVE_`; enforced by `tests/env_var_namespace_test.rs`. External (OS/Cargo/git/agent) vars need an explicit allowlist rationale. Never print env-var values (some carry auth material).
+- `TOKENSAVE_LOG` controls structured stderr diagnostics (off by default). `--log-level` and `--debug` override it. Keep fields allowlisted and review hook and MCP stdout isolation when adding events. See [Debug diagnostics](docs/guide/TROUBLESHOOTING.md#debug-diagnostics).
 - `TOKENSAVE_WORKER_TOKEN` — auth for the hidden `extract-worker` subcommand (256-bit token, also required as first 32 bytes on stdin). Direct invocation fails. `TOKENSAVE_DISABLE_SUBPROCESS=1` opts out of the worker pool.
 - `TOKENSAVE_DISABLE_GREP_HOOK=1` — opt out of the Claude PreToolUse grep guardrail (useful for headless/subagent dispatch).
 - `TOKENSAVE_AUTO_TRACK` — per-run override of the `auto_track` config field (truthy values enable; `0`/`false`/`no`/`off`/empty disable).

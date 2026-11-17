@@ -5,6 +5,7 @@ use std::sync::RwLock;
 
 use libsql::{Builder, Connection, Database as LibsqlDatabase};
 
+use crate::debug_log::{event, Level};
 use crate::errors::{Result, TokenSaveError};
 use crate::types::{Edge, Node};
 
@@ -88,6 +89,47 @@ pub struct Database {
     pub(super) write_lock: tokio::sync::Mutex<()>,
 }
 
+async fn connect_with_retry<T, F>(operation: &'static str, connect: impl Fn() -> F) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    event(
+        Level::Debug,
+        "database",
+        operation,
+        || serde_json::json!({ "status": "start" }),
+    );
+    let mut attempt = 1;
+    loop {
+        let result = connect().await;
+        if attempt < DB_CONNECT_MAX_ATTEMPTS
+            && result.as_ref().is_err_and(is_transient_connect_error)
+        {
+            event(
+                Level::Warn,
+                "database",
+                operation,
+                || serde_json::json!({ "status": "retry", "attempt": attempt }),
+            );
+            tokio::time::sleep(connect_retry_backoff(attempt)).await;
+            attempt += 1;
+            continue;
+        }
+        let (level, status) = if result.is_ok() {
+            (Level::Debug, "connected")
+        } else {
+            (Level::Error, "failed")
+        };
+        event(
+            level,
+            "database",
+            operation,
+            || serde_json::json!({ "status": status, "attempt": attempt }),
+        );
+        return result;
+    }
+}
+
 impl Database {
     /// Creates a new database at `db_path`, creating parent directories if needed.
     ///
@@ -103,17 +145,7 @@ impl Database {
             })?;
         }
 
-        let mut attempt = 1;
-        loop {
-            match Self::try_initialize(db_path).await {
-                Ok(result) => return Ok(result),
-                Err(e) if attempt < DB_CONNECT_MAX_ATTEMPTS && is_transient_connect_error(&e) => {
-                    tokio::time::sleep(connect_retry_backoff(attempt)).await;
-                    attempt += 1;
-                }
-                Err(e) => return Err(e),
-            }
-        }
+        connect_with_retry("initialize", || Self::try_initialize(db_path)).await
     }
 
     async fn try_initialize(db_path: &Path) -> Result<(Self, bool)> {
@@ -138,7 +170,18 @@ impl Database {
 
         super::compatibility::check(&conn, migrations::latest_version()).await?;
         Self::apply_pragmas(&conn, 0).await?;
-        migrations::create_schema(&conn).await?;
+        let schema = migrations::create_schema(&conn).await;
+        event(
+            if schema.is_ok() {
+                Level::Debug
+            } else {
+                Level::Error
+            },
+            "database",
+            "create_schema",
+            || serde_json::json!({ "success": schema.is_ok() }),
+        );
+        schema?;
 
         let database = Self {
             conn,
@@ -156,17 +199,7 @@ impl Database {
     /// Returns `(Self, migrated)` where `migrated` is `true` if schema
     /// migrations were applied during open.
     pub async fn open(db_path: &Path) -> Result<(Self, bool)> {
-        let mut attempt = 1;
-        loop {
-            match Self::try_open(db_path).await {
-                Ok(result) => return Ok(result),
-                Err(e) if attempt < DB_CONNECT_MAX_ATTEMPTS && is_transient_connect_error(&e) => {
-                    tokio::time::sleep(connect_retry_backoff(attempt)).await;
-                    attempt += 1;
-                }
-                Err(e) => return Err(e),
-            }
-        }
+        connect_with_retry("open", || Self::try_open(db_path)).await
     }
 
     async fn try_open(db_path: &Path) -> Result<(Self, bool)> {
@@ -188,7 +221,18 @@ impl Database {
         super::compatibility::check(&conn, migrations::latest_version()).await?;
         let file_size = std::fs::metadata(db_path).map_or(0, |m| m.len());
         Self::apply_pragmas(&conn, file_size).await?;
-        let migrated = migrations::migrate(&conn).await?;
+        let migrated = migrations::migrate(&conn).await;
+        event(
+            if migrated.is_ok() {
+                Level::Debug
+            } else {
+                Level::Error
+            },
+            "database",
+            "migrate",
+            || serde_json::json!({ "success": migrated.is_ok(), "applied": migrated.as_ref().ok() }),
+        );
+        let migrated = migrated?;
         purge_legacy_read_cache(&conn).await;
 
         let database = Self {
@@ -204,19 +248,7 @@ impl Database {
 
     /// Opens a current, checkpointed database without changing it.
     pub async fn open_read_only(db_path: &Path) -> Result<Self> {
-        let mut attempt = 1;
-        loop {
-            match Self::try_open_read_only(db_path).await {
-                Ok(database) => return Ok(database),
-                Err(error)
-                    if attempt < DB_CONNECT_MAX_ATTEMPTS && is_transient_connect_error(&error) =>
-                {
-                    tokio::time::sleep(connect_retry_backoff(attempt)).await;
-                    attempt += 1;
-                }
-                Err(error) => return Err(error),
-            }
-        }
+        connect_with_retry("open_read_only", || Self::try_open_read_only(db_path)).await
     }
 
     async fn try_open_read_only(db_path: &Path) -> Result<Self> {
