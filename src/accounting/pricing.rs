@@ -38,6 +38,9 @@ fn cache_path() -> Option<PathBuf> {
 }
 
 /// The embedded pricing table -- compiled into the binary as a fallback.
+///
+/// Used until the first `LiteLLM` refresh succeeds, and whenever the cached
+/// file is missing, so it must price the models the CLIs report today.
 fn embedded_table() -> HashMap<String, ModelPricing> {
     let mut m = HashMap::new();
 
@@ -97,7 +100,43 @@ fn embedded_table() -> HashMap<String, ModelPricing> {
         },
     );
 
+    // Exact Anthropic and OpenAI model ids from `llm-prices`, whose rows are
+    // read from each provider's pricing page and dated. The family prefixes
+    // above stay as the fallback for ids the table does not list.
+    for p in llm_prices::all() {
+        if !matches!(p.provider, "anthropic" | "openai") {
+            continue;
+        }
+        let (Some(input), Some(output)) = (p.input, p.output) else {
+            continue;
+        };
+        let pricing = ModelPricing {
+            input_per_mtok: input,
+            output_per_mtok: output,
+            cache_write_per_mtok: p.cache_write("5m").unwrap_or(0.0),
+            cache_read_per_mtok: p.cache_read.unwrap_or(0.0),
+        };
+        for id in std::iter::once(p.model).chain(p.aliases.iter().copied()) {
+            if !is_metered_model(id) {
+                continue;
+            }
+            m.insert(id.to_string(), pricing.clone());
+            // `claude-opus-4-1-20250805` is also reported as `claude-opus-4-1`.
+            if let Some(undated) = strip_snapshot_date(id) {
+                m.entry(undated.to_string())
+                    .or_insert_with(|| pricing.clone());
+            }
+        }
+    }
+
     m
+}
+
+/// `id` without a trailing `-YYYYMMDD` snapshot date, if it has one.
+fn strip_snapshot_date(id: &str) -> Option<&str> {
+    let (base, date) = id.rsplit_once('-')?;
+    (date.len() == 8 && date.starts_with("20") && date.bytes().all(|b| b.is_ascii_digit()))
+        .then_some(base)
 }
 
 /// Model families tokensave prices: Anthropic Claude plus the `OpenAI` families
@@ -440,6 +479,26 @@ mod tests {
     fn test_cost_of_turn_unknown_model() {
         let cost = cost_of_turn("unknown-model", 1_000_000, 100_000, 0, 0);
         assert!((cost - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn embedded_table_prices_current_models_at_list_price() {
+        // Offline (no cached LiteLLM file) these were unpriced, or priced at
+        // an older family's rate. USD per MTok from the providers' pages.
+        let table = embedded_table();
+        let rates = |model: &str| {
+            let p = lookup_in_table(&table, model).unwrap();
+            (p.input_per_mtok, p.output_per_mtok, p.cache_read_per_mtok)
+        };
+        assert_eq!(rates("claude-opus-5-5"), (4.0, 20.0, 0.20));
+        assert_eq!(rates("claude-sonnet-5-5-20990101"), (2.0, 10.0, 0.10));
+        assert_eq!(rates("claude-haiku-5-5"), (0.10, 0.50, 0.01));
+        assert_eq!(rates("claude-haiku-4-5"), (1.0, 5.0, 0.10));
+        assert_eq!(rates("claude-opus-4-1"), (15.0, 75.0, 1.50));
+        assert_eq!(rates("gpt-5.5"), (5.0, 30.0, 0.50));
+        assert_eq!(rates("gpt-5.4-mini"), (0.75, 4.50, 0.075));
+        let opus = lookup_in_table(&table, "claude-opus-5-5").unwrap();
+        assert!((opus.cache_write_per_mtok - 5.0).abs() < f64::EPSILON);
     }
 
     #[test]
