@@ -3,6 +3,8 @@
 Every `tokensave` command at a glance.
 
 ```bash
+tokensave --version                # Print the installed version
+tokensave --version --verbose      # Include build metadata
 tokensave init [path]              # Initialize a new project (full index); without a path, the git root
                                    # (a no-op inside an existing project)
 tokensave init --cpu-usage low     # Initialize with a fixed CPU profile (skip the benchmark)
@@ -56,6 +58,11 @@ tokensave okf import <dir> [--name N] [--replace] [--strict] [--json] [--project
 tokensave okf list [--json] [--project P]          # List imported bundles
 tokensave okf remove <name> [--project P]          # Remove an imported bundle
 ```
+
+Verbose version output includes the build commit, Cargo build profile, target
+triple and Rust compiler version. Values unavailable at build time are shown as
+`unknown`; source archives without Git metadata may not contain a commit. This
+command does not open or initialize a project database.
 
 See [Open Knowledge Format](OKF.md) for the `okf` commands, their findings, the export layout and imported knowledge.
 
