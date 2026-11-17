@@ -8,7 +8,6 @@ autotests = false
 description = "Code intelligence tool that builds a semantic knowledge graph from Rust, Go, Java, Scala, TypeScript, Python, C, C++, Kotlin, C#, Swift, and many more codebases"
 license = "MIT"
 repository = "https://github.com/aovestdipaperino/tokensave"
-homepage = "https://github.com/aovestdipaperino/tokensave"
 readme = "README.md"
 keywords = ["code-intelligence", "knowledge-graph", "mcp", "tree-sitter", "claude"]
 categories = ["development-tools", "command-line-utilities"]
@@ -138,16 +137,7 @@ libsql = { version = "0.9.30", default-features = false, features = ["core"] }
 tree-sitter = "0.26"
 tree-sitter-language = "0.1"
 tokensave-large-treesitters = { version = "0.9.0", git = "https://github.com/aovestdipaperino/tokensave-large-treesitters" }
-# Force tree-sitter-dart 0.2 — 0.1 fails to wrap top-level declarations
-# in `top_level_variable_declaration` / `function_declaration` nodes,
-# breaking the dart extractor and most dart_extraction_test cases.
-# medium-treesitters declares `tree-sitter-dart = "0.1"` which won't
-# pick up 0.2 via SemVer; pulling it directly here forces the lock file
-# to resolve to 0.2 for the whole workspace.
-tree-sitter-dart = "0.2"
 dekobon-tree-sitter-groovy = "0.2"
-ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
-ndarray = "0.17"
 clap = { version = "4.6", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -160,7 +150,6 @@ thiserror = "2"
 # Dated, source-cited Anthropic/OpenAI list prices for the offline pricing fallback.
 llm-prices = "1.3"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.11"
 glob = "0.3"
 walkdir = "2"
