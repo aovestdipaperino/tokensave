@@ -3761,12 +3761,12 @@ SELECT DISTINCT n1.file_path AS src_file, n2.file_path AS tgt_file FROM edges e 
 
 ### src/hooks.rs
 
-#### Q0302 — `any_symbol_indexed`
+#### Q0302 — `is_symbol_indexed`
 
-Source: [src/hooks.rs:412](../src/hooks.rs#L412).
+Source: [src/hooks.rs:410](../src/hooks.rs#L410).
 
 ```sql
-SELECT 1 FROM nodes WHERE LOWER(name) IN ({placeholders}) LIMIT 1
+SELECT 1 FROM nodes WHERE LOWER(name) = ? LIMIT 1
 ```
 
 ### src/mcp/tools/definitions.rs
@@ -11862,32 +11862,29 @@ Source: [src/graph/queries.rs:619](../src/graph/queries.rs#L619).
     }
 ```
 
-### `any_symbol_indexed` — src/hooks.rs:403
+### `is_symbol_indexed` — src/hooks.rs:401
 
-Source: [src/hooks.rs:403](../src/hooks.rs#L403).
+Source: [src/hooks.rs:401](../src/hooks.rs#L401).
 
 ```rust
-fn any_symbol_indexed(env: &HookEnv, symbols: &[String]) -> bool {
+fn is_symbol_indexed(env: &HookEnv, symbol: &str) -> bool {
     let Some(root) = env.project_root.as_deref() else {
         return true;
     };
-    if symbols.is_empty() {
+    let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
+    // Fail closed, like an index that cannot be opened (#940).
+    if crate::db::compatibility::check_wal_sidecar(&db_path).is_err() {
         return true;
     }
-    let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
-    let placeholders = vec!["?"; symbols.len()].join(",");
-    let sql = format!("SELECT 1 FROM nodes WHERE LOWER(name) IN ({placeholders}) LIMIT 1");
-    let params: Vec<libsql::Value> = symbols
-        .iter()
-        .map(|s| libsql::Value::Text(s.to_lowercase()))
-        .collect();
+    let sql = "SELECT 1 FROM nodes WHERE LOWER(name) = ? LIMIT 1";
+    let name = symbol.to_lowercase();
     let probe = async move {
         let db = libsql::Builder::new_local(&db_path)
             .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .build()
             .await?;
         let conn = db.connect()?;
-        let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+        let mut rows = conn.query(sql, libsql::params![name]).await?;
         Ok::<bool, libsql::Error>(rows.next().await?.is_some())
     };
     // The hook runs inside `#[tokio::main]`'s multi-thread runtime (main.rs),

@@ -3,8 +3,7 @@
 //! #648 listed command shapes that still let a symbol search through:
 //! `git grep` (which searches the working tree unless given a revision), a
 //! search batched behind a read-only command such as `sed -n …p` or another
-//! grep, an alternation where only one branch is symbol-shaped, a call-site
-//! pattern with something after the `(`, and a search piped into a read-only
+//! grep, a call-site pattern with something after the `(`, and a search piped into a read-only
 //! filter such as `head`.
 //!
 //! #649: the denial pointed usages at `tokensave_callers_for`, which takes node
@@ -84,7 +83,6 @@ fn shapes_from_648_are_denied() {
         "git grep -n MySymbol -- src",
         "sed -n 1,20p notes.md; grep -rn MySymbol src",
         r#"grep -n "a b" x.ts; grep -rn MySymbol src --include=*.ts"#,
-        r#"grep -n "MySymbol\|throw new Error" src/x.ts"#,
         r#"grep -n "MySymbol(name" src/x.ts"#,
     ] {
         assert!(is_blocked(command, &root), "must be denied: {command}");
@@ -174,7 +172,6 @@ fn denial_never_points_at_callers_for() {
         "grep -rn MySymbol src",
         r#"grep -rn "\bMySymbol\b" src"#,
         "grep -rn 'MySymbol(' src",
-        "grep -rn 'Alpha|Beta' src",
         "grep -rn 'class MySymbol' src",
     ] {
         let r = reason(command, &root);
@@ -207,10 +204,6 @@ fn denial_names_the_symbol_from_each_shape() {
     for (command, symbol) in [
         ("git grep -n MySymbol", "MySymbol"),
         (r#"grep -n "MySymbol(name" src/x.ts"#, "MySymbol"),
-        (
-            r#"grep -n "MySymbol\|throw new Error" src/x.ts"#,
-            "MySymbol",
-        ),
         ("sed -n 1,20p notes.md; grep -rn OtherSym src", "OtherSym"),
         ("grep -rn 'def my_symbol' src", "my_symbol"),
     ] {
@@ -221,11 +214,7 @@ fn denial_names_the_symbol_from_each_shape() {
 }
 
 #[test]
-fn alternation_denial_lists_one_call_per_name() {
+fn alternation_of_symbols_passes_through() {
     let (_tmp, root) = project();
-    let r = reason("grep -rnE 'Alpha|Beta' src", &root);
-    for name in ["Alpha", "Beta"] {
-        let call = format!(r#"tokensave_search {{"query": "{name}"}}"#);
-        assert!(r.contains(&call), "expected `{call}` in {r}");
-    }
+    assert!(decision("grep -rnE 'Alpha|Beta' src", &root).is_empty());
 }
