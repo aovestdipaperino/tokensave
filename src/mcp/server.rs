@@ -3026,6 +3026,10 @@ impl McpServer {
         id: Value,
         params: Option<&Value>,
     ) -> JsonRpcResponse {
+        let selected = params
+            .and_then(|p| p.get("arguments"))
+            .is_some_and(|a| a.get("graph_root").is_some() || a.get("graph_branch").is_some());
+        let _suppression = crate::profile::suppress_selected_call(selected);
         // `handle_tools_call` builds a future of about 56 KiB. Boxing it here
         // keeps that state on the heap for the length of one tool call instead
         // of inlining it into every caller's future, including the serve loop.
