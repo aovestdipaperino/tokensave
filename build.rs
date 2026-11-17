@@ -1,6 +1,57 @@
-use std::{fs, path::Path};
+use std::{fs, path::Path, process::Command};
+
+fn command_output(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (!value.is_empty() && !value.contains(['\n', '\r'])).then_some(value)
+}
+
+fn build_metadata() {
+    // Do not pick up an unrelated parent repository for unpacked source archives.
+    let commit = if Path::new(".git").exists() {
+        let current_ref = command_output("git", &["symbolic-ref", "-q", "HEAD"]);
+        for name in [Some("HEAD"), Some("packed-refs"), current_ref.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(path) = command_output("git", &["rev-parse", "--git-path", name]) {
+                println!("cargo::rerun-if-changed={path}");
+            }
+        }
+        command_output("git", &["rev-parse", "--short=12", "HEAD"])
+            .filter(|sha| sha.len() >= 7 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+    } else {
+        None
+    };
+    let rustc = std::env::var_os("RUSTC")
+        .and_then(|path| Command::new(path).arg("--version").output().ok())
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty() && !value.contains(['\n', '\r']));
+    println!(
+        "cargo::rustc-env=TOKENSAVE_BUILD_COMMIT={}",
+        commit.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "cargo::rustc-env=TOKENSAVE_BUILD_RUSTC={}",
+        rustc.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "cargo::rustc-env=TOKENSAVE_BUILD_TARGET={}",
+        std::env::var("TARGET").unwrap_or_else(|_| "unknown".into())
+    );
+    println!(
+        "cargo::rustc-env=TOKENSAVE_BUILD_PROFILE={}",
+        std::env::var("PROFILE").unwrap_or_else(|_| "unknown".into())
+    );
+}
 
 fn main() {
+    build_metadata();
     let out_path = Path::new("src/resources/logo.ansi");
     let logo_bytes = include_bytes!("src/resources/logo.png");
     let ansi = logo_art::image_to_ansi(logo_bytes, 90);

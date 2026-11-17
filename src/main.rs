@@ -173,6 +173,21 @@ fn format_agent_row(a: &tokensave::global_db::AgentCostSummary) -> String {
 
 #[tokio::main]
 async fn main() {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.len() == 2
+        && args.iter().any(|arg| arg == "--version")
+        && args.iter().any(|arg| arg == "--verbose")
+    {
+        println!(
+            "tokensave {}\ncommit: {}\nbuild-profile: {}\ntarget: {}\nrustc: {}",
+            env!("CARGO_PKG_VERSION"),
+            env!("TOKENSAVE_BUILD_COMMIT"),
+            env!("TOKENSAVE_BUILD_PROFILE"),
+            env!("TOKENSAVE_BUILD_TARGET"),
+            env!("TOKENSAVE_BUILD_RUSTC"),
+        );
+        return;
+    }
     let cli = Cli::parse();
     if let Err(e) = run(cli).await {
         eprintln!("Error: {}", e);
