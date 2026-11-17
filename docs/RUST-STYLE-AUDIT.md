@@ -66,16 +66,17 @@ reported separately from that static review.
 
 | Scope | Local branch | Status and dependencies |
 | --- | --- | --- |
-| Context | [#1027](https://github.com/aovestdipaperino/tokensave/pull/1027), `refactor/context-style-audit` | Manual follow-up implemented; current validation below. |
-| Graph | [#1028](https://github.com/aovestdipaperino/tokensave/pull/1028), `refactor/graph-style-audit` | Commit `dcffca46` in `/tmp/tokensave-graph-style`; 12 library tests and 59 integration tests passed (one manual benchmark ignored); formatting, Clippy and wiki checks passed. Independent of context. |
-| Resolution | [#1029](https://github.com/aovestdipaperino/tokensave/pull/1029), `refactor/resolution-style-audit` | Commit `7a171c0e` in `/tmp/tokensave-resolution-style`; 6 library, 90 scoped lite integration, and 87 Ruby/GDScript-enabled integration tests passed; formatting, Clippy and wiki checks passed. Independent of context. |
+| Context | [#1027](https://github.com/aovestdipaperino/tokensave/pull/1027), `refactor/context-style-audit` | Merged into `master`; validation below. |
+| Graph | [#1028](https://github.com/aovestdipaperino/tokensave/pull/1028), `refactor/graph-style-audit` | Merged into `master`; 12 library tests and 59 integration tests passed (one manual benchmark ignored); formatting, Clippy and wiki checks passed. Independent of context. |
+| Resolution | [#1029](https://github.com/aovestdipaperino/tokensave/pull/1029), `refactor/resolution-style-audit` | Merged into `master`; 6 library, 90 scoped lite integration, and 87 Ruby/GDScript-enabled integration tests passed; formatting, Clippy and wiki checks passed. Independent of context. |
 
 The graph review in [#1028](https://github.com/aovestdipaperino/tokensave/pull/1028)
 merged into `master` and identified a separate defect in
 [#1026](https://github.com/aovestdipaperino/tokensave/issues/1026). The pinned-Rust
 reproduction returned `(0.0, 5)` for four cyclic edges plus one one-way bridge.
-The independent fix on `fix/acyclicity-scc-edges` retains component IDs and counts
-only edges within a single multi-node strongly connected component. Its regression
+The independent fix in [#1045](https://github.com/aovestdipaperino/tokensave/pull/1045)
+retains component IDs and counts only edges within a single multi-node strongly
+connected component. Its regression
 expects four cyclic edges and a score of approximately 0.2. A second test covers
 self-loops in singleton and multi-node components. Both pass with pinned Rust
 1.100.0. Merge and release of the fix are pending.
