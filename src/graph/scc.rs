@@ -15,6 +15,13 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hash};
 
+/// One suspended DFS visit and its progress through a neighbor snapshot.
+struct DfsFrame<N> {
+    node: N,
+    neighbors: Vec<N>,
+    next_neighbor: usize,
+}
+
 /// Computes the strongly-connected components of the directed graph
 /// described by `adj`. Every node that appears as a key OR as a value
 /// becomes part of exactly one SCC in the result.
@@ -22,7 +29,6 @@ use std::hash::{BuildHasher, Hash};
 /// SCCs are emitted in reverse-topological order over the condensation:
 /// if SCC `A` depends on SCC `B`, `B` appears in the result before `A`.
 /// This matches Tarjan's natural emission order.
-#[allow(clippy::implicit_hasher)]
 pub fn tarjan_scc<N>(
     adj: &HashMap<N, HashSet<N, impl BuildHasher>, impl BuildHasher>,
 ) -> Vec<Vec<N>>
@@ -52,15 +58,14 @@ where
     let mut sccs: Vec<Vec<N>> = Vec::new();
     let mut next_index: usize = 0;
 
-    // Iterative DFS using an explicit call stack of (node, neighbor_iter, neighbor_index).
+    // Iterative DFS using an explicit call stack of visits.
     // After visiting each neighbor we may need to update lowlink, so each
     // frame remembers its own progress through its neighbor list.
     for root in &all_nodes {
         if index_of.contains_key(root) {
             continue;
         }
-        // Frame: (node, neighbors snapshot, current neighbor index).
-        let mut work: Vec<(N, Vec<N>, usize)> = Vec::new();
+        let mut work: Vec<DfsFrame<N>> = Vec::new();
         let root_neighbors: Vec<N> = adj
             .get(root)
             .map(|s| s.iter().cloned().collect())
@@ -70,7 +75,11 @@ where
         next_index += 1;
         stack.push(root.clone());
         on_stack.insert(root.clone());
-        work.push((root.clone(), root_neighbors, 0));
+        work.push(DfsFrame {
+            node: root.clone(),
+            neighbors: root_neighbors,
+            next_neighbor: 0,
+        });
 
         // Peek the top frame each iteration instead of cloning the whole
         // tuple — earlier revisions used `work.last_mut().cloned()` which
@@ -79,17 +88,20 @@ where
         // body needs to `work.push(...)` while `frame` is still borrowed,
         // which only works because NLL drops the `frame` reborrow early —
         // a `while let` binding would keep it alive for the whole body.
-        #[allow(clippy::while_let_loop)]
+        #[allow(
+            clippy::while_let_loop,
+            reason = "the mutable frame borrow must end before pushing a child visit"
+        )]
         loop {
             let Some(frame) = work.last_mut() else { break };
-            let idx = frame.2;
-            if idx >= frame.1.len() {
+            let idx = frame.next_neighbor;
+            if idx >= frame.neighbors.len() {
                 // Finished this node — pop frame, update parent's lowlink,
                 // and emit an SCC if this node is a Tarjan root.
                 let popped = work
                     .pop()
                     .unwrap_or_else(|| unreachable!("work stack non-empty"));
-                let node = popped.0;
+                let node = popped.node;
                 let node_ll = *lowlink.get(&node).unwrap_or(&0);
                 let node_idx = *index_of.get(&node).unwrap_or(&0);
                 if node_ll == node_idx {
@@ -105,17 +117,17 @@ where
                     sccs.push(component);
                 }
                 if let Some(parent_frame) = work.last() {
-                    let parent_ll = *lowlink.get(&parent_frame.0).unwrap_or(&0);
-                    lowlink.insert(parent_frame.0.clone(), parent_ll.min(node_ll));
+                    let parent_ll = *lowlink.get(&parent_frame.node).unwrap_or(&0);
+                    lowlink.insert(parent_frame.node.clone(), parent_ll.min(node_ll));
                 }
                 continue;
             }
 
             // Clone only the two values we actually need before mutating
             // `work` (push invalidates `frame`).
-            let next = frame.1[idx].clone();
-            let node = frame.0.clone();
-            frame.2 += 1;
+            let next = frame.neighbors[idx].clone();
+            let node = frame.node.clone();
+            frame.next_neighbor += 1;
 
             if let Some(&next_index_val) = index_of.get(&next) {
                 if on_stack.contains(&next) {
@@ -132,7 +144,11 @@ where
                 next_index += 1;
                 stack.push(next.clone());
                 on_stack.insert(next.clone());
-                work.push((next, child_neighbors, 0));
+                work.push(DfsFrame {
+                    node: next,
+                    neighbors: child_neighbors,
+                    next_neighbor: 0,
+                });
             }
         }
     }
@@ -144,8 +160,10 @@ where
 /// is only cyclic if it has an explicit self-edge in `adj`; otherwise
 /// it's just an isolated vertex. Components of size >= 2 are always
 /// cyclic by Tarjan's definition.
-#[allow(clippy::implicit_hasher)]
-pub fn is_cyclic_scc<N>(scc: &[N], adj: &HashMap<N, HashSet<N>>) -> bool
+pub fn is_cyclic_scc<N>(
+    scc: &[N],
+    adj: &HashMap<N, HashSet<N, impl BuildHasher>, impl BuildHasher>,
+) -> bool
 where
     N: Eq + Hash,
 {
@@ -161,7 +179,10 @@ where
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests assert graph invariants and fail immediately when they are violated"
+)]
 mod tests {
     use super::*;
 
@@ -171,7 +192,10 @@ mod tests {
 
     #[test]
     fn custom_hashers_preserve_explicit_node_type_calls() {
-        type Hasher = std::hash::BuildHasherDefault<std::collections::hash_map::DefaultHasher>;
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::BuildHasherDefault;
+
+        type Hasher = BuildHasherDefault<DefaultHasher>;
         let mut adj: HashMap<String, HashSet<String, Hasher>, Hasher> = HashMap::default();
         adj.entry("a".to_string())
             .or_default()

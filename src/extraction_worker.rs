@@ -150,9 +150,9 @@ fn process_request(registry: &LanguageRegistry, req: &ExtractRequest) -> Extract
     let mut result = extractor.extract(&req.file_path, &source);
     result.sanitize();
     let content_hash = sync::content_hash(&source);
-    let size = source.len() as u64;
-    let mtime =
-        sync::file_stat(&abs_path).map_or_else(crate::tokensave::current_timestamp, |(m, _)| m);
+    // Match the disk metadata used by the automatic sync pre-filter.
+    let (mtime, size) = sync::file_stat(&abs_path)
+        .unwrap_or_else(|| (crate::tokensave::current_timestamp(), source.len() as u64));
 
     ExtractResponse {
         file_path: req.file_path.clone(),
@@ -352,6 +352,21 @@ fn worker_thread<F>(
         };
 
         let outcome = round_trip_with_timeout(&mut worker, &req, per_file_timeout);
+        use crate::debug_log::{event, Level};
+        let (level, status) = match &outcome {
+            RoundTripOutcome::Ok(response) if response.data.is_some() => {
+                (Level::Trace, "extracted")
+            }
+            RoundTripOutcome::Ok(_) => (Level::Trace, "no_extraction"),
+            RoundTripOutcome::Timeout => (Level::Warn, "timeout"),
+            RoundTripOutcome::Err(_) => (Level::Warn, "worker_error"),
+        };
+        event(
+            level,
+            "index",
+            "extract_file",
+            || serde_json::json!({ "batch_position": idx, "status": status }),
+        );
         let n = progress_count.fetch_add(1, Ordering::Relaxed) + 1;
         on_progress(n, total, &file_path);
 
@@ -559,6 +574,26 @@ fn slices_eq(a: &[u8], b: &[u8]) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bom_extraction_records_disk_size() {
+        let dir = tempfile::tempdir().expect("temporary project");
+        let source = b"\xef\xbb\xbfpub fn worker_symbol() {}\n";
+        std::fs::write(dir.path().join("bom.rs"), source).expect("write BOM source");
+        let response = process_request(
+            &LanguageRegistry::new(),
+            &ExtractRequest {
+                project_root: dir.path().to_path_buf(),
+                file_path: "bom.rs".to_string(),
+            },
+        );
+        let data = response.data.expect("Rust extraction succeeds");
+        assert_eq!(data.size, source.len() as u64);
+        assert_eq!(
+            data.content_hash,
+            sync::content_hash("pub fn worker_symbol() {}\n")
+        );
+    }
 
     #[test]
     fn message_round_trips() {

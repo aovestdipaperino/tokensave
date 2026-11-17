@@ -301,7 +301,9 @@ fn init_falls_back_to_the_default_when_the_result_cannot_be_saved() {
         text.contains("CPU usage profile: balanced (built-in default)"),
         "{text}"
     );
-    assert!(dir.path().join(".tokensave").join("tokensave.db").exists());
+    assert!(tokensave::config::get_tokensave_dir(dir.path())
+        .join("tokensave.db")
+        .exists());
 }
 
 #[test]

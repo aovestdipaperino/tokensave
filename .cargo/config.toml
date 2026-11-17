@@ -21,6 +21,12 @@ CXXFLAGS = { value = "-DNDEBUG", force = false }
 # so a test that wants the maintenance path can still ask for it.
 TOKENSAVE_SKIP_AGENT_MAINTENANCE = { value = "1", force = false }
 
+# Project state stays under each test project's root even when the developer
+# has set `state_dir` in ~/.tokensave/config.toml (#919): an empty
+# TOKENSAVE_STATE_DIR selects the default layout. `force = false` so a test
+# (or a developer) that sets the variable explicitly still gets relocation.
+TOKENSAVE_STATE_DIR = { value = "", force = false }
+
 # Test fixtures create real Git repositories and must not inherit developer
 # hooks such as the global hooks installed by `tokensave install` (#381).
 # This command-scope Git setting is inherited by every Git child process while

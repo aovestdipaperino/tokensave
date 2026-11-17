@@ -763,7 +763,7 @@ async fn read_only_open_rejects_old_schema_without_migration_or_byte_changes() {
 }
 
 #[tokio::test]
-async fn read_only_open_rejects_newer_schema_as_config_error_without_byte_changes() {
+async fn read_only_open_rejects_newer_schema_without_byte_changes() {
     let dir = TempDir::new().expect("failed to create temp dir");
     let db_path = dir.path().join("read_only_newer.db");
     let (db, _) = Database::initialize(&db_path)
@@ -790,7 +790,8 @@ async fn read_only_open_rejects_newer_schema_as_config_error_without_byte_change
     assert!(
         matches!(
             &error,
-            TokenSaveError::Config { message } if message.contains("schema version")
+            TokenSaveError::Database { operation, message }
+                if operation == tokensave::db::compatibility::OPERATION && message.contains("schema version")
         ),
         "unexpected schema error: {error}"
     );
@@ -1602,6 +1603,40 @@ async fn test_migrate_v18_is_idempotent() {
     );
 }
 
+/// V19 adds and backfills the indexed trailing reference name used by
+/// labelled caller discovery (#687).
+#[tokio::test]
+async fn test_migrate_v19_adds_and_backfills_reference_leaf() {
+    let (_dir, conn, _db) = create_raw_db().await;
+    create_schema(&conn).await.expect("create_schema");
+    conn.execute_batch(
+        "DROP INDEX idx_unresolved_refs_reference_leaf;
+         ALTER TABLE unresolved_refs DROP COLUMN reference_leaf;",
+    )
+    .await
+    .expect("simulate v18 unresolved_refs");
+    insert_node_pair(&conn).await;
+    conn.execute(
+        "INSERT INTO unresolved_refs
+         (from_node_id, reference_name, reference_kind, line, col, file_path)
+         VALUES ('a', 'receiver::run', 'calls', 7, 3, 'src/lib.rs')",
+        (),
+    )
+    .await
+    .expect("insert v18 reference");
+    set_user_version(&conn, 18).await;
+
+    assert!(migrate(&conn).await.expect("v19 migration"));
+    assert_eq!(get_user_version(&conn).await, latest_version());
+    assert!(index_exists(&conn, "idx_unresolved_refs_reference_leaf").await);
+    let mut rows = conn
+        .query("SELECT reference_leaf FROM unresolved_refs", ())
+        .await
+        .expect("select reference leaf");
+    let row = rows.next().await.expect("row").expect("one reference");
+    assert_eq!(row.get::<String>(0).expect("reference leaf"), "run");
+}
+
 /// A failed migration names the way out, and `sync --force`'s open rebuilds
 /// the database instead of failing the same way again.
 #[tokio::test]
@@ -1618,7 +1653,7 @@ async fn test_failed_migration_is_recoverable_by_a_forced_rebuild() {
     drop(cg);
 
     // Make v18 fail: a legacy column that a view depends on cannot be dropped.
-    let db_path = dir.path().join(".tokensave").join("tokensave.db");
+    let db_path = tokensave::config::get_tokensave_dir(dir.path()).join("tokensave.db");
     {
         let db = Builder::new_local(&db_path).build().await.expect("db");
         let conn = db.connect().expect("conn");
@@ -1656,7 +1691,7 @@ async fn test_forced_rebuild_is_refused_while_the_sync_lock_is_held() {
     cg.index_all().await.expect("index");
     drop(cg);
 
-    let db_path = dir.path().join(".tokensave").join("tokensave.db");
+    let db_path = tokensave::config::get_tokensave_dir(dir.path()).join("tokensave.db");
     {
         let db = Builder::new_local(&db_path).build().await.expect("db");
         let conn = db.connect().expect("conn");
@@ -1672,7 +1707,7 @@ async fn test_forced_rebuild_is_refused_while_the_sync_lock_is_held() {
     let before = std::fs::read(&db_path).expect("read db");
 
     // A live process (this one) holds the sync lock.
-    let lock = dir.path().join(".tokensave").join("sync.lock");
+    let lock = tokensave::config::get_tokensave_dir(dir.path()).join("sync.lock");
     std::fs::write(&lock, std::process::id().to_string()).expect("write lock");
 
     let err = match TokenSave::open_rebuilding_failed_migration(dir.path()).await {

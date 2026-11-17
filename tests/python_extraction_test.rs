@@ -1,6 +1,6 @@
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::PythonExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, NodeKind, Visibility};
 
 #[test]
 fn test_py_file_node_is_root() {

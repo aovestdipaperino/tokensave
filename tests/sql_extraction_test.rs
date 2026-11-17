@@ -2,7 +2,7 @@
 
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::SqlExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, NodeKind};
 
 #[test]
 fn test_sql_file_node() {

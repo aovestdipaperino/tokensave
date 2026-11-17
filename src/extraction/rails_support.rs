@@ -125,6 +125,8 @@ pub(crate) fn parse_route_target(name: &str) -> Option<RouteTarget<'_>> {
 }
 
 impl RouteTarget<'_> {
+    /// Formats the target back into its `[~][::]Const#action` reference name.
+    #[cfg(any(test, feature = "lang-ruby"))]
     pub(crate) fn format(&self) -> String {
         format!(
             "{}{}{}#{}",

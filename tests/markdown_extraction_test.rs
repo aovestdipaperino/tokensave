@@ -2,7 +2,7 @@
 
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::MarkdownExtractor;
-use tokensave::types::*;
+use tokensave::types::{generate_node_id, EdgeKind, NodeKind};
 
 #[test]
 fn test_markdown_file_node_is_root() {

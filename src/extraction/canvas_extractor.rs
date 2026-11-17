@@ -274,7 +274,10 @@ impl CanvasExtractor {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is a separate field of the node being emitted"
+    )]
     fn make_node(
         id: String,
         kind: NodeKind,

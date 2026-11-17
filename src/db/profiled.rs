@@ -19,6 +19,7 @@
 use libsql::params::IntoParams;
 use libsql::{Row, Rows};
 
+use crate::debug_log::{event, Level};
 use crate::profile::{self, DbOp, Span};
 
 use super::Database;
@@ -42,6 +43,7 @@ impl RowSource for Rows {
 /// the first row), which counts as success.
 pub(crate) struct ProfiledRows {
     rows: Rows,
+    op: DbOp,
     span: Option<Span>,
     read: u64,
 }
@@ -58,6 +60,7 @@ impl ProfiledRows {
                 Ok(None)
             }
             Err(e) => {
+                log_statement_failure(self.op, "iterate");
                 if let Some(span) = self.span.take() {
                     span.fail();
                 }
@@ -88,6 +91,15 @@ impl Drop for ProfiledRows {
     }
 }
 
+fn log_statement_failure(op: DbOp, phase: &'static str) {
+    event(
+        Level::Error,
+        "database",
+        "statement_failed",
+        || serde_json::json!({ "statement": op.name(), "phase": phase }),
+    );
+}
+
 impl Database {
     /// `conn().query(sql, params)`, measured under `op`.
     pub(crate) async fn profiled_query(
@@ -96,16 +108,61 @@ impl Database {
         sql: &str,
         params: impl IntoParams,
     ) -> libsql::Result<ProfiledRows> {
-        let span = profile::span(op);
+        let mut span = profile::span(op);
+        span.mark_cancellable();
         match self.conn().query(sql, params).await {
             Ok(rows) => Ok(ProfiledRows {
                 rows,
+                op,
                 span: span.is_active().then_some(span),
                 read: 0,
             }),
             Err(e) => {
+                log_statement_failure(op, "query");
                 span.fail();
                 Err(e)
+            }
+        }
+    }
+
+    /// `conn().execute(sql, params)`, measured under `op`.
+    pub(crate) async fn profiled_execute(
+        &self,
+        op: DbOp,
+        sql: &str,
+        params: impl IntoParams,
+    ) -> libsql::Result<u64> {
+        let mut span = profile::span(op);
+        span.mark_cancellable();
+        match self.conn().execute(sql, params).await {
+            Ok(affected) => {
+                span.add_rows(0, affected);
+                span.finish();
+                Ok(affected)
+            }
+            Err(error) => {
+                log_statement_failure(op, "execute");
+                span.fail();
+                Err(error)
+            }
+        }
+    }
+
+    /// `conn().execute_batch(sql)`, measured under `op`.
+    pub(crate) async fn profiled_execute_batch(&self, op: DbOp, sql: &str) -> libsql::Result<()> {
+        let mut span = profile::span(op);
+        span.mark_cancellable();
+        match self.conn().execute_batch(sql).await {
+            // The batch's rows are not needed; callers only run statements
+            // such as `BEGIN`.
+            Ok(_rows) => {
+                span.finish();
+                Ok(())
+            }
+            Err(error) => {
+                log_statement_failure(op, "execute_batch");
+                span.fail();
+                Err(error)
             }
         }
     }
@@ -113,7 +170,8 @@ impl Database {
     /// Acquires the write lock (#563), measuring the wait as
     /// [`DbOp::WriteLockWait`].
     pub(crate) async fn lock_writes(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        let span = profile::span(DbOp::WriteLockWait);
+        let mut span = profile::span(DbOp::WriteLockWait);
+        span.mark_cancellable();
         let guard = self.write_lock.lock().await;
         span.finish();
         guard
@@ -180,6 +238,23 @@ mod tests {
         .await;
         assert!(s.errors >= 1);
         assert_eq!(s.histogram.count(), s.count);
+    }
+
+    #[tokio::test]
+    async fn execute_records_affected_rows() {
+        let (_dir, db) = temp_db().await;
+        let s = recorded(DbOp::RecordDecision, async {
+            db.profiled_execute(
+                DbOp::RecordDecision,
+                "INSERT INTO metadata(key, value) VALUES ('profiled-execute', '1')",
+                (),
+            )
+            .await
+            .unwrap();
+        })
+        .await;
+        assert!(s.count >= 1);
+        assert!(s.rows_affected >= 1);
     }
 
     #[tokio::test]

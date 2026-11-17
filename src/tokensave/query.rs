@@ -153,6 +153,16 @@ impl TokenSave {
             .await
     }
 
+    /// Returns extracted calls whose trailing name matches `name`, including
+    /// sites that did not produce an edge to the requested definition (#687).
+    pub async fn get_call_references_by_name(
+        &self,
+        name: &str,
+        limit: usize,
+    ) -> Result<(usize, Vec<CallReference>)> {
+        self.db.get_call_references_by_name(name, limit).await
+    }
+
     #[must_use]
     pub fn has_trait_dispatch_callers(&self, node_id: &str) -> bool {
         self.db.has_trait_dispatch_callers(node_id)
@@ -195,6 +205,23 @@ impl TokenSave {
         let traverser = GraphTraverser::new(&self.db);
         traverser
             .find_path_directed(from_id, to_id, &[crate::types::EdgeKind::Calls], max_depth)
+            .await
+    }
+
+    /// Finds the shortest path between two nodes over every stored edge
+    /// kind, in either direction. `max_depth` bounds the path length and
+    /// `max_expanded` the number of nodes the search reads edges for; see
+    /// [`GraphTraverser::find_path_bounded`].
+    pub async fn get_connection_path(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        max_depth: usize,
+        max_expanded: usize,
+    ) -> Result<crate::graph::traversal::PathSearch> {
+        let traverser = GraphTraverser::new(&self.db);
+        traverser
+            .find_path_bounded(from_id, to_id, &[], max_depth, max_expanded)
             .await
     }
 
@@ -529,6 +556,11 @@ impl TokenSave {
         }
     }
 
+    /// Whether `path` (project-relative, `/`-separated) is an indexed file.
+    pub async fn is_indexed_file(&self, path: &str) -> bool {
+        matches!(self.db.get_file(path).await, Ok(Some(_)))
+    }
+
     /// Returns `impl` blocks matching the given trait and/or implementing type.
     ///
     /// Both filters are optional:
@@ -856,6 +888,59 @@ impl TokenSave {
     /// Returns true if serving from a fallback (ancestor) DB.
     pub fn is_fallback(&self) -> bool {
         self.fallback_warning.is_some()
+    }
+
+    /// Returns the effective `auto_track` setting: the project config,
+    /// overridden per run by `TOKENSAVE_AUTO_TRACK`.
+    pub fn auto_track_enabled(&self) -> bool {
+        crate::config::env_bool_override("TOKENSAVE_AUTO_TRACK", self.config.auto_track)
+    }
+
+    /// Explains why an untracked active branch was not registered
+    /// automatically, and how to change that (#877).
+    ///
+    /// `None` unless the checked-out branch is untracked and served from a
+    /// fallback index; a detached HEAD has no branch to track. Longer than the
+    /// fallback warning on purpose, which is why it is reported by
+    /// `tokensave_status` alone rather than prepended to every tool response.
+    pub fn auto_track_hint(&self) -> Option<String> {
+        let branch = self.active_branch.as_deref()?;
+        self.fallback_warning.as_ref()?;
+        let add = format!("`tokensave branch add {}`", shell_quote(branch));
+        let config_path = get_tokensave_dir(&self.project_root).join("config.json");
+        let config_path = config_path
+            .strip_prefix(&self.project_root)
+            .unwrap_or(&config_path)
+            .display()
+            .to_string();
+        Some(if !self.auto_track_enabled() {
+            if self.config.auto_track {
+                format!(
+                    "Automatic branch tracking is enabled in {config_path} but turned off \
+                     for this run by the TOKENSAVE_AUTO_TRACK environment variable. Unset \
+                     it to track new branches automatically, or run {add}."
+                )
+            } else {
+                format!(
+                    "Automatic branch tracking is disabled by `\"auto_track\": false` in \
+                     {config_path}, so neither the post-checkout git hook nor opening the \
+                     project registers new branches. Run {add} to track this branch, or set \
+                     `\"auto_track\": true` in {config_path} (or TOKENSAVE_AUTO_TRACK=1 for \
+                     one run) to track new branches automatically."
+                )
+            }
+        } else if self.tracks_checkout {
+            format!(
+                "Automatic branch tracking is enabled but did not track this branch; the \
+                 branch warning gives the reason when tracking failed. Run {add} to retry."
+            )
+        } else {
+            format!(
+                "Automatic branch tracking is enabled, but this read-only view does not \
+                 register branches; the next tokensave command or MCP server start in that \
+                 project will. Run {add} there to track it now."
+            )
+        })
     }
 }
 

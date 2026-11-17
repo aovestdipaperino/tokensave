@@ -1,6 +1,7 @@
 //! Full and incremental indexing.
 use super::query::resolve_symbol_for_edit;
 use super::*;
+use crate::debug_log::{event, Level};
 use crate::profile::{IndexPhase, SyncPhase};
 
 const RAILS_ROUTE_REFERENCES_METADATA: &str = "rails_route_references_v3";
@@ -210,6 +211,292 @@ fn reenters_project_root(path: &Path, canonical_root: Option<&Path>) -> bool {
         .is_ok_and(|target| path_contains_root(&target, root))
 }
 
+/// Resolves the `path` of `tokensave_create_file` (#920) to the absolute path
+/// to write and its project-relative, forward-slash form.
+///
+/// Refuses, with a message for the caller: an empty path, any `..` component,
+/// a path whose nearest existing ancestor resolves outside the project root
+/// (which covers an absolute path elsewhere and a symlinked parent that leaves
+/// the root), the root itself, and paths inside `.git` or tokensave's state
+/// directory. The target itself is not followed here: the caller refuses a
+/// target that is a symlink.
+pub(crate) fn resolve_new_file_target(
+    project_root: &Path,
+    state_dir: &Path,
+    path: &str,
+) -> std::result::Result<(PathBuf, String), String> {
+    use std::path::Component;
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("path is empty".to_string());
+    }
+    let given = Path::new(path);
+    if given
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(format!("`..` is not allowed in path: {path}"));
+    }
+    let given: PathBuf = given
+        .components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .collect();
+    let canonical_root = project_root
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve the project root: {e}"))?;
+    let candidate = if given.is_absolute() {
+        given
+    } else {
+        project_root.join(given)
+    };
+    let Some(file_name) = candidate.file_name().map(std::ffi::OsStr::to_os_string) else {
+        return Err(format!("path names no file: {path}"));
+    };
+
+    // Canonicalize the nearest existing ancestor of the parent, so a symlink
+    // anywhere above the file is resolved before the containment check. The
+    // missing components below it cannot be symlinks yet.
+    let mut existing = candidate.parent().unwrap_or(Path::new(""));
+    let mut missing = Vec::new();
+    while std::fs::symlink_metadata(existing).is_err() {
+        let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+            return Err(format!("{path} is outside the project root"));
+        };
+        missing.push(name.to_os_string());
+        existing = parent;
+    }
+    let mut target = existing
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve {}: {e}", existing.display()))?;
+    for name in missing.iter().rev() {
+        target.push(name);
+    }
+    target.push(&file_name);
+
+    let rel = target
+        .strip_prefix(&canonical_root)
+        .map_err(|_| format!("{path} is outside the project root"))?;
+    if rel.as_os_str().is_empty() {
+        return Err(format!("path names the project root: {path}"));
+    }
+    // Case-insensitive, as `.GIT` is `.git` on Windows and default macOS.
+    let named = |component: Component<'_>, name: &str| {
+        component
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(name)
+    };
+    if rel.components().any(|component| named(component, ".git")) {
+        return Err(format!("refusing to write inside .git: {path}"));
+    }
+    let in_state_dir = rel
+        .components()
+        .next()
+        .is_some_and(|first| named(first, crate::config::TOKENSAVE_DIR))
+        || state_dir
+            .canonicalize()
+            .is_ok_and(|state| target.starts_with(state));
+    if in_state_dir {
+        return Err(format!(
+            "refusing to write inside tokensave's state: {path}"
+        ));
+    }
+    let rel_str = rel
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    Ok((project_root.join(rel), rel_str))
+}
+
+/// The canonical location an edit of `abs` would touch, with every symlink
+/// resolved.
+///
+/// A target that does not exist yet resolves through its nearest existing
+/// ancestor, so the containment check still applies and the caller's own read
+/// reports the missing file. A missing tail that contains `..` cannot be
+/// resolved without following it, so it is an error.
+fn canonicalize_edit_target(abs: &Path) -> std::io::Result<PathBuf> {
+    match abs.canonicalize() {
+        Ok(target) => return Ok(target),
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+        Err(_) => {}
+    }
+    let mut existing = abs;
+    let mut missing = Vec::new();
+    while std::fs::symlink_metadata(existing).is_err() {
+        let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no existing ancestor",
+            ));
+        };
+        missing.push(name);
+        existing = parent;
+    }
+    let mut target = existing.canonicalize()?;
+    for name in missing.iter().rev() {
+        target.push(name);
+    }
+    Ok(target)
+}
+
+/// Why the edit tools refuse `rel`, a path relative to the project root or a
+/// worktree root whose resolved form is `target`: it is inside `.git` or
+/// tokensave's state, which `tokensave_create_file` refuses too (#920).
+/// `None` when neither applies.
+fn protected_edit_path(rel: &Path, target: &Path, state_dir: &Path) -> Option<&'static str> {
+    use std::path::Component;
+    // Case-insensitive, as `.GIT` is `.git` on Windows and default macOS.
+    let named = |component: Component<'_>, name: &str| {
+        component
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(name)
+    };
+    if rel.components().any(|component| named(component, ".git")) {
+        return Some("it is inside .git");
+    }
+    let in_state_dir = rel
+        .components()
+        .next()
+        .is_some_and(|first| named(first, crate::config::TOKENSAVE_DIR))
+        || state_dir
+            .canonicalize()
+            .is_ok_and(|state| target.starts_with(state));
+    in_state_dir.then_some("it is inside tokensave's state")
+}
+
+/// Decides whether the edit tools may write `target`, a canonical path (see
+/// [`canonicalize_edit_target`]), for the project whose canonical root is
+/// `canonical_root` (#866).
+///
+/// Allowed: a path under the project root, or under one of `worktrees` (the
+/// other checkouts of the same git repository, listed only when the target is
+/// outside the root). Refused: anything else, and any path inside `.git` or
+/// tokensave's state.
+///
+/// Returns the target's root-relative, forward-slash path, the key the index
+/// stores it under, or `None` for a target in another worktree, which the
+/// index does not cover.
+pub(crate) fn check_edit_target(
+    target: &Path,
+    canonical_root: &Path,
+    state_dir: &Path,
+    worktrees: impl FnOnce() -> Vec<PathBuf>,
+) -> std::result::Result<Option<String>, EditRefusal> {
+    let (base, in_project) = if target.starts_with(canonical_root) {
+        (canonical_root.to_path_buf(), true)
+    } else {
+        let worktree = worktrees()
+            .iter()
+            .filter_map(|root| root.canonicalize().ok())
+            .find(|root| target.starts_with(root))
+            .ok_or(EditRefusal::Outside)?;
+        (worktree, false)
+    };
+    let rel = target
+        .strip_prefix(&base)
+        .map_err(|_| EditRefusal::Outside)?;
+    if let Some(reason) = protected_edit_path(rel, target, state_dir) {
+        return Err(EditRefusal::Protected(reason));
+    }
+    Ok(in_project.then(|| crate::tokensave::normalize_rel_path(&rel.to_string_lossy())))
+}
+
+/// Why [`check_edit_target`] refused a target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditRefusal {
+    /// Outside the project root and every worktree of its repository.
+    Outside,
+    /// Inside `.git` or tokensave's state; the reason names which.
+    Protected(&'static str),
+}
+
+impl EditRefusal {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Outside => {
+                "it resolves outside the project root and the repository's git worktrees"
+            }
+            Self::Protected(reason) => reason,
+        }
+    }
+}
+
+/// `abs` relative to `project_root` when it names a path below the root
+/// without any `..` or `.` component, before symlinks are resolved. `None`
+/// otherwise.
+fn lexical_project_rel<'a>(abs: &'a Path, project_root: &Path) -> Option<&'a Path> {
+    use std::path::Component;
+    let rel = abs.strip_prefix(project_root).ok()?;
+    let plain = rel
+        .components()
+        .all(|component| matches!(component, Component::Normal(_)));
+    (plain && !rel.as_os_str().is_empty()).then_some(rel)
+}
+
+/// The directory-pruning rule of the gitignore-aware scan walk.
+///
+/// Shared by [`TokenSave::scan_files_with_gitignore`] and the opt-in
+/// filesystem watcher (#937), which registers only the directories this rule
+/// keeps, so a directory the scan never enters is never watched either.
+pub(super) struct ScanDirPrune {
+    root: PathBuf,
+    config: TokenSaveConfig,
+    canonical_root: Option<PathBuf>,
+    manifest: Option<std::sync::Arc<crate::project_manifest::CompiledManifest>>,
+}
+
+impl ScanDirPrune {
+    pub(super) fn new(cg: &TokenSave) -> Self {
+        Self {
+            root: cg.project_root.clone(),
+            config: cg.config.clone(),
+            canonical_root: cg.project_root.canonicalize().ok(),
+            manifest: cg.manifest(),
+        }
+    }
+
+    /// Whether the walk descends into the directory at `path`, found at
+    /// `depth` below the walk root.
+    pub(super) fn keeps(&self, path: &Path, depth: usize, is_symlink: bool) -> bool {
+        // A linked worktree below the root is a second working tree of the
+        // same repository (#865). No include glob re-admits it. The root is
+        // exempt: a worktree with an index of its own is a project.
+        if depth > 0 && crate::config::is_linked_worktree_root(path) {
+            return false;
+        }
+        let rel_str = path
+            .strip_prefix(&self.root)
+            .map(|rel| rel.to_string_lossy().replace('\\', "/"));
+        if let Ok(rel_str) = &rel_str {
+            if is_excluded_dir(rel_str, &self.config) {
+                return false;
+            }
+        }
+        // Hidden directories stay pruned exactly as the crate's disabled
+        // hidden filter pruned them; an include glob or manifest entry
+        // re-admits one (#194).
+        let hidden = path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with('.'));
+        if depth > 0 && hidden {
+            let rel_str = rel_str.unwrap_or_default();
+            let manifest_allows = self.manifest.as_deref().is_some_and(|m| {
+                m.matches_local_file(&rel_str) || m.local_dir_may_contain(&rel_str)
+            });
+            if !is_included(&rel_str, &self.config) && !manifest_allows {
+                return false;
+            }
+        }
+        // A link back onto the root or one of its ancestors would re-walk the
+        // project plus the rest of the filesystem (#327). The walk root itself
+        // is exempt so a project opened through a symlinked path still scans.
+        !(depth > 0 && is_symlink && reenters_project_root(path, self.canonical_root.as_deref()))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Indexing
 // ---------------------------------------------------------------------------
@@ -352,18 +639,32 @@ impl TokenSave {
         F: Fn(usize, usize, &str),
         V: Fn(&str),
     {
+        let lock = try_acquire_sync_lock(&self.project_root)?;
+        self.index_all_with_lock(on_file, on_verbose, lock).await
+    }
+
+    /// Keep recovery and indexing inside the same writer critical section.
+    pub(super) async fn index_all_with_lock<F, V>(
+        &self,
+        on_file: F,
+        on_verbose: V,
+        _lock: SyncLockGuard,
+    ) -> Result<IndexResult>
+    where
+        F: Fn(usize, usize, &str),
+        V: Fn(&str),
+    {
         debug_assert!(self.project_root.exists(), "project root does not exist");
         debug_assert!(
             self.project_root.is_dir(),
             "project root is not a directory"
         );
-        let _lock = try_acquire_sync_lock(&self.project_root)?;
         // Fail loudly on a broken project.json (unknown language, bad glob)
         // instead of silently indexing without the manifest (#194).
         self.ensure_current_checkout()?;
         self.validate_manifest()?;
         let dispatch_revision = self.dispatch_revision();
-        write_dirty_sentinel(&self.project_root);
+        write_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         let start = Instant::now();
         // Profiling (#754): phase spans keep the verbose timings above
         // unchanged; an early `?` return records the open phase as failed.
@@ -385,6 +686,12 @@ impl TokenSave {
         let scan_span = crate::profile::span(IndexPhase::Scan);
         let detection_before = crate::language_detection::statistics();
         let (files, skipped_extensions) = self.scan_files_diagnostics();
+        event(Level::Debug, "index", "full_scan", || {
+            serde_json::json!({
+                "selected": files.len(),
+                "unsupported": skipped_extensions.iter().map(|(_, count)| count).sum::<usize>(),
+            })
+        });
         let total = files.len();
         scan_span.finish();
         on_verbose(&format!(
@@ -505,7 +812,7 @@ impl TokenSave {
             // #253: `from_nodes` borrows from `all_nodes` rather than
             // cloning it into its caches; the remaining peak here is
             // `all_nodes` itself (#306).
-            let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
+            let resolver = ReferenceResolver::from_nodes(&all_nodes);
             crate::memstats::record("index:resolve:build_caches");
             let resolution = self
                 .cpu_usage()
@@ -661,7 +968,7 @@ impl TokenSave {
             result.duration_ms > 0 || result.file_count == 0,
             "non-empty index completed in zero milliseconds"
         );
-        clear_dirty_sentinel(&self.project_root);
+        clear_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         self.record_indexed_version();
         crate::memstats::record("index:done");
         Ok(result)
@@ -825,6 +1132,32 @@ impl TokenSave {
             if refs.is_empty() {
                 continue;
             }
+            // A re-attempted reference's cleanup deletes by site, so every
+            // reference recorded at the same (caller, line) must re-resolve
+            // with it — a same-named sibling can hold a different target whose
+            // edge would otherwise be deleted and never rewritten (#630).
+            // Same pairing as the GDScript site path above (#597).
+            let mut sites: Vec<(String, u32)> = refs
+                .iter()
+                .map(|r| (r.from_node_id.clone(), r.line))
+                .collect();
+            sites.sort_unstable();
+            sites.dedup();
+            // A full pass re-attempts every reference anyway, so the site
+            // pairing is only needed (and only pays for) an incremental pass.
+            if touched.is_some() {
+                for member in self.db.get_unresolved_refs_at_sites(&sites).await? {
+                    let unseen = !refs.iter().any(|r| {
+                        r.from_node_id == member.from_node_id
+                            && r.line == member.line
+                            && r.reference_name == member.reference_name
+                            && r.reference_kind == member.reference_kind
+                    });
+                    if unseen {
+                        refs.push(member);
+                    }
+                }
+            }
             attempted += refs.len();
             // Only the references actually re-resolved may have their ambiguity
             // records replaced — see `write_ambiguities`. Not collected for a
@@ -834,6 +1167,7 @@ impl TokenSave {
                 attempted_refs.extend(refs.iter().map(AmbiguityRefKey::from));
             }
             crate::cancel::check("resolve")?;
+            self.db.delete_resolved_edges_for_refs(&refs).await?;
             let (batch_resolved, batch_ambiguous) =
                 self.cpu_usage().run(|| resolver.resolve_batch(&refs))?;
             resolved.extend(batch_resolved);
@@ -1004,12 +1338,38 @@ impl TokenSave {
         Ok(())
     }
 
+    /// Whether the project-relative `path` lies below a linked worktree that
+    /// is inside the project. The scan does not enter such a directory (#865).
+    pub(super) fn is_below_nested_worktree(&self, path: &str) -> bool {
+        if Path::new(path).is_absolute() {
+            return false;
+        }
+        let mut dir = self.project_root.clone();
+        let mut parts = path.split('/').peekable();
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                // The last part is the file name.
+                break;
+            }
+            dir.push(part);
+            if crate::config::is_linked_worktree_root(&dir) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Index/reexamine the given file paths, updating their graph nodes and edges.
     /// This is a focused, single-shot operation used by `sync_if_stale`.
     pub(crate) async fn sync_single_files(&self, file_paths: &[String]) -> Result<()> {
         use crate::sync as sync_mod;
 
         self.ensure_current_checkout()?;
+        // This path mutates the graph like a full sync, so it gets the same
+        // crash contract: the sentinel is cleared only on the single success
+        // exit below, and an interrupted pass is recovered on the next open
+        // instead of silently losing resolver edges (#630, #450).
+        write_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         let start = Instant::now();
         let project_root = &self.project_root;
         let registry = &self.registry;
@@ -1029,7 +1389,9 @@ impl TokenSave {
         let mut existing: Vec<String> = Vec::with_capacity(file_paths.len());
         for path in file_paths {
             let absolute = project_root.join(&path);
-            if absolute.exists() {
+            // A file below a nested worktree is outside the scan (#865). Its
+            // row is from an earlier index, so it takes the removal branch.
+            if absolute.exists() && !self.is_below_nested_worktree(&path) {
                 // A previously detected source can become unsupported. Targeted
                 // MCP refreshes must remove its old symbols as full sync does.
                 if self.config.language_detection.enabled
@@ -1172,7 +1534,7 @@ impl TokenSave {
                 .unwrap_or_default();
             crate::memstats::set_graph_nodes(all_nodes.len() as u64);
             crate::memstats::record("sync:resolve:load_nodes");
-            let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
+            let resolver = ReferenceResolver::from_nodes(&all_nodes);
             crate::memstats::record("sync:resolve:build_caches");
             // Paged rather than materialised (#482), and narrowed to the
             // references this sync could have changed (#484).
@@ -1221,7 +1583,7 @@ impl TokenSave {
             )
             .await?;
 
-        clear_dirty_sentinel(&self.project_root);
+        clear_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         crate::memstats::record("sync:done");
         Ok(())
     }
@@ -1276,7 +1638,7 @@ impl TokenSave {
         self.ensure_current_checkout()?;
         self.validate_manifest()?;
         let dispatch_revision = self.dispatch_revision();
-        write_dirty_sentinel(&self.project_root);
+        write_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         let start = Instant::now();
         // Profiling (#754): see `index_all_with_progress_verbose`.
         let run_span = crate::profile::span(SyncPhase::Total);
@@ -1287,6 +1649,12 @@ impl TokenSave {
         let scan_span = crate::profile::span(SyncPhase::Scan);
         let detection_before = crate::language_detection::statistics();
         let (current_files, skipped_extensions) = self.scan_files_diagnostics();
+        event(Level::Debug, "index", "sync_scan", || {
+            serde_json::json!({
+                "selected": current_files.len(),
+                "unsupported": skipped_extensions.iter().map(|(_, count)| count).sum::<usize>(),
+            })
+        });
         if self.config.language_detection.enabled {
             let d = crate::language_detection::statistics() - detection_before;
             on_verbose(&format!("automatic language detection: {} examined, {} shebang, {} content, {} unsupported, {} cache hits, {:.3}ms (process-local counters)", d.examined, d.shebang, d.content, d.unsupported, d.cache_hits, d.micros as f64 / 1000.0));
@@ -1460,10 +1828,17 @@ impl TokenSave {
                 }
             }
         }
+        event(Level::Debug, "index", "sync_changes", || {
+            serde_json::json!({
+                "new": new_files.len(), "changed": stale.len(),
+                "removed": removed.len(), "metadata_only": mtime_only_changed.len(),
+                "read_failures": skipped.len(), "branch_transition": branch_transition,
+            })
+        });
         if branch_transition {
             let count = new_files.len() + stale.len() + removed.len();
             if self.max_auto_sync_files > 0 && count > self.max_auto_sync_files {
-                clear_dirty_sentinel(&self.project_root);
+                clear_dirty_sentinel(&self.project_root, &self.dirty_database_name());
                 return Err(TokenSaveError::Config {
                     message: format!("branch context has {count} changed files, exceeding max_auto_sync_files={}; run `tokensave sync`", self.max_auto_sync_files),
                 });
@@ -1707,7 +2082,7 @@ impl TokenSave {
                     .unwrap_or_default();
                 crate::memstats::set_graph_nodes(all_nodes.len() as u64);
                 crate::memstats::record("sync:resolve:load_nodes");
-                let resolver = ReferenceResolver::from_nodes(&self.db, &all_nodes);
+                let resolver = ReferenceResolver::from_nodes(&all_nodes);
                 crate::memstats::record("sync:resolve:build_caches");
                 // Paged rather than materialised (#482), and narrowed to the
                 // references this sync could have changed (#484).
@@ -1799,7 +2174,7 @@ impl TokenSave {
                 total_nodes + total_edges,
             );
         }
-        clear_dirty_sentinel(&self.project_root);
+        clear_dirty_sentinel(&self.project_root, &self.dirty_database_name());
         crate::memstats::record("sync:done");
         Ok(SyncResult {
             files_added: new_files.len(),
@@ -1847,6 +2222,17 @@ impl TokenSave {
             &self.project_root,
             &self.config,
             self.manifest().as_deref(),
+            &self.registry.supported_extensions(),
+        )
+    }
+
+    /// Returns a warning message if git-tracked source files were dropped
+    /// only by an ambiguous default `exclude` glob such as `**/build/**`
+    /// (#949).
+    pub fn warn_tracked_ambiguous_excludes(&self) -> Option<String> {
+        detect_tracked_ambiguous_excludes(
+            &self.project_root,
+            &self.config,
             &self.registry.supported_extensions(),
         )
     }
@@ -2027,6 +2413,10 @@ impl TokenSave {
                 if !crate::config::is_force_included(&rel_str, config) {
                     continue;
                 }
+                // The worktree rule of the main walk applies here too (#865).
+                if self.is_below_nested_worktree(&rel_str) {
+                    continue;
+                }
                 if let Some(rel_str) = self.accept_file(entry.path(), supported_exts, &mut skipped)
                 {
                     files.push(rel_str);
@@ -2056,6 +2446,10 @@ impl TokenSave {
             .filter_entry(|e| {
                 if e.depth() == 0 {
                     return true;
+                }
+                // The same rule as `ScanDirPrune::keeps` (#865).
+                if e.file_type().is_dir() && crate::config::is_linked_worktree_root(e.path()) {
+                    return false;
                 }
                 // Checked before every other rule so no `include` glob or
                 // manifest entry can re-enable a link that swallows the
@@ -2145,10 +2539,7 @@ impl TokenSave {
         // gets walked (#170). Mirrors the `is_excluded_dir` prune in
         // `scan_files_walkdir` and applies equally to `--skip-folder`, which
         // feeds the same exclude list.
-        let root = self.project_root.clone();
-        let config = self.config.clone();
-        let canonical_root = self.project_root.canonicalize().ok();
-        let manifest_for_prune = manifest.clone();
+        let prune = ScanDirPrune::new(self);
         let walker = ignore::WalkBuilder::new(&self.project_root)
             .follow_links(true)
             .hidden(false) // hidden entries are filtered manually below
@@ -2159,38 +2550,7 @@ impl TokenSave {
             .filter_entry(move |e| {
                 // Only prune directories; files are filtered later by accept_file.
                 if e.file_type().is_some_and(|ft| ft.is_dir()) {
-                    if let Ok(rel) = e.path().strip_prefix(&root) {
-                        let rel_str = rel.to_string_lossy().replace('\\', "/");
-                        if is_excluded_dir(&rel_str, &config) {
-                            return false;
-                        }
-                    }
-                    // Hidden directories stay pruned exactly as the crate's
-                    // disabled hidden filter pruned them; an include glob or
-                    // manifest entry re-admits one (#194).
-                    if e.depth() > 0 && e.file_name().to_string_lossy().starts_with('.') {
-                        let rel_str = e
-                            .path()
-                            .strip_prefix(&root)
-                            .map(|rel| rel.to_string_lossy().replace('\\', "/"))
-                            .unwrap_or_default();
-                        let manifest_allows = manifest_for_prune.as_deref().is_some_and(|m| {
-                            m.matches_local_file(&rel_str) || m.local_dir_may_contain(&rel_str)
-                        });
-                        if !is_included(&rel_str, &config) && !manifest_allows {
-                            return false;
-                        }
-                    }
-                    // A link back onto the root or one of its ancestors would
-                    // re-walk the project plus the rest of the filesystem
-                    // (#327). The walk root itself is exempt so a project
-                    // opened through a symlinked path still scans.
-                    if e.depth() > 0
-                        && e.path_is_symlink()
-                        && reenters_project_root(e.path(), canonical_root.as_deref())
-                    {
-                        return false;
-                    }
+                    return prune.keeps(e.path(), e.depth(), e.path_is_symlink());
                 }
                 true
             })
@@ -2295,16 +2655,6 @@ impl TokenSave {
     }
 }
 
-/// Detects git-tracked, indexable files that the hidden-directory filter
-/// skipped. Returns a formatted warning string if any exist.
-///
-/// Mirrors the walker's pruning rule exactly (`scan_files_walkdir` /
-/// `scan_files_with_gitignore`): a dot-prefixed *directory* blocks descent
-/// unless that directory path itself matches an include glob or manifest
-/// entry. Matching only the files inside (e.g. `.github/**` without a bare
-/// `.github` entry) does not re-enable descent, so this check walks each
-/// ancestor prefix the same way the walker does instead of testing the file
-/// path — otherwise the warning would go silent in exactly that trap.
 /// Every path `git ls-files` reports for the project, as forward-slashed
 /// repository-relative strings.
 ///
@@ -2337,6 +2687,16 @@ pub(crate) fn list_git_tracked_files(project_root: &Path) -> Option<Vec<String>>
     )
 }
 
+/// Detects git-tracked, indexable files that the hidden-directory filter
+/// skipped. Returns a formatted warning string if any exist.
+///
+/// Mirrors the walker's pruning rule exactly (`scan_files_walkdir` /
+/// `scan_files_with_gitignore`): a dot-prefixed *directory* blocks descent
+/// unless that directory path itself matches an include glob or manifest
+/// entry. Matching only the files inside (e.g. `.github/**` without a bare
+/// `.github` entry) does not re-enable descent, so this check walks each
+/// ancestor prefix the same way the walker does instead of testing the file
+/// path — otherwise the warning would go silent in exactly that trap.
 pub fn detect_skipped_hidden_dirs(
     project_root: &Path,
     config: &TokenSaveConfig,
@@ -2426,6 +2786,183 @@ pub fn detect_skipped_hidden_dirs(
 
     Some(format!(
         "\x1b[33mwarning:\x1b[0m skipped {total} tracked {file_word} in hidden directories ({dir_summary}) — add \"{top_dir}\" and \"{top_dir}/**\" to include[] in .tokensave/config.json, then run `tokensave sync -f` to index them (or add \"{top_dir}/**\" to exclude[] to silence this warning)"
+    ))
+}
+
+/// Where the walker's `exclude` handling leaves the files of one directory,
+/// as seen by [`detect_tracked_ambiguous_excludes`].
+enum AmbiguousExcludeVerdict {
+    /// Not excluded at directory level; file-level globs still apply.
+    Reachable,
+    /// Pruned at `dir` by the ambiguous default `pattern` alone.
+    Ambiguous { dir: String, pattern: String },
+    /// Hidden, or excluded by a glob that is not an ambiguous default: a
+    /// deliberate opt-out, or a case another warning reports.
+    Silent,
+}
+
+/// Detects git-tracked, indexable files that only an ambiguous default
+/// `exclude` glob keeps out of the index (#949). Returns a formatted warning
+/// string if any exist.
+///
+/// The [`AMBIGUOUS_DEFAULT_EXCLUDES`](crate::config::AMBIGUOUS_DEFAULT_EXCLUDES)
+/// (`**/build/**`, `**/out/**`, `bin/**`) are meant for generated output, but
+/// a tracked file under `build/` is often a real source package, and nothing else in `init` or `sync` output says it
+/// was left out. A file is reported only when every exclude glob that drops
+/// it is one of those defaults: any other matching glob, including an
+/// explicit `build/**` the user wrote, is a deliberate opt-out. Files under a
+/// hidden directory are left to [`detect_skipped_hidden_dirs`].
+///
+/// Mirrors the walker's exclude rule: a directory is pruned when
+/// [`is_excluded_dir`] matches it, and a file is dropped when
+/// [`is_excluded`] matches it.
+pub fn detect_tracked_ambiguous_excludes(
+    project_root: &Path,
+    config: &TokenSaveConfig,
+    supported_exts: &[&str],
+) -> Option<String> {
+    let is_ambiguous = |pattern: &str| crate::config::AMBIGUOUS_DEFAULT_EXCLUDES.contains(&pattern);
+    // Without an ambiguous default in the config there is nothing to report,
+    // so skip the `git ls-files` subprocess.
+    if !config.exclude.iter().any(|pattern| is_ambiguous(pattern)) {
+        return None;
+    }
+    let tracked = list_git_tracked_files(project_root)?;
+
+    let match_opts = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: false,
+        require_literal_leading_dot: false,
+    };
+    let patterns: Vec<(&str, glob::Pattern)> = config
+        .exclude
+        .iter()
+        .filter_map(|raw| {
+            glob::Pattern::new(raw)
+                .ok()
+                .map(|pattern| (raw.as_str(), pattern))
+        })
+        .collect();
+
+    // Sibling files share the directory verdict, so evaluate the globs once
+    // per parent directory, as `detect_skipped_hidden_dirs` does.
+    let mut dir_cache: HashMap<String, AmbiguousExcludeVerdict> = HashMap::new();
+    // Pruned directory -> (ambiguous pattern that pruned it, file count).
+    let mut dir_counts: HashMap<String, (String, usize)> = HashMap::new();
+
+    for rel_path in tracked.iter().map(String::as_str) {
+        // Only files an extractor could index; a tracked `build/output.bin`
+        // is not worth a warning.
+        let ext = Path::new(rel_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if !supported_exts.contains(&ext) {
+            continue;
+        }
+        let dirs = rel_path.rsplit_once('/').map_or("", |(dirs, _file)| dirs);
+
+        let verdict = dir_cache.entry(dirs.to_string()).or_insert_with(|| {
+            let mut end = 0;
+            for comp in dirs.split('/').filter(|comp| !comp.is_empty()) {
+                end += comp.len() + usize::from(end > 0);
+                if comp.starts_with('.') {
+                    return AmbiguousExcludeVerdict::Silent;
+                }
+                let prefix = &dirs[..end];
+                let probe = format!("{prefix}/_");
+                let mut ambiguous = None;
+                for (raw, pattern) in &patterns {
+                    if pattern.matches_with(&probe, match_opts)
+                        || pattern.matches_with(prefix, match_opts)
+                    {
+                        if !is_ambiguous(raw) {
+                            return AmbiguousExcludeVerdict::Silent;
+                        }
+                        ambiguous.get_or_insert(*raw);
+                    }
+                }
+                // The walker prunes at the shallowest excluded directory and
+                // never sees the globs that would match deeper down.
+                if let Some(raw) = ambiguous {
+                    return AmbiguousExcludeVerdict::Ambiguous {
+                        dir: prefix.to_string(),
+                        pattern: raw.to_string(),
+                    };
+                }
+            }
+            AmbiguousExcludeVerdict::Reachable
+        });
+
+        let (dir, pattern) = match verdict {
+            AmbiguousExcludeVerdict::Silent => continue,
+            AmbiguousExcludeVerdict::Ambiguous { dir, pattern } => (dir.clone(), pattern.clone()),
+            AmbiguousExcludeVerdict::Reachable => {
+                // Only a file-level match can still drop the file.
+                let Some((raw, _)) = patterns.iter().find(|(raw, pattern)| {
+                    is_ambiguous(raw) && pattern.matches_with(rel_path, match_opts)
+                }) else {
+                    continue;
+                };
+                let dir = if dirs.is_empty() { rel_path } else { dirs };
+                (dir.to_string(), raw.to_string())
+            }
+        };
+        // Any deliberate file-level glob, such as `**/*.min.*`, wins over an
+        // ambiguous default.
+        if patterns
+            .iter()
+            .any(|(raw, pattern)| !is_ambiguous(raw) && pattern.matches_with(rel_path, match_opts))
+        {
+            continue;
+        }
+        // `git ls-files` lists index entries that may not exist on disk
+        // (sparse checkouts, staged deletions); the walker never saw those.
+        if !project_root.join(rel_path).is_file() {
+            continue;
+        }
+        dir_counts.entry(dir).or_insert((pattern, 0)).1 += 1;
+    }
+
+    if dir_counts.is_empty() {
+        return None;
+    }
+
+    let total: usize = dir_counts.values().map(|(_, count)| count).sum();
+    let mut dir_vec: Vec<(String, String, usize)> = dir_counts
+        .into_iter()
+        .map(|(dir, (pattern, count))| (dir, pattern, count))
+        .collect();
+    dir_vec.sort_unstable_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+
+    let dir_summary = dir_vec
+        .iter()
+        .map(|(dir, _, count)| format!("{dir}: {count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut top_patterns: Vec<&str> = Vec::new();
+    for (_, pattern, _) in &dir_vec {
+        if !top_patterns.contains(&pattern.as_str()) {
+            top_patterns.push(pattern);
+        }
+    }
+    let remove = top_patterns
+        .iter()
+        .map(|pattern| format!("\"{pattern}\""))
+        .collect::<Vec<_>>()
+        .join(" and ");
+
+    let top_dir = &dir_vec[0].0;
+    // The silencing glob must not itself be an ambiguous default, or it
+    // would not silence anything: `bin` -> `bin/**/*`, not `bin/**`.
+    let mut keep = format!("{top_dir}/**");
+    if is_ambiguous(&keep) {
+        keep.push_str("/*");
+    }
+    let file_word = if total == 1 { "file" } else { "files" };
+
+    Some(format!(
+        "\x1b[33mwarning:\x1b[0m excluded {total} tracked {file_word} by default build-output excludes ({dir_summary}) — if they are source, remove {remove} from exclude[] in .tokensave/config.json and run `tokensave sync` to index them (or add \"{keep}\" to exclude[] to keep them excluded and silence this warning)"
     ))
 }
 
@@ -2578,32 +3115,35 @@ impl TokenSave {
     /// read/written, plus — when that location falls under the *indexed*
     /// project root — the root-relative path used as the DB reindex key.
     ///
-    /// Resolution rules (fixes the "wrong-tree write" bug where a caller
-    /// working in a git worktree got edits silently redirected into the
-    /// primary checkout):
+    /// Resolution rules:
     ///
-    /// - An **absolute** `path` is honored verbatim, even when it points
-    ///   outside the indexed project root. Passing an absolute path is
-    ///   itself the caller's explicit, deliberate statement of where the
-    ///   write should land, so no separate opt-out flag is needed. The
-    ///   previous behavior rejected out-of-root absolute paths with a "path
-    ///   is not within the project" error, which is safe but unhelpful for
-    ///   worktree callers; verbatim honoring plus the `resolved_path` echoed
-    ///   back in every result is the cheaper, equally-safe guard (caller can
-    ///   verify the target instead of being blocked from a legitimate one).
-    /// - A **relative** `path` resolves against `root_override` when given
-    ///   (a worktree caller's per-call retarget), falling back to the
-    ///   indexed project root otherwise — unchanged default behavior.
-    /// - The DB reindex key is only populated when the resolved absolute
-    ///   path is actually under the indexed project root; writes that land
-    ///   elsewhere (verbatim absolute path, or a `root_override` pointing
-    ///   outside the index) skip reindexing since the DB has no record of
-    ///   that tree.
-    pub(crate) fn resolve_edit_target(
+    /// - An **absolute** `path` is taken as given; a **relative** `path`
+    ///   resolves against `root_override` when given (a worktree caller's
+    ///   per-call retarget), falling back to the indexed project root. This
+    ///   keeps a caller working in a git worktree from having edits silently
+    ///   redirected into the primary checkout.
+    /// - The result, with symlinks and `..` resolved, must lie inside the
+    ///   indexed project root or inside another worktree of the same git
+    ///   repository, and not inside `.git` or tokensave's state (#866; see
+    ///   [`check_edit_target`]). Anything else is refused with an error, so
+    ///   an absolute path, a `..` escape, a symlink or a `project_root`
+    ///   override cannot point an edit at an arbitrary file.
+    /// - One exception keeps the edit scope equal to the index scope: the
+    ///   indexer follows a symlink inside the root into a tree outside it
+    ///   (#34), so a file the index tracks under a plain root-relative path
+    ///   (no `..`) stays editable through that link, unless it resolves
+    ///   into a `.git` directory.
+    /// - The DB reindex key is only populated when the target is under the
+    ///   indexed project root; writes to another worktree skip reindexing
+    ///   since the DB has no record of that tree.
+    ///
+    /// The check and the caller's later read and write are not atomic: a
+    /// symlink swapped in between them is followed.
+    pub(crate) async fn resolve_edit_target(
         &self,
         path: &str,
         root_override: Option<&str>,
-    ) -> (PathBuf, Option<String>) {
+    ) -> Result<(PathBuf, Option<String>)> {
         let p = Path::new(path);
         let abs_path = if p.is_absolute() {
             p.to_path_buf()
@@ -2613,11 +3153,52 @@ impl TokenSave {
                 None => self.project_root.join(p),
             }
         };
-        let rel_for_index = abs_path
-            .strip_prefix(&self.project_root)
-            .ok()
-            .map(|rel| rel.to_string_lossy().replace('\\', "/"));
-        (abs_path, rel_for_index)
+        let refuse = |reason: String| TokenSaveError::Config {
+            message: format!("refusing to edit {path}: {reason}"),
+        };
+        let canonical_root = self
+            .project_root
+            .canonicalize()
+            .map_err(|e| refuse(format!("cannot resolve the project root: {e}")))?;
+        let target = canonicalize_edit_target(&abs_path)
+            .map_err(|e| refuse(format!("cannot resolve {}: {e}", abs_path.display())))?;
+        let state_dir = crate::config::get_tokensave_dir(&self.project_root);
+        let refusal = match check_edit_target(&target, &canonical_root, &state_dir, || {
+            crate::worktree::repository_worktree_roots(&self.project_root)
+        }) {
+            Ok(rel_for_index) => return Ok((abs_path, rel_for_index)),
+            Err(refusal) => refusal,
+        };
+        if refusal == EditRefusal::Outside {
+            if let Some(key) = self.indexed_link_key(&abs_path, &target, &state_dir).await {
+                return Ok((abs_path, Some(key)));
+            }
+        }
+        Err(refuse(refusal.reason().to_string()))
+    }
+
+    /// The index key of `abs` when it names a file the index tracks through a
+    /// symlink inside the project root that leads outside it (#34), and
+    /// `target`, its resolved form, is not inside a `.git` directory. See
+    /// [`Self::resolve_edit_target`].
+    async fn indexed_link_key(
+        &self,
+        abs: &Path,
+        target: &Path,
+        state_dir: &Path,
+    ) -> Option<String> {
+        let rel = lexical_project_rel(abs, &self.project_root)?;
+        let into_git = target
+            .components()
+            .any(|component| component.as_os_str().eq_ignore_ascii_case(".git"));
+        if into_git || protected_edit_path(rel, target, state_dir).is_some() {
+            return None;
+        }
+        let key = crate::tokensave::normalize_rel_path(&rel.to_string_lossy());
+        match self.db.get_file(&key).await {
+            Ok(Some(_)) => Some(key),
+            _ => None,
+        }
     }
 
     async fn rebuild_rails_routes_best_effort(&self, ruby_changed: bool) {
@@ -2644,6 +3225,121 @@ impl TokenSave {
         self.sync_single_files(&[file_path.to_string()]).await
     }
 
+    /// Creates `path` with `content` and indexes it (`tokensave_create_file`,
+    /// #920).
+    ///
+    /// Stricter than [`Self::resolve_edit_target`]: the file must land inside
+    /// the indexed project root, so a path in another git worktree, a `..`
+    /// component and a symlink leaving the root are refused (see
+    /// [`resolve_new_file_target`]). An existing file is replaced only with
+    /// `overwrite`; a directory or a symlink never is. Content is bounded by
+    /// the project's `max_file_size`, the largest file the index accepts.
+    ///
+    /// Refusals come back as `success: false` with a message, like the other
+    /// edit tools; only I/O failures after the checks are errors.
+    ///
+    /// The checks and the write are not atomic: a symlink created in a parent
+    /// directory between them is followed. Without `overwrite` the write uses
+    /// `create_new`, so an existing file is never replaced by that race.
+    pub async fn create_file(
+        &self,
+        path: &str,
+        content: &str,
+        overwrite: bool,
+    ) -> Result<crate::types::CreateFileResult> {
+        let refuse = |message: String| crate::types::CreateFileResult {
+            success: false,
+            file_path: path.to_string(),
+            resolved_path: String::new(),
+            bytes: 0,
+            overwritten: false,
+            indexed: false,
+            message,
+            digest: String::new(),
+        };
+        if content.len() as u64 > self.config.max_file_size {
+            return Ok(refuse(format!(
+                "content is {} bytes, over the project's max_file_size of {} bytes",
+                content.len(),
+                self.config.max_file_size
+            )));
+        }
+        let state_dir = crate::config::get_tokensave_dir(&self.project_root);
+        let (abs_path, rel_path) =
+            match resolve_new_file_target(&self.project_root, &state_dir, path) {
+                Ok(target) => target,
+                Err(reason) => return Ok(refuse(reason)),
+            };
+        let resolved_path = abs_path.to_string_lossy().into_owned();
+        let existing = std::fs::symlink_metadata(&abs_path).ok();
+        if let Some(meta) = &existing {
+            let reason = if meta.file_type().is_symlink() {
+                Some("the target is a symlink; it is never replaced")
+            } else if meta.is_dir() {
+                Some("the target is a directory")
+            } else if !overwrite {
+                Some("the file exists; pass overwrite: true to replace it")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                let mut refused = refuse(format!("{reason}: {rel_path}"));
+                refused.file_path = rel_path;
+                refused.resolved_path = resolved_path;
+                return Ok(refused);
+            }
+        }
+
+        if let Some(parent) = abs_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| TokenSaveError::Config {
+                message: format!("failed to create {}: {e}", parent.display()),
+            })?;
+        }
+        let write = || -> std::io::Result<()> {
+            use std::io::Write as _;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true);
+            if overwrite {
+                options.create(true).truncate(true);
+            } else {
+                options.create_new(true);
+            }
+            let mut file = options.open(&abs_path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()
+        };
+        write().map_err(|e| TokenSaveError::Config {
+            message: format!("failed to write {resolved_path}: {e}"),
+        })?;
+        let digest = crate::context::read_cache::digest_bytes(content.as_bytes());
+        let overwritten = existing.is_some();
+
+        // The write landed; a reindex failure is reported, not raised, so the
+        // caller does not retry a write that already happened (#563).
+        let (indexed, message) = match self.reindex_file(&rel_path).await {
+            Ok(()) => {
+                let indexed = self.db.get_file(&rel_path).await?.is_some();
+                let message = if indexed {
+                    "file written and indexed"
+                } else {
+                    "file written; not indexed (tokensave does not index this kind of file)"
+                };
+                (indexed, message.to_string())
+            }
+            Err(e) => (false, format!("file written but reindex failed: {e}")),
+        };
+        Ok(crate::types::CreateFileResult {
+            success: true,
+            file_path: rel_path,
+            resolved_path,
+            bytes: content.len(),
+            overwritten,
+            indexed,
+            message,
+            digest,
+        })
+    }
+
     /// 1-based inclusive line range covered by a byte span in `source`.
     fn byte_span_lines(source: &str, start: usize, end: usize) -> (u32, u32) {
         let start_line = source[..start].bytes().filter(|&b| b == b'\n').count() as u32 + 1;
@@ -2668,7 +3364,7 @@ impl TokenSave {
         new_str: &str,
         root_override: Option<&str>,
     ) -> Result<EditResult> {
-        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override);
+        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override).await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
 
@@ -2769,7 +3465,7 @@ impl TokenSave {
         replacements: &[(&str, &str)],
         root_override: Option<&str>,
     ) -> Result<MultiEditResult> {
-        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override);
+        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override).await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
 
@@ -2833,7 +3529,7 @@ impl TokenSave {
         before: bool,
         root_override: Option<&str>,
     ) -> Result<InsertResult> {
-        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override);
+        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override).await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
 
@@ -2970,7 +3666,9 @@ impl TokenSave {
         root_override: Option<&str>,
     ) -> Result<EditResult> {
         let target = resolve_symbol_for_edit(self, symbol).await?;
-        let (abs_path, rel_path) = self.resolve_edit_target(&target.file_path, root_override);
+        let (abs_path, rel_path) = self
+            .resolve_edit_target(&target.file_path, root_override)
+            .await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
         let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
@@ -3051,7 +3749,9 @@ impl TokenSave {
         root_override: Option<&str>,
     ) -> Result<EditResult> {
         let target = resolve_symbol_for_edit(self, symbol).await?;
-        let (abs_path, rel_path) = self.resolve_edit_target(&target.file_path, root_override);
+        let (abs_path, rel_path) = self
+            .resolve_edit_target(&target.file_path, root_override)
+            .await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
         let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
@@ -3164,7 +3864,7 @@ impl TokenSave {
         expected_digest: Option<&str>,
         root_override: Option<&str>,
     ) -> Result<LineReplaceResult> {
-        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override);
+        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override).await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
         let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
@@ -3255,7 +3955,9 @@ impl TokenSave {
             }
         };
         let target = resolve_symbol_for_edit(self, symbol).await?;
-        let (abs_path, rel_path) = self.resolve_edit_target(&target.file_path, root_override);
+        let (abs_path, rel_path) = self
+            .resolve_edit_target(&target.file_path, root_override)
+            .await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
         let source = std::fs::read_to_string(&abs_path).map_err(|e| TokenSaveError::Config {
@@ -3337,7 +4039,7 @@ impl TokenSave {
     ) -> Result<AstGrepResult> {
         use std::process::Command;
 
-        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override);
+        let (abs_path, rel_path) = self.resolve_edit_target(path, root_override).await?;
         let resolved_path = abs_path.to_string_lossy().to_string();
         let display_path = rel_path.clone().unwrap_or_else(|| resolved_path.clone());
 

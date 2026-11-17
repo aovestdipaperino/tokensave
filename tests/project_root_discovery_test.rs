@@ -95,11 +95,11 @@ fn init_at(fx: &Fixture, dir: &Path) {
 }
 
 fn db_path(root: &Path) -> PathBuf {
-    root.join(".tokensave").join("tokensave.db")
+    tokensave::config::get_tokensave_dir(root).join("tokensave.db")
 }
 
 fn config_path(root: &Path) -> PathBuf {
-    root.join(".tokensave").join("config.json")
+    tokensave::config::get_tokensave_dir(root).join("config.json")
 }
 
 /// Index contents a no-op must leave alone: the DB bytes and the config text.
@@ -130,7 +130,10 @@ fn init_below_an_existing_project_reuses_it_without_indexing() {
         assert!(err.contains(&root.display().to_string()), "stderr: {err}");
         assert!(err.contains("No initialization or indexing required"));
         assert!(!err.contains("indexing done"), "must not index: {err}");
-        assert!(!cwd.join(".tokensave").exists(), "no nested .tokensave");
+        assert!(
+            !tokensave::config::get_tokensave_dir(&cwd).exists(),
+            "no nested .tokensave"
+        );
         assert_eq!(
             snapshot(&root),
             before,
@@ -164,8 +167,8 @@ fn init_in_an_uninitialized_git_subdirectory_targets_the_git_root() {
     let out = fx.tokensave(&cwd, &["init"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert!(db_path(&root).is_file(), "the git root must be initialized");
-    assert!(!cwd.join(".tokensave").exists());
-    assert!(!root.join("src").join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(&cwd).exists());
+    assert!(!tokensave::config::get_tokensave_dir(&root.join("src")).exists());
 }
 
 #[test]
@@ -211,7 +214,7 @@ fn non_git_project_is_discovered_from_a_subdirectory() {
     let out = fx.tokensave(&cwd, &["init"]);
     assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
     assert!(stderr(&out).contains("already initialized in"));
-    assert!(!cwd.join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(&cwd).exists());
 }
 
 #[test]
@@ -230,7 +233,7 @@ fn search_from_a_subdirectory_uses_the_root_index_and_root_relative_paths() {
         !text.contains("src/backend"),
         "no cwd-relative prefix: {text}"
     );
-    assert!(!cwd.join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(&cwd).exists());
 }
 
 #[test]
@@ -244,7 +247,7 @@ fn sync_and_status_from_a_subdirectory_use_the_root_index() {
 
     let out = fx.tokensave(&cwd, &["sync"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
-    assert!(!cwd.join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(&cwd).exists());
 
     let out = fx.tokensave(&cwd, &["tool", "search", "second"]);
     assert!(stdout(&out).contains("src/more.rs"), "{}", stdout(&out));
@@ -286,7 +289,7 @@ fn malformed_parent_configuration_is_an_actionable_error() {
         "stderr: {err}"
     );
     assert!(err.contains("config.json"), "stderr: {err}");
-    assert!(!cwd.join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(&cwd).exists());
 }
 
 #[test]
@@ -346,5 +349,109 @@ fn mcp_server_launched_from_a_subdirectory_serves_the_root_project() {
         "stdout: {text}\nstderr: {}",
         stderr(&out)
     );
-    assert!(!cwd.join(".tokensave").exists());
+    assert!(!tokensave::config::get_tokensave_dir(&cwd).exists());
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "TokenSave Test")
+        .env("GIT_AUTHOR_EMAIL", "tokensave@example.com")
+        .env("GIT_COMMITTER_NAME", "TokenSave Test")
+        .env("GIT_COMMITTER_EMAIL", "tokensave@example.com")
+        .output()
+        .expect("git must be on PATH for this test");
+    assert!(
+        out.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        stderr(&out)
+    );
+}
+
+/// The start of the warning for an index that belongs to a different working
+/// tree (#312).
+const BORROWED_INDEX_WARNING: &str = "belongs to a different git working tree";
+
+/// A main checkout with an index, and a linked worktree inside it that has no
+/// index of its own. Returns the two roots.
+fn main_with_nested_worktree(fx: &Fixture) -> (PathBuf, PathBuf) {
+    let main = fx.dir(&["main"]);
+    git_repo(&main, "in_main");
+    git(&main, &["add", "-A"]);
+    git(&main, &["commit", "-q", "-m", "base"]);
+    init_at(fx, &main);
+    let nested = main.join("nested");
+    git(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "side",
+            &nested.to_string_lossy(),
+        ],
+    );
+    (main, nested)
+}
+
+/// A command in a linked worktree nested in its main checkout uses the index
+/// of the main checkout. The CLI must say so, as the MCP server does (#865).
+#[test]
+fn commands_in_a_nested_worktree_warn_about_the_borrowed_index() {
+    let fx = Fixture::new();
+    let (main, nested) = main_with_nested_worktree(&fx);
+
+    for args in [&["status"][..], &["sync"], &["tool", "search", "in_main"]] {
+        let out = fx.tokensave(&nested, args);
+        let err = stderr(&out);
+        assert!(out.status.success(), "{args:?} failed: {err}");
+        assert!(
+            err.contains(BORROWED_INDEX_WARNING),
+            "{args:?} must warn about the borrowed index: {err}"
+        );
+        assert!(err.contains(&nested.display().to_string()), "{err}");
+    }
+
+    // The main checkout and its subdirectories own the index.
+    for cwd in [main.clone(), main.join("src")] {
+        let out = fx.tokensave(&cwd, &["status"]);
+        let err = stderr(&out);
+        assert!(!err.contains(BORROWED_INDEX_WARNING), "{err}");
+    }
+}
+
+/// The warning tells the user to run `tokensave init` in the worktree. That
+/// command must create the index of the worktree (#865).
+#[test]
+fn init_in_a_nested_worktree_creates_the_worktree_index() {
+    let fx = Fixture::new();
+    let (main, nested) = main_with_nested_worktree(&fx);
+    let before = snapshot(&main);
+
+    // From a subdirectory, `init` targets the root of the worktree.
+    let out = fx.tokensave(&nested.join("src"), &["init"]);
+    let err = stderr(&out);
+    assert!(out.status.success(), "init failed: {err}");
+    assert!(
+        db_path(&nested).is_file(),
+        "init must create the index of the worktree: {err}"
+    );
+    assert!(!tokensave::config::get_tokensave_dir(&nested.join("src")).exists());
+    assert_eq!(
+        snapshot(&main),
+        before,
+        "the index of the main checkout must be untouched"
+    );
+
+    // The worktree now owns its index, so no command warns.
+    let out = fx.tokensave(&nested, &["tool", "search", "in_main"]);
+    assert!(stdout(&out).contains("src/lib.rs"), "{}", stdout(&out));
+    assert!(
+        !stderr(&out).contains(BORROWED_INDEX_WARNING),
+        "{}",
+        stderr(&out)
+    );
 }

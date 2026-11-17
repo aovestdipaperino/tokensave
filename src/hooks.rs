@@ -171,8 +171,6 @@ enum PatternShape {
     BareSymbol,
     /// `\bsymbol\b` — a word-boundary symbol lookup.
     WordBoundary,
-    /// Multiple identifiers joined by `|` (or `\|` in BRE).
-    Alternation,
     /// A definition-anchored spelling of a single symbol — a leading
     /// `def`/`class`/`fn`/… keyword, a trailing `(`, or both (#452). The
     /// grepper is looking for where the symbol is *declared*, which is
@@ -393,34 +391,33 @@ fn build_block_message(reason: &str) -> String {
     .to_string()
 }
 
-/// #686: deny only when the index actually defines one of the names the
+/// #686: deny only when the index actually defines the name the
 /// pattern searches for. Keywords (`catch`), version strings and prose that
 /// merely look identifier-shaped are not symbols, and redirecting them to
 /// `tokensave_search` would return nothing.
 ///
 /// Fails closed: an index that cannot be opened or queried keeps the
 /// pre-#686 deny, and so does a missing `project_root` (hermetic tests).
-fn any_symbol_indexed(env: &HookEnv, symbols: &[String]) -> bool {
+fn is_symbol_indexed(env: &HookEnv, symbol: &str) -> bool {
     let Some(root) = env.project_root.as_deref() else {
+        log_index_probe("no_project_root_fail_closed");
         return true;
     };
-    if symbols.is_empty() {
+    let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
+    // Fail closed, like an index that cannot be opened (#940).
+    if crate::db::compatibility::check_wal_sidecar(&db_path).is_err() {
+        log_index_probe("wal_refused_fail_closed");
         return true;
     }
-    let db_path = root.join(".tokensave").join("tokensave.db");
-    let placeholders = vec!["?"; symbols.len()].join(",");
-    let sql = format!("SELECT 1 FROM nodes WHERE LOWER(name) IN ({placeholders}) LIMIT 1");
-    let params: Vec<libsql::Value> = symbols
-        .iter()
-        .map(|s| libsql::Value::Text(s.to_lowercase()))
-        .collect();
+    let sql = "SELECT 1 FROM nodes WHERE LOWER(name) = ? LIMIT 1";
+    let name = symbol.to_lowercase();
     let probe = async move {
         let db = libsql::Builder::new_local(&db_path)
             .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .build()
             .await?;
         let conn = db.connect()?;
-        let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+        let mut rows = conn.query(sql, libsql::params![name]).await?;
         Ok::<bool, libsql::Error>(rows.next().await?.is_some())
     };
     // The hook runs inside `#[tokio::main]`'s multi-thread runtime (main.rs),
@@ -436,22 +433,98 @@ fn any_symbol_indexed(env: &HookEnv, symbols: &[String]) -> bool {
             .ok()
             .and_then(|rt| rt.block_on(probe).ok()),
     };
+    log_index_probe(match ran {
+        Some(true) => "symbol_found",
+        Some(false) => "symbol_absent",
+        None => "index_unavailable_fail_closed",
+    });
     ran.unwrap_or(true)
+}
+
+fn log_index_probe(outcome: &'static str) {
+    crate::debug_log::event(
+        crate::debug_log::Level::Debug,
+        "hook",
+        "grep_index_probe",
+        || serde_json::json!({ "outcome": outcome }),
+    );
+}
+
+fn grep_check(tool: &'static str, check: &'static str, passed: bool) {
+    crate::debug_log::event(
+        crate::debug_log::Level::Debug,
+        "hook",
+        "grep_check",
+        || serde_json::json!({ "tool": tool, "check": check, "passed": passed }),
+    );
+}
+
+fn check_grep_pattern<'a>(
+    tool: &'static str,
+    pattern: &'a str,
+    env: &HookEnv,
+) -> Option<SymbolMatch<'a>> {
+    let found = classify_symbol_pattern(pattern);
+    crate::debug_log::event(
+        crate::debug_log::Level::Debug,
+        "hook",
+        "grep_classification",
+        || {
+            let shape = match found.as_ref().map(|found| found.shape) {
+                Some(PatternShape::BareSymbol) => "bare_symbol",
+                Some(PatternShape::WordBoundary) => "word_boundary",
+                Some(PatternShape::Definition) => "definition",
+                None => "not_a_single_symbol",
+            };
+            serde_json::json!({ "tool": tool, "shape": shape })
+        },
+    );
+    let found = found?;
+    let indexed = is_symbol_indexed(env, found.symbol);
+    grep_check(tool, "symbol_indexed", indexed);
+    indexed.then_some(found)
+}
+
+fn log_grep_decision(tool: &'static str, denied: bool) {
+    crate::debug_log::event(
+        crate::debug_log::Level::Debug,
+        "hook",
+        "grep_decision",
+        || {
+            serde_json::json!({
+                "tool": tool,
+                "decision": if denied { "deny" } else { "allow" },
+                "reason": if denied { "symbol_lookup_policy" } else { "redirect_conditions_not_met" },
+            })
+        },
+    );
 }
 
 /// Inspect a `Grep` tool input. Returns `Some(reason)` to redirect.
 fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
+    let decision = evaluate_grep_tool_input_inner(parsed, env);
+    log_grep_decision("Grep", decision.is_some());
+    decision
+}
+
+fn evaluate_grep_tool_input_inner(parsed: &Value, env: &HookEnv) -> Option<String> {
+    grep_check("Grep", "project_index_available", env.in_tokensave_project);
+    grep_check("Grep", "hook_enabled", !env.disable_grep_hook);
     if !env.in_tokensave_project || env.disable_grep_hook {
         return None;
     }
     let pattern = parsed.get("pattern").and_then(|v| v.as_str())?;
-    if pattern.is_empty() || pattern.len() > MAX_PATTERN_LEN {
+    let valid_length = !pattern.is_empty() && pattern.len() <= MAX_PATTERN_LEN;
+    grep_check("Grep", "pattern_length_eligible", valid_length);
+    if !valid_length {
         return None;
     }
     // Both harnesses default an omitted mode to a cheap path-only result.
     // Redirect only explicit content searches; missing, malformed, cheap, or
     // unknown modes fail open.
-    if parsed.get("output_mode").and_then(|v| v.as_str()) != Some("content") {
+    let content_mode = parsed.get("output_mode").and_then(|v| v.as_str()) == Some("content");
+    grep_check("Grep", "content_mode", content_mode);
+    if !content_mode {
         return None;
     }
     let path = parsed.get("path").and_then(|v| v.as_str()).unwrap_or("");
@@ -462,13 +535,12 @@ fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let ty = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    if !target_looks_like_code(path, &[glob], ty, env) {
+    let code_target = target_looks_like_code(path, &[glob], ty, env);
+    grep_check("Grep", "code_target_eligible", code_target);
+    if !code_target {
         return None;
     }
-    let found = classify_symbol_pattern(pattern)?;
-    if !any_symbol_indexed(env, &found.symbols) {
-        return None;
-    }
+    let found = check_grep_pattern("Grep", pattern, env)?;
     Some(redirect_message("Grep", pattern, &found))
 }
 
@@ -669,6 +741,14 @@ fn split_top_level_segments(command: &str) -> Option<Vec<Vec<&str>>> {
 }
 
 fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {
+    let decision = evaluate_bash_command_inner(command, env);
+    log_grep_decision("Bash", decision.is_some());
+    decision
+}
+
+fn evaluate_bash_command_inner(command: &str, env: &HookEnv) -> Option<String> {
+    grep_check("Bash", "project_index_available", env.in_tokensave_project);
+    grep_check("Bash", "hook_enabled", !env.disable_grep_hook);
     if !env.in_tokensave_project || env.disable_grep_hook {
         return None;
     }
@@ -690,12 +770,15 @@ fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {
     let mut reason = None;
     for stages in &segments {
         let (first, filters) = stages.split_first()?;
-        if !filters.iter().all(|stage| is_read_only_filter(stage)) {
+        let read_only_filters = filters.iter().all(|stage| is_read_only_filter(stage));
+        if !read_only_filters {
+            grep_check("Bash", "read_only_pipeline_filters", false);
             return None;
         }
         if let Some(found) = evaluate_bash_segment(first, env) {
             reason.get_or_insert(found);
         } else if !is_inert_command(first, reason.is_none() && filters.is_empty()) {
+            grep_check("Bash", "inert_companion_command", false);
             return None;
         }
     }
@@ -708,10 +791,13 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
     // the deliberate bypass is honored rather than stripped and then blocked.
     let stripped = strip_command_prefixes(command.trim());
     if stripped.disables_hook {
+        grep_check("Bash", "inline_hook_enabled", false);
         return None;
     }
     let mut inv = extract_grep_invocation(command)?;
+    grep_check(inv.tool, "recognized_grep_invocation", true);
     if inv.pattern.is_empty() || inv.pattern.len() > MAX_PATTERN_LEN {
+        grep_check(inv.tool, "pattern_length_eligible", false);
         return None;
     }
     if !inv.git_trees.is_empty() {
@@ -725,6 +811,7 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
             None => base.to_path_buf(),
         };
         if !inv.git_trees.iter().all(|t| base.join(t).exists()) {
+            grep_check(inv.tool, "working_tree_target", false);
             return None;
         }
         let trees = std::mem::take(&mut inv.git_trees);
@@ -743,7 +830,10 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
             let cd_path = expand_home_prefix(&cd_path, crate::agents::home_dir().as_deref())
                 .unwrap_or_else(|| PathBuf::from(cd_path.as_ref()));
             match classify_path_within_project(&cd_path.to_string_lossy(), Some(root), env.base()) {
-                Containment::Outside => return None,
+                Containment::Outside => {
+                    grep_check(inv.tool, "working_directory_inside_project", false);
+                    return None;
+                }
                 Containment::Inside => {
                     // Canonicalize the cd'd directory so a symlink to a code directory
                     // is resolved to the real path and classified by its basename.
@@ -766,18 +856,17 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
             Cow::Borrowed(target)
         };
     let globs: Vec<&str> = inv.globs.iter().map(String::as_str).collect();
-    if !target_looks_like_code(
+    let code_target = target_looks_like_code(
         target.as_ref(),
         &globs,
         inv.ty.as_deref().unwrap_or(""),
         env,
-    ) {
+    );
+    grep_check(inv.tool, "code_target_eligible", code_target);
+    if !code_target {
         return None;
     }
-    let found = classify_symbol_pattern(&inv.pattern)?;
-    if !any_symbol_indexed(env, &found.symbols) {
-        return None;
-    }
+    let found = check_grep_pattern(inv.tool, &inv.pattern, env)?;
     Some(redirect_message("Bash grep", &inv.pattern, &found))
 }
 
@@ -903,13 +992,11 @@ fn files_redirect_message(tool_label: &str, pattern: &str) -> String {
     )
 }
 
-/// A redirectable grep pattern: its shape and the symbol names it searches for,
-/// in the order they appear. The names feed the concrete replacement calls the
-/// denial spells out (#654).
+/// A redirectable grep pattern and the symbol used in the replacement call.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SymbolMatch {
+struct SymbolMatch<'a> {
     shape: PatternShape,
-    symbols: Vec<String>,
+    symbol: &'a str,
 }
 
 /// One `tokensave_search` call spelled the way an agent would type it, so the
@@ -939,21 +1026,14 @@ fn symbol_suggestions(symbol: &str) -> String {
     )
 }
 
-fn redirect_message(tool_label: &str, pattern: &str, found: &SymbolMatch) -> String {
-    let suggestion = match (found.shape, found.symbols.as_slice()) {
-        (PatternShape::Definition, [symbol, ..]) => {
-            format!("{} to find the definition", search_call(symbol, false))
-        }
-        (PatternShape::Alternation, symbols) if symbols.len() > 1 => {
-            let calls: Vec<String> = symbols.iter().map(|s| search_call(s, false)).collect();
-            format!(
-                "one call per name: {}. For call sites, search `Name(` with \"literal\": true",
-                calls.join(", ")
-            )
-        }
-        (_, [symbol, ..]) => symbol_suggestions(symbol),
-        // Not produced by the classifier: a match always carries a symbol.
-        (_, []) => "tokensave_search".to_string(),
+fn redirect_message(tool_label: &str, pattern: &str, found: &SymbolMatch<'_>) -> String {
+    let suggestion = if found.shape == PatternShape::Definition {
+        format!(
+            "{} to find the definition",
+            search_call(found.symbol, false)
+        )
+    } else {
+        symbol_suggestions(found.symbol)
     };
     format!(
         "STOP: This {tool_label} targets a code file in a tokensave-indexed project and the \
@@ -963,77 +1043,29 @@ fn redirect_message(tool_label: &str, pattern: &str, found: &SymbolMatch) -> Str
     )
 }
 
-/// Classify the pattern. Returns `None` for anything that contains regex
-/// metacharacters we don't understand — the caller passes those through.
-///
-/// An alternation is a symbol search when *any* branch is symbol-shaped
-/// (#648): `MySymbol\|throw new Error` still hunts for `MySymbol`, and the
-/// prose branch beside it does not change that.
-fn classify_symbol_pattern(pattern: &str) -> Option<SymbolMatch> {
-    let mut p = pattern;
-    let mut had_wb = false;
-    if let Some(rest) = p.strip_prefix("\\b") {
-        if let Some(rest2) = rest.strip_suffix("\\b") {
-            p = rest2;
-            had_wb = true;
-        }
+/// Classify single-symbol patterns that the hook can redirect.
+fn classify_symbol_pattern(pattern: &str) -> Option<SymbolMatch<'_>> {
+    // Both ERE `|` and BRE `\|` can match text from several branches.
+    // A symbol lookup cannot preserve those matches (#1031).
+    if pattern.contains('|') {
+        return None;
     }
 
-    // Normalize BRE `\|` to ERE `|` so we can split uniformly. Anything that
-    // still looks like a regex escape (e.g. `\.`, `\(`, `\d`) leaves a `\`
-    // behind, which `is_pure_identifier` will reject.
-    let normalized = p.replace("\\|", "|");
-    let parts: Vec<&str> = normalized.split('|').collect();
-
-    if let [only] = parts.as_slice() {
-        if is_pure_identifier(only) {
-            let shape = if had_wb {
-                PatternShape::WordBoundary
-            } else {
-                PatternShape::BareSymbol
-            };
-            return Some(SymbolMatch {
-                shape,
-                symbols: vec![(*only).to_string()],
-            });
-        }
-        // Not a bare identifier. Before passing it through, check whether it
-        // is the idiomatic way to grep for a *definition* or a call — `def
-        // foo`, `class MyError`, `foo(` (#452). Those are the highest-value
-        // redirects, not the least.
-        let (shape, symbol) = classify_definition_pattern(p)?;
-        return Some(SymbolMatch {
-            shape,
-            symbols: vec![symbol.to_string()],
-        });
-    }
-
-    let mut symbols: Vec<String> = Vec::new();
-    let mut single_shape = PatternShape::BareSymbol;
-    for (shape, symbol) in parts.iter().filter_map(|part| classify_branch(part)) {
-        if !symbols.iter().any(|s| s == symbol) {
-            symbols.push(symbol.to_string());
-            single_shape = shape;
-        }
-    }
-    let shape = match symbols.len() {
-        0 => return None,
-        1 => single_shape,
-        _ => PatternShape::Alternation,
-    };
-    Some(SymbolMatch { shape, symbols })
-}
-
-/// Classify one branch of an alternation, accepting a per-branch `\b…\b`.
-fn classify_branch(part: &str) -> Option<(PatternShape, &str)> {
-    let part = part
+    let bounded = pattern
         .strip_prefix("\\b")
-        .and_then(|rest| rest.strip_suffix("\\b"))
-        .unwrap_or(part);
-    if is_pure_identifier(part) {
-        return Some((PatternShape::BareSymbol, part));
-    }
-    classify_definition_pattern(part)
+        .and_then(|rest| rest.strip_suffix("\\b"));
+    let symbol = bounded.unwrap_or(pattern);
+    let (shape, symbol) = if is_pure_identifier(symbol) {
+        let shape = if bounded.is_some() {
+            PatternShape::WordBoundary
+        } else {
+            PatternShape::BareSymbol
+        };
+        (shape, symbol)
+    } else {
+        classify_definition_pattern(symbol)?
+    };
+    Some(SymbolMatch { shape, symbol })
 }
 
 /// Definition-anchor keywords that may precede a symbol name in a grep pattern.
@@ -1531,6 +1563,7 @@ fn classify_glob_target(glob: &str) -> Option<bool> {
 
 #[derive(Debug, Default)]
 struct GrepInvocation {
+    tool: &'static str,
     pattern: String,
     targets: Vec<String>,
     /// File globs the search was narrowed to: grep's `--include`, rg/ag's
@@ -1702,15 +1735,13 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
     // Identify the tool. `git grep` searches the working tree unless it is
     // given a revision (#648); which positionals are revisions is settled by
     // the caller from `git_trees`.
-    let (is_git, after_tool) = match strip_git_grep(rest) {
-        Some(after) => (true, after),
-        None => (
-            false,
-            ["grep ", "rg ", "ag "]
-                .iter()
-                .find_map(|prefix| rest.strip_prefix(prefix))?,
-        ),
+    let (tool, after_tool) = match strip_git_grep(rest) {
+        Some(after) => ("git grep", after),
+        None => [("grep", "grep "), ("rg", "rg "), ("ag", "ag ")]
+            .into_iter()
+            .find_map(|(tool, prefix)| rest.strip_prefix(prefix).map(|after| (tool, after)))?,
     };
+    let is_git = tool == "git grep";
 
     let tokens = shell_split(after_tool);
     let mut pattern: Option<String> = None;
@@ -1797,6 +1828,7 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
     }
 
     Some(GrepInvocation {
+        tool,
         pattern: pattern?,
         targets,
         globs,
@@ -2265,6 +2297,70 @@ pub fn evaluate_droid_pre_tool_use_with_env(raw: &str, env: &HookEnv) -> Option<
     evaluate_hook_decision_core(&tool_input.to_string(), &env)
 }
 
+/// Pi `tool_call` guardrail handler, called by the installed extension.
+///
+/// Pi delivers `{ toolName, input, cwd }` on stdin, and the extension reads the
+/// decision from the exit status: 2 and a stderr reason block the call, 0 lets
+/// it through. The same channel Kiro and Droid use, because Pi has no
+/// hook-JSON contract of its own.
+pub fn hook_pi_pre_tool_use() -> i32 {
+    let event = read_stdin_to_string();
+    if let Some(reason) = evaluate_pi_pre_tool_use(&event) {
+        eprintln!("{reason}");
+        2
+    } else {
+        0
+    }
+}
+
+/// Pure decision logic for Pi `tool_call` events, using the real process
+/// environment.
+pub fn evaluate_pi_pre_tool_use(raw: &str) -> Option<String> {
+    evaluate_pi_pre_tool_use_with_env(raw, &HookEnv::from_runtime())
+}
+
+/// [`evaluate_pi_pre_tool_use`] with an explicit environment snapshot.
+///
+/// Pi's native tools are named in lowercase and take payloads that are close to
+/// Claude's but not identical, so each one is normalized before it reaches the
+/// shared [`evaluate_hook_decision_core`]:
+///
+/// - `grep` always returns matching lines, but the core only redirects a
+///   content search, which it recognizes by Claude's `output_mode`, so the
+///   adapter supplies `content`.
+/// - `find` is a glob search: `pattern` plus an optional `path`, and nothing
+///   else, which is exactly how the core tells a path search from a content
+///   search.
+/// - `bash` already carries `command`.
+///
+/// Anything else passes untouched, and so does a payload that is not Pi's
+/// envelope.
+pub fn evaluate_pi_pre_tool_use_with_env(raw: &str, env: &HookEnv) -> Option<String> {
+    let Ok(event) = serde_json::from_str::<Value>(raw) else {
+        return evaluate_hook_decision_core(raw, env);
+    };
+    let Some(tool_name) = event.get("toolName").and_then(Value::as_str) else {
+        return evaluate_hook_decision_core(raw, env);
+    };
+    // The extension reports the session's directory; without it the hook
+    // process's own cwd would be the wrong base for relative targets.
+    let env = env.for_event(&event);
+    let mut tool_input = event
+        .get("input")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    match tool_name {
+        "grep" => {
+            tool_input["output_mode"] = Value::String("content".to_string());
+        }
+        "find" | "bash" => {}
+        _ => return None,
+    }
+
+    evaluate_hook_decision_core(&tool_input.to_string(), &env)
+}
+
 fn kiro_event_has_research_text(value: &Value) -> bool {
     let mut text = Vec::new();
     collect_kiro_task_strings(value, &mut text);
@@ -2413,6 +2509,29 @@ pub async fn hook_stop() {
     };
 
     let stats = crate::accounting::parser::ingest_claude_only(&gdb).await;
+    print_session_receipt(&stats).await;
+}
+
+/// Pi `agent_settled` hook handler, called by the installed extension.
+///
+/// The Pi counterpart of [`hook_stop`]: it ingests only Pi sessions, so the
+/// hot path stays free of the Claude and Droid scans, and prints the same
+/// receipt. The extension shows stderr to the user, which is why nothing is
+/// written to stdout.
+pub async fn hook_pi_stop() {
+    let Some(gdb) = crate::global_db::GlobalDb::open().await else {
+        return;
+    };
+
+    let stats = crate::accounting::parser::ingest_pi_only(&gdb).await;
+    print_session_receipt(&stats).await;
+}
+
+/// Prints the one-line session receipt to stderr for `stats`.
+///
+/// A run that ingested no new turn prints nothing, so a receipt always
+/// describes fresh work.
+async fn print_session_receipt(stats: &crate::accounting::IngestStats) {
     if stats.turns_inserted == 0 {
         return;
     }

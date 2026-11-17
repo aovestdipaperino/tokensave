@@ -4,7 +4,9 @@ use std::os::unix::fs::symlink;
 use tempfile::TempDir;
 use tokensave::config::{load_config, save_config};
 use tokensave::tokensave::TokenSave;
-use tokensave::types::{Edge, EdgeKind, Node, NodeKind};
+#[cfg(feature = "lang-ruby")]
+use tokensave::types::NodeKind;
+use tokensave::types::{Edge, EdgeKind, Node};
 
 async fn canonical_graph(cg: &TokenSave) -> (Vec<Node>, Vec<Edge>) {
     let mut nodes = cg.db().get_all_nodes().await.unwrap();
@@ -1206,7 +1208,7 @@ async fn test_concurrent_sync_is_rejected() {
     let cg = TokenSave::init(project).await.unwrap();
 
     // Simulate an in-progress sync by placing a lockfile with our own PID.
-    let lock_path = project.join(".tokensave").join("sync.lock");
+    let lock_path = tokensave::config::get_tokensave_dir(project).join("sync.lock");
     fs::write(&lock_path, format!("{}", std::process::id())).unwrap();
 
     let err = cg.sync().await.unwrap_err();
@@ -1219,6 +1221,28 @@ async fn test_concurrent_sync_is_rejected() {
     // After removing the lockfile, sync should succeed.
     fs::remove_file(&lock_path).unwrap();
     cg.sync().await.unwrap();
+}
+
+#[test]
+fn test_concurrent_hook_sync_is_rejected_before_database_open() {
+    let dir = TempDir::new().unwrap();
+    let project = dir.path();
+    fs::create_dir_all(tokensave::config::get_tokensave_dir(project)).unwrap();
+
+    let first = tokensave::tokensave::try_acquire_auto_sync_lock(project).unwrap();
+    let error = tokensave::tokensave::try_acquire_auto_sync_lock(project)
+        .err()
+        .expect("second hook-triggered sync must not acquire the lock");
+    assert!(
+        error
+            .to_string()
+            .contains("another hook-triggered sync is already running"),
+        "unexpected error: {error}"
+    );
+
+    drop(first);
+    tokensave::tokensave::try_acquire_auto_sync_lock(project)
+        .expect("dropping the first guard must release the hook sync slot");
 }
 
 /// Regression test for the incremental-sync edge-resolution gap: when a

@@ -1,6 +1,6 @@
 use std::io::Write;
 use tempfile::NamedTempFile;
-use tokensave::sync::*;
+use tokensave::sync::{content_hash, file_stat, read_source_file};
 
 #[test]
 fn test_content_hash_deterministic() {

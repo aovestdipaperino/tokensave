@@ -2,7 +2,7 @@
 
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::PowerShellExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, NodeKind};
 
 #[test]
 fn test_powershell_extract_functions() {

@@ -725,7 +725,7 @@ fn is_exact_raw_node_id(value: &str) -> bool {
 }
 
 fn is_exact_raw_node_id_parts(kind: &str, digest: &str) -> bool {
-    NodeKind::from_str(kind).is_some()
+    kind.parse::<NodeKind>().is_ok()
         && digest.len() == 32
         && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -895,7 +895,7 @@ mod tests {
         drop(graph);
 
         if with_node {
-            let db_path = dir.path().join(".tokensave").join("tokensave.db");
+            let db_path = crate::config::get_tokensave_dir(dir.path()).join("tokensave.db");
             let (db, _) = Database::open(&db_path).await.unwrap();
             db.insert_node(&sample_node()).await.unwrap();
             db.checkpoint().await.unwrap();

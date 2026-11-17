@@ -1,7 +1,6 @@
-/// Reference resolution module.
-///
-/// Resolves unresolved references (from tree-sitter extraction) into concrete
-/// edges by matching them against known nodes in the database.
+//! Resolves references from tree-sitter extraction against known graph nodes.
+//!
+//! The resolver borrows preloaded nodes; persistence stays with the caller.
 mod js_specifier;
 mod resolver;
 mod touched;

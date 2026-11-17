@@ -1,0 +1,52 @@
+{
+  "revision": "a1e87d652c7f00d134268fb9fadcb16d56fa7bc7",
+  "features": "lite",
+  "tools": {
+    "blaze": {
+      "steps": [
+        {
+          "name": "cold-build",
+          "argv": [
+            "blaze",
+            "build",
+            "--locked",
+            "--no-default-features",
+            "--features",
+            "lite"
+          ],
+          "ok": false,
+          "exit_code": 101,
+          "timed_out": false,
+          "wall_s": 4.26,
+          "cpu_s": 14.101,
+          "peak_rss_mib": 468.0,
+          "log": "$CHECKOUT/.blaze-eval/run/logs/blaze-01-cold-build.log",
+          "error_tail": "$ blaze build --locked --no-default-features --features lite\n   Compiling tokensave v7.17.0 ($CHECKOUT/.blaze-eval/run/tree-blaze)\nerror: could not build `tokensave`: Failed to build the build scripts of $CHECKOUT/.blaze-eval/run/tree-blaze\n  blaze could not run the build script of `faster-hex v0.10.1` for the load\n  failed to run custom build command for `faster-hex v0.10.1`\n    \n    Caused by:\n    process didn't exit successfully: `$CHECKOUT/.blaze-eval/run/tree-blaze/target/rust-analyzer/compile-time/build/faster-hex-ce44162b3357e015/build-script-build` (exit status: 101)\n    --- stderr\n    \n    thread 'main' (2) panicked at $HOME/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/lib.rs:160:20:\n    called `Result::unwrap()` on an `Err` value: Error { kind: Other(\"could not execute rustc\") }\n    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n(what blaze said is in $BLAZE_HOME/workers/acfb68cdd018aba6/log)\n"
+        }
+      ],
+      "disk": {
+        "target_after_cold_mib": 578.23828125,
+        "target_at_end_mib": 578.23828125,
+        "tool_home_growth_mib": 0.0
+      },
+      "status": "plain cargo: not through blaze (`blaze enable` turns it on)\ndaemon: pid 90279, version 0.20261027.0-f60566aa-bfa6a50-18e84e6021a7f916, exits after 1800s idle, workers hold at most 15470 MB\n  worker: pid 90282, $CHECKOUT/.blaze-eval/run/tree-blaze/, log $BLAZE_HOME/workers/acfb68cdd018aba6/log\n    $CHECKOUT/.blaze-eval/run/tree-blaze: failed: the daemon could not load the workspace (exit status: 1: panicked at $HOME/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/lib.rs:160:20:          called `Result::unwrap()` on an `Err` value: Error { kind: Other(\"could not execute rustc\") }); the worker's log is $BLAZE_HOME/workers/acfb68cdd018aba6/log\nstore: 834 MB, at most 7525 MB (`blaze cache gc` collects it), $HOME/.cache/ra-jit/store"
+    }
+  },
+  "started": "2026-11-15T19:34:03Z",
+  "environment": {
+    "cpus": 8,
+    "mem_total_mib": 30942,
+    "kernel": "7.0.0-38-generic",
+    "python": "3.14.4",
+    "cargo_version": "cargo 1.100.0 (3acc79c0c 2026-11-05)",
+    "rustc_version": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+    "cc_version": [
+      "cc (Ubuntu 15.2.0-16ubuntu1) 15.2.0"
+    ],
+    "blaze_version": "blaze 0.20261027.0 (49ca152)"
+  },
+  "measurement_notes": [
+    "Confirmation uses the already populated shared Blaze cache; not a fresh-store cold build.",
+    "CPU accounting includes reaped daemon workers."
+  ]
+}

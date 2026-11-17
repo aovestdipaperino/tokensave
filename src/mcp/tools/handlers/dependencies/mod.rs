@@ -401,7 +401,6 @@ fn render_crate(workspaces: &[Workspace], name: &str, kind_filter: &str) -> Tool
 
 // Silence unused-warning when no ecosystem uses a particular DepKind variant
 // in tests-only builds.
-#[allow(dead_code)]
 fn _all_kinds_referenced() {
     let _ = DepKind::Normal;
     let _ = DepKind::Build;

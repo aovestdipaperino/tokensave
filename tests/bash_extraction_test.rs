@@ -2,7 +2,7 @@
 
 use tokensave::extraction::BashExtractor;
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, NodeKind};
 
 #[test]
 fn test_bash_extract_functions() {
