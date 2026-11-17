@@ -171,8 +171,6 @@ enum PatternShape {
     BareSymbol,
     /// `\bsymbol\b` — a word-boundary symbol lookup.
     WordBoundary,
-    /// Multiple identifiers joined by `|` (or `\|` in BRE).
-    Alternation,
     /// A definition-anchored spelling of a single symbol — a leading
     /// `def`/`class`/`fn`/… keyword, a trailing `(`, or both (#452). The
     /// grepper is looking for where the symbol is *declared*, which is
@@ -393,38 +391,31 @@ fn build_block_message(reason: &str) -> String {
     .to_string()
 }
 
-/// #686: deny only when the index actually defines one of the names the
+/// #686: deny only when the index actually defines the name the
 /// pattern searches for. Keywords (`catch`), version strings and prose that
 /// merely look identifier-shaped are not symbols, and redirecting them to
 /// `tokensave_search` would return nothing.
 ///
 /// Fails closed: an index that cannot be opened or queried keeps the
 /// pre-#686 deny, and so does a missing `project_root` (hermetic tests).
-fn any_symbol_indexed(env: &HookEnv, symbols: &[String]) -> bool {
+fn is_symbol_indexed(env: &HookEnv, symbol: &str) -> bool {
     let Some(root) = env.project_root.as_deref() else {
         return true;
     };
-    if symbols.is_empty() {
-        return true;
-    }
     let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
     // Fail closed, like an index that cannot be opened (#940).
     if crate::db::compatibility::check_wal_sidecar(&db_path).is_err() {
         return true;
     }
-    let placeholders = vec!["?"; symbols.len()].join(",");
-    let sql = format!("SELECT 1 FROM nodes WHERE LOWER(name) IN ({placeholders}) LIMIT 1");
-    let params: Vec<libsql::Value> = symbols
-        .iter()
-        .map(|s| libsql::Value::Text(s.to_lowercase()))
-        .collect();
+    let sql = "SELECT 1 FROM nodes WHERE LOWER(name) = ? LIMIT 1";
+    let name = symbol.to_lowercase();
     let probe = async move {
         let db = libsql::Builder::new_local(&db_path)
             .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .build()
             .await?;
         let conn = db.connect()?;
-        let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+        let mut rows = conn.query(sql, libsql::params![name]).await?;
         Ok::<bool, libsql::Error>(rows.next().await?.is_some())
     };
     // The hook runs inside `#[tokio::main]`'s multi-thread runtime (main.rs),
@@ -470,7 +461,7 @@ fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
         return None;
     }
     let found = classify_symbol_pattern(pattern)?;
-    if !any_symbol_indexed(env, &found.symbols) {
+    if !is_symbol_indexed(env, found.symbol) {
         return None;
     }
     Some(redirect_message("Grep", pattern, &found))
@@ -779,7 +770,7 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
         return None;
     }
     let found = classify_symbol_pattern(&inv.pattern)?;
-    if !any_symbol_indexed(env, &found.symbols) {
+    if !is_symbol_indexed(env, found.symbol) {
         return None;
     }
     Some(redirect_message("Bash grep", &inv.pattern, &found))
@@ -907,13 +898,11 @@ fn files_redirect_message(tool_label: &str, pattern: &str) -> String {
     )
 }
 
-/// A redirectable grep pattern: its shape and the symbol names it searches for,
-/// in the order they appear. The names feed the concrete replacement calls the
-/// denial spells out (#654).
+/// A redirectable grep pattern and the symbol used in the replacement call.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SymbolMatch {
+struct SymbolMatch<'a> {
     shape: PatternShape,
-    symbols: Vec<String>,
+    symbol: &'a str,
 }
 
 /// One `tokensave_search` call spelled the way an agent would type it, so the
@@ -943,21 +932,14 @@ fn symbol_suggestions(symbol: &str) -> String {
     )
 }
 
-fn redirect_message(tool_label: &str, pattern: &str, found: &SymbolMatch) -> String {
-    let suggestion = match (found.shape, found.symbols.as_slice()) {
-        (PatternShape::Definition, [symbol, ..]) => {
-            format!("{} to find the definition", search_call(symbol, false))
-        }
-        (PatternShape::Alternation, symbols) if symbols.len() > 1 => {
-            let calls: Vec<String> = symbols.iter().map(|s| search_call(s, false)).collect();
-            format!(
-                "one call per name: {}. For call sites, search `Name(` with \"literal\": true",
-                calls.join(", ")
-            )
-        }
-        (_, [symbol, ..]) => symbol_suggestions(symbol),
-        // Not produced by the classifier: a match always carries a symbol.
-        (_, []) => "tokensave_search".to_string(),
+fn redirect_message(tool_label: &str, pattern: &str, found: &SymbolMatch<'_>) -> String {
+    let suggestion = if found.shape == PatternShape::Definition {
+        format!(
+            "{} to find the definition",
+            search_call(found.symbol, false)
+        )
+    } else {
+        symbol_suggestions(found.symbol)
     };
     format!(
         "STOP: This {tool_label} targets a code file in a tokensave-indexed project and the \
@@ -967,77 +949,29 @@ fn redirect_message(tool_label: &str, pattern: &str, found: &SymbolMatch) -> Str
     )
 }
 
-/// Classify the pattern. Returns `None` for anything that contains regex
-/// metacharacters we don't understand — the caller passes those through.
-///
-/// An alternation is a symbol search when *any* branch is symbol-shaped
-/// (#648): `MySymbol\|throw new Error` still hunts for `MySymbol`, and the
-/// prose branch beside it does not change that.
-fn classify_symbol_pattern(pattern: &str) -> Option<SymbolMatch> {
-    let mut p = pattern;
-    let mut had_wb = false;
-    if let Some(rest) = p.strip_prefix("\\b") {
-        if let Some(rest2) = rest.strip_suffix("\\b") {
-            p = rest2;
-            had_wb = true;
-        }
+/// Classify single-symbol patterns that the hook can redirect.
+fn classify_symbol_pattern(pattern: &str) -> Option<SymbolMatch<'_>> {
+    // Both ERE `|` and BRE `\|` can match text from several branches.
+    // A symbol lookup cannot preserve those matches (#1031).
+    if pattern.contains('|') {
+        return None;
     }
 
-    // Normalize BRE `\|` to ERE `|` so we can split uniformly. Anything that
-    // still looks like a regex escape (e.g. `\.`, `\(`, `\d`) leaves a `\`
-    // behind, which `is_pure_identifier` will reject.
-    let normalized = p.replace("\\|", "|");
-    let parts: Vec<&str> = normalized.split('|').collect();
-
-    if let [only] = parts.as_slice() {
-        if is_pure_identifier(only) {
-            let shape = if had_wb {
-                PatternShape::WordBoundary
-            } else {
-                PatternShape::BareSymbol
-            };
-            return Some(SymbolMatch {
-                shape,
-                symbols: vec![(*only).to_string()],
-            });
-        }
-        // Not a bare identifier. Before passing it through, check whether it
-        // is the idiomatic way to grep for a *definition* or a call — `def
-        // foo`, `class MyError`, `foo(` (#452). Those are the highest-value
-        // redirects, not the least.
-        let (shape, symbol) = classify_definition_pattern(p)?;
-        return Some(SymbolMatch {
-            shape,
-            symbols: vec![symbol.to_string()],
-        });
-    }
-
-    let mut symbols: Vec<String> = Vec::new();
-    let mut single_shape = PatternShape::BareSymbol;
-    for (shape, symbol) in parts.iter().filter_map(|part| classify_branch(part)) {
-        if !symbols.iter().any(|s| s == symbol) {
-            symbols.push(symbol.to_string());
-            single_shape = shape;
-        }
-    }
-    let shape = match symbols.len() {
-        0 => return None,
-        1 => single_shape,
-        _ => PatternShape::Alternation,
-    };
-    Some(SymbolMatch { shape, symbols })
-}
-
-/// Classify one branch of an alternation, accepting a per-branch `\b…\b`.
-fn classify_branch(part: &str) -> Option<(PatternShape, &str)> {
-    let part = part
+    let bounded = pattern
         .strip_prefix("\\b")
-        .and_then(|rest| rest.strip_suffix("\\b"))
-        .unwrap_or(part);
-    if is_pure_identifier(part) {
-        return Some((PatternShape::BareSymbol, part));
-    }
-    classify_definition_pattern(part)
+        .and_then(|rest| rest.strip_suffix("\\b"));
+    let symbol = bounded.unwrap_or(pattern);
+    let (shape, symbol) = if is_pure_identifier(symbol) {
+        let shape = if bounded.is_some() {
+            PatternShape::WordBoundary
+        } else {
+            PatternShape::BareSymbol
+        };
+        (shape, symbol)
+    } else {
+        classify_definition_pattern(symbol)?
+    };
+    Some(SymbolMatch { shape, symbol })
 }
 
 /// Definition-anchor keywords that may precede a symbol name in a grep pattern.

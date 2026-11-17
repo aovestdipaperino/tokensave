@@ -96,7 +96,9 @@ For agent-specific instructions, see [Connecting to Your Agent](../USER-GUIDE.md
 
 ### PreToolUse hook
 
-The hook runs `tokensave hook-pre-tool-use` -- a native Rust command (no bash or jq required). It intercepts Agent, Grep, Glob, and Bash tool calls: Explore agents are blocked outright, symbol-shaped grep/rg/ag invocations (plain identifiers, alternations, `\b`-wrapped names) are redirected to the matching tokensave MCP tool, and path-shaped discovery (`Glob`, `find -name`, `fd --extension`) over code extensions is redirected to `tokensave_files`. Regex patterns, `git grep`, piped commands, non-code extensions, search roots outside the index, and `find` predicates that change what the command does (`-exec`, `-delete`, `-mtime`) all pass through untouched; set `TOKENSAVE_DISABLE_GREP_HOOK=1` to opt out per shell.
+The native `tokensave hook-pre-tool-use` command handles Agent, Grep, Glob, and Bash tool calls without requiring bash or jq. It blocks Explore agents, redirects eligible single-symbol searches to `tokensave_search`, and redirects path-shaped discovery (`Glob`, `find -name`, `fd --extension`) over code extensions to `tokensave_files`.
+
+Grep patterns containing a pipe pass through, including extended regex alternation (`|`) and basic regex alternation (`\|`). This preserves matches in comments, strings, and other source text even when an alternative matches an indexed symbol. Other unrecognized regex patterns, searches outside the index, searches over non-code extensions, and `find` predicates such as `-exec`, `-delete`, and `-mtime` also pass through. Set `TOKENSAVE_DISABLE_GREP_HOOK=1` to opt out per shell.
 
 Filters are read most-specific-first: an explicit `type` is authoritative, then an explicit file glob, then the search path. A documentation search such as `path: "."` with `glob: "**/*.md"` therefore passes through rather than being treated as a code search on the broad path, while a code-only glob (`**/*.rs`) still redirects even under a non-code path. Mixed globs (`**/*.{rs,md}`) pass through, since they can return documentation.
 
