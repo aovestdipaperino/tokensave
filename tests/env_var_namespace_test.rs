@@ -20,6 +20,8 @@ const EXTERNAL_ENV_VARS: &[&str] = &[
     "PI_CODING_AGENT_DIR",
     "VIBE_HOME",
     "TOOL_INPUT",
+    // Cargo supplies the compiler path used by build.rs for verbose version metadata.
+    "RUSTC",
     // Git subprocess isolation.
     "GIT_CONFIG_GLOBAL",
     "GIT_CONFIG_COUNT",
