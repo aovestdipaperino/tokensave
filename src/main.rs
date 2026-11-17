@@ -1,6 +1,6 @@
 // Rust guideline compliant 2025-10-17
 // Updated 2026-03-23: compact bordered table for status output
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::process;
 
@@ -188,8 +188,36 @@ async fn main() {
         );
         return;
     }
-    let cli = Cli::parse();
-    if let Err(e) = run(cli).await {
+    use tokensave::debug_log::{self, Level};
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    debug_log::configure(cli.debug, cli.log_level);
+    let command = matches.subcommand_name().unwrap_or("default");
+    debug_log::event(
+        Level::Info,
+        "cli",
+        "start",
+        || serde_json::json!({ "command": command }),
+    );
+    let started = debug_log::enabled(Level::Error).then(std::time::Instant::now);
+    let result = run(cli).await;
+    debug_log::event(
+        if result.is_ok() {
+            Level::Info
+        } else {
+            Level::Error
+        },
+        "cli",
+        "finish",
+        || {
+            serde_json::json!({
+                "command": command,
+                "success": result.is_ok(),
+                "elapsed_us": started.map(|start| start.elapsed().as_micros()),
+            })
+        },
+    );
+    if let Err(e) = result {
         eprintln!("Error: {}", e);
         process::exit(1);
     }
@@ -2738,6 +2766,12 @@ fn exit_after_serve(profiler: Option<tokensave::profile::Profiler>) -> ! {
     if let Some(profiler) = profiler {
         profiler.shutdown();
     }
+    tokensave::debug_log::event(
+        tokensave::debug_log::Level::Info,
+        "mcp",
+        "shutdown",
+        || serde_json::json!({ "success": true }),
+    );
     let _ = std::io::stdout().flush();
     std::process::exit(0);
 }

@@ -2,6 +2,11 @@
 
 Every `tokensave` command at a glance.
 
+Use `tokensave --debug <command>` to emit structured diagnostics on stderr.
+Use `--log-level off|error|warn|info|debug|trace` to select a level or
+`TOKENSAVE_LOG` to pass a level to an agent-launched process. See
+[Debug diagnostics](TROUBLESHOOTING.md#debug-diagnostics) for capture examples.
+
 ```bash
 tokensave --version                # Print the installed version
 tokensave --version --verbose      # Include build metadata

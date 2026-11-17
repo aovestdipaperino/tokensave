@@ -84,6 +84,15 @@ pub(crate) async fn run(name: Option<String>, args: Vec<String>) -> Result<()> {
     // The 15,000-character cap protects an agent's context window; the CLI's
     // reader is a script or a person, so it gets the whole result (#673).
     disable_response_limit();
+    use tokensave::debug_log::{event, Level};
+    event(Level::Debug, "search", "tool_dispatch", || {
+        serde_json::json!({
+            "tool": def.name,
+            "explicit_project": parsed.project.is_some(),
+            "branch_index": cg.serving_branch().is_some(),
+            "fallback": cg.is_fallback(),
+        })
+    });
     let result = handle_tool_call(&cg, &def.name, parsed.tool_args, None, None).await?;
 
     if parsed.raw_json {

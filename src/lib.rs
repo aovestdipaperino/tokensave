@@ -29,6 +29,8 @@ pub mod config;
 pub mod context;
 pub mod cpu;
 pub mod db;
+#[doc(hidden)]
+pub mod debug_log;
 pub mod derive_table;
 pub mod diagnose;
 pub mod diagnostics;

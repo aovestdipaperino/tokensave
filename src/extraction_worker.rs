@@ -352,6 +352,21 @@ fn worker_thread<F>(
         };
 
         let outcome = round_trip_with_timeout(&mut worker, &req, per_file_timeout);
+        use crate::debug_log::{event, Level};
+        let (level, status) = match &outcome {
+            RoundTripOutcome::Ok(response) if response.data.is_some() => {
+                (Level::Trace, "extracted")
+            }
+            RoundTripOutcome::Ok(_) => (Level::Trace, "no_extraction"),
+            RoundTripOutcome::Timeout => (Level::Warn, "timeout"),
+            RoundTripOutcome::Err(_) => (Level::Warn, "worker_error"),
+        };
+        event(
+            level,
+            "index",
+            "extract_file",
+            || serde_json::json!({ "batch_position": idx, "status": status }),
+        );
         let n = progress_count.fetch_add(1, Ordering::Relaxed) + 1;
         on_progress(n, total, &file_path);
 

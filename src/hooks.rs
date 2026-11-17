@@ -400,11 +400,13 @@ fn build_block_message(reason: &str) -> String {
 /// pre-#686 deny, and so does a missing `project_root` (hermetic tests).
 fn is_symbol_indexed(env: &HookEnv, symbol: &str) -> bool {
     let Some(root) = env.project_root.as_deref() else {
+        log_index_probe("no_project_root_fail_closed");
         return true;
     };
     let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
     // Fail closed, like an index that cannot be opened (#940).
     if crate::db::compatibility::check_wal_sidecar(&db_path).is_err() {
+        log_index_probe("wal_refused_fail_closed");
         return true;
     }
     let sql = "SELECT 1 FROM nodes WHERE LOWER(name) = ? LIMIT 1";
@@ -431,22 +433,98 @@ fn is_symbol_indexed(env: &HookEnv, symbol: &str) -> bool {
             .ok()
             .and_then(|rt| rt.block_on(probe).ok()),
     };
+    log_index_probe(match ran {
+        Some(true) => "symbol_found",
+        Some(false) => "symbol_absent",
+        None => "index_unavailable_fail_closed",
+    });
     ran.unwrap_or(true)
+}
+
+fn log_index_probe(outcome: &'static str) {
+    crate::debug_log::event(
+        crate::debug_log::Level::Debug,
+        "hook",
+        "grep_index_probe",
+        || serde_json::json!({ "outcome": outcome }),
+    );
+}
+
+fn grep_check(tool: &'static str, check: &'static str, passed: bool) {
+    crate::debug_log::event(
+        crate::debug_log::Level::Debug,
+        "hook",
+        "grep_check",
+        || serde_json::json!({ "tool": tool, "check": check, "passed": passed }),
+    );
+}
+
+fn check_grep_pattern<'a>(
+    tool: &'static str,
+    pattern: &'a str,
+    env: &HookEnv,
+) -> Option<SymbolMatch<'a>> {
+    let found = classify_symbol_pattern(pattern);
+    crate::debug_log::event(
+        crate::debug_log::Level::Debug,
+        "hook",
+        "grep_classification",
+        || {
+            let shape = match found.as_ref().map(|found| found.shape) {
+                Some(PatternShape::BareSymbol) => "bare_symbol",
+                Some(PatternShape::WordBoundary) => "word_boundary",
+                Some(PatternShape::Definition) => "definition",
+                None => "not_a_single_symbol",
+            };
+            serde_json::json!({ "tool": tool, "shape": shape })
+        },
+    );
+    let found = found?;
+    let indexed = is_symbol_indexed(env, found.symbol);
+    grep_check(tool, "symbol_indexed", indexed);
+    indexed.then_some(found)
+}
+
+fn log_grep_decision(tool: &'static str, denied: bool) {
+    crate::debug_log::event(
+        crate::debug_log::Level::Debug,
+        "hook",
+        "grep_decision",
+        || {
+            serde_json::json!({
+                "tool": tool,
+                "decision": if denied { "deny" } else { "allow" },
+                "reason": if denied { "symbol_lookup_policy" } else { "redirect_conditions_not_met" },
+            })
+        },
+    );
 }
 
 /// Inspect a `Grep` tool input. Returns `Some(reason)` to redirect.
 fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
+    let decision = evaluate_grep_tool_input_inner(parsed, env);
+    log_grep_decision("Grep", decision.is_some());
+    decision
+}
+
+fn evaluate_grep_tool_input_inner(parsed: &Value, env: &HookEnv) -> Option<String> {
+    grep_check("Grep", "project_index_available", env.in_tokensave_project);
+    grep_check("Grep", "hook_enabled", !env.disable_grep_hook);
     if !env.in_tokensave_project || env.disable_grep_hook {
         return None;
     }
     let pattern = parsed.get("pattern").and_then(|v| v.as_str())?;
-    if pattern.is_empty() || pattern.len() > MAX_PATTERN_LEN {
+    let valid_length = !pattern.is_empty() && pattern.len() <= MAX_PATTERN_LEN;
+    grep_check("Grep", "pattern_length_eligible", valid_length);
+    if !valid_length {
         return None;
     }
     // Both harnesses default an omitted mode to a cheap path-only result.
     // Redirect only explicit content searches; missing, malformed, cheap, or
     // unknown modes fail open.
-    if parsed.get("output_mode").and_then(|v| v.as_str()) != Some("content") {
+    let content_mode = parsed.get("output_mode").and_then(|v| v.as_str()) == Some("content");
+    grep_check("Grep", "content_mode", content_mode);
+    if !content_mode {
         return None;
     }
     let path = parsed.get("path").and_then(|v| v.as_str()).unwrap_or("");
@@ -457,13 +535,12 @@ fn evaluate_grep_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let ty = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    if !target_looks_like_code(path, &[glob], ty, env) {
+    let code_target = target_looks_like_code(path, &[glob], ty, env);
+    grep_check("Grep", "code_target_eligible", code_target);
+    if !code_target {
         return None;
     }
-    let found = classify_symbol_pattern(pattern)?;
-    if !is_symbol_indexed(env, found.symbol) {
-        return None;
-    }
+    let found = check_grep_pattern("Grep", pattern, env)?;
     Some(redirect_message("Grep", pattern, &found))
 }
 
@@ -664,6 +741,14 @@ fn split_top_level_segments(command: &str) -> Option<Vec<Vec<&str>>> {
 }
 
 fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {
+    let decision = evaluate_bash_command_inner(command, env);
+    log_grep_decision("Bash", decision.is_some());
+    decision
+}
+
+fn evaluate_bash_command_inner(command: &str, env: &HookEnv) -> Option<String> {
+    grep_check("Bash", "project_index_available", env.in_tokensave_project);
+    grep_check("Bash", "hook_enabled", !env.disable_grep_hook);
     if !env.in_tokensave_project || env.disable_grep_hook {
         return None;
     }
@@ -685,12 +770,15 @@ fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {
     let mut reason = None;
     for stages in &segments {
         let (first, filters) = stages.split_first()?;
-        if !filters.iter().all(|stage| is_read_only_filter(stage)) {
+        let read_only_filters = filters.iter().all(|stage| is_read_only_filter(stage));
+        if !read_only_filters {
+            grep_check("Bash", "read_only_pipeline_filters", false);
             return None;
         }
         if let Some(found) = evaluate_bash_segment(first, env) {
             reason.get_or_insert(found);
         } else if !is_inert_command(first, reason.is_none() && filters.is_empty()) {
+            grep_check("Bash", "inert_companion_command", false);
             return None;
         }
     }
@@ -703,10 +791,13 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
     // the deliberate bypass is honored rather than stripped and then blocked.
     let stripped = strip_command_prefixes(command.trim());
     if stripped.disables_hook {
+        grep_check("Bash", "inline_hook_enabled", false);
         return None;
     }
     let mut inv = extract_grep_invocation(command)?;
+    grep_check(inv.tool, "recognized_grep_invocation", true);
     if inv.pattern.is_empty() || inv.pattern.len() > MAX_PATTERN_LEN {
+        grep_check(inv.tool, "pattern_length_eligible", false);
         return None;
     }
     if !inv.git_trees.is_empty() {
@@ -720,6 +811,7 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
             None => base.to_path_buf(),
         };
         if !inv.git_trees.iter().all(|t| base.join(t).exists()) {
+            grep_check(inv.tool, "working_tree_target", false);
             return None;
         }
         let trees = std::mem::take(&mut inv.git_trees);
@@ -738,7 +830,10 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
             let cd_path = expand_home_prefix(&cd_path, crate::agents::home_dir().as_deref())
                 .unwrap_or_else(|| PathBuf::from(cd_path.as_ref()));
             match classify_path_within_project(&cd_path.to_string_lossy(), Some(root), env.base()) {
-                Containment::Outside => return None,
+                Containment::Outside => {
+                    grep_check(inv.tool, "working_directory_inside_project", false);
+                    return None;
+                }
                 Containment::Inside => {
                     // Canonicalize the cd'd directory so a symlink to a code directory
                     // is resolved to the real path and classified by its basename.
@@ -761,18 +856,17 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
             Cow::Borrowed(target)
         };
     let globs: Vec<&str> = inv.globs.iter().map(String::as_str).collect();
-    if !target_looks_like_code(
+    let code_target = target_looks_like_code(
         target.as_ref(),
         &globs,
         inv.ty.as_deref().unwrap_or(""),
         env,
-    ) {
+    );
+    grep_check(inv.tool, "code_target_eligible", code_target);
+    if !code_target {
         return None;
     }
-    let found = classify_symbol_pattern(&inv.pattern)?;
-    if !is_symbol_indexed(env, found.symbol) {
-        return None;
-    }
+    let found = check_grep_pattern(inv.tool, &inv.pattern, env)?;
     Some(redirect_message("Bash grep", &inv.pattern, &found))
 }
 
@@ -1469,6 +1563,7 @@ fn classify_glob_target(glob: &str) -> Option<bool> {
 
 #[derive(Debug, Default)]
 struct GrepInvocation {
+    tool: &'static str,
     pattern: String,
     targets: Vec<String>,
     /// File globs the search was narrowed to: grep's `--include`, rg/ag's
@@ -1640,15 +1735,13 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
     // Identify the tool. `git grep` searches the working tree unless it is
     // given a revision (#648); which positionals are revisions is settled by
     // the caller from `git_trees`.
-    let (is_git, after_tool) = match strip_git_grep(rest) {
-        Some(after) => (true, after),
-        None => (
-            false,
-            ["grep ", "rg ", "ag "]
-                .iter()
-                .find_map(|prefix| rest.strip_prefix(prefix))?,
-        ),
+    let (tool, after_tool) = match strip_git_grep(rest) {
+        Some(after) => ("git grep", after),
+        None => [("grep", "grep "), ("rg", "rg "), ("ag", "ag ")]
+            .into_iter()
+            .find_map(|(tool, prefix)| rest.strip_prefix(prefix).map(|after| (tool, after)))?,
     };
+    let is_git = tool == "git grep";
 
     let tokens = shell_split(after_tool);
     let mut pattern: Option<String> = None;
@@ -1735,6 +1828,7 @@ fn extract_grep_invocation(command: &str) -> Option<GrepInvocation> {
     }
 
     Some(GrepInvocation {
+        tool,
         pattern: pattern?,
         targets,
         globs,
