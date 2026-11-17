@@ -1,0 +1,10 @@
+# FTS comparison corpora (see docs/benchmarks/turso-fts-methodology.md).
+# name	language	size	source	ref	commit	export_sha256 (tokensave 7.15.0)
+requests	Python	small	https://github.com/psf/requests	v2.32.3	0e322af87745eff34caffe4df68456ebc20d9068	2ce5fa90f2b79d965a49a5bf049e4ab9ba3cf5368ddd01ab0ea13035341e9524
+express	JavaScript	small	https://github.com/expressjs/express	4.21.1	8e229f92752ad51462c868b99f6e6c2e559801b0	c80062179a45659fb1fc97a150d61ffe02f3fff6d345afa9c9f68a2c8c9ebef2
+fmt	C++	small	https://github.com/fmtlib/fmt	11.0.2	0c9fce2ffefecfdce794e1859584e25877b7b592	33fb61c9acc230f3849cdbd4ac90e9c2c20f71f88ed514d41cce8daf60317290
+ripgrep	Rust	small	https://github.com/BurntSushi/ripgrep	14.1.1	4649aa9700619f94cf9c66876e9549d83420e16c	ce4d742fc3e0842d3db3a0f5775c0ab7c037b4b9af4207b8e184942f94cd413c
+vue-core	TypeScript	medium	https://github.com/vuejs/core	v3.5.12	770ea67a9cdbb9f01bd7098b8c63978037d0e3fd	22762ec57997678af59a8f088ca31284dc6cdfe6a3b22a4623aabb171d74e180
+tokensave	Rust	medium	this repository	5357fe1	5357fe1	c2f9cfb19e109ddf459dda8e067988d54cffc7d109bc834ef4b58af8be956e9c
+redis	C	medium	https://github.com/redis/redis	7.4.1	74b289a0e12f9f65a6daeec6a66cadc76792f644	730ca4b09ff86517d101072e09f1e6096a9bf742361c8a5b30b3a75bac6c9c60
+django	Python	large	https://github.com/django/django	5.1.2	c499184f198df8deb8b5f7282b679babef8384ff	fc52d7a166fc42ae60d212c52b4bf8e3c314787912ca75011bdeafcb2d85dcae

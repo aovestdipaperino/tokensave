@@ -42,6 +42,14 @@ op_enum! {
     DbOp, "db" {
         /// Opening a connection and applying connection pragmas.
         Open => "open",
+        /// Compatibility harness only: opening the selected engine.
+        ProbeOpen => "probe_open",
+        /// Compatibility harness only: a batch statement (including setup).
+        ProbeBatch => "probe_batch",
+        /// Compatibility harness only: query execution before row iteration.
+        ProbeQueryExecute => "probe_query_execute",
+        /// Compatibility harness only: row iteration and rendering.
+        ProbeMaterialize => "probe_materialize",
         /// Waiting on the write lock that serializes write transactions.
         WriteLockWait => "write_lock_wait",
         /// A write transaction, from BEGIN to COMMIT or ROLLBACK.

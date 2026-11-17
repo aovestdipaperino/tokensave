@@ -62,6 +62,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - **Scheme is now an indexed language (`lang-scheme` feature, in `full`).** A new tree-sitter extractor covers `define` in function, variable and macro (`define-syntax`) form, `define-library`/`library` (modules), and call edges, skipping quoted forms and comments. Grammar `tree-sitter-scheme` 0.25.0 via `tokensave-large-treesitters`. Handles `.scm` and `.ss`.
 - **FlatBuffers schemas are now an indexed language (`lang-flatbuffers` feature, in `full`).** A new tree-sitter extractor covers `namespace` (modules), `include` (uses), `table`/`struct` (structs with typed fields), `enum` (with variants), `union`, and `rpc_service` (interfaces with methods), plus doc comments. Grammar `tree-sitter-flatbuffers` 0.1.8 via `tokensave-large-treesitters`. Handles `.fbs`.
 
+- Profiling overhead comparisons (`off`/`light`/`detailed`) in the database workload harness, with per-workload production recorder snapshots, randomized fresh-process repetitions and correctness gates; optional per-engine profiler breakdowns in the existing Turso compatibility probes (#754, PR 6). Timed-out probe tasks are aborted and joined before temporary directory cleanup (#761).
 - Hidden `profile --local` controls for repository-specific profiling and independent sharing consent, with separate aggregates, reports and upload state; environment overrides and the destination gate remain in force (#764).
 
 - Draft performance sharing controls (`profile share status|preview|enable|disable`), separate default-off consent and disable-only environment override. Uploads remain unavailable pending the maintainer-approved endpoint and data policy (#754, PR 8).
@@ -239,6 +240,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - Mandatory contributor and AI agent rule for native filesystem path construction (#743), following PR #738: one component per `join` or `push`, with explicit exceptions for portable string formats and path-syntax fixtures.
 
 - Automatic extraction RAM safeguards complement project profiles: sample physical RAM (and visible Linux cgroup headroom) before parallel extraction and reduce concurrency using a conservative parser allowance. Applies to subprocess and in-process paths, including `performance`; no background polling or hard RSS guarantee.
+
+- Executable SQL compatibility probes for the Turso evaluation (`benchmarks/db-compat/`, standalone crate) and their report (`docs/benchmarks/turso-compatibility.md`, #739). Turso 0.8.3 matches SQLite on 39 of 55 probes; FTS5 is unsupported. No production changes.
+
+- Functional, relevance and performance comparison of Turso's native Tantivy full-text search against SQLite FTS5 (`fts_compare` in `benchmarks/db-compat/`, report in `docs/benchmarks/turso-fts-report.md`, #739). Separate from the SQL probes, whose results are unchanged. No production changes.
 
 - Project `memory_usage` profiles (`low`, `balanced`, `performance`) limit simultaneous extraction parsers independently of CPU policy, trading throughput for lower parser memory. The default `balanced` caps extraction at two parsers; `performance` retains previous concurrency. These are not total-RAM caps.
 - Configurable `language_aliases` reuse enabled extractors for custom extensions such as Perl `.t` tests (#725). Existing `project.json` file/glob overrides take precedence; mapping edits invalidate unchanged indexed files. Source overrides also take precedence over artifacts, and sync diagnostics describe alias and artifact remedies. `tokensave init` now preserves the existing project settings instead of resetting them to their defaults, so a supplied mapping survives the first index.

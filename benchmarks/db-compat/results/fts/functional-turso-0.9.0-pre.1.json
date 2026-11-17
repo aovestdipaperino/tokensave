@@ -1,0 +1,1661 @@
+{
+  "environment": {
+    "allocator": "system",
+    "build_profile": "release",
+    "cpu_model": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+    "kernel": "6.18.33.2-microsoft-standard-WSL2",
+    "libsql": "0.9.30",
+    "logical_cpus": 8,
+    "mem_available_kib": 4549344,
+    "mem_total_kib": 7970424,
+    "os": "Ubuntu 26.04.1 LTS",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "sqlite_bundled": "3.45.1 (vendored libsql, FTS5 enabled)",
+    "tantivy": "0.26.2",
+    "tokio_runtime": "multi_thread (default worker count)",
+    "turso": "0.9.0-pre.1",
+    "turso_core": "0.9.0-pre.1"
+  },
+  "results": [
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "1",
+      "reason": "",
+      "scenario": "exact_symbol",
+      "title": "Exact symbol name lookup"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "1",
+      "reason": "",
+      "scenario": "exact_symbol",
+      "title": "Exact symbol name lookup"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "1",
+      "reason": "",
+      "scenario": "exact_symbol",
+      "title": "Exact symbol name lookup"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "1",
+      "reason": "",
+      "scenario": "exact_symbol",
+      "title": "Exact symbol name lookup"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"update_cloud\"]",
+      "got": "[update_cloud]",
+      "number": "2",
+      "reason": "",
+      "scenario": "partial_symbol",
+      "title": "Partial symbol lookup (camelCase inner word via search_terms)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"update_cloud\"]",
+      "got": "[update_cloud]",
+      "number": "2",
+      "reason": "",
+      "scenario": "partial_symbol",
+      "title": "Partial symbol lookup (camelCase inner word via search_terms)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "configurable",
+      "expected": "set [\"update_cloud\"]",
+      "got": "[]",
+      "number": "2",
+      "reason": "the 'simple' tokenizer does not lowercase",
+      "scenario": "partial_symbol",
+      "title": "Partial symbol lookup (camelCase inner word via search_terms)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"update_cloud\"]",
+      "got": "[update_cloud]",
+      "number": "2",
+      "reason": "",
+      "scenario": "partial_symbol",
+      "title": "Partial symbol lookup (camelCase inner word via search_terms)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"parse_config\", \"parser_state\", \"parser_file\", \"parsing_doc\"]",
+      "got": "[parser_file,parser_state,parsing_doc,parse_config]",
+      "number": "3",
+      "reason": "",
+      "scenario": "prefix_single",
+      "title": "Prefix matching, single token (\"pars\"*)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "unsupported",
+      "expected": "set [\"parse_config\", \"parser_state\", \"parser_file\", \"parsing_doc\"]",
+      "got": "",
+      "number": "3",
+      "reason": "single-token prefix query: Tantivy's query parser accepts \"a b\"* (phrase prefix, >= 2 tokens) only; \"a\"* is a parse error and a* silently matches nothing",
+      "scenario": "prefix_single",
+      "title": "Prefix matching, single token (\"pars\"*)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "unsupported",
+      "expected": "set [\"parse_config\", \"parser_state\", \"parser_file\", \"parsing_doc\"]",
+      "got": "",
+      "number": "3",
+      "reason": "single-token prefix query: Tantivy's query parser accepts \"a b\"* (phrase prefix, >= 2 tokens) only; \"a\"* is a parse error and a* silently matches nothing",
+      "scenario": "prefix_single",
+      "title": "Prefix matching, single token (\"pars\"*)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "approximation",
+      "expected": "set [\"parse_config\", \"parser_state\", \"parser_file\", \"parsing_doc\"]",
+      "got": "[parser_state,parser_file,sparse_matrix,parse_config,parsing_doc]",
+      "number": "3",
+      "reason": "n-gram index matches substrings, a superset of prefix matches",
+      "scenario": "prefix_single",
+      "title": "Prefix matching, single token (\"pars\"*)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"data_api\"]",
+      "got": "[data_api]",
+      "number": "3b",
+      "reason": "",
+      "scenario": "prefix_phrase",
+      "title": "Prefix matching, multi-token phrase prefix (\"data-api\"*)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"data_api\"]",
+      "got": "[data_api]",
+      "number": "3b",
+      "reason": "",
+      "scenario": "prefix_phrase",
+      "title": "Prefix matching, multi-token phrase prefix (\"data-api\"*)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"data_api\"]",
+      "got": "[data_api]",
+      "number": "3b",
+      "reason": "",
+      "scenario": "prefix_phrase",
+      "title": "Prefix matching, multi-token phrase prefix (\"data-api\"*)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"data_api\"]",
+      "got": "[data_api]",
+      "number": "3b",
+      "reason": "",
+      "scenario": "prefix_phrase",
+      "title": "Prefix matching, multi-token phrase prefix (\"data-api\"*)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "4",
+      "reason": "",
+      "scenario": "qualified_name",
+      "title": "Fully qualified name search"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "4",
+      "reason": "",
+      "scenario": "qualified_name",
+      "title": "Fully qualified name search"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "4",
+      "reason": "",
+      "scenario": "qualified_name",
+      "title": "Fully qualified name search"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "4",
+      "reason": "",
+      "scenario": "qualified_name",
+      "title": "Fully qualified name search"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"run_query\"]",
+      "got": "[run_query]",
+      "number": "5",
+      "reason": "",
+      "scenario": "signature",
+      "title": "Function signature search (\"sql: &str\")"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"run_query\"]",
+      "got": "[run_query]",
+      "number": "5",
+      "reason": "",
+      "scenario": "signature",
+      "title": "Function signature search (\"sql: &str\")"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"run_query\"]",
+      "got": "[run_query]",
+      "number": "5",
+      "reason": "",
+      "scenario": "signature",
+      "title": "Function signature search (\"sql: &str\")"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"run_query\"]",
+      "got": "[run_query]",
+      "number": "5",
+      "reason": "",
+      "scenario": "signature",
+      "title": "Function signature search (\"sql: &str\")"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"parse_config\", \"long_ident\"]",
+      "got": "[parse_config,long_ident]",
+      "number": "6",
+      "reason": "",
+      "scenario": "nl_doc",
+      "title": "Natural-language documentation search (OR of words)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"parse_config\", \"long_ident\"]",
+      "got": "[long_ident,parse_config]",
+      "number": "6",
+      "reason": "",
+      "scenario": "nl_doc",
+      "title": "Natural-language documentation search (OR of words)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"parse_config\", \"long_ident\"]",
+      "got": "[parse_config,long_ident]",
+      "number": "6",
+      "reason": "",
+      "scenario": "nl_doc",
+      "title": "Natural-language documentation search (OR of words)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"parse_config\", \"long_ident\"]",
+      "got": "[long_ident,parse_config]",
+      "number": "6",
+      "reason": "",
+      "scenario": "nl_doc",
+      "title": "Natural-language documentation search (OR of words)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"parser_state\", \"runs\", \"run_loop\", \"run_query\"]",
+      "got": "[runs,run_loop,run_query,parser_state]",
+      "number": "6b",
+      "reason": "",
+      "scenario": "nl_doc_stemmed",
+      "title": "Documentation search relying on stemming (\"running\")"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "expected-semantic",
+      "expected": "set [\"parser_state\", \"runs\", \"run_loop\", \"run_query\"]",
+      "got": "[parser_state]",
+      "number": "6b",
+      "reason": "no stemming tokenizer is available (FTS5 uses porter)",
+      "scenario": "nl_doc_stemmed",
+      "title": "Documentation search relying on stemming (\"running\")"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "expected-semantic",
+      "expected": "set [\"parser_state\", \"runs\", \"run_loop\", \"run_query\"]",
+      "got": "[parser_state]",
+      "number": "6b",
+      "reason": "no stemming tokenizer is available (FTS5 uses porter)",
+      "scenario": "nl_doc_stemmed",
+      "title": "Documentation search relying on stemming (\"running\")"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "expected-semantic",
+      "expected": "set [\"parser_state\", \"runs\", \"run_loop\", \"run_query\"]",
+      "got": "[parser_state]",
+      "number": "6b",
+      "reason": "no stemming tokenizer is available (FTS5 uses porter)",
+      "scenario": "nl_doc_stemmed",
+      "title": "Documentation search relying on stemming (\"running\")"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"data_api\", \"run_query\"]",
+      "got": "[data_api,run_query]",
+      "number": "7",
+      "reason": "",
+      "scenario": "phrase",
+      "title": "Phrase matching (\"database query\")"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"data_api\", \"run_query\"]",
+      "got": "[run_query,data_api]",
+      "number": "7",
+      "reason": "",
+      "scenario": "phrase",
+      "title": "Phrase matching (\"database query\")"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"data_api\", \"run_query\"]",
+      "got": "[run_query,data_api]",
+      "number": "7",
+      "reason": "",
+      "scenario": "phrase",
+      "title": "Phrase matching (\"database query\")"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"data_api\", \"run_query\"]",
+      "got": "[run_query,data_api]",
+      "number": "7",
+      "reason": "",
+      "scenario": "phrase",
+      "title": "Phrase matching (\"database query\")"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"data_api\", \"run_query\"]",
+      "got": "[run_query,data_api]",
+      "number": "8a",
+      "reason": "",
+      "scenario": "bool_and",
+      "title": "Boolean AND"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"data_api\", \"run_query\"]",
+      "got": "[run_query,data_api]",
+      "number": "8a",
+      "reason": "",
+      "scenario": "bool_and",
+      "title": "Boolean AND"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"data_api\", \"run_query\"]",
+      "got": "[run_query,data_api]",
+      "number": "8a",
+      "reason": "",
+      "scenario": "bool_and",
+      "title": "Boolean AND"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"data_api\", \"run_query\"]",
+      "got": "[run_query,data_api]",
+      "number": "8a",
+      "reason": "",
+      "scenario": "bool_and",
+      "title": "Boolean AND"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"sparse_matrix\", \"update_cloud\"]",
+      "got": "[sparse_matrix,update_cloud]",
+      "number": "8b",
+      "reason": "",
+      "scenario": "bool_or",
+      "title": "Boolean OR"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"sparse_matrix\", \"update_cloud\"]",
+      "got": "[sparse_matrix,update_cloud]",
+      "number": "8b",
+      "reason": "",
+      "scenario": "bool_or",
+      "title": "Boolean OR"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "configurable",
+      "expected": "set [\"sparse_matrix\", \"update_cloud\"]",
+      "got": "[sparse_matrix]",
+      "number": "8b",
+      "reason": "the 'simple' tokenizer does not lowercase",
+      "scenario": "bool_or",
+      "title": "Boolean OR"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"sparse_matrix\", \"update_cloud\"]",
+      "got": "[sparse_matrix,update_cloud]",
+      "number": "8b",
+      "reason": "",
+      "scenario": "bool_or",
+      "title": "Boolean OR"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"run_query\"]",
+      "got": "[run_query]",
+      "number": "8c",
+      "reason": "",
+      "scenario": "bool_not",
+      "title": "Boolean NOT"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"run_query\"]",
+      "got": "[run_query]",
+      "number": "8c",
+      "reason": "",
+      "scenario": "bool_not",
+      "title": "Boolean NOT"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"run_query\"]",
+      "got": "[run_query]",
+      "number": "8c",
+      "reason": "",
+      "scenario": "bool_not",
+      "title": "Boolean NOT"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"run_query\"]",
+      "got": "[run_query]",
+      "number": "8c",
+      "reason": "",
+      "scenario": "bool_not",
+      "title": "Boolean NOT"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"data_api\", \"run_loop\"]",
+      "got": "[run_loop,data_api]",
+      "number": "8d",
+      "reason": "",
+      "scenario": "bool_phrase_prefix",
+      "title": "Boolean OR of phrase prefixes, with NOT"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"data_api\", \"run_loop\"]",
+      "got": "[run_loop,data_api]",
+      "number": "8d",
+      "reason": "",
+      "scenario": "bool_phrase_prefix",
+      "title": "Boolean OR of phrase prefixes, with NOT"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"data_api\", \"run_loop\"]",
+      "got": "[run_loop,data_api]",
+      "number": "8d",
+      "reason": "",
+      "scenario": "bool_phrase_prefix",
+      "title": "Boolean OR of phrase prefixes, with NOT"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "correctness-failure",
+      "expected": "set [\"data_api\", \"run_loop\"]",
+      "got": "[data_api]",
+      "number": "8d",
+      "reason": "expected set [\"data_api\", \"run_loop\"]",
+      "scenario": "bool_phrase_prefix",
+      "title": "Boolean OR of phrase prefixes, with NOT"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "9a",
+      "reason": "",
+      "scenario": "ident_snake",
+      "title": "Identifier tokenization: snake_case part"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "9a",
+      "reason": "",
+      "scenario": "ident_snake",
+      "title": "Identifier tokenization: snake_case part"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "9a",
+      "reason": "",
+      "scenario": "ident_snake",
+      "title": "Identifier tokenization: snake_case part"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "approximation",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config,long_ident]",
+      "number": "9a",
+      "reason": "n-gram index matches substrings, a superset of prefix matches",
+      "scenario": "ident_snake",
+      "title": "Identifier tokenization: snake_case part"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"update_cloud\", \"data_api\"]",
+      "got": "[update_cloud,data_api]",
+      "number": "9b",
+      "reason": "",
+      "scenario": "ident_camel",
+      "title": "Identifier tokenization: camelCase word from search_terms"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"update_cloud\", \"data_api\"]",
+      "got": "[update_cloud,data_api]",
+      "number": "9b",
+      "reason": "",
+      "scenario": "ident_camel",
+      "title": "Identifier tokenization: camelCase word from search_terms"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"update_cloud\", \"data_api\"]",
+      "got": "[update_cloud,data_api]",
+      "number": "9b",
+      "reason": "",
+      "scenario": "ident_camel",
+      "title": "Identifier tokenization: camelCase word from search_terms"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"update_cloud\", \"data_api\"]",
+      "got": "[update_cloud,data_api]",
+      "number": "9b",
+      "reason": "",
+      "scenario": "ident_camel",
+      "title": "Identifier tokenization: camelCase word from search_terms"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"utf8_decode\"]",
+      "got": "[utf8_decode]",
+      "number": "9c",
+      "reason": "",
+      "scenario": "ident_digits",
+      "title": "Identifier tokenization: alphanumeric token (utf8)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"utf8_decode\"]",
+      "got": "[utf8_decode]",
+      "number": "9c",
+      "reason": "",
+      "scenario": "ident_digits",
+      "title": "Identifier tokenization: alphanumeric token (utf8)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"utf8_decode\"]",
+      "got": "[utf8_decode]",
+      "number": "9c",
+      "reason": "",
+      "scenario": "ident_digits",
+      "title": "Identifier tokenization: alphanumeric token (utf8)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"utf8_decode\"]",
+      "got": "[utf8_decode]",
+      "number": "9c",
+      "reason": "",
+      "scenario": "ident_digits",
+      "title": "Identifier tokenization: alphanumeric token (utf8)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"long_ident\"]",
+      "got": "[long_ident]",
+      "number": "9d",
+      "reason": "",
+      "scenario": "ident_long",
+      "title": "Identifier tokenization: single token longer than 40 bytes"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "configurable",
+      "expected": "set [\"long_ident\"]",
+      "got": "[]",
+      "number": "9d",
+      "reason": "the 'default' tokenizer drops tokens over 40 bytes; 'simple' keeps them but is case-sensitive",
+      "scenario": "ident_long",
+      "title": "Identifier tokenization: single token longer than 40 bytes"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"long_ident\"]",
+      "got": "[long_ident]",
+      "number": "9d",
+      "reason": "",
+      "scenario": "ident_long",
+      "title": "Identifier tokenization: single token longer than 40 bytes"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"long_ident\"]",
+      "got": "[long_ident]",
+      "number": "9d",
+      "reason": "",
+      "scenario": "ident_long",
+      "title": "Identifier tokenization: single token longer than 40 bytes"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "10a",
+      "reason": "",
+      "scenario": "case_upper",
+      "title": "Case-insensitive lookup (PARSE_CONFIG)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "10a",
+      "reason": "",
+      "scenario": "case_upper",
+      "title": "Case-insensitive lookup (PARSE_CONFIG)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "configurable",
+      "expected": "set [\"parse_config\"]",
+      "got": "[]",
+      "number": "10a",
+      "reason": "the 'simple' tokenizer does not lowercase",
+      "scenario": "case_upper",
+      "title": "Case-insensitive lookup (PARSE_CONFIG)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "10a",
+      "reason": "",
+      "scenario": "case_upper",
+      "title": "Case-insensitive lookup (PARSE_CONFIG)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"http_server\"]",
+      "got": "[http_server]",
+      "number": "10b",
+      "reason": "",
+      "scenario": "case_acronym",
+      "title": "Case-insensitive lookup (httpserver vs HTTPServer)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"http_server\"]",
+      "got": "[http_server]",
+      "number": "10b",
+      "reason": "",
+      "scenario": "case_acronym",
+      "title": "Case-insensitive lookup (httpserver vs HTTPServer)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "configurable",
+      "expected": "set [\"http_server\"]",
+      "got": "[]",
+      "number": "10b",
+      "reason": "the 'simple' tokenizer does not lowercase",
+      "scenario": "case_acronym",
+      "title": "Case-insensitive lookup (httpserver vs HTTPServer)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"http_server\"]",
+      "got": "[http_server]",
+      "number": "10b",
+      "reason": "",
+      "scenario": "case_acronym",
+      "title": "Case-insensitive lookup (httpserver vs HTTPServer)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"groesse\"]",
+      "got": "[groesse]",
+      "number": "11a",
+      "reason": "",
+      "scenario": "unicode_latin",
+      "title": "Unicode identifier (größe)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"groesse\"]",
+      "got": "[groesse]",
+      "number": "11a",
+      "reason": "",
+      "scenario": "unicode_latin",
+      "title": "Unicode identifier (größe)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"groesse\"]",
+      "got": "[groesse]",
+      "number": "11a",
+      "reason": "",
+      "scenario": "unicode_latin",
+      "title": "Unicode identifier (größe)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"groesse\"]",
+      "got": "[groesse]",
+      "number": "11a",
+      "reason": "",
+      "scenario": "unicode_latin",
+      "title": "Unicode identifier (größe)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"cafe_menu\", \"groesse\"]",
+      "got": "[cafe_menu,groesse]",
+      "number": "11b",
+      "reason": "",
+      "scenario": "unicode_fold",
+      "title": "Unicode diacritic folding (cafe matches café / Cafés)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "expected-semantic",
+      "expected": "set [\"cafe_menu\", \"groesse\"]",
+      "got": "[]",
+      "number": "11b",
+      "reason": "no diacritic folding (FTS5 unicode61 remove_diacritics=1)",
+      "scenario": "unicode_fold",
+      "title": "Unicode diacritic folding (cafe matches café / Cafés)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "expected-semantic",
+      "expected": "set [\"cafe_menu\", \"groesse\"]",
+      "got": "[]",
+      "number": "11b",
+      "reason": "no diacritic folding (FTS5 unicode61 remove_diacritics=1)",
+      "scenario": "unicode_fold",
+      "title": "Unicode diacritic folding (cafe matches café / Cafés)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "expected-semantic",
+      "expected": "set [\"cafe_menu\", \"groesse\"]",
+      "got": "[]",
+      "number": "11b",
+      "reason": "no diacritic folding (FTS5 unicode61 remove_diacritics=1)",
+      "scenario": "unicode_fold",
+      "title": "Unicode diacritic folding (cafe matches café / Cafés)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"cjk\"]",
+      "got": "[cjk]",
+      "number": "11c",
+      "reason": "",
+      "scenario": "unicode_cjk",
+      "title": "Unicode identifier (CJK 数据处理)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"cjk\"]",
+      "got": "[cjk]",
+      "number": "11c",
+      "reason": "",
+      "scenario": "unicode_cjk",
+      "title": "Unicode identifier (CJK 数据处理)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"cjk\"]",
+      "got": "[cjk]",
+      "number": "11c",
+      "reason": "",
+      "scenario": "unicode_cjk",
+      "title": "Unicode identifier (CJK 数据处理)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"cjk\"]",
+      "got": "[cjk]",
+      "number": "11c",
+      "reason": "",
+      "scenario": "unicode_cjk",
+      "title": "Unicode identifier (CJK 数据处理)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"cyrillic\"]",
+      "got": "[cyrillic]",
+      "number": "11d",
+      "reason": "",
+      "scenario": "unicode_cyrillic_case",
+      "title": "Unicode case folding (РАЗОБРАТЬ_СТРОКУ)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"cyrillic\"]",
+      "got": "[cyrillic]",
+      "number": "11d",
+      "reason": "",
+      "scenario": "unicode_cyrillic_case",
+      "title": "Unicode case folding (РАЗОБРАТЬ_СТРОКУ)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "configurable",
+      "expected": "set [\"cyrillic\"]",
+      "got": "[]",
+      "number": "11d",
+      "reason": "the 'simple' tokenizer does not lowercase",
+      "scenario": "unicode_cyrillic_case",
+      "title": "Unicode case folding (РАЗОБРАТЬ_СТРОКУ)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"cyrillic\"]",
+      "got": "[cyrillic]",
+      "number": "11d",
+      "reason": "",
+      "scenario": "unicode_cyrillic_case",
+      "title": "Unicode case folding (РАЗОБРАТЬ_СТРОКУ)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "steps [\"sparse=[]\", \"dense=[sparse_matrix]\"]",
+      "got": "[sparse=[],dense=[sparse_matrix]]",
+      "number": "12",
+      "reason": "",
+      "scenario": "update",
+      "title": "Update indexed content (rename sparse_matrix to dense_grid)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "steps [\"sparse=[]\", \"dense=[sparse_matrix]\"]",
+      "got": "[sparse=[],dense=[sparse_matrix]]",
+      "number": "12",
+      "reason": "",
+      "scenario": "update",
+      "title": "Update indexed content (rename sparse_matrix to dense_grid)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "steps [\"sparse=[]\", \"dense=[sparse_matrix]\"]",
+      "got": "[sparse=[],dense=[sparse_matrix]]",
+      "number": "12",
+      "reason": "",
+      "scenario": "update",
+      "title": "Update indexed content (rename sparse_matrix to dense_grid)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "steps [\"sparse=[]\", \"dense=[sparse_matrix]\"]",
+      "got": "[sparse=[],dense=[sparse_matrix]]",
+      "number": "12",
+      "reason": "",
+      "scenario": "update",
+      "title": "Update indexed content (rename sparse_matrix to dense_grid)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "steps [\"before=[utf8_decode]\", \"after=[]\"]",
+      "got": "[before=[utf8_decode],after=[]]",
+      "number": "13",
+      "reason": "",
+      "scenario": "delete",
+      "title": "Delete indexed content"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "steps [\"before=[utf8_decode]\", \"after=[]\"]",
+      "got": "[before=[utf8_decode],after=[]]",
+      "number": "13",
+      "reason": "",
+      "scenario": "delete",
+      "title": "Delete indexed content"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "steps [\"before=[utf8_decode]\", \"after=[]\"]",
+      "got": "[before=[utf8_decode],after=[]]",
+      "number": "13",
+      "reason": "",
+      "scenario": "delete",
+      "title": "Delete indexed content"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "steps [\"before=[utf8_decode]\", \"after=[]\"]",
+      "got": "[before=[utf8_decode],after=[]]",
+      "number": "13",
+      "reason": "",
+      "scenario": "delete",
+      "title": "Delete indexed content"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "steps [\"writer=[fresh]\", \"reader=[fresh]\"]",
+      "got": "[writer=[fresh],reader=[fresh]]",
+      "number": "14",
+      "reason": "",
+      "scenario": "after_commit",
+      "title": "Search immediately after commit (second connection)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "steps [\"writer=[fresh]\", \"reader=[fresh]\"]",
+      "got": "[writer=[fresh],reader=[fresh]]",
+      "number": "14",
+      "reason": "",
+      "scenario": "after_commit",
+      "title": "Search immediately after commit (second connection)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "steps [\"writer=[fresh]\", \"reader=[fresh]\"]",
+      "got": "[writer=[fresh],reader=[fresh]]",
+      "number": "14",
+      "reason": "",
+      "scenario": "after_commit",
+      "title": "Search immediately after commit (second connection)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "steps [\"writer=[fresh]\", \"reader=[fresh]\"]",
+      "got": "[writer=[fresh],reader=[fresh]]",
+      "number": "14",
+      "reason": "",
+      "scenario": "after_commit",
+      "title": "Search immediately after commit (second connection)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "steps [\"writer=[pending]\", \"reader=[]\", \"after_rollback=[]\"]",
+      "got": "[writer=[pending],reader=[],after_rollback=[]]",
+      "number": "15",
+      "reason": "",
+      "scenario": "uncommitted",
+      "title": "Search within an uncommitted transaction"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "steps [\"writer=[pending]\", \"reader=[]\", \"after_rollback=[]\"]",
+      "got": "[writer=[pending],reader=[],after_rollback=[]]",
+      "number": "15",
+      "reason": "",
+      "scenario": "uncommitted",
+      "title": "Search within an uncommitted transaction"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "steps [\"writer=[pending]\", \"reader=[]\", \"after_rollback=[]\"]",
+      "got": "[writer=[pending],reader=[],after_rollback=[]]",
+      "number": "15",
+      "reason": "",
+      "scenario": "uncommitted",
+      "title": "Search within an uncommitted transaction"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "steps [\"writer=[pending]\", \"reader=[]\", \"after_rollback=[]\"]",
+      "got": "[writer=[pending],reader=[],after_rollback=[]]",
+      "number": "15",
+      "reason": "",
+      "scenario": "uncommitted",
+      "title": "Search within an uncommitted transaction"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "ordered [\"run_loop\", \"drain_events\"]",
+      "got": "[run_loop,drain_events]",
+      "number": "16",
+      "reason": "",
+      "scenario": "weighting",
+      "title": "Column weighting (name hit outranks docstring hit)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "ordered [\"run_loop\", \"drain_events\"]",
+      "got": "[run_loop,drain_events]",
+      "number": "16",
+      "reason": "",
+      "scenario": "weighting",
+      "title": "Column weighting (name hit outranks docstring hit)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "ordered [\"run_loop\", \"drain_events\"]",
+      "got": "[run_loop,drain_events]",
+      "number": "16",
+      "reason": "",
+      "scenario": "weighting",
+      "title": "Column weighting (name hit outranks docstring hit)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "ordered [\"run_loop\", \"drain_events\"]",
+      "got": "[run_loop,drain_events]",
+      "number": "16",
+      "reason": "",
+      "scenario": "weighting",
+      "title": "Column weighting (name hit outranks docstring hit)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "ranked-result contract",
+      "got": "[contract=ok]",
+      "number": "17",
+      "reason": "",
+      "scenario": "contract",
+      "title": "Ranked-result API contract (limit, order, score sign)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "ranked-result contract",
+      "got": "[contract=ok]",
+      "number": "17",
+      "reason": "",
+      "scenario": "contract",
+      "title": "Ranked-result API contract (limit, order, score sign)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "ranked-result contract",
+      "got": "[contract=ok]",
+      "number": "17",
+      "reason": "",
+      "scenario": "contract",
+      "title": "Ranked-result API contract (limit, order, score sign)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "ranked-result contract",
+      "got": "[contract=ok]",
+      "number": "17",
+      "reason": "",
+      "scenario": "contract",
+      "title": "Ranked-result API contract (limit, order, score sign)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"parser_state\"]",
+      "got": "[parser_state]",
+      "number": "18",
+      "reason": "",
+      "scenario": "bounded_exclude",
+      "title": "Bounded search excluding file/doc kinds"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"parser_state\"]",
+      "got": "[parser_state]",
+      "number": "18",
+      "reason": "",
+      "scenario": "bounded_exclude",
+      "title": "Bounded search excluding file/doc kinds"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"parser_state\"]",
+      "got": "[parser_state]",
+      "number": "18",
+      "reason": "",
+      "scenario": "bounded_exclude",
+      "title": "Bounded search excluding file/doc kinds"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"parser_state\"]",
+      "got": "[parser_state]",
+      "number": "18",
+      "reason": "",
+      "scenario": "bounded_exclude",
+      "title": "Bounded search excluding file/doc kinds"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "top = parse_config",
+      "got": "[parse_config,long_ident,parser_file,parser_state,parsing_doc]",
+      "number": "19",
+      "reason": "",
+      "scenario": "production_search",
+      "title": "Production search_nodes (phrase channel + OR of prefixes)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "unsupported",
+      "expected": "top = parse_config",
+      "got": "",
+      "number": "19",
+      "reason": "single-token prefix query: Tantivy's query parser accepts \"a b\"* (phrase prefix, >= 2 tokens) only; \"a\"* is a parse error and a* silently matches nothing",
+      "scenario": "production_search",
+      "title": "Production search_nodes (phrase channel + OR of prefixes)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "unsupported",
+      "expected": "top = parse_config",
+      "got": "",
+      "number": "19",
+      "reason": "single-token prefix query: Tantivy's query parser accepts \"a b\"* (phrase prefix, >= 2 tokens) only; \"a\"* is a parse error and a* silently matches nothing",
+      "scenario": "production_search",
+      "title": "Production search_nodes (phrase channel + OR of prefixes)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "top = parse_config",
+      "got": "[parse_config,parser_state,long_ident,parser_file,sparse_matrix]",
+      "number": "19",
+      "reason": "",
+      "scenario": "production_search",
+      "title": "Production search_nodes (phrase channel + OR of prefixes)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"parse_config\", \"parsing_doc\"]",
+      "got": "[parsing_doc,parse_config]",
+      "number": "20",
+      "reason": "",
+      "scenario": "column_filter",
+      "title": "Single-column filter (name : parse)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "expected-semantic",
+      "expected": "set [\"parse_config\", \"parsing_doc\"]",
+      "got": "[parse_config]",
+      "number": "20",
+      "reason": "no stemming tokenizer is available (FTS5 uses porter)",
+      "scenario": "column_filter",
+      "title": "Single-column filter (name : parse)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "expected-semantic",
+      "expected": "set [\"parse_config\", \"parsing_doc\"]",
+      "got": "[parse_config]",
+      "number": "20",
+      "reason": "no stemming tokenizer is available (FTS5 uses porter)",
+      "scenario": "column_filter",
+      "title": "Single-column filter (name : parse)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "approximation",
+      "expected": "set [\"parse_config\", \"parsing_doc\"]",
+      "got": "[parser_file,parser_state,parse_config,sparse_matrix]",
+      "number": "20",
+      "reason": "no stemming (misses Parsing) and substring matching (adds every name containing 'parse')",
+      "scenario": "column_filter",
+      "title": "Single-column filter (name : parse)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "ordered [\"2\", \"7\"]",
+      "got": "[2,7]",
+      "number": "21a",
+      "reason": "",
+      "scenario": "recall_production_shape",
+      "title": "Memory recall, production SQL shape (newest first, LIMIT 2)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "correctness-failure",
+      "expected": "ordered [\"2\", \"7\"]",
+      "got": "[2,1]",
+      "number": "21a",
+      "reason": "expected ordered [\"2\", \"7\"]",
+      "scenario": "recall_production_shape",
+      "title": "Memory recall, production SQL shape (newest first, LIMIT 2)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "correctness-failure",
+      "expected": "ordered [\"2\", \"7\"]",
+      "got": "[2,1]",
+      "number": "21a",
+      "reason": "expected ordered [\"2\", \"7\"]",
+      "scenario": "recall_production_shape",
+      "title": "Memory recall, production SQL shape (newest first, LIMIT 2)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "correctness-failure",
+      "expected": "ordered [\"2\", \"7\"]",
+      "got": "[2,1]",
+      "number": "21a",
+      "reason": "expected ordered [\"2\", \"7\"]",
+      "scenario": "recall_production_shape",
+      "title": "Memory recall, production SQL shape (newest first, LIMIT 2)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "ordered [\"2\", \"7\"]",
+      "got": "[2,7]",
+      "number": "21b",
+      "reason": "",
+      "scenario": "recall_adapted",
+      "title": "Memory recall, subquery form (newest first, LIMIT 2)"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "ordered [\"2\", \"7\"]",
+      "got": "[2,7]",
+      "number": "21b",
+      "reason": "",
+      "scenario": "recall_adapted",
+      "title": "Memory recall, subquery form (newest first, LIMIT 2)"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "ordered [\"2\", \"7\"]",
+      "got": "[2,7]",
+      "number": "21b",
+      "reason": "",
+      "scenario": "recall_adapted",
+      "title": "Memory recall, subquery form (newest first, LIMIT 2)"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "ordered [\"2\", \"7\"]",
+      "got": "[2,7]",
+      "number": "21b",
+      "reason": "",
+      "scenario": "recall_adapted",
+      "title": "Memory recall, subquery form (newest first, LIMIT 2)"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "ordered [\"2\", \"7\", \"5\"]",
+      "got": "[2,7,5]",
+      "number": "21c",
+      "reason": "",
+      "scenario": "recall_since",
+      "title": "Memory recall with since filter"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "ordered [\"2\", \"7\", \"5\"]",
+      "got": "[2,7,5]",
+      "number": "21c",
+      "reason": "",
+      "scenario": "recall_since",
+      "title": "Memory recall with since filter"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "ordered [\"2\", \"7\", \"5\"]",
+      "got": "[2,7,5]",
+      "number": "21c",
+      "reason": "",
+      "scenario": "recall_since",
+      "title": "Memory recall with since filter"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "ordered [\"2\", \"7\", \"5\"]",
+      "got": "[2,7,5]",
+      "number": "21c",
+      "reason": "",
+      "scenario": "recall_since",
+      "title": "Memory recall with since filter"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"b_precond\"]",
+      "got": "[b_precond]",
+      "number": "22a",
+      "reason": "",
+      "scenario": "body_prefix_pairs",
+      "title": "Executable-body search, production prefix pairs"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "unsupported",
+      "expected": "set [\"b_precond\"]",
+      "got": "",
+      "number": "22a",
+      "reason": "single-token prefix query: Tantivy's query parser accepts \"a b\"* (phrase prefix, >= 2 tokens) only; \"a\"* is a parse error and a* silently matches nothing",
+      "scenario": "body_prefix_pairs",
+      "title": "Executable-body search, production prefix pairs"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "unsupported",
+      "expected": "set [\"b_precond\"]",
+      "got": "",
+      "number": "22a",
+      "reason": "single-token prefix query: Tantivy's query parser accepts \"a b\"* (phrase prefix, >= 2 tokens) only; \"a\"* is a parse error and a* silently matches nothing",
+      "scenario": "body_prefix_pairs",
+      "title": "Executable-body search, production prefix pairs"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"b_precond\"]",
+      "got": "[b_precond]",
+      "number": "22a",
+      "reason": "",
+      "scenario": "body_prefix_pairs",
+      "title": "Executable-body search, production prefix pairs"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"b_precond\"]",
+      "got": "[b_precond]",
+      "number": "22b",
+      "reason": "",
+      "scenario": "body_exact_pairs",
+      "title": "Executable-body search, exact-term pairs"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"b_precond\"]",
+      "got": "[b_precond]",
+      "number": "22b",
+      "reason": "",
+      "scenario": "body_exact_pairs",
+      "title": "Executable-body search, exact-term pairs"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"b_precond\"]",
+      "got": "[b_precond]",
+      "number": "22b",
+      "reason": "",
+      "scenario": "body_exact_pairs",
+      "title": "Executable-body search, exact-term pairs"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"b_precond\"]",
+      "got": "[b_precond]",
+      "number": "22b",
+      "reason": "",
+      "scenario": "body_exact_pairs",
+      "title": "Executable-body search, exact-term pairs"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "23",
+      "reason": "",
+      "scenario": "incremental_path",
+      "title": "Index created before rows, then incremental inserts"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "23",
+      "reason": "",
+      "scenario": "incremental_path",
+      "title": "Index created before rows, then incremental inserts"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "23",
+      "reason": "",
+      "scenario": "incremental_path",
+      "title": "Index created before rows, then incremental inserts"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "23",
+      "reason": "",
+      "scenario": "incremental_path",
+      "title": "Index created before rows, then incremental inserts"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "24",
+      "reason": "",
+      "scenario": "reopen",
+      "title": "Search after closing and reopening the database"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "24",
+      "reason": "",
+      "scenario": "reopen",
+      "title": "Search after closing and reopening the database"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "24",
+      "reason": "",
+      "scenario": "reopen",
+      "title": "Search after closing and reopening the database"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set [\"parse_config\"]",
+      "got": "[parse_config]",
+      "number": "24",
+      "reason": "",
+      "scenario": "reopen",
+      "title": "Search after closing and reopening the database"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "n/a",
+      "expected": "set []",
+      "got": "",
+      "number": "25",
+      "reason": "turso-only check",
+      "scenario": "planner_guard",
+      "title": "FTS call naming a subset of the indexed columns (fts_match(name, 'batching'))"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "pass",
+      "expected": "set []",
+      "got": "[]",
+      "number": "25",
+      "reason": "",
+      "scenario": "planner_guard",
+      "title": "FTS call naming a subset of the indexed columns (fts_match(name, 'batching'))"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "pass",
+      "expected": "set []",
+      "got": "[]",
+      "number": "25",
+      "reason": "",
+      "scenario": "planner_guard",
+      "title": "FTS call naming a subset of the indexed columns (fts_match(name, 'batching'))"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "pass",
+      "expected": "set []",
+      "got": "[]",
+      "number": "25",
+      "reason": "",
+      "scenario": "planner_guard",
+      "title": "FTS call naming a subset of the indexed columns (fts_match(name, 'batching'))"
+    },
+    {
+      "adapter": "libsql-fts5",
+      "class": "n/a",
+      "expected": "steps [\"created\"]",
+      "got": "",
+      "number": "26",
+      "reason": "turso-only check",
+      "scenario": "stem_tokenizer",
+      "title": "Stemming tokenizer for a native index (tokenizer='en_stem')"
+    },
+    {
+      "adapter": "turso-tantivy",
+      "class": "unsupported",
+      "expected": "steps [\"created\"]",
+      "got": "",
+      "number": "26",
+      "reason": "Parse error: unsupported FTS tokenizer 'en_stem'. Supported tokenizers: default, raw, simple, whitespace, ngram",
+      "scenario": "stem_tokenizer",
+      "title": "Stemming tokenizer for a native index (tokenizer='en_stem')"
+    },
+    {
+      "adapter": "turso-tantivy-simple",
+      "class": "unsupported",
+      "expected": "steps [\"created\"]",
+      "got": "",
+      "number": "26",
+      "reason": "Parse error: unsupported FTS tokenizer 'en_stem'. Supported tokenizers: default, raw, simple, whitespace, ngram",
+      "scenario": "stem_tokenizer",
+      "title": "Stemming tokenizer for a native index (tokenizer='en_stem')"
+    },
+    {
+      "adapter": "turso-tantivy-ngram",
+      "class": "unsupported",
+      "expected": "steps [\"created\"]",
+      "got": "",
+      "number": "26",
+      "reason": "Parse error: unsupported FTS tokenizer 'en_stem'. Supported tokenizers: default, raw, simple, whitespace, ngram",
+      "scenario": "stem_tokenizer",
+      "title": "Stemming tokenizer for a native index (tokenizer='en_stem')"
+    }
+  ]
+}
