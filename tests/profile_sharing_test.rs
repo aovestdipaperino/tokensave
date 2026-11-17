@@ -277,7 +277,7 @@ fn local_reports_preview_and_reset_never_use_global_aggregates() {
     successful(run_local(
         tmp.path(),
         &repo,
-        &["profile", "reset", "--local"],
+        &["profile", "reset", "--local", "--force"],
     ));
     assert!(tokensave::profile::storage::load(&local_dir, 0).is_empty());
     assert!(!tokensave::profile::storage::load(&global_dir, 0).is_empty());

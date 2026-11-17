@@ -2109,11 +2109,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         }
         Commands::Profile { action, local } => {
             profile_command::handle_profile_action(action, local)?;
+        }
         Commands::State { action } => {
             commands::handle_state_action(action);
-        }
-        Commands::Profile { action } => {
-            profile_command::handle_profile_action(action)?;
         }
         Commands::QualityDiff { .. } => unreachable!("handled before startup"),
         Commands::Branch { action } => {

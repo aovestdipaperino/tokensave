@@ -142,16 +142,7 @@ fn dispatch(action: ProfileAction, scope: &Scope) -> Result<()> {
             }
             Ok(())
         }
-        ProfileAction::Reset => {
-            let removed = storage::reset(&scope.profile_dir()?);
-            println!("Removed {removed} profile file(s).");
-            Ok(())
-        }
-    }
-}
-
-fn enable(detailed: bool, duration: Option<&str>, scope: &Scope) -> Result<()> {
-        ProfileAction::Reset { force } => reset(force),
+        ProfileAction::Reset { force } => reset(force, scope),
     }
 }
 
@@ -169,7 +160,7 @@ fn retain_engine(
     )))
 }
 
-fn enable(detailed: bool, duration: Option<&str>) -> Result<()> {
+fn enable(detailed: bool, duration: Option<&str>, scope: &Scope) -> Result<()> {
     if !detailed {
         set_mode(Mode::Light, None, scope)?;
         return invite_sharing(scope);
@@ -316,10 +307,6 @@ fn invite_sharing(scope: &Scope) -> Result<()> {
     ))
 }
 
-fn status(scope: &Scope) -> Result<()> {
-    let prefs = scope.load()?.profiling;
-    let effective = scope.settings();
-    let dir = scope.profile_dir()?;
 /// `2026-11-13T22:00:00Z (in 2h 0m)`: the expiry as a UTC timestamp plus the
 /// time remaining from `now`.
 fn describe_expiry(expires_at: i64, now: u64) -> String {
@@ -334,9 +321,9 @@ fn describe_expiry(expires_at: i64, now: u64) -> String {
 
 /// Deletes all recorded data. Without `--force` it asks first, and refuses
 /// when there is no terminal to ask on.
-fn reset(force: bool) -> Result<()> {
+fn reset(force: bool, scope: &Scope) -> Result<()> {
     use std::io::{BufRead as _, IsTerminal as _, Write as _};
-    let dir = profile_dir()?;
+    let dir = scope.profile_dir()?;
     if !force {
         if !std::io::stdin().is_terminal() {
             return Err(config_error(
@@ -364,10 +351,10 @@ fn reset(force: bool) -> Result<()> {
     Ok(())
 }
 
-fn status() -> Result<()> {
-    let prefs = user_config::profiling_preferences();
-    let effective = Settings::from_environment();
-    let dir = profile_dir()?;
+fn status(scope: &Scope) -> Result<()> {
+    let prefs = scope.load()?.profiling;
+    let effective = scope.settings();
+    let dir = scope.profile_dir()?;
     print!(
         "{}",
         render_status(

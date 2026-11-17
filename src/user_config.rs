@@ -938,6 +938,8 @@ pub fn profiling_sharing_consent() -> bool {
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|text| toml::from_str::<ConfigFile>(&text).ok())
         .is_some_and(|config| config.profiling_share_enabled)
+}
+
 /// The `auto_init` setting in `config.toml` (#876), read without the side
 /// effects of [`UserConfig::load`]. A missing or unparseable file means the
 /// default, `true`.
