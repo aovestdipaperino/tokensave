@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::db::Database;
 use crate::errors::{Result, TokenSaveError};
-use crate::types::*;
+use crate::profile::DbOp;
+use crate::types::{EdgeKind, Node, NodeKind, Visibility};
 
 /// Godot virtual callbacks that the engine invokes on `Object`, `Node`,
 /// `CanvasItem`, `Control`, `Resource` and the physics bodies. A `.gd`
@@ -82,7 +83,7 @@ fn row_to_node_dead_code(row: &libsql::Row) -> std::result::Result<Node, libsql:
 
     Ok(Node {
         id: get_string_lossy(row, 0)?,
-        kind: NodeKind::from_str(&kind_str).unwrap_or(NodeKind::Function),
+        kind: kind_str.parse::<NodeKind>().unwrap_or(NodeKind::Function),
         name: get_string_lossy(row, 2)?,
         qualified_name: get_string_lossy(row, 3)?,
         file_path: get_string_lossy(row, 4)?,
@@ -93,7 +94,7 @@ fn row_to_node_dead_code(row: &libsql::Row) -> std::result::Result<Node, libsql:
         end_column: row.get::<u32>(8)?,
         signature: get_opt_string_lossy(row, 10)?,
         docstring: get_opt_string_lossy(row, 9)?,
-        visibility: Visibility::from_str(&vis_str).unwrap_or_default(),
+        visibility: vis_str.parse::<Visibility>().unwrap_or_default(),
         is_async: is_async_int != 0,
         branches: row.get::<u32>(13)?,
         loops: row.get::<u32>(14)?,
@@ -340,8 +341,7 @@ impl<'a> GraphQueryManager<'a> {
 
         let mut rows = self
             .db
-            .conn()
-            .query(&sql, libsql::params![marker_ids_json])
+            .profiled_query(DbOp::FindDeadCode, &sql, libsql::params![marker_ids_json])
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to find dead code: {e}"),
@@ -398,15 +398,14 @@ impl<'a> GraphQueryManager<'a> {
                          AND b.kind IN ('function', 'method')
              WHERE EXISTS (SELECT 1 FROM edges c
                            WHERE c.target = b.id AND c.kind IN ('calls', 'uses'))";
-        let mut rows =
-            self.db
-                .conn()
-                .query(sql, ())
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to find live GDScript overrides: {e}"),
-                    operation: "gdscript_live_overrides".to_string(),
-                })?;
+        let mut rows = self
+            .db
+            .profiled_query(DbOp::GdscriptLiveOverrides, sql, ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to find live GDScript overrides: {e}"),
+                operation: "gdscript_live_overrides".to_string(),
+            })?;
         let mut live = HashSet::new();
         while let Some(row) = rows.next().await.map_err(|e| TokenSaveError::Database {
             message: format!("failed to read row: {e}"),
@@ -477,8 +476,11 @@ impl<'a> GraphQueryManager<'a> {
 
         let mut rows = self
             .db
-            .conn()
-            .query(&sql, libsql::params_from_iter(param_values))
+            .profiled_query(
+                DbOp::GetFileDependencies,
+                &sql,
+                libsql::params_from_iter(param_values),
+            )
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query file dependencies: {e}"),
@@ -539,8 +541,11 @@ impl<'a> GraphQueryManager<'a> {
 
         let mut rows = self
             .db
-            .conn()
-            .query(&sql, libsql::params_from_iter(param_values))
+            .profiled_query(
+                DbOp::GetFileDependents,
+                &sql,
+                libsql::params_from_iter(param_values),
+            )
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query file dependents: {e}"),
@@ -627,15 +632,14 @@ impl<'a> GraphQueryManager<'a> {
                    WHERE e.kind IN ('calls', 'uses') \
                    AND n1.file_path != n2.file_path";
 
-        let mut rows =
-            self.db
-                .conn()
-                .query(sql, ())
-                .await
-                .map_err(|e| TokenSaveError::Database {
-                    message: format!("failed to query file adjacency: {e}"),
-                    operation: "build_file_adjacency".to_string(),
-                })?;
+        let mut rows = self
+            .db
+            .profiled_query(DbOp::BuildFileAdjacency, sql, ())
+            .await
+            .map_err(|e| TokenSaveError::Database {
+                message: format!("failed to query file adjacency: {e}"),
+                operation: "build_file_adjacency".to_string(),
+            })?;
 
         // Normalise the prefix once: ensure it ends with '/'.
         let prefix: Option<String> = path_prefix.map(|p| {

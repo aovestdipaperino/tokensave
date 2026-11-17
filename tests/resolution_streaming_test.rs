@@ -60,7 +60,7 @@ async fn paging_the_references_changes_nothing() {
         "the fixture must produce enough references to page, got {}",
         refs.len()
     );
-    let resolver = ReferenceResolver::from_nodes(db, &nodes);
+    let resolver = ReferenceResolver::from_nodes(&nodes);
 
     let whole = resolver.resolve_all(&refs);
     assert!(
@@ -101,7 +101,7 @@ async fn one_reference_per_page_still_resolves_everything() {
 
     let nodes = db.get_all_nodes_for_resolution().await.expect("nodes");
     let refs = db.get_unresolved_refs().await.expect("refs");
-    let resolver = ReferenceResolver::from_nodes(db, &nodes);
+    let resolver = ReferenceResolver::from_nodes(&nodes);
 
     let whole = resolver.resolve_all(&refs);
     let mut one_at_a_time = Vec::new();

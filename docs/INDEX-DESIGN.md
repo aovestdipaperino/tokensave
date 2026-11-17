@@ -130,6 +130,7 @@ CREATE TABLE unresolved_refs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     from_node_id    TEXT NOT NULL,       -- FK → nodes(id): the calling/referencing node
     reference_name  TEXT NOT NULL,       -- symbol name as written in source
+    reference_leaf  TEXT NOT NULL,       -- trailing segment, indexed for caller lookup
     reference_kind  TEXT NOT NULL,       -- edge kind to create if resolved (e.g. "calls")
     line            INTEGER NOT NULL,
     col             INTEGER NOT NULL,
@@ -138,7 +139,7 @@ CREATE TABLE unresolved_refs (
 );
 ```
 
-**Lifecycle.** Unresolved refs are created during extraction and consumed during reference resolution. The CASCADE ensures they are cleaned up when their owning node is deleted during re-indexing.
+**Lifecycle.** Unresolved refs are created during extraction and retained after reference resolution as the source evidence behind resolved edges and ambiguity records. The CASCADE ensures they are cleaned up when their owning node is deleted during re-indexing. `reference_leaf` is the final segment after `::` or `.` (`Type::run` and `value.run` both store `run`) and has its own equality index. `tokensave_callers` uses it to retrieve every same-named call without a leading-wildcard scan of this table (schema v19).
 
 #### `ambiguous_calls`
 
@@ -331,7 +332,7 @@ returns before reading the edges table at all (#481).
 
 Designed for the common case where only a handful of files changed.
 
-1. **Acquire sync lock** — atomically create `.tokensave/sync.lock` with the current PID. If the lockfile already exists and the owning PID is alive, the sync fails immediately with an error. Stale locks from dead processes are reclaimed automatically.
+1. **Acquire sync lock** — atomically create `.tokensave/sync.lock` with the current PID. If the lockfile already exists and the owning PID is alive, the sync fails immediately with an error. Stale locks are reclaimed only after confirming that their recorded PID is dead; malformed or unreadable locks are not broken automatically. Hook-triggered syncs first claim `.tokensave/auto-sync.lock`, before opening the database, so losing background processes exit without loading it.
 
 2. **Scan and hash** — walk the project directory and compute SHA-256 content hashes for every source file on disk.
 
@@ -416,6 +417,6 @@ This gives the AI assistant a complete picture of the blast radius of a change, 
 
 ## Concurrency Model
 
-- **Single writer.** The sync lock (`.tokensave/sync.lock`) ensures only one sync or full index runs at a time. The lock is a regular file containing the PID; stale locks from crashed processes are detected by checking if the PID is still alive.
+- **Single writer.** The sync lock (`.tokensave/sync.lock`) ensures only one sync or full index runs at a time. Hook-triggered syncs additionally use `.tokensave/auto-sync.lock` to enforce single-flight before database startup. Both locks are regular files containing the PID; a stale lock is removed only after checking that the PID is no longer alive.
 - **Concurrent readers.** WAL mode allows the MCP server to serve queries while a sync is in progress. Reads see a consistent snapshot of the database at the time they started.
 - **Schema migrations.** Run inside `BEGIN EXCLUSIVE` to prevent multiple processes from migrating simultaneously. After acquiring the lock, the version is re-checked to handle the race where another process migrated between the initial check and the lock acquisition.

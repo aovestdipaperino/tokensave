@@ -92,11 +92,11 @@ For machine-readable output, use `--json`.
 
 Initialization (`tokensave init`) and incremental updates (`tokensave sync`) are deliberately separate commands.
 
-Tokensave installs a global git post-commit hook that runs `tokensave sync` after every commit to keep the index fresh. If `sync` were allowed to create a new database when none existed, it would silently bootstrap a `.tokensave/` directory in every git repository on your machine -- even ones you never intended to index. By requiring an explicit `init`, only projects you opt into get a database. The hook runs harmlessly (exits with a non-zero status, output suppressed) in all other repos.
+Tokensave installs a global git post-commit hook that runs `tokensave sync` after every commit to keep the index fresh. An explicit `sync <path>` never creates a database. A pathless `sync`, which is what the hook runs, creates one only through `auto_init` (#876): at the top level of a git repository with no index, outside the system temp dir and your home directory, and with no more candidate files than `max_auto_sync_files`. Set `auto_init = false` in `~/.tokensave/config.toml` to keep `init` an explicit opt-in for every project; the hook then runs harmlessly (exits with a non-zero status, output suppressed) in repos without an index. See [Automatic initialization](guide/INDEXING.md#automatic-initialization).
 
 In short:
 - **`tokensave init`** -- one-time setup. Creates the database and performs a full index. Errors if already initialized.
-- **`tokensave sync`** -- ongoing updates. Requires an existing database. Errors if the project was never initialized.
+- **`tokensave sync`** -- ongoing updates. Requires an existing database, unless `auto_init` initializes a new repository as described above. Errors otherwise.
 
 ### Incremental syncs
 
@@ -424,7 +424,7 @@ Run `tokensave sync` whenever you want. It's incremental and fast.
 
 ### Post-commit hook
 
-During `tokensave install`, you'll be offered a global git `post-commit` hook. If you accept, tokensave will automatically sync in the background after every git commit across all your repos. The hook is a no-op in repos that don't have a `.tokensave/` directory.
+During `tokensave install`, you'll be offered a global git `post-commit` hook. If you accept, tokensave will automatically sync in the background after every git commit across all your repos. In a repo without a `.tokensave/` directory, the hook initializes it when `auto_init` allows that (see [Automatic initialization](guide/INDEXING.md#automatic-initialization)) and is a no-op otherwise.
 
 If you're scripting the install (CI, dotfiles bootstrap, onboarding playbook), pass `--git-hook yes` to install the hook without prompting, or `--git-hook no` to skip it. Omitting the flag preserves the interactive prompt.
 
@@ -580,9 +580,11 @@ purpose. To change the ceiling, set `max_auto_sync_files` in
 `.tokensave/config.json`; `0` disables the file-count check (the empty-index
 guard always applies).
 
-The `watcher_debounce` setting in `~/.tokensave/config.toml` is left over
-from that watcher. It is still accepted, but nothing reads it, and the
-30-second cooldown is not configurable.
+The 30-second cooldown is not configurable. The `watcher_debounce` setting in
+`~/.tokensave/config.toml` applies only to the opt-in filesystem watcher
+(`filesystem_watch_enabled = true` or `serve --watch`, #937), which is off by
+default and runs beside this check rather than replacing it; see
+[Opt-in filesystem watcher](guide/INDEXING.md#opt-in-filesystem-watcher).
 
 ### Interrupting a sync
 
@@ -1859,10 +1861,12 @@ The `config.toml` is plain TOML and fully transparent:
 
 ```toml
 upload_enabled = true        # set to false to stop uploading
-watcher_debounce = "2s"      # inert; left over from the watcher removed in 6.1.1
+filesystem_watch_enabled = false # true = `serve` follows file changes via OS notifications (#937)
+watcher_debounce = "2s"      # quiet period for the opt-in watcher; unused while it is off
 extraction_timeout_secs = 60 # per-file extraction timeout
 wildcard_permissions = false # true = grant Claude Code tools via one "mcp__tokensave__*" entry
 manage_rules = true          # false = leave ~/.claude/rules/tokensave.md and other rules files to you
+auto_init = true             # false = never initialize a new git repository unasked (TOKENSAVE_AUTO_INIT overrides)
 ```
 
 `state.toml` holds everything else (`pending_upload`, `last_upload_at`,
@@ -1891,6 +1895,8 @@ confirming those changes. Structural findings include incompatible schema,
 invalid SHA-256 fingerprints, dangling edges/references/parents, orphan symbols
 and vectors, and dispatch records with missing endpoints. Branch metadata is
 checked for malformed JSON, missing default entries/databases and unsafe paths.
+A recorded default branch that no longer exists in Git produces a
+`BRANCH_DEFAULT_STALE` warning (fix it with `tokensave branch set-default`).
 An untracked current branch produces `BRANCH_FALLBACK` and stops verification
 rather than comparing another branch's database against the current source.
 
@@ -1914,6 +1920,10 @@ relationships/ambiguous-call candidates are deferred. No automatic full rebuild
 or index deletion occurs. Preserve a backup before manually recovering structural
 corruption. Symlink targets outside the project are reported without reading them;
 filesystem changes during verification can require a second run.
+
+For interrupted indexing and manual backup/restore steps, see
+[Database recovery](DATABASE-RECOVERY.md), including the implementation's
+validation status and remaining crash-test coverage.
 
 ### "tokensave not initialized"
 

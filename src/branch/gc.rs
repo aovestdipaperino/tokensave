@@ -149,7 +149,7 @@ pub async fn collect_if_enabled(root: &Path, protected: &[PathBuf]) {
     .await;
     match result {
         Ok(removed) if !removed.is_empty() => {
-            tracing::info!(?removed, "cleaned stale branch indexes")
+            tracing::info!(?removed, "cleaned stale branch indexes");
         }
         Err(error) => tracing::warn!(%error, "automatic branch cleanup skipped"),
         _ => {}

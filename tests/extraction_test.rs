@@ -1,5 +1,5 @@
 use tokensave::extraction::{LanguageRegistry, RustExtractor};
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, NodeKind, Visibility};
 
 #[test]
 fn test_extract_function() {

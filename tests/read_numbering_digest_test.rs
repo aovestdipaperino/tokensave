@@ -302,3 +302,53 @@ async fn missing_arguments_name_both_spellings() {
     let msg = read_err(&cg, json!({ "file": "src/main.rs", "mode": "lines" })).await;
     assert!(msg.contains("lines") && msg.contains("start"), "{msg}");
 }
+
+#[tokio::test]
+async fn unknown_read_parameters_are_named_before_range_or_file_errors() {
+    let (_dir, cg) = setup().await;
+    for args in [
+        json!({ "path": "docs/README.md", "mode": "lines", "start_line": 40, "end_line": 75 }),
+        json!({ "path": "src/main.rs", "start_line": 5, "end_line": 6 }),
+        json!({ "path": "src/main.rs", "mode": "full", "start_line": 5, "end_line": 6 }),
+    ] {
+        let message = read_err(&cg, args).await;
+        assert!(
+            message.contains("unknown tokensave_read parameter(s)"),
+            "{message}"
+        );
+        assert!(
+            message.contains("start_line") && message.contains("end_line"),
+            "{message}"
+        );
+        assert!(
+            message.contains("'lines'") && message.contains("'start'/'end'"),
+            "{message}"
+        );
+        assert!(!message.contains("requires"), "{message}");
+    }
+    let digest = text_digest(&read(&cg, json!({ "file": "src/main.rs" })).await);
+    let message = read_err(
+        &cg,
+        json!({ "file": "src/main.rs", "if_digest": digest, "offset": 5, "limit": 2 }),
+    )
+    .await;
+    assert!(
+        message.contains("offset") && message.contains("limit"),
+        "{message}"
+    );
+}
+
+#[tokio::test]
+async fn known_read_aliases_and_graph_selectors_remain_accepted() {
+    let (_dir, cg) = setup().await;
+    let result = read_json(
+        &cg,
+        json!({ "path": "src/main.rs", "start": "5", "end": 6,
+            "graph_root": cg.project_root(), "graph_branch": "master", "force": true }),
+    )
+    .await;
+    assert_eq!(
+        result["body"],
+        "     5\tfn helper() -> i32 {\n     6\t    42"
+    );
+}

@@ -78,11 +78,21 @@ pub(crate) async fn run(name: Option<String>, args: Vec<String>) -> Result<()> {
         return Ok(());
     }
 
+    crate::commands::warn_borrowed_worktree_index(parsed.project.is_some());
     let project_path = tokensave::config::resolve_path_with_discovery(parsed.project.clone());
     let cg = serve::ensure_initialized(&project_path).await?;
     // The 15,000-character cap protects an agent's context window; the CLI's
     // reader is a script or a person, so it gets the whole result (#673).
     disable_response_limit();
+    use tokensave::debug_log::{event, Level};
+    event(Level::Debug, "search", "tool_dispatch", || {
+        serde_json::json!({
+            "tool": def.name,
+            "explicit_project": parsed.project.is_some(),
+            "branch_index": cg.serving_branch().is_some(),
+            "fallback": cg.is_fallback(),
+        })
+    });
     let result = handle_tool_call(&cg, &def.name, parsed.tool_args, None, None).await?;
 
     if parsed.raw_json {
@@ -491,6 +501,7 @@ fn group_for(def: &ToolDefinition) -> &'static str {
         || n == "tokensave_replace_symbol"
         || n == "tokensave_insert_at_symbol"
         || n == "tokensave_rename"
+        || n == "tokensave_create_file"
     {
         "edit"
     } else if n == "tokensave_record_decision"
@@ -498,6 +509,7 @@ fn group_for(def: &ToolDefinition) -> &'static str {
         || n == "tokensave_session_recall"
         || n == "tokensave_session_start"
         || n == "tokensave_session_end"
+        || n == "tokensave_knowledge"
     {
         "memory & session"
     } else if n == "tokensave_health"

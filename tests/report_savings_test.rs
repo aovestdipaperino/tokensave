@@ -23,7 +23,10 @@ use tokensave::tokensave::TokenSave;
 
 /// Creates and indexes a project. `Some(value)` writes `report_savings` to
 /// the config before the server opens it; `None` leaves the default.
-async fn setup_server(report_savings: Option<bool>) -> (TempDir, Arc<McpServer>) {
+async fn setup_server_with_global_db(
+    report_savings: Option<bool>,
+    global_db_path: Option<std::path::PathBuf>,
+) -> (TempDir, Arc<McpServer>) {
     let dir = TempDir::new().unwrap();
     let project = dir.path();
     std::fs::create_dir_all(project.join("src")).unwrap();
@@ -43,8 +46,15 @@ async fn setup_server(report_savings: Option<bool>) -> (TempDir, Arc<McpServer>)
     }
 
     let cg = TokenSave::open(project).await.unwrap();
-    let server = McpServer::new(cg, None).await;
+    let server = match global_db_path {
+        Some(global_db_path) => McpServer::new_with_global_db_path(cg, None, global_db_path).await,
+        None => McpServer::new(cg, None).await,
+    };
     (dir, server)
+}
+
+async fn setup_server(report_savings: Option<bool>) -> (TempDir, Arc<McpServer>) {
+    setup_server_with_global_db(report_savings, None).await
 }
 
 fn jsonrpc_request(id: i64, method: &str, params: Value) -> String {
@@ -161,10 +171,15 @@ async fn savings_are_still_accounted_when_reporting_is_off() {
     // The point of the flag is to stop the model talking about savings, not to
     // stop measuring them. The savings ledger is what `tokensave gain` reads,
     // so that is what has to keep growing with reporting off.
-    let (dir, server) = setup_server(Some(false)).await;
+    let global_dir = TempDir::new().unwrap();
+    let global_db_path = global_dir.path().join("global.db");
+    let (dir, server) = setup_server_with_global_db(Some(false), Some(global_db_path)).await;
     let project = tokensave::global_db::normalize_project_key(dir.path());
-    let gdb = tokensave::global_db::GlobalDb::open().await.unwrap();
-    let calls_before = gdb.sum_savings(Some(&project), 0).await.calls;
+    let calls_before = server
+        .global_savings_for_test(&project)
+        .await
+        .unwrap()
+        .calls;
 
     let text = search_text(&server).await;
     assert!(
@@ -176,7 +191,11 @@ async fn savings_are_still_accounted_when_reporting_is_off() {
         .await;
 
     assert_eq!(
-        gdb.sum_savings(Some(&project), 0).await.calls,
+        server
+            .global_savings_for_test(&project)
+            .await
+            .unwrap()
+            .calls,
         calls_before + 1,
         "the call must still reach the ledger that `tokensave gain` reports from"
     );

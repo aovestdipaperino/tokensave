@@ -843,7 +843,10 @@ mod tests {
     ///    matching source hashes but poisoned fingerprint signals would survive
     ///    and produce a phantom 1.0-similarity pair.
     #[tokio::test]
-    #[allow(clippy::float_cmp)]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the recomputed score must be exactly the stored one"
+    )]
     async fn phantom_pair_disappears_after_recompute() {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::write(tmp.path().join("lib.rs"), TWO_FNS).unwrap();

@@ -1,0 +1,205 @@
+{
+  "revision": "a1e87d652c7f00d134268fb9fadcb16d56fa7bc7",
+  "features": "lite",
+  "tools": {
+    "cargo": {
+      "steps": [
+        {
+          "name": "cold-build",
+          "argv": [
+            "cargo",
+            "build",
+            "--locked",
+            "--no-default-features",
+            "--features",
+            "lite"
+          ],
+          "ok": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "wall_s": 130.378,
+          "cpu_s": 666.324,
+          "peak_rss_mib": 2729.6,
+          "log": "$CHECKOUT/.blaze-eval/run/logs/cargo-01-cold-build.log",
+          "error_tail": ""
+        },
+        {
+          "name": "noop-build",
+          "argv": [
+            "cargo",
+            "build",
+            "--locked",
+            "--no-default-features",
+            "--features",
+            "lite"
+          ],
+          "ok": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "wall_s": 0.352,
+          "cpu_s": 0.328,
+          "peak_rss_mib": 96.4,
+          "log": "$CHECKOUT/.blaze-eval/run/logs/cargo-02-noop-build.log",
+          "error_tail": ""
+        },
+        {
+          "name": "edit-build",
+          "argv": [
+            "cargo",
+            "build",
+            "--locked",
+            "--no-default-features",
+            "--features",
+            "lite"
+          ],
+          "ok": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "wall_s": 10.225,
+          "cpu_s": 17.41,
+          "peak_rss_mib": 1447.2,
+          "log": "$CHECKOUT/.blaze-eval/run/logs/cargo-03-edit-build.log",
+          "error_tail": ""
+        },
+        {
+          "name": "edit-build",
+          "argv": [
+            "cargo",
+            "build",
+            "--locked",
+            "--no-default-features",
+            "--features",
+            "lite"
+          ],
+          "ok": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "wall_s": 7.82,
+          "cpu_s": 9.896,
+          "peak_rss_mib": 1340.5,
+          "log": "$CHECKOUT/.blaze-eval/run/logs/cargo-04-edit-build.log",
+          "error_tail": ""
+        },
+        {
+          "name": "test-first",
+          "argv": [
+            "cargo",
+            "test",
+            "--locked",
+            "--no-default-features",
+            "--features",
+            "lite",
+            "--test",
+            "integration",
+            "sync"
+          ],
+          "ok": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "wall_s": 73.468,
+          "cpu_s": 177.905,
+          "peak_rss_mib": 2213.3,
+          "log": "$CHECKOUT/.blaze-eval/run/logs/cargo-05-test-first.log",
+          "error_tail": ""
+        },
+        {
+          "name": "test-noop",
+          "argv": [
+            "cargo",
+            "test",
+            "--locked",
+            "--no-default-features",
+            "--features",
+            "lite",
+            "--test",
+            "integration",
+            "sync"
+          ],
+          "ok": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "wall_s": 3.63,
+          "cpu_s": 16.876,
+          "peak_rss_mib": 274.6,
+          "log": "$CHECKOUT/.blaze-eval/run/logs/cargo-06-test-noop.log",
+          "error_tail": ""
+        },
+        {
+          "name": "edit-test",
+          "argv": [
+            "cargo",
+            "test",
+            "--locked",
+            "--no-default-features",
+            "--features",
+            "lite",
+            "--test",
+            "integration",
+            "sync"
+          ],
+          "ok": true,
+          "exit_code": 0,
+          "timed_out": false,
+          "wall_s": 68.242,
+          "cpu_s": 132.949,
+          "peak_rss_mib": 1945.8,
+          "log": "$CHECKOUT/.blaze-eval/run/logs/cargo-07-edit-test.log",
+          "error_tail": ""
+        }
+      ],
+      "disk": {
+        "target_after_cold_mib": 2677.1171875,
+        "target_at_end_mib": 3515.0078125,
+        "tool_home_growth_mib": 0.0
+      },
+      "status": null
+    },
+    "blaze": {
+      "steps": [
+        {
+          "name": "cold-build",
+          "argv": [
+            "blaze",
+            "build",
+            "--locked",
+            "--no-default-features",
+            "--features",
+            "lite"
+          ],
+          "ok": false,
+          "exit_code": 101,
+          "timed_out": false,
+          "wall_s": 147.796,
+          "cpu_s": 1.348,
+          "peak_rss_mib": 2319.4,
+          "log": "$CHECKOUT/.blaze-eval/run/logs/blaze-01-cold-build.log",
+          "error_tail": "$ blaze build --locked --no-default-features --features lite\nnote: blaze builds with its own toolchain, blaze-2026-10-27, not rustc 1.100.0 (0ef1bc386 2026-11-09), the toolchain cargo was started with. blaze is its own Rust toolchain whatever the project pins (docs/toolchain.md); the project's toolchain and its CI stay the final word\n   Compiling tokensave v7.17.0 ($CHECKOUT/.blaze-eval/run/tree-blaze)\nerror: could not build `tokensave`: Failed to build the build scripts of $CHECKOUT/.blaze-eval/run/tree-blaze\n  blaze could not run the build script of `faster-hex v0.10.1` for the load\n  failed to run custom build command for `faster-hex v0.10.1`\n    \n    Caused by:\n    process didn't exit successfully: `$CHECKOUT/.blaze-eval/run/tree-blaze/target/rust-analyzer/compile-time/build/faster-hex-ce44162b3357e015/build-script-build` (exit status: 101)\n    --- stderr\n    \n    thread 'main' (2) panicked at $HOME/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/lib.rs:160:20:\n    called `Result::unwrap()` on an `Err` value: Error { kind: Other(\"could not execute rustc\") }\n    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n(what blaze said is in $BLAZE_HOME/workers/acfb68cdd018aba6/log)"
+        }
+      ],
+      "disk": {
+        "target_after_cold_mib": 3876.453125,
+        "target_at_end_mib": 3876.453125,
+        "tool_home_growth_mib": 0.0
+      },
+      "status": "plain cargo: not through blaze (`blaze enable` turns it on)\ndaemon: pid 68102, version 0.20261027.0-f60566aa-bfa6a50-18e84e6021a7f916, exits after 1800s idle, workers hold at most 15470 MB\n  worker: pid 68105, $CHECKOUT/.blaze-eval/run/tree-blaze/, log $BLAZE_HOME/workers/acfb68cdd018aba6/log\n    $CHECKOUT/.blaze-eval/run/tree-blaze: failed: the daemon could not load the workspace (exit status: 1: panicked at $HOME/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/lib.rs:160:20:          called `Result::unwrap()` on an `Err` value: Error { kind: Other(\"could not execute rustc\") }); the worker's log is $BLAZE_HOME/workers/acfb68cdd018aba6/log\nstore: 834 MB, at most 7195 MB (`blaze cache gc` collects it), $HOME/.cache/ra-jit/store"
+    }
+  },
+  "started": "2026-11-15T19:25:33Z",
+  "environment": {
+    "cpus": 8,
+    "mem_total_mib": 30942,
+    "kernel": "7.0.0-38-generic",
+    "python": "3.14.4",
+    "cargo_version": "cargo 1.100.0 (3acc79c0c 2026-11-05)",
+    "rustc_version": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+    "cc_version": [
+      "cc (Ubuntu 15.2.0-16ubuntu1) 15.2.0"
+    ],
+    "blaze_version": "blaze 0.20261027.0 (49ca152)"
+  },
+  "measurement_notes": [
+    "Single native Linux run on a shared desktop; no statistical speedup claim.",
+    "Initial Blaze CPU measurement excludes reaped daemon workers and is incomplete; use the confirmation run for corrected accounting.",
+    "Blaze cache store is outside BLAZE_HOME; tool-home growth does not measure that store. See blaze status."
+  ]
+}

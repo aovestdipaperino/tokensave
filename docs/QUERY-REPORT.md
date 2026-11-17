@@ -14,25 +14,81 @@ origin constants and release-channel selection are in `compatibility.rs`.
 Existing connection, migration, global-open, branch-copy, hook, and verification
 contexts below include their compatibility checks and channel-aware paths.
 
+Recovery context (#864): on an abandoned dirty sentinel, `TokenSave::open_with`
+holds the writer lock across recovery and reindexing, and runs Q0029
+(`quick_check`), then Q0030 (`needs_bulk_load_finalization`) and,
+when needed, Q0034 (`end_bulk_load`) before a complete source reindex. Errors
+propagate; detected corruption refuses automatic deletion. The SQL templates
+and bindings are unchanged, so inventory counts remain unchanged. Regression
+SQL in `tests/corruption_test.rs` remains outside the documented scope.
+
+Local accounting context (2026-10-30): Q0282 is the atomic, revision-aware
+snapshot UPSERT. Binding `?15` chooses Copilot checkpoint timestamps; `?16`
+is the usage revision; `?17` is validated native output plus reasoning for
+legacy Codex dominance checks. Same-revision Codex rows with unchanged token
+counters can be repriced only from zero to a positive estimate; the exception
+adds no binding and cannot lower a positive estimate. Revision repair replaces
+corrected counters, equal-revision updates remain monotonic, and downgrades are
+rejected. Binding `?18` enables Augment's cumulative subagent USD to increase
+without moving the original session timestamp bucket; Augment keeps usage
+revision 0. Q0390–Q0392 cover schema readiness and remaining legacy rows;
+Q0393–Q0397 are isolated failure/concurrency fixtures. Snapshot migration
+fails closed and verifies actual schema after an ALTER race. The original turn
+field list remains compatible; only the new Codex writer supplies revision 1.
+
+Ledger per-tool context (#918, 2026-11-09): Q0398 and Q0399 are the
+project-filtered and all-projects forms of `savings_by_tool`, bound like
+Q0273/Q0274 (`?1` project key, `?2` or `?1` start timestamp). They add two
+occurrences; like `savings_history`, the function is not in the construction
+appendix, so that count is unchanged.
+
+Labelled-callers context (#687, 2026-11-13): schema v19 adds the indexed
+`unresolved_refs.reference_leaf` column. Q0405–Q0408 add and backfill it in
+bounded keyset pages. Q0409 and Q0410 count and retrieve the matching call
+references; the retrieval CTE applies the caller-supplied hard limit before
+joining same-line edges, target names, and ambiguity evidence. Q0237 and Q0239
+now bind the leaf beside the full reference name, and Q0039 creates the column
+and index for a fresh database.
+
+Legacy cache purge context (#866, 2026-11-13): Q0411-Q0414 run once per
+writable open in `purge_legacy_read_cache`. Q0411 short-circuits when the
+legacy `read_cache` table is empty or missing; otherwise Q0412 records the
+current `secure_delete` mode, Q0413 deletes every row with it on, and Q0414
+restores the recorded integer mode. Q0415-Q0418 are the inline test. No
+schema, binding or existing entry changes.
+
+Search-annotation context (#688, 2026-11-15): Q0419-Q0425 are the read-only
+lookups of `tokensave grep`, in the section "`tokensave grep` additions" at
+the end of the SQL sections. They add seven occurrences, one source file and
+one construction context. No schema, binding or existing entry changes.
+
+Profiling coverage context (#885, 2026-11-13): the existing SQL and bindings in
+Q0204-Q0217, Q0253-Q0256, Q0296, and Q0308-Q0320 are unchanged,
+but their execution now goes through static `DbOp` labels in the profiled
+database API. The two quality-diff `BEGIN` statements use the profiled batch
+helper. Inventory IDs, occurrence counts, and construction contexts are
+unchanged.
+
 `?`, `?1`, and similar placeholders are bound by the caller. Rust format fields such as `{placeholders}`, `{where_clause}`, `{limit}`, and `{}` are preserved as templates; they are not executable SQL until constructed. Rust string escapes and backslash-newline continuations are decoded for readability. Dynamic SQL has potentially unlimited concrete instances, so the report includes its templates and complete builder functions in the construction appendix, including conditional clauses and parameter bindings. No SQL was executed to produce this report.
 
 ## Inventory summary
 
-- SQL-bearing source files: **38**.
-- SQL literal/template occurrences: **346**.
-- Functions retained for construction/binding context: **172**.
+- SQL-bearing source files: **41**.
+- SQL literal/template occurrences: **382**.
+- Functions retained for construction/binding context: **182**.
 
 ## Source file index
 
 | Source file | SQL occurrences |
 | --- | ---: |
+| [src/accounting/codex.rs](../src/accounting/codex.rs) | 1 |
 | [src/agents/hooks.rs](../src/agents/hooks.rs) | 4 |
 | [src/agents/mod.rs](../src/agents/mod.rs) | 1 |
 | [src/blame_engine.rs](../src/blame_engine.rs) | 16 |
 | [src/branch.rs](../src/branch.rs) | 2 |
 | [src/db/compatibility.rs](../src/db/compatibility.rs) | 7 |
-| [src/db/connection.rs](../src/db/connection.rs) | 11 |
-| [src/db/migrations.rs](../src/db/migrations.rs) | 53 |
+| [src/db/connection.rs](../src/db/connection.rs) | 19 |
+| [src/db/migrations.rs](../src/db/migrations.rs) | 57 |
 | [src/db/queries/clear.rs](../src/db/queries/clear.rs) | 1 |
 | [src/db/queries/edges.rs](../src/db/queries/edges.rs) | 51 |
 | [src/db/queries/files.rs](../src/db/queries/files.rs) | 8 |
@@ -43,19 +99,21 @@ contexts below include their compatibility checks and channel-aware paths.
 | [src/db/queries/routes.rs](../src/db/queries/routes.rs) | 18 |
 | [src/db/queries/search.rs](../src/db/queries/search.rs) | 9 |
 | [src/db/queries/stats.rs](../src/db/queries/stats.rs) | 5 |
-| [src/db/queries/unresolved.rs](../src/db/queries/unresolved.rs) | 10 |
+| [src/db/queries/unresolved.rs](../src/db/queries/unresolved.rs) | 12 |
 | [src/doctor.rs](../src/doctor.rs) | 1 |
 | [src/edge_audit.rs](../src/edge_audit.rs) | 4 |
 | [src/extraction/fstar_extractor.rs](../src/extraction/fstar_extractor.rs) | 2 |
 | [src/extraction/ruby_extractor.rs](../src/extraction/ruby_extractor.rs) | 1 |
 | [src/extraction/ruby_template_extractor.rs](../src/extraction/ruby_template_extractor.rs) | 1 |
 | [src/graphify.rs](../src/graphify.rs) | 5 |
-| [src/global_db.rs](../src/global_db.rs) | 41 |
+| [src/global_db.rs](../src/global_db.rs) | 50 |
 | [src/graph/imports.rs](../src/graph/imports.rs) | 1 |
 | [src/graph/queries.rs](../src/graph/queries.rs) | 5 |
+| [src/grep_annotate/index.rs](../src/grep_annotate/index.rs) | 7 |
 | [src/hooks.rs](../src/hooks.rs) | 1 |
 | [src/mcp/tools/definitions.rs](../src/mcp/tools/definitions.rs) | 4 |
 | [src/mcp/tools/handlers/workflow.rs](../src/mcp/tools/handlers/workflow.rs) | 1 |
+| [src/okf/export.rs](../src/okf/export.rs) | 5 |
 | [src/quality_diff.rs](../src/quality_diff.rs) | 2 |
 | [src/runtime_telemetry.rs](../src/runtime_telemetry.rs) | 4 |
 | [src/tokensave/memory.rs](../src/tokensave/memory.rs) | 7 |
@@ -411,6 +469,70 @@ DELETE FROM edges
              PRAGMA foreign_keys = ON;
 ```
 
+#### Q0411 — `purge_legacy_read_cache`
+
+Source: [src/db/connection.rs:597](../src/db/connection.rs#L597).
+
+```sql
+SELECT EXISTS (SELECT 1 FROM read_cache)
+```
+
+#### Q0412 — `purge_legacy_read_cache`
+
+Source: [src/db/connection.rs:602](../src/db/connection.rs#L602).
+
+```sql
+PRAGMA secure_delete
+```
+
+#### Q0413 — `purge_legacy_read_cache`
+
+Source: [src/db/connection.rs:604](../src/db/connection.rs#L604).
+
+```sql
+PRAGMA secure_delete = ON; DELETE FROM read_cache;
+```
+
+#### Q0414 — `purge_legacy_read_cache`
+
+Source: [src/db/connection.rs:608](../src/db/connection.rs#L608).
+
+```sql
+PRAGMA secure_delete = {previous};
+```
+
+#### Q0415 — `writable_open_clears_legacy_read_cache_rows`
+
+Source: [src/db/connection.rs:630](../src/db/connection.rs#L630).
+
+```sql
+INSERT INTO read_cache (project_id, session_id, file_path, mtime_ns, mode, args_hash, digest, body, token_count, created_at) VALUES ('p', 's', 'src/secret.rs', 0, 'full', 'h', 'd', X'544f4b454e', 1, 0)
+```
+
+#### Q0416 — `writable_open_clears_legacy_read_cache_rows`
+
+Source: [src/db/connection.rs:639](../src/db/connection.rs#L639).
+
+```sql
+PRAGMA secure_delete
+```
+
+#### Q0417 — `writable_open_clears_legacy_read_cache_rows`
+
+Source: [src/db/connection.rs:646](../src/db/connection.rs#L646).
+
+```sql
+SELECT COUNT(*) FROM read_cache
+```
+
+#### Q0418 — `writable_open_clears_legacy_read_cache_rows`
+
+Source: [src/db/connection.rs:661](../src/db/connection.rs#L661).
+
+```sql
+PRAGMA secure_delete
+```
+
 ### src/db/migrations.rs
 
 #### Q0035 — `module constant / top-level string`
@@ -562,6 +684,7 @@ CREATE TABLE IF NOT EXISTS nodes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             from_node_id TEXT NOT NULL,
             reference_name TEXT NOT NULL,
+            reference_leaf TEXT NOT NULL DEFAULT '',
             reference_kind TEXT NOT NULL,
             line INTEGER NOT NULL,
             col INTEGER NOT NULL,
@@ -637,6 +760,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 
         CREATE INDEX IF NOT EXISTS idx_unresolved_refs_from_node_id ON unresolved_refs(from_node_id);
         CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_name ON unresolved_refs(reference_name);
+        CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_leaf ON unresolved_refs(reference_leaf);
         CREATE INDEX IF NOT EXISTS idx_unresolved_refs_file_path ON unresolved_refs(file_path);
 
         CREATE INDEX IF NOT EXISTS idx_nodes_lower_name ON nodes(lower(name));
@@ -1381,6 +1505,41 @@ Source: [src/db/migrations.rs:1794](../src/db/migrations.rs#L1794).
 
 ```sql
 ALTER TABLE edges ADD COLUMN resolved_by INTEGER;
+```
+
+#### Q0405 — `migrate_v19`
+
+Source: [src/db/migrations.rs:1819](../src/db/migrations.rs#L1819).
+
+```sql
+ALTER TABLE unresolved_refs
+                 ADD COLUMN reference_leaf TEXT NOT NULL DEFAULT '';
+```
+
+#### Q0406 — `migrate_v19`
+
+Source: [src/db/migrations.rs:1835](../src/db/migrations.rs#L1835).
+
+```sql
+SELECT id, reference_name FROM unresolved_refs
+                 WHERE id > ?1 ORDER BY id LIMIT 25000
+```
+
+#### Q0407 — `migrate_v19`
+
+Source: [src/db/migrations.rs:1858](../src/db/migrations.rs#L1858).
+
+```sql
+UPDATE unresolved_refs SET reference_leaf = ?1 WHERE id = ?2
+```
+
+#### Q0408 — `migrate_v19`
+
+Source: [src/db/migrations.rs:1878](../src/db/migrations.rs#L1878).
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_unresolved_refs_reference_leaf
+             ON unresolved_refs(reference_leaf);
 ```
 
 ### src/db/queries/clear.rs
@@ -2479,7 +2638,7 @@ SELECT kind, name, qualified_name FROM nodes WHERE file_path = ?1
 
 #### Q0198 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1120](../src/db/queries/nodes.rs#L1120).
+Source: [src/db/queries/nodes.rs:1123](../src/db/queries/nodes.rs#L1123).
 
 ```sql
 DELETE FROM executable_body_fts WHERE file_path = ?1
@@ -2487,7 +2646,7 @@ DELETE FROM executable_body_fts WHERE file_path = ?1
 
 #### Q0199 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1134](../src/db/queries/nodes.rs#L1134).
+Source: [src/db/queries/nodes.rs:1137](../src/db/queries/nodes.rs#L1137).
 
 ```sql
 SELECT id FROM nodes WHERE file_path = ?1
@@ -2495,7 +2654,7 @@ SELECT id FROM nodes WHERE file_path = ?1
 
 #### Q0200 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1171](../src/db/queries/nodes.rs#L1171).
+Source: [src/db/queries/nodes.rs:1174](../src/db/queries/nodes.rs#L1174).
 
 ```sql
 DELETE FROM edges WHERE source = ?1 OR target = ?1
@@ -2503,7 +2662,7 @@ DELETE FROM edges WHERE source = ?1 OR target = ?1
 
 #### Q0201 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1181](../src/db/queries/nodes.rs#L1181).
+Source: [src/db/queries/nodes.rs:1184](../src/db/queries/nodes.rs#L1184).
 
 ```sql
 DELETE FROM unresolved_refs WHERE from_node_id = ?1
@@ -2511,7 +2670,7 @@ DELETE FROM unresolved_refs WHERE from_node_id = ?1
 
 #### Q0202 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1191](../src/db/queries/nodes.rs#L1191).
+Source: [src/db/queries/nodes.rs:1194](../src/db/queries/nodes.rs#L1194).
 
 ```sql
 DELETE FROM vectors WHERE node_id = ?1
@@ -2519,7 +2678,7 @@ DELETE FROM vectors WHERE node_id = ?1
 
 #### Q0203 — `delete_nodes_by_file`
 
-Source: [src/db/queries/nodes.rs:1201](../src/db/queries/nodes.rs#L1201).
+Source: [src/db/queries/nodes.rs:1204](../src/db/queries/nodes.rs#L1204).
 
 ```sql
 DELETE FROM nodes WHERE file_path = ?1
@@ -2845,17 +3004,17 @@ SELECT from_node_id, reference_name, line, col, file_path
 
 #### Q0237 — `insert_unresolved_ref`
 
-Source: [src/db/queries/unresolved.rs:47](../src/db/queries/unresolved.rs#L47).
+Source: [src/db/queries/unresolved.rs:49](../src/db/queries/unresolved.rs#L49).
 
 ```sql
 INSERT INTO unresolved_refs
-                (from_node_id, reference_name, reference_kind, line, col, file_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                (from_node_id, reference_name, reference_leaf, reference_kind, line, col, file_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
 ```
 
 #### Q0238 — `insert_unresolved_refs`
 
-Source: [src/db/queries/unresolved.rs:74](../src/db/queries/unresolved.rs#L74).
+Source: [src/db/queries/unresolved.rs:87](../src/db/queries/unresolved.rs#L87).
 
 ```sql
 BEGIN
@@ -2863,15 +3022,15 @@ BEGIN
 
 #### Q0239 — `insert_unresolved_refs`
 
-Source: [src/db/queries/unresolved.rs:82](../src/db/queries/unresolved.rs#L82).
+Source: [src/db/queries/unresolved.rs:95](../src/db/queries/unresolved.rs#L95).
 
 ```sql
-INSERT INTO unresolved_refs (from_node_id,reference_name,reference_kind,line,col,file_path) VALUES (?1,?2,?3,?4,?5,?6)
+INSERT INTO unresolved_refs (from_node_id,reference_name,reference_leaf,reference_kind,line,col,file_path) VALUES (?1,?2,?3,?4,?5,?6,?7)
 ```
 
 #### Q0240 — `insert_unresolved_refs`
 
-Source: [src/db/queries/unresolved.rs:107](../src/db/queries/unresolved.rs#L107).
+Source: [src/db/queries/unresolved.rs:121](../src/db/queries/unresolved.rs#L121).
 
 ```sql
 COMMIT
@@ -2908,7 +3067,7 @@ SELECT id, from_node_id, reference_name, reference_kind, line, col, file_path
 
 #### Q0244 — `get_unresolved_refs_for_sources`
 
-Source: [src/db/queries/unresolved.rs:228](../src/db/queries/unresolved.rs#L228).
+Source: [src/db/queries/unresolved.rs:231](../src/db/queries/unresolved.rs#L231).
 
 ```sql
 SELECT from_node_id, reference_name, reference_kind, line, col, file_path
@@ -2917,10 +3076,44 @@ SELECT from_node_id, reference_name, reference_kind, line, col, file_path
 
 #### Q0245 — `clear_unresolved_refs`
 
-Source: [src/db/queries/unresolved.rs:259](../src/db/queries/unresolved.rs#L259).
+Source: [src/db/queries/unresolved.rs:262](../src/db/queries/unresolved.rs#L262).
 
 ```sql
 DELETE FROM unresolved_refs
+```
+
+#### Q0409 — `get_call_references_by_name`
+
+Source: [src/db/queries/unresolved.rs:327](../src/db/queries/unresolved.rs#L327).
+
+```sql
+SELECT COUNT(*) FROM unresolved_refs
+                 WHERE reference_kind = 'calls' AND reference_leaf = ?1
+```
+
+#### Q0410 — `get_call_references_by_name`
+
+Source: [src/db/queries/unresolved.rs:351](../src/db/queries/unresolved.rs#L351).
+
+```sql
+WITH selected AS (
+                     SELECT from_node_id, reference_name, reference_kind, line, col, file_path
+                     FROM unresolved_refs
+                     WHERE reference_kind = 'calls' AND reference_leaf = ?1
+                     ORDER BY file_path, line, col, id
+                     LIMIT ?2
+                 )
+                 SELECT r.from_node_id, r.reference_name, r.line, r.col, r.file_path,
+                        t.id, t.qualified_name, a.candidate_node_ids
+                 FROM selected r
+                 LEFT JOIN edges e
+                   ON e.source = r.from_node_id AND e.line = r.line AND e.kind = 'calls'
+                 LEFT JOIN nodes t ON t.id = e.target AND t.name = ?1
+                 LEFT JOIN ambiguous_calls a
+                   ON a.from_node_id = r.from_node_id
+                  AND a.reference_name = r.reference_name
+                  AND a.line = r.line
+                 ORDER BY r.file_path, r.line, r.col, t.qualified_name
 ```
 
 ### src/doctor.rs
@@ -3009,7 +3202,7 @@ begin
 
 #### Q0255 — `open_at`
 
-Source: [src/global_db.rs:228](../src/global_db.rs#L228).
+Source: [src/global_db.rs:237](../src/global_db.rs#L237).
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -3019,7 +3212,7 @@ PRAGMA journal_mode = WAL;
 
 #### Q0256 — `open_at`
 
-Source: [src/global_db.rs:236](../src/global_db.rs#L236).
+Source: [src/global_db.rs:245](../src/global_db.rs#L245).
 
 ```sql
 CREATE TABLE IF NOT EXISTS projects (
@@ -3030,7 +3223,7 @@ CREATE TABLE IF NOT EXISTS projects (
 
 #### Q0257 — `open_at`
 
-Source: [src/global_db.rs:245](../src/global_db.rs#L245).
+Source: [src/global_db.rs:260](../src/global_db.rs#L260).
 
 ```sql
 CREATE TABLE IF NOT EXISTS turns (
@@ -3048,7 +3241,8 @@ CREATE TABLE IF NOT EXISTS turns (
                 tool_names TEXT NOT NULL DEFAULT '',
                 agent TEXT NOT NULL DEFAULT 'claude',
                 credits INTEGER,
-                tool_result_tokens INTEGER NOT NULL DEFAULT 0
+                tool_result_tokens INTEGER NOT NULL DEFAULT 0,
+                usage_revision INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON turns(timestamp);
             CREATE INDEX IF NOT EXISTS idx_turns_project ON turns(project_hash);
@@ -3072,7 +3266,7 @@ CREATE TABLE IF NOT EXISTS turns (
 
 #### Q0258 — `open_at`
 
-Source: [src/global_db.rs:285](../src/global_db.rs#L285).
+Source: [src/global_db.rs:294](../src/global_db.rs#L294).
 
 ```sql
 CREATE TABLE IF NOT EXISTS meta (
@@ -3081,9 +3275,9 @@ CREATE TABLE IF NOT EXISTS meta (
             )
 ```
 
-#### Q0259 — `migrate_turns_columns`
+#### Q0259 — `turns_columns`
 
-Source: [src/global_db.rs:311](../src/global_db.rs#L311).
+Source: [src/global_db.rs:328](../src/global_db.rs#L328).
 
 ```sql
 PRAGMA table_info(turns)
@@ -3091,7 +3285,7 @@ PRAGMA table_info(turns)
 
 #### Q0260 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:330](../src/global_db.rs#L330).
+Source: [src/global_db.rs:342](../src/global_db.rs#L342).
 
 ```sql
 ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'
@@ -3099,7 +3293,7 @@ ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'
 
 #### Q0261 — `migrate_turns_columns`
 
-Source: [src/global_db.rs:337](../src/global_db.rs#L337).
+Source: [src/global_db.rs:344](../src/global_db.rs#L344).
 
 ```sql
 ALTER TABLE turns ADD COLUMN credits INTEGER
@@ -3115,7 +3309,7 @@ ALTER TABLE turns ADD COLUMN tool_result_tokens INTEGER NOT NULL DEFAULT 0
 
 #### Q0263 — `migrate_project_paths`
 
-Source: [src/global_db.rs:366](../src/global_db.rs#L366).
+Source: [src/global_db.rs:375](../src/global_db.rs#L375).
 
 ```sql
 SELECT 1 FROM meta WHERE key = 'projects_path_normalized'
@@ -3123,7 +3317,7 @@ SELECT 1 FROM meta WHERE key = 'projects_path_normalized'
 
 #### Q0264 — `migrate_project_paths`
 
-Source: [src/global_db.rs:377](../src/global_db.rs#L377).
+Source: [src/global_db.rs:386](../src/global_db.rs#L386).
 
 ```sql
 SELECT path, tokens_saved FROM projects
@@ -3131,7 +3325,7 @@ SELECT path, tokens_saved FROM projects
 
 #### Q0265 — `migrate_project_paths`
 
-Source: [src/global_db.rs:406](../src/global_db.rs#L406).
+Source: [src/global_db.rs:415](../src/global_db.rs#L415).
 
 ```sql
 DELETE FROM projects
@@ -3139,7 +3333,7 @@ DELETE FROM projects
 
 #### Q0266 — `migrate_project_paths`
 
-Source: [src/global_db.rs:412](../src/global_db.rs#L412).
+Source: [src/global_db.rs:421](../src/global_db.rs#L421).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3147,7 +3341,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0267 — `migrate_project_paths`
 
-Source: [src/global_db.rs:422](../src/global_db.rs#L422).
+Source: [src/global_db.rs:431](../src/global_db.rs#L431).
 
 ```sql
 UPDATE savings_ledger SET project_path = ?1 WHERE project_path = ?2
@@ -3155,7 +3349,7 @@ UPDATE savings_ledger SET project_path = ?1 WHERE project_path = ?2
 
 #### Q0268 — `migrate_project_paths`
 
-Source: [src/global_db.rs:431](../src/global_db.rs#L431).
+Source: [src/global_db.rs:440](../src/global_db.rs#L440).
 
 ```sql
 INSERT OR REPLACE INTO meta (key, value) VALUES ('projects_path_normalized', '1')
@@ -3163,7 +3357,7 @@ INSERT OR REPLACE INTO meta (key, value) VALUES ('projects_path_normalized', '1'
 
 #### Q0269 — `upsert`
 
-Source: [src/global_db.rs:446](../src/global_db.rs#L446).
+Source: [src/global_db.rs:455](../src/global_db.rs#L455).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3172,7 +3366,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0270 — `get_project_tokens`
 
-Source: [src/global_db.rs:459](../src/global_db.rs#L459).
+Source: [src/global_db.rs:468](../src/global_db.rs#L468).
 
 ```sql
 SELECT tokens_saved FROM projects WHERE path = ?1
@@ -3180,7 +3374,7 @@ SELECT tokens_saved FROM projects WHERE path = ?1
 
 #### Q0271 — `global_tokens_saved`
 
-Source: [src/global_db.rs:476](../src/global_db.rs#L476).
+Source: [src/global_db.rs:485](../src/global_db.rs#L485).
 
 ```sql
 SELECT COALESCE(SUM(tokens_saved), 0) FROM projects
@@ -3188,7 +3382,7 @@ SELECT COALESCE(SUM(tokens_saved), 0) FROM projects
 
 #### Q0272 — `record_savings`
 
-Source: [src/global_db.rs:498](../src/global_db.rs#L498).
+Source: [src/global_db.rs:507](../src/global_db.rs#L507).
 
 ```sql
 INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_tokens) VALUES (?1, ?2, ?3, ?4, ?5)
@@ -3196,7 +3390,7 @@ INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_to
 
 #### Q0273 — `sum_savings`
 
-Source: [src/global_db.rs:512](../src/global_db.rs#L512).
+Source: [src/global_db.rs:521](../src/global_db.rs#L521).
 
 ```sql
 SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE project_path = ?1 AND ts >= ?2
@@ -3204,7 +3398,7 @@ SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - 
 
 #### Q0274 — `sum_savings`
 
-Source: [src/global_db.rs:515](../src/global_db.rs#L515).
+Source: [src/global_db.rs:524](../src/global_db.rs#L524).
 
 ```sql
 SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE ts >= ?1
@@ -3212,7 +3406,7 @@ SELECT COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - 
 
 #### Q0275 — `savings_history`
 
-Source: [src/global_db.rs:543](../src/global_db.rs#L543).
+Source: [src/global_db.rs:552](../src/global_db.rs#L552).
 
 ```sql
 SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE project_path = ?1 AND ts >= ?2 GROUP BY day ORDER BY day DESC
@@ -3220,15 +3414,31 @@ SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tok
 
 #### Q0276 — `savings_history`
 
-Source: [src/global_db.rs:549](../src/global_db.rs#L549).
+Source: [src/global_db.rs:558](../src/global_db.rs#L558).
 
 ```sql
 SELECT (ts/86400)*86400 AS day, COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0), COUNT(*) FROM savings_ledger WHERE ts >= ?1 GROUP BY day ORDER BY day DESC
 ```
 
+#### Q0398 — `savings_by_tool`
+
+Source: [src/global_db.rs:592](../src/global_db.rs#L592).
+
+```sql
+SELECT tool_name, COUNT(*), COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0) FROM savings_ledger WHERE project_path = ?1 AND ts >= ?2 GROUP BY tool_name ORDER BY COUNT(*) DESC, tool_name ASC
+```
+
+#### Q0399 — `savings_by_tool`
+
+Source: [src/global_db.rs:597](../src/global_db.rs#L597).
+
+```sql
+SELECT tool_name, COUNT(*), COALESCE(SUM(CASE WHEN before_tokens > after_tokens THEN before_tokens - after_tokens ELSE 0 END), 0) FROM savings_ledger WHERE ts >= ?1 GROUP BY tool_name ORDER BY COUNT(*) DESC, tool_name ASC
+```
+
 #### Q0277 — `delete_project`
 
-Source: [src/global_db.rs:578](../src/global_db.rs#L578).
+Source: [src/global_db.rs:625](../src/global_db.rs#L625).
 
 ```sql
 DELETE FROM projects WHERE path = ?1
@@ -3236,7 +3446,7 @@ DELETE FROM projects WHERE path = ?1
 
 #### Q0278 — `delete_projects`
 
-Source: [src/global_db.rs:597](../src/global_db.rs#L597).
+Source: [src/global_db.rs:638](../src/global_db.rs#L638).
 
 ```sql
 DELETE FROM projects WHERE path IN ({})
@@ -3244,7 +3454,7 @@ DELETE FROM projects WHERE path IN ({})
 
 #### Q0279 — `list_project_paths`
 
-Source: [src/global_db.rs:613](../src/global_db.rs#L613).
+Source: [src/global_db.rs:654](../src/global_db.rs#L654).
 
 ```sql
 SELECT path FROM projects
@@ -3252,7 +3462,7 @@ SELECT path FROM projects
 
 #### Q0280 — `insert_turn`
 
-Source: [src/global_db.rs:631](../src/global_db.rs#L631).
+Source: [src/global_db.rs:672](../src/global_db.rs#L672).
 
 ```sql
 INSERT OR IGNORE INTO turns
@@ -3264,57 +3474,72 @@ INSERT OR IGNORE INTO turns
 
 #### Q0281 — `add_tool_result_tokens`
 
-Source: [src/global_db.rs:675](../src/global_db.rs#L675).
+Source: [src/global_db.rs:716](../src/global_db.rs#L716).
 
 ```sql
 UPDATE turns SET tool_result_tokens = tool_result_tokens + ?2 WHERE message_id = ?1
 ```
 
-#### Q0282 — `upsert_droid_turn`
+#### Q0282 — `upsert_monotonic_turn`
 
-Source: [src/global_db.rs:694](../src/global_db.rs#L694).
+Source: [src/global_db.rs:802](../src/global_db.rs#L802).
 
 ```sql
 INSERT INTO turns
                  (message_id, project_hash, session_id, model, timestamp,
                   input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
-                  cost_usd, category, tool_names, agent, credits)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                  cost_usd, category, tool_names, agent, credits, usage_revision)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?16)
                  ON CONFLICT(message_id) DO UPDATE SET
                      project_hash        = excluded.project_hash,
                      session_id          = excluded.session_id,
                      model               = excluded.model,
-                     input_tokens        = MAX(excluded.input_tokens,        turns.input_tokens),
-                     output_tokens       = MAX(excluded.output_tokens,       turns.output_tokens),
-                     cache_write_tokens  = MAX(excluded.cache_write_tokens,  turns.cache_write_tokens),
-                     cache_read_tokens   = MAX(excluded.cache_read_tokens,   turns.cache_read_tokens),
+                     timestamp           = CASE WHEN ?15 THEN excluded.timestamp ELSE turns.timestamp END,
+                     input_tokens        = excluded.input_tokens,
+                     output_tokens       = excluded.output_tokens,
+                     cache_write_tokens  = excluded.cache_write_tokens,
+                     cache_read_tokens   = excluded.cache_read_tokens,
                      cost_usd            = excluded.cost_usd,
                      category            = excluded.category,
                      tool_names          = excluded.tool_names,
                      agent               = excluded.agent,
-                     credits             = COALESCE(excluded.credits, turns.credits)
+                     credits             = COALESCE(excluded.credits, turns.credits),
+                     usage_revision      = excluded.usage_revision
                  WHERE
-                     excluded.input_tokens        >= turns.input_tokens
-                     AND excluded.output_tokens       >= turns.output_tokens
+                     excluded.agent = turns.agent
+                     AND excluded.input_tokens        >= turns.input_tokens
                      AND excluded.cache_write_tokens  >= turns.cache_write_tokens
                      AND excluded.cache_read_tokens   >= turns.cache_read_tokens
                      AND (excluded.credits IS NULL
                           OR turns.credits IS NULL
                           OR excluded.credits >= turns.credits)
                      AND (
-                         excluded.input_tokens        > turns.input_tokens
-                         OR excluded.output_tokens       > turns.output_tokens
-                         OR excluded.cache_write_tokens  > turns.cache_write_tokens
-                         OR excluded.cache_read_tokens   > turns.cache_read_tokens
-                         OR (excluded.credits IS NOT NULL
-                             AND (turns.credits IS NULL
-                                  OR excluded.credits > turns.credits))
+                         (excluded.usage_revision = turns.usage_revision
+                          AND excluded.output_tokens >= turns.output_tokens
+                          AND (excluded.input_tokens        > turns.input_tokens
+                               OR excluded.output_tokens       > turns.output_tokens
+                               OR excluded.cache_write_tokens  > turns.cache_write_tokens
+                               OR excluded.cache_read_tokens   > turns.cache_read_tokens
+                               OR (excluded.credits IS NOT NULL
+                                   AND (turns.credits IS NULL
+                                        OR excluded.credits > turns.credits))
+                               OR (?18 AND excluded.cost_usd > turns.cost_usd)
+                               OR (excluded.agent = 'codex'
+                                   AND turns.cost_usd = 0.0
+                                   AND excluded.cost_usd > 0.0
+                                   AND excluded.input_tokens = turns.input_tokens
+                                   AND excluded.output_tokens = turns.output_tokens
+                                   AND excluded.cache_write_tokens = turns.cache_write_tokens
+                                   AND excluded.cache_read_tokens = turns.cache_read_tokens)))
+                         OR (excluded.agent = 'codex'
+                             AND turns.usage_revision = 0 AND excluded.usage_revision = 1
+                             AND ?17 >= turns.output_tokens)
                      )
 ```
 
 #### Q0283 — `total_cost_since`
 
-Source: [src/global_db.rs:755](../src/global_db.rs#L755).
+Source: [src/global_db.rs:805](../src/global_db.rs#L805).
 
 ```sql
 SELECT COALESCE(SUM(cost_usd), 0.0) FROM turns WHERE timestamp >= ?1
@@ -3322,7 +3547,7 @@ SELECT COALESCE(SUM(cost_usd), 0.0) FROM turns WHERE timestamp >= ?1
 
 #### Q0284 — `total_tokens_since`
 
-Source: [src/global_db.rs:769](../src/global_db.rs#L769).
+Source: [src/global_db.rs:819](../src/global_db.rs#L819).
 
 ```sql
 SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM turns WHERE timestamp >= ?1
@@ -3330,7 +3555,7 @@ SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM turns WHERE timestamp
 
 #### Q0285 — `token_breakdown_since`
 
-Source: [src/global_db.rs:784](../src/global_db.rs#L784).
+Source: [src/global_db.rs:834](../src/global_db.rs#L834).
 
 ```sql
 SELECT COALESCE(SUM(input_tokens), 0),
@@ -3342,7 +3567,7 @@ SELECT COALESCE(SUM(input_tokens), 0),
 
 #### Q0286 — `cost_by_model_since`
 
-Source: [src/global_db.rs:814](../src/global_db.rs#L814).
+Source: [src/global_db.rs:865](../src/global_db.rs#L865).
 
 ```sql
 SELECT model, SUM(cost_usd),
@@ -3353,7 +3578,7 @@ SELECT model, SUM(cost_usd),
 
 #### Q0287 — `cost_by_category_since`
 
-Source: [src/global_db.rs:840](../src/global_db.rs#L840).
+Source: [src/global_db.rs:892](../src/global_db.rs#L892).
 
 ```sql
 SELECT category, SUM(cost_usd), COUNT(*)
@@ -3363,7 +3588,7 @@ SELECT category, SUM(cost_usd), COUNT(*)
 
 #### Q0288 — `nav_turns_since`
 
-Source: [src/global_db.rs:877](../src/global_db.rs#L877).
+Source: [src/global_db.rs:929](../src/global_db.rs#L929).
 
 ```sql
 SELECT tool_names, tool_result_tokens FROM turns WHERE timestamp >= ?1 AND agent = 'claude'
@@ -3371,7 +3596,7 @@ SELECT tool_names, tool_result_tokens FROM turns WHERE timestamp >= ?1 AND agent
 
 #### Q0289 — `cost_by_agent_since`
 
-Source: [src/global_db.rs:901](../src/global_db.rs#L901).
+Source: [src/global_db.rs:953](../src/global_db.rs#L953).
 
 ```sql
 SELECT agent,
@@ -3388,7 +3613,7 @@ SELECT agent,
 
 #### Q0290 — `get_parse_offset`
 
-Source: [src/global_db.rs:949](../src/global_db.rs#L949).
+Source: [src/global_db.rs:1001](../src/global_db.rs#L1001).
 
 ```sql
 SELECT byte_offset, mtime FROM parse_offsets WHERE file_path = ?1
@@ -3396,7 +3621,7 @@ SELECT byte_offset, mtime FROM parse_offsets WHERE file_path = ?1
 
 #### Q0291 — `set_parse_offset`
 
-Source: [src/global_db.rs:965](../src/global_db.rs#L965).
+Source: [src/global_db.rs:1017](../src/global_db.rs#L1017).
 
 ```sql
 INSERT INTO parse_offsets (file_path, byte_offset, mtime) VALUES (?1, ?2, ?3)
@@ -3405,7 +3630,7 @@ INSERT INTO parse_offsets (file_path, byte_offset, mtime) VALUES (?1, ?2, ?3)
 
 #### Q0292 — `checkpoint`
 
-Source: [src/global_db.rs:976](../src/global_db.rs#L976).
+Source: [src/global_db.rs:1028](../src/global_db.rs#L1028).
 
 ```sql
 PRAGMA wal_checkpoint(TRUNCATE);
@@ -3413,7 +3638,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 
 #### Q0293 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1076](../src/global_db.rs#L1076).
+Source: [src/global_db.rs:1128](../src/global_db.rs#L1128).
 
 ```sql
 DELETE FROM meta WHERE key = 'projects_path_normalized';
@@ -3422,7 +3647,7 @@ DELETE FROM meta WHERE key = 'projects_path_normalized';
 
 #### Q0294 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1088](../src/global_db.rs#L1088).
+Source: [src/global_db.rs:1140](../src/global_db.rs#L1140).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3430,7 +3655,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0295 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1097](../src/global_db.rs#L1097).
+Source: [src/global_db.rs:1149](../src/global_db.rs#L1149).
 
 ```sql
 INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_tokens) VALUES (42, ?1, 'tokensave_context', 1000, 100)
@@ -3536,12 +3761,12 @@ SELECT DISTINCT n1.file_path AS src_file, n2.file_path AS tgt_file FROM edges e 
 
 ### src/hooks.rs
 
-#### Q0302 — `any_symbol_indexed`
+#### Q0302 — `is_symbol_indexed`
 
-Source: [src/hooks.rs:412](../src/hooks.rs#L412).
+Source: [src/hooks.rs:410](../src/hooks.rs#L410).
 
 ```sql
-SELECT 1 FROM nodes WHERE LOWER(name) IN ({placeholders}) LIMIT 1
+SELECT 1 FROM nodes WHERE LOWER(name) = ? LIMIT 1
 ```
 
 ### src/mcp/tools/definitions.rs
@@ -4043,6 +4268,33 @@ Source: [src/agents/hooks.rs:2342](../src/agents/hooks.rs#L2342).
         );
     }
 ```
+
+
+### `migrate_v19` — src/db/migrations.rs:1809
+
+Source: [src/db/migrations.rs:1809](../src/db/migrations.rs#L1809).
+
+Q0405 runs only when `table_columns` does not report `reference_leaf`. Q0406
+binds the last processed `id` as `?1` and reads at most 25,000 rows. For every
+row, Q0407 binds `simple_ref_name(reference_name)` as `?1` and the row id as
+`?2` through one reset prepared statement. The next page starts at the last id;
+the loop retains only one page. Q0408 creates the equality index after the
+backfill. All four statements run inside the migration transaction established
+by `migrate`.
+
+
+### `get_call_references_by_name` — src/db/queries/unresolved.rs:318
+
+Source: [src/db/queries/unresolved.rs:318](../src/db/queries/unresolved.rs#L318).
+
+Q0409 binds the requested trailing symbol name as `?1` and returns the full
+matching call-reference count. Q0410 binds the same name as `?1` and the hard
+result limit as `?2`. Its `selected` CTE orders and limits indexed
+`unresolved_refs` before joining: an edge must share the source node and line,
+and its target must share the trailing name; an ambiguity must share source,
+full reference name, and line. The Rust collector groups duplicate joined rows
+back into one reference and retains all same-named resolved targets for its
+`confirmed`/`other` classification.
 
 ### `cargo_build_binary_warning` — src/agents/mod.rs:207
 
@@ -9520,7 +9772,10 @@ Source: [src/db/queries/nodes.rs:1076](../src/db/queries/nodes.rs#L1076).
 
         let mut out = Vec::new();
         while let Ok(Some(row)) = rows.next().await {
-            let kind = NodeKind::from_str(&row.get::<String>(0).unwrap_or_default())
+            let kind = row
+                .get::<String>(0)
+                .unwrap_or_default()
+                .parse::<NodeKind>()
                 .unwrap_or(NodeKind::Function);
             out.push(TouchedNode {
                 kind,
@@ -9534,7 +9789,7 @@ Source: [src/db/queries/nodes.rs:1076](../src/db/queries/nodes.rs#L1076).
 
 ### `delete_nodes_by_file` — src/db/queries/nodes.rs:1103
 
-Source: [src/db/queries/nodes.rs:1103](../src/db/queries/nodes.rs#L1103).
+Source: [src/db/queries/nodes.rs:1106](../src/db/queries/nodes.rs#L1106).
 
 ```rust
     pub async fn delete_nodes_by_file(&self, file_path: &str) -> Result<()> {
@@ -10571,20 +10826,21 @@ Source: [src/db/queries/unresolved.rs:13](../src/db/queries/unresolved.rs#L13).
     }
 ```
 
-### `insert_unresolved_ref` — src/db/queries/unresolved.rs:44
+### `insert_unresolved_ref` — src/db/queries/unresolved.rs:46
 
-Source: [src/db/queries/unresolved.rs:44](../src/db/queries/unresolved.rs#L44).
+Source: [src/db/queries/unresolved.rs:46](../src/db/queries/unresolved.rs#L46).
 
 ```rust
     pub async fn insert_unresolved_ref(&self, uref: &UnresolvedRef) -> Result<()> {
         self.conn()
             .execute(
                 "INSERT INTO unresolved_refs
-                (from_node_id, reference_name, reference_kind, line, col, file_path)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (from_node_id, reference_name, reference_leaf, reference_kind, line, col, file_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     uref.from_node_id.as_str(),
                     uref.reference_name.as_str(),
+                    simple_ref_name(&uref.reference_name),
                     uref.reference_kind.as_str(),
                     i64::from(uref.line),
                     i64::from(uref.column),
@@ -10602,10 +10858,10 @@ Source: [src/db/queries/unresolved.rs:44](../src/db/queries/unresolved.rs#L44).
 
 ### `insert_unresolved_refs` — src/db/queries/unresolved.rs:68
 
-Source: [src/db/queries/unresolved.rs:68](../src/db/queries/unresolved.rs#L68).
+Source: [src/db/queries/unresolved.rs:81](../src/db/queries/unresolved.rs#L81).
 
 ```rust
-    pub async fn insert_unresolved_refs(&self, refs: &[UnresolvedRef]) -> Result<()> {
+    async fn insert_unresolved_refs_unprofiled(&self, refs: &[UnresolvedRef]) -> Result<()> {
         if refs.is_empty() {
             return Ok(());
         }
@@ -10619,7 +10875,7 @@ Source: [src/db/queries/unresolved.rs:68](../src/db/queries/unresolved.rs#L68).
             })?;
 
         let stmt = self.conn()
-            .prepare("INSERT INTO unresolved_refs (from_node_id,reference_name,reference_kind,line,col,file_path) VALUES (?1,?2,?3,?4,?5,?6)")
+            .prepare("INSERT INTO unresolved_refs (from_node_id,reference_name,reference_leaf,reference_kind,line,col,file_path) VALUES (?1,?2,?3,?4,?5,?6,?7)")
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to prepare: {e}"),
@@ -10630,6 +10886,7 @@ Source: [src/db/queries/unresolved.rs:68](../src/db/queries/unresolved.rs#L68).
             stmt.execute(params![
                 uref.from_node_id.as_str(),
                 uref.reference_name.as_str(),
+                simple_ref_name(&uref.reference_name),
                 uref.reference_kind.as_str(),
                 i64::from(uref.line),
                 i64::from(uref.column),
@@ -10738,7 +10995,10 @@ Source: [src/db/queries/unresolved.rs:171](../src/db/queries/unresolved.rs#L171)
                 UnresolvedRef {
                     from_node_id: row.get::<String>(1).unwrap_or_default(),
                     reference_name: row.get::<String>(2).unwrap_or_default(),
-                    reference_kind: EdgeKind::from_str(&row.get::<String>(3).unwrap_or_default())
+                    reference_kind: row
+                        .get::<String>(3)
+                        .unwrap_or_default()
+                        .parse::<EdgeKind>()
                         .unwrap_or(EdgeKind::Calls),
                     line: row.get::<u32>(4).unwrap_or(0),
                     column: row.get::<u32>(5).unwrap_or(0),
@@ -10752,7 +11012,7 @@ Source: [src/db/queries/unresolved.rs:171](../src/db/queries/unresolved.rs#L171)
 
 ### `get_unresolved_refs_for_sources` — src/db/queries/unresolved.rs:220
 
-Source: [src/db/queries/unresolved.rs:220](../src/db/queries/unresolved.rs#L220).
+Source: [src/db/queries/unresolved.rs:223](../src/db/queries/unresolved.rs#L223).
 
 ```rust
     pub async fn get_unresolved_refs_for_sources(
@@ -10794,7 +11054,7 @@ Source: [src/db/queries/unresolved.rs:220](../src/db/queries/unresolved.rs#L220)
 
 ### `clear_unresolved_refs` — src/db/queries/unresolved.rs:257
 
-Source: [src/db/queries/unresolved.rs:257](../src/db/queries/unresolved.rs#L257).
+Source: [src/db/queries/unresolved.rs:260](../src/db/queries/unresolved.rs#L260).
 
 ```rust
     pub async fn clear_unresolved_refs(&self) -> Result<()> {
@@ -11001,9 +11261,9 @@ pub async fn audit(db: &Database, limit: usize) -> Result<EdgeAudit> {
 }
 ```
 
-### `delete_projects` — src/global_db.rs:588
+### `delete_projects` — src/global_db.rs:629
 
-Source: [src/global_db.rs:588](../src/global_db.rs#L588).
+Source: [src/global_db.rs:629](../src/global_db.rs#L629).
 
 ```rust
     pub async fn delete_projects(&self, project_paths: &[String]) -> usize {
@@ -11030,9 +11290,9 @@ Source: [src/global_db.rs:588](../src/global_db.rs#L588).
     }
 ```
 
-### `migration_merges_duplicates_and_drops_relative_rows` — src/global_db.rs:1063
+### `migration_merges_duplicates_and_drops_relative_rows` — src/global_db.rs:1115
 
-Source: [src/global_db.rs:1063](../src/global_db.rs#L1063).
+Source: [src/global_db.rs:1115](../src/global_db.rs#L1115).
 
 ```rust
     async fn migration_merges_duplicates_and_drops_relative_rows() {
@@ -11602,32 +11862,29 @@ Source: [src/graph/queries.rs:619](../src/graph/queries.rs#L619).
     }
 ```
 
-### `any_symbol_indexed` — src/hooks.rs:403
+### `is_symbol_indexed` — src/hooks.rs:401
 
-Source: [src/hooks.rs:403](../src/hooks.rs#L403).
+Source: [src/hooks.rs:401](../src/hooks.rs#L401).
 
 ```rust
-fn any_symbol_indexed(env: &HookEnv, symbols: &[String]) -> bool {
+fn is_symbol_indexed(env: &HookEnv, symbol: &str) -> bool {
     let Some(root) = env.project_root.as_deref() else {
         return true;
     };
-    if symbols.is_empty() {
+    let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
+    // Fail closed, like an index that cannot be opened (#940).
+    if crate::db::compatibility::check_wal_sidecar(&db_path).is_err() {
         return true;
     }
-    let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
-    let placeholders = vec!["?"; symbols.len()].join(",");
-    let sql = format!("SELECT 1 FROM nodes WHERE LOWER(name) IN ({placeholders}) LIMIT 1");
-    let params: Vec<libsql::Value> = symbols
-        .iter()
-        .map(|s| libsql::Value::Text(s.to_lowercase()))
-        .collect();
+    let sql = "SELECT 1 FROM nodes WHERE LOWER(name) = ? LIMIT 1";
+    let name = symbol.to_lowercase();
     let probe = async move {
         let db = libsql::Builder::new_local(&db_path)
             .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .build()
             .await?;
         let conn = db.connect()?;
-        let mut rows = conn.query(&sql, libsql::params_from_iter(params)).await?;
+        let mut rows = conn.query(sql, libsql::params![name]).await?;
         Ok::<bool, libsql::Error>(rows.next().await?.is_some())
     };
     // The hook runs inside `#[tokio::main]`'s multi-thread runtime (main.rs),
@@ -12780,9 +13037,9 @@ Source: [src/db/queries/nodes.rs:78](../src/db/queries/nodes.rs#L78).
     }
 ```
 
-### `upsert` — src/global_db.rs:441
+### `upsert` — src/global_db.rs:450
 
-Source: [src/global_db.rs:441](../src/global_db.rs#L441).
+Source: [src/global_db.rs:450](../src/global_db.rs#L450).
 
 ```rust
     pub async fn upsert(&self, project_path: &Path, tokens_saved: u64) {
@@ -12798,48 +13055,73 @@ Source: [src/global_db.rs:441](../src/global_db.rs#L441).
     }
 ```
 
-### `upsert_droid_turn` — src/global_db.rs:691
+### `upsert_monotonic_turn` — src/global_db.rs:802
 
-Source: [src/global_db.rs:691](../src/global_db.rs#L691).
+Source: [src/global_db.rs:802](../src/global_db.rs#L802).
 
 ```rust
-    pub async fn upsert_droid_turn(&self, turn: &crate::types::CostTurn) -> bool {
-        self.conn
+    async fn upsert_monotonic_turn(
+        &self,
+        turn: &crate::types::CostTurn,
+        kind: SnapshotKind,
+    ) -> crate::errors::Result<bool> {
+        let (revision, legacy_output_tokens) = match kind {
+            SnapshotKind::Codex {
+                legacy_output_tokens,
+            } => (1, Some(legacy_output_tokens as i64)),
+            _ => (0, None),
+        };
+        let changed = self.conn
             .execute(
                 "INSERT INTO turns
                  (message_id, project_hash, session_id, model, timestamp,
                   input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
-                  cost_usd, category, tool_names, agent, credits)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                  cost_usd, category, tool_names, agent, credits, usage_revision)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?16)
                  ON CONFLICT(message_id) DO UPDATE SET
                      project_hash        = excluded.project_hash,
                      session_id          = excluded.session_id,
                      model               = excluded.model,
-                     input_tokens        = MAX(excluded.input_tokens,        turns.input_tokens),
-                     output_tokens       = MAX(excluded.output_tokens,       turns.output_tokens),
-                     cache_write_tokens  = MAX(excluded.cache_write_tokens,  turns.cache_write_tokens),
-                     cache_read_tokens   = MAX(excluded.cache_read_tokens,   turns.cache_read_tokens),
+                     timestamp           = CASE WHEN ?15 THEN excluded.timestamp ELSE turns.timestamp END,
+                     input_tokens        = excluded.input_tokens,
+                     output_tokens       = excluded.output_tokens,
+                     cache_write_tokens  = excluded.cache_write_tokens,
+                     cache_read_tokens   = excluded.cache_read_tokens,
                      cost_usd            = excluded.cost_usd,
                      category            = excluded.category,
                      tool_names          = excluded.tool_names,
                      agent               = excluded.agent,
-                     credits             = COALESCE(excluded.credits, turns.credits)
+                     credits             = COALESCE(excluded.credits, turns.credits),
+                     usage_revision      = excluded.usage_revision
                  WHERE
-                     excluded.input_tokens        >= turns.input_tokens
-                     AND excluded.output_tokens       >= turns.output_tokens
+                     excluded.agent = turns.agent
+                     AND excluded.input_tokens        >= turns.input_tokens
                      AND excluded.cache_write_tokens  >= turns.cache_write_tokens
                      AND excluded.cache_read_tokens   >= turns.cache_read_tokens
                      AND (excluded.credits IS NULL
                           OR turns.credits IS NULL
                           OR excluded.credits >= turns.credits)
                      AND (
-                         excluded.input_tokens        > turns.input_tokens
-                         OR excluded.output_tokens       > turns.output_tokens
-                         OR excluded.cache_write_tokens  > turns.cache_write_tokens
-                         OR excluded.cache_read_tokens   > turns.cache_read_tokens
-                         OR (excluded.credits IS NOT NULL
-                             AND (turns.credits IS NULL
-                                  OR excluded.credits > turns.credits))
+                         (excluded.usage_revision = turns.usage_revision
+                          AND excluded.output_tokens >= turns.output_tokens
+                          AND (excluded.input_tokens        > turns.input_tokens
+                               OR excluded.output_tokens       > turns.output_tokens
+                               OR excluded.cache_write_tokens  > turns.cache_write_tokens
+                               OR excluded.cache_read_tokens   > turns.cache_read_tokens
+                               OR (excluded.credits IS NOT NULL
+                                   AND (turns.credits IS NULL
+                                        OR excluded.credits > turns.credits))
+                               OR (?18 AND excluded.cost_usd > turns.cost_usd)
+                               OR (excluded.agent = 'codex'
+                                   AND turns.cost_usd = 0.0
+                                   AND excluded.cost_usd > 0.0
+                                   AND excluded.input_tokens = turns.input_tokens
+                                   AND excluded.output_tokens = turns.output_tokens
+                                   AND excluded.cache_write_tokens = turns.cache_write_tokens
+                                   AND excluded.cache_read_tokens = turns.cache_read_tokens)))
+                         OR (excluded.agent = 'codex'
+                             AND turns.usage_revision = 0 AND excluded.usage_revision = 1
+                             AND ?17 >= turns.output_tokens)
                      )",
                 params![
                     turn.message_id.clone(),
@@ -12856,10 +13138,14 @@ Source: [src/global_db.rs:691](../src/global_db.rs#L691).
                     turn.tool_names.clone(),
                     turn.agent.clone(),
                     turn.credits.map(|c| c as i64),
+                    i64::from(matches!(kind, SnapshotKind::Copilot)),
+                    revision,
+                    legacy_output_tokens,
+                    i64::from(matches!(kind, SnapshotKind::Augment)),
                 ],
             )
-            .await
-            .is_ok_and(|n| n > 0)
+            .await?;
+        Ok(changed > 0)
     }
 ```
 
@@ -13012,3 +13298,397 @@ SELECT substr(e.source,1,4097), substr(e.target,1,4097), substr(e.kind,1,4097), 
 ?1 is the same file for both endpoints; ?2 is max_edges + 1, integer <=5001. Extra row refuses export. id breaks ties without collapsing multiplicity; line and nullable numeric resolver provenance are retained.
 
 Construction context: max_nodes is validated in 1..=1000 and max_edges in 1..=5000 before integer conversion. SQL templates are fixed; no user text is interpolated. Queries Q0385–Q0388 use one read transaction for a consistent DB snapshot. Output is published only after successful reads, budget checks, source/branch rechecks and capped serialization. No migrations or writes occur.
+
+
+## OKF export additions (Refs #858)
+
+Source: [src/okf/export.rs](../src/okf/export.rs), `export`, `read_files` and
+`read_links`. This section adds five occurrences and one construction/binding
+context to the existing inventory. No existing query was changed, moved or
+removed. Snapshot inspected 2026-11-11. The export opens the branch database
+found by `graphify::database_path` read-only, after
+`compatibility::preflight`, like the Graphify export. The transaction API owns
+BEGIN, COMMIT and rollback on drop.
+
+#### Q0400 — `export`: Read-only connection limits
+
+```sql
+PRAGMA query_only=1; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192;
+```
+
+Fixed batch, no parameters; executes before the read transaction.
+
+#### Q0401 — `export`: Current-schema check
+
+```sql
+PRAGMA user_version
+```
+
+No bindings; exactly one scalar row. Versions unequal to latest_version() are
+refused; the export never migrates.
+
+#### Q0402 — `read_files`: Bounded source-file list
+
+```sql
+SELECT path, substr(content_hash,1,128), size, node_count FROM files WHERE kind = 'code' ORDER BY path LIMIT ?1
+```
+
+?1 is max_files + 1. An extra row refuses the export. Artifact rows are
+excluded.
+
+#### Q0403 — `read_links`: File-to-file dependency aggregation
+
+```sql
+SELECT s.file_path, t.file_path, substr(e.kind,1,64), COUNT(*) FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target WHERE s.file_path <> t.file_path GROUP BY s.file_path, t.file_path, e.kind ORDER BY s.file_path, t.file_path, e.kind LIMIT ?1
+```
+
+?1 is max_links + 1. An extra row refuses the export. Rows whose files are not
+in the Q0402 list are ignored.
+
+#### Q0404 — `export`: Symbols per file
+
+```sql
+SELECT n.file_path, substr(n.kind,1,64), substr(n.name,1,513), substr(n.qualified_name,1,513), n.start_line, n.end_line, substr(n.visibility,1,32) FROM nodes n JOIN files f ON f.path = n.file_path WHERE f.kind = 'code' AND n.kind NOT IN ('file', 'doc') ORDER BY n.file_path, n.start_line, n.id
+```
+
+No bindings. Rows are streamed in file order; each file keeps at most
+max_symbols_per_file rows in memory and counts the rest. No source body,
+signature or docstring is projected.
+
+Construction context: all templates are fixed and no user text is interpolated.
+Q0401–Q0404 run in one read transaction for a consistent snapshot. The bundle is
+written to a staging directory beside the output and renamed into place only
+after every read succeeds; an existing output path is refused. No writes or
+migrations reach the database.
+
+
+## `tokensave grep` additions (Refs #688)
+
+Source: [src/grep_annotate/index.rs](../src/grep_annotate/index.rs), `Index`.
+This section adds seven occurrences and one construction/binding context to
+the existing inventory. No existing query was changed, moved or removed.
+Snapshot inspected 2026-11-15. `Index::try_open` opens the database that
+`TokenSave::resolve_db_for_branch` selects, read-only, after
+`compatibility::preflight`. There is no transaction: each statement is one
+read, and the facts of a file are read one time and kept in memory.
+
+#### Q0419 — `try_open`: Read-only connection limits
+
+```sql
+PRAGMA query_only=1; PRAGMA busy_timeout=1000;
+```
+
+Fixed batch, no parameters; executes one time, before the lookups.
+
+#### Q0420 — `try_open`: Current-schema check
+
+```sql
+PRAGMA user_version
+```
+
+No bindings; exactly one scalar row. With a version unequal to
+latest_version(), the command adds no facts and reports the two versions on
+standard error; it never migrates.
+
+#### Q0421 — `file_state`: Index entry of one file
+
+```sql
+SELECT modified_at, size FROM files WHERE path = ?1
+```
+
+?1 is a project-relative path with `/` separators. At most one row, by primary
+key. The caller compares the values with the modification time and the size on
+disk. After a full index, `size` is the length of the decoded text, which is
+not the size on disk for a file with a byte order mark. So when the sizes
+differ, the caller decodes the file before it reports a change. It runs for a
+file with a hit, and for the file of a call or reference target in a different
+file.
+
+#### Q0422 — `read_file_facts`: Symbols of one file
+
+```sql
+SELECT kind, name, qualified_name, start_line, end_line FROM nodes WHERE file_path = ?1 LIMIT ?2
+```
+
+?1 is the file; ?2 is the constant 20000. Uses `idx_nodes_file_path`. No source
+body, signature or docstring is projected.
+
+#### Q0423 — `read_file_facts`: Edges that start in one file
+
+```sql
+SELECT e.line, e.kind, t.id, t.name, t.qualified_name, t.file_path, t.start_line, t.end_line FROM nodes s JOIN edges e ON e.source = s.id JOIN nodes t ON t.id = e.target WHERE s.file_path = ?1 AND e.line IS NOT NULL AND e.kind != 'contains' ORDER BY e.line, e.id LIMIT ?2
+```
+
+?1 is the file; ?2 is the constant 50000. Source nodes come from
+`idx_nodes_file_path`, their edges from `idx_edges_source_kind`, and each
+target by primary key.
+
+#### Q0424 — `read_file_facts`: Ambiguous calls of one file
+
+```sql
+SELECT line, reference_name, candidate_node_ids FROM ambiguous_calls WHERE file_path = ?1
+```
+
+?1 is the file. Uses `idx_ambiguous_calls_file`. `candidate_node_ids` is the
+stored JSON array of node IDs.
+
+#### Q0425 — `candidate_names`: Name of one candidate
+
+```sql
+SELECT qualified_name, file_path FROM nodes WHERE id = ?1
+```
+
+?1 is a node ID from Q0424. At most one row, by primary key. It runs for at
+most three candidates of an ambiguous call on a hit line.
+
+Construction context: all templates are fixed and no user text is
+interpolated. The only values bound from outside are file paths taken from the
+output of the search command; they are bound as parameters, checked to be
+regular files below the project root before Q0421, and never formatted into
+SQL. Q0422-Q0424 run one time for each file with a hit, and at most 2048 files
+stay in memory. No writes or migrations reach the database.
+
+
+#### Q0390 — `migrate_turns_columns`
+
+Source: [src/global_db.rs:351](../src/global_db.rs#L351).
+
+```sql
+ALTER TABLE turns ADD COLUMN usage_revision INTEGER NOT NULL DEFAULT 0
+```
+
+
+#### Q0391 — `migrate_turns_columns`
+
+Source: [src/global_db.rs:363](../src/global_db.rs#L363).
+
+```sql
+SELECT agent, credits, tool_result_tokens, usage_revision FROM turns LIMIT 0
+```
+
+
+#### Q0392 — `legacy_codex_rows`
+
+Source: [src/global_db.rs:788](../src/global_db.rs#L788).
+
+```sql
+SELECT COUNT(*) FROM turns WHERE agent = 'codex' AND usage_revision = 0
+```
+
+
+#### Q0393 — `failed_repair_count_is_unknown_not_absent`
+
+Source: [src/accounting/codex.rs:717](../src/accounting/codex.rs#L717).
+
+```sql
+DROP TABLE turns
+```
+
+
+#### Q0394 — `snapshot_migration_fails_closed_then_retries_when_writable`
+
+Source: [src/global_db.rs:1129](../src/global_db.rs#L1129).
+
+```sql
+CREATE TABLE turns (agent TEXT, credits INTEGER, tool_result_tokens INTEGER);
+             PRAGMA query_only = ON;
+```
+
+
+#### Q0395 — `snapshot_migration_fails_closed_then_retries_when_writable`
+
+Source: [src/global_db.rs:1135](../src/global_db.rs#L1135).
+
+```sql
+PRAGMA query_only = OFF;
+```
+
+
+#### Q0396 — `concurrent_snapshot_migrations_recheck_actual_schema`
+
+Source: [src/global_db.rs:1157](../src/global_db.rs#L1157).
+
+```sql
+PRAGMA journal_mode = WAL;
+             PRAGMA busy_timeout = 5000;
+             CREATE TABLE turns (agent TEXT, credits INTEGER, tool_result_tokens INTEGER);
+```
+
+
+#### Q0397 — `concurrent_snapshot_migrations_recheck_actual_schema`
+
+Source: [src/global_db.rs:1164](../src/global_db.rs#L1164).
+
+```sql
+PRAGMA busy_timeout = 5000;
+```
+
+
+### `turns_columns` — src/global_db.rs:325
+
+Source: [src/global_db.rs:325](../src/global_db.rs#L325).
+
+```rust
+    async fn turns_columns(
+        conn: &Connection,
+    ) -> crate::errors::Result<std::collections::HashSet<String>> {
+        let mut rows = conn.query("PRAGMA table_info(turns)", ()).await?;
+        let mut columns = std::collections::HashSet::new();
+        while let Some(row) = rows.next().await? {
+            columns.insert(row.get::<String>(1)?);
+        }
+        Ok(columns)
+    }
+```
+
+
+### `migrate_turns_columns` — src/global_db.rs:337
+
+Source: [src/global_db.rs:337](../src/global_db.rs#L337).
+
+```rust
+    async fn migrate_turns_columns(conn: &Connection) -> crate::errors::Result<()> {
+        let columns = Self::turns_columns(conn).await?;
+        for (column, statement) in [
+            (
+                "agent",
+                "ALTER TABLE turns ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'",
+            ),
+            ("credits", "ALTER TABLE turns ADD COLUMN credits INTEGER"),
+            (
+                "tool_result_tokens",
+                "ALTER TABLE turns ADD COLUMN tool_result_tokens INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "usage_revision",
+                "ALTER TABLE turns ADD COLUMN usage_revision INTEGER NOT NULL DEFAULT 0",
+            ),
+        ] {
+            if !columns.contains(column) {
+                if let Err(error) = conn.execute(statement, ()).await {
+                    if !Self::turns_columns(conn).await?.contains(column) {
+                        return Err(error.into());
+                    }
+                }
+            }
+        }
+        conn.prepare(
+            "SELECT agent, credits, tool_result_tokens, usage_revision FROM turns LIMIT 0",
+        )
+        .await?;
+        Ok(())
+    }
+```
+
+
+### `legacy_codex_rows` — src/global_db.rs:784
+
+Source: [src/global_db.rs:784](../src/global_db.rs#L784).
+
+```rust
+    pub async fn legacy_codex_rows(&self) -> crate::errors::Result<u64> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT COUNT(*) FROM turns WHERE agent = 'codex' AND usage_revision = 0",
+                (),
+            )
+            .await?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| crate::errors::TokenSaveError::Database {
+                message: "missing legacy snapshot count".to_string(),
+                operation: "count legacy Codex snapshots".to_string(),
+            })?;
+        Ok(row.get::<i64>(0)? as u64)
+    }
+```
+
+
+### `snapshot_migration_fails_closed_then_retries_when_writable` — src/global_db.rs:1125
+
+Source: [src/global_db.rs:1125](../src/global_db.rs#L1125).
+
+```rust
+    async fn snapshot_migration_fails_closed_then_retries_when_writable() {
+        let db = Builder::new_local(":memory:").build().await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE turns (agent TEXT, credits INTEGER, tool_result_tokens INTEGER);
+             PRAGMA query_only = ON;",
+        )
+        .await
+        .unwrap();
+        assert!(GlobalDb::migrate_turns_columns(&conn).await.is_err());
+        conn.execute_batch("PRAGMA query_only = OFF;")
+            .await
+            .unwrap();
+        GlobalDb::migrate_turns_columns(&conn).await.unwrap();
+        GlobalDb::migrate_turns_columns(&conn).await.unwrap();
+        assert!(GlobalDb::turns_columns(&conn)
+            .await
+            .unwrap()
+            .contains("usage_revision"));
+    }
+```
+
+
+### `concurrent_snapshot_migrations_recheck_actual_schema` — src/global_db.rs:1147
+
+Source: [src/global_db.rs:1147](../src/global_db.rs#L1147).
+
+```rust
+    async fn concurrent_snapshot_migrations_recheck_actual_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Builder::new_local(dir.path().join("legacy.db"))
+            .build()
+            .await
+            .unwrap();
+        let first = db.connect().unwrap();
+        let second = db.connect().unwrap();
+        first
+            .execute_batch(
+                "PRAGMA journal_mode = WAL;
+             PRAGMA busy_timeout = 5000;
+             CREATE TABLE turns (agent TEXT, credits INTEGER, tool_result_tokens INTEGER);",
+            )
+            .await
+            .unwrap();
+        second
+            .execute_batch("PRAGMA busy_timeout = 5000;")
+            .await
+            .unwrap();
+        let (a, b) = tokio::join!(
+            GlobalDb::migrate_turns_columns(&first),
+            GlobalDb::migrate_turns_columns(&second)
+        );
+        a.unwrap();
+        b.unwrap();
+        assert!(GlobalDb::turns_columns(&first)
+            .await
+            .unwrap()
+            .contains("usage_revision"));
+    }
+```
+
+
+### `failed_repair_count_is_unknown_not_absent` — src/accounting/codex.rs:710
+
+Source: [src/accounting/codex.rs:710](../src/accounting/codex.rs#L710).
+
+```rust
+    async fn failed_repair_count_is_unknown_not_absent() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("global.db");
+        let gdb = crate::global_db::GlobalDb::open_at(&db_path).await.unwrap();
+        let db = libsql::Builder::new_local(&db_path).build().await.unwrap();
+        db.connect()
+            .unwrap()
+            .execute("DROP TABLE turns", ())
+            .await
+            .unwrap();
+        let result = ingest_dir(&gdb, &tmp.path().join("absent")).await;
+        assert_eq!(result.coverage.state, CoverageState::Partial);
+    }
+```

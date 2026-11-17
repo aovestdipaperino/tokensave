@@ -142,7 +142,7 @@ async fn gc_protects_open_and_shared_databases() {
     let db = tokensave::config::get_tokensave_dir(root)
         .join("branches")
         .join("gone.db");
-    assert!(collect_stale_indexes(root, &[db.clone()])
+    assert!(collect_stale_indexes(root, std::slice::from_ref(&db))
         .await
         .unwrap()
         .is_empty());

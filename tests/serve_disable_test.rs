@@ -45,7 +45,9 @@ fn run_server(
             .expect("write MCP initialize request");
     }
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Generous: this only catches a hang, and loaded Windows CI runners
+    // have exceeded 5 s for a healthy startup and shutdown.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let status = loop {
         if let Some(status) = child.try_wait().expect("poll tokensave serve") {
             break status;
@@ -53,7 +55,11 @@ fn run_server(
         if Instant::now() >= deadline {
             child.kill().expect("kill hung tokensave serve");
             child.wait().expect("reap hung tokensave serve");
-            panic!("tokensave serve did not stop");
+            let mut stderr = String::new();
+            if let Some(mut pipe) = child.stderr.take() {
+                let _ = pipe.read_to_string(&mut stderr);
+            }
+            panic!("tokensave serve did not stop\nstderr: {stderr}");
         }
         std::thread::sleep(Duration::from_millis(20));
     };

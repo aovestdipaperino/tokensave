@@ -1,0 +1,4 @@
+[
+  {"symbol": "rust_target", "file": "src/lib.rs", "line": 3, "column": 8, "edge_kind": "calls"},
+  {"symbol": "RustThing", "file": "src/lib.rs", "line": 1, "column": 12, "edge_kind": "uses"}
+]

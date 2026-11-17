@@ -1,0 +1,4 @@
+[
+  {"symbol": "tsTarget", "file": "src/index.ts", "line": 3, "column": 17, "edge_kind": "calls"},
+  {"symbol": "TsThing", "file": "src/index.ts", "line": 1, "column": 18, "edge_kind": "uses"}
+]

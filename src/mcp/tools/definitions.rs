@@ -290,6 +290,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_insert_at(),
         def_delete_symbol(),
         def_replace_lines(),
+        def_create_file(),
         def_ast_grep_rewrite(),
         def_rename(),
         graph_scoped(def_gini()),
@@ -317,6 +318,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         def_record_decision(),
         def_record_code_area(),
         def_session_recall(),
+        def_knowledge(),
         graph_scoped(def_read()),
         graph_scoped(def_entities()),
         graph_scoped(def_implementations()),
@@ -437,6 +439,7 @@ pub const TOOL_AREAS: &[(&str, &str, &[&str])] = &[
             "tokensave_insert_at",
             "tokensave_delete_symbol",
             "tokensave_replace_lines",
+            "tokensave_create_file",
             "tokensave_ast_grep_rewrite",
             "tokensave_replace_symbol",
             "tokensave_insert_at_symbol",
@@ -470,6 +473,7 @@ pub const TOOL_AREAS: &[(&str, &str, &[&str])] = &[
             "tokensave_session_recall",
             "tokensave_record_decision",
             "tokensave_record_code_area",
+            "tokensave_knowledge",
         ],
     ),
     (
@@ -972,19 +976,19 @@ fn def_callers() -> ToolDefinition {
     def(
         "tokensave_callers",
         "Callers",
-        "Find callers of a given node (function, method, etc.). Returns direct \
-         callers by default; pass max_depth > 1 to also follow the chain \
-         transitively. Each result includes `depth` (1 = direct caller, 2+ = \
-         transitive), `line` (the call-site line where the caller invokes the \
-         target), `lines` (every line where the caller invokes the target, \
-         ascending; a caller is listed once even when it calls the target \
-         several times), and `def_line`/`end_line` (the caller's own span). Generic \
-         callers through a trait are included for concrete impl methods and \
-         tagged with `dispatch_via_trait: true`; pass `resolve_dispatch: false` \
-         to disable reverse dispatch resolution. Pass `node_id`, or `symbol` to \
-         name the target directly: each match is answered in its own group \
-         (`symbol`, `match_count`, `matches[]` with the callers under `callers`), \
-         up to `max_matches`.",
+        "Find callers of a given node (function, method, etc.). Direct results \
+         list every extracted call to the target's name, not only resolved \
+         edges: each caller's `references` label every site `confirmed`, \
+         `other`, `ambiguous` or `unresolved`, and uncertain sites carry \
+         `to_read: true`. Pass max_depth > 1 to also follow the chain \
+         transitively. Each result includes `depth` (1 = direct caller), `line` \
+         (a call-site line), `lines` (every call-site line, ascending; a caller \
+         is listed once) and `def_line`/`end_line` (the caller's own span). \
+         Trait-dispatched callers of concrete impl methods are included and \
+         tagged `dispatch_via_trait: true`; pass `resolve_dispatch: false` to \
+         disable this. Pass `node_id`, or `symbol` to name the target directly: \
+         each match is answered in its own group (`symbol`, `match_count`, \
+         `matches[]` with `callers`), up to `max_matches`.",
         json!({
             "type": "object",
             "properties": {
@@ -1002,7 +1006,7 @@ fn def_callers() -> ToolDefinition {
                 },
                 "limit": {
                     "type": "number",
-                    "description": "Maximum callers listed per match (default: 50, max: 500). When more exist, the result reports `count`, `total` and `truncated: true` (with node_id alone, the list is then wrapped as `{count, total, truncated, callers}`)."
+                    "description": "Maximum callers and direct call references inspected per match (default: 50, max: 500). When more exist, the result reports caller and reference counts plus truncation explicitly."
                 },
                 "max_depth": {
                     "type": "number",
@@ -1905,7 +1909,7 @@ fn def_str_replace() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                    "description": "Absolute or project-relative file path inside the indexed project or another git worktree of the same repository; other paths are refused."
                 },
                 "old_str": {
                     "type": "string",
@@ -1943,7 +1947,7 @@ fn def_multi_str_replace() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                    "description": "Absolute or project-relative file path inside the indexed project or another git worktree of the same repository; other paths are refused."
                 },
                 "replacements": {
                     "type": "array",
@@ -1979,7 +1983,7 @@ fn def_insert_at() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                    "description": "Absolute or project-relative file path inside the indexed project or another git worktree of the same repository; other paths are refused."
                 },
                 "anchor": {
                     "type": "string",
@@ -2028,6 +2032,23 @@ fn def_delete_symbol() -> ToolDefinition {
         annotations: Some(json!({ "readOnlyHint": false, "title": "Delete Symbol" })),
         meta: None,
     }
+}
+
+fn def_create_file() -> ToolDefinition {
+    def_rw(
+        "tokensave_create_file",
+        "Create File",
+        "Create a new file inside the indexed project and index it at once, so it is searchable right after the call. Refuses an existing file unless `overwrite` is true, a directory, a symlink, a path outside the project root (absolute, `..`, or through a symlink), and paths inside `.git` or tokensave's own state. Unlike the other edit tools, a path in another git worktree is refused too. Missing parent directories are created.",
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "Project-relative path, or an absolute path inside the project root." },
+                "content": { "type": "string", "description": "The file's full content, at most the project's max_file_size (1 MiB by default)." },
+                "overwrite": { "type": "boolean", "description": "Replace an existing regular file. Default false." }
+            },
+            "required": ["path", "content"]
+        }),
+    )
 }
 
 fn def_replace_lines() -> ToolDefinition {
@@ -2452,7 +2473,7 @@ fn def_ast_grep_rewrite() -> ToolDefinition {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute or project-relative file path. An absolute path is always honored verbatim, even outside the indexed project root (e.g. a git worktree)."
+                    "description": "Absolute or project-relative file path inside the indexed project or another git worktree of the same repository; other paths are refused."
                 },
                 "pattern": {
                     "type": "string",
@@ -2685,6 +2706,57 @@ fn def_session_recall() -> ToolDefinition {
                 "include_code_areas": {
                     "type": "boolean",
                     "description": "If true, also return the top-touched code areas (default: false)."
+                }
+            }
+        }),
+    )
+}
+
+fn def_knowledge() -> ToolDefinition {
+    def(
+        "tokensave_knowledge",
+        "Imported Knowledge",
+        "Search and read Open Knowledge Format (OKF) bundles imported into this project \
+         with `tokensave okf import` (docs, metrics, tables, Graphify or tokensave exports). \
+         `query` matches concept titles, IDs, tags, types, descriptions and bodies; `file` \
+         finds concepts about a project file; `concept` returns one concept in full with its \
+         links and backlinks; `related` traverses both directions of that graph. Results name \
+         the project files a concept refers to and whether \
+         they are indexed. With no arguments, lists the imported bundles.",
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Words to search for (all optional; concepts matching more words rank first)."
+                },
+                "file": {
+                    "type": "string",
+                    "description": "Project-relative file path; only concepts that refer to it."
+                },
+                "concept": {
+                    "type": "string",
+                    "description": "Concept ID to read in full, e.g. \"metrics/revenue\"."
+                },
+                "related": {
+                    "type": "string",
+                    "description": "Concept ID whose links and backlinks to traverse."
+                },
+                "depth": {
+                    "type": "number",
+                    "description": "Relationship traversal depth (default: 1, max: 3); used with `related`."
+                },
+                "bundle": {
+                    "type": "string",
+                    "description": "Imported bundle name to restrict to."
+                },
+                "type": {
+                    "type": "string",
+                    "description": "Concept `type` to restrict to (case-insensitive), e.g. \"Metric\"."
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Maximum results (default: 10, max: 50)."
                 }
             }
         }),
@@ -2984,7 +3056,8 @@ fn def_read() -> ToolDefinition {
          slice from 120 starts at 120). The body is always returned, with a \
          'digest' of it. To skip re-sending content you still hold, pass that \
          digest as 'if_digest': when it matches the current body for the same \
-         mode and range, a tiny stub with 'unchanged: true' is returned instead.",
+         mode and range, a tiny stub with 'unchanged: true' is returned instead. \
+         Reads any file inside the project, ignored or not, except under '.git'.",
         json!({
             "type": "object",
             "properties": {
@@ -3023,28 +3096,43 @@ fn def_call_chain() -> ToolDefinition {
     def(
         "tokensave_call_chain",
         "Call Chain",
-        "Find the shortest directed call chain between two symbols, following \
-         only outgoing `calls` edges. Returns the ordered sequence of nodes \
-         and edges that connect `from_id` to `to_id`, or a not-found result. \
-         Use `tokensave_search` or `tokensave_by_qualified_name` first to \
-         resolve symbol names into node IDs.",
+        "Find the shortest path between two symbols. Name each end by symbol \
+         (`from`, `to`) or by node ID (`from_id`, `to_id`). By default the \
+         path is a directed call chain: only outgoing `calls` edges. With \
+         `follow: \"any\"` it is the shortest connection over every edge \
+         kind in either direction, and each step reports `edge_direction`. \
+         Returns the ordered nodes and edges, or a not-found result. A name \
+         that matches several symbols is not guessed: the candidates are \
+         listed for a re-call by node ID.",
         json!({
             "type": "object",
             "properties": {
+                "from": {
+                    "type": "string",
+                    "description": "Symbol name of the start (the caller end), e.g. 'RefreshAsync' or 'Coordinator::RefreshAsync'. Must match one symbol."
+                },
+                "to": {
+                    "type": "string",
+                    "description": "Symbol name of the end (the callee end). Must match one symbol."
+                },
                 "from_id": {
                     "type": "string",
-                    "description": "Source node ID (the caller end of the chain)."
+                    "description": "Start node ID. Takes precedence over `from`."
                 },
                 "to_id": {
                     "type": "string",
-                    "description": "Target node ID (the callee end of the chain)."
+                    "description": "End node ID. Takes precedence over `to`."
+                },
+                "follow": {
+                    "type": "string",
+                    "enum": ["calls", "any"],
+                    "description": "calls (default): outgoing `calls` edges only, a chain of execution. any: every edge kind in either direction, for how two symbols are connected."
                 },
                 "max_depth": {
                     "type": "number",
-                    "description": "Maximum BFS depth (default: 8, max: 20)."
+                    "description": "Maximum path length in edges (default: 8, max: 20)."
                 }
-            },
-            "required": ["from_id", "to_id"]
+            }
         }),
     )
 }
@@ -3224,7 +3312,7 @@ fn def_diff() -> ToolDefinition {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::unreadable_literal)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     /// The drift gate's refused set, derived from the registry the same way
@@ -3323,9 +3411,12 @@ mod tests {
             "tokensave_rename",
             "tokensave_insert_at",
             "tokensave_insert_at_symbol",
+            // Reads imported OKF bundles from project state, not the graph.
+            "tokensave_knowledge",
             "tokensave_log",
             "tokensave_multi_str_replace",
             "tokensave_replace_lines",
+            "tokensave_create_file",
             "tokensave_port_order",
             "tokensave_port_status",
             "tokensave_pr_context",
@@ -3408,6 +3499,33 @@ mod tests {
             get_listed_tool_definitions(Toolset::Full, &none).len(),
             listed
         );
+    }
+
+    /// #920: `tokensave_create_file` is a deferred edit tool: not core, not
+    /// alwaysLoad, writes files, and is listed only once `edit` (or `all`) is.
+    #[test]
+    fn create_file_is_listed_only_with_the_edit_area() {
+        use crate::config::Toolset;
+        use std::collections::BTreeSet;
+        const NAME: &str = "tokensave_create_file";
+        assert!(!CORE_TOOLS.contains(&NAME));
+        assert_eq!(tool_area(NAME), "edit");
+        let definition = get_tool_definitions()
+            .into_iter()
+            .find(|d| d.name == NAME)
+            .unwrap();
+        assert!(!is_always_load(&definition));
+        assert!(!is_read_only_tool(&definition));
+        let listed = |areas: &[&str]| {
+            let areas: BTreeSet<String> = areas.iter().map(|a| (*a).to_string()).collect();
+            get_listed_tool_definitions(Toolset::Core, &areas)
+                .iter()
+                .any(|d| d.name == NAME)
+        };
+        assert!(!listed(&[]));
+        assert!(!listed(&["git"]));
+        assert!(listed(&["edit"]));
+        assert!(listed(&["all"]));
     }
 
     /// #576: each area names real tools only, no tool is in two areas or in

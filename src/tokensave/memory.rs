@@ -95,18 +95,19 @@ impl TokenSave {
                 operation: "record_decision".to_string(),
             })?;
         let now = current_timestamp();
-        let conn = self.db.conn();
-        conn.execute(
-            "INSERT INTO memory_decisions (text, reason, created_at, files, tags) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            libsql::params![text, reason, now, files_json, tags_json],
-        )
-        .await
-        .map_err(|e| crate::errors::TokenSaveError::Database {
-            message: format!("record_decision insert failed: {e}"),
-            operation: "record_decision".to_string(),
-        })?;
-        Ok(conn.last_insert_rowid())
+        self.db
+            .profiled_execute(
+                crate::profile::DbOp::RecordDecision,
+                "INSERT INTO memory_decisions (text, reason, created_at, files, tags) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                libsql::params![text, reason, now, files_json, tags_json],
+            )
+            .await
+            .map_err(|e| crate::errors::TokenSaveError::Database {
+                message: format!("record_decision insert failed: {e}"),
+                operation: "record_decision".to_string(),
+            })?;
+        Ok(self.db.conn().last_insert_rowid())
     }
 
     /// Recall decisions. With `query`, runs FTS5 MATCH against text+reason
@@ -120,8 +121,6 @@ impl TokenSave {
         limit: usize,
     ) -> crate::errors::Result<Vec<DecisionRecord>> {
         let limit = limit.clamp(1, MAX_RECALL_LIMIT) as i64;
-        let conn = self.db.conn();
-
         let db_err = |e: libsql::Error| crate::errors::TokenSaveError::Database {
             message: format!("session_recall query failed: {e}"),
             operation: "session_recall".to_string(),
@@ -135,8 +134,10 @@ impl TokenSave {
         let fts_query = query.and_then(crate::db::to_fts_match_query);
 
         let mut rows = match (fts_query.as_deref(), since) {
-            (Some(q), Some(ts)) => conn
-                .query(
+            (Some(q), Some(ts)) => self
+                .db
+                .profiled_query(
+                    crate::profile::DbOp::SessionRecall,
                     "SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags \
                      FROM memory_decisions d \
                      JOIN memory_decisions_fts f ON f.rowid = d.id \
@@ -146,8 +147,10 @@ impl TokenSave {
                 )
                 .await
                 .map_err(db_err)?,
-            (Some(q), None) => conn
-                .query(
+            (Some(q), None) => self
+                .db
+                .profiled_query(
+                    crate::profile::DbOp::SessionRecall,
                     "SELECT d.id, d.text, d.reason, d.created_at, d.files, d.tags \
                      FROM memory_decisions d \
                      JOIN memory_decisions_fts f ON f.rowid = d.id \
@@ -157,8 +160,10 @@ impl TokenSave {
                 )
                 .await
                 .map_err(db_err)?,
-            (None, Some(ts)) => conn
-                .query(
+            (None, Some(ts)) => self
+                .db
+                .profiled_query(
+                    crate::profile::DbOp::SessionRecall,
                     "SELECT id, text, reason, created_at, files, tags \
                      FROM memory_decisions WHERE created_at >= ?1 \
                      ORDER BY created_at DESC LIMIT ?2",
@@ -166,8 +171,10 @@ impl TokenSave {
                 )
                 .await
                 .map_err(db_err)?,
-            (None, None) => conn
-                .query(
+            (None, None) => self
+                .db
+                .profiled_query(
+                    crate::profile::DbOp::SessionRecall,
                     "SELECT id, text, reason, created_at, files, tags \
                      FROM memory_decisions ORDER BY created_at DESC LIMIT ?1",
                     libsql::params![limit],
@@ -269,21 +276,22 @@ impl TokenSave {
     ) -> crate::errors::Result<()> {
         debug_assert!(!path.is_empty(), "code area path must not be empty");
         let now = current_timestamp();
-        let conn = self.db.conn();
-        conn.execute(
-            "INSERT INTO memory_code_areas (path, description, last_touched_at, touch_count) \
-             VALUES (?1, ?2, ?3, 1) \
-             ON CONFLICT(path) DO UPDATE SET \
-                description = COALESCE(excluded.description, memory_code_areas.description), \
-                last_touched_at = excluded.last_touched_at, \
-                touch_count = memory_code_areas.touch_count + 1",
-            libsql::params![path, description, now],
-        )
-        .await
-        .map_err(|e| crate::errors::TokenSaveError::Database {
-            message: format!("record_code_area upsert failed: {e}"),
-            operation: "record_code_area".to_string(),
-        })?;
+        self.db
+            .profiled_execute(
+                crate::profile::DbOp::RecordCodeArea,
+                "INSERT INTO memory_code_areas (path, description, last_touched_at, touch_count) \
+                 VALUES (?1, ?2, ?3, 1) \
+                 ON CONFLICT(path) DO UPDATE SET \
+                    description = COALESCE(excluded.description, memory_code_areas.description), \
+                    last_touched_at = excluded.last_touched_at, \
+                    touch_count = memory_code_areas.touch_count + 1",
+                libsql::params![path, description, now],
+            )
+            .await
+            .map_err(|e| crate::errors::TokenSaveError::Database {
+                message: format!("record_code_area upsert failed: {e}"),
+                operation: "record_code_area".to_string(),
+            })?;
         Ok(())
     }
 
@@ -293,9 +301,10 @@ impl TokenSave {
         limit: usize,
     ) -> crate::errors::Result<Vec<CodeAreaRecord>> {
         let limit = limit.clamp(1, MAX_CODE_AREAS_LIMIT) as i64;
-        let conn = self.db.conn();
-        let mut rows = conn
-            .query(
+        let mut rows = self
+            .db
+            .profiled_query(
+                crate::profile::DbOp::ListCodeAreas,
                 "SELECT id, path, description, last_touched_at, touch_count \
                  FROM memory_code_areas ORDER BY last_touched_at DESC LIMIT ?1",
                 libsql::params![limit],

@@ -1,0 +1,62 @@
+dev-build: using blaze (blaze 0.20261027.0 (49ca152)); 'scripts/dev-build --cargo ...' uses Cargo.
+note: blaze builds with its own toolchain, blaze-2026-10-27, not rustc 1.100.0 (0ef1bc386 2026-11-09), the toolchain cargo was started with. blaze is its own Rust toolchain whatever the project pins (docs/toolchain.md); the project's toolchain and its CI stay the final word
+error: could not build `tokensave`: Failed to build the build scripts of $CHECKOUT/.blaze-eval/run/tree-cargo
+  blaze could not run the build script of `faster-hex v0.10.1` for the load
+  failed to run custom build command for `faster-hex v0.10.1`
+    
+    Caused by:
+    process didn't exit successfully: `$CHECKOUT/.blaze-eval/run/tree-cargo/target/rust-analyzer/compile-time/build/faster-hex-ce44162b3357e015/build-script-build` (exit status: 101)
+    --- stderr
+    
+    thread 'main' (2) panicked at $HOME/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/lib.rs:160:20:
+    called `Result::unwrap()` on an `Err` value: Error { kind: Other("could not execute rustc") }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+(what blaze said is in $BLAZE_HOME/workers/e101e7c47b16abf3/log)
+dev-build: blaze exited with 101; running the same command with cargo, whose result counts.
+warning: `package.homepage` is redundant with `package.repository`
+  --> Cargo.toml:11:12
+   |
+10 | repository = "https://github.com/aovestdipaperino/tokensave"
+   |              -----------------------------------------------
+11 | homepage = "https://github.com/aovestdipaperino/tokensave"
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::redundant_homepage` is set to `warn` by default
+help: consider removing `package.homepage`
+warning: `tokensave` (manifest) generated 1 warning
+warning: `package.homepage` is redundant with `package.repository`
+  --> $CHECKOUT/Cargo.toml:11:12
+   |
+10 | repository = "https://github.com/aovestdipaperino/tokensave"
+   |              -----------------------------------------------
+11 | homepage = "https://github.com/aovestdipaperino/tokensave"
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `cargo::redundant_homepage` is set to `warn` by default
+help: consider removing `package.homepage`
+warning: `tokensave` (manifest) generated 1 warning
+   Compiling tokensave v7.17.0 ($CHECKOUT/.blaze-eval/run/tree-cargo)
+warning: unused dependency `ort`
+   --> Cargo.toml:149:1
+    |
+149 | ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `cargo::unused_dependencies` is set to `warn` by default
+help: consider removing the dependency on `ort`
+warning: unused dependency `tracing-subscriber`
+   --> Cargo.toml:161:1
+    |
+161 | tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the dependency on `tracing-subscriber`
+warning: unused dependency `tree-sitter-dart`
+   --> Cargo.toml:147:1
+    |
+147 | tree-sitter-dart = "0.2"
+    | ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: consider removing the dependency on `tree-sitter-dart`
+warning: `tokensave` (manifest) generated 3 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.41s

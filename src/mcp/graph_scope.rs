@@ -725,7 +725,7 @@ fn is_exact_raw_node_id(value: &str) -> bool {
 }
 
 fn is_exact_raw_node_id_parts(kind: &str, digest: &str) -> bool {
-    NodeKind::from_str(kind).is_some()
+    kind.parse::<NodeKind>().is_ok()
         && digest.len() == 32
         && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
 }

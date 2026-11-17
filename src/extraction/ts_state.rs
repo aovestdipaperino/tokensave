@@ -11,7 +11,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tree_sitter::Node as TsNode;
 
-use crate::types::{Edge, ExtractionResult, Node, UnresolvedRef, Visibility};
+#[cfg(feature = "lang-ruby")]
+use crate::types::Visibility;
+use crate::types::{Edge, ExtractionResult, Node, UnresolvedRef};
 
 /// What a Python class body declares. The Python extractor keeps one per
 /// enclosing class so a `self.<name>` read in a value position can be told
@@ -50,6 +52,7 @@ pub(crate) struct ExtractionState {
     pub(crate) python_class_attrs: Vec<PythonClassAttrs>,
     /// Current Ruby visibility mode inside a class/module body (private/protected/
     /// public switches). Other extractors leave it at the default Pub.
+    #[cfg(feature = "lang-ruby")]
     pub(crate) visibility_mode: Visibility,
     /// Whether a Ruby `module_function` mode switch is currently active: the
     /// next `def`s in this module body become a private instance method
@@ -60,6 +63,7 @@ pub(crate) struct ExtractionState {
     /// (confirmed against Ruby 3.4.7), so this flag is saved/reset/restored
     /// at exactly the same sites as `visibility_mode`, and setting either
     /// one clears the other. Other extractors leave it `false`.
+    #[cfg(feature = "lang-ruby")]
     pub(crate) module_function_mode: bool,
     /// Node IDs of Ruby singleton methods that belong to the enclosing class
     /// (`def self.foo`, `def obj.foo` where `obj` resolves to `self`/the
@@ -67,6 +71,7 @@ pub(crate) struct ExtractionState {
     /// :foo` vs `private :foo`) can tell a singleton from a same-named
     /// instance method — they share a kind and qualified name. Other
     /// extractors leave it empty.
+    #[cfg(feature = "lang-ruby")]
     pub(crate) singleton_method_ids: Vec<String>,
     /// Node IDs of Ruby singleton methods whose receiver is *not* the
     /// enclosing class (`def obj.foo`, or anything defined inside
@@ -74,9 +79,11 @@ pub(crate) struct ExtractionState {
     /// nor the class-method bucket, so visibility directives must skip them
     /// rather than let them fall into the instance-method branch by default.
     /// Other extractors leave it empty.
+    #[cfg(feature = "lang-ruby")]
     pub(crate) foreign_singleton_method_ids: Vec<String>,
     /// Which Ruby singleton scope the traversal is currently inside. Other
     /// extractors leave it at `Outside`.
+    #[cfg(feature = "lang-ruby")]
     pub(crate) singleton_scope: SingletonScope,
     /// Whether the traversal is currently inside a Ruby module body that has
     /// evidence of being an `ActiveSupport::Concern` (an `extend
@@ -90,16 +97,19 @@ pub(crate) struct ExtractionState {
     /// not into a plain `def x` or `class << self` body (where `self` is the
     /// instance or the singleton class instead). Other extractors leave it
     /// `false`.
+    #[cfg(feature = "lang-ruby")]
     pub(crate) in_concern_scope: bool,
     /// Whether `self` in the body currently being traversed is an *instance* the
     /// extractor cannot name, rather than the enclosing class/module. True inside a
     /// plain `def foo` body (and a `def foo` inside `class << some_object`); false
     /// in class/module bodies, `def self.foo` bodies, and `class << …` bodies,
     /// where `self` is a module. Other extractors leave it `false`.
+    #[cfg(feature = "lang-ruby")]
     pub(crate) self_is_instance: bool,
     /// The class/module node that owns direct Ruby body calls while the
     /// traversal is outside a method or self-retargeting block. Other
     /// extractors leave it `None`.
+    #[cfg(feature = "lang-ruby")]
     pub(crate) ruby_body_call_owner_id: Option<String>,
     /// Whether the traversal is currently inside a Concern `included`/
     /// `prepended`/`class_methods` block, where `self` at runtime is the
@@ -118,6 +128,7 @@ pub(crate) struct ExtractionState {
     /// "some includer exists". So `visit_module_function_directive` treats
     /// this flag as blocking evidence rather than trying to model it. Other
     /// extractors leave it `false`.
+    #[cfg(feature = "lang-ruby")]
     pub(crate) in_concern_self_retargeting_block: bool,
 }
 
@@ -125,6 +136,7 @@ pub(crate) struct ExtractionState {
 /// reopens `expr`'s singleton class, so a plain `def foo` there defines a method
 /// on `expr`, not an instance method of the enclosing class. Other extractors
 /// leave this at `Outside`.
+#[cfg(feature = "lang-ruby")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SingletonScope {
     /// Not inside any `class << …` body.
@@ -154,14 +166,23 @@ impl ExtractionState {
             timestamp,
             class_depth: 0,
             python_class_attrs: Vec::new(),
+            #[cfg(feature = "lang-ruby")]
             visibility_mode: Visibility::Pub,
+            #[cfg(feature = "lang-ruby")]
             module_function_mode: false,
+            #[cfg(feature = "lang-ruby")]
             singleton_method_ids: Vec::new(),
+            #[cfg(feature = "lang-ruby")]
             foreign_singleton_method_ids: Vec::new(),
+            #[cfg(feature = "lang-ruby")]
             singleton_scope: SingletonScope::Outside,
+            #[cfg(feature = "lang-ruby")]
             in_concern_scope: false,
+            #[cfg(feature = "lang-ruby")]
             self_is_instance: false,
+            #[cfg(feature = "lang-ruby")]
             ruby_body_call_owner_id: None,
+            #[cfg(feature = "lang-ruby")]
             in_concern_self_retargeting_block: false,
         }
     }
@@ -235,6 +256,7 @@ pub(crate) fn find_child_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsN
 }
 
 /// Find the first descendant of a node with a given kind (recursive DFS).
+#[cfg(any(feature = "lang-julia", feature = "lang-powershell"))]
 pub(crate) fn find_descendant_by_kind<'a>(node: TsNode<'a>, kind: &str) -> Option<TsNode<'a>> {
     let mut stack = vec![node];
     while let Some(current) = stack.pop() {

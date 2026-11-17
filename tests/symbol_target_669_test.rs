@@ -224,7 +224,33 @@ async fn qualified_type_member_names_one_match() {
             only["qualified_name"], "App::Catalog::RefreshAsync",
             "{only}"
         );
-        assert_eq!(names(&only["callers"]), ["Run"], "{symbol}: {only}");
+        // `Run` is the only caller with an edge to Catalog's method. The
+        // callers of Coordinator's same-named method are listed too (#687),
+        // but only as reference evidence labelled `other`.
+        let callers = only["callers"].as_array().expect("callers");
+        let (resolved, reference_only): (Vec<&Value>, Vec<&Value>) = callers
+            .iter()
+            .partition(|caller| caller["reference_only"] != true);
+        let resolved_names: Vec<&str> = resolved
+            .iter()
+            .map(|caller| caller["name"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(resolved_names, ["Run"], "{symbol}: {only}");
+        let mut other_names: Vec<&str> = reference_only
+            .iter()
+            .map(|caller| caller["name"].as_str().unwrap_or_default())
+            .collect();
+        other_names.sort_unstable();
+        assert_eq!(other_names, ["RunLater", "RunTwice"], "{symbol}: {only}");
+        for caller in reference_only {
+            let references = caller["references"].as_array().expect("references");
+            assert!(
+                references
+                    .iter()
+                    .all(|reference| reference["status"] == "other"),
+                "{symbol}: {caller}"
+            );
+        }
     }
 }
 

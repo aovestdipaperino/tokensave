@@ -1,0 +1,127 @@
+{
+  "schema": 1,
+  "description": "Initial #948 task suite. Expected answers for the tokensave repository are valid only at the pinned ref.",
+  "repos": {
+    "tokensave": {
+      "source": "git",
+      "url": "https://github.com/aovestdipaperino/tokensave.git",
+      "ref": "251a0550af0fb89c4fdb3a873bbd002871333eea",
+      "strip": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".claude",
+        ".cursor",
+        ".github/copilot-instructions.md",
+        "codegraph"
+      ]
+    },
+    "inventory": {
+      "source": "fixture",
+      "path": "fixtures/inventory"
+    }
+  },
+  "tasks": [
+    {
+      "id": "definition",
+      "repo": "tokensave",
+      "category": "symbol-definition",
+      "prompt": "In this repository, find the function or method that builds the on-disk path of a profiler aggregate file (the per-process, per-hour JSON file). Reply with its repository-relative file path and its name. Do not modify any file.",
+      "checks": {
+        "answer_all": [
+          "src.profile.storage\\.rs",
+          "\\bfile_path\\b"
+        ],
+        "read_only": true
+      }
+    },
+    {
+      "id": "callers",
+      "repo": "tokensave",
+      "category": "references",
+      "prompt": "List every non-test function or method that calls `merge_snapshot` (defined in src/profile/recorder.rs). Give each caller's name and file. Do not modify any file.",
+      "checks": {
+        "answer_all": [
+          "\\bload\\b",
+          "\\bflush\\b",
+          "src.profile.storage\\.rs"
+        ],
+        "read_only": true
+      }
+    },
+    {
+      "id": "impact",
+      "repo": "tokensave",
+      "category": "impact-analysis",
+      "prompt": "If the `FILE_SCHEMA` constant in src/profile/storage.rs were incremented, which functions or methods use it, and what would happen to profile aggregate files written before the change? Name the functions. Do not modify any file.",
+      "checks": {
+        "answer_all": [
+          "\\bload\\b",
+          "\\bflush\\b",
+          "skip|ignor|discard|not (be )?(read|loaded)"
+        ],
+        "read_only": true
+      }
+    },
+    {
+      "id": "multi-hop",
+      "repo": "tokensave",
+      "category": "multi-hop",
+      "prompt": "Trace what happens when a user runs `tokensave profile export`. Name (1) the function that dispatches the profile subcommand, (2) the function that reads and merges the aggregate files from disk, and (3) the function that builds the sanitized export. Do not modify any file.",
+      "checks": {
+        "answer_all": [
+          "\\bhandle_profile_action\\b",
+          "\\bload\\b",
+          "\\bsanitized\\b"
+        ],
+        "read_only": true
+      }
+    },
+    {
+      "id": "missing-symbol",
+      "repo": "tokensave",
+      "category": "missing-information",
+      "prompt": "Does this repository define a function named `reticulate_splines`? Answer with exactly FOUND or NOT FOUND on the first line, then one line of justification. Do not modify any file.",
+      "checks": {
+        "answer_all": [
+          "NOT FOUND"
+        ],
+        "read_only": true
+      }
+    },
+    {
+      "id": "unindexed-file",
+      "repo": "tokensave",
+      "category": "stale-or-unindexed",
+      "setup_files": {
+        "src/bench_backoff_probe.rs": "//! Added after indexing by the agent benchmark (#948).\n\n/// Rounds a retry delay down to the nearest multiple of `step_ms`.\npub fn quantize_backoff_window(delay_ms: u64, step_ms: u64) -> u64 {\n    if step_ms == 0 {\n        return delay_ms;\n    }\n    delay_ms - delay_ms % step_ms\n}\n"
+      },
+      "prompt": "Which file defines the function `quantize_backoff_window`, and what does it return when `step_ms` is 0? Do not modify any file.",
+      "checks": {
+        "answer_all": [
+          "src.bench_backoff_probe\\.rs",
+          "delay_ms|unchanged|the delay|input delay|original"
+        ],
+        "read_only": true
+      }
+    },
+    {
+      "id": "bugfix",
+      "repo": "inventory",
+      "category": "patch",
+      "prompt": "The unit tests in this repository fail. Find the bug in the library code under inventory/ and fix it with a minimal change. Do not modify the tests. Run the tests with `python -m unittest discover -s tests` to confirm the fix.",
+      "checks": {
+        "command": [
+          "{python}",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests"
+        ],
+        "unchanged": [
+          "tests"
+        ]
+      }
+    }
+  ]
+}
