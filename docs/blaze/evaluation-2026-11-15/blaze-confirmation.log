@@ -1,0 +1,14 @@
+$ blaze build --locked --no-default-features --features lite
+   Compiling tokensave v7.17.0 ($CHECKOUT/.blaze-eval/run/tree-blaze)
+error: could not build `tokensave`: Failed to build the build scripts of $CHECKOUT/.blaze-eval/run/tree-blaze
+  blaze could not run the build script of `faster-hex v0.10.1` for the load
+  failed to run custom build command for `faster-hex v0.10.1`
+    
+    Caused by:
+    process didn't exit successfully: `$CHECKOUT/.blaze-eval/run/tree-blaze/target/rust-analyzer/compile-time/build/faster-hex-ce44162b3357e015/build-script-build` (exit status: 101)
+    --- stderr
+    
+    thread 'main' (2) panicked at $HOME/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.1/src/lib.rs:160:20:
+    called `Result::unwrap()` on an `Err` value: Error { kind: Other("could not execute rustc") }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+(what blaze said is in $BLAZE_HOME/workers/acfb68cdd018aba6/log)

@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tempfile::TempDir;
-use tokensave::agents::{AgentIntegration, DoctorCounters, HealthcheckContext, PiIntegration};
-
+use tokensave::agents::{
+    AgentIntegration, DoctorCounters, HealthcheckContext, InstallScope, PiIntegration,
+};
 mod common;
 use common::{make_install_ctx as make_ctx, read_json};
 
@@ -29,6 +30,25 @@ fn pi_config_path(home: &Path) -> PathBuf {
 /// helper in `src/agents/integrations/pi.rs`.
 fn pi_rules_path(home: &Path) -> PathBuf {
     home.join(".pi").join("agent").join("AGENTS.md")
+}
+
+/// Project-scoped Pi MCP config path (`<project>/.pi/mcp.json`).
+fn pi_local_config_path(project: &Path) -> PathBuf {
+    project.join(".pi").join("mcp.json")
+}
+
+/// Project-scoped Pi instructions file (`<project>/AGENTS.md`).
+fn pi_local_rules_path(project: &Path) -> PathBuf {
+    project.join("AGENTS.md")
+}
+
+/// An install context scoped to a project (`--local`).
+fn make_local_ctx(home: &Path, project: &Path) -> tokensave::agents::InstallContext {
+    let mut ctx = make_ctx(home);
+    ctx.scope = InstallScope::Local {
+        project_path: project.to_path_buf(),
+    };
+    ctx
 }
 
 // ===========================================================================
@@ -455,4 +475,484 @@ fn test_has_tokensave_before_and_after_install() {
 fn test_name_and_id() {
     assert_eq!(PiIntegration.name(), "Pi");
     assert_eq!(PiIntegration.id(), "pi");
+}
+
+// ===========================================================================
+// Local (--local) scope
+// ===========================================================================
+
+#[test]
+fn test_pi_supports_local() {
+    assert!(
+        PiIntegration.supports_local(),
+        "pi has project-scoped config (.pi/mcp.json, project AGENTS.md)"
+    );
+}
+
+#[test]
+fn test_local_install_writes_project_surfaces_only() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let ctx = make_local_ctx(home, &project);
+    PiIntegration.install(&ctx).unwrap();
+
+    let mcp_path = pi_local_config_path(&project);
+    assert!(
+        mcp_path.exists(),
+        "local install should create {}",
+        mcp_path.display()
+    );
+    let config = read_json(&mcp_path);
+    assert!(
+        config["mcpServers"]["tokensave"].is_object(),
+        "project .pi/mcp.json should register tokensave"
+    );
+
+    let rules_path = pi_local_rules_path(&project);
+    assert!(
+        rules_path.exists(),
+        "local install should write rules to {}",
+        rules_path.display()
+    );
+    let contents = std::fs::read_to_string(&rules_path).unwrap();
+    assert!(
+        contents.contains("tokensave rules begin"),
+        "project AGENTS.md should carry the tokensave rules block"
+    );
+
+    assert!(
+        !pi_config_path(home).exists(),
+        "local install must not touch the global mcp.json"
+    );
+    assert!(
+        !pi_rules_path(home).exists(),
+        "local install must not touch the global AGENTS.md"
+    );
+}
+
+#[test]
+fn test_local_install_preserves_existing_agents_md() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let rules_path = pi_local_rules_path(&project);
+    std::fs::write(&rules_path, "# Project rules\n\nAlways run the linter.\n").unwrap();
+
+    let ctx = make_local_ctx(home, &project);
+    PiIntegration.install(&ctx).unwrap();
+
+    let contents = std::fs::read_to_string(&rules_path).unwrap();
+    assert!(
+        contents.contains("Always run the linter."),
+        "existing project instructions must be preserved"
+    );
+    assert!(
+        contents.contains("tokensave rules begin"),
+        "the tokensave rules block should be added"
+    );
+}
+
+#[test]
+fn test_local_uninstall_removes_project_surfaces_only() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let global_ctx = make_ctx(home);
+    PiIntegration.install(&global_ctx).unwrap();
+
+    let ctx = make_local_ctx(home, &project);
+    PiIntegration.install(&ctx).unwrap();
+    PiIntegration.uninstall(&ctx).unwrap();
+
+    assert!(
+        !pi_local_config_path(&project).exists(),
+        "project .pi/mcp.json should be removed when tokensave was the only entry"
+    );
+    let rules_path = pi_local_rules_path(&project);
+    assert!(
+        !rules_path.exists()
+            || !std::fs::read_to_string(&rules_path)
+                .unwrap()
+                .contains("tokensave rules begin"),
+        "the tokensave rules block should be gone from the project AGENTS.md"
+    );
+
+    assert!(
+        pi_config_path(home).exists(),
+        "local uninstall must not remove the global mcp.json"
+    );
+    let global_rules = std::fs::read_to_string(pi_rules_path(home)).unwrap();
+    assert!(
+        global_rules.contains("tokensave rules begin"),
+        "local uninstall must not remove the global rules block"
+    );
+}
+
+#[test]
+fn test_local_healthcheck_reports_project_config() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let ctx = make_local_ctx(home, &project);
+    PiIntegration.install(&ctx).unwrap();
+
+    let mut dc = DoctorCounters::new();
+    let hctx = HealthcheckContext {
+        home: home.to_path_buf(),
+        project_path: project.to_path_buf(),
+    };
+    PiIntegration.healthcheck(&mut dc, &hctx);
+    assert_eq!(dc.issues, 0, "clean local Pi install should have no issues");
+}
+
+// ===========================================================================
+// Tool exposure and the guardrail extension
+// ===========================================================================
+
+/// Pi's default exposure (`codemode`) declares no tool to the model, so the
+/// registered entry has to say otherwise or the rules name tools the agent
+/// cannot call.
+#[test]
+fn test_install_exposes_tools_to_the_model() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_ctx(home);
+    PiIntegration.install(&ctx).unwrap();
+
+    let config = read_json(&pi_config_path(home));
+    let ts = &config["mcpServers"]["tokensave"];
+    assert_eq!(ts["exposure"].as_str(), Some("direct"));
+    assert!(
+        ts["description"].as_str().is_some_and(|d| !d.is_empty()),
+        "the server entry should carry a one-line description"
+    );
+}
+
+fn pi_extension_path(home: &Path) -> PathBuf {
+    home.join(".pi")
+        .join("agent")
+        .join("extensions")
+        .join("tokensave.ts")
+}
+
+#[test]
+fn test_install_writes_guardrail_extension_bound_to_the_binary() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_ctx(home);
+    PiIntegration.install(&ctx).unwrap();
+
+    let path = pi_extension_path(home);
+    let contents = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("guardrail extension missing at {}: {e}", path.display()));
+    assert!(contents.starts_with("// tokensave-managed extension"));
+    assert!(contents.contains("const TOKENSAVE_BIN = \"/usr/local/bin/tokensave\";"));
+    assert!(
+        !contents.contains("__TOKENSAVE_BIN__"),
+        "the placeholder must be replaced with the installed binary path"
+    );
+    for subcommand in ["hook-pi-pre-tool-use", "hook-prompt-submit", "hook-pi-stop"] {
+        assert!(contents.contains(subcommand), "missing {subcommand} relay");
+    }
+}
+
+/// A binary path with a backslash must land as a valid TS string literal, and
+/// the file must not be rewritten when it is already current.
+#[test]
+fn test_guardrail_extension_escapes_the_binary_path_and_is_idempotent() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let mut ctx = make_ctx(home);
+    ctx.tokensave_bin = "C:\\Program Files\\tokensave\\tokensave.exe".to_string();
+    PiIntegration.install(&ctx).unwrap();
+
+    let path = pi_extension_path(home);
+    let first = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        first.contains(r#"const TOKENSAVE_BIN = "C:\\Program Files\\tokensave\\tokensave.exe";"#)
+    );
+
+    let born = std::fs::metadata(&path).unwrap().modified().unwrap();
+    PiIntegration.install(&ctx).unwrap();
+    let second = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(born, std::fs::metadata(&path).unwrap().modified().unwrap());
+}
+
+/// Tokensave owns that path only because it wrote it; an extension a user put
+/// there is theirs and must survive an install untouched.
+#[test]
+fn test_install_leaves_a_foreign_extension_alone() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let path = pi_extension_path(home);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "export default function (pi) {}\n").unwrap();
+
+    let ctx = make_ctx(home);
+    PiIntegration.install(&ctx).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "export default function (pi) {}\n"
+    );
+}
+
+#[test]
+fn test_uninstall_removes_guardrail_extension_and_its_empty_dir() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_ctx(home);
+    PiIntegration.install(&ctx).unwrap();
+
+    let path = pi_extension_path(home);
+    assert!(path.exists());
+
+    PiIntegration.uninstall(&ctx).unwrap();
+    assert!(!path.exists(), "guardrail extension should be removed");
+    assert!(
+        !path.parent().unwrap().exists(),
+        "the extensions directory tokensave created should be removed"
+    );
+}
+
+/// Uninstall must not delete an extension tokensave did not write.
+#[test]
+fn test_uninstall_keeps_a_foreign_extension() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let path = pi_extension_path(home);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "export default function (pi) {}\n").unwrap();
+
+    let ctx = make_ctx(home);
+    PiIntegration.uninstall(&ctx).unwrap();
+
+    assert!(path.exists(), "a user extension must survive uninstall");
+}
+
+#[test]
+fn test_local_install_writes_project_guardrail_extension() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+
+    let ctx = make_local_ctx(home, &project);
+    PiIntegration.install(&ctx).unwrap();
+
+    let project_extension = project.join(".pi").join("extensions").join("tokensave.ts");
+    assert!(
+        project_extension.exists(),
+        "local install should write {}",
+        project_extension.display()
+    );
+    assert!(
+        !pi_extension_path(home).exists(),
+        "local install must not write the global extension"
+    );
+}
+
+/// A registration that leaves every tool unreachable is the failure this whole
+/// change exists to catch, so doctor has to fail on it.
+#[test]
+fn test_healthcheck_detects_tools_hidden_by_codemode_exposure() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let mcp_path = pi_config_path(home);
+    std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &mcp_path,
+        r#"{"mcpServers": {"tokensave": {"command": "tokensave", "args": ["serve"], "exposure": "codemode"}}}"#,
+    )
+    .unwrap();
+
+    let mut dc = DoctorCounters::new();
+    let hctx = HealthcheckContext {
+        home: home.to_path_buf(),
+        project_path: home.to_path_buf(),
+    };
+    PiIntegration.healthcheck(&mut dc, &hctx);
+    assert!(
+        dc.issues > 0,
+        "doctor should fail when the exposure hides the tools"
+    );
+}
+
+#[test]
+fn test_healthcheck_detects_stale_or_missing_guardrail_extension() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let ctx = make_ctx(home);
+    PiIntegration.install(&ctx).unwrap();
+
+    let path = pi_extension_path(home);
+    std::fs::write(&path, "// tokensave-managed extension\nstale\n").unwrap();
+
+    let mut dc = DoctorCounters::new();
+    let hctx = HealthcheckContext {
+        home: home.to_path_buf(),
+        project_path: home.to_path_buf(),
+    };
+    PiIntegration.healthcheck(&mut dc, &hctx);
+    assert!(dc.issues > 0, "doctor should fail on a stale extension");
+}
+
+/// Unknown exposure must not be reported as proven direct-tool availability.
+#[test]
+fn test_healthcheck_rejects_unknown_exposure_in_both_scopes() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    let mut ctx = make_ctx(home);
+    PiIntegration.install(&ctx).unwrap();
+    ctx.scope = InstallScope::Local {
+        project_path: home.to_path_buf(),
+    };
+    PiIntegration.install(&ctx).unwrap();
+    for path in [pi_config_path(home), pi_local_config_path(home)] {
+        let mut settings = read_json(&path);
+        settings["mcpServers"]["tokensave"]["exposure"] = serde_json::json!("unknown-mode");
+        std::fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    }
+    let mut dc = DoctorCounters::new();
+    PiIntegration.healthcheck(
+        &mut dc,
+        &HealthcheckContext {
+            home: home.to_path_buf(),
+            project_path: home.to_path_buf(),
+        },
+    );
+    assert_eq!(dc.issues, 2);
+}
+
+/// Diagnostics preserve both managed files and user context overrides.
+#[test]
+fn test_healthcheck_reports_shadowing_without_writes() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+    let dir = TempDir::new().unwrap();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    let nested = project.join("src");
+    std::fs::create_dir_all(&nested).unwrap();
+    // Isolate project discovery from any enclosing checkout.
+    std::fs::create_dir(project.join(".git")).unwrap();
+    PiIntegration.install(&make_ctx(&home)).unwrap();
+    let hctx = HealthcheckContext {
+        home: home.clone(),
+        project_path: nested,
+    };
+    let mut baseline = DoctorCounters::new();
+    PiIntegration.healthcheck(&mut baseline, &hctx);
+    let paths = [
+        home.join(".pi").join("agent").join("AGENTS.override.md"),
+        project.join("AGENTS.override.md"),
+    ];
+    for path in &paths {
+        std::fs::write(path, "User-owned override\n").unwrap();
+    }
+    let managed = [
+        pi_config_path(&home),
+        pi_rules_path(&home),
+        home.join(".pi")
+            .join("agent")
+            .join("extensions")
+            .join("tokensave.ts"),
+    ];
+    let before: Vec<_> = managed.iter().map(|p| std::fs::read(p).unwrap()).collect();
+    let mut dc = DoctorCounters::new();
+    PiIntegration.healthcheck(&mut dc, &hctx);
+    assert_eq!(dc.warnings, baseline.warnings + 2);
+    assert_eq!(dc.issues, 0);
+    for (path, bytes) in managed.iter().zip(before) {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    for path in paths {
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "User-owned override\n"
+        );
+    }
+    assert!(!tokensave::config::get_tokensave_dir(&project).exists());
+}
+
+#[test]
+fn test_healthcheck_index_presence_is_metadata_only() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    std::env::remove_var("PI_CODING_AGENT_DIR");
+    let dir = TempDir::new().unwrap();
+    let home = dir.path().join("home");
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    PiIntegration.install(&make_ctx(&home)).unwrap();
+    let hctx = HealthcheckContext {
+        home,
+        project_path: project.clone(),
+    };
+    let mut missing = DoctorCounters::new();
+    PiIntegration.healthcheck(&mut missing, &hctx);
+    let index_dir = tokensave::config::get_tokensave_dir(&project);
+    std::fs::create_dir(&index_dir).unwrap();
+    std::fs::write(index_dir.join("config.json"), "{}").unwrap();
+    let mut incomplete = DoctorCounters::new();
+    PiIntegration.healthcheck(&mut incomplete, &hctx);
+    assert_eq!(incomplete.warnings, missing.warnings);
+    // Even an invalid database is never opened, migrated, or described as healthy.
+    let db = index_dir.join("tokensave.db");
+    std::fs::write(&db, "not a database").unwrap();
+    let mut present = DoctorCounters::new();
+    PiIntegration.healthcheck(&mut present, &hctx);
+    assert_eq!(present.warnings + 1, missing.warnings);
+    assert_eq!(std::fs::read_to_string(db).unwrap(), "not a database");
+    assert_eq!(std::fs::read_dir(index_dir).unwrap().count(), 2);
 }

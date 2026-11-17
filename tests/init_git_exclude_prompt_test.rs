@@ -61,7 +61,7 @@ fn init_outside_a_git_repo_does_not_claim_to_have_excluded_anything() {
         "a piped answer must not create a .gitignore"
     );
     assert!(
-        dir.path().join(".tokensave").exists(),
+        tokensave::config::get_tokensave_dir(dir.path()).exists(),
         "init itself must still succeed: {output}"
     );
 }

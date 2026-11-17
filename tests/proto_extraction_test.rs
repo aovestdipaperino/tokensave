@@ -2,7 +2,7 @@
 
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::ProtoExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, ExtractionResult, NodeKind};
 
 fn extract_sample() -> ExtractionResult {
     let source = std::fs::read_to_string("tests/fixtures/sample.proto")

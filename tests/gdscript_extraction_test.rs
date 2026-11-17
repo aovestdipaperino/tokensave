@@ -3,7 +3,7 @@
 
 use tokensave::extraction::GdScriptExtractor;
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, ExtractionResult, NodeKind};
 
 const SAMPLE: &str = r#"
 class_name Player extends CharacterBody2D

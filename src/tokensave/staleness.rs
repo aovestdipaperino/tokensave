@@ -38,6 +38,10 @@ pub enum AutoSyncScope {
     /// the one this handle resolved. Syncing would write the new branch's
     /// files into the old branch's database. See [`BranchDrift`].
     BranchDrifted(BranchDrift),
+    /// The open database belongs to `owner`, and the checkout is a branch
+    /// with no database of its own or a detached HEAD. Syncing would write
+    /// the working tree into `owner`'s index (#865).
+    BorrowedIndex { owner: String },
 }
 
 /// A handle resolved to one branch while the working tree sits on another.
@@ -88,7 +92,7 @@ impl TokenSave {
     /// into agreement with the filesystem.
     ///
     /// A file is reported stale when any of:
-    /// - it is in the DB and has been modified on disk since `modified_at`,
+    /// - it is in the DB and its on-disk modification time or size differs,
     /// - it is in the DB but no longer exists on disk (deletion — DB needs cleanup),
     /// - it exists on disk but has no DB record (new file — needs indexing).
     ///
@@ -114,14 +118,17 @@ impl TokenSave {
                 continue;
             };
             let abs_path = self.project_root.join(&normalized);
-            let file_exists = abs_path.exists();
+            // A file below a nested worktree is outside the scan (#865). It
+            // counts as absent: a row for it needs cleanup, and no row is
+            // made for it.
+            let file_exists = abs_path.exists() && !self.is_below_nested_worktree(&normalized);
             match self.db.get_file(&normalized).await {
                 Ok(Some(record)) => {
                     if !file_exists {
                         // Indexed but deleted — DB needs cleanup.
                         stale.push(normalized);
-                    } else if let Some((mtime, _)) = crate::sync::file_stat(&abs_path) {
-                        if mtime > record.modified_at {
+                    } else if let Some((mtime, size)) = crate::sync::file_stat(&abs_path) {
+                        if mtime != record.modified_at || size != record.size {
                             stale.push(normalized);
                         }
                     }
@@ -158,8 +165,8 @@ impl TokenSave {
         stale
     }
 
-    /// Returns every file whose on-disk mtime is newer than its recorded
-    /// timestamp, plus on-disk files the DB doesn't know about yet, plus
+    /// Returns every file whose on-disk mtime or size differs from its recorded
+    /// metadata, plus on-disk files the DB doesn't know about yet, plus
     /// DB-known files that no longer exist on disk (so a follow-up sync
     /// can prune them).
     ///
@@ -185,9 +192,9 @@ impl TokenSave {
             stale.dedup();
             return stale;
         }
-        let modified_map: HashMap<&str, i64> = indexed
+        let modified_map: HashMap<&str, (i64, u64)> = indexed
             .iter()
-            .map(|f| (f.path.as_str(), f.modified_at))
+            .map(|f| (f.path.as_str(), (f.modified_at, f.size)))
             .collect();
         let on_disk_set: HashSet<&str> = on_disk.iter().map(String::as_str).collect();
 
@@ -195,9 +202,9 @@ impl TokenSave {
 
         for rel in &on_disk {
             let abs = self.project_root.join(rel);
-            let mtime = crate::sync::file_stat(&abs).map_or(0, |(mtime, _)| mtime);
+            let stat = crate::sync::file_stat(&abs);
             match modified_map.get(rel.as_str()) {
-                Some(&modified_at) if mtime <= modified_at => {}
+                Some(&recorded) if stat == Some(recorded) => {}
                 _ => stale.push(rel.clone()),
             }
         }
@@ -258,7 +265,7 @@ impl TokenSave {
     /// startup catch-up and its per-`tools/call` staleness check — must use
     /// this; explicit `tokensave sync` deliberately stays unbounded.
     ///
-    /// Three guards, in order (see [`AutoSyncScope`] for why):
+    /// Four guards, in order (see [`AutoSyncScope`] for why):
     ///
     /// 1. A working tree checked out onto a different branch than this handle
     ///    serves yields [`AutoSyncScope::BranchDrifted`]. Syncing would write
@@ -275,8 +282,38 @@ impl TokenSave {
     ///    materialises the whole node graph at once (#306) that cost is
     ///    graph-proportional. A limit of `0` disables this third guard.
     pub async fn find_stale_files_bounded(&self) -> AutoSyncScope {
+        use crate::debug_log::{event, Level};
+        let scope = self.auto_sync_scope().await;
+        event(
+            Level::Debug,
+            "index",
+            "automatic_sync_scope",
+            || match &scope {
+                AutoSyncScope::BranchDrifted(_) => {
+                    serde_json::json!({ "decision": "branch_drift" })
+                }
+                AutoSyncScope::BorrowedIndex { .. } => {
+                    serde_json::json!({ "decision": "borrowed_index" })
+                }
+                AutoSyncScope::Uninitialized => serde_json::json!({ "decision": "uninitialized" }),
+                AutoSyncScope::TooManyStale { count, limit } => serde_json::json!({
+                    "decision": "over_budget", "stale": count, "limit": limit,
+                }),
+                AutoSyncScope::Sync(stale) => serde_json::json!({
+                    "decision": if stale.is_empty() { "up_to_date" } else { "sync" },
+                    "stale": stale.len(),
+                }),
+            },
+        );
+        scope
+    }
+
+    async fn auto_sync_scope(&self) -> AutoSyncScope {
         if let Some(drift) = self.branch_drift() {
             return AutoSyncScope::BranchDrifted(drift);
+        }
+        if let Some(owner) = self.borrowed_index_owner() {
+            return AutoSyncScope::BorrowedIndex { owner };
         }
 
         // Checked before the walk: when the index is empty there is nothing
@@ -323,7 +360,17 @@ impl TokenSave {
         self.db.last_index_time().await.unwrap_or(0)
     }
 
-    /// Count git commits newer than the given UNIX timestamp.
+    /// Counts the commits reachable from `HEAD` whose committer time is
+    /// strictly later than `since_timestamp` (UNIX seconds).
+    ///
+    /// A commit in the same second as `since_timestamp` is not counted, so an
+    /// index synced in the same second as the last commit reports no stale
+    /// commits (#936). The committer time is recorded in the commit, not the
+    /// time the commit entered the checkout: a commit created before the last
+    /// sync but pulled or merged after it is not counted, and a commit whose
+    /// committer date was preserved or skewed (for example by
+    /// `git rebase --committer-date-is-author-date`) is compared as recorded.
+    ///
     /// Returns 0 if git is unavailable or the directory is not a git repository.
     pub fn git_commits_since(&self, since_timestamp: i64) -> usize {
         let Ok(repo) = gix::open(&self.project_root) else {
@@ -332,9 +379,11 @@ impl TokenSave {
         let Ok(head) = repo.head_commit() else {
             return 0;
         };
+        // `ByCommitTimeCutoff` keeps commits with `time >= seconds`. Timestamps
+        // are whole seconds, so `+ 1` makes the comparison `time > since`.
         let sorting = gix::revision::walk::Sorting::ByCommitTimeCutoff {
             order: gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
-            seconds: since_timestamp,
+            seconds: since_timestamp.saturating_add(1),
         };
         let Ok(walk) = head.ancestors().sorting(sorting).all() else {
             return 0;

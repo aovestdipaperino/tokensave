@@ -616,7 +616,7 @@ pub fn is_newer_version(current: &str, latest: &str) -> bool {
 /// Returns true if `latest` is a newer version than `current` AND the
 /// difference is at least a minor version bump (patch-only bumps return false).
 ///
-/// Used by the CLI version warning to avoid nagging on patch releases.
+/// Used by the MCP update notice to avoid nagging agents on patch releases.
 pub fn is_newer_minor_version(current: &str, latest: &str) -> bool {
     fn parse(v: &str) -> Option<(u64, u64)> {
         let base = v.split_once('-').map_or(v, |(b, _)| b);
@@ -631,6 +631,77 @@ pub fn is_newer_minor_version(current: &str, latest: &str) -> bool {
             (Some(c), Some(l)) => l > c,
             _ => true,
         }
+}
+
+/// Which newer releases warrant telling the user to update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateNoticeScope {
+    /// Any newer release on the same channel, including patch releases.
+    /// Used by the CLI notices (`init`, `sync`, `status`).
+    AnyRelease,
+    /// Only releases that bump the minor or major version. Used by the MCP
+    /// server so agents are not nagged on every patch release.
+    MinorOrMajor,
+}
+
+/// A newer tokensave release than the running binary, worth announcing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvailableUpdate {
+    /// The running version.
+    pub current: String,
+    /// The latest published version on the same channel.
+    pub latest: String,
+}
+
+impl AvailableUpdate {
+    /// Two-line, ANSI-coloured notice for the terminal (printed on stderr).
+    pub fn terminal_notice(&self) -> String {
+        format!(
+            "\x1b[33mUpdate available: v{} → v{}\x1b[0m\n  Run: \x1b[1mtokensave upgrade\x1b[0m",
+            self.current, self.latest
+        )
+    }
+
+    /// One-line plain-text notice prepended to MCP tool results.
+    pub fn agent_notice(&self) -> String {
+        format!(
+            "⚠️ tokensave v{} is installed, but v{} is available. \
+             Run `tokensave upgrade` to update.",
+            self.current, self.latest
+        )
+    }
+}
+
+/// Checks whether `latest` is a newer release than `current` that the user
+/// should be warned about, according to `scope`.
+///
+/// Follows the channel rules of [`is_newer_version`]: beta and stable never
+/// cross, and unparseable versions never produce a notice. This is a pure
+/// comparison; fetching `latest` and honoring `TOKENSAVE_UPDATE_CHECK` are
+/// the caller's job (see [`fetch_latest_version_passive`]).
+///
+/// # Examples
+///
+/// ```
+/// use tokensave::cloud::{available_update, UpdateNoticeScope};
+/// let update = available_update("6.4.4", "6.5.0", UpdateNoticeScope::MinorOrMajor);
+/// assert_eq!(update.map(|u| u.latest), Some("6.5.0".to_string()));
+/// assert!(available_update("6.4.4", "6.4.5", UpdateNoticeScope::MinorOrMajor).is_none());
+/// assert!(available_update("6.4.4", "6.4.5", UpdateNoticeScope::AnyRelease).is_some());
+/// ```
+pub fn available_update(
+    current: &str,
+    latest: &str,
+    scope: UpdateNoticeScope,
+) -> Option<AvailableUpdate> {
+    let newer = match scope {
+        UpdateNoticeScope::AnyRelease => is_newer_version(current, latest),
+        UpdateNoticeScope::MinorOrMajor => is_newer_minor_version(current, latest),
+    };
+    newer.then(|| AvailableUpdate {
+        current: current.to_string(),
+        latest: latest.to_string(),
+    })
 }
 
 /// How tokensave was installed, detected from the binary path.
@@ -786,6 +857,59 @@ mod tests {
             upload_is_due(&failed_a_while_ago, now),
             "the cooldown must expire, or a single failure would wedge uploads for a day"
         );
+    }
+
+    #[test]
+    fn available_update_any_release_includes_patch_bumps() {
+        let scope = UpdateNoticeScope::AnyRelease;
+        assert!(available_update("6.4.4", "6.4.5", scope).is_some());
+        assert!(available_update("6.4.4", "6.5.0", scope).is_some());
+        assert!(available_update("6.4.4", "7.0.0", scope).is_some());
+        assert!(available_update("6.4.4", "6.4.4", scope).is_none());
+        assert!(available_update("6.4.4", "6.4.3", scope).is_none());
+    }
+
+    #[test]
+    fn available_update_minor_or_major_skips_patch_bumps() {
+        let scope = UpdateNoticeScope::MinorOrMajor;
+        assert!(available_update("6.4.4", "6.4.5", scope).is_none());
+        assert!(available_update("6.4.4", "6.5.0", scope).is_some());
+        assert!(available_update("6.4.4", "7.0.0", scope).is_some());
+        assert!(available_update("6.4.4", "6.4.4", scope).is_none());
+    }
+
+    #[test]
+    fn available_update_never_crosses_channels_or_accepts_garbage() {
+        for scope in [
+            UpdateNoticeScope::AnyRelease,
+            UpdateNoticeScope::MinorOrMajor,
+        ] {
+            assert!(available_update("6.4.4-beta.1", "7.0.0", scope).is_none());
+            assert!(available_update("6.4.4", "7.0.0-beta.1", scope).is_none());
+            assert!(available_update("6.4.4", "", scope).is_none());
+            assert!(available_update("6.4.4", "not-a-version", scope).is_none());
+        }
+        assert!(available_update(
+            "7.0.0-beta.1",
+            "7.0.0-beta.2",
+            UpdateNoticeScope::AnyRelease
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn available_update_notices_name_both_versions_and_the_upgrade_command() {
+        let Some(update) = available_update("6.4.4", "6.5.0", UpdateNoticeScope::AnyRelease) else {
+            panic!("6.5.0 is newer than 6.4.4");
+        };
+        assert_eq!(update.current, "6.4.4");
+        assert_eq!(update.latest, "6.5.0");
+        for notice in [update.terminal_notice(), update.agent_notice()] {
+            assert!(notice.contains("6.4.4"), "{notice}");
+            assert!(notice.contains("6.5.0"), "{notice}");
+            assert!(notice.contains("tokensave upgrade"), "{notice}");
+        }
+        assert!(!update.agent_notice().contains('\x1b'));
     }
 
     #[test]

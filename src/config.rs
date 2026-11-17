@@ -87,9 +87,12 @@ pub struct TokenSaveConfig {
     /// Opt-in fallback for files without a registered extension or manifest language.
     #[serde(default)]
     pub language_detection: crate::language_detection::DetectionConfig,
-    /// CPU concurrency profile, applied when the project is opened.
-    #[serde(default)]
-    pub cpu_usage: crate::cpu::CpuUsage,
+    /// CPU concurrency profile pinned for this project, applied when it is
+    /// opened. `None` (the field absent) follows `TOKENSAVE_CPU_USAGE`, the
+    /// global `cpu_usage` and the global hardware benchmark (#752); see
+    /// [`crate::global_benchmark::effective_cpu_usage`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_usage: Option<crate::cpu::CpuUsage>,
     /// Extraction parser-memory profile, applied when the project is opened.
     #[serde(default)]
     pub memory_usage: crate::memory::MemoryUsage,
@@ -148,16 +151,20 @@ pub struct TokenSaveConfig {
     /// such projects backfill the latest schema on first MCP tool use.
     #[serde(default)]
     pub last_indexed_version: String,
-    /// Transparently track the current git branch when it is untracked, by
-    /// copying the nearest-ancestor DB on the next `TokenSave::open`. Defaults
-    /// to `false` (current behavior: fall back to the ancestor DB with a
-    /// warning). The `TOKENSAVE_AUTO_TRACK` env var overrides this per-run.
-    /// Independent of the `post-checkout` git hook, which tracks on branch
-    /// switch when `tokensave install` set it up.
-    #[serde(default)]
+    /// Track an untracked git branch automatically by copying the nearest
+    /// tracked ancestor's DB: the `post-checkout` hook does so on a branch
+    /// checkout, and `TokenSave::open` on the next open. `false` falls back to
+    /// the ancestor DB with a warning instead. The `TOKENSAVE_AUTO_TRACK` env
+    /// var overrides this per-run.
+    ///
+    /// Defaults to `true` (#922), including when the field is absent. An
+    /// explicit `false` is kept as written, so a project whose config was
+    /// saved while the default was still `false` keeps that value until the
+    /// user changes it.
+    #[serde(default = "default_auto_track")]
     pub auto_track: bool,
     /// Automatically collect indexes for deleted Git branches on open and
-    /// MCP freshness checks. Opt-in; TOKENSAVE_AUTO_GC overrides per run.
+    /// MCP freshness checks. Opt-in; `TOKENSAVE_AUTO_GC` overrides per run.
     #[serde(default)]
     pub auto_gc: bool,
     /// Refuse `tokensave_*` MCP calls when the index describes a different
@@ -252,6 +259,12 @@ fn default_artifact_extensions() -> Vec<String> {
     .collect()
 }
 
+/// Serde default for [`TokenSaveConfig::auto_track`], so a config without the
+/// field tracks new branches like a freshly written one (#922).
+fn default_auto_track() -> bool {
+    true
+}
+
 /// Serde default for [`TokenSaveConfig::report_savings`]. Off by default so
 /// MCP results stay compact; accounting to the global DB still happens.
 fn default_report_savings() -> bool {
@@ -270,20 +283,35 @@ fn default_max_auto_sync_files() -> usize {
 /// (`0`, `false`, `no`, `off`, or empty); absence falls back to `config_value`.
 /// This is the convention `TOKENSAVE_AUTO_TRACK` established.
 pub fn env_bool_override(var: &str, config_value: bool) -> bool {
-    match std::env::var(var) {
-        Ok(v) => !matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "no" | "off" | ""
+    let (value, source) = match std::env::var(var) {
+        Ok(v) => (
+            !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off" | ""
+            ),
+            "environment",
         ),
-        Err(_) => config_value,
-    }
+        Err(_) => (config_value, "configured_value"),
+    };
+    use crate::debug_log::{event, Level};
+    event(Level::Debug, "config", "boolean_setting", || match var {
+        "TOKENSAVE_AUTO_TRACK"
+        | "TOKENSAVE_REPORT_SAVINGS"
+        | "TOKENSAVE_AUTO_INIT"
+        | "TOKENSAVE_AUTO_GC"
+        | "TOKENSAVE_CAVEMAN_COMPATIBILITY" => {
+            serde_json::json!({ "setting": var, "source": source, "value": value })
+        }
+        _ => serde_json::json!({ "setting": "other", "source": source }),
+    });
+    value
 }
 
 impl Default for TokenSaveConfig {
     fn default() -> Self {
         Self {
             language_detection: crate::language_detection::DetectionConfig::default(),
-            cpu_usage: crate::cpu::CpuUsage::default(),
+            cpu_usage: None,
             memory_usage: crate::memory::MemoryUsage::default(),
             version: CONFIG_VERSION,
             root_dir: String::new(),
@@ -319,7 +347,7 @@ impl Default for TokenSaveConfig {
             source_path_overrides: Vec::new(),
             docs_dir: default_docs_dir(),
             last_indexed_version: String::new(),
-            auto_track: false,
+            auto_track: default_auto_track(),
             auto_gc: false,
             strict_tree: false,
             max_auto_sync_files: default_max_auto_sync_files(),
@@ -332,9 +360,82 @@ impl Default for TokenSaveConfig {
     }
 }
 
-/// Returns the path to the `.tokensave` directory within the given project root.
+/// Default `exclude` globs whose directory names usually hold generated
+/// output but are also common names for real source packages (#949).
+///
+/// A Python data pipeline imported as `build.extract`, or a `bin/` of tracked
+/// scripts, is source that these defaults drop. `init` and `sync` therefore
+/// report git-tracked, indexable files that only these globs exclude; see
+/// `detect_tracked_ambiguous_excludes`. The other defaults (`node_modules`,
+/// `.venv`, `site-packages`, …) are almost never tracked source, and tracked
+/// `vendor/` code is excluded on purpose, so they are not listed here.
+pub const AMBIGUOUS_DEFAULT_EXCLUDES: &[&str] = &["**/build/**", "**/out/**", "bin/**"];
+
+/// Returns channel-specific project state: `.tokensave` or `.tokensave/beta`
+/// under the project root, or the same layout under a configured base state
+/// directory (#919, see [`crate::state_dir`]).
 pub fn get_tokensave_dir(project_root: &Path) -> PathBuf {
-    project_root.join(TOKENSAVE_DIR)
+    locate_project_state(project_root).into_dir()
+}
+
+/// Where `project_root` keeps its state, and whether that is under the root.
+pub fn locate_project_state(project_root: &Path) -> crate::state_dir::Location {
+    let beta = crate::cloud::is_beta();
+    crate::state_dir::locate(project_root, channel_dir(project_root, beta), |dir| {
+        channel_subdir(dir, beta)
+    })
+}
+
+/// The channel-independent project state root: the directory holding the
+/// stable state and the `beta` subdirectory. `<root>/.tokensave` by default.
+pub fn project_state_root(project_root: &Path) -> PathBuf {
+    match locate_project_state(project_root) {
+        crate::state_dir::Location::InRepo(_) => project_root.join(TOKENSAVE_DIR),
+        crate::state_dir::Location::Relocated { base, .. } => {
+            crate::state_dir::relocated_root(&base, project_root)
+        }
+    }
+}
+
+/// Where the current setting puts `project_root`'s state, whether or not any
+/// exists there. Differs from [`get_tokensave_dir`] when existing state is
+/// kept at its old location after the setting changed.
+pub fn configured_project_state_dir(project_root: &Path) -> PathBuf {
+    let beta = crate::cloud::is_beta();
+    match crate::state_dir::configured_base() {
+        Some(base) => channel_subdir(crate::state_dir::relocated_root(&base, project_root), beta),
+        None => channel_dir(project_root, beta),
+    }
+}
+
+/// Whether `project_root` keeps its state under itself, so `init` should keep
+/// `.tokensave/` out of Git. False when the state is relocated.
+pub fn project_state_is_in_repo(project_root: &Path) -> bool {
+    matches!(
+        locate_project_state(project_root),
+        crate::state_dir::Location::InRepo(_)
+    )
+}
+
+/// Returns the channel-specific global state directory under `home`:
+/// `~/.tokensave` or `~/.tokensave/beta`. Never relocated: the base state
+/// directory setting moves project state only.
+pub fn get_global_tokensave_dir(home: &Path) -> PathBuf {
+    channel_dir(home, crate::cloud::is_beta())
+}
+
+/// Separate beta project state (including config, locks, and branch indexes)
+/// from stable without changing stable paths or shared user settings.
+fn channel_dir(root: &Path, beta: bool) -> PathBuf {
+    channel_subdir(root.join(TOKENSAVE_DIR), beta)
+}
+
+fn channel_subdir(directory: PathBuf, beta: bool) -> PathBuf {
+    if beta {
+        directory.join("beta")
+    } else {
+        directory
+    }
 }
 
 /// Returns the path to the configuration file (`config.json`) within the `.tokensave` directory.
@@ -350,10 +451,12 @@ pub fn load_config(project_root: &Path) -> Result<TokenSaveConfig> {
     let config_path = get_config_path(project_root);
 
     if !config_path.exists() {
-        return Ok(TokenSaveConfig {
+        let config = TokenSaveConfig {
             root_dir: project_root.to_string_lossy().to_string(),
             ..TokenSaveConfig::default()
-        });
+        };
+        log_config(&config, "defaults");
+        return Ok(config);
     }
 
     let contents = fs::read_to_string(&config_path).map_err(|e| TokenSaveError::Config {
@@ -373,14 +476,26 @@ pub fn load_config(project_root: &Path) -> Result<TokenSaveConfig> {
             ),
         })?;
     migrate_config(&mut config);
+    log_config(&config, "project_file");
 
     Ok(config)
 }
 
+fn log_config(config: &TokenSaveConfig, source: &'static str) {
+    use crate::debug_log::{event, Level};
+    event(Level::Debug, "config", "project_settings", || {
+        serde_json::json!({
+            "source": source,
+            "strict_tree": config.strict_tree,
+            "max_auto_sync_files": config.max_auto_sync_files,
+        })
+    });
+}
+
 /// The `cpu_usage` explicitly present in the project's config file, if any.
 ///
-/// Unlike [`load_config`], a missing field is `None` rather than the default,
-/// so `init` can tell a profile the user chose from one it should benchmark.
+/// Unlike [`load_config`], a project that is not initialized yet is `None`
+/// rather than an error, and nothing else in the file has to be valid.
 pub fn configured_cpu_usage(project_root: &Path) -> Result<Option<crate::cpu::CpuUsage>> {
     let config_path = get_config_path(project_root);
     if !config_path.exists() {
@@ -425,7 +540,8 @@ fn migrate_config(config: &mut TokenSaveConfig) {
 /// Writes to a temporary file first and then renames it to the final location,
 /// ensuring that a partial write never corrupts the configuration.
 pub fn save_config(project_root: &Path, config: &TokenSaveConfig) -> Result<()> {
-    let tokensave_dir = get_tokensave_dir(project_root);
+    let location = locate_project_state(project_root);
+    let tokensave_dir = location.dir().to_path_buf();
     fs::create_dir_all(&tokensave_dir).map_err(|e| TokenSaveError::Config {
         message: format!(
             "failed to create tokensave directory '{}': {}",
@@ -433,6 +549,9 @@ pub fn save_config(project_root: &Path, config: &TokenSaveConfig) -> Result<()> 
             e
         ),
     })?;
+    if let crate::state_dir::Location::Relocated { base, .. } = &location {
+        crate::state_dir::record(base, project_root);
+    }
 
     let config_path = get_config_path(project_root);
     let tmp_path = config_path.with_extension("tmp");
@@ -704,36 +823,192 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     out
 }
 
-/// Walks from `start` upward looking for a `.tokensave/tokensave.db`.
+/// The project a directory belongs to, as found by [`discover_project`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectDiscovery {
+    /// An initialized project (`.tokensave/tokensave.db`) owns the directory.
+    Initialized(PathBuf),
+    /// The nearest `.tokensave/` holds a `config.json` but no database: an
+    /// interrupted or partial `init`. Reported rather than skipped so an outer
+    /// project is never used in its place.
+    Incomplete(PathBuf),
+    /// No project owns the directory. `git_root` is the nearest enclosing git
+    /// working tree root (main checkout, linked worktree, or submodule), the
+    /// directory `init` targets by default.
+    Uninitialized { git_root: Option<PathBuf> },
+}
+
+/// Finds the project that owns `start` by walking up its ancestors.
 ///
-/// Returns the first ancestor directory (inclusive) that contains an
-/// initialised `TokenSave` project, or `None` if the filesystem root is
-/// reached without finding one.
+/// This is the single authority for "which project am I in": every command run
+/// without an explicit path, the MCP server, and the agent hooks resolve
+/// through it, so a command run from `repo/src/backend` serves the same index
+/// as one run from `repo`.
+///
+/// The nearest `.tokensave/` wins. Git repository roots are isolation
+/// boundaries: once the walk passes the root of an independent repository (a
+/// `.git` directory, or a submodule's `.git` file), a project above it is used
+/// only when that project is not itself inside a git repository — a plain
+/// workspace folder that indexes several checkouts — never when it belongs to
+/// an outer repository. A linked worktree's `.git` file is not a boundary: a
+/// worktree nested in its main checkout keeps borrowing that index, which the
+/// borrowed-worktree notice (#312) then reports.
+///
+/// Costs a few `stat` calls per ancestor and never spawns `git`.
+pub fn discover_project(start: &Path) -> ProjectDiscovery {
+    discover_project_from(start, crate::agents::home_dir().as_deref())
+}
+
+/// [`discover_project`] with the home directory passed in. `~/.tokensave/` is
+/// the global state directory, not a project, unless it holds a database.
+fn discover_project_from(start: &Path, home: Option<&Path>) -> ProjectDiscovery {
+    let mut git_root: Option<PathBuf> = None;
+    let mut crossed_repository = false;
+    for dir in start.ancestors() {
+        let tokensave_dir = get_tokensave_dir(dir);
+        let found = if tokensave_dir.join("tokensave.db").exists() {
+            Some(ProjectDiscovery::Initialized(dir.to_path_buf()))
+        } else if Some(dir) != home && tokensave_dir.join("config.json").is_file() {
+            Some(ProjectDiscovery::Incomplete(dir.to_path_buf()))
+        } else {
+            None
+        };
+        if let Some(found) = found {
+            if crossed_repository && dir.ancestors().any(|d| git_marker(d).is_some()) {
+                break;
+            }
+            return found;
+        }
+        if let Some(marker) = git_marker(dir) {
+            if git_root.is_none() {
+                git_root = Some(dir.to_path_buf());
+            }
+            if marker == GitMarker::Repository {
+                crossed_repository = true;
+            }
+        }
+    }
+    ProjectDiscovery::Uninitialized { git_root }
+}
+
+/// What a directory's `.git` entry says about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitMarker {
+    /// The root of a repository of its own: a `.git` directory, or a `.git`
+    /// file pointing anywhere but a `worktrees/` entry (a submodule).
+    Repository,
+    /// A linked worktree of a repository whose main checkout lives elsewhere.
+    LinkedWorktree,
+}
+
+fn git_marker(dir: &Path) -> Option<GitMarker> {
+    let dot_git = dir.join(".git");
+    let meta = fs::metadata(&dot_git).ok()?;
+    if meta.is_dir() {
+        return Some(GitMarker::Repository);
+    }
+    // A linked worktree's `.git` file reads `gitdir: <common-dir>/worktrees/<name>`.
+    let contents = fs::read_to_string(&dot_git).ok()?;
+    let gitdir = Path::new(contents.strip_prefix("gitdir:")?.trim());
+    let in_worktrees = gitdir
+        .parent()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name == "worktrees");
+    Some(if in_worktrees {
+        GitMarker::LinkedWorktree
+    } else {
+        GitMarker::Repository
+    })
+}
+
+/// Whether `dir` is the root of a linked worktree: its `.git` is a file that
+/// points into the `worktrees/` directory of a repository.
+///
+/// The scan uses this to stay out of a worktree that lies inside the checkout
+/// it indexes (#865). Such a directory is a second working tree of the same
+/// repository, not content of the first. A nested clone and a submodule are
+/// repositories of their own and give `false`.
+///
+/// Costs one `stat` for a directory with no `.git` entry.
+pub(crate) fn is_linked_worktree_root(dir: &Path) -> bool {
+    git_marker(dir) == Some(GitMarker::LinkedWorktree)
+}
+
+/// The root of the linked worktree that `start` is in, when the project that
+/// owns `start` is the index of the checkout around that worktree.
+///
+/// A linked worktree's `.git` file is not a boundary for [`discover_project`],
+/// so a worktree nested in its main checkout borrows the index of that
+/// checkout. This function reports that case with file checks only, and it
+/// does not start a `git` process.
+///
+/// Returns `None` when the worktree has an index of its own, when `start` is
+/// not below a linked worktree root, and when the project is a plain folder
+/// outside each git working tree. Such a folder indexes the checkouts below
+/// it, so its index is not borrowed.
+pub fn borrowed_worktree_root(start: &Path) -> Option<PathBuf> {
+    borrowed_worktree_root_from(start, crate::agents::home_dir().as_deref())
+}
+
+/// [`borrowed_worktree_root`] with the home directory passed in.
+fn borrowed_worktree_root_from(start: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let ProjectDiscovery::Initialized(project) = discover_project_from(start, home) else {
+        return None;
+    };
+    let worktree = start
+        .ancestors()
+        .take_while(|dir| *dir != project)
+        .find(|dir| git_marker(dir) == Some(GitMarker::LinkedWorktree))?;
+    project
+        .ancestors()
+        .any(|dir| git_marker(dir).is_some())
+        .then(|| worktree.to_path_buf())
+}
+
+/// Returns the nearest initialized `TokenSave` project that owns `start`, or
+/// `None` when [`discover_project`] finds none (or only an incomplete one).
 pub fn discover_project_root(start: &Path) -> Option<PathBuf> {
-    let mut dir = start.to_path_buf();
-    loop {
-        if dir.join(".tokensave").join("tokensave.db").exists() {
-            return Some(dir);
-        }
-        if !dir.pop() {
-            return None;
-        }
+    match discover_project(start) {
+        ProjectDiscovery::Initialized(root) => Some(root),
+        ProjectDiscovery::Incomplete(_) | ProjectDiscovery::Uninitialized { .. } => None,
     }
 }
 
-/// Like [`resolve_path`], but when `path` is `None` it walks up from `cwd`
-/// to find the nearest initialised `TokenSave` project before falling back to
-/// `cwd` itself.
+/// Like [`resolve_path`], but when `path` is `None` it resolves the project
+/// that owns `cwd` via [`discover_project`].
 ///
-/// Used by `serve`, `sync`, and `status`. NOT used by `init` (which must
-/// create a fresh project at the target directory).
+/// An explicit `path` is an override and is used as given. Without one, an
+/// incomplete project resolves to its own root, so the caller's "not
+/// initialized" error names it rather than `cwd`; with no project at all this
+/// falls back to `cwd`. `init` calls [`discover_project`] directly, since it
+/// also needs the git root.
 pub fn resolve_path_with_discovery(path: Option<String>) -> PathBuf {
     if let Some(p) = path {
         absolutize(PathBuf::from(p))
     } else {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        discover_project_root(&cwd).unwrap_or(cwd)
+        match discover_project(&cwd) {
+            ProjectDiscovery::Initialized(root) | ProjectDiscovery::Incomplete(root) => root,
+            ProjectDiscovery::Uninitialized { .. } => cwd,
+        }
     }
+}
+
+/// Resolve the repository root for a pathless sync started by a git hook.
+///
+/// Git hooks belong to the repository that fired them. They must not borrow an
+/// initialized plain workspace above that repository: doing so can turn a
+/// small commit into an unbounded sync of an unrelated, much larger index.
+pub fn resolve_git_hook_sync_root() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    git_hook_sync_root_from(&cwd)
+}
+
+fn git_hook_sync_root_from(start: &Path) -> PathBuf {
+    start
+        .ancestors()
+        .find(|directory| git_marker(directory).is_some())
+        .map_or_else(|| start.to_path_buf(), Path::to_path_buf)
 }
 
 /// Basename of the dependency lockfile Terraform and `OpenTofu` share.
@@ -962,8 +1237,9 @@ pub fn load_query_ignore(project_root: &Path) -> QueryIgnore {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::{
-        env_bool_override, is_excluded, is_excluded_dir, is_ignored_by_git, is_included,
-        load_query_ignore, QueryIgnore, TokenSaveConfig,
+        env_bool_override, get_config_path, get_tokensave_dir, is_excluded, is_excluded_dir,
+        is_ignored_by_git, is_included, load_config, load_query_ignore, save_config, QueryIgnore,
+        TokenSaveConfig, CONFIG_FILENAME,
     };
     use std::fs;
     use std::process::Command;
@@ -1144,7 +1420,7 @@ mod tests {
     #[test]
     fn test_load_query_ignore_reads_file() {
         let dir = TempDir::new().unwrap();
-        let ts_dir = dir.path().join(".tokensave");
+        let ts_dir = crate::config::get_tokensave_dir(dir.path());
         fs::create_dir_all(&ts_dir).unwrap();
         fs::write(ts_dir.join("queryignore"), "generated\ntests/*\n").unwrap();
 
@@ -1183,9 +1459,348 @@ mod tests {
     }
 
     #[test]
+    fn auto_track_defaults_to_on() {
+        // #922: new branches are tracked without opting in.
+        assert!(TokenSaveConfig::default().auto_track);
+    }
+
+    #[test]
+    fn configs_without_auto_track_default_to_on() {
+        let json = r#"{"version":2,"root_dir":"/x","exclude":[],"max_file_size":1000,
+                       "extract_docstrings":true,"track_call_sites":true}"#;
+        let config: TokenSaveConfig = serde_json::from_str(json).unwrap();
+        assert!(config.auto_track);
+    }
+
+    #[test]
+    fn an_explicit_auto_track_false_survives_load_and_save() {
+        // #922: a config saved while the default was off records `false`, and
+        // an upgrade must not turn it on behind the user's back.
+        let tmp = TempDir::new().unwrap();
+        let config_dir = get_tokensave_dir(tmp.path());
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join(CONFIG_FILENAME),
+            r#"{"version":2,"root_dir":"/x","exclude":[],"max_file_size":1000,
+                "extract_docstrings":true,"track_call_sites":true,"auto_track":false}"#,
+        )
+        .unwrap();
+
+        let config = load_config(tmp.path()).unwrap();
+        assert!(!config.auto_track);
+        save_config(tmp.path(), &config).unwrap();
+        assert!(!load_config(tmp.path()).unwrap().auto_track);
+    }
+
+    #[test]
+    fn a_new_config_records_auto_track_on() {
+        let tmp = TempDir::new().unwrap();
+        save_config(tmp.path(), &TokenSaveConfig::default()).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(get_config_path(tmp.path())).unwrap())
+                .unwrap();
+        assert_eq!(written["auto_track"], serde_json::Value::Bool(true));
+    }
+
+    #[test]
     fn env_override_respects_falsey_spellings() {
         // Absent → the config value wins, in both directions.
         assert!(env_bool_override("TOKENSAVE_UNSET_TEST_VAR_XYZ", true));
         assert!(!env_bool_override("TOKENSAVE_UNSET_TEST_VAR_XYZ", false));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod discovery_tests {
+    use super::{
+        borrowed_worktree_root_from, discover_project_from, get_tokensave_dir,
+        git_hook_sync_root_from, ProjectDiscovery,
+    };
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use tempfile::TempDir;
+
+    fn mkdirs(base: &Path, parts: &[&str]) -> PathBuf {
+        let mut dir = base.to_path_buf();
+        for part in parts {
+            dir.push(part);
+        }
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn init_project(dir: &Path) {
+        let tokensave_dir = get_tokensave_dir(dir);
+        fs::create_dir_all(&tokensave_dir).unwrap();
+        fs::write(tokensave_dir.join("tokensave.db"), b"").unwrap();
+    }
+
+    fn init_repo(dir: &Path) {
+        fs::create_dir_all(dir.join(".git")).unwrap();
+    }
+
+    fn discover(start: &Path) -> ProjectDiscovery {
+        discover_project_from(start, None)
+    }
+
+    #[test]
+    fn nested_directories_resolve_to_the_project_root() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        init_repo(&root);
+        init_project(&root);
+        for parts in [
+            &[][..],
+            &["src"],
+            &["src", "backend", "services"],
+            &["tests"],
+        ] {
+            let start = mkdirs(&root, parts);
+            assert_eq!(
+                discover(&start),
+                ProjectDiscovery::Initialized(root.clone()),
+                "from {}",
+                start.display()
+            );
+        }
+    }
+
+    #[test]
+    fn nearest_project_wins_within_one_repository() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        init_repo(&root);
+        init_project(&root);
+        let inner = mkdirs(&root, &["packages", "app"]);
+        init_project(&inner);
+        let start = mkdirs(&inner, &["src"]);
+        assert_eq!(discover(&start), ProjectDiscovery::Initialized(inner));
+    }
+
+    #[test]
+    fn uninitialized_git_subdirectory_reports_the_git_root() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        init_repo(&root);
+        let start = mkdirs(&root, &["src", "component"]);
+        assert_eq!(
+            discover(&start),
+            ProjectDiscovery::Uninitialized {
+                git_root: Some(root)
+            }
+        );
+    }
+
+    #[test]
+    fn independent_nested_repository_does_not_borrow_the_outer_index() {
+        let tmp = TempDir::new().unwrap();
+        let outer = tmp.path().to_path_buf();
+        init_repo(&outer);
+        init_project(&outer);
+        let nested = mkdirs(&outer, &["vendor", "lib"]);
+        init_repo(&nested);
+        let start = mkdirs(&nested, &["src"]);
+        assert_eq!(
+            discover(&start),
+            ProjectDiscovery::Uninitialized {
+                git_root: Some(nested)
+            }
+        );
+    }
+
+    #[test]
+    fn git_hook_sync_stays_at_nested_repository_root() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        init_project(&workspace);
+        let repository = mkdirs(&workspace, &["repos", "app"]);
+        init_repo(&repository);
+        let start = mkdirs(&repository, &["src", "nested"]);
+
+        assert_eq!(git_hook_sync_root_from(&start), repository);
+    }
+
+    #[test]
+    fn submodule_git_file_is_a_repository_boundary() {
+        let tmp = TempDir::new().unwrap();
+        let outer = tmp.path().to_path_buf();
+        init_repo(&outer);
+        init_project(&outer);
+        let sub = mkdirs(&outer, &["deps", "sub"]);
+        fs::write(sub.join(".git"), "gitdir: ../../.git/modules/sub\n").unwrap();
+        assert_eq!(
+            discover(&sub),
+            ProjectDiscovery::Uninitialized {
+                git_root: Some(sub)
+            }
+        );
+    }
+
+    #[test]
+    fn non_git_workspace_project_is_shared_by_the_repositories_inside_it() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        init_project(&workspace);
+        let repo = mkdirs(&workspace, &["dev", "app"]);
+        init_repo(&repo);
+        let start = mkdirs(&repo, &["src"]);
+        assert_eq!(discover(&start), ProjectDiscovery::Initialized(workspace));
+    }
+
+    #[test]
+    fn linked_worktree_nested_in_its_main_checkout_borrows_the_main_index() {
+        let tmp = TempDir::new().unwrap();
+        let main = tmp.path().to_path_buf();
+        init_repo(&main);
+        init_project(&main);
+        let worktree = mkdirs(&main, &[".worktrees", "feature"]);
+        let gitdir = main.join(".git").join("worktrees").join("feature");
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .unwrap();
+        assert_eq!(discover(&worktree), ProjectDiscovery::Initialized(main));
+    }
+
+    #[test]
+    fn linked_worktree_without_an_index_reports_its_own_root() {
+        let tmp = TempDir::new().unwrap();
+        let worktree = mkdirs(tmp.path(), &["wt"]);
+        fs::write(worktree.join(".git"), "gitdir: /repo/.git/worktrees/wt\n").unwrap();
+        let start = mkdirs(&worktree, &["src"]);
+        assert_eq!(
+            discover(&start),
+            ProjectDiscovery::Uninitialized {
+                git_root: Some(worktree)
+            }
+        );
+    }
+
+    /// A linked worktree at `parts` below `main`, with the `.git` file that
+    /// `git worktree add` writes.
+    fn nested_worktree(main: &Path, parts: &[&str]) -> PathBuf {
+        let worktree = mkdirs(main, parts);
+        let gitdir = main.join(".git").join("worktrees").join("feature");
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .unwrap();
+        worktree
+    }
+
+    #[test]
+    fn nested_worktree_without_an_index_borrows_the_main_index() {
+        let tmp = TempDir::new().unwrap();
+        let main = tmp.path().to_path_buf();
+        init_repo(&main);
+        init_project(&main);
+        let worktree = nested_worktree(&main, &[".worktrees", "feature"]);
+        let start = mkdirs(&worktree, &["src"]);
+        assert_eq!(
+            borrowed_worktree_root_from(&worktree, None),
+            Some(worktree.clone())
+        );
+        assert_eq!(borrowed_worktree_root_from(&start, None), Some(worktree));
+    }
+
+    #[test]
+    fn nested_worktree_with_an_index_borrows_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let main = tmp.path().to_path_buf();
+        init_repo(&main);
+        init_project(&main);
+        let worktree = nested_worktree(&main, &[".worktrees", "feature"]);
+        init_project(&worktree);
+        let start = mkdirs(&worktree, &["src"]);
+        assert_eq!(borrowed_worktree_root_from(&start, None), None);
+    }
+
+    #[test]
+    fn main_checkout_and_its_subdirectories_borrow_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let main = tmp.path().to_path_buf();
+        init_repo(&main);
+        init_project(&main);
+        let start = mkdirs(&main, &["src", "component"]);
+        assert_eq!(borrowed_worktree_root_from(&main, None), None);
+        assert_eq!(borrowed_worktree_root_from(&start, None), None);
+    }
+
+    /// A plain folder that indexes the checkouts below it owns their files.
+    #[test]
+    fn worktree_below_a_non_git_workspace_project_borrows_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        init_project(&workspace);
+        let worktree = mkdirs(&workspace, &["dev", "wt"]);
+        fs::write(worktree.join(".git"), "gitdir: /repo/.git/worktrees/wt\n").unwrap();
+        assert_eq!(borrowed_worktree_root_from(&worktree, None), None);
+    }
+
+    #[test]
+    fn worktree_and_submodule_without_a_project_above_borrow_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let worktree = mkdirs(tmp.path(), &["wt"]);
+        fs::write(worktree.join(".git"), "gitdir: /repo/.git/worktrees/wt\n").unwrap();
+        assert_eq!(borrowed_worktree_root_from(&worktree, None), None);
+
+        let outer = mkdirs(tmp.path(), &["outer"]);
+        init_repo(&outer);
+        init_project(&outer);
+        let sub = mkdirs(&outer, &["deps", "sub"]);
+        fs::write(sub.join(".git"), "gitdir: ../../.git/modules/sub\n").unwrap();
+        assert_eq!(borrowed_worktree_root_from(&sub, None), None);
+    }
+
+    #[test]
+    fn partial_install_is_reported_instead_of_an_outer_project() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().to_path_buf();
+        init_project(&workspace);
+        let partial = mkdirs(&workspace, &["app"]);
+        let tokensave_dir = get_tokensave_dir(&partial);
+        fs::create_dir_all(&tokensave_dir).unwrap();
+        fs::write(tokensave_dir.join("config.json"), "{}").unwrap();
+        let start = mkdirs(&partial, &["src"]);
+        assert_eq!(discover(&start), ProjectDiscovery::Incomplete(partial));
+    }
+
+    #[test]
+    fn global_state_directory_in_home_is_not_a_project() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().to_path_buf();
+        let global_dir = super::get_global_tokensave_dir(&home);
+        fs::create_dir_all(&global_dir).unwrap();
+        fs::write(global_dir.join("config.json"), "{}").unwrap();
+        let start = mkdirs(&home, &["scratch"]);
+        assert_eq!(
+            discover_project_from(&start, Some(&home)),
+            ProjectDiscovery::Uninitialized { git_root: None }
+        );
+    }
+
+    #[test]
+    fn paths_with_spaces_and_unicode_resolve() {
+        let tmp = TempDir::new().unwrap();
+        let root = mkdirs(tmp.path(), &["My Projects", "café ☕"]);
+        init_project(&root);
+        let start = mkdirs(&root, &["sous dossier", "日本"]);
+        assert_eq!(discover(&start), ProjectDiscovery::Initialized(root));
+    }
+}
+
+#[cfg(test)]
+mod channel_path_tests {
+    #[test]
+    fn beta_state_is_isolated_and_stable_layout_is_unchanged() {
+        let root = std::path::Path::new("project");
+        assert_eq!(super::channel_dir(root, false), root.join(".tokensave"));
+        assert_eq!(
+            super::channel_dir(root, true),
+            root.join(".tokensave").join("beta")
+        );
     }
 }

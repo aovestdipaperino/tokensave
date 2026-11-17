@@ -1,10 +1,78 @@
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::cli::BranchAction;
 use crate::global;
 use crate::Spinner;
+use tokensave::config::{discover_project, ProjectDiscovery};
 use tokensave::tokensave::TokenSave;
+
+/// Handles `tokensave state list|prune` (#919).
+pub(crate) fn handle_state_action(action: crate::cli::StateAction) {
+    use crate::cli::StateAction;
+    use tokensave::display::format_bytes;
+    use tokensave::state_dir;
+
+    let describe = |entry: &state_dir::StateEntry| -> String {
+        let size = state_dir::dir_size(&entry.dir);
+        match &entry.origin {
+            Some(origin) => format!(
+                "{}  ->  {}  ({}, recorded by {})",
+                entry.dir.display(),
+                origin.project_root,
+                format_bytes(size),
+                origin.version
+            ),
+            None => format!(
+                "{}  ->  (no {})",
+                entry.dir.display(),
+                state_dir::ORIGIN_FILENAME
+            ),
+        }
+    };
+
+    match action {
+        StateAction::List => {
+            let setting = state_dir::setting();
+            match &setting.base {
+                Some(base) => println!("Base state directory: {}", base.display()),
+                None => {
+                    println!("Base state directory: none (state lives under each project root)")
+                }
+            }
+            let entries = state_dir::scan();
+            if entries.is_empty() {
+                println!("No relocated project state found.");
+                return;
+            }
+            for entry in &entries {
+                let marker = if entry.is_orphaned() {
+                    "orphaned  "
+                } else {
+                    ""
+                };
+                println!("  {marker}{}", describe(entry));
+            }
+        }
+        StateAction::Prune { dry_run } => {
+            let pruned = state_dir::prune(dry_run);
+            if pruned.is_empty() {
+                println!("No orphaned project state found.");
+                return;
+            }
+            let verb = if dry_run { "Would delete" } else { "Deleted" };
+            for (entry, error) in &pruned {
+                match error {
+                    None => println!("{verb} {}", describe(entry)),
+                    Some(error) => eprintln!("Could not delete {}: {error}", entry.dir.display()),
+                }
+            }
+            if dry_run {
+                println!("Run `tokensave state prune` without --dry-run to delete them.");
+            }
+        }
+    }
+}
 
 pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::errors::Result<()> {
     use tokensave::branch;
@@ -13,7 +81,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
 
     match action {
         BranchAction::List { path } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
             let Some(meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
                 eprintln!("No branch tracking configured. Run `tokensave branch add` to start.");
@@ -21,6 +89,9 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             };
             let current = branch::current_branch(&project_path);
             eprintln!("Default branch: {}", meta.default_branch);
+            if let Some(warning) = branch::default_branch_state(&project_path, &meta).warning() {
+                eprintln!("\x1b[33mwarning:\x1b[0m {warning}");
+            }
             eprintln!();
             for (name, entry) in &meta.branches {
                 let db_path = tokensave_dir.join(&entry.db_file);
@@ -49,7 +120,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             path,
             if_enabled,
         } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
 
             // #397: an automated caller (the `post-checkout` hook) passes
@@ -59,12 +130,18 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             // authoritative — on fresh installs as much as old ones. Checked
             // before anything is read or written, so a declined auto-track
             // costs nothing. Silent by design: a hook runs on every checkout
-            // and must not narrate.
+            // and must not narrate, unless `TOKENSAVE_HOOK_DEBUG` asks (#877).
             if if_enabled {
                 let config = tokensave::config::load_config(&project_path).unwrap_or_default();
                 let enabled =
                     tokensave::config::env_bool_override("TOKENSAVE_AUTO_TRACK", config.auto_track);
                 if !enabled {
+                    hook_debug(&project_path, || {
+                        format!(
+                            "branch add --if-enabled: {}",
+                            auto_track_disabled_reason(&project_path, name.as_deref())
+                        )
+                    });
                     return Ok(());
                 }
             }
@@ -87,12 +164,22 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             let _branch_lock =
                 tokensave::tokensave::acquire_branch_operation_lock(&tokensave_dir).await?;
 
-            // Load or bootstrap metadata
-            let mut meta = branch_meta::load_branch_meta(&tokensave_dir).unwrap_or_else(|| {
-                let default = branch::detect_default_branch(&project_path)
-                    .unwrap_or_else(|| "main".to_string());
-                branch_meta::BranchMeta::new(&default)
-            });
+            // Load or bootstrap metadata, detecting the default the same way
+            // `init` does: a hard-coded "main" recorded a branch that does
+            // not exist in a `master` repository (#874).
+            let mut meta = match branch_meta::load_branch_meta(&tokensave_dir) {
+                Some(meta) => meta,
+                None => {
+                    let default = branch::detect_default_branch(&project_path)
+                        .or_else(|| branch::current_branch(&project_path))
+                        .ok_or_else(|| tokensave::errors::TokenSaveError::Config {
+                            message: "cannot detect the default branch (detached HEAD?). \
+                                      Check out the default branch and retry."
+                                .to_string(),
+                        })?;
+                    branch_meta::BranchMeta::new(&default)
+                }
+            };
 
             if meta.is_tracked(&branch_name) {
                 eprintln!("Branch '{branch_name}' is already tracked.");
@@ -180,7 +267,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             }
         }
         BranchAction::Remove { name, path } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
             let Some(mut meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
                 eprintln!("No branch tracking configured.");
@@ -205,8 +292,30 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
                 eprintln!("Branch '{name}' is not tracked.");
             }
         }
+        BranchAction::SetDefault { name, path } => {
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
+            let tokensave_dir = get_tokensave_dir(&project_path);
+            match branch::set_default_branch(&project_path, &tokensave_dir, &name).await? {
+                branch::SetDefaultOutcome::Unchanged => {
+                    eprintln!("Branch '{name}' is already the default.");
+                }
+                branch::SetDefaultOutcome::Renamed { previous } => {
+                    eprintln!(
+                        "\x1b[32m✔\x1b[0m Default branch is now '{name}' \
+                         (renamed from '{previous}', index kept)."
+                    );
+                }
+                branch::SetDefaultOutcome::Promoted { previous } => {
+                    eprintln!(
+                        "\x1b[32m✔\x1b[0m Default branch is now '{name}'. \
+                         '{previous}' is an ordinary branch now; run \
+                         `tokensave branch remove {previous}` to delete its index."
+                    );
+                }
+            }
+        }
         BranchAction::Removeall { path } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
             let Some(mut meta) = branch_meta::load_branch_meta(&tokensave_dir) else {
                 eprintln!("No branch tracking configured.");
@@ -234,7 +343,7 @@ pub(crate) async fn handle_branch_action(action: BranchAction) -> tokensave::err
             }
         }
         BranchAction::Gc { path } => {
-            let project_path = tokensave::config::resolve_path(path);
+            let project_path = tokensave::config::resolve_path_with_discovery(path);
             let tokensave_dir = get_tokensave_dir(&project_path);
             if branch_meta::load_branch_meta(&tokensave_dir).is_none() {
                 eprintln!("No branch tracking configured.");
@@ -262,13 +371,18 @@ pub(crate) async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
     use std::fs;
     use std::path::PathBuf;
 
-    let home_tokensave: Option<PathBuf> = dirs::home_dir().map(|h| h.join(".tokensave"));
+    let home_tokensave: Option<PathBuf> =
+        dirs::home_dir().map(|h| tokensave::config::get_global_tokensave_dir(&h));
 
     let mut targets = global::gather_target_projects(all, &home_tokensave).await;
     if all {
         // wipe acts on the live `.tokensave/` directory; drop rows whose
         // directory is already gone (they're handled by `tokensave doctor`).
-        targets.retain(|p| p.join(".tokensave").join("tokensave.db").exists());
+        targets.retain(|p| {
+            tokensave::config::get_tokensave_dir(p)
+                .join("tokensave.db")
+                .exists()
+        });
     }
 
     if !all && targets.is_empty() {
@@ -299,11 +413,30 @@ pub(crate) async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
     // own `seen`, and the `--all` branch reads from `projects.path` which is
     // a primary key. No need for a second per-loop dedupe.
     for project_root in &targets {
-        let ts_dir = project_root.join(".tokensave");
+        let ts_dir = tokensave::config::get_tokensave_dir(project_root);
         if !ts_dir.exists() {
             continue;
         }
-        match fs::remove_dir_all(&ts_dir) {
+        let removal = if !tokensave::cloud::is_beta() && ts_dir.join("beta").exists() {
+            // Beta owns this subtree; wiping stable must preserve it.
+            (|| -> std::io::Result<()> {
+                for entry in fs::read_dir(&ts_dir)? {
+                    let entry = entry?;
+                    if entry.file_name() == "beta" {
+                        continue;
+                    }
+                    if entry.file_type()?.is_dir() {
+                        fs::remove_dir_all(entry.path())?;
+                    } else {
+                        fs::remove_file(entry.path())?;
+                    }
+                }
+                Ok(())
+            })()
+        } else {
+            fs::remove_dir_all(&ts_dir)
+        };
+        match removal {
             Ok(()) => {
                 removed += 1;
                 wiped_paths.push(project_root.clone());
@@ -352,7 +485,8 @@ pub(crate) async fn handle_list(all: bool) -> tokensave::errors::Result<()> {
     use std::path::PathBuf;
     use tokensave::display::format_token_count;
 
-    let home_tokensave: Option<PathBuf> = dirs::home_dir().map(|h| h.join(".tokensave"));
+    let home_tokensave: Option<PathBuf> =
+        dirs::home_dir().map(|h| tokensave::config::get_global_tokensave_dir(&h));
     let project_paths = global::gather_target_projects(all, &home_tokensave).await;
 
     if project_paths.is_empty() {
@@ -370,7 +504,7 @@ pub(crate) async fn handle_list(all: bool) -> tokensave::errors::Result<()> {
     let mut total_tokens: u64 = 0;
 
     for path in &project_paths {
-        let ts_dir = path.join(".tokensave");
+        let ts_dir = tokensave::config::get_tokensave_dir(path);
         let on_disk = ts_dir.exists();
         let size = if on_disk {
             global::tokensave_dir_size(&ts_dir)
@@ -462,9 +596,88 @@ async fn is_fresh_install() -> bool {
     }
 }
 
+/// Where a project that does not exist yet is created for `cwd`: an incomplete
+/// project's own root (re-running `init` completes it), else the enclosing git
+/// working tree root, else `cwd` itself.
+fn init_target(cwd: PathBuf, discovery: ProjectDiscovery) -> PathBuf {
+    match discovery {
+        ProjectDiscovery::Initialized(root) | ProjectDiscovery::Incomplete(root) => root,
+        ProjectDiscovery::Uninitialized { git_root } => git_root.unwrap_or(cwd),
+    }
+}
+
+/// Resolves the directory `tokensave init` initializes.
+///
+/// An explicit path is an override and is used as given. Without one, `cwd` is
+/// resolved through [`discover_project`]: when it lies below an existing
+/// project, that project is reported and `None` is returned, so `init` exits 0
+/// without creating a nested `.tokensave/` or indexing anything. `cwd` being
+/// the project root itself is returned as is, keeping `init`'s refusal to
+/// re-initialize (#372). Otherwise the project is created at the git root.
+pub(crate) fn resolve_init_root(
+    path: Option<String>,
+) -> tokensave::errors::Result<Option<PathBuf>> {
+    if path.is_some() {
+        return Ok(Some(tokensave::config::resolve_path(path)));
+    }
+    let cwd = tokensave::config::resolve_path(None);
+    // A linked worktree nested in its main checkout borrows that checkout's
+    // index until it has one of its own. The borrowed-index warning tells the
+    // user to run `init` there, so `init` must create that index (#865).
+    if let Some(worktree) = tokensave::config::borrowed_worktree_root(&cwd) {
+        return Ok(Some(worktree));
+    }
+    match discover_project(&cwd) {
+        ProjectDiscovery::Initialized(root) if root != cwd => {
+            // Reporting a project whose config cannot load as "usable" would
+            // only defer the failure to the first sync or query.
+            if let Err(e) = tokensave::config::load_config(&root) {
+                return Err(tokensave::errors::TokenSaveError::Config {
+                    message: format!(
+                        "TokenSave is initialized at '{}', but its configuration cannot be \
+                         loaded: {e}\n  Fix or remove .tokensave/config.json there, then rerun.",
+                        root.display()
+                    ),
+                });
+            }
+            eprintln!(
+                "TokenSave is already initialized in:\n  {}\n\nCurrent directory:\n  {}\n\n\
+                 Using existing project configuration and index.\n\
+                 No initialization or indexing required.",
+                root.display(),
+                cwd.display()
+            );
+            Ok(None)
+        }
+        discovery => Ok(Some(init_target(cwd, discovery))),
+    }
+}
+
+/// Warns on stderr when the command runs in a linked worktree and uses the
+/// index of the checkout around it (#865).
+///
+/// An explicit project path is the user's choice, so it gets no warning. The
+/// text goes to stderr only: stdout can be JSON that a script parses.
+pub(crate) fn warn_borrowed_worktree_index(explicit_path: bool) {
+    if explicit_path {
+        return;
+    }
+    let Ok(cwd) = std::env::current_dir() else {
+        return;
+    };
+    if let Some(mismatch) = tokensave::worktree::borrowed_index_mismatch(&cwd) {
+        eprintln!(
+            "\x1b[33mWarning: {}\x1b[0m",
+            tokensave::worktree::worktree_mismatch_warning(&mismatch)
+        );
+    }
+}
+
 /// When invoked with no subcommand, offer to create the index if none exists.
 pub(crate) async fn handle_no_command() -> tokensave::errors::Result<()> {
-    let project_path = tokensave::config::resolve_path(None);
+    let cwd = tokensave::config::resolve_path(None);
+    let discovery = discover_project(&cwd);
+    let project_path = init_target(cwd, discovery);
     if TokenSave::is_initialized(&project_path) {
         // Already initialized — render help to stderr, never stdout. Agent
         // permission hooks invoke a bare `tokensave` and parse stdout as JSON;
@@ -512,32 +725,261 @@ pub(crate) async fn handle_no_command() -> tokensave::errors::Result<()> {
     Ok(())
 }
 
-/// Picks the profile for a project being initialized, and a note saying where
-/// it came from. Benchmarks the host only when nothing was chosen explicitly.
-fn select_initial_cpu_usage(
-    project_path: &Path,
-    requested: Option<tokensave::cpu::CpuUsage>,
-) -> tokensave::errors::Result<(tokensave::cpu::CpuUsage, String)> {
-    if let Some(profile) = requested {
-        return Ok((profile, "from --cpu-usage".to_string()));
-    }
-    if let Some(profile) = tokensave::config::configured_cpu_usage(project_path)? {
-        return Ok((profile, "kept from .tokensave/config.json".to_string()));
-    }
-    eprintln!("Benchmarking this machine to choose a CPU usage profile...");
-    let measurement = tokensave::hardware::measure();
-    eprintln!("  {}", measurement.summary());
-    let recommendation = tokensave::hardware::recommend(&measurement);
-    Ok((
-        recommendation.profile,
-        format!(
-            "{}; run `tokensave tune` to measure again",
-            recommendation.reason
-        ),
-    ))
+/// Prints a saved or fresh benchmark result for `init` and `config benchmark`.
+fn print_benchmark(result: &tokensave::global_benchmark::SavedBenchmark) {
+    eprintln!("  Measured:    {}", result.measurement.summary());
+    let workers = result.recommended_workers();
+    eprintln!(
+        "  Recommended: {} profile, {workers} worker{} ({})",
+        result.recommendation.profile.as_str(),
+        if workers == 1 { "" } else { "s" },
+        result.recommendation.reason
+    );
 }
 
-/// Re-runs the resource benchmark and updates `cpu_usage` (#731).
+fn benchmark_file_display() -> String {
+    tokensave::user_config::benchmark_path().map_or_else(
+        || "~/.tokensave/benchmark.toml".to_string(),
+        |p| p.display().to_string(),
+    )
+}
+
+/// Explains why the benchmark is about to run.
+fn announce_benchmark(status: &tokensave::global_benchmark::CacheStatus, forced: bool) {
+    use tokensave::global_benchmark::CacheStatus;
+    match status {
+        _ if forced => eprintln!("Running hardware benchmark (--force)..."),
+        CacheStatus::Invalid { reason, .. } => {
+            eprintln!("Saved global hardware benchmark can't be reused: {reason}.");
+            eprintln!("Running hardware benchmark...");
+        }
+        _ => {
+            eprintln!("No global hardware benchmark found.");
+            eprintln!("Running initial hardware benchmark...");
+        }
+    }
+}
+
+/// Picks the `cpu_usage` to pin for a project being initialized: only
+/// `--cpu-usage` pins one. When the project will follow the global hardware
+/// benchmark, makes sure a valid one is saved, measuring only if none is, so
+/// the next project on this machine reuses it (#752).
+pub(crate) fn prepare_initial_cpu_usage(
+    project_path: &Path,
+    requested: Option<tokensave::cpu::CpuUsage>,
+) -> tokensave::errors::Result<Option<tokensave::cpu::CpuUsage>> {
+    use tokensave::global_benchmark::{self as gb, Outcome, Trigger};
+    if requested.is_some() {
+        return Ok(requested);
+    }
+    // A setting that takes precedence over the benchmark makes it unused.
+    if tokensave::config::configured_cpu_usage(project_path)?.is_some()
+        || gb::env_cpu_usage().is_some()
+    {
+        return Ok(None);
+    }
+    let prefs = tokensave::user_config::resource_preferences();
+    if prefs.cpu_usage.is_some() {
+        return Ok(None);
+    }
+    match gb::ensure(prefs.benchmark, Trigger::Automatic, |status| {
+        announce_benchmark(status, false);
+    }) {
+        Outcome::Cached(_) => eprintln!("Using cached global hardware benchmark."),
+        Outcome::Measured { result, saved } => {
+            print_benchmark(&result);
+            match saved {
+                Ok(()) => eprintln!(
+                    "Global benchmark results saved to {}.",
+                    benchmark_file_display()
+                ),
+                Err(e) => eprintln!(
+                    "\x1b[33mwarning:\x1b[0m could not save the hardware benchmark: {e}. \
+                     Using the built-in default; run `tokensave config benchmark` to retry."
+                ),
+            }
+        }
+        Outcome::Disabled => {}
+        Outcome::Skipped(status) => {
+            let why = match status {
+                gb::CacheStatus::Invalid { reason, .. } => reason,
+                _ => "none is saved".to_string(),
+            };
+            eprintln!(
+                "No usable global hardware benchmark ({why}) and automatic benchmarking is off \
+                 ([benchmark] auto_run = false). Run `tokensave config benchmark` to measure."
+            );
+        }
+    }
+    Ok(None)
+}
+
+fn print_json(report: &serde_json::Value) {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(report).unwrap_or_else(|_| report.to_string())
+    );
+}
+
+/// `tokensave config benchmark`: manages the machine-level hardware
+/// benchmark in `~/.tokensave/benchmark.toml` (#752). Exits 1 when the
+/// requested action could not be completed.
+pub(crate) fn run_config_benchmark(force: bool, show: bool, reset: bool, json: bool) {
+    use tokensave::global_benchmark::{self as gb, CacheStatus, Outcome, Trigger};
+    let path = benchmark_file_display();
+    let fail = |message: String, report: serde_json::Value| -> ! {
+        if json {
+            print_json(&report);
+        } else {
+            eprintln!("\x1b[31merror:\x1b[0m {message}");
+        }
+        std::process::exit(1);
+    };
+
+    if reset {
+        match gb::reset() {
+            Ok(removed) => {
+                if json {
+                    print_json(&serde_json::json!({
+                        "action": "reset", "path": path, "removed": removed,
+                    }));
+                } else if removed {
+                    println!(
+                        "Deleted {path}. The next `tokensave init` or \
+                         `tokensave config benchmark` measures this machine again."
+                    );
+                } else {
+                    println!("No global hardware benchmark was saved ({path}).");
+                }
+            }
+            Err(e) => fail(
+                e.clone(),
+                serde_json::json!({ "action": "reset", "path": path, "error": e }),
+            ),
+        }
+        return;
+    }
+
+    let prefs = tokensave::user_config::resource_preferences();
+    if show {
+        let (_, status) = gb::status();
+        let (profile, source) = gb::effective_cpu_usage(None);
+        let (state, reason, saved) = match &status {
+            CacheStatus::Missing => ("missing", None, None),
+            CacheStatus::Valid(saved) => ("valid", None, Some(saved)),
+            CacheStatus::Invalid { reason, saved } => ("invalid", Some(reason), saved.as_ref()),
+        };
+        if json {
+            print_json(&serde_json::json!({
+                "action": "show",
+                "path": path,
+                "status": state,
+                "reason": reason,
+                "saved": saved,
+                "recommended_workers": saved.map(gb::SavedBenchmark::recommended_workers),
+                "settings": {
+                    "enabled": prefs.benchmark.enabled,
+                    "auto_run": prefs.benchmark.auto_run,
+                    "cpu_usage": prefs.cpu_usage,
+                },
+                "effective": { "cpu_usage": profile, "source": source },
+            }));
+            return;
+        }
+        println!("Global hardware benchmark: {path}");
+        match (state, reason) {
+            ("valid", _) => println!("  Status:      valid for this machine"),
+            ("missing", _) => println!("  Status:      not measured yet"),
+            (_, Some(reason)) => println!("  Status:      not usable: {reason}"),
+            _ => {}
+        }
+        if let Some(saved) = saved {
+            println!("  Measured:    {}", saved.measurement.summary());
+            println!(
+                "  Recommended: {} profile, {} worker(s) ({})",
+                saved.recommendation.profile.as_str(),
+                saved.recommended_workers(),
+                saved.recommendation.reason
+            );
+            println!(
+                "  Measured at: {} by tokensave {}",
+                saved.measured_at_utc(),
+                saved.tokensave_version
+            );
+        }
+        println!(
+            "  Settings:    enabled = {}, auto_run = {}, global cpu_usage = {}",
+            prefs.benchmark.enabled,
+            prefs.benchmark.auto_run,
+            prefs
+                .cpu_usage
+                .map_or("(not set)", tokensave::cpu::CpuUsage::as_str)
+        );
+        println!(
+            "  Projects without their own cpu_usage use: {} ({})",
+            profile.as_str(),
+            source.describe()
+        );
+        return;
+    }
+
+    if !prefs.benchmark.enabled {
+        let message = "the hardware benchmark is disabled ([benchmark] enabled = false in \
+                       ~/.tokensave/config.toml)"
+            .to_string();
+        fail(
+            message.clone(),
+            serde_json::json!({ "action": "benchmark", "path": path, "error": message }),
+        );
+    }
+    let trigger = if force {
+        Trigger::Force
+    } else {
+        Trigger::OnRequest
+    };
+    let outcome = gb::ensure(prefs.benchmark, trigger, |status| {
+        if !json {
+            announce_benchmark(status, force);
+        }
+    });
+    let (result, measured, saved) = match outcome {
+        Outcome::Cached(result) => (result, false, Ok(())),
+        Outcome::Measured { result, saved } => (result, true, saved),
+        // Ruled out above: enabled is true and the trigger is explicit.
+        Outcome::Disabled | Outcome::Skipped(_) => return,
+    };
+    if json {
+        let report = serde_json::json!({
+            "action": "benchmark",
+            "path": path,
+            "status": if measured { "measured" } else { "cached" },
+            "saved": saved.is_ok(),
+            "error": saved.as_ref().err(),
+            "result": result,
+            "recommended_workers": result.recommended_workers(),
+        });
+        if saved.is_err() {
+            fail(String::new(), report);
+        }
+        print_json(&report);
+        return;
+    }
+    if !measured {
+        eprintln!("Using cached global hardware benchmark (run with --force to measure again).");
+    }
+    print_benchmark(&result);
+    match saved {
+        Ok(()) if measured => eprintln!("Global benchmark results saved to {path}."),
+        Ok(()) => {}
+        Err(e) => fail(
+            format!("could not save the hardware benchmark: {e}"),
+            serde_json::Value::Null,
+        ),
+    }
+}
+
+/// Re-runs the resource benchmark, saves it as the global benchmark and
+/// updates a `cpu_usage` the project pins (#731, #752).
 ///
 /// `--dry-run` only reports, so it also works where no project is initialized.
 pub(crate) fn run_tune(
@@ -561,10 +1003,7 @@ pub(crate) fn run_tune(
                 "dry_run": dry_run,
                 "written": false,
             });
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&report).unwrap_or_else(|_| report.to_string())
-            );
+            print_json(&report);
         } else {
             eprintln!(
                 "\x1b[31merror:\x1b[0m {plain}.\n\
@@ -580,19 +1019,30 @@ pub(crate) fn run_tune(
     let measurement = tokensave::hardware::measure();
     let recommendation = tokensave::hardware::recommend(&measurement);
 
+    // Only a profile the project pins is updated; a project without one
+    // follows the global benchmark saved below.
     let mut config = if initialized {
         Some(tokensave::config::load_config(&project_path)?)
     } else {
         None
     };
-    let previous = config.as_ref().map(|c| c.cpu_usage);
+    let previous = config.as_ref().and_then(|c| c.cpu_usage);
     let written = match config.as_mut() {
-        Some(config) if !dry_run && config.cpu_usage != recommendation.profile => {
-            config.cpu_usage = recommendation.profile;
+        Some(config) if !dry_run && previous.is_some_and(|p| p != recommendation.profile) => {
+            config.cpu_usage = Some(recommendation.profile);
             tokensave::config::save_config(&project_path, config)?;
             true
         }
         _ => false,
+    };
+    let global_saved = if dry_run
+        || !tokensave::user_config::resource_preferences()
+            .benchmark
+            .enabled
+    {
+        None
+    } else {
+        Some(tokensave::global_benchmark::save_measurement(measurement))
     };
 
     if json {
@@ -605,11 +1055,9 @@ pub(crate) fn run_tune(
             "previous": previous,
             "dry_run": dry_run,
             "written": written,
+            "global_saved": global_saved.as_ref().is_some_and(Result::is_ok),
         });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report).unwrap_or_else(|_| report.to_string())
-        );
+        print_json(&report);
         return Ok(());
     }
 
@@ -632,15 +1080,32 @@ pub(crate) fn run_tune(
             "Dry run: cpu_usage stays {}. Run without --dry-run to apply.",
             prev.as_str()
         ),
-        (None, _) => println!("Dry run: no project is initialized here, nothing written."),
+        (None, _) if !initialized => {
+            println!("Dry run: no project is initialized here, nothing written.");
+        }
+        (None, _) if dry_run => println!("Dry run: nothing written."),
+        (None, _) => println!(
+            "This project has no cpu_usage of its own and follows the global hardware benchmark."
+        ),
+    }
+    match global_saved {
+        Some(Ok(_)) => println!(
+            "Saved as the global hardware benchmark ({}).",
+            benchmark_file_display()
+        ),
+        Some(Err(e)) => {
+            eprintln!("\x1b[33mwarning:\x1b[0m could not save the global hardware benchmark: {e}")
+        }
+        None => {}
     }
     Ok(())
 }
 
 /// Initializes a new project (if needed) and runs a full index.
 ///
-/// For a new project the CPU usage profile is `cpu_usage` when given, else the
-/// `cpu_usage` already in `.tokensave/config.json`, else benchmarked (#731).
+/// For a new project, `cpu_usage` pins the project's CPU usage profile when
+/// given; otherwise the project follows the global settings and the global
+/// hardware benchmark, which is measured only if none is saved (#752).
 pub(crate) async fn init_and_index(
     project_path: &Path,
     skip_folders: &[String],
@@ -658,10 +1123,18 @@ pub(crate) async fn init_and_index(
     let mut cg = if TokenSave::is_initialized(project_path) {
         TokenSave::open_rebuilding_failed_migration(project_path).await?
     } else {
-        let (cpu_usage, cpu_note) = select_initial_cpu_usage(project_path, cpu_usage)?;
-        let cg = TokenSave::init_with_cpu_usage(project_path, cpu_usage).await?;
+        let pin = prepare_initial_cpu_usage(project_path, cpu_usage)?;
+        let cg = TokenSave::init_with_cpu_usage(project_path, pin).await?;
         eprintln!("Initialized TokenSave at {}", project_path.display());
-        eprintln!("CPU usage profile: {} ({cpu_note})", cpu_usage.as_str());
+        let source = cg.cpu_usage_source();
+        let note = if cpu_usage.is_some()
+            && source == tokensave::global_benchmark::CpuUsageSource::Project
+        {
+            "from --cpu-usage"
+        } else {
+            source.describe()
+        };
+        eprintln!("CPU usage profile: {} ({note})", cg.cpu_usage().as_str());
         // Offer to exclude .tokensave from git if it isn't already. Default to
         // the local, untracked .git/info/exclude so we don't leave a committable
         // diff; offer the tracked .gitignore as an explicit opt-in.
@@ -672,8 +1145,10 @@ pub(crate) async fn init_and_index(
         // stdin and takes it for an answer (#288), but the write itself needs
         // no answer, so the default local exclusion is still applied (#373).
         // Success is reported only when the helper confirms the entry was
-        // actually written.
-        if tokensave::config::is_inside_git_repo(project_path)
+        // actually written. State relocated out of the tree (#919) needs no
+        // exclusion, so the repository is left untouched.
+        if tokensave::config::project_state_is_in_repo(project_path)
+            && tokensave::config::is_inside_git_repo(project_path)
             && !tokensave::config::is_in_gitignore(project_path)
         {
             if io::stdin().is_terminal() {
@@ -742,6 +1217,9 @@ pub(crate) async fn init_and_index(
     if let Some(warning) = cg.warn_skipped_hidden_dirs() {
         eprintln!("{warning}");
     }
+    if let Some(warning) = cg.warn_tracked_ambiguous_excludes() {
+        eprintln!("{warning}");
+    }
     global::update_global_db(&cg).await;
     Ok(cg)
 }
@@ -761,6 +1239,7 @@ pub(crate) fn estimate_dollars_saved(saved_tokens: u64) -> f64 {
 pub async fn handle_gain(
     all: bool,
     history: bool,
+    by_tool: bool,
     range: &str,
     json_output: bool,
 ) -> tokensave::errors::Result<()> {
@@ -800,6 +1279,21 @@ pub async fn handle_gain(
             println!("{}", serde_json::to_string_pretty(&arr).unwrap_or_default());
         } else {
             tokensave::display::print_gain_history(&rows, estimate_dollars_saved);
+        }
+        return Ok(());
+    }
+
+    if by_tool {
+        let rows = gdb
+            .savings_by_tool(project_filter.as_deref(), since as i64)
+            .await;
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&rows).unwrap_or_default()
+            );
+        } else {
+            tokensave::display::print_gain_by_tool(&rows);
         }
         return Ok(());
     }
@@ -1158,7 +1652,8 @@ mod skipped_summary_tests {
 /// Tracking always goes through the `auto_track` gate (#397), so the knob
 /// stays authoritative on this path. Silent by design and never fails the
 /// checkout: a hook runs on every branch switch and must neither narrate nor
-/// be able to break `git checkout`.
+/// be able to break `git checkout`. `TOKENSAVE_HOOK_DEBUG` makes it explain
+/// each decision through [`hook_debug`] (#877).
 pub async fn hook_post_checkout(prev_head: Option<&str>, branch_flag: Option<&str>) {
     use tokensave::agents::hooks::{classify_checkout, is_under_temp_dir, CheckoutAction};
 
@@ -1174,6 +1669,9 @@ pub async fn hook_post_checkout(prev_head: Option<&str>, branch_flag: Option<&st
     let canonical_project_path =
         std::fs::canonicalize(&project_path).unwrap_or_else(|_| project_path.clone());
     if is_under_temp_dir(&canonical_project_path, &system_temp) {
+        hook_debug(&project_path, || {
+            "post-checkout: skipped, the project is under the system temp directory".to_string()
+        });
         return;
     }
 
@@ -1182,25 +1680,105 @@ pub async fn hook_post_checkout(prev_head: Option<&str>, branch_flag: Option<&st
             // `init` on an already-initialised project returns an error;
             // either way tracking still runs, matching the shell's
             // `init || exit 0` followed by the track.
-            let _ = init_and_index(&project_path, &[], false, None).await;
+            if let Err(e) = init_and_index(&project_path, &[], false, None).await {
+                hook_debug(&project_path, || {
+                    format!("post-checkout: init skipped: {e}")
+                });
+            }
             track_current_branch_if_enabled(&project_path).await;
         }
         CheckoutAction::TrackOnly => track_current_branch_if_enabled(&project_path).await,
-        CheckoutAction::Nothing => {}
+        CheckoutAction::Nothing => hook_debug(&project_path, || {
+            "post-checkout: file checkout, nothing to do".to_string()
+        }),
     }
 }
 
 /// Tracks the current branch when `auto_track` allows it, swallowing every
 /// failure. Shared by both arms of [`hook_post_checkout`].
-async fn track_current_branch_if_enabled(project_path: &std::path::Path) {
+async fn track_current_branch_if_enabled(project_path: &Path) {
     let config = tokensave::config::load_config(project_path).unwrap_or_default();
     if !tokensave::config::env_bool_override("TOKENSAVE_AUTO_TRACK", config.auto_track) {
+        hook_debug(project_path, || {
+            format!(
+                "post-checkout: {}",
+                auto_track_disabled_reason(project_path, None)
+            )
+        });
         return;
     }
-    let _ = handle_branch_action(BranchAction::Add {
+    let result = handle_branch_action(BranchAction::Add {
         name: None,
         path: Some(project_path.display().to_string()),
         if_enabled: true,
     })
     .await;
+    hook_debug(project_path, || match result {
+        Ok(()) => {
+            "post-checkout: tracked the current branch, or it was already tracked".to_string()
+        }
+        Err(e) => format!("post-checkout: tracking the current branch failed: {e}"),
+    });
+}
+
+/// Size at which [`hook_debug`] starts its log afresh, so a debug setting left
+/// on cannot grow the file without bound.
+const HOOK_DEBUG_LOG_LIMIT: u64 = 256 * 1024;
+
+/// Explains a git hook's decision when `TOKENSAVE_HOOK_DEBUG` asks for it
+/// (#877); otherwise does nothing, and `message` is never built.
+///
+/// The installed hooks discard tokensave's output, so besides stderr the line
+/// is appended to `hook-debug.log` in the project's tokensave directory — only
+/// when that directory already exists, because a global hook must never create
+/// state in an uninitialised repository. Best-effort: a failed write never
+/// fails the hook.
+fn hook_debug(project_path: &Path, message: impl FnOnce() -> String) {
+    if !tokensave::config::env_bool_override("TOKENSAVE_HOOK_DEBUG", false) {
+        return;
+    }
+    let message = message();
+    eprintln!("[tokensave] {message}");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(project_path);
+    if !tokensave_dir.is_dir() {
+        return;
+    }
+    let log_path = tokensave_dir.join("hook-debug.log");
+    let restart = std::fs::metadata(&log_path).is_ok_and(|meta| meta.len() >= HOOK_DEBUG_LOG_LIMIT);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(!restart)
+        .truncate(restart)
+        .open(&log_path);
+    if let Ok(mut file) = file {
+        let _ = writeln!(
+            file,
+            "{} {message}",
+            tokensave::tokensave::current_timestamp()
+        );
+    }
+}
+
+/// Says why automatic tracking skipped `branch` (the current branch when
+/// `None`) and how to enable it, for [`hook_debug`].
+fn auto_track_disabled_reason(project_path: &Path, branch: Option<&str>) -> String {
+    let branch = branch
+        .map(str::to_string)
+        .or_else(|| tokensave::branch::current_branch(project_path))
+        .map_or_else(
+            || "the current branch".to_string(),
+            |b| format!("branch '{b}'"),
+        );
+    let config_path = tokensave::config::get_tokensave_dir(project_path).join("config.json");
+    let config_path = config_path
+        .strip_prefix(project_path)
+        .unwrap_or(&config_path)
+        .display()
+        .to_string();
+    format!(
+        "did not track {branch}: automatic branch tracking is disabled. Set \
+         `\"auto_track\": true` in {config_path} or TOKENSAVE_AUTO_TRACK=1 to enable it, \
+         or run `tokensave branch add`."
+    )
 }

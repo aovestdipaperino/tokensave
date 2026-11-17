@@ -112,8 +112,7 @@ fn gc_keeps_live_branches_inside_a_worktree() {
         .status
         .success());
 
-    let db = wt
-        .join(".tokensave")
+    let db = tokensave::config::get_tokensave_dir(&wt)
         .join("branches")
         .join("test-branch.db");
     assert!(db.exists(), "branch DB should exist before gc");
@@ -149,7 +148,9 @@ fn gc_still_removes_a_branch_git_no_longer_has() {
     assert!(tokensave(root, &["branch", "add", "doomed"])
         .status
         .success());
-    let db = root.join(".tokensave").join("branches").join("doomed.db");
+    let db = tokensave::config::get_tokensave_dir(root)
+        .join("branches")
+        .join("doomed.db");
     assert!(db.exists());
 
     git(root, &["checkout", "main"]);

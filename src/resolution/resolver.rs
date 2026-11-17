@@ -1,10 +1,25 @@
-// Rust guideline compliant 2025-10-17
+//! Resolves extracted references against borrowed graph-node indexes.
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
-use rayon::prelude::*;
+use crate::types::{
+    AmbiguousCall, Edge, EdgeKind, Node, NodeKind, ResolutionResult, ResolvedBy, ResolvedRef,
+    UnresolvedRef, Visibility,
+};
 
-use crate::db::Database;
-use crate::types::*;
+/// Whether a name-only match needs evidence that the target is visible.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reachability {
+    Required,
+    Unrestricted,
+}
+
+/// Whether a typed-receiver step consumes an awaited task result.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ResultUse {
+    Direct,
+    Awaited,
+}
 
 /// Names that are too common to resolve across files reliably.
 /// These are standard library types, trait methods, and ubiquitous constructors
@@ -172,18 +187,12 @@ fn suppress_go_selector_bare_siblings(resolved: &mut Vec<ResolvedRef>) {
     // Sites where a selector resolved by import path, keyed on the exact call
     // position plus the callee's bare name (the selector's trailing segment) —
     // precisely the identity the sibling bare-name ref carries.
-    let suppressed: HashSet<(&str, &str, u32, u32, &str)> = resolved
+    let suppressed: HashSet<CallSite<'_>> = resolved
         .iter()
         .filter(|r| r.resolved_by == "go-selector-import")
         .filter_map(|r| {
             let bare = r.original.reference_name.rsplit('.').next()?;
-            Some((
-                r.original.from_node_id.as_str(),
-                r.original.file_path.as_str(),
-                r.original.line,
-                r.original.column,
-                bare,
-            ))
+            Some(CallSite::from_reference(&r.original, bare))
         })
         .collect();
     if suppressed.is_empty() {
@@ -195,12 +204,9 @@ fn suppress_go_selector_bare_siblings(resolved: &mut Vec<ResolvedRef>) {
         .iter()
         .map(|r| {
             r.original.reference_name.contains('.')
-                || !suppressed.contains(&(
-                    r.original.from_node_id.as_str(),
-                    r.original.file_path.as_str(),
-                    r.original.line,
-                    r.original.column,
-                    r.original.reference_name.as_str(),
+                || !suppressed.contains(&CallSite::from_reference(
+                    &r.original,
+                    &r.original.reference_name,
                 ))
         })
         .collect();
@@ -264,7 +270,26 @@ fn is_typed_receiver_tag(tag: &str) -> bool {
 }
 
 /// A call site: caller, file, line, column, and the method's bare name.
-type CallSite<'r> = (&'r str, &'r str, u32, u32, &'r str);
+#[derive(PartialEq, Eq, Hash)]
+struct CallSite<'reference> {
+    caller: &'reference str,
+    file_path: &'reference str,
+    line: u32,
+    column: u32,
+    bare_name: &'reference str,
+}
+
+impl<'reference> CallSite<'reference> {
+    fn from_reference(reference: &'reference UnresolvedRef, bare_name: &'reference str) -> Self {
+        Self {
+            caller: &reference.from_node_id,
+            file_path: &reference.file_path,
+            line: reference.line,
+            column: reference.column,
+            bare_name,
+        }
+    }
+}
 
 /// Call sites where a typed-receiver ref resolved, keyed like the sibling
 /// refs and ambiguity records they make redundant. The column is part of the
@@ -277,15 +302,7 @@ fn gdscript_typed_sites(resolved: &[ResolvedRef]) -> HashSet<CallSite<'_>> {
         .filter(|r| {
             is_typed_receiver_tag(&r.resolved_by) && r.original.reference_kind == EdgeKind::Calls
         })
-        .map(|r| {
-            (
-                r.original.from_node_id.as_str(),
-                r.original.file_path.as_str(),
-                r.original.line,
-                r.original.column,
-                simple_ref_name(&r.original.reference_name),
-            )
-        })
+        .map(|r| CallSite::from_reference(&r.original, simple_ref_name(&r.original.reference_name)))
         .collect()
 }
 
@@ -309,11 +326,8 @@ fn suppress_gdscript_typed_siblings(resolved: &mut Vec<ResolvedRef>) {
             .map(|r| {
                 is_typed_receiver_tag(&r.resolved_by)
                     || r.original.reference_kind != EdgeKind::Calls
-                    || !sites.contains(&(
-                        r.original.from_node_id.as_str(),
-                        r.original.file_path.as_str(),
-                        r.original.line,
-                        r.original.column,
+                    || !sites.contains(&CallSite::from_reference(
+                        &r.original,
                         simple_ref_name(&r.original.reference_name),
                     ))
             })
@@ -377,7 +391,7 @@ fn is_gdscript_ident(s: &str) -> bool {
 
 /// Whether `path` is an ERB or Slim template, indexed as Ruby.
 fn is_ruby_template(path: &str) -> bool {
-    std::path::Path::new(path)
+    Path::new(path)
         .extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("erb") || ext.eq_ignore_ascii_case("slim"))
 }
@@ -510,7 +524,8 @@ fn preceding_type_token(s: &str) -> Option<&str> {
     let bytes = s.as_bytes();
     let mut depth = 0i32;
     let mut start = bytes.len();
-    for (i, &c) in bytes.iter().enumerate().rev() {
+    let reversed_bytes = bytes.iter().enumerate().rev();
+    for (i, &c) in reversed_bytes {
         match c {
             b')' | b']' | b'>' => depth += 1,
             b'(' | b'[' | b'<' => depth -= 1,
@@ -621,7 +636,7 @@ fn lang_from_path(path: &str) -> &'static str {
 }
 
 /// A `.cpp` calling into its own `.h` tags differently, and without this the match takes 0.5, under
-/// the 0.6 floor in [`Resolver::resolve_all`], and the edge is dropped.
+/// the 0.6 floor in [`ReferenceResolver::resolve_all`], and the edge is dropped.
 fn same_language_family(a: &str, b: &str) -> bool {
     a == b || matches!((a, b), ("c", "cpp") | ("cpp", "c"))
 }
@@ -679,13 +694,12 @@ fn go_file_in_package(file_path: &str, import_path: &str) -> bool {
 }
 
 /// Resolves unresolved references into concrete edges by matching them against
-/// known nodes loaded from the database.
+/// known nodes.
 ///
-/// Caches are built once at construction time by loading all nodes from the
-/// database and indexing them by `name` and `qualified_name`.
+/// Caches are built once at construction time from the caller's pre-loaded
+/// nodes, indexed by `name` and `qualified_name`; the resolver itself never
+/// queries the database.
 pub struct ReferenceResolver<'a> {
-    #[allow(dead_code)]
-    db: &'a Database,
     /// Nodes grouped by their short name.
     ///
     /// Keys and values borrow from the caller's node slice rather than owning
@@ -727,7 +741,7 @@ type IndexedRefs<'r> = Vec<(usize, &'r UnresolvedRef)>;
 
 impl<'a> ReferenceResolver<'a> {
     /// Creates a resolver from pre-loaded nodes.
-    pub fn from_nodes(db: &'a Database, all_nodes: &'a [Node]) -> Self {
+    pub fn from_nodes(all_nodes: &'a [Node]) -> Self {
         let mut name_cache: HashMap<&'a str, Vec<&'a Node>> = HashMap::new();
         let mut qualified_name_cache: HashMap<&'a str, Vec<&'a Node>> = HashMap::new();
         let mut node_id_cache: HashMap<&'a str, &'a Node> = HashMap::new();
@@ -845,7 +859,6 @@ impl<'a> ReferenceResolver<'a> {
         }
 
         Self {
-            db,
             name_cache,
             qualified_name_cache,
             node_id_cache,
@@ -998,9 +1011,12 @@ impl<'a> ReferenceResolver<'a> {
                 .rsplit("::")
                 .next()
                 .unwrap_or(&uref.reference_name);
-            if let Some(resolved) =
-                self.try_exact_name_match_simple(uref, simple_name, false, PATH_TAIL_MATCH)
-            {
+            if let Some(resolved) = self.try_exact_name_match_simple(
+                uref,
+                simple_name,
+                Reachability::Unrestricted,
+                PATH_TAIL_MATCH,
+            ) {
                 return Some(resolved);
             }
             return None;
@@ -1039,9 +1055,12 @@ impl<'a> ReferenceResolver<'a> {
                 return self.try_csharp_receiver_fallback(uref, simple_name);
             }
             if simple_name != uref.reference_name {
-                if let Some(resolved) =
-                    self.try_exact_name_match_simple(uref, simple_name, true, SIMPLE_NAME_MATCH)
-                {
+                if let Some(resolved) = self.try_exact_name_match_simple(
+                    uref,
+                    simple_name,
+                    Reachability::Required,
+                    SIMPLE_NAME_MATCH,
+                ) {
                     return Some(resolved);
                 }
             }
@@ -1093,7 +1112,7 @@ impl<'a> ReferenceResolver<'a> {
             &candidates,
             "ruby-template-helper",
             &self.import_index,
-            false,
+            Reachability::Unrestricted,
             &self.node_id_cache,
         )
     }
@@ -1149,6 +1168,9 @@ impl<'a> ReferenceResolver<'a> {
     ///
     /// The caller must run [`Self::finalize_resolved`] once over the
     /// accumulated results before creating edges.
+    ///
+    /// The tuple is retained for compatibility with streaming library callers;
+    /// its components are the resolved references and ambiguity records.
     pub fn resolve_batch(&self, refs: &[UnresolvedRef]) -> (Vec<ResolvedRef>, Vec<AmbiguousCall>) {
         let (resolved, ambiguous, _) = self.resolve_batch_inner(refs);
         (resolved, ambiguous)
@@ -1180,13 +1202,13 @@ impl<'a> ReferenceResolver<'a> {
             return;
         }
         ambiguous.retain(|a| {
-            !sites.contains(&(
-                a.from_node_id.as_str(),
-                a.file_path.as_str(),
-                a.line,
-                a.column,
-                simple_ref_name(&a.reference_name),
-            ))
+            !sites.contains(&CallSite {
+                caller: &a.from_node_id,
+                file_path: &a.file_path,
+                line: a.line,
+                column: a.column,
+                bare_name: simple_ref_name(&a.reference_name),
+            })
         });
     }
 
@@ -1200,6 +1222,8 @@ impl<'a> ReferenceResolver<'a> {
         &self,
         refs: &[UnresolvedRef],
     ) -> (Vec<ResolvedRef>, Vec<AmbiguousCall>, Vec<u32>) {
+        use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+
         // Partition into resolvable (name exists in graph) and hopeless.
         //
         // A qualified/dotted ref (`Self::method`, `Type::method`, `obj.method`)
@@ -1306,18 +1330,31 @@ impl<'a> ReferenceResolver<'a> {
     /// first base as `Extends`. Once the target is known, an `Extends` that
     /// lands on an interface is really an `Implements`, which is what
     /// `tokensave_implementations` reads (#643).
+    ///
+    /// Swift has the same ambiguity in every inheritance clause (`class A:
+    /// Base, P`, `struct S: P`, `actor X: P`, `extension T: P`), so its
+    /// `Extends` refs get the same treatment. A protocol inheriting another
+    /// protocol (`protocol P: Q`) is not a conformance and stays `Extends`.
     fn edge_kind_for(&self, r: &ResolvedRef) -> EdgeKind {
         let kind = r.original.reference_kind;
-        if kind == EdgeKind::Extends
-            && lang_from_path(&r.original.file_path) == "csharp"
-            && self
-                .node_id_cache
-                .get(r.target_node_id.as_str())
-                .is_some_and(|n| n.kind == NodeKind::Interface)
-        {
-            return EdgeKind::Implements;
+        if kind != EdgeKind::Extends {
+            return kind;
         }
-        kind
+        let is_interface = |id: &str| {
+            self.node_id_cache
+                .get(id)
+                .is_some_and(|n| n.kind == NodeKind::Interface)
+        };
+        let upgrades = match lang_from_path(&r.original.file_path) {
+            "csharp" => is_interface(&r.target_node_id),
+            "swift" => is_interface(&r.target_node_id) && !is_interface(&r.original.from_node_id),
+            _ => false,
+        };
+        if upgrades {
+            EdgeKind::Implements
+        } else {
+            kind
+        }
     }
 
     /// Strategy 1: try matching the reference name against qualified names.
@@ -1576,15 +1613,15 @@ impl<'a> ReferenceResolver<'a> {
 
         let mut types = self.csharp_root_types(uref, root)?;
         for step in steps {
-            let (awaited, step) = match step.strip_prefix("await ") {
-                Some(s) => (true, s),
-                None => (false, step),
+            let (result_use, step) = match step.strip_prefix("await ") {
+                Some(s) => (ResultUse::Awaited, s),
+                None => (ResultUse::Direct, step),
             };
             let members = match step.strip_suffix("()") {
                 Some(name) => self.csharp_members(&types, name, is_csharp_callable),
                 None => self.csharp_members(&types, step, is_csharp_data_member),
             };
-            types = self.csharp_member_types(&members, awaited)?;
+            types = self.csharp_member_types(&members, result_use)?;
         }
 
         let mut targets = self.csharp_members(&types, method, target_ok);
@@ -1632,7 +1669,7 @@ impl<'a> ReferenceResolver<'a> {
         if members.is_empty() {
             return Some(self.csharp_types(name));
         }
-        self.csharp_member_types(&members, false)
+        self.csharp_member_types(&members, ResultUse::Direct)
     }
 
     /// The type declarations (every partial) enclosing the caller of `uref`.
@@ -1657,14 +1694,21 @@ impl<'a> ReferenceResolver<'a> {
     }
 
     /// The one type declared for `members` (a field's or property's type, a
-    /// method's return type, `Task<T>` unwrapped when `awaited`), as its
+    /// method's return type, `Task<T>` unwrapped for an awaited result), as its
     /// indexed declarations. `None` when the members disagree or declare none.
-    fn csharp_member_types(&self, members: &[&'a Node], awaited: bool) -> Option<Vec<&'a Node>> {
+    fn csharp_member_types(
+        &self,
+        members: &[&'a Node],
+        result_use: ResultUse,
+    ) -> Option<Vec<&'a Node>> {
         let mut next: Vec<&str> = members
             .iter()
             .filter_map(|m| {
                 let raw = csharp_declared_type(m.signature.as_deref()?, &m.name)?;
-                let raw = if awaited { unwrap_task(raw)? } else { raw };
+                let raw = match result_use {
+                    ResultUse::Awaited => unwrap_task(raw)?,
+                    ResultUse::Direct => raw,
+                };
                 csharp_type_name(raw)
             })
             .collect();
@@ -1755,7 +1799,12 @@ impl<'a> ReferenceResolver<'a> {
             .and_then(|caller| caller.qualified_name.rsplit_once("::"))
             .map(|(scope, _)| scope);
         let Some(own_scope) = own_scope.filter(|_| !matches!(receiver, "this" | "base")) else {
-            return self.try_exact_name_match_simple(uref, simple_name, true, SIMPLE_NAME_MATCH);
+            return self.try_exact_name_match_simple(
+                uref,
+                simple_name,
+                Reachability::Required,
+                SIMPLE_NAME_MATCH,
+            );
         };
         let in_own_scope = |n: &Node| {
             n.qualified_name
@@ -1770,7 +1819,12 @@ impl<'a> ReferenceResolver<'a> {
             .filter(|n| kind_compatible(uref, &n.kind))
             .collect();
         if !compatible.iter().any(|n| in_own_scope(n)) {
-            return self.try_exact_name_match_simple(uref, simple_name, true, SIMPLE_NAME_MATCH);
+            return self.try_exact_name_match_simple(
+                uref,
+                simple_name,
+                Reachability::Required,
+                SIMPLE_NAME_MATCH,
+            );
         }
         if CROSS_FILE_BLOCKLIST.contains(&simple_name) {
             return None;
@@ -1787,7 +1841,7 @@ impl<'a> ReferenceResolver<'a> {
             &others,
             SIMPLE_NAME_MATCH,
             &self.import_index,
-            true,
+            Reachability::Required,
             &self.node_id_cache,
         )
     }
@@ -1948,7 +2002,7 @@ impl<'a> ReferenceResolver<'a> {
         &self,
         uref: &UnresolvedRef,
         simple_name: &str,
-        require_reachable: bool,
+        reachability: Reachability,
         tag: &str,
     ) -> Option<ResolvedRef> {
         if CROSS_FILE_BLOCKLIST.contains(&simple_name) {
@@ -1989,13 +2043,13 @@ impl<'a> ReferenceResolver<'a> {
                 &kind_filtered,
                 tag,
                 &self.import_index,
-                require_reachable,
+                reachability,
                 &self.node_id_cache,
             );
         };
 
         if candidates.len() == 1 {
-            if require_reachable
+            if reachability == Reachability::Required
                 && !is_plausibly_reachable(
                     uref,
                     candidates[0],
@@ -2295,7 +2349,7 @@ fn kind_compatible(uref: &UnresolvedRef, target_kind: &NodeKind) -> bool {
         // attachment of an annotation/decorator usage to the item it
         // decorates (`get_annotation_sites`, `get_test_annotated_node_ids`,
         // `get_files_with_test_annotations`,
-        // `populate_test_annotated_targets_temp_table`). Extractors already
+        // `find_dead_code`). Extractors already
         // emit that edge directly at the usage site — this resolver has no
         // second, distinct relation to express under the same edge kind.
         //
@@ -2328,7 +2382,7 @@ fn resolve_from_filtered<'a>(
         kind_filtered,
         "exact-match",
         import_index,
-        false,
+        Reachability::Unrestricted,
         node_by_id,
     )
 }
@@ -2388,8 +2442,9 @@ fn is_plausibly_reachable(
         return true;
     }
 
-    let dir_of = |path: &str| path.rfind('/').map(|i| path[..i].to_string());
-    if dir_of(&candidate.file_path) == dir_of(&uref.file_path) {
+    let candidate_dir = candidate.file_path.rsplit_once('/').map(|(dir, _)| dir);
+    let reference_dir = uref.file_path.rsplit_once('/').map(|(dir, _)| dir);
+    if candidate_dir == reference_dir {
         return true;
     }
 
@@ -2450,11 +2505,11 @@ fn resolve_from_filtered_named(
     kind_filtered: &[&Node],
     resolved_by: &str,
     import_index: &HashMap<String, HashSet<String>>,
-    require_reachable: bool,
+    reachability: Reachability,
     node_by_id: &HashMap<&str, &Node>,
 ) -> Option<ResolvedRef> {
     if kind_filtered.len() == 1 {
-        if require_reachable
+        if reachability == Reachability::Required
             && !is_plausibly_reachable(uref, kind_filtered[0], import_index, node_by_id)
         {
             return None;

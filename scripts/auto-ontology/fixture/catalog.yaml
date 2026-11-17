@@ -1,0 +1,44 @@
+data_layer:
+  databases:
+    - id: billing
+      dialect: postgres
+      schemas:
+        - id: billing-public
+          name: public
+          database_name: billing
+          tables:
+            - id: invoices
+              name: invoices
+              pk: [invoice_id]
+              columns:
+                - {id: invoice-id, name: invoice_id, type: integer}
+            - id: subscriptions
+              name: subscriptions
+              pk: [subscription_id]
+              columns:
+                - {id: subscription-id, name: subscription_id, type: integer}
+            - id: payments
+              name: payments
+              pk: [payment_id]
+              columns:
+                - {id: payment-id, name: payment_id, type: integer}
+semantic_layer:
+  terms:
+    - id: booked-revenue
+      name: Net Booked Revenue
+      description: Deduct promotional credits and exclude sales tax.
+      represents: [invoices]
+      columns_attributes:
+        - {id: attr-invoice_id, name: invoice_id, column_id: invoice-id}
+    - id: active-subscriber
+      name: Active Subscriber
+      description: Count only paid subscriptions and exclude trial accounts.
+      represents: [subscriptions]
+      columns_attributes:
+        - {id: attr-subscription_id, name: subscription_id, column_id: subscription-id}
+    - id: payment-attempt
+      name: Payment Attempt
+      description: Count each attempted settlement.
+      represents: [payments]
+      columns_attributes:
+        - {id: attr-payment_id, name: payment_id, column_id: payment-id}

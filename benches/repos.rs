@@ -134,35 +134,34 @@ pub fn ensure_cloned(root: &Path, repo: Repo) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Revert all changes (tracked and untracked) made in `repo_dir` during the
-/// bench: `git stash --include-untracked` followed by `git stash drop`. Run
-/// at end-of-bench so write queries don't leak modifications past the run.
-///
-/// Returns `Ok(())` even if there is nothing to stash (`git stash` exits 0
-/// in that case, just with a "No local changes" message on stderr).
-pub fn restore_repo(repo_dir: &Path) -> Result<(), String> {
-    // Check whether there is anything to stash; `stash drop` errors if the
-    // stash list is empty, so we want to skip it cleanly when the tree is clean.
-    let dirty = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(repo_dir)
-        .output()
-        .map_err(|e| format!("git status: {e}"))?;
-    if dirty.stdout.is_empty() {
-        return Ok(());
-    }
+/// Owns only the scratch directory created for this benchmark run.
+/// An existing directory (including leftovers from an interrupted run) is
+/// refused: it may contain files belonging to someone else or a concurrent run.
+pub struct ScratchDir {
+    path: PathBuf,
+}
 
-    run_git(
-        &[
-            "stash",
-            "push",
-            "--include-untracked",
-            "--quiet",
-            "-m",
-            "tokensave-bench",
-        ],
-        Some(repo_dir),
-    )?;
-    run_git(&["stash", "drop", "--quiet"], Some(repo_dir))?;
-    Ok(())
+impl ScratchDir {
+    pub fn create(repo_dir: &Path, name: &str) -> Result<Self, String> {
+        let path = repo_dir.join(name);
+        std::fs::create_dir(&path).map_err(|e| {
+            format!(
+                "cannot reserve scratch directory {}: {e}; use a separate benchmark cache, \
+                 or inspect any existing scratch directory before removing it manually",
+                path.display()
+            )
+        })?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.path) {
+            eprintln!(
+                "[bench] WARNING: could not remove owned scratch directory {}: {e}",
+                self.path.display()
+            );
+        }
+    }
 }

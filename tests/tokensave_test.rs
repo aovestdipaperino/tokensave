@@ -57,7 +57,7 @@ impl SelectedGraphFixture {
     }
 
     fn tokensave_dir(&self) -> PathBuf {
-        self.root.join(".tokensave")
+        tokensave::config::get_tokensave_dir(&self.root)
     }
 
     fn config_path(&self) -> PathBuf {
@@ -131,7 +131,7 @@ async fn setup_tracked_branch_project() -> SelectedGraphFixture {
     graph.checkpoint().await.unwrap();
     drop(graph);
 
-    let tokensave_dir = root.join(".tokensave");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(&root);
     fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
     fs::copy(
         tokensave_dir.join("tokensave.db"),
@@ -326,6 +326,120 @@ async fn open_read_only_env_helper() {
     assert_eq!(selected.serving_branch(), Some("master"));
 }
 
+fn set_auto_track(fixture: &SelectedGraphFixture, enabled: bool) {
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.config_path()).unwrap()).unwrap();
+    config["auto_track"] = serde_json::Value::Bool(enabled);
+    fs::write(
+        fixture.config_path(),
+        serde_json::to_vec_pretty(&config).unwrap(),
+    )
+    .unwrap();
+}
+
+/// #877: an untracked branch explains that `auto_track` is off and how to
+/// turn it on, instead of only suggesting `branch add`.
+#[tokio::test]
+async fn untracked_branch_hint_explains_disabled_auto_track() {
+    let fixture = setup_tracked_branch_project().await;
+    run_git(fixture.root(), &["checkout", "-b", "work"]);
+    set_auto_track(&fixture, false);
+
+    let cg = TokenSave::open(fixture.root()).await.unwrap();
+
+    assert!(cg.is_fallback());
+    assert!(!cg.auto_track_enabled());
+    let hint = cg.auto_track_hint().expect("untracked branch has a hint");
+    assert!(
+        hint.contains("Automatic branch tracking is disabled"),
+        "{hint}"
+    );
+    assert!(hint.contains("`tokensave branch add 'work'`"), "{hint}");
+    assert!(hint.contains("\"auto_track\": false"), "{hint}");
+    assert!(hint.contains("\"auto_track\": true"), "{hint}");
+    assert!(hint.contains("TOKENSAVE_AUTO_TRACK=1"), "{hint}");
+    assert!(hint.contains("config.json"), "{hint}");
+}
+
+/// `tokensave_status` carries the hint next to the branch warning.
+#[tokio::test]
+async fn status_tool_reports_auto_track_hint_for_untracked_branch() {
+    let fixture = setup_tracked_branch_project().await;
+    run_git(fixture.root(), &["checkout", "-b", "work"]);
+    set_auto_track(&fixture, false);
+    let cg = TokenSave::open(fixture.root()).await.unwrap();
+
+    let result = tokensave::mcp::handle_tool_call(
+        &cg,
+        "tokensave_status",
+        serde_json::json!({}),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = result.value["content"][0]["text"].as_str().unwrap();
+    let status: serde_json::Value = serde_json::from_str(text).unwrap();
+
+    assert_eq!(status["branch_fallback"], true);
+    assert_eq!(status["auto_track"], false);
+    let hint = status["auto_track_hint"].as_str().unwrap();
+    assert!(
+        hint.contains("Automatic branch tracking is disabled"),
+        "{hint}"
+    );
+}
+
+/// With `auto_track` on, opening tracks the branch, so there is no fallback
+/// and nothing to explain.
+#[tokio::test]
+async fn enabled_auto_track_leaves_no_untracked_branch_hint() {
+    let fixture = setup_tracked_branch_project().await;
+    run_git(fixture.root(), &["checkout", "-b", "work"]);
+    set_auto_track(&fixture, true);
+
+    let cg = TokenSave::open(fixture.root()).await.unwrap();
+
+    assert!(cg.auto_track_enabled());
+    assert!(!cg.is_fallback());
+    assert_eq!(cg.auto_track_hint(), None);
+}
+
+/// A read-only view never tracks, even with `auto_track` on; the hint must
+/// say so rather than claim the setting is off.
+#[tokio::test]
+async fn read_only_view_explains_why_enabled_auto_track_did_not_run() {
+    let fixture = setup_tracked_branch_project().await;
+    run_git(fixture.root(), &["checkout", "-b", "work"]);
+    set_auto_track(&fixture, true);
+
+    let selected = TokenSave::open_read_only(fixture.root(), None)
+        .await
+        .unwrap();
+
+    assert!(selected.is_fallback());
+    let hint = selected
+        .auto_track_hint()
+        .expect("untracked branch has a hint");
+    assert!(hint.contains("enabled"), "{hint}");
+    assert!(hint.contains("read-only view"), "{hint}");
+}
+
+/// The tracked default branch and a detached HEAD have nothing to track.
+#[tokio::test]
+async fn tracked_branch_and_detached_head_have_no_hint() {
+    let fixture = setup_tracked_branch_project().await;
+    set_auto_track(&fixture, false);
+
+    let cg = TokenSave::open(fixture.root()).await.unwrap();
+    assert_eq!(cg.auto_track_hint(), None);
+    drop(cg);
+
+    run_git(fixture.root(), &["checkout", "--detach"]);
+    let cg = TokenSave::open(fixture.root()).await.unwrap();
+    assert_eq!(cg.auto_track_hint(), None);
+}
+
 #[tokio::test]
 async fn open_read_only_opens_branch_only_default_database_layout() {
     let fixture = setup_single_db_project("branch_only").await;
@@ -354,7 +468,7 @@ async fn open_read_only_opens_branch_only_default_database_layout() {
 #[tokio::test]
 async fn open_read_only_rejects_orphan_database_without_config() {
     let dir = TempDir::new().unwrap();
-    let tokensave_dir = dir.path().join(".tokensave");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(dir.path());
     fs::create_dir_all(&tokensave_dir).unwrap();
     let database_path = tokensave_dir.join("tokensave.db");
     fs::write(&database_path, b"orphan").unwrap();
@@ -1238,4 +1352,89 @@ async fn last_sync_timestamp_falls_back_to_indexed_at_without_metadata() {
     let observed = cg.last_sync_timestamp().await;
     let fallback = cg.last_index_time().await.unwrap();
     assert_eq!(observed, fallback);
+}
+
+/// Restoring an older copy must refresh both targeted and project-wide reads (#1020).
+#[tokio::test]
+async fn test_staleness_older_replacement_and_preserved_mtime() {
+    use std::fs::File;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    for preserve_mtime in [false, true] {
+        let (dir, cg) = setup().await;
+        let path = dir.path().join("src").join("lib.rs");
+        let original_mtime = fs::metadata(&path).unwrap().modified().unwrap();
+        let replacement = dir.path().join("replacement");
+        let mut source = "pub fn restored_symbol() {}\n".to_string();
+        if !preserve_mtime {
+            source
+                .push_str(&" ".repeat(fs::metadata(&path).unwrap().len() as usize - source.len()));
+        }
+        fs::write(&replacement, source).unwrap();
+        File::options()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_modified(if preserve_mtime {
+                original_mtime
+            } else {
+                UNIX_EPOCH + Duration::from_secs(1_000_000)
+            })
+            .unwrap();
+        // Remove first for Windows, where rename cannot replace an existing file.
+        fs::remove_file(&path).unwrap();
+        fs::rename(&replacement, &path).unwrap();
+        let expected = vec!["src/lib.rs".to_string()];
+        assert_eq!(cg.check_file_staleness(&expected).await, expected);
+        assert_eq!(cg.find_stale_files().await, expected);
+        cg.sync_if_stale_silent(&expected).await.unwrap();
+        assert!(cg.check_file_staleness(&expected).await.is_empty());
+        assert!(cg.find_stale_files().await.is_empty());
+        assert!(!cg.search("restored_symbol", 10).await.unwrap().is_empty());
+        assert!(cg
+            .search("foo", 10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|hit| { hit.node.file_path != "src/lib.rs" || hit.node.name != "foo" }));
+    }
+}
+
+#[tokio::test]
+async fn test_staleness_bom_files_use_disk_size() {
+    for bytes in [
+        b"\xef\xbb\xbfpub fn bom_symbol() {}\n".to_vec(),
+        [
+            vec![0xff, 0xfe],
+            "pub fn bom_symbol() {}\n"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect(),
+        ]
+        .concat(),
+        [
+            vec![0xfe, 0xff],
+            "pub fn bom_symbol() {}\n"
+                .encode_utf16()
+                .flat_map(u16::to_be_bytes)
+                .collect(),
+        ]
+        .concat(),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("bom.rs");
+        fs::write(&path, &bytes).unwrap();
+        let cg = TokenSave::init(dir.path()).await.unwrap();
+        cg.index_all().await.unwrap();
+        let files = cg.get_all_files().await.unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].size, bytes.len() as u64);
+        for _ in 0..3 {
+            assert!(cg
+                .check_file_staleness(&["bom.rs".to_string()])
+                .await
+                .is_empty());
+            assert!(cg.find_stale_files().await.is_empty());
+        }
+    }
 }

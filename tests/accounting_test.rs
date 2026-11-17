@@ -5,15 +5,16 @@
 //! - cost_by_agent_since groups correctly with AgentCostSummary fields.
 //! - NULL credits aggregate when any row in a group has NULL credits.
 //! - total_tokens_since counts all agents (no filter).
-//! - token_breakdown_since, cost_by_model_since, cost_by_category_since,
-//!   nav_turns_since remain Claude-only.
+//! - token_breakdown_since, cost_by_category_since, nav_turns_since remain
+//!   Claude-only; cost_by_model_since covers USD-metered agents (Claude, Codex)
+//!   but still excludes credits-only Droid.
 
 use tempfile::TempDir;
 use tokensave::global_db::GlobalDb;
 use tokensave::types::CostTurn;
 
 async fn open_isolated_db(tmp: &TempDir) -> GlobalDb {
-    let db_path = tmp.path().join(".tokensave").join("global.db");
+    let db_path = tokensave::config::get_tokensave_dir(tmp.path()).join("global.db");
     GlobalDb::open_at(&db_path).await.expect("global db open")
 }
 
@@ -55,12 +56,50 @@ fn droid_turn(id: &str, input: u64, output: u64, credits: Option<u64>) -> CostTu
     }
 }
 
+fn copilot_turn(id: &str, timestamp: u64, nano_aiu: u64) -> CostTurn {
+    CostTurn {
+        message_id: id.to_string(),
+        project_hash: "unknown".to_string(),
+        session_id: "copilot-session".to_string(),
+        model: "gpt-5.4".to_string(),
+        timestamp,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
+        cost_usd: 0.0,
+        category: "unclassified".to_string(),
+        tool_names: String::new(),
+        agent: "copilot".to_string(),
+        credits: Some(nano_aiu),
+    }
+}
+
+fn codex_turn(id: &str, model: &str, input: u64, output: u64, cost_usd: f64) -> CostTurn {
+    CostTurn {
+        message_id: id.to_string(),
+        project_hash: "proj".to_string(),
+        session_id: "sess".to_string(),
+        model: model.to_string(),
+        timestamp: 1_000_002,
+        input_tokens: input,
+        output_tokens: output,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
+        cost_usd,
+        category: "unclassified".to_string(),
+        tool_names: String::new(),
+        agent: "codex".to_string(),
+        credits: None,
+    }
+}
+
 /// A legacy DB (no agent/credits columns) is upgraded transparently.
 /// The existing row must have agent="claude" and credits=None after migration.
 #[tokio::test]
 async fn legacy_migration_adds_agent_and_credits() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join(".tokensave").join("global.db");
+    let db_path = tokensave::config::get_tokensave_dir(tmp.path()).join("global.db");
     std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
 
     // Build an old-schema DB without agent/credits columns.
@@ -217,6 +256,42 @@ async fn legacy_views_exclude_droid() {
     // nav_turns_since: only claude turns
     let nav = db.nav_turns_since(0).await;
     assert_eq!(nav.len(), 1, "nav_turns_since must exclude droid");
+}
+
+/// cost_by_model_since is the "how models cost" view and must include Codex,
+/// which is USD-metered like Claude, while still excluding credits-only Droid.
+#[tokio::test]
+async fn cost_by_model_includes_codex_but_not_droid() {
+    let tmp = TempDir::new().unwrap();
+    let db = open_isolated_db(&tmp).await;
+
+    assert!(db.insert_turn(&claude_turn("c1", 100, 20)).await);
+    assert!(db.insert_turn(&droid_turn("d1", 200, 30, None)).await);
+    assert!(
+        db.insert_turn(&codex_turn("codex:s1", "gpt-5.4", 1000, 200, 3.5))
+            .await
+    );
+
+    let by_model = db.cost_by_model_since(0).await;
+    let models: Vec<&str> = by_model.iter().map(|(m, _, _)| m.as_str()).collect();
+    assert!(
+        models.contains(&"gpt-5.4"),
+        "codex model must appear: {models:?}"
+    );
+    assert!(
+        models.contains(&"claude-opus-4-6"),
+        "claude model must appear: {models:?}"
+    );
+    assert!(
+        !models.contains(&"gemini-pro"),
+        "droid model must not appear: {models:?}"
+    );
+    let (_, codex_cost, codex_tokens) = by_model
+        .iter()
+        .find(|(m, _, _)| m == "gpt-5.4")
+        .expect("gpt-5.4 row");
+    assert!((codex_cost - 3.5).abs() < 1e-9);
+    assert_eq!(*codex_tokens, 1200);
 }
 
 /// cost_summary efficiency denominator uses ALL agent tokens (not just Claude).
@@ -416,6 +491,46 @@ async fn upsert_droid_turn_accepts_larger_snapshot() {
     let droid = summaries.iter().find(|s| s.agent == "droid").unwrap();
     assert_eq!(droid.input_tokens, 200, "stored tokens should be larger");
     assert_eq!(droid.credits, Some(600), "stored credits should be larger");
+}
+
+#[tokio::test]
+async fn copilot_larger_checkpoint_moves_the_range_timestamp() {
+    let tmp = TempDir::new().unwrap();
+    let db = open_isolated_db(&tmp).await;
+    let start = copilot_turn("copilot:session", 1_000_000, 900_000_000_000);
+    let later = copilot_turn("copilot:session", 2_000_000, 1_500_000_000_000);
+
+    assert!(db.upsert_copilot_turn(&start).await);
+    assert!(db.upsert_copilot_turn(&later).await);
+
+    let rows = db.cost_by_agent_since(2_000_000).await;
+    let copilot = rows
+        .iter()
+        .find(|summary| summary.agent == "copilot")
+        .expect("later Copilot checkpoint must be in the later range");
+    assert_eq!(copilot.credits, Some(1_500_000_000_000));
+}
+
+#[tokio::test]
+async fn droid_larger_snapshot_keeps_session_start_bucket() {
+    let tmp = TempDir::new().unwrap();
+    let db = open_isolated_db(&tmp).await;
+    let initial = droid_turn("droid:session", 100, 20, Some(500));
+    assert!(db.upsert_droid_turn(&initial).await);
+
+    let mut later = initial.clone();
+    later.timestamp = 2_000_000;
+    later.input_tokens = 200;
+    later.credits = Some(600);
+    assert!(db.upsert_droid_turn(&later).await);
+
+    assert!(
+        db.cost_by_agent_since(2_000_000)
+            .await
+            .iter()
+            .all(|summary| summary.agent != "droid"),
+        "Droid snapshots must remain bucketed at session start"
+    );
 }
 
 /// Upsert with smaller counters returns false; stored totals remain the larger values.

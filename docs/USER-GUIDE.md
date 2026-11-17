@@ -92,11 +92,11 @@ For machine-readable output, use `--json`.
 
 Initialization (`tokensave init`) and incremental updates (`tokensave sync`) are deliberately separate commands.
 
-Tokensave installs a global git post-commit hook that runs `tokensave sync` after every commit to keep the index fresh. If `sync` were allowed to create a new database when none existed, it would silently bootstrap a `.tokensave/` directory in every git repository on your machine -- even ones you never intended to index. By requiring an explicit `init`, only projects you opt into get a database. The hook runs harmlessly (exits with a non-zero status, output suppressed) in all other repos.
+Tokensave installs a global git post-commit hook that runs `tokensave sync` after every commit to keep the index fresh. An explicit `sync <path>` never creates a database. A pathless `sync`, which is what the hook runs, creates one only through `auto_init` (#876): at the top level of a git repository with no index, outside the system temp dir and your home directory, and with no more candidate files than `max_auto_sync_files`. Set `auto_init = false` in `~/.tokensave/config.toml` to keep `init` an explicit opt-in for every project; the hook then runs harmlessly (exits with a non-zero status, output suppressed) in repos without an index. See [Automatic initialization](guide/INDEXING.md#automatic-initialization).
 
 In short:
 - **`tokensave init`** -- one-time setup. Creates the database and performs a full index. Errors if already initialized.
-- **`tokensave sync`** -- ongoing updates. Requires an existing database. Errors if the project was never initialized.
+- **`tokensave sync`** -- ongoing updates. Requires an existing database, unless `auto_init` initializes a new repository as described above. Errors otherwise.
 
 ### Incremental syncs
 
@@ -307,9 +307,40 @@ By default `tokensave install` registers the MCP server in your **global** agent
 tokensave install --local --agent claude
 ```
 
-This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`. Supported agents: **claude, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie, plank** (each writes its own project file, e.g. `.cursor/mcp.json`, `.factory/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`, `.augment/settings.json`, `.mcp.json` for plank). Other agents have no project-scoped config and report an error with `--local`.
+This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`. Supported agents: **claude, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie, omp, plank, pi** (each writes its own project file, e.g. `.cursor/mcp.json`, `.factory/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`, `.augment/settings.json`, `.omp/mcp.json`, `.mcp.json` for plank, `.pi/mcp.json`, `./AGENTS.md`, and `./.pi/extensions/tokensave.ts` for pi). Other agents have no project-scoped config and report an error with `--local`.
 
 Remove a project-local install with `tokensave uninstall --local`.
+
+### Pi retrieval preference
+
+The managed Pi extension adds a conditional indexed-retrieval preference through
+`before_agent_start.systemPromptOptions.sections` on each run. Native tools stay
+available for documentation, configuration, unindexed files, exact source checks,
+and missing, stale, or insufficient indexes. It supports the declared tools from
+built-in MCP or `pi-mcp-adapter`; it does not expand search interception or block
+`read`. Older Pi versions without structured prompt options retain the installed
+`AGENTS.md` guidance. After updating tokensave, rerun `tokensave install --agent pi`
+(add `--local` for a project install), then restart or reload Pi to load the
+updated extension. See [the investigation and validation record](PI-INTEGRATION.md)
+for API details, evidence, and evaluation limitations.
+
+Run `tokensave doctor --agent pi` for read-only diagnostics. It checks global
+and project-local registration/exposure, managed rules and extension freshness,
+and potential `AGENTS.override.md` shadowing in the agent directory and project
+ancestors. Unknown exposure values require review; only `direct` satisfies the
+managed configuration. Missing configuration has scope-specific reinstall advice.
+
+An index-file check uses normal project discovery without opening the database
+or running sync. File presence does not verify schema, freshness or language
+coverage. Run `tokensave init` for an uninitialized project or `tokensave sync`
+to refresh an existing index. Diagnostics never repair configuration or indexing.
+
+Runtime fields are explicitly **UNVERIFIED**: this CLI cannot inspect a running
+Pi session's loaded extension, effective prompt, MCP readiness or declared tools.
+After reinstalling, restart/reload Pi and inspect its actual tools and prompt,
+including the `tokensave_retrieval` section. Adapter tool names and discovery
+depend on the installed adapter; use its declared interface. Static checks alone
+do not establish that a model can call TokenSave.
 
 ### Removing an integration
 
@@ -393,7 +424,7 @@ Run `tokensave sync` whenever you want. It's incremental and fast.
 
 ### Post-commit hook
 
-During `tokensave install`, you'll be offered a global git `post-commit` hook. If you accept, tokensave will automatically sync in the background after every git commit across all your repos. The hook is a no-op in repos that don't have a `.tokensave/` directory.
+During `tokensave install`, you'll be offered a global git `post-commit` hook. If you accept, tokensave will automatically sync in the background after every git commit across all your repos. In a repo without a `.tokensave/` directory, the hook initializes it when `auto_init` allows that (see [Automatic initialization](guide/INDEXING.md#automatic-initialization)) and is a no-op otherwise.
 
 If you're scripting the install (CI, dotfiles bootstrap, onboarding playbook), pass `--git-hook yes` to install the hook without prompting, or `--git-hook no` to skip it. Omitting the flag preserves the interactive prompt.
 
@@ -549,9 +580,11 @@ purpose. To change the ceiling, set `max_auto_sync_files` in
 `.tokensave/config.json`; `0` disables the file-count check (the empty-index
 guard always applies).
 
-The `watcher_debounce` setting in `~/.tokensave/config.toml` is left over
-from that watcher. It is still accepted, but nothing reads it, and the
-30-second cooldown is not configurable.
+The 30-second cooldown is not configurable. The `watcher_debounce` setting in
+`~/.tokensave/config.toml` applies only to the opt-in filesystem watcher
+(`filesystem_watch_enabled = true` or `serve --watch`, #937), which is off by
+default and runs beside this check rather than replacing it; see
+[Opt-in filesystem watcher](guide/INDEXING.md#opt-in-filesystem-watcher).
 
 ### Interrupting a sync
 
@@ -1357,17 +1390,36 @@ Existing cancellation, reaping and on-demand freshness bounds remain in place.
 
 ### CPU usage profiles
 
-`tokensave init` picks a profile for you. Before the first index it benchmarks
-the machine (normally well under a second) and writes `low`, `balanced` or
-`performance` as `cpu_usage` in `.tokensave/config.json`, printing what it
-measured and why it chose that profile:
+tokensave picks a profile for you from a **machine-level hardware benchmark**.
+CPU count, parallel throughput and memory belong to the machine, not to a
+repository, so the benchmark runs once per machine. Its result is saved in
+`~/.tokensave/benchmark.toml` (`%USERPROFILE%\.tokensave\benchmark.toml` on
+Windows), and every project without its own `cpu_usage` uses it.
+
+The first `tokensave init` on a machine runs the benchmark, which normally takes
+well under a second:
 
 ```text
-Benchmarking this machine to choose a CPU usage profile...
-  8 CPUs, 7.6 GiB memory (5.5 GiB available), 4.3x speedup on 8 threads
+No global hardware benchmark found.
+Running initial hardware benchmark...
+  Measured:    8 CPUs, 7.6 GiB memory (5.5 GiB available), 4.3x speedup on 8 threads
+  Recommended: balanced profile, 4 workers (4.3 CPUs of parallel throughput; resources are moderate or shared)
+Global benchmark results saved to /home/you/.tokensave/benchmark.toml.
 Initialized TokenSave at /path/to/project
-CPU usage profile: balanced (4.3 CPUs of parallel throughput; resources are moderate or shared; run `tokensave tune` to measure again)
+CPU usage profile: balanced (from the global hardware benchmark)
 ```
+
+Every later `init`, on any repository, reuses the saved result without
+measuring:
+
+```text
+Using cached global hardware benchmark.
+Initialized TokenSave at /path/to/other-project
+CPU usage profile: balanced (from the global hardware benchmark)
+```
+
+`sync`, `serve` and MCP tool calls never run the benchmark. They only read
+the saved result when a project opens.
 
 The benchmark reads the CPUs this process may use (`available_parallelism`,
 which honors affinity and cgroup CPU quotas) and total and available memory
@@ -1378,22 +1430,91 @@ containers, shared vCPUs or a busy machine. The profile is chosen as follows:
 
 | Selected | When |
 | --- | --- |
-| `low` | Total memory under 3 GiB, available memory under 1 GiB, at most 2 CPUs, or under 2.5 effective CPUs. |
-| `performance` | At least 6 effective CPUs, at least 60% parallel efficiency, at least 16 GiB total memory and at least 8 GiB available. |
+| `low` | Total memory under 3 GiB, at most 2 CPUs, or under 2.5 effective CPUs. |
+| `performance` | At least 6 effective CPUs, at least 60% parallel efficiency, at least 16 GiB total memory. |
 | `balanced` | Everything else, and whenever a probe fails. |
 
-The benchmark runs once and its result is stored, so normal runs never measure
-anything. To skip it, pass `tokensave init --cpu-usage <low|balanced|performance>`.
-A `cpu_usage` that is already in the config file is also kept.
+Total memory means usable capacity, capped by a stricter cgroup limit. Currently
+available memory is reported for diagnostics but does not affect the saved
+profile; runtime memory safeguards handle transient pressure.
 
-Run `tokensave tune` at any time after `init` to measure again, for example
-after a hardware change or when the first benchmark ran on a busy machine. It
-updates `cpu_usage` when the recommendation differs from the stored profile.
-`tokensave tune --dry-run` only prints the recommendation and also works where
-no project is initialized. `--json` gives machine-readable output. Restart
-`tokensave serve` after a change.
+#### Managing the global benchmark
 
-To choose a profile by hand, set `"cpu_usage"` in the existing `.tokensave/config.json`:
+```bash
+tokensave config benchmark           # Reuse a valid saved result, or measure and save one
+tokensave config benchmark --force   # Measure again even if a valid result is saved
+tokensave config benchmark --show    # Print the saved result, its validity and the settings (never measures)
+tokensave config benchmark --reset   # Delete the saved result; the next init measures again
+tokensave config benchmark --show --json   # Machine-readable output (all forms accept --json)
+```
+
+`--force`, `--show` and `--reset` are mutually exclusive; combining them is a
+usage error (exit code 2). A run that cannot save its result, and a run while
+the benchmark is disabled, exit with code 1.
+
+Run `--force` after the first benchmark ran on a busy machine. Hardware changes
+are detected automatically. `tokensave tune [path]` still works: it measures
+again, saves the result as the global benchmark, and updates the project's
+`cpu_usage` if the project pins one. `tokensave tune --dry-run` only prints the
+recommendation and also works where no project is initialized.
+
+**When a saved result is measured again.** A saved result survives restarts,
+other repositories, `init`, `sync` and upgrades that leave the benchmark alone.
+`init` measures again only when one of these applies:
+
+- the file is missing, malformed or incomplete;
+- its schema version or benchmark algorithm version differs from the running
+  release;
+- the CPU count changed;
+- total memory changed by more than 10%.
+
+Available memory is recorded but not compared, so momentary memory pressure
+never invalidates the result; extraction already adapts to the current
+headroom at run time (see [Automatic RAM safeguards](#automatic-ram-safeguards)).
+Results never expire by age.
+
+**Concurrency and failures.** Simultaneous `init`s coordinate through an
+advisory lock (`benchmark.toml.lock`, released by the OS if a process dies),
+so only one of them measures and the others reuse its result. The file is
+replaced by an atomic rename, so a failed or interrupted write keeps the
+previous valid result. If the result can't be saved (for example, the home
+directory is read-only), `init` prints a warning, uses the built-in default
+`balanced`, and still initializes the project.
+
+#### Settings and precedence
+
+The effective profile is resolved when a project opens, highest precedence
+first:
+
+1. `TOKENSAVE_CPU_USAGE=<low|balanced|performance>`, a per-run override. An
+   unrecognized value is ignored with a warning.
+2. `cpu_usage` in the project's `.tokensave/config.json`. `tokensave init
+   --cpu-usage <profile>` writes it.
+3. `cpu_usage` in `~/.tokensave/config.toml`, a machine-wide manual profile.
+4. The saved global hardware benchmark, when it is enabled and valid.
+5. The built-in default, `balanced`.
+
+The benchmark runs only when level 4 would actually be used: `init` skips it
+when `--cpu-usage`, `TOKENSAVE_CPU_USAGE`, a project `cpu_usage` or a global
+`cpu_usage` is set.
+
+Global benchmark settings live in `~/.tokensave/config.toml`:
+
+```toml
+cpu_usage = "balanced"   # optional machine-wide profile; beats the benchmark
+
+[benchmark]
+enabled = true    # false: never run the benchmark and ignore saved results
+auto_run = true   # false: use a valid saved result, but never measure automatically
+```
+
+With `auto_run = false`, `init` uses a valid saved result but never measures;
+run `tokensave config benchmark` yourself when you want one. With
+`enabled = false`, or with a global `cpu_usage`, tokensave runs no benchmark at
+all.
+
+To pin a profile for one project, set `"cpu_usage"` in its
+`.tokensave/config.json`:
 
 ```json
 {
@@ -1402,8 +1523,16 @@ To choose a profile by hand, set `"cpu_usage"` in the existing `.tokensave/confi
 ```
 
 This snippet is a field to add to your existing file, not a replacement for
-its required fields. Missing `cpu_usage` defaults to `balanced`; invalid values
-are rejected with the supported choices.
+its required fields. Without `cpu_usage` the project follows the global
+settings above; invalid values are rejected with the supported choices.
+
+**Projects initialized before the global benchmark.** Earlier releases
+always wrote `cpu_usage` into `.tokensave/config.json`, so existing projects
+keep exactly the profile they have, as a project pin. No reinitialization is
+needed. To make an existing project follow the global benchmark, delete its
+`cpu_usage` line. Per-project results from earlier releases aren't copied into
+the global cache, because nothing records whether a stored profile was
+measured or chosen by hand, so the first `init` after upgrading measures once.
 
 | Profile | Worker ceiling | Choose it when |
 | --- | --- | --- |
@@ -1732,10 +1861,12 @@ The `config.toml` is plain TOML and fully transparent:
 
 ```toml
 upload_enabled = true        # set to false to stop uploading
-watcher_debounce = "2s"      # inert; left over from the watcher removed in 6.1.1
+filesystem_watch_enabled = false # true = `serve` follows file changes via OS notifications (#937)
+watcher_debounce = "2s"      # quiet period for the opt-in watcher; unused while it is off
 extraction_timeout_secs = 60 # per-file extraction timeout
 wildcard_permissions = false # true = grant Claude Code tools via one "mcp__tokensave__*" entry
 manage_rules = true          # false = leave ~/.claude/rules/tokensave.md and other rules files to you
+auto_init = true             # false = never initialize a new git repository unasked (TOKENSAVE_AUTO_INIT overrides)
 ```
 
 `state.toml` holds everything else (`pending_upload`, `last_upload_at`,
@@ -1764,6 +1895,8 @@ confirming those changes. Structural findings include incompatible schema,
 invalid SHA-256 fingerprints, dangling edges/references/parents, orphan symbols
 and vectors, and dispatch records with missing endpoints. Branch metadata is
 checked for malformed JSON, missing default entries/databases and unsafe paths.
+A recorded default branch that no longer exists in Git produces a
+`BRANCH_DEFAULT_STALE` warning (fix it with `tokensave branch set-default`).
 An untracked current branch produces `BRANCH_FALLBACK` and stops verification
 rather than comparing another branch's database against the current source.
 
@@ -1787,6 +1920,10 @@ relationships/ambiguous-call candidates are deferred. No automatic full rebuild
 or index deletion occurs. Preserve a backup before manually recovering structural
 corruption. Symlink targets outside the project are reported without reading them;
 filesystem changes during verification can require a second run.
+
+For interrupted indexing and manual backup/restore steps, see
+[Database recovery](DATABASE-RECOVERY.md), including the implementation's
+validation status and remaining crash-test coverage.
 
 ### "tokensave not initialized"
 
@@ -1864,3 +2001,38 @@ binary when you want the configured path to be durable.
 ### Getting help
 
 If you run into something not covered here, check the [GitHub repository](https://github.com/aovestdipaperino/tokensave) or open an issue.
+
+## Database channel compatibility
+
+Stable and beta use separate project state and global databases. See the
+[database compatibility guide](DATABASE-COMPATIBILITY.md) for creation-origin
+markers, legacy upgrades, beta initialization, recovery refusals, and returning
+to stable without deleting beta data.
+
+
+## Experimental Graphify interoperability
+
+`tokensave graphify-export` creates a bounded, read-only snapshot of one selected
+indexed code file and the relationships whose endpoints are both in that file.
+The integration targets master; beta is currently reserved for data-critical PRs.
+Graphify remains a separate optional tool.
+
+Initialize and sync the project separately, then select a new output filename:
+
+```bash
+tokensave graphify-export --project /path/to/project --file src/main.rs --output /private/export/snapshot.json
+```
+
+Existing output is never replaced. The command refuses stale source, untracked
+branch fallback, and exceeded node/edge/size budgets. It does not install
+Graphify, run a model, change the index, or register hooks. The snapshot omits
+cross-file relationships, documents, source bodies, signatures and docstrings;
+do not use it as a complete impact graph. Names and paths can still disclose
+private project information.
+
+For the pinned Graphify version, graph schema, visualization behavior, limits,
+and reproduction steps, see [the integration contract](graphify/README.md).
+Graphify writes `graph.html` beside its input JSON and uses external JavaScript
+assets, so keep each visualization in a dedicated disposable export directory.
+Document enrichment and production rollout remain conditional on the quality
+and resource assessment tracked in [#791](https://github.com/aovestdipaperino/tokensave/issues/791).

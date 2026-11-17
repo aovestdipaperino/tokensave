@@ -936,7 +936,10 @@ impl Ctx<'_> {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one argument per attribute of the route being emitted"
+    )]
     fn emit(
         &mut self,
         node: TsNode<'_>,

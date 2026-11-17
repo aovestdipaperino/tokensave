@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "description": "Agent configurations compared by run. Every arm uses the same agent, model and CLI arguments; arms differ only in the fields shown.",
+  "agent": "claude-code",
+  "common_args": [
+    "--setting-sources", "",
+    "--permission-mode", "acceptEdits",
+    "--permission-prompts", "none",
+    "--allowedTools", "Read", "Grep", "Glob", "Edit", "Write", "Bash(python *)", "Bash(python3 *)", "Bash(git status*)", "Bash(git diff*)", "PowerShell(python *)", "mcp__tokensave",
+    "--disable-slash-commands",
+    "--no-session-persistence"
+  ],
+  "arms": {
+    "baseline": {
+      "description": "No TokenSave: no MCP servers, unindexed checkout.",
+      "tokensave": false
+    },
+    "tokensave": {
+      "description": "TokenSave MCP server (libSQL) on an indexed checkout; server instructions only.",
+      "tokensave": true
+    },
+    "tokensave-guided": {
+      "description": "As tokensave, plus the rules text `tokensave install` writes for Claude Code, appended to the system prompt. Tests whether guidance changes tool use.",
+      "tokensave": true,
+      "append_system_prompt_file": "~/.claude/rules/tokensave.md"
+    },
+    "caveman": {
+      "description": "No TokenSave; the pinned Caveman skill passed with --caveman-skill, appended to the system prompt (#797).",
+      "tokensave": false,
+      "caveman_skill": true
+    },
+    "tokensave-caveman-nocoop": {
+      "description": "As caveman, plus the TokenSave MCP server with Caveman cooperation off. Measures TokenSave's effect while Caveman is on.",
+      "tokensave": true,
+      "caveman_skill": true,
+      "caveman_cooperation": false,
+      "reference": "caveman"
+    },
+    "tokensave-caveman": {
+      "description": "As tokensave-caveman-nocoop, with Caveman cooperation on: the server finds the pinned skill and adds its cooperation paragraph. Measures that paragraph's effect.",
+      "tokensave": true,
+      "caveman_skill": true,
+      "caveman_cooperation": true,
+      "reference": "tokensave-caveman-nocoop"
+    }
+  }
+}

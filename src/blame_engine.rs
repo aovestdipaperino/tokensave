@@ -637,13 +637,12 @@ fn commit_metadata(commit: &gix::Commit<'_>) -> Result<(String, String, String, 
     Ok((author, email, date, summary))
 }
 
-fn format_rfc3339(unix_secs: i64) -> String {
+pub(crate) fn format_rfc3339(unix_secs: i64) -> String {
     // gix doesn't ship a time formatter; format manually as UTC.
     let (yr, mo, dy, hr, mn, sc) = ymd_hms_from_unix(unix_secs);
     format!("{yr:04}-{mo:02}-{dy:02}T{hr:02}:{mn:02}:{sc:02}Z")
 }
 
-#[allow(clippy::many_single_char_names)] // algorithm variables match the reference
 fn ymd_hms_from_unix(mut ts: i64) -> (i32, u32, u32, u32, u32, u32) {
     // Howard Hinnant's `civil_from_days`, simplified for UTC.
     let day_sec = ts.rem_euclid(86_400);
@@ -750,17 +749,21 @@ pub fn compute_target_fingerprint(
 fn lang_key_is_known(key: &str) -> bool {
     matches!(
         key,
-        "bash"
+        "awk"
+            | "bash"
             | "batch"
             | "c"
             | "c_sharp"
             | "clojure"
             | "cobol"
+            | "commonlisp"
             | "cpp"
+            | "cuda"
             | "dart"
             | "dockerfile"
             | "elixir"
             | "erlang"
+            | "flatbuffers"
             | "fortran"
             | "fsharp"
             | "glsl"
@@ -789,12 +792,14 @@ fn lang_key_is_known(key: &str) -> bool {
             | "ruby"
             | "rust"
             | "scala"
+            | "scheme"
             | "sql"
             | "swift"
             | "toml"
             | "tsx"
             | "typescript"
             | "vbnet"
+            | "wolfram"
             | "zig"
     ) || (cfg!(feature = "lang-wgsl") && key == "wgsl")
         || (cfg!(feature = "lang-hlsl") && key == "hlsl")

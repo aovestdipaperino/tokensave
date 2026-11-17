@@ -20,7 +20,7 @@
 
 use tokensave::extraction::ElixirExtractor;
 use tokensave::extraction::LanguageExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, ExtractionResult, NodeKind};
 
 /// Names of everything the extraction reported as a `Calls` reference.
 fn call_targets(result: &ExtractionResult) -> Vec<String> {
@@ -216,5 +216,132 @@ end
     assert!(
         !calls.iter().any(|c| c.contains("MyLib")),
         "doctest must not fabricate a call edge to the module it names, got {calls:?}"
+    );
+}
+
+#[test]
+fn test_elixir_eex_template_extracts_embedded_code() {
+    let source = "é<main>static_only()</main>\né<%= top_level_helper() %>\n\
+<%== raw_output_helper() %>\n<%- trim_helper() -%>\n\
+<%# commented_helper() %>\n<%% escaped_helper() %>\n\
+<% defmodule EexFixture do %>\n<% def render do %>\n\
+  <%= Nested.helper() %>\n<% end %>\n<% end %>\n";
+    let registry = tokensave::extraction::LanguageRegistry::new();
+    assert!(
+        registry.extractor_for_file("views/show.eex").is_some(),
+        "EEx files must dispatch to the Elixir extractor"
+    );
+    let extractor = registry
+        .extractor_for_file("views/show.eex")
+        .expect("EEx extractor exists");
+    assert_eq!(extractor.language_name(), "Elixir");
+    assert!(
+        registry.extractor_for_file("views/show.heex").is_none(),
+        "HEEx support is outside the Elixir EEx extension"
+    );
+
+    let result = extractor.extract("views/show.eex", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let calls = call_targets(&result);
+
+    let top_level = result
+        .unresolved_refs
+        .iter()
+        .find(|reference| reference.reference_name == "top_level_helper")
+        .expect("top-level EEx expressions must be attributed to the file");
+    let file = result
+        .nodes
+        .iter()
+        .find(|node| node.kind == NodeKind::File)
+        .expect("the EEx file node must exist");
+    assert_eq!(top_level.from_node_id, file.id);
+    assert_eq!((top_level.line, top_level.column), (1, 6));
+    assert!(source
+        .lines()
+        .nth(top_level.line as usize)
+        .expect("line exists")[top_level.column as usize..]
+        .starts_with("top_level_helper"));
+    for wanted in ["raw_output_helper", "trim_helper"] {
+        assert_eq!(
+            calls.iter().filter(|call| call.contains(wanted)).count(),
+            1,
+            "expected one top-level reference to `{wanted}`"
+        );
+    }
+
+    let render = result
+        .nodes
+        .iter()
+        .find(|node| node.kind == NodeKind::Function && node.name == "render")
+        .expect("Elixir definitions in EEx tags must be extracted");
+    let nested = result
+        .unresolved_refs
+        .iter()
+        .find(|reference| reference.reference_name == "Nested.helper")
+        .expect("calls inside EEx definitions must be extracted");
+    assert_eq!(nested.from_node_id, render.id);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call.as_str() == "Nested.helper")
+            .count(),
+        1,
+        "nested calls must not be recorded twice"
+    );
+
+    for ignored in ["static_only", "commented_helper", "escaped_helper"] {
+        assert!(
+            !calls.iter().any(|call| call.contains(ignored)),
+            "non-code EEx content must not contribute `{ignored}`"
+        );
+    }
+}
+
+#[test]
+fn test_elixir_eex_escaped_open_does_not_skip_active_tag() {
+    let source = "<%% literal <%= active_after_escaped() %>";
+    let result = ElixirExtractor.extract("views/escaped.eex", source);
+
+    assert!(
+        result
+            .unresolved_refs
+            .iter()
+            .any(|reference| reference.reference_name == "active_after_escaped"),
+        "an escaped opening delimiter must not consume a later active tag"
+    );
+}
+
+#[test]
+fn test_elixir_eex_bang_comment_is_ignored() {
+    let source = "<%!-- hidden_in_comment() --%><%= visible_after_comment() %>";
+    let result = ElixirExtractor.extract("views/bang-comment.eex", source);
+
+    assert!(
+        result
+            .unresolved_refs
+            .iter()
+            .any(|reference| reference.reference_name == "visible_after_comment"),
+        "active tags after a bang comment must still be extracted"
+    );
+    assert!(
+        !result
+            .unresolved_refs
+            .iter()
+            .any(|reference| reference.reference_name == "hidden_in_comment"),
+        "code inside a bang comment must not be extracted"
+    );
+}
+
+#[test]
+fn test_elixir_eex_comment_percent_escape_does_not_skip_active_tag() {
+    let source = "<%# comment %%> <%= active_after_comment() %>";
+    let result = ElixirExtractor.extract("views/comment-percent.eex", source);
+
+    assert!(
+        result
+            .unresolved_refs
+            .iter()
+            .any(|reference| reference.reference_name == "active_after_comment"),
+        "the first EEx closing delimiter must end the comment tag"
     );
 }

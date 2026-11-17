@@ -37,8 +37,13 @@ fn env_disabled() -> HookEnv {
 fn indexed_project() -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().join("project");
-    std::fs::create_dir_all(root.join(".tokensave")).expect("create .tokensave");
-    std::fs::write(root.join(".tokensave").join("tokensave.db"), b"").expect("write db");
+    std::fs::create_dir_all(tokensave::config::get_tokensave_dir(&root))
+        .expect("create .tokensave");
+    std::fs::write(
+        tokensave::config::get_tokensave_dir(&root).join("tokensave.db"),
+        b"",
+    )
+    .expect("write db");
     (tmp, root)
 }
 
@@ -360,17 +365,6 @@ fn test_grep_allows_omitted_output_mode() {
 }
 
 #[test]
-fn test_grep_blocks_alternation_on_rust_file() {
-    let input =
-        r#"{"pattern": "Foo\\|Bar\\|Baz", "path": "src/main.rs", "output_mode": "content"}"#;
-    let result = evaluate_hook_decision_with_env(input, &env_indexed());
-    assert!(
-        is_blocked(&result),
-        "alternation of identifiers should redirect"
-    );
-}
-
-#[test]
 fn test_grep_blocks_word_boundary_symbol() {
     let input =
         r#"{"pattern": "\\bhandle_request\\b", "path": "src/main.rs", "output_mode": "content"}"#;
@@ -591,16 +585,6 @@ fn test_bash_blocks_grep_rn_recursive() {
     assert!(
         is_blocked(&result),
         "grep -rn callers search should redirect"
-    );
-}
-
-#[test]
-fn test_bash_blocks_alternation_command() {
-    let input = r#"{"command": "grep -n \"Foo\\|Bar\" src/main.rs"}"#;
-    let result = evaluate_hook_decision_with_env(input, &env_indexed());
-    assert!(
-        is_blocked(&result),
-        "alternation in grep command should redirect"
     );
 }
 
@@ -2046,8 +2030,9 @@ fn test_relative_target_climbing_out_of_the_project_is_left_alone() {
 fn indexed_project_with_nodes(names: &[&str]) -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().join("project");
-    std::fs::create_dir_all(root.join(".tokensave")).expect("create .tokensave");
-    let db_path = root.join(".tokensave").join("tokensave.db");
+    std::fs::create_dir_all(tokensave::config::get_tokensave_dir(&root))
+        .expect("create .tokensave");
+    let db_path = tokensave::config::get_tokensave_dir(&root).join("tokensave.db");
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("runtime");
@@ -2099,25 +2084,48 @@ fn test_686_indexed_symbol_still_denied() {
 }
 
 #[test]
-fn test_686_alternation_of_unindexed_names_passes_through() {
+fn grep_hook_allows_alternation_with_an_indexed_branch() {
     let (_tmp, root) = indexed_project_with_nodes(&["MySymbol"]);
     let env = env_rooted_at(&root);
-    let result = evaluate_hook_decision_with_env(&grep_input("etag|mangled"), &env);
-    assert!(
-        result.is_empty(),
-        "no branch is an indexed symbol: {result}"
-    );
+    for pattern in ["MySymbol|throw new Error", r"MySymbol\\|OtherSymbol"] {
+        let result = evaluate_hook_decision_with_env(&grep_input(pattern), &env);
+        assert!(
+            result.is_empty(),
+            "{pattern}: expected pass-through, got {result}"
+        );
+    }
 }
 
 #[test]
-fn test_686_alternation_with_indexed_branch_denied() {
-    let (_tmp, root) = indexed_project_with_nodes(&["MySymbol"]);
+fn bash_hook_allows_reported_alternation_even_with_indexed_names() {
+    let (_tmp, root) = indexed_project_with_nodes(&["text", "label", "license", "product"]);
     let env = env_rooted_at(&root);
-    let result = evaluate_hook_decision_with_env(&grep_input("MySymbol|throw new Error"), &env);
-    assert!(
-        is_blocked(&result),
-        "an indexed branch should still redirect: {result}"
-    );
+    std::fs::create_dir(root.join("src")).expect("create src");
+    std::fs::write(
+        root.join("src").join("main.rs"),
+        "fn text() {}\n// license label product\n",
+    )
+    .expect("write source");
+
+    for command in [
+        "grep -nE 'text|label|license|product' src/main.rs",
+        r"grep -n 'text\|label\|license\|product' src/main.rs",
+        "rg -n 'text|label|license|product' src/main.rs",
+    ] {
+        let input = serde_json::json!({
+            "tool_name": "Bash",
+            "cwd": root,
+            "tool_input": { "command": command },
+        });
+        let result = evaluate_claude_pre_tool_use_with_env(&input.to_string(), &env);
+        assert!(
+            result.is_empty(),
+            "{command}: expected pass-through, got {result}"
+        );
+    }
+
+    let input = r#"{"command": "rg -n text src/main.rs"}"#;
+    assert!(is_blocked(&evaluate_hook_decision_with_env(input, &env)));
 }
 
 #[test]

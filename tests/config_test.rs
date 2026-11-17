@@ -1,5 +1,9 @@
 use tempfile::TempDir;
-use tokensave::config::*;
+use tokensave::config::{
+    add_to_git_info_exclude, add_to_gitignore, configured_cpu_usage, get_config_path,
+    get_tokensave_dir, is_excluded, is_in_gitignore, load_config, non_git_scan_warning,
+    resolve_path, save_config, TokenSaveConfig,
+};
 
 #[test]
 fn test_default_config_has_exclude_patterns() {
@@ -23,7 +27,10 @@ fn test_generated_config_explains_environment_overrides() {
     let dir = TempDir::new().unwrap();
     save_config(dir.path(), &TokenSaveConfig::default()).unwrap();
 
-    let text = std::fs::read_to_string(dir.path().join(".tokensave").join("config.json")).unwrap();
+    let text = std::fs::read_to_string(
+        tokensave::config::get_tokensave_dir(dir.path()).join("config.json"),
+    )
+    .unwrap();
     assert!(text.contains("\"_comment\""));
     assert!(text.contains("TOKENSAVE_* environment variables override"));
     assert!(serde_json::from_str::<TokenSaveConfig>(&text).is_ok());
@@ -42,7 +49,12 @@ fn test_is_excluded() {
 fn test_tokensave_dir_creation() {
     let dir = TempDir::new().unwrap();
     let cg_dir = get_tokensave_dir(dir.path());
-    assert!(cg_dir.ends_with(".tokensave"));
+    let expected = if tokensave::cloud::is_beta() {
+        dir.path().join(".tokensave").join("beta")
+    } else {
+        dir.path().join(".tokensave")
+    };
+    assert_eq!(cg_dir, expected);
 }
 
 #[test]
@@ -75,7 +87,7 @@ fn test_last_indexed_version_persists() {
 #[test]
 fn test_legacy_config_without_last_indexed_version_loads_empty() {
     let dir = TempDir::new().unwrap();
-    let tokensave_dir = dir.path().join(".tokensave");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(dir.path());
     std::fs::create_dir_all(&tokensave_dir).unwrap();
     // Pre-7.0 config that predates the `last_indexed_version` field.
     let legacy_json = r#"{
@@ -94,7 +106,7 @@ fn test_legacy_config_without_last_indexed_version_loads_empty() {
 #[test]
 fn test_legacy_config_with_include_field_still_loads() {
     let dir = TempDir::new().unwrap();
-    let tokensave_dir = dir.path().join(".tokensave");
+    let tokensave_dir = tokensave::config::get_tokensave_dir(dir.path());
     std::fs::create_dir_all(&tokensave_dir).unwrap();
     // Simulate an old config that still has an "include" field
     let legacy_json = r#"{
@@ -445,8 +457,12 @@ fn resolve_path_with_discovery_makes_a_relative_argument_absolute() {
 fn test_discover_project_root_finds_parent() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
-    std::fs::create_dir_all(root.join(".tokensave")).unwrap();
-    std::fs::write(root.join(".tokensave").join("tokensave.db"), b"fake").unwrap();
+    std::fs::create_dir_all(tokensave::config::get_tokensave_dir(root)).unwrap();
+    std::fs::write(
+        tokensave::config::get_tokensave_dir(root).join("tokensave.db"),
+        b"fake",
+    )
+    .unwrap();
     let child = root.join("src").join("mcp");
     std::fs::create_dir_all(&child).unwrap();
 
@@ -465,8 +481,12 @@ fn test_discover_project_root_returns_none() {
 fn test_discover_project_root_at_root_itself() {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path();
-    std::fs::create_dir_all(root.join(".tokensave")).unwrap();
-    std::fs::write(root.join(".tokensave").join("tokensave.db"), b"fake").unwrap();
+    std::fs::create_dir_all(tokensave::config::get_tokensave_dir(root)).unwrap();
+    std::fs::write(
+        tokensave::config::get_tokensave_dir(root).join("tokensave.db"),
+        b"fake",
+    )
+    .unwrap();
 
     let found = tokensave::config::discover_project_root(root);
     assert_eq!(found, Some(root.to_path_buf()));
@@ -475,11 +495,20 @@ fn test_discover_project_root_at_root_itself() {
 #[test]
 fn cpu_usage_defaults_and_legacy_configs() {
     use tokensave::cpu::CpuUsage;
-    assert_eq!(TokenSaveConfig::default().cpu_usage, CpuUsage::Balanced);
-    let mut legacy = serde_json::to_value(TokenSaveConfig::default()).unwrap();
-    legacy.as_object_mut().unwrap().remove("cpu_usage");
+    // A new project pins nothing: it follows the global settings (#752).
+    assert_eq!(TokenSaveConfig::default().cpu_usage, None);
+    let written = serde_json::to_value(TokenSaveConfig::default()).unwrap();
+    assert!(written.get("cpu_usage").is_none(), "{written}");
+    // Configs written before #752 always carried `cpu_usage`; it stays a pin.
+    let mut legacy = written;
+    legacy["cpu_usage"] = serde_json::json!("balanced");
     let config: TokenSaveConfig = serde_json::from_value(legacy).unwrap();
-    assert_eq!(config.cpu_usage, CpuUsage::Balanced);
+    assert_eq!(config.cpu_usage, Some(CpuUsage::Balanced));
+    // An explicit null means unset.
+    let mut null = serde_json::to_value(TokenSaveConfig::default()).unwrap();
+    null["cpu_usage"] = serde_json::Value::Null;
+    let config: TokenSaveConfig = serde_json::from_value(null).unwrap();
+    assert_eq!(config.cpu_usage, None);
 }
 
 #[test]
@@ -488,11 +517,11 @@ fn cpu_usage_profiles_round_trip_through_existing_config() {
     for profile in [CpuUsage::Low, CpuUsage::Balanced, CpuUsage::Performance] {
         let dir = TempDir::new().unwrap();
         let config = TokenSaveConfig {
-            cpu_usage: profile,
+            cpu_usage: Some(profile),
             ..Default::default()
         };
         save_config(dir.path(), &config).unwrap();
-        assert_eq!(load_config(dir.path()).unwrap().cpu_usage, profile);
+        assert_eq!(load_config(dir.path()).unwrap().cpu_usage, Some(profile));
     }
 }
 
@@ -500,12 +529,8 @@ fn cpu_usage_profiles_round_trip_through_existing_config() {
 fn invalid_cpu_usage_reports_valid_choices_and_config_path() {
     let dir = TempDir::new().unwrap();
     save_config(dir.path(), &TokenSaveConfig::default()).unwrap();
-    let path = dir.path().join(".tokensave").join("config.json");
-    for invalid in [
-        serde_json::json!("turbo"),
-        serde_json::json!(null),
-        serde_json::json!(2),
-    ] {
+    let path = tokensave::config::get_tokensave_dir(dir.path()).join("config.json");
+    for invalid in [serde_json::json!("turbo"), serde_json::json!(2)] {
         let mut config = serde_json::to_value(TokenSaveConfig::default()).unwrap();
         config["cpu_usage"] = invalid;
         std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
@@ -554,12 +579,8 @@ fn memory_usage_profiles_round_trip_through_existing_config() {
 fn invalid_memory_usage_reports_valid_choices_and_config_path() {
     let dir = TempDir::new().unwrap();
     save_config(dir.path(), &TokenSaveConfig::default()).unwrap();
-    let path = dir.path().join(".tokensave").join("config.json");
-    for invalid in [
-        serde_json::json!("turbo"),
-        serde_json::json!(null),
-        serde_json::json!(2),
-    ] {
+    let path = tokensave::config::get_tokensave_dir(dir.path()).join("config.json");
+    for invalid in [serde_json::json!("turbo"), serde_json::json!(2)] {
         let mut config = serde_json::to_value(TokenSaveConfig::default()).unwrap();
         config["memory_usage"] = invalid;
         std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();

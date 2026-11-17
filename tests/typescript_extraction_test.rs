@@ -1,6 +1,6 @@
 use tokensave::extraction::LanguageExtractor;
 use tokensave::extraction::TypeScriptExtractor;
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, ExtractionResult, NodeKind, Visibility};
 
 #[test]
 fn test_ts_file_node_is_root() {

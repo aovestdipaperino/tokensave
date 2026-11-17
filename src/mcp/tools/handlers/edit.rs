@@ -225,6 +225,54 @@ pub(super) async fn handle_delete_symbol(cg: &TokenSave, args: Value) -> Result<
     })
 }
 
+/// Handles `tokensave_create_file` (#920). See [`TokenSave::create_file`]
+/// for the containment rules, which are stricter than the other edit tools'.
+pub(super) async fn handle_create_file(cg: &TokenSave, args: Value) -> Result<ToolResult> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: path".to_string(),
+        })?;
+    let content = args
+        .get("content")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| TokenSaveError::Config {
+            message: "missing required parameter: content".to_string(),
+        })?;
+    let overwrite = args
+        .get("overwrite")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    let result = cg.create_file(path, content, overwrite).await?;
+    let touched_files = if result.success {
+        vec![result.file_path.clone()]
+    } else {
+        Vec::new()
+    };
+    let mut value = json!({
+        "ok": result.success,
+        "file": result.file_path,
+        "message": result.message,
+    });
+    if !result.resolved_path.is_empty() {
+        value["resolved_path"] = json!(result.resolved_path);
+    }
+    if result.success {
+        value["bytes"] = json!(result.bytes);
+        value["overwritten"] = json!(result.overwritten);
+        value["indexed"] = json!(result.indexed);
+        value["digest"] = json!(result.digest);
+    }
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&value).unwrap_or_default() }]
+        }),
+        touched_files,
+    })
+}
+
 pub(super) async fn handle_replace_lines(cg: &TokenSave, args: Value) -> Result<ToolResult> {
     let path = args
         .get("path")

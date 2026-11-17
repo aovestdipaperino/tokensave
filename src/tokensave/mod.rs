@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use rayon::prelude::*;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use walkdir::WalkDir;
 
 use crate::branch;
@@ -19,7 +19,12 @@ use crate::extraction::LanguageRegistry;
 use crate::graph::{GraphQueryManager, GraphTraverser};
 use crate::resolution::{AmbiguityRefKey, ReferenceResolver, TouchedNode, TouchedSet};
 use crate::sync;
-use crate::types::*;
+use crate::types::{
+    AmbiguousCall, AstGrepResult, BuildContextOptions, CallReference, Edge, EdgeKind, EditResult,
+    ExecutableBodyDocument, ExtractionResult, FileKind, FileRecord, GraphStats, InsertResult,
+    LineReplaceResult, MultiEditResult, Node, NodeKind, ResolvedRef, SearchResult, Subgraph,
+    TaskContext, UnresolvedRef,
+};
 
 mod extract;
 mod guard;
@@ -30,18 +35,21 @@ mod rename;
 mod runtime;
 mod staleness;
 mod util;
+mod watch;
 
 pub(crate) use extract::*;
 pub(crate) use guard::*;
 pub use guard::{
-    acquire_branch_operation_lock, try_acquire_sync_lock, BranchOperationLock, SyncLockGuard,
+    acquire_branch_operation_lock, try_acquire_auto_sync_lock, try_acquire_sync_lock,
+    AutoSyncLockGuard, BranchOperationLock, SyncLockGuard,
 };
-pub use indexing::detect_skipped_hidden_dirs;
+pub use indexing::{detect_skipped_hidden_dirs, detect_tracked_ambiguous_excludes};
 pub use rename::{validate_identifier, RenameConfidence, RenameOutcome, RenamePlan, RenameSite};
 pub use runtime::BranchRuntime;
 pub use staleness::{AutoSyncScope, BranchDrift, DEFAULT_MAX_AUTO_SYNC_FILES};
 pub use util::is_test_file;
 pub(crate) use util::*;
+pub use watch::{is_transient_file_name, WatchPlan, WatchedChange};
 
 /// Central orchestrator that coordinates all subsystems of the code graph.
 ///
@@ -65,6 +73,13 @@ pub struct TokenSave {
     /// [`Self::find_stale_files_bounded`]; explicit `sync` ignores it.
     /// Seeded from `config.max_auto_sync_files`.
     max_auto_sync_files: usize,
+    /// Effective CPU usage profile and where it came from, resolved once at
+    /// open: `TOKENSAVE_CPU_USAGE`, the project's `cpu_usage`, the global
+    /// `cpu_usage`, the global hardware benchmark, then `balanced` (#752).
+    cpu_usage: (
+        crate::cpu::CpuUsage,
+        crate::global_benchmark::CpuUsageSource,
+    ),
 }
 
 /// A decision recorded by an agent during a session.
@@ -158,19 +173,22 @@ impl TokenSave {
     /// Creates the `.tokensave` directory, writes a default configuration
     /// (preserving existing project settings), and initializes a fresh `SQLite` database.
     pub async fn init(project_root: &Path) -> Result<Self> {
-        Self::init_with_cpu_usage(project_root, load_config(project_root)?.cpu_usage).await
+        Self::init_with_cpu_usage(project_root, None).await
     }
 
-    /// Like [`Self::init`], but stores `cpu_usage` instead of the existing
-    /// profile. Used by `tokensave init` after benchmarking the host.
+    /// Like [`Self::init`], but `Some(profile)` pins the project's
+    /// `cpu_usage` (`tokensave init --cpu-usage`). `None` keeps the
+    /// project's existing setting, which for a new project means following
+    /// the global settings and hardware benchmark.
     pub async fn init_with_cpu_usage(
         project_root: &Path,
-        cpu_usage: crate::cpu::CpuUsage,
+        cpu_usage: Option<crate::cpu::CpuUsage>,
     ) -> Result<Self> {
+        let existing = load_config(project_root)?;
         let config = TokenSaveConfig {
-            cpu_usage,
+            cpu_usage: cpu_usage.or(existing.cpu_usage),
             root_dir: project_root.to_string_lossy().to_string(),
-            ..load_config(project_root)?
+            ..existing
         };
         save_config(project_root, &config)?;
 
@@ -189,6 +207,7 @@ impl TokenSave {
         Ok(Self {
             db,
             max_auto_sync_files: config.max_auto_sync_files,
+            cpu_usage: crate::global_benchmark::effective_cpu_usage(config.cpu_usage),
             config,
             project_root: project_root.to_path_buf(),
             registry: LanguageRegistry::new(),
@@ -210,7 +229,12 @@ impl TokenSave {
     /// parallelism, so it follows the project's configured policy rather than
     /// a hard-coded thread count.
     pub fn cpu_usage(&self) -> crate::cpu::CpuUsage {
-        self.config.cpu_usage
+        self.cpu_usage.0
+    }
+
+    /// Where [`Self::cpu_usage`] came from.
+    pub fn cpu_usage_source(&self) -> crate::global_benchmark::CpuUsageSource {
+        self.cpu_usage.1
     }
 
     /// Overrides the automatic-sync file ceiling for this handle, without
@@ -226,9 +250,15 @@ impl TokenSave {
     /// added columns) signals that a forced reindex is needed to backfill the
     /// new schema. Falls back to `false` when the version cannot be read.
     pub async fn needs_schema_upgrade(&self) -> bool {
-        crate::db::migrations::read_schema_version(self.db.conn())
-            .await
-            .is_ok_and(|v| v < crate::db::migrations::latest_version())
+        let mut span = crate::profile::span(crate::profile::DbOp::ReadSchemaVersion);
+        span.mark_cancellable();
+        if let Ok(version) = crate::db::migrations::read_schema_version(self.db.conn()).await {
+            span.finish();
+            version < crate::db::migrations::latest_version()
+        } else {
+            span.fail();
+            false
+        }
     }
 
     /// Opens an existing `TokenSave` project at the given root.
@@ -257,13 +287,46 @@ impl TokenSave {
         let tokensave_dir = get_tokensave_dir(project_root);
         let active_branch = branch::current_branch(project_root);
 
+        let (candidate, _, _) =
+            Self::resolve_db_for_branch(project_root, &tokensave_dir, active_branch.as_deref());
+        if let Err(error) =
+            crate::db::compatibility::preflight(&candidate, crate::db::migrations::latest_version())
+                .await
+        {
+            if crate::db::compatibility::is_refusal(&error) {
+                return Err(error);
+            }
+            if Database::is_corruption_error(&error) {
+                return Err(corruption_refusal(&candidate, &error));
+            }
+            // Other open errors are handled below.
+        }
+
+        // A default branch renamed since init would otherwise be auto-tracked
+        // below as an ordinary branch, duplicating its database (#874). Best
+        // effort, like auto-track: never fail open() on this.
+        match branch::reconcile_default_branch(project_root, &tokensave_dir).await {
+            Ok(branch::DefaultBranchState::Renamable { recorded, detected }) => eprintln!(
+                "[tokensave] default branch updated: {recorded} → {detected} \
+                 ({recorded} no longer exists)"
+            ),
+            Ok(state) => {
+                if let Some(warning) = state.warning() {
+                    eprintln!("[tokensave] warning: {warning}");
+                }
+            }
+            Err(e) => eprintln!("[tokensave] default branch check skipped: {e}"),
+        }
+
         // Transparent auto-track: when branch metadata exists and the active
         // branch is untracked, copy the ancestor DB so queries + get_stats serve
         // a real per-branch DB instead of silently falling back. Best-effort —
-        // never fail open() on this. Gated by config.auto_track, overridable
-        // per-run via TOKENSAVE_AUTO_TRACK (git-hook path is separate).
+        // never fail open() on this. Gated by config.auto_track (on by default,
+        // #922), overridable per-run via TOKENSAVE_AUTO_TRACK; the
+        // post-checkout hook applies the same gate.
         let auto_track =
             crate::config::env_bool_override("TOKENSAVE_AUTO_TRACK", config.auto_track);
+        let mut auto_track_error = None;
         if auto_track {
             if let Some(b) = active_branch.as_deref() {
                 match branch::track_branch_copy(project_root, &tokensave_dir, b).await {
@@ -272,13 +335,22 @@ impl TokenSave {
                          ancestor; run `tokensave sync` to refresh)"
                     ),
                     Ok(false) => {}
-                    Err(e) => eprintln!("[tokensave] auto-track skipped for '{b}': {e}"),
+                    Err(e) => {
+                        eprintln!("[tokensave] auto-track skipped for '{b}': {e}");
+                        auto_track_error = Some(e.to_string());
+                    }
                 }
             }
         }
 
-        let (db_path, serving_branch, fallback_warning) =
+        let (db_path, serving_branch, mut fallback_warning) =
             Self::resolve_db_for_branch(project_root, &tokensave_dir, active_branch.as_deref());
+        // #877: stderr never reaches an MCP client, so carry the reason
+        // automatic tracking failed on the warning the client does see.
+        if let (Some(warning), Some(error)) = (fallback_warning.as_mut(), auto_track_error) {
+            warning.push_str(" Automatic branch tracking failed: ");
+            warning.push_str(&error);
+        }
 
         // Protect the selected DB as well as HEAD: an untracked branch can
         // be borrowing the index of an ancestor whose Git ref was deleted.
@@ -295,28 +367,39 @@ impl TokenSave {
 
         // If the dirty sentinel exists, a previous sync/index was interrupted.
         // Check integrity and rebuild if necessary.
-        let crashed = has_dirty_sentinel(project_root);
+        let database = dirty_database_name(&tokensave_dir, &db_path);
+        let crashed = has_dirty_sentinel(project_root, &database);
         if crashed {
             eprintln!(
                 "[tokensave] previous operation was interrupted — checking database integrity…"
             );
         }
 
-        // Try to open; if the database is completely unreadable, delete and
-        // re-initialize rather than failing permanently.
+        // Corruption must preserve the database, including user-authored state.
         let open_result = Database::open(&db_path).await;
         let (db, migrated) = match open_result {
             Ok(pair) => pair,
-            Err(e)
-                if Database::is_corruption_error(&e)
-                    || crashed
-                    || (rebuild_failed_migration && Database::is_migration_error(&e)) =>
-            {
+            Err(e) if crate::db::compatibility::is_refusal(&e) => return Err(e),
+            Err(e) if Database::is_corruption_error(&e) => {
+                return Err(corruption_refusal(&db_path, &e));
+            }
+            Err(e) if rebuild_failed_migration && Database::is_migration_error(&e) => {
                 // Never delete a database over a condition that clears by
                 // itself, or while another tokensave process is using it:
                 // the holder would keep writing to an unlinked file.
                 if crate::db::migrations::is_environmental_error(&e) {
                     return Err(e);
+                }
+                // The rebuild indexes the working tree. Refuse before the
+                // delete when the database belongs to another branch (#865).
+                let meta = branch_meta::load_branch_meta(&tokensave_dir);
+                if let Some(owner) = meta.as_ref().and_then(|meta| {
+                    borrowed_index_owner(meta, active_branch.as_deref(), serving_branch.as_deref())
+                }) {
+                    let refusal = borrowed_index_refusal(active_branch.as_deref(), owner);
+                    return Err(TokenSaveError::Config {
+                        message: format!("{e}\nNot rebuilding the database: {refusal}"),
+                    });
                 }
                 let lock = match rebuild_refusal(project_root, &db_path) {
                     Ok(lock) => lock,
@@ -326,19 +409,16 @@ impl TokenSave {
                         });
                     }
                 };
-                if Database::is_migration_error(&e) {
-                    eprintln!("[tokensave] {e}\n[tokensave] rebuilding the database…");
-                } else {
-                    print_corruption_warning();
-                }
+                eprintln!("[tokensave] {e}\n[tokensave] rebuilding the database…");
                 delete_db_files(&db_path);
-                clear_dirty_sentinel(project_root);
+                clear_dirty_sentinel(project_root, &database);
                 let (db, _) = Database::initialize(&db_path).await?;
                 // The index pass below takes the sync lock itself.
                 drop(lock);
                 let ts = Self {
                     db,
                     max_auto_sync_files: config.max_auto_sync_files,
+                    cpu_usage: crate::global_benchmark::effective_cpu_usage(config.cpu_usage),
                     config,
                     project_root: project_root.to_path_buf(),
                     registry: LanguageRegistry::new(),
@@ -357,54 +437,48 @@ impl TokenSave {
             Err(e) => return Err(e),
         };
 
-        // If the sentinel was set but the database opened successfully, run a
-        // quick integrity check.
-        if crashed {
-            let intact = db.quick_check().await.unwrap_or(false);
-            if !intact {
-                print_corruption_warning();
-                drop(db);
-                delete_db_files(&db_path);
-                clear_dirty_sentinel(project_root);
-                let (new_db, _) = Database::initialize(&db_path).await?;
-                let ts = Self {
-                    db: new_db,
-                    max_auto_sync_files: config.max_auto_sync_files,
-                    config,
-                    project_root: project_root.to_path_buf(),
-                    registry: LanguageRegistry::new(),
-                    tracks_checkout: true,
-                    active_branch: active_branch.clone(),
-                    serving_branch: serving_branch.clone(),
-                    fallback_warning: fallback_warning.clone(),
-                };
-                ts.index_all_with_progress(|c, t, f| {
-                    eprintln!("[tokensave] re-indexing [{c}/{t}] {f}");
-                })
-                .await?;
-                eprintln!("[tokensave] re-index complete.");
-                return Ok(ts);
+        // Never turn I/O or lock failures into a corruption verdict. Keep the
+        // sentinel until the complete source-derived graph has been rebuilt.
+        let recovery_lock = if crashed && !sync_in_progress(project_root) {
+            Some(try_acquire_sync_lock(project_root)?)
+        } else {
+            None
+        };
+        // Another writer may have completed between observing the sentinel
+        // and acquiring the lock. Recheck while holding exclusive ownership.
+        let recover_interrupted =
+            recovery_lock.is_some() && has_dirty_sentinel(project_root, &database);
+        if (recover_interrupted || migrated)
+            && serving_branch.is_some()
+            && serving_branch != active_branch
+        {
+            return Err(TokenSaveError::Config {
+                message: "Cannot rebuild a borrowed branch database from the current checkout. \
+                    Check out its owning branch and retry recovery; the dirty sentinel is preserved."
+                    .into(),
+            });
+        }
+        if recover_interrupted {
+            match db.quick_check().await {
+                Ok(true) => {}
+                Ok(false) => return Err(corruption_refusal(&db_path, "quick_check failed")),
+                Err(e) if Database::is_corruption_error(&e) => {
+                    return Err(corruption_refusal(&db_path, &e));
+                }
+                Err(e) => return Err(e),
             }
-            // `quick_check` validates the B-tree but cannot see a bulk load
-            // that dropped its indexes and never recreated them: the rows are
-            // structurally valid, just un-indexed and possibly duplicated
-            // (#318). Detect that state and re-run finalization, which dedupes
-            // the edges and rebuilds every dropped index — far cheaper than a
-            // full re-index and enough to restore a correct, fast graph.
-            if db.needs_bulk_load_finalization().await.unwrap_or(false) {
-                eprintln!(
-                    "[tokensave] previous bulk load did not finalize — deduping edges and rebuilding indexes…"
-                );
+            // Restore external-content FTS before begin_bulk_load clears it
+            // again. Repeating DELETE against an already emptied FTS index
+            // can otherwise fail with SQLITE_CORRUPT (#864).
+            if db.needs_bulk_load_finalization().await? {
                 db.end_bulk_load().await?;
             }
-
-            // DB is fine — clean up the stale sentinel.
-            clear_dirty_sentinel(project_root);
         }
 
         let ts = Self {
             db,
             max_auto_sync_files: config.max_auto_sync_files,
+            cpu_usage: crate::global_benchmark::effective_cpu_usage(config.cpu_usage),
             config,
             project_root: project_root.to_path_buf(),
             registry: LanguageRegistry::new(),
@@ -414,11 +488,21 @@ impl TokenSave {
             fallback_warning,
         };
 
-        if migrated {
-            eprintln!("[tokensave] schema changed — performing full re-index…");
-            ts.index_all_with_progress(|current, total, file| {
-                eprintln!("[tokensave] re-indexing [{current}/{total}] {file}");
-            })
+        if migrated || recover_interrupted {
+            eprintln!(
+                "[tokensave] schema changed or operation interrupted — performing full re-index…"
+            );
+            let lock = match recovery_lock {
+                Some(lock) => lock,
+                None => try_acquire_sync_lock(project_root)?,
+            };
+            ts.index_all_with_lock(
+                |current, total, file| {
+                    eprintln!("[tokensave] re-indexing [{current}/{total}] {file}");
+                },
+                |_| {},
+                lock,
+            )
             .await?;
             eprintln!("[tokensave] re-index complete.");
         }
@@ -431,7 +515,7 @@ impl TokenSave {
     /// Returns `(db_path, serving_branch, fallback_warning)`.
     /// `serving_branch` is the branch whose DB is actually opened.
     /// The warning is `Some` when falling back to an ancestor branch's DB.
-    fn resolve_db_for_branch(
+    pub(crate) fn resolve_db_for_branch(
         project_root: &Path,
         tokensave_dir: &Path,
         branch: Option<&str>,
@@ -558,6 +642,7 @@ impl TokenSave {
         Ok(Self {
             db,
             max_auto_sync_files: config.max_auto_sync_files,
+            cpu_usage: crate::global_benchmark::effective_cpu_usage(config.cpu_usage),
             config,
             project_root: project_root.to_path_buf(),
             registry: LanguageRegistry::new(),
@@ -604,6 +689,7 @@ impl TokenSave {
         Ok(Self {
             db,
             max_auto_sync_files: config.max_auto_sync_files,
+            cpu_usage: crate::global_benchmark::effective_cpu_usage(config.cpu_usage),
             config,
             project_root: project_root.to_path_buf(),
             registry: LanguageRegistry::new(),
@@ -639,7 +725,7 @@ mod resolve_db_tests {
     /// DB file, the shape that exposes hardcoded `tokensave.db` fallbacks.
     fn setup(default_branch: &str, db_file: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::TempDir::new().unwrap();
-        let tokensave_dir = dir.path().join(".tokensave");
+        let tokensave_dir = crate::config::get_tokensave_dir(dir.path());
         std::fs::create_dir_all(tokensave_dir.join("branches")).unwrap();
         let mut branches = HashMap::new();
         branches.insert(
@@ -714,7 +800,7 @@ mod resolve_db_tests {
     #[test]
     fn missing_branch_meta_keeps_single_db_mode() {
         let dir = tempfile::TempDir::new().unwrap();
-        let tokensave_dir = dir.path().join(".tokensave");
+        let tokensave_dir = crate::config::get_tokensave_dir(dir.path());
         std::fs::create_dir_all(&tokensave_dir).unwrap();
         let (path, serving, warning) =
             TokenSave::resolve_db_for_branch(dir.path(), &tokensave_dir, Some("anything"));

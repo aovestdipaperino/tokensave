@@ -127,6 +127,23 @@ pub fn detect_worktree_index_mismatch(
     })
 }
 
+/// The mismatch for a command that starts in `start_path` with no explicit
+/// project path, found with file checks only.
+///
+/// The MCP server asks git once at startup
+/// ([`detect_worktree_index_mismatch`]). A CLI command runs once and exits, so
+/// it uses [`config::borrowed_worktree_root`](crate::config::borrowed_worktree_root),
+/// which starts no process. That function covers the worktree nested in its
+/// main checkout, the one layout in which the CLI finds a borrowed index.
+pub fn borrowed_index_mismatch(start_path: &Path) -> Option<WorktreeIndexMismatch> {
+    let worktree_root = crate::config::borrowed_worktree_root(start_path)?;
+    let index_root = crate::config::discover_project_root(start_path)?;
+    Some(WorktreeIndexMismatch {
+        worktree_root,
+        index_root,
+    })
+}
+
 /// Verbose multi-line warning for `tokensave status` and similar contexts
 /// where the answer can sit alongside a heads-up block.
 pub fn worktree_mismatch_warning(m: &WorktreeIndexMismatch) -> String {
@@ -156,6 +173,56 @@ pub fn worktree_mismatch_notice(m: &WorktreeIndexMismatch) -> String {
     )
 }
 
+/// The working-tree roots of every checkout of the repository that `dir`
+/// belongs to: the main checkout and each linked worktree, as
+/// `git worktree list` reports them. Bare entries are skipped, since they have
+/// no working tree. Empty when `dir` is not in a git repository or git cannot
+/// run.
+///
+/// The edit tools use this to accept a target in a sibling worktree of the
+/// indexed repository (#866). Git runs in `dir`, which must be a trusted
+/// directory (the indexed project root), never a caller-supplied target: git
+/// reads the configuration of the repository it runs in.
+pub fn repository_worktree_roots(dir: &Path) -> Vec<PathBuf> {
+    let Ok(output) = Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(dir)
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8(output.stdout)
+        .map(|text| parse_worktree_list(&text))
+        .unwrap_or_default()
+}
+
+/// Parses `git worktree list --porcelain` output into the listed non-bare
+/// working-tree paths. Records are separated by blank lines; each starts with
+/// `worktree <path>`.
+fn parse_worktree_list(porcelain: &str) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut path: Option<PathBuf> = None;
+    let mut bare = false;
+    for line in porcelain.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            if let Some(root) = path.take() {
+                if !bare {
+                    roots.push(root);
+                }
+            }
+            bare = false;
+        } else if let Some(listed) = line.strip_prefix("worktree ") {
+            path = Some(PathBuf::from(listed));
+        } else if line == "bare" {
+            bare = true;
+        }
+    }
+    roots
+}
+
 /// Resolve symlinks where possible so tmp/realpath quirks don't break
 /// equality checks. Falls back to a plain `absolutize` when canonicalize
 /// fails (e.g. directory was deleted between rev-parse and the fs call).
@@ -178,6 +245,66 @@ mod tests {
             .status()
             .expect("git not on PATH — required for worktree tests");
         assert!(status.success(), "git {args:?} failed in {}", cwd.display());
+    }
+
+    #[test]
+    fn worktree_list_parser_skips_bare_entries() {
+        let porcelain = "worktree /srv/repo.git\nbare\n\n\
+                         worktree /work/feature\nHEAD 0123\nbranch refs/heads/feature\n\n\
+                         worktree /work/detached\nHEAD 4567\ndetached\nprunable gone\n";
+        assert_eq!(
+            parse_worktree_list(porcelain),
+            vec![
+                PathBuf::from("/work/feature"),
+                PathBuf::from("/work/detached")
+            ]
+        );
+        assert!(parse_worktree_list("").is_empty());
+    }
+
+    #[test]
+    fn repository_worktree_roots_lists_main_and_linked_checkouts() {
+        let tmp = tempdir().unwrap();
+        let main = tmp.path().join("main");
+        fs::create_dir_all(&main).unwrap();
+        run_git(&main, &["init", "-q"]);
+        run_git(
+            &main,
+            &[
+                "-c",
+                "user.email=t@example.com",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+        );
+        let linked = tmp.path().join("linked");
+        run_git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                linked.to_str().unwrap(),
+                "-b",
+                "wt",
+            ],
+        );
+
+        let canonical = |p: &Path| fs::canonicalize(p).unwrap();
+        let roots: Vec<PathBuf> = repository_worktree_roots(&linked)
+            .iter()
+            .map(|p| canonical(p))
+            .collect();
+        assert_eq!(roots, vec![canonical(&main), canonical(&linked)]);
+
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        assert!(repository_worktree_roots(&outside).is_empty());
     }
 
     #[test]

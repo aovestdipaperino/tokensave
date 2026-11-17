@@ -1,0 +1,17 @@
+{
+  "repository": "/absolute/path/to/task-repository",
+  "commit": "REPLACE_WITH_FULL_COMMIT_SHA",
+  "repeats": 3,
+  "timeout_seconds": 600,
+  "arms": {
+    "A": {
+      "driver": ["/absolute/path/to/agent-telemetry-driver", "--tokensave-only"],
+      "metadata": {"tokensave_commit": "PIN_ME", "agent_version": "PIN_ME", "model": "PIN_ME", "provider": "PIN_ME", "pricing_snapshot": "PIN_ME", "caveman": "absent"}
+    },
+    "B": {
+      "driver": ["/absolute/path/to/agent-telemetry-driver", "--with-caveman"],
+      "metadata": {"tokensave_commit": "PIN_ME", "agent_version": "PIN_ME", "model": "PIN_ME", "provider": "PIN_ME", "pricing_snapshot": "PIN_ME", "caveman_commit": "9b68f7ed12b05e7efaff18e65c5a3fc2849fd0a4", "caveman_mode": "caveman", "proxy_compression": "off"}
+    }
+  },
+  "tasks": [{"id": "regression", "prompt": "Fix the supplied regression without changing the public API. Run its regression test.", "verify": ["cargo", "test", "--locked", "regression_test"]}]
+}

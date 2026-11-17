@@ -8,7 +8,7 @@
 //! relative to this source file).
 
 use tokensave::extraction::{FStarExtractor, LanguageExtractor};
-use tokensave::types::*;
+use tokensave::types::{EdgeKind, ExtractionResult, Node, NodeKind, Visibility};
 
 /// The comprehensive F* fixture, embedded at compile time.
 const SAMPLE: &str = include_str!("fixtures/sample.fst");
