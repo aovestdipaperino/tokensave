@@ -9,6 +9,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- `tokensave_health` excludes one-way links between separate cycles from the cyclic-edge count (Refs #1026).
 - `tokensave_read` rejects unknown parameters by name and lists the accepted range syntax, so guessed names such as `start_line`/`end_line` no longer disappear behind a missing-range error or silently produce a full-file read (Refs #1023).
 
 ### Internal

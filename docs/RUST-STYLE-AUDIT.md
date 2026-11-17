@@ -70,13 +70,15 @@ reported separately from that static review.
 | Graph | [#1028](https://github.com/aovestdipaperino/tokensave/pull/1028), `refactor/graph-style-audit` | Commit `dcffca46` in `/tmp/tokensave-graph-style`; 12 library tests and 59 integration tests passed (one manual benchmark ignored); formatting, Clippy and wiki checks passed. Independent of context. |
 | Resolution | [#1029](https://github.com/aovestdipaperino/tokensave/pull/1029), `refactor/resolution-style-audit` | Commit `7a171c0e` in `/tmp/tokensave-resolution-style`; 6 library, 90 scoped lite integration, and 87 Ruby/GDScript-enabled integration tests passed; formatting, Clippy and wiki checks passed. Independent of context. |
 
-The graph review found a separate functional defect:
-[#1026](https://github.com/aovestdipaperino/tokensave/issues/1026). A one-way edge
-between two distinct cyclic components is incorrectly included in the cyclic
-edge count. A standalone harness compiled the unmodified repository health/SCC
-modules with pinned Rust 1.100.0 and reproduced `(0.0, 5)` for four cyclic edges
-plus one bridge. Expected cyclic-edge count is four (score approximately 0.2).
-This finding is tracked separately and is not fixed by the style cleanup.
+The graph review in [#1028](https://github.com/aovestdipaperino/tokensave/pull/1028)
+merged into `master` and identified a separate defect in
+[#1026](https://github.com/aovestdipaperino/tokensave/issues/1026). The pinned-Rust
+reproduction returned `(0.0, 5)` for four cyclic edges plus one one-way bridge.
+The independent fix on `fix/acyclicity-scc-edges` retains component IDs and counts
+only edges within a single multi-node strongly connected component. Its regression
+expects four cyclic edges and a score of approximately 0.2. A second test covers
+self-loops in singleton and multi-node components. Both pass with pinned Rust
+1.100.0. Merge and release of the fix are pending.
 
 ## Validation
 

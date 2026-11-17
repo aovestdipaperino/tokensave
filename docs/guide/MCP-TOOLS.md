@@ -125,6 +125,10 @@ Five tools surface structural quality signals from the existing graph. The compo
 | `tokensave_dsm` | Design Structure Matrix in `stats`, `clusters`, or `matrix` form -- reveals layering violations and hidden coupling |
 | `tokensave_test_risk` | Risk-weighted test-gap analysis combining complexity, fan-in, coverage, and 90-day git churn into a single score |
 
+The acyclicity score is one minus the fraction of dependency edges whose endpoints
+belong to the same strongly connected component of two or more files. One-way
+links between separate cycles contribute only to the total edge count.
+
 ### Sessions
 
 Snapshot health metrics at the start of an AI coding session, then diff at the end to see what improved or regressed.
