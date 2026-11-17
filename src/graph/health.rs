@@ -64,6 +64,8 @@ pub fn gini_label(gini: f64) -> &'static str {
 
 /// Computes the acyclicity score for a directed graph.
 /// Uses Tarjan's SCC algorithm. Score = 1.0 - (`edges_in_nontrivial_SCCs` / `total_edges`).
+/// Only edges within the same SCC of two or more nodes contribute to the
+/// cyclic-edge count. This excludes self-loops on singleton SCCs.
 /// Returns (score, `number_of_edges_in_cycles`).
 ///
 /// This existing public pair is kept for caller compatibility; both values are
@@ -79,25 +81,26 @@ pub fn acyclicity_score<S1: BuildHasher, S2: BuildHasher>(
 
     let sccs = scc::tarjan_scc(adj);
 
-    // Build a set of nodes in nontrivial SCCs (size > 1)
-    let mut in_cycle: HashSet<&str> = HashSet::new();
-    for scc in &sccs {
-        if scc.len() > 1 {
-            for node in scc {
-                in_cycle.insert(node.as_str());
+    // Borrow at most one key per graph node for this score calculation.
+    let mut node_to_scc: HashMap<&str, usize> = HashMap::new();
+    for (id, component) in sccs.iter().enumerate() {
+        if component.len() > 1 {
+            for node in component {
+                node_to_scc.insert(node.as_str(), id);
             }
         }
     }
 
-    // Count edges where both endpoints are in nontrivial SCCs
     let edges_in_cycles: usize = adj
         .iter()
-        .filter(|(src, _)| in_cycle.contains(src.as_str()))
-        .map(|(_src, targets)| {
-            targets
-                .iter()
-                .filter(|tgt| in_cycle.contains(tgt.as_str()))
-                .count()
+        .filter_map(|(src, targets)| {
+            let src_scc = node_to_scc.get(src.as_str())?;
+            Some(
+                targets
+                    .iter()
+                    .filter(|tgt| node_to_scc.get(tgt.as_str()) == Some(src_scc))
+                    .count(),
+            )
         })
         .sum();
 
@@ -425,6 +428,43 @@ pub fn compute_composite_health(dims: &HealthDimensions) -> u32 {
     // Low-weight penalty: skip-test-coverage overuse reduces score by up to 2%.
     let penalized = base * (0.98 + 0.02 * dims.coverage_discipline);
     penalized.round() as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acyclicity_excludes_edges_between_cyclic_components() {
+        let adj = HashMap::from([
+            ("a".to_owned(), HashSet::from(["b".to_owned()])),
+            (
+                "b".to_owned(),
+                HashSet::from(["a".to_owned(), "c".to_owned()]),
+            ),
+            ("c".to_owned(), HashSet::from(["d".to_owned()])),
+            ("d".to_owned(), HashSet::from(["c".to_owned()])),
+        ]);
+
+        let (score, cyclic_edges) = acyclicity_score(&adj);
+        assert_eq!(cyclic_edges, 4);
+        assert!((score - 0.2).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn acyclicity_counts_self_loops_only_in_multi_node_components() {
+        let singleton = HashMap::from([("a".to_owned(), HashSet::from(["a".to_owned()]))]);
+        let pair = HashMap::from([
+            (
+                "a".to_owned(),
+                HashSet::from(["a".to_owned(), "b".to_owned()]),
+            ),
+            ("b".to_owned(), HashSet::from(["a".to_owned()])),
+        ]);
+
+        assert_eq!(acyclicity_score(&singleton), (1.0, 0));
+        assert_eq!(acyclicity_score(&pair), (0.0, 3));
+    }
 }
 
 #[cfg(test)]
