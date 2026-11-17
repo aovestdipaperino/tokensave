@@ -14,6 +14,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Internal
 
+- Add an opt-in Claude Code launcher that composes local TokenSave and an authenticated Auto Ontology MCP endpoint (Refs #1022).
 - Evaluate NVIDIA Auto Ontology interoperability with a reproducible offline glossary-to-OKF PoC and a retrieval benchmark (Refs #1022). See [the evaluation](docs/AUTO-ONTOLOGY-EVALUATION.md).
 - Add an opt-in direct-parser ASan audit with C/C++ calibration controls, native object instrumentation checks, bounded corpus runs and Linux findings (Refs #958).
 

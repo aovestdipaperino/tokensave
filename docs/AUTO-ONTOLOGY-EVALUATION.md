@@ -3,11 +3,13 @@
 [Refs #1022](https://github.com/aovestdipaperino/tokensave/issues/1022)
 
 **Decision.** Rely on agent-side MCP composition when an agent needs a live
-catalog. For offline use, curate a small OKF bundle and import it with the
+catalog. The included Claude Code launcher configures that composition for one
+session. For offline use, curate a small OKF bundle and import it with the
 existing TokenSave commands. The PoC retrieved catalog definitions and linked
 them to indexed code, but it did not establish a benefit over live composition
 or ordinary, curated OKF. Defer a general adapter and a built-in connector.
-There is no new runtime behavior or dependency.
+The launcher is run explicitly from a checkout and adds no dependency to the
+TokenSave binary or its installation.
 
 Two use cases drove the evaluation: locating the code that implements a
 business concept and bringing its separately maintained definition into a code
@@ -31,7 +33,7 @@ and the [Apache converter](https://github.com/apache/ossie-converters/tree/cb4b4
 
 | Integration | Assessment |
 | --- | --- |
-| MCP composition | Register local TokenSave stdio and the authenticated Auto Ontology HTTP MCP endpoint in the same client. Route code location to TokenSave and glossary questions to Auto Ontology. This preserves catalog freshness and user permissions. It requires a compatible client, a reachable deployment, and separate catalog configuration. Reviewed against the pinned interface. Live sign-in and tool calls were not exercised. |
+| MCP composition | Register local TokenSave stdio and the authenticated Auto Ontology HTTP MCP endpoint in the same client. Route code location to TokenSave and glossary questions to Auto Ontology. This preserves catalog freshness and user permissions. It requires a compatible client, a reachable deployment, and separate catalog configuration. The Claude Code launcher is covered by a subprocess smoke test. Live sign-in and tool calls were not exercised. |
 | Offline projection | Demonstrated with pinned converter output and local OKF import. It needs an explicit, reviewed concept-to-code map. Snapshots permit offline lookup but may go stale, and a local bundle has no per-term catalog ACL. |
 | Explicit connector | The public gateway exposes authenticated REST and MCP surfaces. A connector would duplicate client routing and take on credential handling, retries, scope, and cross-server error reporting. The fixture gives no reason to add this to TokenSave. |
 
@@ -104,6 +106,8 @@ bundle. The single host, debug build, and tiny sample constrain any performance
 inference.
 
 ## Live setup and operational considerations
+
+The [agent integrations guide](guide/AGENT-INTEGRATIONS.md#using-auto-ontology-with-claude-code) shows how to launch both servers in one Claude Code session.
 
 For a live trial, start the pinned Auto Ontology deployment with its web/auth
 gateway, backend, ingestion service, and PostgreSQL with pgvector. Configure a
