@@ -419,7 +419,6 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 ## Gotchas and workflow quirks
 
 - **Vendored libsql patch (#367).** `vendor/libsql` is a copy of libsql 0.9.30 with a one-line fix for a double-close use-after-free (intermittent `STATUS_ACCESS_VIOLATION` on Windows). `tests/vendored_libsql_test.rs` fails if the patch and vendored copy drift. `cargo package` strips `[patch.crates-io]` and excludes `vendor/libsql`, so those tests pass trivially in a published crate. Delete the patch + vendor copy together once upstream ships the fix.
-- **tree-sitter-dart is forced to 0.2** via a direct dependency because 0.1 fails to wrap top-level declarations, breaking the Dart extractor.
 - **Versioning is not SemVer.** Patch/minor/major encode required maintenance: patch = no action, minor = silent reinstall of agent integrations, major = reinstall + forced full reindex. The DB schema has its own version (`LATEST_VERSION` in `src/db/migrations.rs`, stored in `PRAGMA user_version`); reindex detection is schema-driven, not release-version-driven. See `TOKENSAVE-VERSIONING.md`.
 - **CHANGELOG.md is huge (~500 KB).** The release workflow extracts the `## [<version>]` block; run `scripts/prepare-release.py` before a release to promote `[Unreleased]` content into it (idempotent).
 - **CI disk-space flake.** The Linux runner ships ~10 GB free; the ~713 MB cache restore plus the cargo target dir (34 tree-sitter parsers) can exceed it, so CI frees disk space first.
