@@ -64,6 +64,17 @@ Every graph and diagram created or updated for repository documentation MUST
 use Mermaid. Embed Mermaid source in fenced `mermaid` code blocks in Markdown
 so GitHub can render it and contributors can edit it directly.
 
+## Star history
+
+The README star-history chart must always represent
+`aovestdipaperino/tokensave`, including on branches and in forks (#1036).
+Keep its data source and any associated links tied to that repository; never
+replace its history with a fork's stars. Keep chart regeneration restricted to
+the upstream repository, and verify the configuration and generated assets
+when changing the chart or its workflow. Preserve the daily/manual schedule and
+avoid star-triggered runs unless a deliberate change is made (see #265). Keep
+this shared rule aligned between `master` and `beta`.
+
 ## README consistency and installation
 
 Keep `README.md` synchronized between `master` and `beta`. Installation
