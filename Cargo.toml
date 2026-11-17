@@ -157,6 +157,8 @@ ureq = { version = "3", features = ["json", "platform-verifier"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 thiserror = "2"
+# Dated, source-cited Anthropic/OpenAI list prices for the offline pricing fallback.
+llm-prices = "1.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.11"
