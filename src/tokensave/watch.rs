@@ -296,6 +296,111 @@ impl TokenSave {
         Some(dirs)
     }
 
+    /// Lists the immediate children of directories named by kqueue. The
+    /// backend can name an existing child when another child was created.
+    /// The caller plans these hints with the same scope rules as direct events.
+    pub(crate) fn kqueue_directory_changes(
+        &self,
+        changes: &[WatchedChange],
+        watched: &HashSet<PathBuf>,
+        removed: &HashSet<PathBuf>,
+    ) -> std::io::Result<Vec<WatchedChange>> {
+        use crate::mcp::fs_watch::MAX_PENDING_PATHS;
+
+        let mut directories = HashSet::new();
+        let mut additional = Vec::new();
+        let mut ignore_cache = HashMap::new();
+        for change in changes {
+            let Some(rel) = self.watch_relative(&change.path) else {
+                continue;
+            };
+            let dir = self.project_root.join(&rel);
+            if !dir.is_dir()
+                || !directories.insert(dir.clone())
+                || self.is_watch_internal(&rel)
+                || (!watched.contains(&dir)
+                    && !self.watch_ancestors_in_scope(&rel, true, &mut ignore_cache))
+            {
+                continue;
+            }
+            for entry in std::fs::read_dir(&dir)? {
+                if additional.len() == MAX_PENDING_PATHS {
+                    return Err(std::io::Error::other(format!(
+                        "kqueue directory listing exceeded {MAX_PENDING_PATHS} entries in one batch"
+                    )));
+                }
+                let entry = entry?;
+                let path = entry.path();
+                let structural = (entry.file_type()?.is_dir()
+                    || path.is_symlink() && path.is_dir())
+                    && (!watched.contains(&path)
+                        || path.ancestors().any(|parent| removed.contains(parent)));
+                additional.push(WatchedChange { path, structural });
+            }
+        }
+        Ok(additional)
+    }
+
+    #[cfg(target_os = "freebsd")]
+    pub(crate) fn kqueue_watch_files(
+        &self,
+        dirs: &[PathBuf],
+    ) -> std::io::Result<(Vec<PathBuf>, bool)> {
+        use crate::mcp::fs_watch::MAX_WATCHED_DIRS;
+
+        let exts = self.watch_supported_extensions();
+        let exts: Vec<_> = exts.iter().map(String::as_str).collect();
+        let mut ignore_cache = HashMap::new();
+        let mut remaining = MAX_WATCHED_DIRS;
+        let mut files = Vec::new();
+        for dir in dirs {
+            let Some(rel) = self.watch_relative(dir) else {
+                continue;
+            };
+            if self.is_watch_internal(&rel)
+                || !self.watch_ancestors_in_scope(&rel, true, &mut ignore_cache)
+            {
+                continue;
+            }
+            let entries = match std::fs::read_dir(dir) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            // The ignore matcher inventories siblings, so process only complete,
+            // bounded listings. Keep registrations from earlier directories.
+            let children = entries
+                .take(remaining + 1)
+                .collect::<std::io::Result<Vec<_>>>()?;
+            if children.len() > remaining {
+                return Ok((files, true));
+            }
+            remaining -= children.len();
+            for entry in children {
+                let path = entry.path();
+                let kind = entry.file_type()?;
+                if !kind.is_file() && !(kind.is_symlink() && path.is_file()) {
+                    continue;
+                }
+                let Some(rel) = self.watch_relative(&path) else {
+                    continue;
+                };
+                let noise = entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(is_transient_file_name);
+                if !noise
+                    && !self.is_watch_internal(&rel)
+                    && !self.is_below_nested_worktree(&rel)
+                    && self.watch_file_in_scope(&rel, &path, &exts, &mut ignore_cache)
+                {
+                    files.push(path);
+                }
+            }
+        }
+        Ok((files, false))
+    }
+
     /// Turns a debounced batch of changed paths into what the index needs.
     ///
     /// Internal and transient paths are dropped. An existing file is passed
@@ -351,7 +456,73 @@ impl TokenSave {
 
 #[cfg(test)]
 mod tests {
-    use super::is_transient_file_name;
+    use super::{is_transient_file_name, HashSet, TokenSave, WatchedChange};
+    use crate::mcp::fs_watch::MAX_PENDING_PATHS;
+
+    #[tokio::test]
+    async fn kqueue_directory_listing_finds_multiple_children_in_scope() {
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("create fixture");
+        };
+        let root = tmp.path();
+        let Ok(cg) = TokenSave::init(root).await else {
+            panic!("initialize fixture");
+        };
+        let src = root.join("src");
+        let new_dir = root.join("new_dir");
+        assert!(std::fs::create_dir(&src).is_ok());
+        assert!(std::fs::create_dir(&new_dir).is_ok());
+        assert!(std::fs::write(root.join(".gitignore"), "src/ignored.rs\n").is_ok());
+        for name in ["a.rs", "b.rs", "ignored.rs", ".#a.rs"] {
+            assert!(std::fs::write(src.join(name), "pub fn fixture() {}\n").is_ok());
+        }
+        let watched = HashSet::from([root.to_path_buf(), src.clone()]);
+        let changes = [root.to_path_buf(), src.clone(), src.clone()].map(|path| WatchedChange {
+            path,
+            structural: false,
+        });
+        let Ok(children) = cg.kqueue_directory_changes(&changes, &watched, &HashSet::new()) else {
+            panic!("list kqueue directory changes");
+        };
+        assert_eq!(
+            children
+                .iter()
+                .filter(|c| c.path == src.join("a.rs"))
+                .count(),
+            1
+        );
+
+        let plan = cg.plan_watch_batch(&children).await;
+        assert_eq!(plan.files, ["src/a.rs", "src/b.rs"]);
+        assert_eq!(plan.new_dirs, [new_dir]);
+        assert!(plan.reconcile);
+    }
+
+    #[tokio::test]
+    async fn kqueue_directory_listing_rejects_partial_results_over_budget() {
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("create fixture");
+        };
+        let Ok(cg) = TokenSave::init(tmp.path()).await else {
+            panic!("initialize fixture");
+        };
+        let src = tmp.path().join("src");
+        assert!(std::fs::create_dir(&src).is_ok());
+        for i in 0..MAX_PENDING_PATHS {
+            assert!(std::fs::write(src.join(format!("{i}.tmp")), "").is_ok());
+        }
+        let changes = [WatchedChange {
+            path: src.clone(),
+            structural: false,
+        }];
+        assert!(cg
+            .kqueue_directory_changes(&changes, &HashSet::new(), &HashSet::new())
+            .is_ok());
+        assert!(std::fs::write(src.join("overflow.tmp"), "").is_ok());
+        assert!(cg
+            .kqueue_directory_changes(&changes, &HashSet::new(), &HashSet::new())
+            .is_err());
+    }
 
     #[test]
     fn transient_names_are_recognised() {

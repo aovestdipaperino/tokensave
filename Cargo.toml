@@ -178,6 +178,11 @@ tree-sitter-vhdl = { version = "1.4", optional = true }
 # asks for one.
 notify = "8"
 
+[target.'cfg(target_os = "freebsd")'.dependencies]
+kqueue = "1.2"
+libc = "0.2"
+mio = { version = "1", features = ["os-ext"] }
+
 [target.'cfg(unix)'.dependencies]
 # Its self-pipe falls back to write when a sandbox denies socket sends.
 signal-hook = "0.3"

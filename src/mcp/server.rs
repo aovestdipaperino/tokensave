@@ -1617,7 +1617,7 @@ impl McpServer {
 
         let (tx, rx) = tokio::sync::mpsc::channel(CHANNEL_CAPACITY);
         let overflow = Arc::new(AtomicBool::new(false));
-        let mut native = match NativeWatcher::start(
+        let native = match NativeWatcher::start(
             &root,
             mode,
             dirs,
@@ -1646,26 +1646,54 @@ impl McpServer {
             settings.debounce.as_millis()
         );
 
-        let apply_weak = weak.clone();
-        fs_watch::run_watch_loop(
+        let uses_kqueue = NativeWatcher::uses_kqueue();
+        fs_watch::run_watch_loop_inner(
             rx,
             overflow,
             settings,
             cancel,
-            move |batch| {
-                let weak = apply_weak.clone();
+            native,
+            move |batch, removed, mut native| {
+                let weak = weak.clone();
                 async move {
-                    match weak.upgrade() {
-                        Some(server) => server.apply_watch_batch(batch).await,
-                        None => fs_watch::WatchOutcome::default(),
+                    #[cfg(target_os = "freebsd")]
+                    let file_dirs = native.file_directories_for_batch(&batch.changes);
+                    let server = weak.upgrade();
+                    let (mut outcome, _recover_watches) = match &server {
+                        Some(server) => {
+                            let kqueue_watches =
+                                uses_kqueue.then_some((native.watched_directories(), &removed));
+                            server.apply_native_watch_batch(batch, kqueue_watches).await
+                        }
+                        None => (fs_watch::WatchOutcome::default(), false),
+                    };
+                    #[cfg(not(target_os = "freebsd"))]
+                    if !removed.is_empty() || !outcome.new_dirs.is_empty() {
+                        native.update_dirs(removed, std::mem::take(&mut outcome.new_dirs));
                     }
+                    #[cfg(target_os = "freebsd")]
+                    {
+                        let mut dirs = native.update_freebsd_dirs(
+                            &removed,
+                            std::mem::take(&mut outcome.new_dirs),
+                            file_dirs,
+                        );
+                        if let Some(server) = &server {
+                            if native.needs_freebsd_recovery(_recover_watches, outcome.reconciled) {
+                                dirs.extend(server.recover_freebsd_watch_dirs(&mut native).await);
+                                dirs.sort_unstable();
+                                dirs.dedup();
+                            }
+                            server
+                                .register_freebsd_watch_files(&mut native, &dirs)
+                                .await;
+                        }
+                    }
+                    (outcome, native)
                 }
             },
-            |new_dirs| native.add_dirs(new_dirs),
         )
         .await;
-        // Dropping the native watcher releases every registered watch.
-        drop(native);
         fs_watch::set_state(&stats, "stopped");
     }
 
@@ -1678,11 +1706,19 @@ impl McpServer {
         &self,
         batch: super::fs_watch::WatchBatch,
     ) -> super::fs_watch::WatchOutcome {
+        self.apply_native_watch_batch(batch, None).await.0
+    }
+
+    async fn apply_native_watch_batch(
+        &self,
+        mut batch: super::fs_watch::WatchBatch,
+        kqueue_watches: Option<(&HashSet<PathBuf>, &HashSet<PathBuf>)>,
+    ) -> (super::fs_watch::WatchOutcome, bool) {
         let mut outcome = super::fs_watch::WatchOutcome::default();
         let stats = &self.fs_watch_stats;
         stats.record_batch(batch.changes.len());
         let Some(cg) = self.cg.as_ref() else {
-            return outcome;
+            return (outcome, false);
         };
         // Same guard as an automatic sync (#400): never write one branch's
         // files into another branch's database.
@@ -1691,29 +1727,66 @@ impl McpServer {
                 "the working tree is on branch '{}' but this server serves '{}'",
                 drift.working_tree, drift.serving
             ));
-            return outcome;
+            let recover =
+                kqueue_watches.is_some_and(|(_, removed)| batch.rescan || !removed.is_empty());
+            if recover {
+                outcome.retry_rescan_after = Some(super::fs_watch::MIN_RECONCILE_INTERVAL);
+            }
+            return (outcome, recover);
         }
         stats.clear_drift();
 
+        if let Some((watched, removed)) = kqueue_watches.filter(|_| !batch.rescan) {
+            match cg.kqueue_directory_changes(&batch.changes, watched, removed) {
+                Ok(children) => {
+                    let mut changes = HashMap::<_, bool>::new();
+                    for change in batch.changes.into_iter().chain(children) {
+                        *changes.entry(change.path).or_default() |= change.structural;
+                    }
+                    batch.changes = changes
+                        .into_iter()
+                        .map(|(path, structural)| crate::tokensave::WatchedChange {
+                            path,
+                            structural,
+                        })
+                        .collect();
+                }
+                Err(error) => {
+                    batch.rescan = true;
+                    batch.reasons.push(error.to_string());
+                }
+            }
+        }
         let plan = cg.plan_watch_batch(&batch.changes).await;
+        let watched_dir_removed = kqueue_watches
+            .is_some_and(|(watched, removed)| removed.iter().any(|path| watched.contains(path)));
         // A per-directory watcher needs the whole new subtree: `mkdir -p` or
         // a moved-in folder brings nested directories with no event of their
         // own. A recursive watch already covers them.
         if super::fs_watch::WatchMode::for_platform() == super::fs_watch::WatchMode::PerDirectory {
-            for dir in &plan.new_dirs {
-                if let Some(subtree) = cg.watch_directories(dir, super::fs_watch::MAX_WATCHED_DIRS)
-                {
-                    outcome.new_dirs.extend(subtree);
+            let mut seen = HashSet::new();
+            let mut candidates = plan.new_dirs;
+            candidates.sort_unstable();
+            for dir in &candidates {
+                if seen.contains(dir) {
+                    continue;
+                }
+                let remaining = super::fs_watch::MAX_WATCHED_DIRS - seen.len();
+                if let Some(subtree) = cg.watch_directories(dir, remaining) {
+                    for path in subtree {
+                        if seen.insert(path.clone()) {
+                            outcome.new_dirs.push(path);
+                        }
+                    }
                 } else {
                     stats.record_error(&format!(
-                        "{} holds more than {} directories; not watching it",
-                        dir.display(),
-                        super::fs_watch::MAX_WATCHED_DIRS
+                        "{} exceeds the remaining budget of {remaining} directories",
+                        dir.display()
                     ));
                 }
             }
         }
-        if batch.rescan || plan.reconcile {
+        if batch.rescan || plan.reconcile || watched_dir_removed {
             if batch.rescan {
                 stats.record_error(&format!(
                     "{}; reconciling with a bounded scan",
@@ -1725,7 +1798,7 @@ impl McpServer {
                 // scan once the interval has passed.
                 self.sync_watched_files(cg, &plan.files).await;
                 outcome.retry_rescan_after = Some(wait);
-                return outcome;
+                return (outcome, batch.rescan);
             }
             // Shares the lazy resync's overlap guard (#535): if a resync is
             // already walking the tree, retry rather than walk it twice.
@@ -1736,7 +1809,7 @@ impl McpServer {
             {
                 self.sync_watched_files(cg, &plan.files).await;
                 outcome.retry_rescan_after = Some(super::fs_watch::MIN_RECONCILE_INTERVAL);
-                return outcome;
+                return (outcome, batch.rescan);
             }
             self.run_lazy_resync().await;
             self.lazy_sync_in_flight.store(false, Ordering::Release);
@@ -1747,10 +1820,68 @@ impl McpServer {
                 .as_secs() as i64;
             self.last_staleness_check_at.store(now, Ordering::Release);
             outcome.reconciled = true;
-            return outcome;
+            return (outcome, batch.rescan);
         }
         self.sync_watched_files(cg, &plan.files).await;
-        outcome
+        (outcome, false)
+    }
+
+    #[cfg(target_os = "freebsd")]
+    async fn recover_freebsd_watch_dirs(
+        self: &Arc<Self>,
+        native: &mut super::fs_watch::NativeWatcher,
+    ) -> Vec<PathBuf> {
+        let server = Arc::clone(self);
+        let walk = tokio::task::spawn_blocking(move || {
+            let cg = server.cg.as_ref()?;
+            if cg.branch_drift().is_some() {
+                return None;
+            }
+            cg.watch_directories(cg.project_root(), super::fs_watch::MAX_WATCHED_DIRS)
+        })
+        .await;
+        match walk {
+            Ok(Some(dirs)) => native.refresh_freebsd_dirs(dirs),
+            _ => {
+                self.fs_watch_stats.record_error(
+                    "could not rescan FreeBSD directory watches within scope and budget",
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    #[cfg(target_os = "freebsd")]
+    async fn register_freebsd_watch_files(
+        &self,
+        native: &mut super::fs_watch::NativeWatcher,
+        dirs: &[PathBuf],
+    ) {
+        let Some(cg) = self.cg.as_ref() else {
+            return;
+        };
+        if dirs.is_empty() || cg.branch_drift().is_some() {
+            return;
+        }
+        let (candidates, limited) = match cg.kqueue_watch_files(dirs) {
+            Ok(listing) => listing,
+            Err(error) => {
+                self.fs_watch_stats
+                    .record_error(&format!("could not list FreeBSD file watches: {error}"));
+                return;
+            }
+        };
+        if limited {
+            self.fs_watch_stats
+                .record_error("FreeBSD file listing reached the watch budget");
+        }
+        let paths: Vec<_> = native
+            .register_explicit(candidates, false)
+            .iter()
+            .filter_map(|path| cg.watch_relative(path))
+            .collect();
+        // Catch edits made between indexing the recreated subtree and opening its file watches.
+        self.sync_watched_files(cg, &paths).await;
     }
 
     /// Syncs the files of a watcher batch and refreshes the token map.

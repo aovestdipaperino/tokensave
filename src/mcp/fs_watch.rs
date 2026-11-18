@@ -28,14 +28,24 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use notify::event::ModifyKind;
-use notify::{EventKind, RecursiveMode, Watcher};
+use notify::event::{ModifyKind, RemoveKind};
+use notify::EventKind;
+#[cfg(any(not(target_os = "freebsd"), test))]
+use notify::{RecursiveMode, Watcher};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::tokensave::{is_transient_file_name, WatchedChange};
+
+#[cfg(target_os = "freebsd")]
+mod freebsd;
+
+#[cfg(target_os = "freebsd")]
+pub(crate) use freebsd::FreeBsdWatcher as PlatformWatcher;
+#[cfg(not(target_os = "freebsd"))]
+type PlatformWatcher = notify::RecommendedWatcher;
 
 /// Debounce used when `watcher_debounce` is missing or unparseable.
 pub const DEFAULT_DEBOUNCE: Duration = Duration::from_secs(2);
@@ -50,6 +60,8 @@ pub const CHANNEL_CAPACITY: usize = 1024;
 pub const MAX_PENDING_PATHS: usize = 4096;
 /// Most directories a per-directory watcher registers.
 pub const MAX_WATCHED_DIRS: usize = 16_384;
+#[cfg(target_os = "freebsd")]
+const FREEBSD_FD_RESERVE: usize = 32;
 /// Shortest interval between two watcher-triggered reconciliation scans.
 pub const MIN_RECONCILE_INTERVAL: Duration = Duration::from_secs(10);
 /// How long shutdown waits for the watcher task to finish its batch.
@@ -132,6 +144,17 @@ pub enum WatchMsg {
     /// The event stream is no longer trustworthy (an error, or the platform
     /// reported dropped events); reconcile with a scan.
     Rescan(String),
+}
+
+pub(crate) enum NativeWatchMsg {
+    Index(WatchMsg),
+    Removed(Vec<PathBuf>),
+}
+
+impl From<WatchMsg> for NativeWatchMsg {
+    fn from(message: WatchMsg) -> Self {
+        Self::Index(message)
+    }
 }
 
 /// One debounced batch, handed to the code that applies it.
@@ -292,7 +315,7 @@ pub fn event_to_message(result: notify::Result<notify::Event>) -> Option<WatchMs
         ));
     }
     let structural = classify_event(&event.kind)?;
-    let changes: Vec<WatchedChange> = event
+    let changes: Vec<_> = event
         .paths
         .into_iter()
         .filter(|path| !is_noise_path(path))
@@ -301,12 +324,61 @@ pub fn event_to_message(result: notify::Result<notify::Event>) -> Option<WatchMs
     (!changes.is_empty()).then_some(WatchMsg::Changes(changes))
 }
 
+fn native_event_to_message(
+    result: notify::Result<notify::Event>,
+    uses_kqueue: bool,
+) -> Option<NativeWatchMsg> {
+    match result {
+        Ok(event) if uses_kqueue && !event.need_rescan() && event.kind.is_create() => {
+            // kqueue can report the first child without a descriptor as the
+            // created path. Keep the parent even if that child is ignored.
+            let parents: Vec<_> = event
+                .paths
+                .iter()
+                .filter_map(|path| path.parent())
+                .filter(|path| !is_noise_path(path))
+                .map(|path| WatchedChange {
+                    path: path.to_path_buf(),
+                    structural: false,
+                })
+                .collect();
+            let mut changes = match event_to_message(Ok(event)) {
+                Some(WatchMsg::Changes(changes)) => changes,
+                _ => Vec::new(),
+            };
+            changes.extend(parents);
+            (!changes.is_empty()).then_some(NativeWatchMsg::Index(WatchMsg::Changes(changes)))
+        }
+        Ok(event)
+            if !event.need_rescan()
+                && matches!(
+                    event.kind,
+                    EventKind::Remove(RemoveKind::Folder | RemoveKind::Any | RemoveKind::Other)
+                ) =>
+        {
+            let paths: Vec<_> = event
+                .paths
+                .into_iter()
+                .filter(|p| !is_noise_path(p))
+                .collect();
+            (!paths.is_empty()).then_some(NativeWatchMsg::Removed(paths))
+        }
+        result => event_to_message(result).map(NativeWatchMsg::from),
+    }
+}
+
 /// The paths collected for one batch, bounded by [`MAX_PENDING_PATHS`].
 #[derive(Debug, Default)]
 struct Pending {
-    paths: HashMap<PathBuf, bool>,
+    paths: HashMap<PathBuf, PendingPath>,
     rescan: bool,
     reasons: Vec<String>,
+}
+
+#[derive(Debug)]
+struct PendingPath {
+    structural: bool,
+    removed: bool,
 }
 
 impl Pending {
@@ -317,45 +389,75 @@ impl Pending {
         }
     }
 
-    fn absorb(&mut self, msg: WatchMsg) {
-        match msg {
-            WatchMsg::Rescan(reason) => self.add_reason(reason),
-            WatchMsg::Changes(changes) => {
+    fn absorb(&mut self, msg: impl Into<NativeWatchMsg>) {
+        match msg.into() {
+            NativeWatchMsg::Index(WatchMsg::Rescan(reason)) => self.add_reason(reason),
+            NativeWatchMsg::Index(WatchMsg::Changes(changes)) => {
                 if self.rescan && self.paths.len() >= MAX_PENDING_PATHS {
                     return;
                 }
                 for change in changes {
-                    if let Some(structural) = self.paths.get_mut(&change.path) {
-                        *structural |= change.structural;
-                    } else if self.paths.len() < MAX_PENDING_PATHS {
-                        self.paths.insert(change.path, change.structural);
-                    } else {
-                        self.add_reason(format!(
-                            "more than {MAX_PENDING_PATHS} paths changed in one batch"
-                        ));
-                        return;
+                    if !self.record_path(change.path, change.structural, false) {
+                        break;
+                    }
+                }
+            }
+            NativeWatchMsg::Removed(paths) => {
+                for path in paths {
+                    if !self.record_path(path, true, true) {
+                        break;
                     }
                 }
             }
         }
     }
 
+    fn record_path(&mut self, path: PathBuf, structural: bool, removed: bool) -> bool {
+        if let Some(pending) = self.paths.get_mut(&path) {
+            pending.structural |= structural;
+            pending.removed |= removed;
+        } else if self.paths.len() < MAX_PENDING_PATHS {
+            self.paths.insert(
+                path,
+                PendingPath {
+                    structural,
+                    removed,
+                },
+            );
+        } else {
+            self.add_reason(format!(
+                "more than {MAX_PENDING_PATHS} paths changed in one batch"
+            ));
+            return false;
+        }
+        true
+    }
+
     fn is_empty(&self) -> bool {
         self.paths.is_empty() && !self.rescan
     }
 
-    fn into_batch(self) -> WatchBatch {
-        let mut changes: Vec<WatchedChange> = self
-            .paths
-            .into_iter()
-            .map(|(path, structural)| WatchedChange { path, structural })
-            .collect();
-        changes.sort_by(|a, b| a.path.cmp(&b.path));
-        WatchBatch {
-            changes,
-            rescan: self.rescan,
-            reasons: self.reasons,
+    fn into_batch(self) -> (WatchBatch, HashSet<PathBuf>) {
+        let mut changes = Vec::with_capacity(self.paths.len());
+        let mut removed = HashSet::new();
+        for (path, pending) in self.paths {
+            if pending.removed {
+                removed.insert(path.clone());
+            }
+            changes.push(WatchedChange {
+                path,
+                structural: pending.structural,
+            });
         }
+        changes.sort_by(|a, b| a.path.cmp(&b.path));
+        (
+            WatchBatch {
+                changes,
+                rescan: self.rescan,
+                reasons: self.reasons,
+            },
+            removed,
+        )
     }
 }
 
@@ -369,16 +471,48 @@ impl Pending {
 /// cancelled part-way through a sync — and `register` receives the
 /// directories a per-directory watcher should add.
 pub async fn run_watch_loop<A, Fut, R>(
-    mut rx: mpsc::Receiver<WatchMsg>,
+    rx: mpsc::Receiver<WatchMsg>,
     overflow: Arc<AtomicBool>,
     settings: WatchSettings,
     cancel: CancellationToken,
     mut apply: A,
-    mut register: R,
+    register: R,
 ) where
     A: FnMut(WatchBatch) -> Fut,
     Fut: Future<Output = WatchOutcome>,
     R: FnMut(Vec<PathBuf>),
+{
+    run_watch_loop_inner(
+        rx,
+        overflow,
+        settings,
+        cancel,
+        register,
+        move |batch, removed, mut register| {
+            let application = apply(batch);
+            async move {
+                let mut outcome = application.await;
+                if !removed.is_empty() || !outcome.new_dirs.is_empty() {
+                    register(std::mem::take(&mut outcome.new_dirs));
+                }
+                (outcome, register)
+            }
+        },
+    )
+    .await;
+}
+
+pub(crate) async fn run_watch_loop_inner<M, S, A, Fut>(
+    mut rx: mpsc::Receiver<M>,
+    overflow: Arc<AtomicBool>,
+    settings: WatchSettings,
+    cancel: CancellationToken,
+    mut state: S,
+    mut apply: A,
+) where
+    M: Into<NativeWatchMsg>,
+    A: FnMut(WatchBatch, HashSet<PathBuf>, S) -> Fut,
+    Fut: Future<Output = (WatchOutcome, S)>,
 {
     let mut retry_at: Option<Instant> = None;
     loop {
@@ -424,10 +558,9 @@ pub async fn run_watch_loop<A, Fut, R>(
             pending.add_reason("the event queue was full and events were dropped".to_string());
         }
         if !pending.is_empty() {
-            let outcome = apply(pending.into_batch()).await;
-            if !outcome.new_dirs.is_empty() {
-                register(outcome.new_dirs);
-            }
+            let (batch, removed) = pending.into_batch();
+            let (outcome, next_state) = apply(batch, removed, state).await;
+            state = next_state;
             if outcome.reconciled {
                 retry_at = None;
             }
@@ -450,15 +583,21 @@ async fn sleep_until_opt(deadline: Option<Instant>) {
 }
 
 /// The native watcher and the directories it holds.
-pub(crate) struct NativeWatcher {
-    watcher: notify::RecommendedWatcher,
+pub(crate) struct NativeWatcher<W = PlatformWatcher> {
+    watcher: W,
     mode: WatchMode,
     watched: HashSet<PathBuf>,
+    #[cfg(target_os = "freebsd")]
+    recovery_pending: bool,
     stats: Arc<WatchStats>,
     limit_reported: bool,
 }
 
 impl NativeWatcher {
+    pub(crate) fn uses_kqueue() -> bool {
+        cfg!(target_os = "freebsd")
+    }
+
     /// Creates the native watcher and registers `root` (recursive mode) or
     /// each of `dirs` (per-directory mode). Events go to `tx`; a full
     /// channel sets `overflow` instead of blocking the notify thread.
@@ -466,13 +605,18 @@ impl NativeWatcher {
         root: &Path,
         mode: WatchMode,
         dirs: Vec<PathBuf>,
-        tx: mpsc::Sender<WatchMsg>,
+        tx: mpsc::Sender<NativeWatchMsg>,
         overflow: Arc<AtomicBool>,
         stats: Arc<WatchStats>,
     ) -> Result<Self, String> {
+        #[cfg(target_os = "freebsd")]
+        if mode != WatchMode::PerDirectory || !dirs.iter().any(|dir| dir == root) {
+            return Err("FreeBSD kqueue requires the project root in its directory watches".into());
+        }
         let callback_stats = Arc::clone(&stats);
+        let uses_kqueue = Self::uses_kqueue();
         let handler = move |result: notify::Result<notify::Event>| {
-            let Some(msg) = event_to_message(result) else {
+            let Some(msg) = native_event_to_message(result, uses_kqueue) else {
                 return;
             };
             if tx.try_send(msg).is_err() {
@@ -482,15 +626,32 @@ impl NativeWatcher {
                     .fetch_add(1, Ordering::Relaxed);
             }
         };
-        let watcher = notify::recommended_watcher(handler)
-            .map_err(|e| format!("could not create the native watcher: {e}"))?;
+        #[cfg(target_os = "freebsd")]
+        let watcher = PlatformWatcher::new(handler, MAX_WATCHED_DIRS, FREEBSD_FD_RESERVE);
+        #[cfg(not(target_os = "freebsd"))]
+        let watcher = notify::recommended_watcher(handler);
+        let watcher = watcher.map_err(|e| format!("could not create the native watcher: {e}"))?;
         let mut native = Self {
             watcher,
             mode,
             watched: HashSet::new(),
+            #[cfg(target_os = "freebsd")]
+            recovery_pending: false,
             stats,
             limit_reported: false,
         };
+        #[cfg(target_os = "freebsd")]
+        {
+            let results = native
+                .watcher
+                .watch_explicit(dirs, true)
+                .map_err(|e| e.to_string())?;
+            for (dir, result) in results {
+                result.map_err(|e| describe_watch_error(&dir, &e))?;
+                native.watched.insert(dir);
+            }
+        }
+        #[cfg(not(target_os = "freebsd"))]
         match mode {
             WatchMode::RecursiveRoot => {
                 native
@@ -512,13 +673,51 @@ impl NativeWatcher {
         native.publish_count();
         Ok(native)
     }
+}
 
-    /// Registers directories that appeared after start (per-directory mode
-    /// only; a recursive watch already covers them).
-    pub(crate) fn add_dirs(&mut self, dirs: Vec<PathBuf>) {
+impl<W> NativeWatcher<W> {
+    pub(crate) fn watched_directories(&self) -> &HashSet<PathBuf> {
+        &self.watched
+    }
+
+    fn publish_count(&self) {
+        self.stats.watched_dirs.store(
+            u64::try_from(self.watched.len()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+    }
+}
+
+#[cfg(any(not(target_os = "freebsd"), test))]
+impl<W: Watcher> NativeWatcher<W> {
+    fn remove_dirs(&mut self, removed: &HashSet<PathBuf>) {
+        if !removed.is_empty() {
+            // kqueue can close the watch descriptor and still return an error.
+            self.watched.retain(|dir| {
+                if !dir.ancestors().any(|parent| removed.contains(parent)) {
+                    return true;
+                }
+                if let Err(error) = self.watcher.unwatch(dir) {
+                    if !matches!(error.kind, notify::ErrorKind::WatchNotFound) {
+                        self.stats.record_error(&format!(
+                            "could not remove watch for {}: {error}",
+                            dir.display()
+                        ));
+                    }
+                }
+                false
+            });
+            if self.watched.len() < MAX_WATCHED_DIRS {
+                self.limit_reported = false;
+            }
+        }
+    }
+
+    pub(crate) fn update_dirs(&mut self, removed: HashSet<PathBuf>, dirs: Vec<PathBuf>) {
         if self.mode != WatchMode::PerDirectory {
             return;
         }
+        self.remove_dirs(&removed);
         for dir in dirs {
             if self.watched.contains(&dir) {
                 continue;
@@ -549,18 +748,134 @@ impl NativeWatcher {
         }
         self.publish_count();
     }
+}
 
-    fn publish_count(&self) {
-        self.stats.watched_dirs.store(
-            u64::try_from(self.watched.len()).unwrap_or(u64::MAX),
-            Ordering::Relaxed,
-        );
+#[cfg(target_os = "freebsd")]
+impl NativeWatcher {
+    pub(crate) fn needs_freebsd_recovery(&mut self, requested: bool, reconciled: bool) -> bool {
+        self.recovery_pending |= requested;
+        reconciled && std::mem::take(&mut self.recovery_pending)
+    }
+
+    pub(crate) fn refresh_freebsd_dirs(&mut self, dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+        match self.watcher.snapshot() {
+            Ok((live, affected)) => {
+                self.watched = live;
+                self.update_freebsd_dirs(&HashSet::new(), dirs, affected)
+            }
+            Err(error) => {
+                self.stats.record_error(&format!(
+                    "could not refresh FreeBSD directory watches: {error}"
+                ));
+                Vec::new()
+            }
+        }
+    }
+
+    pub(crate) fn file_directories_for_batch(&self, changes: &[WatchedChange]) -> Vec<PathBuf> {
+        changes
+            .iter()
+            .filter_map(|change| {
+                if self.watched.contains(&change.path) {
+                    return Some(change.path.clone());
+                }
+                change
+                    .path
+                    .parent()
+                    .filter(|parent| change.structural && self.watched.contains(*parent))
+                    .map(Path::to_path_buf)
+            })
+            .collect()
+    }
+
+    pub(crate) fn update_freebsd_dirs(
+        &mut self,
+        removed: &HashSet<PathBuf>,
+        dirs: Vec<PathBuf>,
+        mut file_dirs: Vec<PathBuf>,
+    ) -> Vec<PathBuf> {
+        debug_assert_eq!(self.mode, WatchMode::PerDirectory);
+        if !removed.is_empty() {
+            for path in removed {
+                if path
+                    .ancestors()
+                    .skip(1)
+                    .any(|parent| removed.contains(parent))
+                {
+                    continue;
+                }
+                if let Err(error) = self.watcher.unwatch(path) {
+                    self.stats.record_error(&format!(
+                        "could not remove FreeBSD kqueue watches under {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+            self.watched
+                .retain(|dir| !dir.ancestors().any(|parent| removed.contains(parent)));
+        }
+
+        let dirs: Vec<_> = dirs
+            .into_iter()
+            .filter(|dir| !self.watched.contains(dir))
+            .collect();
+        for dir in self.register_explicit(dirs, true) {
+            file_dirs.push(dir.clone());
+            self.watched.insert(dir);
+        }
+        self.publish_count();
+        file_dirs.retain(|dir| self.watched.contains(dir));
+        file_dirs.sort_unstable();
+        file_dirs.dedup();
+        file_dirs
+    }
+
+    pub(crate) fn register_explicit(
+        &mut self,
+        paths: Vec<PathBuf>,
+        directories: bool,
+    ) -> Vec<PathBuf> {
+        if paths.is_empty() {
+            return Vec::new();
+        }
+        let results = match self.watcher.watch_explicit(paths, directories) {
+            Ok(results) => results,
+            Err(error) => {
+                self.stats.record_error(&format!(
+                    "could not register FreeBSD kqueue watches: {error}"
+                ));
+                return Vec::new();
+            }
+        };
+        let mut successful = Vec::new();
+        let mut limit_reached = false;
+        for (path, result) in results {
+            match result {
+                Ok(()) => successful.push(path),
+                Err(e) if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) => {
+                    limit_reached = true
+                }
+                Err(e) if matches!(e.kind, notify::ErrorKind::PathNotFound) => {}
+                Err(e) => self.stats.record_error(&describe_watch_error(&path, &e)),
+            }
+        }
+        if limit_reached && !self.limit_reported {
+            self.stats.record_error("FreeBSD kqueue descriptor budget reached; some paths will rely on the on-demand staleness check");
+        }
+        self.limit_reported = limit_reached || self.limit_reported && successful.is_empty();
+        successful
     }
 }
 
 /// An actionable description of a failure to register `path`.
 fn describe_watch_error(path: &Path, error: &notify::Error) -> String {
     match &error.kind {
+        #[cfg(target_os = "freebsd")]
+        notify::ErrorKind::MaxFilesWatch => format!(
+            "the FreeBSD kqueue descriptor budget would be exceeded while watching {}",
+            path.display()
+        ),
+        #[cfg(not(target_os = "freebsd"))]
         notify::ErrorKind::MaxFilesWatch => format!(
             "the operating system's watch limit was reached while registering {}; raise it \
              (on Linux: sysctl fs.inotify.max_user_watches) or exclude large directories \
@@ -627,7 +942,7 @@ pub(crate) fn set_state(stats: &WatchStats, state: &'static str) {
 #[allow(clippy::unwrap_used, reason = "test assertions")]
 mod tests {
     use super::*;
-    use notify::event::{AccessKind, CreateKind, DataChange, RemoveKind, RenameMode};
+    use notify::event::{AccessKind, CreateKind, DataChange, RenameMode};
 
     fn change(path: &str, structural: bool) -> WatchedChange {
         WatchedChange {
@@ -726,9 +1041,136 @@ mod tests {
         pending.absorb(WatchMsg::Changes(vec![change("/p/a.rs", false)]));
         pending.absorb(WatchMsg::Changes(vec![change("/p/a.rs", true)]));
         pending.absorb(WatchMsg::Changes(vec![change("/p/a.rs", false)]));
-        let batch = pending.into_batch();
+        let (batch, removed) = pending.into_batch();
         assert_eq!(batch.changes, vec![change("/p/a.rs", true)]);
         assert!(!batch.rescan);
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn public_event_converter_returns_changes_for_directory_removal() {
+        let event =
+            notify::Event::new(EventKind::Remove(RemoveKind::Folder)).add_path("/p/src".into());
+        assert_eq!(
+            event_to_message(Ok(event)),
+            Some(WatchMsg::Changes(vec![change("/p/src", true)]))
+        );
+    }
+
+    #[derive(Default)]
+    struct RemovalErrorWatcher {
+        watched: HashSet<PathBuf>,
+    }
+
+    impl Watcher for RemovalErrorWatcher {
+        fn new<F: notify::EventHandler>(_: F, _: notify::Config) -> notify::Result<Self> {
+            Ok(Self::default())
+        }
+
+        fn watch(&mut self, path: &Path, _: RecursiveMode) -> notify::Result<()> {
+            assert!(self.watched.insert(path.to_path_buf()));
+            Ok(())
+        }
+
+        fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+            assert!(self.watched.remove(path));
+            Err(notify::Error::io(std::io::Error::other(
+                "descriptor already closed",
+            )))
+        }
+
+        fn kind() -> notify::WatcherKind {
+            notify::WatcherKind::Kqueue
+        }
+    }
+
+    #[test]
+    fn removal_error_releases_slots_and_allows_reregistration() {
+        let removed = PathBuf::from("/p/src");
+        let child = removed.join("child");
+        let sibling = PathBuf::from("/p/src-other");
+        let watched = HashSet::from([removed.clone(), child.clone(), sibling.clone()]);
+        let stats = Arc::new(WatchStats::default());
+        let mut native = NativeWatcher {
+            watcher: RemovalErrorWatcher {
+                watched: watched.clone(),
+            },
+            mode: WatchMode::PerDirectory,
+            watched,
+            #[cfg(target_os = "freebsd")]
+            recovery_pending: false,
+            stats: Arc::clone(&stats),
+            limit_reported: false,
+        };
+
+        native.update_dirs(HashSet::from([removed.clone()]), vec![removed.clone()]);
+        assert_eq!(
+            native.watched,
+            HashSet::from([removed.clone(), sibling.clone()])
+        );
+        assert_eq!(native.watched, native.watcher.watched);
+        assert_eq!(stats.errors.load(Ordering::Relaxed), 2);
+        assert_eq!(stats.watched_dirs.load(Ordering::Relaxed), 2);
+
+        native.update_dirs(HashSet::new(), vec![child.clone()]);
+        assert_eq!(native.watched, HashSet::from([removed, child, sibling]));
+        assert_eq!(native.watched, native.watcher.watched);
+        assert_eq!(stats.watched_dirs.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn kqueue_create_keeps_parent_of_filtered_child() {
+        let event = notify::Event::new(EventKind::Create(CreateKind::File))
+            .add_path(PathBuf::from("/p/src/.#ignored.rs"));
+        assert!(native_event_to_message(Ok(event.clone()), false).is_none());
+        let mut pending = Pending::default();
+        pending.absorb(native_event_to_message(Ok(event), true).unwrap());
+        assert_eq!(
+            pending.into_batch().0.changes,
+            vec![change("/p/src", false)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn removal_and_recreation_in_one_batch_update_the_same_watch() {
+        let dir = PathBuf::from("/p/src");
+        let (tx, rx) = mpsc::channel(4);
+        let (updates, mut received) = mpsc::channel(2);
+        let cancel = CancellationToken::new();
+        let recreated = dir.clone();
+        let task = tokio::spawn(run_watch_loop_inner(
+            rx,
+            Arc::new(AtomicBool::new(false)),
+            WatchSettings {
+                debounce: MIN_DEBOUNCE,
+            },
+            cancel.clone(),
+            updates,
+            move |batch, removed, updates| {
+                assert_eq!(batch.changes, vec![change("/p/src", true)]);
+                updates
+                    .try_send((removed, vec![recreated.clone()]))
+                    .unwrap();
+                std::future::ready((WatchOutcome::default(), updates))
+            },
+        ));
+        for kind in [
+            EventKind::Remove(RemoveKind::Folder),
+            EventKind::Create(CreateKind::Folder),
+        ] {
+            let event = notify::Event::new(kind).add_path(dir.clone());
+            tx.send(native_event_to_message(Ok(event), false).unwrap())
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), received.recv())
+                .await
+                .unwrap(),
+            Some((HashSet::from([dir.clone()]), vec![dir]))
+        );
+        cancel.cancel();
+        task.await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
