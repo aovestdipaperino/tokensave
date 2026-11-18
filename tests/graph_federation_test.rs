@@ -139,6 +139,99 @@ async fn search_federates_across_two_roots() {
     );
 }
 
+/// Regression for #1048: a multi-root request may explicitly include the
+/// project already served by the MCP server. A broken neighbour must be
+/// reported as skipped without costing the caller the served graph's answer.
+#[tokio::test]
+async fn federation_queries_the_served_root_and_reports_failed_neighbours() {
+    let tmp = TempDir::new().unwrap();
+    let served = tmp.path().join("served");
+    let uninitialized = tmp.path().join("uninitialized");
+    std::fs::create_dir_all(&served).unwrap();
+    std::fs::create_dir_all(&uninitialized).unwrap();
+    project(&served, "served_only").await;
+
+    let cg = TokenSave::open(&served).await.unwrap();
+    let server = McpServer::new_explicit_root(cg, None).await;
+    let response = call(
+        &server,
+        "tokensave_search",
+        json!({
+            "query": "served_only",
+            "graph_root": [
+                served.canonicalize().unwrap().to_string_lossy(),
+                uninitialized.canonicalize().unwrap().to_string_lossy()
+            ]
+        }),
+    )
+    .await;
+
+    assert!(response.get("error").is_none(), "{response:?}");
+    let text = text_of(&response);
+    assert!(text.contains("served_only"), "{text}");
+    assert!(
+        text.contains("could not be queried") && text.contains("uninitialized"),
+        "the unusable root must be reported as skipped, got: {text}"
+    );
+}
+
+/// Regression for #1048: worktree collapsing may keep the served root as the
+/// repository representative. That representative must remain queryable, and
+/// the dropped sibling must still be named in the response.
+#[tokio::test]
+async fn federation_keeps_a_served_root_when_its_worktree_is_collapsed() {
+    let tmp = TempDir::new().unwrap();
+    let served = tmp.path().join("served_repo");
+    std::fs::create_dir_all(served.join("src")).unwrap();
+    std::fs::write(
+        served.join("src").join("lib.rs"),
+        "pub fn served_only() -> i32 { 1 }\n",
+    )
+    .unwrap();
+    git(&served, &["init", "-b", "master"]);
+    git(&served, &["add", "-A"]);
+    git(&served, &["commit", "-m", "base"]);
+    let cg = TokenSave::init(&served).await.unwrap();
+    cg.sync().await.unwrap();
+    drop(cg);
+
+    let worktree = tmp.path().join("served_worktree");
+    git(
+        &served,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    let cg = TokenSave::init(&worktree).await.unwrap();
+    cg.sync().await.unwrap();
+    drop(cg);
+
+    let cg = TokenSave::open(&served).await.unwrap();
+    let server = McpServer::new_explicit_root(cg, None).await;
+    let response = call(
+        &server,
+        "tokensave_search",
+        json!({
+            "query": "served_only",
+            "graph_root": [
+                served.canonicalize().unwrap().to_string_lossy(),
+                worktree.canonicalize().unwrap().to_string_lossy()
+            ]
+        }),
+    )
+    .await;
+
+    assert!(response.get("error").is_none(), "{response:?}");
+    let text = text_of(&response);
+    assert!(text.contains("served_only"), "{text}");
+    assert!(text.contains("collapsed 1 worktree"), "{text}");
+    assert!(text.contains(&reported_root(&worktree)), "{text}");
+}
+
 /// A single-element array must behave exactly like the string form, so callers
 /// need not special-case one root.
 #[tokio::test]
