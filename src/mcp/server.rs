@@ -1658,12 +1658,19 @@ impl McpServer {
                 async move {
                     #[cfg(target_os = "freebsd")]
                     let file_dirs = native.file_directories_for_batch(&batch.changes);
+                    let mut watch_ignore = if uses_kqueue {
+                        crate::tokensave::WatchIgnore::kqueue()
+                    } else {
+                        crate::tokensave::WatchIgnore::default()
+                    };
                     let server = weak.upgrade();
                     let (mut outcome, _recover_watches) = match &server {
                         Some(server) => {
                             let kqueue_watches =
                                 uses_kqueue.then_some((native.watched_directories(), &removed));
-                            server.apply_native_watch_batch(batch, kqueue_watches).await
+                            server
+                                .apply_native_watch_batch(batch, kqueue_watches, &mut watch_ignore)
+                                .await
                         }
                         None => (fs_watch::WatchOutcome::default(), false),
                     };
@@ -1685,7 +1692,7 @@ impl McpServer {
                                 dirs.dedup();
                             }
                             server
-                                .register_freebsd_watch_files(&mut native, &dirs)
+                                .register_freebsd_watch_files(&mut native, &dirs, &mut watch_ignore)
                                 .await;
                         }
                     }
@@ -1706,13 +1713,16 @@ impl McpServer {
         &self,
         batch: super::fs_watch::WatchBatch,
     ) -> super::fs_watch::WatchOutcome {
-        self.apply_native_watch_batch(batch, None).await.0
+        self.apply_native_watch_batch(batch, None, &mut crate::tokensave::WatchIgnore::default())
+            .await
+            .0
     }
 
     async fn apply_native_watch_batch(
         &self,
         mut batch: super::fs_watch::WatchBatch,
         kqueue_watches: Option<(&HashSet<PathBuf>, &HashSet<PathBuf>)>,
+        watch_ignore: &mut crate::tokensave::WatchIgnore,
     ) -> (super::fs_watch::WatchOutcome, bool) {
         let mut outcome = super::fs_watch::WatchOutcome::default();
         let stats = &self.fs_watch_stats;
@@ -1737,7 +1747,7 @@ impl McpServer {
         stats.clear_drift();
 
         if let Some((watched, removed)) = kqueue_watches.filter(|_| !batch.rescan) {
-            match cg.kqueue_directory_changes(&batch.changes, watched, removed) {
+            match cg.kqueue_directory_changes(&batch.changes, watched, removed, watch_ignore) {
                 Ok(children) => {
                     let mut changes = HashMap::<_, bool>::new();
                     for change in batch.changes.into_iter().chain(children) {
@@ -1757,7 +1767,9 @@ impl McpServer {
                 }
             }
         }
-        let plan = cg.plan_watch_batch(&batch.changes).await;
+        let plan = cg
+            .plan_watch_batch_with_ignore(&batch.changes, watch_ignore)
+            .await;
         let watched_dir_removed = kqueue_watches
             .is_some_and(|(watched, removed)| removed.iter().any(|path| watched.contains(path)));
         // A per-directory watcher needs the whole new subtree: `mkdir -p` or
@@ -1772,7 +1784,9 @@ impl McpServer {
                     continue;
                 }
                 let remaining = super::fs_watch::MAX_WATCHED_DIRS - seen.len();
-                if let Some(subtree) = cg.watch_directories(dir, remaining) {
+                if let Some(subtree) =
+                    cg.watch_directories_with_ignore(dir, remaining, watch_ignore)
+                {
                     for path in subtree {
                         if seen.insert(path.clone()) {
                             outcome.new_dirs.push(path);
@@ -1785,6 +1799,12 @@ impl McpServer {
                     ));
                 }
             }
+        }
+        if !batch.rescan && watch_ignore.exhausted() {
+            batch.rescan = true;
+            batch
+                .reasons
+                .push("FreeBSD ignore scan reached its batch budget".to_string());
         }
         if batch.rescan || plan.reconcile || watched_dir_removed {
             if batch.rescan {
@@ -1856,6 +1876,7 @@ impl McpServer {
         &self,
         native: &mut super::fs_watch::NativeWatcher,
         dirs: &[PathBuf],
+        watch_ignore: &mut crate::tokensave::WatchIgnore,
     ) {
         let Some(cg) = self.cg.as_ref() else {
             return;
@@ -1863,7 +1884,7 @@ impl McpServer {
         if dirs.is_empty() || cg.branch_drift().is_some() {
             return;
         }
-        let (candidates, limited) = match cg.kqueue_watch_files(dirs) {
+        let (candidates, limited) = match cg.kqueue_watch_files(dirs, watch_ignore) {
             Ok(listing) => listing,
             Err(error) => {
                 self.fs_watch_stats
@@ -1873,7 +1894,7 @@ impl McpServer {
         };
         if limited {
             self.fs_watch_stats
-                .record_error("FreeBSD file listing reached the watch budget");
+                .record_error("FreeBSD file or ignore listing reached its batch budget");
         }
         let paths: Vec<_> = native
             .register_explicit(candidates, false)

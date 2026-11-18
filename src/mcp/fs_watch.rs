@@ -851,7 +851,8 @@ impl NativeWatcher {
         let mut limit_reached = false;
         for (path, result) in results {
             match result {
-                Ok(()) => successful.push(path),
+                Ok(newly_armed) if directories || newly_armed => successful.push(path),
+                Ok(_) => {}
                 Err(e) if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) => {
                     limit_reached = true
                 }
@@ -949,6 +950,43 @@ mod tests {
             path: PathBuf::from(path),
             structural,
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "freebsd")]
+    fn freebsd_file_watch_catch_up_only_includes_new_registrations() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let existing = root.join("existing.rs");
+        let new_file = root.join("new.rs");
+        std::fs::write(&existing, "").unwrap();
+        std::fs::write(&new_file, "").unwrap();
+        let (tx, _rx) = mpsc::channel(8);
+        let mut native = NativeWatcher::start(
+            root,
+            WatchMode::PerDirectory,
+            vec![root.to_path_buf()],
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(WatchStats::default()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            native.register_explicit(vec![existing.clone()], false),
+            [existing.clone()]
+        );
+        assert_eq!(
+            native.register_explicit(vec![existing.clone(), new_file.clone()], false),
+            [new_file.clone()]
+        );
+        let replacement = root.join("replacement");
+        std::fs::write(&replacement, "new vnode").unwrap();
+        std::fs::rename(&replacement, &existing).unwrap();
+        assert_eq!(
+            native.register_explicit(vec![existing.clone(), new_file], false),
+            [existing]
+        );
     }
 
     #[test]

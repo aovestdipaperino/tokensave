@@ -19,7 +19,7 @@ const EVENTS_PER_DRAIN: usize = 128;
 // Check the channel even if the poller cannot be woken during shutdown.
 const POLL_TIMEOUT: Duration = Duration::from_secs(1);
 
-type Registration = Vec<(PathBuf, Result<()>)>;
+type Registration = Vec<(PathBuf, Result<bool>)>;
 type WatchResults = Result<Registration>;
 type WatchSnapshot = (HashSet<PathBuf>, Vec<PathBuf>);
 
@@ -206,14 +206,10 @@ impl Watches {
         let mut results = Vec::with_capacity(paths.len());
         for path in paths {
             let result = self.add_one(queue, &path, directories, &mut available);
-            let result = match result {
-                Ok(true) => {
-                    added.push(results.len());
-                    Ok(())
-                }
-                Ok(false) => Ok(()),
-                Err(error) => Err(error.add_path(path.clone())),
-            };
+            if matches!(result, Ok(true)) {
+                added.push(results.len());
+            }
+            let result = result.map_err(|error| error.add_path(path.clone()));
             results.push((path, result));
         }
 

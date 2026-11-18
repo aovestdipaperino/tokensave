@@ -11,6 +11,36 @@ use super::{
     TokenSave,
 };
 
+mod ignore_scope;
+use ignore_scope::IgnoreScope;
+
+#[derive(Default)]
+pub(crate) struct WatchIgnore {
+    listings: HashMap<PathBuf, HashSet<PathBuf>>,
+    kqueue: Option<IgnoreScope>,
+}
+
+impl WatchIgnore {
+    pub(crate) fn kqueue() -> Self {
+        Self {
+            listings: HashMap::new(),
+            kqueue: Some(IgnoreScope::default()),
+        }
+    }
+
+    pub(crate) fn exhausted(&self) -> bool {
+        self.kqueue.as_ref().is_some_and(|scope| scope.exhausted)
+    }
+
+    fn allows(&mut self, path: &Path, is_dir: bool) -> bool {
+        if let Some(scope) = &mut self.kqueue {
+            scope.allows(path, is_dir)
+        } else {
+            passes_gitignore(path, &mut self.listings)
+        }
+    }
+}
+
 /// What a debounced batch of changed paths asks of the index.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct WatchPlan {
@@ -140,7 +170,7 @@ impl TokenSave {
         &self,
         rel: &str,
         include_self: bool,
-        gitignore_cache: &mut HashMap<PathBuf, HashSet<PathBuf>>,
+        gitignore_cache: &mut WatchIgnore,
     ) -> bool {
         let prune = ScanDirPrune::new(self);
         let parts: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
@@ -157,7 +187,7 @@ impl TokenSave {
                 return false;
             }
             if self.config.git_ignore {
-                if !passes_gitignore(&abs, gitignore_cache) {
+                if !gitignore_cache.allows(&abs, true) {
                     return false;
                 }
             } else if *part == "target" {
@@ -178,7 +208,7 @@ impl TokenSave {
         rel: &str,
         abs: &Path,
         supported_exts: &[&str],
-        gitignore_cache: &mut HashMap<PathBuf, HashSet<PathBuf>>,
+        gitignore_cache: &mut WatchIgnore,
     ) -> bool {
         let force_included = crate::config::is_force_included(rel, &self.config);
         if force_included {
@@ -207,7 +237,7 @@ impl TokenSave {
                     return false;
                 }
             }
-            if self.config.git_ignore && !passes_gitignore(abs, gitignore_cache) {
+            if self.config.git_ignore && !gitignore_cache.allows(abs, false) {
                 return false;
             }
         }
@@ -242,10 +272,19 @@ impl TokenSave {
     /// Returns `None` when more than `limit` directories qualify: the caller
     /// then does not watch at all rather than watching part of the tree.
     pub fn watch_directories(&self, start: &Path, limit: usize) -> Option<Vec<PathBuf>> {
+        self.watch_directories_with_ignore(start, limit, &mut WatchIgnore::default())
+    }
+
+    pub(crate) fn watch_directories_with_ignore(
+        &self,
+        start: &Path,
+        limit: usize,
+        gitignore_cache: &mut WatchIgnore,
+    ) -> Option<Vec<PathBuf>> {
         if start != self.project_root {
             let rel = self.watch_relative(start)?;
             if self.is_watch_internal(&rel)
-                || !self.watch_ancestors_in_scope(&rel, true, &mut HashMap::new())
+                || !self.watch_ancestors_in_scope(&rel, true, gitignore_cache)
             {
                 return Some(Vec::new());
             }
@@ -304,12 +343,12 @@ impl TokenSave {
         changes: &[WatchedChange],
         watched: &HashSet<PathBuf>,
         removed: &HashSet<PathBuf>,
+        ignore_cache: &mut WatchIgnore,
     ) -> std::io::Result<Vec<WatchedChange>> {
         use crate::mcp::fs_watch::MAX_PENDING_PATHS;
 
         let mut directories = HashSet::new();
         let mut additional = Vec::new();
-        let mut ignore_cache = HashMap::new();
         for change in changes {
             let Some(rel) = self.watch_relative(&change.path) else {
                 continue;
@@ -319,7 +358,7 @@ impl TokenSave {
                 || !directories.insert(dir.clone())
                 || self.is_watch_internal(&rel)
                 || (!watched.contains(&dir)
-                    && !self.watch_ancestors_in_scope(&rel, true, &mut ignore_cache))
+                    && !self.watch_ancestors_in_scope(&rel, true, ignore_cache))
             {
                 continue;
             }
@@ -338,6 +377,11 @@ impl TokenSave {
                 additional.push(WatchedChange { path, structural });
             }
         }
+        if ignore_cache.exhausted() {
+            return Err(std::io::Error::other(
+                "kqueue ignore scan reached its batch budget",
+            ));
+        }
         Ok(additional)
     }
 
@@ -345,12 +389,12 @@ impl TokenSave {
     pub(crate) fn kqueue_watch_files(
         &self,
         dirs: &[PathBuf],
+        ignore_cache: &mut WatchIgnore,
     ) -> std::io::Result<(Vec<PathBuf>, bool)> {
         use crate::mcp::fs_watch::MAX_WATCHED_DIRS;
 
         let exts = self.watch_supported_extensions();
         let exts: Vec<_> = exts.iter().map(String::as_str).collect();
-        let mut ignore_cache = HashMap::new();
         let mut remaining = MAX_WATCHED_DIRS;
         let mut files = Vec::new();
         for dir in dirs {
@@ -358,7 +402,7 @@ impl TokenSave {
                 continue;
             };
             if self.is_watch_internal(&rel)
-                || !self.watch_ancestors_in_scope(&rel, true, &mut ignore_cache)
+                || !self.watch_ancestors_in_scope(&rel, true, ignore_cache)
             {
                 continue;
             }
@@ -367,8 +411,6 @@ impl TokenSave {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error),
             };
-            // The ignore matcher inventories siblings, so process only complete,
-            // bounded listings. Keep registrations from earlier directories.
             let children = entries
                 .take(remaining + 1)
                 .collect::<std::io::Result<Vec<_>>>()?;
@@ -392,13 +434,13 @@ impl TokenSave {
                 if !noise
                     && !self.is_watch_internal(&rel)
                     && !self.is_below_nested_worktree(&rel)
-                    && self.watch_file_in_scope(&rel, &path, &exts, &mut ignore_cache)
+                    && self.watch_file_in_scope(&rel, &path, &exts, ignore_cache)
                 {
                     files.push(path);
                 }
             }
         }
-        Ok((files, false))
+        Ok((files, ignore_cache.exhausted()))
     }
 
     /// Turns a debounced batch of changed paths into what the index needs.
@@ -409,10 +451,18 @@ impl TokenSave {
     /// An in-scope directory that appeared, or an extensionless missing path
     /// that may have been a directory, makes the batch a reconciliation.
     pub async fn plan_watch_batch(&self, changes: &[WatchedChange]) -> WatchPlan {
+        self.plan_watch_batch_with_ignore(changes, &mut WatchIgnore::default())
+            .await
+    }
+
+    pub(crate) async fn plan_watch_batch_with_ignore(
+        &self,
+        changes: &[WatchedChange],
+        gitignore_cache: &mut WatchIgnore,
+    ) -> WatchPlan {
         let mut plan = WatchPlan::default();
         let exts = self.watch_supported_extensions();
         let ext_refs: Vec<&str> = exts.iter().map(String::as_str).collect();
-        let mut gitignore_cache = HashMap::new();
         let mut seen = HashSet::new();
         for change in changes {
             let Some(rel) = self.watch_relative(&change.path) else {
@@ -428,9 +478,7 @@ impl TokenSave {
             let abs = self.project_root.join(&rel);
             let meta = std::fs::metadata(&abs);
             if meta.as_ref().is_ok_and(std::fs::Metadata::is_dir) {
-                if change.structural
-                    && self.watch_ancestors_in_scope(&rel, true, &mut gitignore_cache)
-                {
+                if change.structural && self.watch_ancestors_in_scope(&rel, true, gitignore_cache) {
                     plan.new_dirs.push(abs);
                     plan.reconcile = true;
                 }
@@ -438,7 +486,7 @@ impl TokenSave {
             }
             let known = matches!(self.db.get_file(&rel).await, Ok(Some(_)));
             if meta.is_ok() {
-                if known || self.watch_file_in_scope(&rel, &abs, &ext_refs, &mut gitignore_cache) {
+                if known || self.watch_file_in_scope(&rel, &abs, &ext_refs, gitignore_cache) {
                     plan.files.push(rel);
                 }
             } else if known {
@@ -456,7 +504,7 @@ impl TokenSave {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_transient_file_name, HashSet, TokenSave, WatchedChange};
+    use super::{is_transient_file_name, HashSet, TokenSave, WatchIgnore, WatchedChange};
     use crate::mcp::fs_watch::MAX_PENDING_PATHS;
 
     #[tokio::test]
@@ -481,7 +529,10 @@ mod tests {
             path,
             structural: false,
         });
-        let Ok(children) = cg.kqueue_directory_changes(&changes, &watched, &HashSet::new()) else {
+        let mut watch_ignore = WatchIgnore::kqueue();
+        let Ok(children) =
+            cg.kqueue_directory_changes(&changes, &watched, &HashSet::new(), &mut watch_ignore)
+        else {
             panic!("list kqueue directory changes");
         };
         assert_eq!(
@@ -492,10 +543,42 @@ mod tests {
             1
         );
 
-        let plan = cg.plan_watch_batch(&children).await;
+        let plan = cg
+            .plan_watch_batch_with_ignore(&children, &mut watch_ignore)
+            .await;
         assert_eq!(plan.files, ["src/a.rs", "src/b.rs"]);
         assert_eq!(plan.new_dirs, [new_dir]);
         assert!(plan.reconcile);
+    }
+
+    #[tokio::test]
+    async fn kqueue_directory_listing_bounds_ancestor_ignore_work_across_batch() {
+        let Ok(tmp) = tempfile::tempdir() else {
+            panic!("create fixture");
+        };
+        let root = tmp.path();
+        let Ok(cg) = TokenSave::init(root).await else {
+            panic!("initialize fixture");
+        };
+        assert!(cg.config.git_ignore);
+        let mut changes = Vec::new();
+        for index in 0..MAX_PENDING_PATHS {
+            let path = root.join(format!("tree-{index}")).join("src");
+            assert!(std::fs::create_dir_all(&path).is_ok());
+            changes.push(WatchedChange {
+                path,
+                structural: false,
+            });
+        }
+
+        let mut watch_ignore = WatchIgnore::kqueue();
+        let result = cg.kqueue_directory_changes(
+            &changes,
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut watch_ignore,
+        );
+        assert!(result.is_err() && watch_ignore.exhausted());
     }
 
     #[tokio::test]
@@ -516,12 +599,65 @@ mod tests {
             structural: false,
         }];
         assert!(cg
-            .kqueue_directory_changes(&changes, &HashSet::new(), &HashSet::new())
+            .kqueue_directory_changes(
+                &changes,
+                &HashSet::new(),
+                &HashSet::new(),
+                &mut WatchIgnore::kqueue(),
+            )
             .is_ok());
         assert!(std::fs::write(src.join("overflow.tmp"), "").is_ok());
         assert!(cg
-            .kqueue_directory_changes(&changes, &HashSet::new(), &HashSet::new())
+            .kqueue_directory_changes(
+                &changes,
+                &HashSet::new(),
+                &HashSet::new(),
+                &mut WatchIgnore::kqueue(),
+            )
             .is_err());
+    }
+
+    #[test]
+    fn kqueue_ignore_matching_agrees_with_directory_walk() -> std::io::Result<()> {
+        use std::fs;
+
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path();
+        assert!(gix::init(root).is_ok());
+        let src = root.join("src");
+        let blocked = src.join("blocked");
+        fs::create_dir_all(&blocked)?;
+        fs::write(
+            root.join(".gitignore"),
+            "src/parent.rs\nsrc/override.rs\nsrc/blocked/\n",
+        )?;
+        fs::write(src.join(".gitignore"), "!override.rs\n")?;
+        fs::write(src.join(".ignore"), "local.rs\n")?;
+        let info = root.join(".git").join("info");
+        fs::create_dir_all(&info)?;
+        fs::write(info.join("exclude"), "src/excluded.rs\n")?;
+
+        let fixtures = [
+            ("parent.rs", false),
+            ("override.rs", true),
+            ("local.rs", false),
+            ("excluded.rs", false),
+            ("keep.rs", true),
+        ];
+        for (name, _) in fixtures {
+            fs::write(src.join(name), "")?;
+        }
+
+        let mut ordinary = WatchIgnore::default();
+        let mut kqueue = WatchIgnore::kqueue();
+        for (name, allowed) in fixtures {
+            let path = src.join(name);
+            assert_eq!(ordinary.allows(&path, false), allowed, "{name}");
+            assert_eq!(kqueue.allows(&path, false), allowed, "{name}");
+        }
+        assert!(!ordinary.allows(&blocked, true));
+        assert!(!kqueue.allows(&blocked, true));
+        Ok(())
     }
 
     #[test]
