@@ -238,6 +238,15 @@ Selected opens are read-only: they never initialize, sync, migrate, auto-track,
 or write graph/source data. They also do not contribute to savings accounting.
 Calls without selectors behave exactly as before.
 
+`tokensave_search` and `tokensave_files` also accept an array of roots to
+federate one request across several graphs. A multi-root array may include the
+project already served by the MCP server; that project participates as a
+read-only member of the federation. Unusable roots are reported as skipped
+when at least one root succeeds, and worktrees of the same repository are
+collapsed with the omitted paths reported. A scalar root or one-element array
+that names the served project remains invalid; omit `graph_root` for that
+single-project call.
+
 `graph_root` is only useful if you know the other project exists, so the server
 tells you: initialized projects sitting directly beside the served root are
 named in the MCP `instructions`, in `tokensave_status`, and in empty

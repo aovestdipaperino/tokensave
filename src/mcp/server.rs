@@ -24,7 +24,7 @@ use crate::tokensave::TokenSave;
 
 use super::graph_scope::{
     collapse_worktree_roots, decode_selected_inputs, merge_federated_results, qualify_result,
-    select_graph, validate_local_inputs, GraphSelector, FEDERATABLE_TOOLS,
+    select_federated_graph, select_graph, validate_local_inputs, GraphSelector, FEDERATABLE_TOOLS,
 };
 use super::tools::{
     baseline_policy, cap_baseline, get_listed_tool_definitions, get_tool_definitions,
@@ -1092,7 +1092,7 @@ impl McpServer {
                 root: root.clone(),
                 branch: branch.clone(),
             };
-            let selected = match select_graph(selector, self.served_root()).await {
+            let selected = match select_federated_graph(selector, self.served_root()).await {
                 Ok(selected) => selected,
                 Err(error) => {
                     failures.push(format!("{}: {error}", root.display()));

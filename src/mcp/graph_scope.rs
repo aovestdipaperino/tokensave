@@ -302,6 +302,27 @@ pub(crate) async fn select_graph(
     selector: GraphSelector,
     served_root: Option<&Path>,
 ) -> Result<SelectedGraph> {
+    select_graph_impl(selector, served_root, false).await
+}
+
+/// Selects one member of a genuinely federated request.
+///
+/// Unlike a scalar selector (or a one-element array), federation may include
+/// the project already served by this MCP server. It is opened read-only like
+/// the other members so every result follows the same qualification and merge
+/// pipeline. Selecting another branch of the served project remains invalid.
+pub(crate) async fn select_federated_graph(
+    selector: GraphSelector,
+    served_root: Option<&Path>,
+) -> Result<SelectedGraph> {
+    select_graph_impl(selector, served_root, true).await
+}
+
+async fn select_graph_impl(
+    selector: GraphSelector,
+    served_root: Option<&Path>,
+    allow_served_root: bool,
+) -> Result<SelectedGraph> {
     if !selector.root.is_absolute() {
         return Err(config_error("graph_root must be an absolute path"));
     }
@@ -331,7 +352,9 @@ pub(crate) async fn select_graph(
             })
         })
         .transpose()?;
-    if canonical_served_root.as_ref() == Some(&canonical_root) {
+    if canonical_served_root.as_ref() == Some(&canonical_root)
+        && (!allow_served_root || selector.branch.is_some())
+    {
         let remedy = if selector.branch.is_some() {
             "; omit graph_root and graph_branch to query the currently served graph \
              (selecting a different branch of the served project is not supported)"
