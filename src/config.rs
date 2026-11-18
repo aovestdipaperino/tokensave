@@ -84,6 +84,10 @@ pub fn resolve_report_savings(configured: bool) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenSaveConfig {
+    /// Persistent stderr diagnostic verbosity. CLI flags override
+    /// `TOKENSAVE_LOG`, which overrides this project setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<crate::debug_log::Level>,
     /// Opt-in fallback for files without a registered extension or manifest language.
     #[serde(default)]
     pub language_detection: crate::language_detection::DetectionConfig,
@@ -310,6 +314,7 @@ pub fn env_bool_override(var: &str, config_value: bool) -> bool {
 impl Default for TokenSaveConfig {
     fn default() -> Self {
         Self {
+            log_level: None,
             language_detection: crate::language_detection::DetectionConfig::default(),
             cpu_usage: None,
             memory_usage: crate::memory::MemoryUsage::default(),
@@ -481,11 +486,50 @@ pub fn load_config(project_root: &Path) -> Result<TokenSaveConfig> {
     Ok(config)
 }
 
+/// Reads only the project log level for early diagnostic initialization.
+///
+/// Full project configuration is loaded later in startup, but diagnostics
+/// need to be configured before the first startup event is emitted.
+pub fn configured_log_level(project_root: &Path) -> Result<Option<crate::debug_log::Level>> {
+    let config_path = get_config_path(project_root);
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    let contents = fs::read_to_string(&config_path).map_err(|e| TokenSaveError::Config {
+        message: format!(
+            "failed to read config file '{}': {}",
+            config_path.display(),
+            e
+        ),
+    })?;
+    let value: serde_json::Value =
+        serde_json::from_str(&contents).map_err(|e| TokenSaveError::Config {
+            message: format!(
+                "failed to parse config file '{}': {}",
+                config_path.display(),
+                e
+            ),
+        })?;
+    value
+        .get("log_level")
+        .map(|level| {
+            serde_json::from_value(level.clone()).map_err(|e| TokenSaveError::Config {
+                message: format!(
+                    "invalid log_level in config file '{}': {}; expected off, error, warn, info, debug or trace",
+                    config_path.display(),
+                    e
+                ),
+            })
+        })
+        .transpose()
+}
+
 fn log_config(config: &TokenSaveConfig, source: &'static str) {
     use crate::debug_log::{event, Level};
     event(Level::Debug, "config", "project_settings", || {
         serde_json::json!({
             "source": source,
+            "log_level": config.log_level.map(crate::debug_log::Level::name),
             "strict_tree": config.strict_tree,
             "max_auto_sync_files": config.max_auto_sync_files,
         })
