@@ -10,7 +10,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const DEFAULT_INTERVAL_SECS: u64 = 86_400;
+/// Periodic checks are opt-in: zero leaves the idle checker off.
+pub const DEFAULT_INTERVAL_SECS: u64 = 0;
+/// The interval the docs and `doctor` suggest when enabling checks (daily).
+pub const SUGGESTED_INTERVAL_SECS: u64 = 86_400;
 /// Retry delay after a check deferred for activity, capped by the interval.
 pub const DEFERRED_RETRY_SECS: u64 = 900;
 const BUDGET: Duration = Duration::from_secs(5);

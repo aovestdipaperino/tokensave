@@ -2,13 +2,14 @@
 
 Periodic checks implement [the periodic-check comment on #864](https://github.com/aovestdipaperino/tokensave/issues/864#issuecomment-6507699473).
 
-Periodic checks are **enabled by default**. The MCP server checks its selected
-project database after at least 60 seconds without incoming requests, at most
-once per day. `tokensave doctor` reports the effective interval and the last
-saved result. Set
+Periodic checks are **opt-in** and off by default. To enable them, set
 `integrity_interval_secs` in the project's channel-specific `.tokensave/config.json`
-(or `.tokensave/beta/config.json`) to another interval in seconds; `0` disables
-periodic checks. Restart the server after changing this setting. Due checks wait
+(or `.tokensave/beta/config.json`) to an interval in seconds; `86400` checks
+once per day. The MCP server then checks its selected project database after at
+least 60 seconds without incoming requests, at most once per interval. `0`, the
+default, disables periodic checks. `tokensave doctor` reports the effective
+interval and the last saved result. Restart the server after changing this
+setting. Due checks wait
 while startup indexing, lazy sync, project sync or requests are in flight.
 This is an idle maintenance check, not a daemon or an exact wall-clock schedule.
 CLI-only projects and projects accessed only through `graph_root` do not get

@@ -198,11 +198,14 @@ async fn check_database(dc: &mut DoctorCounters, project_path: &Path) {
 }
 
 /// Report the periodic integrity-check interval and the last saved result, so
-/// the default-on idle check is discoverable without `integrity-check --status`.
+/// the opt-in idle check is discoverable without `integrity-check --status`.
 fn check_integrity_schedule(dc: &mut DoctorCounters, ts: &TokenSave) {
     let interval = ts.get_config().integrity_interval_secs;
     if interval == 0 {
-        dc.info("Periodic integrity checks: disabled (integrity_interval_secs = 0)");
+        dc.info(&format!(
+            "Periodic integrity checks: off (opt-in; set integrity_interval_secs = {} for daily checks)",
+            crate::integrity::SUGGESTED_INTERVAL_SECS
+        ));
         return;
     }
     dc.info(&format!(

@@ -130,17 +130,17 @@ async fn scheduler_defers_when_busy_and_disabled_without_launching_work() {
     assert!(integrity::load(&path).is_err());
 }
 #[test]
-fn config_defaults_to_daily_checks_and_accepts_disable() {
+fn config_defaults_to_disabled_checks_and_accepts_an_interval() {
     let mut value = serde_json::to_value(tokensave::config::TokenSaveConfig::default()).unwrap();
     value
         .as_object_mut()
         .unwrap()
         .remove("integrity_interval_secs");
     let config: tokensave::config::TokenSaveConfig = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(config.integrity_interval_secs, 86400);
-    value["integrity_interval_secs"] = 0.into();
-    let config: tokensave::config::TokenSaveConfig = serde_json::from_value(value).unwrap();
     assert_eq!(config.integrity_interval_secs, 0);
+    value["integrity_interval_secs"] = 86400.into();
+    let config: tokensave::config::TokenSaveConfig = serde_json::from_value(value).unwrap();
+    assert_eq!(config.integrity_interval_secs, 86400);
 }
 
 #[tokio::test]

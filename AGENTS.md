@@ -372,8 +372,8 @@ portable string formats, and documented path-syntax test fixtures.
 - `tokensave integrity-check <database> [--full|--status]` uses a bounded,
   read-only child and never invokes recovery or migrations. Keep child timeout,
   cancellation/reaping, cross-process lock and diagnostic bounds intact.
-- MCP checks run only during idle time; `integrity_interval_secs` defaults to
-  86400 and zero disables them. Checks deferred for activity retry after
+- MCP checks are opt-in and run only during idle time; `integrity_interval_secs`
+  defaults to 0 (disabled), and 86400 is the suggested daily setting. Checks deferred for activity retry after
   `DEFERRED_RETRY_SECS`; every other attempt counts toward the full interval.
   `doctor` reports the interval and last result. See [docs/DATABASE-INTEGRITY.md](docs/DATABASE-INTEGRITY.md).
 - Focused tests: `cargo test --test integration integrity_test::`.

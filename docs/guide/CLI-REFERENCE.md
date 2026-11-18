@@ -155,7 +155,7 @@ See [Opt-in filesystem watcher](INDEXING.md#opt-in-filesystem-watcher) for scope
 
 | Setting | Where | Effect |
 |---|---|---|
-| `integrity_interval_secs` | `.tokensave/config.json` | Seconds between read-only database checks run by an idle MCP server. Default `86400` (daily, enabled). `0` disables them. Restart the server after changing it. |
+| `integrity_interval_secs` | `.tokensave/config.json` | Seconds between read-only database checks run by an idle MCP server. Default `0` (off; checks are opt-in). `86400` checks daily. Restart the server after changing it. |
 
 `tokensave doctor` shows the effective interval and the last result. See
 [periodic database integrity checks](../DATABASE-INTEGRITY.md) for scheduling,

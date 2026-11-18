@@ -84,7 +84,7 @@ pub fn resolve_report_savings(configured: bool) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenSaveConfig {
-    /// Seconds between idle MCP database checks; zero disables them.
+    /// Seconds between idle MCP database checks; zero (the default) disables them.
     #[serde(default = "default_integrity_interval_secs")]
     pub integrity_interval_secs: u64,
     /// Opt-in fallback for files without a registered extension or manifest language.
