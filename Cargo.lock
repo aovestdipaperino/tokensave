@@ -3544,6 +3544,7 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-css",
  "tree-sitter-hcl",
+ "tree-sitter-hlsl",
  "tree-sitter-html",
  "tree-sitter-language",
  "tree-sitter-systemverilog",
@@ -3557,8 +3558,9 @@ dependencies = [
 
 [[package]]
 name = "tokensave-large-treesitters"
-version = "0.9.0"
-source = "git+https://github.com/aovestdipaperino/tokensave-large-treesitters#694d60b236ff6c397a8df1f3c4f046f94a6df57b"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e12f9884955f347b1c7323f263020af2a097811fe1994e5d974ac46411b971b0"
 dependencies = [
  "arborium-kotlin",
  "arborium-lean",
@@ -3567,17 +3569,13 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-batch",
  "tree-sitter-clojure-orchard",
- "tree-sitter-commonlisp",
- "tree-sitter-cuda",
  "tree-sitter-elixir",
  "tree-sitter-erlang",
- "tree-sitter-flatbuffers",
  "tree-sitter-fortran",
  "tree-sitter-fsharp",
  "tree-sitter-glsl",
  "tree-sitter-gwbasic",
  "tree-sitter-haskell",
- "tree-sitter-hlsl",
  "tree-sitter-julia",
  "tree-sitter-language",
  "tree-sitter-msbasic2",
@@ -3589,7 +3587,6 @@ dependencies = [
  "tree-sitter-powershell",
  "tree-sitter-qbasic",
  "tree-sitter-r",
- "tree-sitter-scheme",
  "tree-sitter-sequel",
  "tree-sitter-toml-ng",
  "tree-sitter-vb-dotnet",
@@ -3810,16 +3807,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tree-sitter-commonlisp"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36c662ae95eee8c5ada519d4fe87261c5fbcc3ffaac4b10c03d460154cd6a9b2"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
 name = "tree-sitter-cpp"
 version = "0.23.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3834,16 +3821,6 @@ name = "tree-sitter-css"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a5cbc5e18f29a2c6d6435891f42569525cf95435a3e01c2f1947abcde178686f"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-cuda"
-version = "0.21.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e88ed4ad300c2fb7ed7dde1d9c1b0926bd93fc8ae1c8766898191bd85f2220f5"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -3874,16 +3851,6 @@ name = "tree-sitter-erlang"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ceb442e728225d601db0661f60d64e166bd9b9a55c587f71d4e4f27378717cce"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-flatbuffers"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a9864687249b3e9817f854fdb43f9c274b362ae0a4a4122b6bd8b7eccbd711d"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -4171,16 +4138,6 @@ name = "tree-sitter-scala"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3394d6bc99bceae03c75482a93f1bcefff11e69d3a405f1410e864212b52739a"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-scheme"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "439ddaefe4c2fc449a98fb57f638ed60aa3dad378b6bc85e9c261c69584bfd37"
 dependencies = [
  "cc",
  "tree-sitter-language",
