@@ -4,7 +4,9 @@ Every `tokensave` command at a glance.
 
 Use `tokensave --debug <command>` to emit structured diagnostics on stderr.
 Use `--log-level off|error|warn|info|debug|trace` to select a level or
-`TOKENSAVE_LOG` to pass a level to an agent-launched process. See
+`TOKENSAVE_LOG` to pass a level to an agent-launched process. Set `log_level`
+to the same values in `.tokensave/config.json` for a persistent project default.
+CLI flags override the environment, which overrides the project setting. See
 [Debug diagnostics](TROUBLESHOOTING.md#debug-diagnostics) for capture examples.
 
 ```bash

@@ -16,13 +16,17 @@ Doctor also validates that each installed hook uses the correct tokensave subcom
 
 ## Debug diagnostics
 
-Diagnostic events are off by default. Use `--debug` for one command or set
-`TOKENSAVE_LOG=debug` in the environment before starting an agent, so new
+Diagnostic events are off by default. Use `--debug` for one command, set
+`TOKENSAVE_LOG=debug` in the environment before starting an agent, or persist
+`"log_level": "debug"` in the project's `.tokensave/config.json`, so new
 TokenSave MCP servers and hooks inherit it. An explicit `--log-level` takes
-precedence over `--debug`, which takes precedence over `TOKENSAVE_LOG`. Levels
+precedence over `--debug`, which takes precedence over `TOKENSAVE_LOG`, which
+takes precedence over the project configuration. Levels
 are `off`, `error`, `warn`, `info`, `debug`, and `trace`. Use `trace` only for
 short captures that need per-file extraction outcomes. Unset the variable or
-set it to `off`, then restart the agent to turn logging off.
+set it to `off`, or remove the project setting, then restart the agent to turn
+logging off. An explicit `TOKENSAVE_LOG=off` temporarily disables a persisted
+project level.
 
 For example, capture a sync or an MCP session from the project
 directory. Choose a file outside the indexed checkout if the capture will
