@@ -871,7 +871,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     }
                 };
                 if !short {
-                    print!("{}", include_str!("resources/logo.ansi"));
+                    print!("{}", include_str!(concat!(env!("OUT_DIR"), "/logo.ansi")));
                 }
                 let branch_info = cg.active_branch().map(|_| {
                     let ts_dir = tokensave::config::get_tokensave_dir(&project_path);

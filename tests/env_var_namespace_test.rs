@@ -22,6 +22,9 @@ const EXTERNAL_ENV_VARS: &[&str] = &[
     "TOOL_INPUT",
     // Cargo supplies the compiler path used by build.rs for verbose version metadata.
     "RUSTC",
+    // Cargo supplies the build script's output directory, where build.rs writes the
+    // generated ANSI logo.
+    "OUT_DIR",
     // Git subprocess isolation.
     "GIT_CONFIG_GLOBAL",
     "GIT_CONFIG_COUNT",
