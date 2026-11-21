@@ -52,10 +52,11 @@ fn build_metadata() {
 
 fn main() {
     build_metadata();
-    let out_path = Path::new("src/resources/logo.ansi");
+    let out_dir = std::env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo");
+    let out_path = Path::new(&out_dir).join("logo.ansi");
     let logo_bytes = include_bytes!("src/resources/logo.png");
     let ansi = logo_art::image_to_ansi(logo_bytes, 90);
-    fs::write(out_path, ansi).unwrap();
+    fs::write(&out_path, ansi).unwrap_or_else(|e| panic!("write {}: {e}", out_path.display()));
     println!("cargo::rerun-if-changed=src/resources/logo.png");
 
     // Vendored WGSL grammar — compiled only when lang-wgsl is enabled.
