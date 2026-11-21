@@ -9,6 +9,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Internal
 
+- Move the build script's named values (Cargo and build-metadata variable keys, logo file names and width, the vendored grammar table) into `build/constants.rs`, pass the generated logo path to the crate through one build variable, and add an AGENTS.md/CONTRIBUTING.md rule and review checklist for named constants (Refs #1069).
 - Add a daily `Release drift` workflow that fails when crates.io carries a stable tokensave version without a published GitHub release, or when that release still lacks `SHA256SUMS` 12 hours after publication (Refs #1070). Without the release, `release.yml` never builds the binaries, Homebrew bottles and Scoop manifest, and `tokensave upgrade` reports the previous version as up to date, as happened with 7.17.0. The check was proposed by @0xreconlion.
 
 ## [7.17.0] - 2026-11-19

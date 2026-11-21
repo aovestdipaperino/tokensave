@@ -246,6 +246,45 @@ coverage changes, update the report's scope and limitations. Before finishing,
 review the source diff for SQL changes and verify that each is reflected in the
 report. Git history records the changes; the report describes the current source.
 
+## Named constants and single sources of truth
+
+These rules apply to new and modified code on every branch (#1069). The
+contributor-facing version is in
+[CONTRIBUTING.md](CONTRIBUTING.md#named-constants).
+
+- Do not scatter magic numbers or meaningful hard-coded strings through new or
+  modified code. Give domain-specific values (limits, widths, timeouts, sizes,
+  file and directory names, environment-variable keys including Cargo keys
+  such as `OUT_DIR`, protocol identifiers, default settings and build
+  artifacts) descriptive, appropriately scoped names.
+- Declare compile-time values with `const` where practical. Use `static`, lazy
+  initialization or runtime configuration only when their semantics require
+  it. Reuse one definition, or derive related values from it, instead of
+  duplicating literals that must stay synchronized.
+- Pass named constants to runtime APIs, for example
+  `std::env::var_os(cargo_env::OUT_DIR)`. Compile-time macros such as `env!`,
+  `include_str!` and `concat!` require string literals: keep those literals,
+  say where the authoritative definition lives in a nearby comment, and do not
+  break compilation to remove them. Where practical, pass a full value through
+  one key instead (for example `include_str!(env!("TOKENSAVE_BUILD_LOGO_ANSI_PATH"))`),
+  and add a test that checks the literal against its definition.
+- Put named constants in dedicated `constants.rs` files or modules instead of
+  declaring them throughout implementation files. Keep each module compact and
+  grouped by feature or domain, place it close to its owner, reuse an existing
+  module when one fits, and avoid a catch-all constants file. Expose constants
+  only as widely as needed, and do not merge unrelated concepts because their
+  values happen to match.
+- `build.rs` cannot import crate modules. Its constants live in
+  `build/constants.rs`, which `build.rs` includes with `#[path]` and
+  `tests/build_constants_test.rs` checks.
+- Conventional, self-explanatory literals such as `0` and `1`, and one-off
+  values without domain meaning, may stay inline. Avoid needless abstraction.
+- **Review checklist:** during each implementation and PR review, search the
+  changed code (including build scripts, tests and generated-asset paths) for
+  repeated or meaningful literals. Replace them with named constants in the
+  appropriate constants module, or record why an inline value is preferable.
+  Check that constants modules stay compact and logically grouped.
+
 ## Rust style guide (master only)
 
 TokenSave has adopted [Google's Rust Style Guide](https://google.github.io/styleguide/rustguide.html)
@@ -393,7 +432,7 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - `src/grep_annotate/` — `tokensave grep` (#688): argument classification for `grep`, `rg` and `git grep`, hit parsing, and read-only index lookups that add `#ts` facts to each `path:line:` hit; the runner is `src/grep_command.rs`. It is dispatched before startup maintenance, runs the named search binary unchanged, and must not sync, migrate or write. Focused checks: `cargo test --test integration grep_annotate_test::` and `cargo test --lib grep_annotate`; see `docs/guide/CLI-REFERENCE.md`.
 - `src/sync.rs` — incremental sync (content hashing, stale/new/removed detection).
 - `src/bench.rs` — `tokensave bench` harness.
-- `build.rs` compiles vendored grammars (WGSL, ActionScript, GDScript) only when their feature is enabled.
+- `build.rs` compiles vendored grammars (WGSL, ActionScript, GDScript) only when their feature is enabled, generates the ANSI logo and records build metadata. Its named values, including the `VENDORED_GRAMMARS` table, are in `build/constants.rs`.
 
 ## Database channel compatibility
 

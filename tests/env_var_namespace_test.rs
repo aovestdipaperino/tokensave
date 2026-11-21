@@ -136,7 +136,7 @@ fn is_allowed_env_var(name: &str) -> bool {
 
 fn rust_sources(root: &Path) -> Vec<PathBuf> {
     let mut sources = Vec::new();
-    for directory in ["src", "benches", "examples"] {
+    for directory in ["src", "benches", "examples", "build"] {
         let directory = root.join(directory);
         if !directory.exists() {
             continue;
