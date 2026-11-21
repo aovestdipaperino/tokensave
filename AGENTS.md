@@ -2,6 +2,15 @@
 
 This file provides guidance to the agent when working with code in this repository.
 
+## Assistant-specific entry points
+
+`AGENTS.md` is the single source of agent guidance. Assistants that do not read
+it by default load it through thin pointer files: `CLAUDE.md` (Claude Code,
+via `@AGENTS.md`), `GEMINI.md` (Gemini CLI), `.github/copilot-instructions.md`
+(GitHub Copilot) and `.cursor/rules/agents.mdc` (Cursor). Keep those files as
+pointers only: never add rules to them, and put every change here. Keep the
+same pointer files on `master` and `beta`.
+
 ## Fork-specific branch workflow
 
 - Create new work branches in the user's fork rather than in the upstream
