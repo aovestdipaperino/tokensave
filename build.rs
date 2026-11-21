@@ -1,31 +1,18 @@
 use std::{fs, path::Path, process::Command};
 
-fn command_output(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program).args(args).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let value = String::from_utf8(output.stdout).ok()?.trim().to_owned();
-    (!value.is_empty() && !value.contains(['\n', '\r'])).then_some(value)
-}
+#[path = "build/provenance.rs"]
+mod provenance;
 
 fn build_metadata() {
-    // Do not pick up an unrelated parent repository for unpacked source archives.
-    let commit = if Path::new(".git").exists() {
-        let current_ref = command_output("git", &["symbolic-ref", "-q", "HEAD"]);
-        for name in [Some("HEAD"), Some("packed-refs"), current_ref.as_deref()]
-            .into_iter()
-            .flatten()
-        {
-            if let Some(path) = command_output("git", &["rev-parse", "--git-path", name]) {
-                println!("cargo::rerun-if-changed={path}");
-            }
-        }
-        command_output("git", &["rev-parse", "--short=12", "HEAD"])
-            .filter(|sha| sha.len() >= 7 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
-    } else {
-        None
-    };
+    // Git checkouts use `git rev-parse`; packaged crates (crates.io) use the
+    // `.cargo_vcs_info.json` Cargo writes at package time (#1062). Only the
+    // package root is inspected, so an unrelated parent repository is ignored.
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_else(|| ".".into());
+    let provenance = provenance::resolve(Path::new(&manifest_dir));
+    for path in &provenance.rerun_if_changed {
+        println!("cargo::rerun-if-changed={path}");
+    }
+    let commit = provenance.commit;
     let rustc = std::env::var_os("RUSTC")
         .and_then(|path| Command::new(path).arg("--version").output().ok())
         .filter(|output| output.status.success())
