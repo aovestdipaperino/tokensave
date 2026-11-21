@@ -137,6 +137,15 @@ pub struct UserConfig {
     #[serde(default = "default_true")]
     pub manage_rules: bool,
 
+    /// When false, `install`, `reinstall`, the upgrade resync and `uninstall`
+    /// leave every agent's tool-approval settings alone (Claude Code's
+    /// `permissions.allow`, Codex `approval_mode`, Gemini/Qwen `trust`, Kiro
+    /// `allowedTools`), the post-upgrade check stops asking for new grants,
+    /// and `doctor` reports approvals as user-managed (#1067).
+    /// `TOKENSAVE_MANAGE_PERMISSIONS` overrides it per run.
+    #[serde(default = "default_true")]
+    pub manage_permissions: bool,
+
     /// When false, `install`, `reinstall`, the upgrade resync and the
     /// post-upgrade hook backfill skip writing the Claude Code hooks
     /// (`PreToolUse`/`UserPromptSubmit`/`Stop`) into settings.json, and
@@ -360,6 +369,7 @@ impl Default for UserConfig {
             extraction_timeout_secs: default_extraction_timeout_secs(),
             wildcard_permissions: false,
             manage_rules: true,
+            manage_permissions: true,
             claude_hooks: true,
             auto_init: true,
             caveman_compatibility: false,
@@ -393,6 +403,8 @@ pub(crate) struct ConfigFile {
     #[serde(default = "default_true")]
     manage_rules: bool,
     #[serde(default = "default_true")]
+    manage_permissions: bool,
+    #[serde(default = "default_true")]
     claude_hooks: bool,
     #[serde(default = "default_true")]
     auto_init: bool,
@@ -423,6 +435,7 @@ impl ConfigFile {
             extraction_timeout_secs: c.extraction_timeout_secs,
             wildcard_permissions: c.wildcard_permissions,
             manage_rules: c.manage_rules,
+            manage_permissions: c.manage_permissions,
             claude_hooks: c.claude_hooks,
             auto_init: c.auto_init,
             caveman_compatibility: c.caveman_compatibility,
@@ -1287,6 +1300,7 @@ impl UserConfig {
             || self.extraction_timeout_secs != base.extraction_timeout_secs
             || self.wildcard_permissions != base.wildcard_permissions
             || self.manage_rules != base.manage_rules
+            || self.manage_permissions != base.manage_permissions
             || self.claude_hooks != base.claude_hooks
             || self.auto_init != base.auto_init
             || self.caveman_compatibility != base.caveman_compatibility
@@ -1341,6 +1355,11 @@ impl UserConfig {
                 on_disk.manage_rules
             } else {
                 self.manage_rules
+            },
+            manage_permissions: if self.manage_permissions == base.manage_permissions {
+                on_disk.manage_permissions
+            } else {
+                self.manage_permissions
             },
             claude_hooks: if self.claude_hooks == base.claude_hooks {
                 on_disk.claude_hooks
@@ -1536,6 +1555,7 @@ mod tests {
             extraction_timeout_secs: 30,
             wildcard_permissions: true,
             manage_rules: false,
+            manage_permissions: false,
             claude_hooks: false,
             auto_init: false,
             caveman_compatibility: true,

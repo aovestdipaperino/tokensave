@@ -35,7 +35,7 @@ impl AgentIntegration for ClaudeIntegration {
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
         match &ctx.scope {
             InstallScope::Global => uninstall_global(ctx),
-            InstallScope::Local { project_path } => uninstall_local(project_path),
+            InstallScope::Local { project_path } => uninstall_local(ctx, project_path),
         }
         Ok(())
     }
@@ -165,11 +165,7 @@ fn install_global(ctx: &InstallContext) -> Result<()> {
     } else {
         install_hook(&mut settings, &ctx.tokensave_bin);
     }
-    install_permissions(
-        &mut settings,
-        &ctx.tool_permissions,
-        ctx.force_permission_style,
-    );
+    install_permissions_if_managed(&mut settings, ctx);
     write_json_file(&settings_path, &settings)?;
 
     // Migration: strip any pre-#256 inline block from CLAUDE.md, then write
@@ -209,11 +205,7 @@ fn install_local(ctx: &InstallContext, project: &Path) -> Result<()> {
     } else {
         install_hook(&mut settings, &ctx.tokensave_bin);
     }
-    install_permissions(
-        &mut settings,
-        &ctx.tool_permissions,
-        ctx.force_permission_style,
-    );
+    install_permissions_if_managed(&mut settings, ctx);
     write_json_file(&settings_path, &settings)?;
 
     uninstall_claude_md_rules(&claude_md_path)?;
@@ -238,7 +230,7 @@ fn uninstall_global(ctx: &InstallContext) {
     let claude_md_path = claude_dir.join("CLAUDE.md");
 
     uninstall_mcp_server(&claude_json_path);
-    uninstall_settings(&settings_path);
+    uninstall_settings(&settings_path, permissions_management_enabled(&ctx.home));
     uninstall_claude_md_rules(&claude_md_path).ok(); // legacy pre-#256 installs, best-effort like the rest of uninstall
     remove_managed_rules_file(&claude_rules_path(&claude_dir));
 
@@ -247,9 +239,12 @@ fn uninstall_global(ctx: &InstallContext) {
     crate::agent_note!("Start a new Claude Code session for changes to take effect.");
 }
 
-fn uninstall_local(project: &Path) {
+fn uninstall_local(ctx: &InstallContext, project: &Path) {
     uninstall_mcp_server(&project.join(".mcp.json"));
-    uninstall_settings(&project.join(".claude").join("settings.json"));
+    uninstall_settings(
+        &project.join(".claude").join("settings.json"),
+        permissions_management_enabled(&ctx.home),
+    );
     uninstall_claude_md_rules(&project.join("CLAUDE.md")).ok(); // legacy pre-#256 installs, best-effort like the rest of uninstall
     remove_managed_rules_file(&claude_rules_path(&project.join(".claude")));
 
@@ -443,6 +438,17 @@ fn find_tokensave_hook(
 /// `uninstall_permissions`.
 fn is_tokensave_perm(s: &str) -> bool {
     s == "mcp__tokensave" || s.starts_with("mcp__tokensave__")
+}
+
+/// Write the tool permissions unless the user manages them
+/// (`manage_permissions = false`, #1067), in which case `permissions.allow`
+/// is left exactly as found.
+fn install_permissions_if_managed(settings: &mut serde_json::Value, ctx: &InstallContext) {
+    if permissions_management_enabled(&ctx.home) {
+        install_permissions(settings, &ctx.tool_permissions, ctx.force_permission_style);
+    } else {
+        crate::agent_note!("{PERMISSIONS_USER_MANAGED_NOTE}");
+    }
 }
 
 /// Add MCP tool permissions (idempotent). Any previously-installed
@@ -642,8 +648,9 @@ fn uninstall_mcp_server(claude_json_path: &Path) {
     }
 }
 
-/// Remove hook, permissions, and stale MCP from settings.json.
-fn uninstall_settings(settings_path: &Path) {
+/// Remove hook, permissions, and stale MCP from settings.json. Permissions
+/// stay when `manage_permissions` is false: they are the user's (#1067).
+fn uninstall_settings(settings_path: &Path, manage_permissions: bool) {
     if !settings_path.exists() {
         return;
     }
@@ -657,7 +664,11 @@ fn uninstall_settings(settings_path: &Path) {
 
     modified |= uninstall_stale_mcp(&mut settings);
     modified |= uninstall_hook(&mut settings);
-    modified |= uninstall_permissions(&mut settings);
+    if manage_permissions {
+        modified |= uninstall_permissions(&mut settings);
+    } else {
+        crate::agent_note!("{PERMISSIONS_USER_MANAGED_NOTE}");
+    }
 
     if modified && backup_and_write_json(settings_path, &settings) {
         crate::agent_note!("\x1b[32m✔\x1b[0m Wrote {}", settings_path.display());
@@ -893,7 +904,12 @@ fn doctor_check_settings_json(dc: &mut DoctorCounters, home: &Path) {
         doctor_check_hook(dc, &settings);
         doctor_fix_hooks(dc, &settings_path, &settings);
     }
-    doctor_check_permissions(dc, &settings);
+    if permissions_management_enabled(home) {
+        doctor_check_permissions(dc, &settings);
+    } else {
+        // #1067: the user owns the approval policy; nothing to prescribe.
+        dc.pass(PERMISSIONS_USER_MANAGED_DOCTOR);
+    }
 }
 
 /// Expected subcommand for each hook event.
@@ -1257,9 +1273,13 @@ pub fn check_install_stale() {
 
     // --- user-level settings: permissions warning + hook backfill ---
     let user_settings_path = claude_config_dir(&home).join("settings.json");
-    if let Ok(contents) = std::fs::read_to_string(&user_settings_path) {
-        if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&contents) {
-            warn_missing_permissions(&settings);
+    // #1067: user-managed approvals get no "run reinstall" nag; reinstall
+    // would not grant anything anyway.
+    if permissions_management_enabled(&home) {
+        if let Ok(contents) = std::fs::read_to_string(&user_settings_path) {
+            if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&contents) {
+                warn_missing_permissions(&settings);
+            }
         }
     }
     // #693: with the opt-out on, the silent backfill must not re-add hooks.

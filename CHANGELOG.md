@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Added
+
+- **`manage_permissions = false` leaves every agent's tool approvals to you (Refs #1067).** `tokensave install` pre-approves every tokensave tool, including the ones that edit files, in Claude Code (`permissions.allow`), Codex CLI (`approval_mode = "auto"`), Gemini CLI and Qwen Code (`trust: true`) and Kiro (`allowedTools`), and reinstall extends the grant to new tools. With `manage_permissions = false` in `~/.tokensave/config.toml` (or `TOKENSAVE_MANAGE_PERMISSIONS=0` for one run), install, reinstall, the upgrade resync and uninstall leave those settings as they find them, the post-upgrade "tools not yet permitted" warning stops, and `doctor` reports approvals as user-managed. The default is unchanged. Reported by @0xreconlion.
+
 ### Internal
 
 - Move the build script's named values (Cargo and build-metadata variable keys, logo file names and width, the vendored grammar table) into `build/constants.rs`, pass the generated logo path to the crate through one build variable, and add an AGENTS.md/CONTRIBUTING.md rule and review checklist for named constants (Refs #1069).
