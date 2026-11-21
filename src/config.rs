@@ -490,26 +490,19 @@ pub fn load_config(project_root: &Path) -> Result<TokenSaveConfig> {
 ///
 /// Full project configuration is loaded later in startup, but diagnostics
 /// need to be configured before the first startup event is emitted.
+///
+/// A missing, unreadable or malformed file yields `Ok(None)`: the command's
+/// own configuration loading reports those cases with its usual, actionable
+/// error, and commands that never load the project configuration keep
+/// working. Only a well-formed file with an invalid `log_level` is an error.
 pub fn configured_log_level(project_root: &Path) -> Result<Option<crate::debug_log::Level>> {
     let config_path = get_config_path(project_root);
-    if !config_path.exists() {
+    let Ok(contents) = fs::read_to_string(&config_path) else {
         return Ok(None);
-    }
-    let contents = fs::read_to_string(&config_path).map_err(|e| TokenSaveError::Config {
-        message: format!(
-            "failed to read config file '{}': {}",
-            config_path.display(),
-            e
-        ),
-    })?;
-    let value: serde_json::Value =
-        serde_json::from_str(&contents).map_err(|e| TokenSaveError::Config {
-            message: format!(
-                "failed to parse config file '{}': {}",
-                config_path.display(),
-                e
-            ),
-        })?;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return Ok(None);
+    };
     value
         .get("log_level")
         .map(|level| {
