@@ -11,6 +11,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 - **`tokensave --version --verbose` reports the release commit for crates.io installs (Refs #1062).** A crate installed with `cargo install tokensave` is built from the published archive, which has no `.git` directory, so the `commit:` line read `unknown`. The build script now falls back to the `.cargo_vcs_info.json` file that Cargo writes into every package at publish time and reports the first 12 digits of the commit recorded there, with a `-dirty` suffix if the package was made from uncommitted changes. Git checkouts still use `git rev-parse HEAD`. Only the package root is inspected, so a source tree unpacked inside an unrelated repository never reports that repository's commit, and a tree with neither source of provenance keeps reporting `unknown`. `tokensave --version` is unchanged.
 
+### Internal
+
+- Move the build script's named values (Cargo and build-metadata variable keys, logo file names and width, the vendored grammar table) into `build/constants.rs`, pass the generated logo path to the crate through one build variable, and add an AGENTS.md/CONTRIBUTING.md rule and review checklist for named constants (Refs #1069).
+- Add a daily `Release drift` workflow that fails when crates.io carries a stable tokensave version without a published GitHub release, or when that release still lacks `SHA256SUMS` 12 hours after publication (Refs #1070). Without the release, `release.yml` never builds the binaries, Homebrew bottles and Scoop manifest, and `tokensave upgrade` reports the previous version as up to date, as happened with 7.17.0. The check was proposed by @0xreconlion.
 
 ## [7.17.0] - 2026-11-19
 
