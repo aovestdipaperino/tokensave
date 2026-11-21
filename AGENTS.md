@@ -2,6 +2,15 @@
 
 This file provides guidance to the agent when working with code in this repository.
 
+## Assistant-specific entry points
+
+`AGENTS.md` is the single source of agent guidance. Assistants that do not read
+it by default load it through thin pointer files: `CLAUDE.md` (Claude Code,
+via `@AGENTS.md`), `GEMINI.md` (Gemini CLI), `.github/copilot-instructions.md`
+(GitHub Copilot) and `.cursor/rules/agents.mdc` (Cursor). Keep those files as
+pointers only: never add rules to them, and put every change here. Keep the
+same pointer files on `master` and `beta`.
+
 ## Fork-specific branch workflow
 
 - Create new work branches in the user's fork rather than in the upstream
@@ -470,3 +479,4 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - **`codegraph` is a git submodule** (`codegraph/`), not part of the crate.
 - **`test-transport` feature** adds test-only JSON-RPC transport hooks in `src/mcp/`.
 - **Release workflow** builds per-platform binaries with `--locked` on the pinned toolchain and skips beta/prerelease tags. `release-beta.yml` is disabled: its jobs are gated on the `BETA_CHANNEL_ENABLED` repository variable (`vars`, because `env` is not available in a job-level `if:`), and beta installs from the `beta` branch.
+- **Publish a crate only through a GitHub release.** `release.yml` runs on `release: published` and is the only path that builds binaries, bottles, the Scoop manifest and the `SHA256SUMS` that `tokensave upgrade` reads; a manual `cargo publish` strands every binary channel on the previous version (#1070). `.github/workflows/release-drift.yml` checks (daily, on each published release, and on manual dispatch) that crates.io's stable version has a published, non-prerelease GitHub release with `SHA256SUMS` (12-hour grace for assets). It runs only in the upstream repository and is not part of `CI OK`.
