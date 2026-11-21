@@ -178,6 +178,8 @@ async fn main() {
         && args.iter().any(|arg| arg == "--version")
         && args.iter().any(|arg| arg == "--verbose")
     {
+        // `env!` only accepts literal keys; build/constants.rs (`rustc_env`)
+        // defines them, and tests/build_constants_test.rs checks they agree.
         println!(
             "tokensave {}\ncommit: {}\nbuild-profile: {}\ntarget: {}\nrustc: {}",
             env!("CARGO_PKG_VERSION"),
@@ -871,7 +873,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     }
                 };
                 if !short {
-                    print!("{}", include_str!(concat!(env!("OUT_DIR"), "/logo.ansi")));
+                    // build.rs owns the logo's file name and location
+                    // (build/constants.rs); `env!` only accepts a literal key.
+                    print!("{}", include_str!(env!("TOKENSAVE_BUILD_LOGO_ANSI_PATH")));
                 }
                 let branch_info = cg.active_branch().map(|_| {
                     let ts_dir = tokensave::config::get_tokensave_dir(&project_path);
