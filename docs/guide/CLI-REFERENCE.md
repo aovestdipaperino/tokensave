@@ -57,7 +57,7 @@ tokensave disable-upload-counter   # Opt out of worldwide counter uploads
 tokensave enable-upload-counter    # Re-enable worldwide counter uploads
 tokensave state list               # List relocated project state and the project of each
 tokensave state prune [--dry-run]  # Delete relocated state whose project directory is gone
-tokensave okf validate <dir> [--json] [--strict] [--verbose]  # Check an OKF v0.2 bundle
+tokensave okf validate <dir> [--json] [--strict] [--verbose]  # Check an OKF bundle (v0.3; earlier versions with fallbacks)
 tokensave okf export --output <dir> [--project P]  # Export the code index as an OKF bundle (no sync)
 tokensave okf import <dir> [--name N] [--replace] [--strict] [--json] [--project P]  # Import a bundle for tokensave_knowledge
 tokensave okf list [--json] [--project P]          # List imported bundles

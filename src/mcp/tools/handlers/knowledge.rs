@@ -1,4 +1,5 @@
-//! `tokensave_knowledge`: search and read imported OKF bundles (#858).
+//! `tokensave_knowledge`: search and read imported OKF bundles (#858,
+//! #1060).
 
 use serde_json::json;
 use serde_json::Value;
@@ -49,15 +50,46 @@ fn bundles_summary(knowledge: &knowledge::Knowledge) -> Vec<Value> {
         .bundles
         .iter()
         .map(|b| {
+            let r = &b.record;
             json!({
-                "name": b.name,
-                "searchable_concepts": counts.get(b.name.as_str()).copied().unwrap_or(0),
-                "declared_okf_version": b.declared_version,
-                "conformant": b.conformant,
-                "imported_at": b.imported_at,
+                "name": r.name,
+                "title": b.meta.title,
+                "description": b.meta.description,
+                "license": b.meta.license,
+                "searchable_concepts": counts.get(r.name.as_str()).copied().unwrap_or(0),
+                "declared_okf_version": b.meta.okf_version,
+                "read_mode": b.read_mode,
+                "conformant": r.conformant,
+                "imported_at": r.imported_at,
             })
         })
         .collect()
+}
+
+/// Trust, freshness and lifecycle of a concept, as reported with each
+/// result (OKF §5.3 to §5.5).
+fn signals(knowledge: &knowledge::Knowledge, concept: &Concept, now: i64) -> Value {
+    let mut out = json!({
+        "status": concept.status,
+        "current": concept.is_current(),
+        "trust_tier": concept.trust.tier,
+        "freshness": concept.freshness(now),
+    });
+    if let Some(superseded_by) = &concept.superseded_by {
+        out["superseded_by"] = json!(superseded_by);
+        out["replacement"] = json!(knowledge.replacement(concept).map(|c| c.id.as_str()));
+    }
+    if let Some(gaps) = &concept.attestation {
+        out["attestable"] = json!(gaps.is_empty());
+    }
+    out
+}
+
+fn merge(mut base: Value, extra: Value) -> Value {
+    if let (Some(base), Value::Object(extra)) = (base.as_object_mut(), extra) {
+        base.extend(extra);
+    }
+    base
 }
 
 async fn read_concept(
@@ -90,12 +122,18 @@ async fn read_concept(
         .take(MAX_LISTED_LINKS)
         .map(|target| json!({ "id": target, "exists": knowledge.exists(&concept.bundle, target) }))
         .collect();
+    let field_links: Vec<Value> = concept
+        .field_links
+        .iter()
+        .take(MAX_LISTED_LINKS)
+        .map(|link| json!({ "field": link.field, "id": link.id }))
+        .collect();
     let backlinks: Vec<&str> = knowledge
         .backlinks(concept)
         .take(MAX_LISTED_LINKS)
         .map(|c| c.id.as_str())
         .collect();
-    Ok(json!({
+    let mut out = json!({
         "bundle": concept.bundle,
         "id": concept.id,
         "type": concept.concept_type,
@@ -104,9 +142,16 @@ async fn read_concept(
         "body": body,
         "body_truncated": body_chars > MAX_BODY_CHARS,
         "links": links,
+        "field_links": field_links,
         "backlinks": backlinks,
         "code_files": code_files(cg, concept).await,
-    }))
+        "trust": concept.trust,
+    });
+    out = merge(out, signals(knowledge, concept, crate::okf::time::now()));
+    if let Some(gaps) = &concept.attestation {
+        out["attestation_gaps"] = json!(gaps);
+    }
+    Ok(out)
 }
 
 async fn related_concepts(
@@ -143,6 +188,8 @@ async fn related_concepts(
             "type": concept.concept_type,
             "title": concept.title,
             "distance": item.distance,
+            "status": concept.status,
+            "trust_tier": concept.trust.tier,
             "code_files": code_files(cg, concept).await,
         }));
     }
@@ -173,14 +220,14 @@ pub(super) async fn handle_knowledge(cg: &TokenSave, args: Value) -> Result<Tool
     }
     let bundle = str_arg(&args, "bundle");
     if let Some(name) = bundle {
-        if !knowledge.bundles.iter().any(|b| b.name == name) {
+        if !knowledge.bundles.iter().any(|b| b.record.name == name) {
             return Err(TokenSaveError::Config {
                 message: format!(
                     "no imported bundle `{name}`; imported: {}",
                     knowledge
                         .bundles
                         .iter()
-                        .map(|b| b.name.as_str())
+                        .map(|b| b.record.name.as_str())
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
@@ -217,6 +264,10 @@ pub(super) async fn handle_knowledge(cg: &TokenSave, args: Value) -> Result<Tool
         bundle,
         concept_type: str_arg(&args, "type"),
         file: file.as_deref(),
+        current_only: args
+            .get("current_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     };
     if query.is_empty()
         && filter.concept_type.is_none()
@@ -235,22 +286,27 @@ pub(super) async fn handle_knowledge(cg: &TokenSave, args: Value) -> Result<Tool
         .map_or(DEFAULT_LIMIT, |n| usize::try_from(n).unwrap_or(MAX_LIMIT))
         .clamp(1, MAX_LIMIT);
     let hits = knowledge.search(query, &filter, limit);
+    let now = crate::okf::time::now();
     let mut results = Vec::with_capacity(hits.len());
     for hit in &hits {
         let c = hit.concept;
-        results.push(json!({
+        let mut result = json!({
             "bundle": c.bundle,
             "id": c.id,
             "type": c.concept_type,
             "title": c.title,
             "description": c.description,
             "tags": c.tags,
-            "status": c.status,
             "score": hit.score,
             "matched_terms": hit.matched,
             "snippet": hit.snippet,
             "code_files": code_files(cg, c).await,
-        }));
+        });
+        result = merge(result, signals(&knowledge, c, now));
+        if let Some(old) = hit.replaces {
+            result["replaces"] = json!(old.id);
+        }
+        results.push(result);
     }
     Ok(text_result(&json!({
         "query": query,
