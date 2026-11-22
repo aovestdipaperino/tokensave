@@ -156,6 +156,7 @@ See [Tool approvals](AGENT-INTEGRATIONS.md#tool-approvals) for what each agent g
 |---|---|---|
 | `state_dir` | `~/.tokensave/config.toml` | Unset (default): each project keeps its state in `.tokensave/` at its root. An absolute path, or one starting with `~`: state lives in `<state_dir>/projects/<name>-<hash>/` and nothing is written inside the repository. Read when a tokensave process starts. |
 | `TOKENSAVE_STATE_DIR` | environment | Overrides `state_dir`. Empty selects the default layout. |
+| `TOKENSAVE_USER_CONFIG_DIR` | environment | Optional absolute directory for machine configuration files and locks. Useful for disposable CLI tests. |
 
 See [Keeping state outside the repository](INDEXING.md#keeping-state-outside-the-repository) for how existing state is kept and how orphans are reported.
 

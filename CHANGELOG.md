@@ -10,6 +10,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ### Changed
 
 - Auto-approve read-only MCP tools by default where the integration supports exact grants. Write-tool approvals require an exact-name opt-in, and existing policy can be reset explicitly (Refs #1080).
+### Internal
+
+- Gate release publication on packaged-crate and native CLI smoke tests, then verify the published crate from crates.io (Refs #1065).
 
 ### Fixed
 

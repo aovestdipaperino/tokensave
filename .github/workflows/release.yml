@@ -1,25 +1,26 @@
 name: Release
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: >-
-          Existing release tag to (re-)build and publish Windows assets for, e.g. v7.11.1.
-          Use this to recover a release whose SignPath approval timed out: it rebuilds the
-          Windows binaries and re-runs signing + the Scoop update against that release,
-          without touching the crate, the bottles or the Homebrew tap. Leave empty for a
-          plain build-only smoke run of the current branch.
+        description: Stable release tag. Leave empty for a build-only candidate run.
         required: false
         type: string
+      publish_draft:
+        description: Publish the existing draft after the packaged smoke matrix passes. With this off, a tag selects Windows recovery.
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
 
 # Prerelease tags are skipped. The beta channel installs from the `beta`
 # branch and publishes no release assets (release-beta.yml is disabled).
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,12 +28,12 @@ env:
 jobs:
   setup:
     name: Resolve target tag
-    if: github.event_name == 'workflow_dispatch' || !github.event.release.prerelease
+    permissions:
+      contents: write # Draft metadata requires access to unpublished releases.
     runs-on: ubuntu-latest
     outputs:
-      # The tag every downstream job builds and uploads against. On a release event this is
-      # the released tag; on a dispatch it is the `tag` input. GITHUB_REF_NAME is the branch
-      # for a dispatch, so jobs must use this instead of github.ref_name.
+      # Build and package the same commit that the smoke matrix checked.
+      revision: ${{ steps.revision.outputs.sha }}
       tag: ${{ steps.resolve.outputs.tag }}
       # 'true' when there is a real release to upload assets to.
       publish: ${{ steps.resolve.outputs.publish }}
@@ -40,21 +41,50 @@ jobs:
       # and crates.io, all of which already succeeded on the original release run.
       windows_only: ${{ steps.resolve.outputs.windows_only }}
     steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.sha }}
+          persist-credentials: false
+
+      - name: Resolve commit
+        id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Resolve tag and mode
         id: resolve
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_TAG: ${{ inputs.tag }}
+          PUBLISH_DRAFT: ${{ inputs.publish_draft }}
         run: |
           set -euo pipefail
-          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
-            TAG="${GITHUB_REF_NAME}"; PUBLISH=true; WINDOWS_ONLY=false
-          elif [ -n "${INPUT_TAG}" ]; then
-            TAG="${INPUT_TAG}"; PUBLISH=true; WINDOWS_ONLY=true
-            # Fail fast on a typo'd tag rather than 40 minutes later at `gh release upload`.
-            gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null
+          TAG="$INPUT_TAG"; PUBLISH=false; WINDOWS_ONLY=false
+          if [[ -z "$TAG" ]]; then
+            if [[ "$PUBLISH_DRAFT" == true ]]; then
+              echo "::error::Provide a stable tag to publish a draft."
+              exit 1
+            fi
+            TAG="$GITHUB_REF_NAME"
           else
-            TAG="${GITHUB_REF_NAME}"; PUBLISH=false; WINDOWS_ONLY=false
+            if [[ ! "$TAG" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+              echo "::error::Expected a stable release tag such as v7.17.2."
+              exit 1
+            fi
+            draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease \
+              --jq 'select(.isPrerelease == false) | .isDraft')
+            if [[ "$PUBLISH_DRAFT" == true && "$draft" == true ]]; then
+              version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+              if [[ "$TAG" != "v$version" ]]; then
+                echo "::error::Release tag does not match Cargo.toml version."
+                exit 1
+              fi
+              PUBLISH=true
+            elif [[ "$PUBLISH_DRAFT" == false && "$draft" == false ]]; then
+              PUBLISH=true; WINDOWS_ONLY=true
+            else
+              echo "::error::Draft publication requires a stable draft. Windows recovery requires a published stable release."
+              exit 1
+            fi
           fi
           {
             echo "tag=${TAG}"
@@ -62,9 +92,20 @@ jobs:
             echo "windows_only=${WINDOWS_ONLY}"
           } >> "$GITHUB_OUTPUT"
 
+  packaged-smoke:
+    name: Gate on packaged CLI smoke
+    needs: setup
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-smoke.yml
+    with:
+      revision: ${{ needs.setup.outputs.revision }}
+
   build:
     name: Build ${{ matrix.name }}
-    needs: setup
+    needs: [setup, packaged-smoke]
+    permissions:
+      contents: write
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -96,7 +137,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.setup.outputs.tag }}
+          ref: ${{ needs.setup.outputs.revision }}
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@1.100.0
         with:
@@ -107,6 +149,27 @@ jobs:
         # archives and bottles are already on the release.
         if: matrix.archive == 'zip' || needs.setup.outputs.windows_only != 'true'
         run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Smoke test the release executable
+        if: matrix.archive == 'zip' || needs.setup.outputs.windows_only != 'true'
+        shell: bash
+        env:
+          SUFFIX: ${{ matrix.archive == 'zip' && '.exe' || '' }}
+        run: |
+          set -o pipefail
+          python -Bu scripts/release-smoke/smoke.py "target/${{ matrix.target }}/release/tokensave${SUFFIX}" 2>&1 | tee release-binary-smoke.log
+
+      - name: Retain release executable smoke log
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-binary-smoke-${{ matrix.name }}
+          path: release-binary-smoke.log
+          if-no-files-found: ignore
 
       - name: Get version
         id: version
@@ -205,6 +268,14 @@ jobs:
           chmod +x tokensave/${VERSION}/bin/tokensave
           tar czf "tokensave-${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" tokensave/
 
+      - name: Upload tested bottle to draft
+        if: matrix.bottle_tag && needs.setup.outputs.publish == 'true' && needs.setup.outputs.windows_only != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.setup.outputs.tag }}
+        shell: bash
+        run: gh release upload "$TAG" tokensave-*.bottle.tar.gz --clobber
+
       - name: Upload bottle artifact
         if: matrix.bottle_tag && needs.setup.outputs.publish == 'true' && needs.setup.outputs.windows_only != 'true'
         uses: actions/upload-artifact@v6
@@ -214,7 +285,7 @@ jobs:
 
   sign-windows:
     name: Sign Windows binary (${{ matrix.name }})
-    if: always() && needs.setup.result == 'success' && needs.setup.outputs.publish == 'true'
+    if: needs.setup.outputs.publish == 'true'
     needs: [setup, build]
     runs-on: ubuntu-latest
     permissions:
@@ -261,12 +332,12 @@ jobs:
           cd signed
           zip "../tokensave-${TAG}-${{ matrix.name }}.zip" tokensave.exe
 
-      - name: Upload signed binary archive
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.setup.outputs.tag }}
-        # This job has no checkout, so gh can't infer the repo from git context.
-        run: gh release upload "${TAG}" "tokensave-${TAG}-${{ matrix.name }}.zip" --clobber --repo "$GITHUB_REPOSITORY"
+      - name: Stage signed binary archive
+        uses: actions/upload-artifact@v6
+        with:
+          name: signed-archive-${{ matrix.name }}
+          path: tokensave-*.zip
+          if-no-files-found: error
 
       # Hashed after signing, not before: signing rewrites the .exe, so a hash
       # taken in the build job would never match what users download (#525).
@@ -283,6 +354,63 @@ jobs:
           name: checksum-${{ matrix.name }}
           path: "*.sha256"
 
+  signed-windows-smoke:
+    name: Smoke test signed Windows archive (${{ matrix.name }})
+    needs: [setup, sign-windows]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x86_64-windows
+            runner: windows-latest
+          - name: aarch64-windows
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.setup.outputs.revision }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: signed-archive-${{ matrix.name }}
+          path: signed-archive
+
+      - name: Extract signed release archive
+        shell: pwsh
+        run: |
+          $archive = Get-ChildItem signed-archive -Filter 'tokensave-*.zip'
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath signed
+
+      - name: Exercise the signed executable
+        shell: bash
+        run: |
+          set -o pipefail
+          python -Bu scripts/release-smoke/smoke.py signed/tokensave.exe 2>&1 | tee signed-smoke.log
+
+      - name: Retain signed executable smoke log
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: signed-smoke-${{ matrix.name }}
+          path: signed-smoke.log
+          if-no-files-found: ignore
+
+      - name: Upload verified Windows binary archive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.setup.outputs.tag }}
+        shell: bash
+        run: gh release upload "$TAG" "signed-archive/tokensave-${TAG}-${{ matrix.name }}.zip" --clobber
+
   # Publishes the SHA256SUMS asset `tokensave upgrade` verifies against (#525).
   #
   # Merges into whatever SHA256SUMS the release already carries rather than
@@ -292,8 +420,9 @@ jobs:
   # necessarily ran its leg, so a fresh entry always wins over a stale one.
   checksums:
     name: Publish SHA256SUMS
-    if: always() && needs.setup.outputs.publish == 'true' && needs.sign-windows.result == 'success'
-    needs: [setup, build, sign-windows]
+    needs: [setup, build, sign-windows, signed-windows-smoke]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - name: Download checksum artifacts
@@ -313,7 +442,7 @@ jobs:
 
           # Carry forward entries for assets this run did not rebuild.
           mkdir -p existing
-          if gh release download "$TAG" --pattern SHA256SUMS --dir existing --clobber 2>/dev/null; then
+          if gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir existing --clobber 2>/dev/null; then
             awk '{ sub(/^\*/, "", $2); print $2 }' new.txt > fresh-names.txt
             while read -r line; do
               [ -n "$line" ] || continue
@@ -335,6 +464,28 @@ jobs:
           TAG: ${{ needs.setup.outputs.tag }}
         run: gh release upload "$TAG" SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
 
+  publish-release:
+    name: Publish verified GitHub draft
+    if: inputs.publish_draft
+    needs: [setup, checksums]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Promote the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.setup.outputs.tag }}
+          REVISION: ${{ needs.setup.outputs.revision }}
+        run: |
+          set -euo pipefail
+          actual=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
+          if [[ "$actual" != "$REVISION" ]]; then
+            echo "::error::The release tag moved after it was tested."
+            exit 1
+          fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+
   update-homebrew:
     name: Update Homebrew tap
     # `needs.build.result == 'success'` rather than only `!cancelled()`: the
@@ -345,18 +496,17 @@ jobs:
     # `arm64_sonoma: ""` exactly this way. A skipped tap update is recoverable;
     # a published broken formula is live breakage for every user on that
     # platform.
-    if: >-
-      github.event_name == 'release' && !github.event.release.prerelease
-      && !cancelled() && needs.build.result == 'success'
-    needs: build
+    needs: [setup, build, publish-release]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-
       - name: Get version
         id: version
+        env:
+          TAG: ${{ needs.setup.outputs.tag }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${TAG#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Download bottle artifacts
@@ -366,17 +516,11 @@ jobs:
           path: bottles
           merge-multiple: true
 
-      - name: Upload bottles to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          for f in bottles/tokensave-*.bottle.tar.gz; do
-            gh release upload "${GITHUB_REF_NAME}" "$f" --clobber
-          done
-
       - name: Download source tarball
+        env:
+          TAG: ${{ needs.setup.outputs.tag }}
         run: |
-          curl -fsSL --retry 3 "https://github.com/${{ github.repository }}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz" -o "source.tar.gz"
+          curl -fsSL --retry 3 "https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz" -o "source.tar.gz"
 
       - name: Compute SHA256 hashes
         id: hashes
@@ -446,11 +590,12 @@ jobs:
 
   publish-crate:
     name: Publish to crates.io
-    if: github.event_name == 'release' && !github.event.release.prerelease
-    needs: build
+    needs: [setup, publish-release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.setup.outputs.revision }}
 
       - uses: dtolnay/rust-toolchain@1.100.0
 
@@ -459,11 +604,44 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
+  verify-published-crate:
+    name: Smoke test the published crate
+    needs: [setup, publish-crate]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.setup.outputs.revision }}
+
+      - uses: dtolnay/rust-toolchain@1.100.0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install the published version from crates.io
+        env:
+          TAG: ${{ needs.setup.outputs.tag }}
+          CARGO_HOME: ${{ runner.temp }}/tokensave-registry-cargo
+        shell: bash
+        run: |
+          set -o pipefail
+          python -Bu scripts/release-smoke/install-package.py --registry-version "${TAG#v}" 2>&1 | tee registry-smoke.log
+
+      - name: Retain registry smoke log
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: registry-smoke
+          path: registry-smoke.log
+
   update-scoop:
     name: Update Scoop bucket
-    if: always() && needs.sign-windows.result == 'success'
-    # Depends on sign-windows: it downloads the signed Windows zip from the release to hash it.
-    needs: [setup, sign-windows]
+    if: >-
+      !cancelled() && needs.checksums.result == 'success'
+      && (needs.publish-release.result == 'success' || needs.setup.outputs.windows_only == 'true')
+    needs: [setup, checksums, publish-release]
     runs-on: ubuntu-latest
     steps:
       - name: Get release info
