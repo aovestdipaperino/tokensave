@@ -247,6 +247,36 @@ pub enum Commands {
         #[arg(long)]
         keep_git_hooks: bool,
     },
+    /// Remove agent integrations and delete tokensave's settings, caches and indexes
+    ///
+    /// Does everything `uninstall` does, then deletes the data tokensave owns
+    /// in the chosen scope. Without a scope flag it purges global state:
+    /// agent integrations, global git hooks, and the settings and caches in
+    /// ~/.tokensave. `--local` and `--project` purge project indexes instead;
+    /// `--all-projects` purges global state and every registered project.
+    /// The token-savings history is kept unless `--include-history` is given.
+    /// The plan is shown before anything changes, and the tokensave
+    /// executable itself is never removed.
+    Purge {
+        /// Show what would be removed and exit without changing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Do not ask for confirmation (required when stdin is not a terminal)
+        #[arg(short, long)]
+        yes: bool,
+        /// Purge only the project containing the current directory
+        #[arg(long, conflicts_with_all = ["project", "all_projects"])]
+        local: bool,
+        /// Purge only this project (repeat for several)
+        #[arg(long, value_name = "PATH", action = ArgAction::Append, num_args = 1, conflicts_with = "all_projects")]
+        project: Vec<std::path::PathBuf>,
+        /// Purge global state and every project in the global registry
+        #[arg(long)]
+        all_projects: bool,
+        /// Also delete the token-savings history (global.db), which cannot be rebuilt
+        #[arg(long, conflicts_with_all = ["local", "project"])]
+        include_history: bool,
+    },
     /// Extraction worker (spawned by tokensave itself; not for direct use).
     #[command(name = "extract-worker", hide = true)]
     ExtractWorker,

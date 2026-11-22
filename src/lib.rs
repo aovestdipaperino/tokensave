@@ -57,6 +57,7 @@ pub mod memstats;
 pub mod monitor;
 pub mod profile;
 pub mod project_manifest;
+pub mod purge;
 pub mod quality_diff;
 pub mod redundancy;
 pub mod resolution;

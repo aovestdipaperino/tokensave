@@ -22,13 +22,16 @@ fn version_output_is_concise_and_verbose_metadata_needs_no_project() {
         assert!(output.stderr.is_empty());
         let text = String::from_utf8(output.stdout).expect("UTF-8 output");
         let lines: Vec<_> = text.lines().collect();
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.len(), 6);
         assert_eq!(lines[0], format!("tokensave {}", env!("CARGO_PKG_VERSION")));
-        for (line, prefix) in
-            lines[1..]
-                .iter()
-                .zip(["commit: ", "build-profile: ", "target: ", "rustc: "])
-        {
+        for (line, prefix) in lines[1..].iter().zip([
+            "commit: ",
+            "build-profile: ",
+            "target: ",
+            "rustc: ",
+            // #1055: detected installer of the running executable.
+            "install-method: ",
+        ]) {
             assert!(!line
                 .strip_prefix(prefix)
                 .expect("metadata field")

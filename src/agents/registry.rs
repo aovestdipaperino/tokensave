@@ -189,6 +189,57 @@ pub fn pick_integrations_interactive(
     Ok((to_install, to_uninstall))
 }
 
+/// What [`uninstall_agents`] did for one agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentUninstallOutcome {
+    /// The agent's tokensave configuration was removed (or was already gone).
+    Removed,
+    /// A project-scoped uninstall was asked for an agent that has no
+    /// project-scoped config, so nothing was done.
+    NoLocalConfig,
+    /// The id is not a known agent.
+    Unknown,
+    /// The agent's uninstall returned an error.
+    Failed(String),
+}
+
+/// Runs each agent's own `uninstall` under `scope`, in order.
+///
+/// This is the one integration-cleanup path shared by `tokensave uninstall`
+/// and `tokensave purge` (#1055). It only touches what each integration's
+/// `uninstall` removes: tokensave's MCP entries, approvals, hooks and rules
+/// files, never the rest of a shared agent config. It does not change the
+/// `installed_agents` registry; the caller decides that.
+pub fn uninstall_agents(
+    home: &Path,
+    ids: &[String],
+    scope: &crate::agents::traits::InstallScope,
+) -> Vec<(String, AgentUninstallOutcome)> {
+    let local = matches!(scope, crate::agents::traits::InstallScope::Local { .. });
+    ids.iter()
+        .map(|id| {
+            let outcome = match get_integration(id) {
+                Err(_) => AgentUninstallOutcome::Unknown,
+                Ok(ag) if local && !ag.supports_local() => AgentUninstallOutcome::NoLocalConfig,
+                Ok(ag) => {
+                    let ctx = crate::agents::traits::InstallContext {
+                        home: home.to_path_buf(),
+                        tokensave_bin: String::new(),
+                        tool_permissions: crate::agents::expected_tool_perms(),
+                        scope: scope.clone(),
+                        force_permission_style: false,
+                    };
+                    match ag.uninstall(&ctx) {
+                        Ok(()) => AgentUninstallOutcome::Removed,
+                        Err(e) => AgentUninstallOutcome::Failed(e.to_string()),
+                    }
+                }
+            };
+            (id.clone(), outcome)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod migrate_tests {

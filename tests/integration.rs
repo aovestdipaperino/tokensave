@@ -168,6 +168,7 @@ mod profile_cli_test;
 mod project_manifest_test;
 mod project_root_discovery_test;
 mod proto_extraction_test;
+mod purge_test;
 mod python_bug224_test;
 mod python_extraction_test;
 mod python_module_scope_refs_test;
