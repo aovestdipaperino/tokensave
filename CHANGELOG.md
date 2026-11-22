@@ -7,6 +7,9 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+
+- **The PreToolUse hook no longer blocks non-code agents on generic wording (Refs #1078).** An untyped Agent prompt containing "explore", "read every", "full contents" or "architecture and structure" is now redirected only when it also names code (for example "source", "src", "repo", "function" or "module"). A prompt such as "Read every listed file in the list below" for OCR text now passes. Code-specific phrases such as "call graph" or "callers of" still redirect on their own. Reported by @dangeReis.
 ### Added
 
 - **A shared server picks each call's project from the client's roots.** A `tokensave serve` with no default project now asks the calling client for its roots (`roots/list`) during each call that has no `graph_root`. It answers from the indexed project that contains them. One tokensave behind an MCP proxy such as MCPProxy, started from the proxy's folder, can now serve clients in several repositories at once. The server asks on every call and caches nothing, because a proxy carries many clients on one session. Calls with `graph_root`, servers started inside a project, and clients without the `roots` capability behave as before. See [Which project a call answers](docs/guide/MCP-TOOLS.md#which-project-a-call-answers).

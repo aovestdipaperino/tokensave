@@ -222,6 +222,35 @@ fn test_blocks_read_every_prompt() {
     assert!(is_blocked(&result));
 }
 
+/// #1078: "read every" over non-code files (OCR text, notes) is not code
+/// research and must pass.
+#[test]
+fn test_allows_read_every_prompt_without_code_context() {
+    for prompt in [
+        "Read every listed file in the list below, then reply OK.",
+        "Read every OCR text file and write a TSV of the totals",
+        "Explore the meeting notes and summarize the decisions",
+        "Print the full contents of the invoice, then decode the barcode",
+    ] {
+        let input = serde_json::json!({ "prompt": prompt }).to_string();
+        let result = evaluate_hook_decision_with_env(&input, &env_indexed());
+        assert!(result.is_empty(), "non-code prompt was blocked: {prompt}");
+    }
+}
+
+#[test]
+fn test_blocks_generic_phrase_with_code_context() {
+    for prompt in [
+        "read every source file and list the public functions",
+        "explore the repo and summarize each module",
+        "show the full contents of every class in the package",
+    ] {
+        let input = serde_json::json!({ "prompt": prompt }).to_string();
+        let result = evaluate_hook_decision_with_env(&input, &env_indexed());
+        assert!(is_blocked(&result), "code research prompt passed: {prompt}");
+    }
+}
+
 #[test]
 fn test_blocks_entire_codebase_prompt() {
     let input = r#"{"prompt": "scan the entire codebase for patterns"}"#;
