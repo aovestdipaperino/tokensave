@@ -417,7 +417,7 @@ fn probe_rename_at_boundary(
                     }
                 }
             }
-            Ok::<_, std::convert::Infallible>(std::ops::ControlFlow::Continue(()))
+            Ok(std::ops::ControlFlow::Continue(()))
         })
         .map_err(|e| format!("tree diff: {e}"))?;
 

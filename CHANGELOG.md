@@ -26,6 +26,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Internal
 
+- Upgrade `gix` from 0.81 to 0.90 (Refs #1084, #1059). `merge_base` now reports a missing merge base as `None` instead of an error, and tree-diff callbacks return `gix::Error`; tokensave keeps its previous behavior in both cases. `heapless` 0.8 is still in `Cargo.lock` through `faster-hex` 0.10.1, so the RUSTSEC ignores in `.cargo/audit.toml` stay until a `gix` release adopts `faster-hex` 2.
 - Move the build script's named values (Cargo and build-metadata variable keys, logo file names and width, the vendored grammar table) into `build/constants.rs`, pass the generated logo path to the crate through one build variable, and add an AGENTS.md/CONTRIBUTING.md rule and review checklist for named constants (Refs #1069).
 - Add a daily `Release drift` workflow that fails when crates.io carries a stable tokensave version without a published GitHub release, or when that release still lacks `SHA256SUMS` 12 hours after publication (Refs #1070). Without the release, `release.yml` never builds the binaries, Homebrew bottles and Scoop manifest, and `tokensave upgrade` reports the previous version as up to date, as happened with 7.17.0. The check was proposed by @0xreconlion.
 
