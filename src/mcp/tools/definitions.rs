@@ -8,10 +8,10 @@ use serde_json::{json, Value};
 
 use super::ToolDefinition;
 
-/// Read-only annotations shared by every tool.
-fn read_only(title: &str) -> Value {
+/// MCP annotations derived from the approval capability registry.
+fn capability_annotations(name: &str, title: &str) -> Value {
     json!({
-        "readOnlyHint": true,
+        "readOnlyHint": tool_capability(name) == Some(ToolCapability::ReadOnly),
         "title": title
     })
 }
@@ -22,27 +22,7 @@ fn def(name: &str, title: &str, description: &str, input_schema: Value) -> ToolD
         name: name.to_string(),
         description: description.to_string(),
         input_schema,
-        annotations: Some(read_only(title)),
-        meta: None,
-    }
-}
-
-/// Write/exec annotations: tools that mutate files or run subprocesses.
-fn read_write(title: &str) -> Value {
-    json!({
-        "readOnlyHint": false,
-        "title": title
-    })
-}
-
-/// Build a `ToolDefinition` for a tool that writes files or executes
-/// subprocesses (`readOnlyHint: false`, no `_meta`).
-fn def_rw(name: &str, title: &str, description: &str, input_schema: Value) -> ToolDefinition {
-    ToolDefinition {
-        name: name.to_string(),
-        description: description.to_string(),
-        input_schema,
-        annotations: Some(read_write(title)),
+        annotations: Some(capability_annotations(name, title)),
         meta: None,
     }
 }
@@ -58,7 +38,7 @@ fn def_always_load(
         name: name.to_string(),
         description: description.to_string(),
         input_schema,
-        annotations: Some(read_only(title)),
+        annotations: Some(capability_annotations(name, title)),
         meta: Some(json!({ "anthropic/alwaysLoad": true })),
     }
 }
@@ -351,22 +331,115 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     definitions
 }
 
-/// Whether a tool definition describes a tool that only reads the graph.
-///
-/// Mirrors the `readOnlyHint` annotation the definitions publish, so the
-/// server and its clients agree on which tools may run at the same time
-/// (#685). A read-only call does not change the index, so the server can
-/// answer two of them at once; anything else still runs alone.
-///
-/// The server derives the set of such tools from the same registry pass it
-/// already builds at startup, so the answer costs nothing beyond the names.
+/// Approval-relevant effects of calling a registered tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCapability {
+    ReadOnly,
+    SideEffecting,
+}
+
+/// An absent entry is unclassified and cannot be auto-approved.
+pub fn tool_capability(name: &str) -> Option<ToolCapability> {
+    use ToolCapability::{ReadOnly, SideEffecting};
+    match name {
+        "tokensave_affected"
+        | "tokensave_ambiguous_calls"
+        | "tokensave_annotations"
+        | "tokensave_blame"
+        | "tokensave_body"
+        | "tokensave_branch_diff"
+        | "tokensave_branch_list"
+        | "tokensave_branch_search"
+        | "tokensave_by_qualified_name"
+        | "tokensave_call_chain"
+        | "tokensave_callees"
+        | "tokensave_callers"
+        | "tokensave_callers_for"
+        | "tokensave_changelog"
+        | "tokensave_circular"
+        | "tokensave_commit_context"
+        | "tokensave_complexity"
+        | "tokensave_config"
+        | "tokensave_constructors"
+        | "tokensave_context"
+        | "tokensave_coupling"
+        | "tokensave_dead_code"
+        | "tokensave_dependencies"
+        | "tokensave_dependency_depth"
+        | "tokensave_derives"
+        | "tokensave_diagnose"
+        | "tokensave_diff"
+        | "tokensave_diff_context"
+        | "tokensave_distribution"
+        | "tokensave_doc"
+        | "tokensave_doc_coverage"
+        | "tokensave_dsm"
+        | "tokensave_entities"
+        | "tokensave_field_sites"
+        | "tokensave_file_dependents"
+        | "tokensave_files"
+        | "tokensave_find_exact_symbol"
+        | "tokensave_gini"
+        | "tokensave_god_class"
+        | "tokensave_health"
+        | "tokensave_hotspots"
+        | "tokensave_impact"
+        | "tokensave_implementations"
+        | "tokensave_impls"
+        | "tokensave_imports"
+        | "tokensave_inheritance_depth"
+        | "tokensave_knowledge"
+        | "tokensave_largest"
+        | "tokensave_log"
+        | "tokensave_module_api"
+        | "tokensave_more"
+        | "tokensave_node"
+        | "tokensave_port_order"
+        | "tokensave_port_status"
+        | "tokensave_pr_context"
+        | "tokensave_rank"
+        | "tokensave_read"
+        | "tokensave_recursion"
+        | "tokensave_redundancy"
+        | "tokensave_rename_preview"
+        | "tokensave_runtime"
+        | "tokensave_search"
+        | "tokensave_session_recall"
+        | "tokensave_signature"
+        | "tokensave_signature_search"
+        | "tokensave_similar"
+        | "tokensave_simplify_scan"
+        | "tokensave_status"
+        | "tokensave_test_coverage"
+        | "tokensave_test_map"
+        | "tokensave_test_risk"
+        | "tokensave_todos"
+        | "tokensave_type_hierarchy"
+        | "tokensave_unsafe_patterns"
+        | "tokensave_unused_imports" => Some(ReadOnly),
+        "tokensave_ast_grep_rewrite"
+        | "tokensave_create_file"
+        | "tokensave_delete_symbol"
+        | "tokensave_diagnostics"
+        | "tokensave_insert_at"
+        | "tokensave_insert_at_symbol"
+        | "tokensave_multi_str_replace"
+        | "tokensave_record_code_area"
+        | "tokensave_record_decision"
+        | "tokensave_rename"
+        | "tokensave_replace_lines"
+        | "tokensave_replace_symbol"
+        | "tokensave_run_affected_tests"
+        | "tokensave_session_end"
+        | "tokensave_session_start"
+        | "tokensave_str_replace" => Some(SideEffecting),
+        _ => None,
+    }
+}
+
+/// Whether a tool may run as a read-only call.
 pub fn is_read_only_tool(definition: &ToolDefinition) -> bool {
-    definition
-        .annotations
-        .as_ref()
-        .and_then(|annotations| annotations.get("readOnlyHint"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+    tool_capability(&definition.name) == Some(ToolCapability::ReadOnly)
 }
 
 /// The tools that [`Toolset::Core`](crate::config::Toolset::Core) lists (#576).
@@ -1361,7 +1434,7 @@ pub const RENAME_DESCRIPTION: &str = "Rename a symbol at its definition and ever
      are refused.";
 
 fn def_rename() -> ToolDefinition {
-    def_rw(
+    def(
         "tokensave_rename",
         "Rename Symbol",
         RENAME_DESCRIPTION,
@@ -1930,10 +2003,7 @@ fn def_str_replace() -> ToolDefinition {
             },
             "required": ["path", "old_str", "new_str"]
         }),
-        annotations: Some(json!({
-            "readOnlyHint": false,
-            "title": "Edit File"
-        })),
+        annotations: Some(capability_annotations("tokensave_str_replace", "Edit File")),
         meta: None,
     }
 }
@@ -1966,10 +2036,7 @@ fn def_multi_str_replace() -> ToolDefinition {
             },
             "required": ["path", "replacements"]
         }),
-        annotations: Some(json!({
-            "readOnlyHint": false,
-            "title": "Multi-Edit File"
-        })),
+        annotations: Some(capability_annotations("tokensave_multi_str_replace", "Multi-Edit File")),
         meta: None,
     }
 }
@@ -2008,10 +2075,7 @@ fn def_insert_at() -> ToolDefinition {
             },
             "required": ["path", "anchor", "content"]
         }),
-        annotations: Some(json!({
-            "readOnlyHint": false,
-            "title": "Insert Into File"
-        })),
+        annotations: Some(capability_annotations("tokensave_insert_at", "Insert Into File")),
         meta: None,
     }
 }
@@ -2029,13 +2093,13 @@ fn def_delete_symbol() -> ToolDefinition {
             },
             "required": ["symbol"]
         }),
-        annotations: Some(json!({ "readOnlyHint": false, "title": "Delete Symbol" })),
+        annotations: Some(capability_annotations("tokensave_delete_symbol", "Delete Symbol")),
         meta: None,
     }
 }
 
 fn def_create_file() -> ToolDefinition {
-    def_rw(
+    def(
         "tokensave_create_file",
         "Create File",
         "Create a new file inside the indexed project and index it at once, so it is searchable right after the call. Refuses an existing file unless `overwrite` is true, a directory, a symlink, a path outside the project root (absolute, `..`, or through a symlink), and paths inside `.git` or tokensave's own state. Unlike the other edit tools, a path in another git worktree is refused too. Missing parent directories are created.",
@@ -2067,7 +2131,7 @@ fn def_replace_lines() -> ToolDefinition {
             },
             "required": ["path", "start", "end", "new_content"]
         }),
-        annotations: Some(json!({ "readOnlyHint": false, "title": "Replace Lines" })),
+        annotations: Some(capability_annotations("tokensave_replace_lines", "Replace Lines")),
         meta: None,
     }
 }
@@ -2430,7 +2494,7 @@ fn def_diagnose() -> ToolDefinition {
 }
 
 fn def_run_affected_tests() -> ToolDefinition {
-    def_rw(
+    def(
         "tokensave_run_affected_tests",
         "Run Affected Tests",
         "Run `cargo test` for tests that cover the symbols in `changed_paths` \
@@ -2490,10 +2554,7 @@ fn def_ast_grep_rewrite() -> ToolDefinition {
             },
             "required": ["path", "pattern", "rewrite"]
         }),
-        annotations: Some(json!({
-            "readOnlyHint": false,
-            "title": "AST Structural Rewrite"
-        })),
+        annotations: Some(capability_annotations("tokensave_ast_grep_rewrite", "AST Structural Rewrite")),
         meta: None,
     }
 }
@@ -2506,10 +2567,7 @@ fn def_session_start() -> ToolDefinition {
             "type": "object",
             "properties": {}
         }),
-        annotations: Some(json!({
-            "readOnlyHint": false,
-            "title": "Session Start"
-        })),
+        annotations: Some(capability_annotations("tokensave_session_start", "Session Start")),
         meta: None,
     }
 }
@@ -2522,10 +2580,7 @@ fn def_session_end() -> ToolDefinition {
             "type": "object",
             "properties": {}
         }),
-        annotations: Some(json!({
-            "readOnlyHint": false,
-            "title": "Session End"
-        })),
+        annotations: Some(capability_annotations("tokensave_session_end", "Session End")),
         meta: None,
     }
 }
@@ -2649,10 +2704,7 @@ fn def_record_decision() -> ToolDefinition {
             },
             "required": ["text"]
         }),
-        annotations: Some(json!({
-            "readOnlyHint": false,
-            "title": "Record Decision"
-        })),
+        annotations: Some(capability_annotations("tokensave_record_decision", "Record Decision")),
         meta: None,
     }
 }
@@ -2675,10 +2727,7 @@ fn def_record_code_area() -> ToolDefinition {
             },
             "required": ["path"]
         }),
-        annotations: Some(json!({
-            "readOnlyHint": false,
-            "title": "Record Code Area"
-        })),
+        annotations: Some(capability_annotations("tokensave_record_code_area", "Record Code Area")),
         meta: None,
     }
 }
@@ -3163,7 +3212,7 @@ fn def_file_dependents() -> ToolDefinition {
 }
 
 fn def_replace_symbol() -> ToolDefinition {
-    def_rw(
+    def(
         "tokensave_replace_symbol",
         "Replace Symbol Source",
         "Replace the full source of a named symbol (function, method, struct, \
@@ -3223,7 +3272,7 @@ fn def_find_exact_symbol() -> ToolDefinition {
 }
 
 fn def_insert_at_symbol() -> ToolDefinition {
-    def_rw(
+    def(
         "tokensave_insert_at_symbol",
         "Insert Near Symbol",
         "Insert content immediately before or after a named symbol's source \

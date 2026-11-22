@@ -25,7 +25,6 @@ const KIRO_AGENT_NAME: &str = "tokensave";
 const OWNED_AGENT_DESCRIPTION: &str =
     "Default Kiro agent with tokensave MCP tools and code-research guardrails.";
 const KIRO_AGENT_ALL_TOOLS: &str = "*";
-const KIRO_ALLOWED_BUILTIN_TOOLS: &str = "@builtin";
 const KIRO_ALLOWED_TOKENSAVE_TOOLS: &str = "@tokensave";
 const KIRO_PRE_TOOL_HOOK: &str = "hook-kiro-pre-tool-use";
 const KIRO_PROMPT_HOOK: &str = "hook-kiro-prompt-submit";
@@ -113,12 +112,7 @@ impl AgentIntegration for KiroIntegration {
         install_steering_rules(&steering)?;
 
         let agent_path = managed_agent_path_in(&base);
-        let owns_agent = install_managed_agent(
-            &agent_path,
-            &ctx.tokensave_bin,
-            &steering,
-            permissions_management_enabled(&ctx.home),
-        )?;
+        let owns_agent = install_managed_agent(&agent_path, &ctx.tokensave_bin, &steering, ctx)?;
 
         let cli_path = cli_config_path_in(&base);
         install_default_agent(&cli_path, owns_agent)?;
@@ -139,9 +133,15 @@ impl AgentIntegration for KiroIntegration {
         uninstall_mcp_server(&mcp_config_path_in(&base));
         remove_steering_rules(&steering_path_in(&base));
         let agent_path = managed_agent_path_in(&base);
-        let owned_agent = is_owned_agent_file(&agent_path);
-        uninstall_managed_agent(&agent_path);
-        uninstall_default_agent(&cli_config_path_in(&base), &agent_path, owned_agent);
+        if has_user_approvals(&agent_path, ctx) {
+            crate::agent_note!(
+                "  Kiro profile kept because it contains user-managed tool approvals."
+            );
+        } else {
+            let owned_agent = is_owned_agent_file(&agent_path);
+            uninstall_managed_agent(&agent_path);
+            uninstall_default_agent(&cli_config_path_in(&base), &agent_path, owned_agent);
+        }
 
         crate::agent_note!();
         crate::agent_note!("Uninstall complete. Tokensave has been removed from Kiro.");
@@ -162,6 +162,10 @@ impl AgentIntegration for KiroIntegration {
             &[],
         );
         let agent_path = managed_agent_path_in(&base);
+        if has_user_approvals(&agent_path, ctx) {
+            plan.skipped("Managed agent", "contains user-managed tool approvals");
+            return Ok(());
+        }
         let owned = std::fs::symlink_metadata(&agent_path).is_ok_and(|meta| meta.is_file())
             && is_owned_agent_file(&agent_path);
         if owned {
@@ -277,7 +281,6 @@ fn managed_agent_config(tokensave_bin: &str, steering_path: &Path) -> serde_json
         "includeMcpJson": true,
         "resources": [file_resource_uri(steering_path)],
         "tools": [KIRO_AGENT_ALL_TOOLS],
-        "allowedTools": [KIRO_ALLOWED_BUILTIN_TOOLS, KIRO_ALLOWED_TOKENSAVE_TOOLS],
         "hooks": {
             "userPromptSubmit": [
                 {
@@ -337,6 +340,16 @@ fn install_mcp_server(path: &Path, tokensave_bin: &str) -> Result<()> {
     Ok(())
 }
 
+fn has_user_approvals(path: &Path, ctx: &InstallContext) -> bool {
+    if permissions_management_enabled(&ctx.home) {
+        return false;
+    }
+    let profile = load_json_file(path);
+    ["allowedTools", "permissions", "toolsSettings"]
+        .iter()
+        .any(|key| profile.get(key).is_some())
+}
+
 /// Create or refresh the tokensave-owned Kiro agent.
 ///
 /// Returns true when tokensave owns the resulting agent file. A pre-existing
@@ -350,7 +363,7 @@ fn install_managed_agent(
     path: &Path,
     tokensave_bin: &str,
     steering_path: &Path,
-    manage_permissions: bool,
+    ctx: &InstallContext,
 ) -> Result<bool> {
     if path.exists() && !is_owned_agent_file(path) {
         crate::agent_note!(
@@ -362,14 +375,42 @@ fn install_managed_agent(
 
     let backup = backup_config_file(path)?;
     let mut config = managed_agent_config(tokensave_bin, steering_path);
-    if !manage_permissions {
+    let profile = load_json_file(path);
+    for field in ["permissions", "toolsSettings"] {
+        if let Some(value) = profile.get(field) {
+            config[field] = value.clone();
+        }
+    }
+    let existing = profile.get("allowedTools").cloned();
+    if permissions_management_enabled(&ctx.home) {
+        let mut allowed = existing
+            .as_ref()
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if ctx.force_permission_style {
+            allowed.retain(|entry| {
+                !entry.as_str().is_some_and(|name| {
+                    name == KIRO_ALLOWED_TOKENSAVE_TOOLS || name.starts_with("@tokensave/")
+                })
+            });
+        } else if allowed
+            .iter()
+            .any(|entry| entry.as_str() == Some(KIRO_ALLOWED_TOKENSAVE_TOOLS))
+        {
+            crate::agent_note!("  Existing Kiro server-wide approval kept. Run tokensave install --agent kiro --reset-tool-approvals to restore write prompts.");
+        }
+        for name in crate::agents::approved_tool_names(&ctx.tool_permissions) {
+            let grant = json!(format!("@tokensave/{name}"));
+            if !allowed.contains(&grant) {
+                allowed.push(grant);
+            }
+        }
+        config["allowedTools"] = json!(allowed);
+    } else {
         crate::agent_note!("{PERMISSIONS_USER_MANAGED_NOTE}");
-        let existing = load_json_file(path).get("allowedTools").cloned();
-        if let Some(object) = config.as_object_mut() {
-            match existing {
-                Some(allowed) => object.insert("allowedTools".to_string(), allowed),
-                None => object.remove("allowedTools"),
-            };
+        if let Some(existing) = existing {
+            config["allowedTools"] = existing;
         }
     }
     safe_write_json_file(path, &config, backup.as_deref())?;
@@ -829,22 +870,15 @@ fn doctor_check_agent_tools(dc: &mut DoctorCounters, config: &serde_json::Value)
 }
 
 fn doctor_check_agent_allowed_tools(dc: &mut DoctorCounters, config: &serde_json::Value) {
-    let required = [KIRO_ALLOWED_BUILTIN_TOOLS, KIRO_ALLOWED_TOKENSAVE_TOOLS];
-    let missing: Vec<&str> = required
+    if json_array_contains_str(config, "allowedTools", KIRO_ALLOWED_TOKENSAVE_TOOLS) {
+        dc.warn("Existing Kiro server-wide approval includes write tools. Use --reset-tool-approvals to restore write prompts.");
+    } else if crate::agents::read_only_tool_names()
         .iter()
-        .copied()
-        .filter(|tool| !json_array_contains_str(config, "allowedTools", tool))
-        .collect();
-
-    if missing.is_empty() {
-        dc.pass("Kiro tokensave agent pre-approves built-in and tokensave tools");
+        .any(|name| !json_array_contains_str(config, "allowedTools", &format!("@tokensave/{name}")))
+    {
+        dc.warn("Some Kiro read-only tools require a prompt. Run tokensave install --agent kiro to refresh.");
     } else {
-        dc.warn(
-            "Kiro tokensave agent allowedTools is not permissive -- run `tokensave install --agent kiro`",
-        );
-        for tool in missing {
-            dc.info(&format!("missing allowedTools entry: {tool}"));
-        }
+        dc.pass("Kiro uses per-tool approvals");
     }
 }
 

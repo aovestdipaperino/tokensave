@@ -1071,8 +1071,14 @@ mod tests {
             "tokensave_replace_lines",
             "tokensave_rename",
             "tokensave_create_file",
+            "tokensave_diagnostics",
         ];
         for tool in &tools {
+            assert!(
+                crate::mcp::tools::tool_capability(&tool.name).is_some(),
+                "unclassified tool {}",
+                tool.name
+            );
             let ann = tool
                 .annotations
                 .as_ref()

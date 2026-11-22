@@ -28,11 +28,7 @@ impl AgentIntegration for CodexIntegration {
         std::fs::create_dir_all(&codex_dir).ok();
         let config_path = codex_dir.join("config.toml");
 
-        install_mcp_server(
-            &config_path,
-            &ctx.tokensave_bin,
-            permissions_management_enabled(&ctx.home),
-        )?;
+        install_mcp_server(&config_path, &ctx.tokensave_bin, ctx)?;
 
         let agents_md = codex_dir.join("AGENTS.md");
         install_prompt_rules(&agents_md)?;
@@ -48,7 +44,11 @@ impl AgentIntegration for CodexIntegration {
         let codex_dir = ctx.home.join(".codex");
         let config_path = codex_dir.join("config.toml");
 
-        uninstall_mcp_server(&config_path)?;
+        if has_user_approvals(&config_path, ctx) {
+            crate::agent_note!("  MCP entry kept because it contains user-managed tool approvals.");
+        } else {
+            uninstall_mcp_server(&config_path)?;
+        }
 
         let agents_md = codex_dir.join("AGENTS.md");
         uninstall_prompt_rules(&agents_md);
@@ -67,7 +67,11 @@ impl AgentIntegration for CodexIntegration {
         let codex_dir = ctx.home.join(".codex");
         let config_path = codex_dir.join("config.toml");
 
-        plan.toml_mcp(&config_path);
+        if has_user_approvals(&config_path, ctx) {
+            plan.skipped("MCP server", "contains user-managed tool approvals");
+        } else {
+            plan.toml_mcp(&config_path);
+        }
 
         let agents_md = codex_dir.join("AGENTS.md");
         plan.rules(&agents_md, crate::agents::rules::LEGACY_RULES_MARKER, &[]);
@@ -109,16 +113,24 @@ impl AgentIntegration for CodexIntegration {
 // Install helpers
 // ---------------------------------------------------------------------------
 
+fn has_user_approvals(path: &Path, ctx: &InstallContext) -> bool {
+    !permissions_management_enabled(&ctx.home)
+        && load_toml_file(path).is_ok_and(|config| {
+            config
+                .get("mcp_servers")
+                .and_then(|servers| servers.get("tokensave"))
+                .and_then(|server| server.get("tools"))
+                .is_some()
+        })
+}
+
 /// Register MCP server and auto-approve tools in ~/.codex/config.toml.
 ///
 /// With `manage_permissions` false (#1067) the per-tool approvals are the
 /// user's: an existing `tools` table is carried over unchanged and none is
 /// created.
-fn install_mcp_server(
-    config_path: &Path,
-    tokensave_bin: &str,
-    manage_permissions: bool,
-) -> Result<()> {
+fn install_mcp_server(config_path: &Path, tokensave_bin: &str, ctx: &InstallContext) -> Result<()> {
+    let manage_permissions = permissions_management_enabled(&ctx.home);
     let mut config = load_toml_file(config_path)?;
 
     // Ensure [mcp_servers.tokensave] exists
@@ -143,7 +155,11 @@ fn install_mcp_server(
             .and_then(toml::Value::as_str),
         tokensave_bin,
     );
-    let mut server_table = toml::map::Map::new();
+    let mut server_table = servers
+        .get("tokensave")
+        .and_then(toml::Value::as_table)
+        .cloned()
+        .unwrap_or_default();
     server_table.insert("command".to_string(), toml::Value::String(bin));
     server_table.insert(
         "args".to_string(),
@@ -151,21 +167,32 @@ fn install_mcp_server(
     );
 
     if manage_permissions {
-        // Auto-approve all tokensave tools so Codex doesn't prompt for each one
-        let mut tools_table = toml::map::Map::new();
-        for tool_name in tool_names() {
-            let mut tool_config = toml::map::Map::new();
-            tool_config.insert(
-                "approval_mode".to_string(),
-                toml::Value::String("auto".to_string()),
-            );
-            tools_table.insert(tool_name.clone(), toml::Value::Table(tool_config));
+        let tools = server_table
+            .entry("tools")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let Some(tools) = tools.as_table_mut() {
+            if ctx.force_permission_style {
+                for policy in tools
+                    .iter_mut()
+                    .filter_map(|(_, value)| value.as_table_mut())
+                {
+                    if policy.get("approval_mode").and_then(toml::Value::as_str) == Some("auto") {
+                        policy.remove("approval_mode");
+                    }
+                }
+            }
+            for name in crate::agents::approved_tool_names(&ctx.tool_permissions) {
+                let policy = tools
+                    .entry(name)
+                    .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+                if let Some(policy) = policy.as_table_mut() {
+                    policy
+                        .entry("approval_mode")
+                        .or_insert_with(|| toml::Value::String("auto".to_string()));
+                }
+            }
         }
-        server_table.insert("tools".to_string(), toml::Value::Table(tools_table));
     } else {
-        if let Some(existing) = servers.get("tokensave").and_then(|t| t.get("tools")) {
-            server_table.insert("tools".to_string(), existing.clone());
-        }
         crate::agent_note!("{PERMISSIONS_USER_MANAGED_NOTE}");
     }
 
@@ -278,20 +305,34 @@ fn doctor_check_config(dc: &mut DoctorCounters, config_path: &Path, manage_permi
         return;
     }
 
-    // Check tool auto-approval
+    // Check read-only auto-approvals and report retained write policy.
     let tools = config
         .get("mcp_servers")
         .and_then(|v| v.get("tokensave"))
         .and_then(|v| v.get("tools"))
         .and_then(|v| v.as_table());
 
+    if tools.is_some_and(|tools| {
+        tools.iter().any(|(name, policy)| {
+            crate::mcp::tools::tool_capability(name)
+                != Some(crate::mcp::tools::ToolCapability::ReadOnly)
+                && policy.get("approval_mode").and_then(toml::Value::as_str) == Some("auto")
+        })
+    }) {
+        dc.warn("Existing Codex write approvals kept. Use tokensave install --agent codex --reset-tool-approvals to restore write prompts.");
+    }
+
     let auto_count = tools.map_or(0, |t| {
-        t.values()
-            .filter(|v| v.get("approval_mode").and_then(|m| m.as_str()) == Some("auto"))
+        t.iter()
+            .filter(|(name, v)| {
+                crate::mcp::tools::tool_capability(name)
+                    == Some(crate::mcp::tools::ToolCapability::ReadOnly)
+                    && v.get("approval_mode").and_then(|m| m.as_str()) == Some("auto")
+            })
             .count()
     });
 
-    let tools = tool_names();
+    let tools = crate::agents::read_only_tool_names();
     let tools_len = tools.len();
     if auto_count >= tools_len {
         dc.pass(&format!("All {tools_len} tools set to auto-approve"));

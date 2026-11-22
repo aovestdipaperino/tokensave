@@ -57,4 +57,4 @@ use crate::agents::rules::{
 use crate::agents::traits::{
     AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext, InstallScope,
 };
-use crate::agents::{expected_tool_perms, permissions_management_enabled, tool_names};
+use crate::agents::{expected_tool_perms, permissions_management_enabled};
