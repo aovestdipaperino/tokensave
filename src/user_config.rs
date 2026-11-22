@@ -119,13 +119,8 @@ pub struct UserConfig {
     #[serde(default = "default_extraction_timeout_secs")]
     pub extraction_timeout_secs: u64,
 
-    /// When true, `install`/`reinstall` grant Claude Code tokensave tools via
-    /// a single compact `mcp__tokensave__*` entry in `permissions.allow`
-    /// instead of enumerating every tool individually. Both forms are fully
-    /// honored by Claude Code; this only affects what gets written. Defaults
-    /// to `false` (explicit per-tool list) for continuity with existing
-    /// installs. Overridable per-invocation with `--wildcard-permissions` /
-    /// `--explicit-permissions`.
+    /// Legacy preference retained when round-tripping old configuration.
+    /// Installers now generate exact grants and ignore this preference.
     #[serde(default)]
     pub wildcard_permissions: bool,
 

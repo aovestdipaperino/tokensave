@@ -280,6 +280,25 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         None => return commands::handle_no_command().await,
     };
 
+    if let Commands::Install {
+        wildcard_permissions,
+        approve_write_tools,
+        ..
+    }
+    | Commands::Reinstall {
+        wildcard_permissions,
+        approve_write_tools,
+        ..
+    } = &command
+    {
+        if *wildcard_permissions {
+            return Err(tokensave::errors::TokenSaveError::Config {
+                message: "--wildcard-permissions would approve future write tools. Use --approve-write-tool NAME or --reset-tool-approvals.".into(),
+            });
+        }
+        tokensave::agents::requested_tool_perms(approve_write_tools)?;
+    }
+
     // Experimental export is read-only and bypasses startup maintenance.
     if let Commands::GraphifyExport {
         project,
@@ -533,7 +552,6 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         // Without a home dir or a resolvable binary path there is nothing to
         // write, so leave the markers alone and retry on the next run.
         if let (Some(home), Some(bin)) = paths {
-            let wildcard = user_config.wildcard_permissions;
             // This resync is background maintenance, not a user-requested
             // install: keep the per-agent setup banners off stderr so they
             // don't appear on every `init`/`sync` (#255).
@@ -553,7 +571,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: bin.clone(),
-                        tool_permissions: tokensave::agents::install_tool_perms(wildcard),
+                        tool_permissions: tokensave::agents::expected_tool_perms(),
                         scope: tokensave::agents::InstallScope::Global,
                         // Silent reinstall on upgrade is never an explicit
                         // style request — preserve an existing covering
@@ -1093,8 +1111,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             agent,
             git_hook,
             local,
-            wildcard_permissions,
+            wildcard_permissions: _,
             explicit_permissions,
+            approve_write_tools,
         } => {
             let home = tokensave::agents::home_dir().ok_or_else(|| {
                 tokensave::errors::TokenSaveError::Config {
@@ -1113,28 +1132,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
 
-            // --wildcard-permissions / --explicit-permissions (mutually
-            // exclusive, enforced by clap) override the persisted default for
-            // this run; a flag on a global install also updates the default
-            // for future silent reinstalls. A --local install is
-            // project-scoped and must not touch the persisted global choice.
-            if wildcard_permissions {
-                user_cfg.wildcard_permissions = true;
-                if !local {
-                    user_cfg.save();
-                }
-            } else if explicit_permissions {
-                user_cfg.wildcard_permissions = false;
-                if !local {
-                    user_cfg.save();
-                }
-            }
-            let want_wildcard = user_cfg.wildcard_permissions;
-            // Only an explicit flag on this invocation counts as a style
-            // request; a flagless install must preserve an existing covering
-            // grant instead of clobbering it (see `install_permissions` in
-            // `agents/claude.rs`).
-            let force_permission_style = wildcard_permissions || explicit_permissions;
+            let tool_permissions = tokensave::agents::requested_tool_perms(&approve_write_tools)?;
+            let force_permission_style = explicit_permissions;
 
             let mut installed_names: Vec<String> = Vec::new();
             let mut removed_names: Vec<String> = Vec::new();
@@ -1172,7 +1171,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
-                        tool_permissions: tokensave::agents::install_tool_perms(want_wildcard),
+                        tool_permissions: tool_permissions.clone(),
                         scope: scope.clone(),
                         force_permission_style,
                     };
@@ -1234,7 +1233,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
-                        tool_permissions: tokensave::agents::install_tool_perms(want_wildcard),
+                        tool_permissions: tool_permissions.clone(),
                         scope: scope.clone(),
                         force_permission_style,
                     };
@@ -1315,8 +1314,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
         }
         Commands::Reinstall {
-            wildcard_permissions,
+            wildcard_permissions: _,
             explicit_permissions,
+            approve_write_tools,
         } => {
             let home = tokensave::agents::home_dir().ok_or_else(|| {
                 tokensave::errors::TokenSaveError::Config {
@@ -1331,21 +1331,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
 
-            // See the matching comment on Commands::Install: a flag overrides
-            // and persists the default for future silent reinstalls.
-            if wildcard_permissions {
-                user_cfg.wildcard_permissions = true;
-                user_cfg.save();
-            } else if explicit_permissions {
-                user_cfg.wildcard_permissions = false;
-                user_cfg.save();
-            }
-            let want_wildcard = user_cfg.wildcard_permissions;
-            // As in Commands::Install: only an explicit flag on this
-            // invocation forces the style; a flagless `reinstall` (including
-            // the automatic silent one on upgrade) must preserve an existing
-            // covering grant.
-            let force_permission_style = wildcard_permissions || explicit_permissions;
+            let tool_permissions = tokensave::agents::requested_tool_perms(&approve_write_tools)?;
+            let force_permission_style = explicit_permissions;
 
             if user_cfg.installed_agents.is_empty() {
                 eprintln!("No installed agents found. Run `tokensave install` first.");
@@ -1361,7 +1348,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     let ctx = tokensave::agents::InstallContext {
                         home: home.clone(),
                         tokensave_bin: tokensave_bin.clone(),
-                        tool_permissions: tokensave::agents::install_tool_perms(want_wildcard),
+                        tool_permissions: tool_permissions.clone(),
                         scope: tokensave::agents::InstallScope::Global,
                         force_permission_style,
                     };
@@ -2546,11 +2533,13 @@ mod startup_tests {
             local: false,
             wildcard_permissions: false,
             explicit_permissions: false,
+            approve_write_tools: vec![],
         }));
         assert!(should_skip_agent_install_maintenance(
             &Commands::Reinstall {
                 wildcard_permissions: false,
                 explicit_permissions: false,
+                approve_write_tools: vec![],
             }
         ));
         assert!(should_skip_agent_install_maintenance(
