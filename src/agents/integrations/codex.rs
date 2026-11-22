@@ -59,6 +59,21 @@ impl AgentIntegration for CodexIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let codex_dir = ctx.home.join(".codex");
+        let config_path = codex_dir.join("config.toml");
+
+        plan.toml_mcp(&config_path);
+
+        let agents_md = codex_dir.join("AGENTS.md");
+        plan.rules(&agents_md, crate::agents::rules::LEGACY_RULES_MARKER, &[]);
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mCodex CLI integration\x1b[0m");
         let codex_dir = ctx.home.join(".codex");

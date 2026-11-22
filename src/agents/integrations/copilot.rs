@@ -145,6 +145,64 @@ impl AgentIntegration for CopilotIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let vscode_settings_path = super::vscode_data_dir(&ctx.home)
+            .join("User")
+            .join("settings.json");
+        let vscode_mcp_json_path = super::vscode_data_dir(&ctx.home)
+            .join("User")
+            .join("mcp.json");
+        let cli_settings_path = super::copilot_cli_dir(&ctx.home).join("mcp-config.json");
+        plan.mcp(&vscode_mcp_json_path, &["servers"], true);
+        plan.mcp(&vscode_settings_path, &["mcp", "servers"], true);
+        let insiders_settings_path = super::vscode_insiders_data_dir(&ctx.home)
+            .join("User")
+            .join("settings.json");
+        let insiders_mcp_json_path = super::vscode_insiders_data_dir(&ctx.home)
+            .join("User")
+            .join("mcp.json");
+        plan.mcp(&insiders_mcp_json_path, &["servers"], true);
+        plan.mcp(&insiders_settings_path, &["mcp", "servers"], true);
+        plan.mcp(&cli_settings_path, &["mcpServers"], false);
+        let jetbrains_dir = super::copilot_jetbrains_dir(&ctx.home);
+        plan.mcp(&jetbrains_dir.join("mcp.json"), &["servers"], false);
+
+        let vscode_instructions = super::vscode_data_dir(&ctx.home)
+            .join("User")
+            .join("prompts")
+            .join("copilot-instructions.md");
+        plan.rules(
+            &vscode_instructions,
+            crate::agents::rules::LEGACY_RULES_MARKER,
+            &[],
+        );
+        let insiders_instructions = super::vscode_insiders_data_dir(&ctx.home)
+            .join("User")
+            .join("prompts")
+            .join("copilot-instructions.md");
+        plan.rules(
+            &insiders_instructions,
+            crate::agents::rules::LEGACY_RULES_MARKER,
+            &[],
+        );
+        let cli_instructions = super::copilot_cli_dir(&ctx.home).join("copilot-instructions.md");
+        plan.rules(
+            &cli_instructions,
+            crate::agents::rules::LEGACY_RULES_MARKER,
+            &[],
+        );
+        plan.rules(
+            &jetbrains_dir.join("global-copilot-instructions.md"),
+            crate::agents::rules::LEGACY_RULES_MARKER,
+            &[],
+        );
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mGitHub Copilot integration\x1b[0m");
         doctor_check_vscode_settings(dc, &super::vscode_data_dir(&ctx.home), "VS Code");

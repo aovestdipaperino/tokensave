@@ -82,6 +82,16 @@ impl AgentIntegration for KiloIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let config_path = kilo_config_path(&ctx.home);
+        plan.mcp(&config_path, &["mcp"], true);
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mKilo CLI integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home);

@@ -67,6 +67,21 @@ impl AgentIntegration for GeminiIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let gemini_dir = ctx.base_dir().join(".gemini");
+        let settings_path = gemini_dir.join("settings.json");
+
+        plan.mcp(&settings_path, &["mcpServers"], false);
+
+        let gemini_md = gemini_dir.join("GEMINI.md");
+        plan.rules(&gemini_md, crate::agents::rules::LEGACY_RULES_MARKER, &[]);
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mGemini CLI integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home, permissions_management_enabled(&ctx.home));

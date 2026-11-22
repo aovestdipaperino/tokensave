@@ -7,7 +7,8 @@
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
-use tokensave::agents::{AgentUninstallOutcome, InstallScope};
+use tokensave::agents::uninstall::{UninstallOutput, UninstallPlan};
+use tokensave::agents::{self, InstallContext, InstallScope};
 use tokensave::purge::constants::{EXIT_INCOMPLETE, EXIT_REFUSED};
 use tokensave::purge::provenance as install_provenance;
 use tokensave::purge::{self, Category, PurgePlan, PurgeRequest};
@@ -87,12 +88,25 @@ pub(crate) async fn run(args: PurgeArgs) -> tokensave::errors::Result<i32> {
     };
     let plan = purge::plan(&request);
     print_plan(&plan, &request, registry_note.as_deref(), args.dry_run);
+    let integration_plans = integration_plans(&plan, &request);
+    let output = UninstallOutput {
+        dry_run: args.dry_run,
+        verbose: true,
+        quiet: false,
+    };
+    for integrations in &integration_plans {
+        integrations.print(output);
+    }
 
     if args.dry_run {
         println!();
         println!("Dry run: nothing was changed.");
         print_reminder(&provenance);
-        return Ok(0);
+        let failed: usize = integration_plans
+            .iter()
+            .map(|plan| plan.apply(output).failed)
+            .sum();
+        return Ok(if failed > 0 { EXIT_INCOMPLETE } else { 0 });
     }
     if plan.is_empty() {
         println!();
@@ -123,7 +137,11 @@ pub(crate) async fn run(args: PurgeArgs) -> tokensave::errors::Result<i32> {
         }
     }
 
-    let failures = execute(&plan, &request).await;
+    let integration_failures = integration_plans
+        .iter()
+        .map(|plan| plan.apply(output).failed)
+        .sum::<usize>();
+    let failures = integration_failures + execute(&plan, &request).await;
     println!();
     if failures == 0 {
         println!("\x1b[32mPurge complete.\x1b[0m");
@@ -137,49 +155,39 @@ pub(crate) async fn run(args: PurgeArgs) -> tokensave::errors::Result<i32> {
     Ok(if failures == 0 { 0 } else { EXIT_INCOMPLETE })
 }
 
-/// Performs the plan. Returns the number of failures.
+fn integration_plans(plan: &PurgePlan, request: &PurgeRequest) -> Vec<UninstallPlan> {
+    let mut plans = Vec::new();
+    let mut ctx = InstallContext {
+        home: request.home.clone(),
+        scope: InstallScope::Global,
+        tokensave_bin: String::new(),
+        tool_permissions: Vec::new(),
+        force_permission_style: false,
+    };
+    if request.global {
+        let mut global = UninstallPlan::default();
+        global.plan_agents(&plan.global_agents, &ctx);
+        if plan.global_hooks {
+            agents::plan_global_hook_removal(&request.home, &mut global);
+        }
+        plans.push(global);
+    }
+    for root in &plan.project_roots {
+        ctx.scope = InstallScope::Local {
+            project_path: root.clone(),
+        };
+        let mut local = UninstallPlan::for_scope(&ctx.scope);
+        local.plan_agents(&plan.local_agents, &ctx);
+        agents::plan_local_hook_removal(root, &mut local);
+        plans.push(local);
+    }
+    plans
+}
+
+/// Performs the data removal plan. Returns the number of failures.
 async fn execute(plan: &PurgePlan, request: &PurgeRequest) -> usize {
     let mut failures = 0usize;
     println!();
-    if request.global {
-        let outcomes = tokensave::agents::uninstall_agents(
-            &request.home,
-            &plan.global_agents,
-            &InstallScope::Global,
-        );
-        failures += report_agents(&outcomes, "global");
-        forget_installed_agents(plan);
-        if plan.global_hooks {
-            let removal = tokensave::agents::remove_git_hooks();
-            for path in removal.deleted.iter().chain(&removal.cleaned) {
-                println!(
-                    "\x1b[32m✔\x1b[0m removed tokensave's git hook section in {}",
-                    path.display()
-                );
-            }
-            if removal.hooks_path_unset {
-                println!("\x1b[32m✔\x1b[0m unset git core.hooksPath");
-            }
-        }
-    }
-    for root in &plan.project_roots {
-        let outcomes = tokensave::agents::uninstall_agents(
-            &request.home,
-            &plan.local_agents,
-            &InstallScope::Local {
-                project_path: root.clone(),
-            },
-        );
-        failures += report_agents(&outcomes, &root.display().to_string());
-        let removal = tokensave::agents::remove_local_git_hooks(root);
-        for path in removal.deleted.iter().chain(&removal.cleaned) {
-            println!(
-                "\x1b[32m✔\x1b[0m removed tokensave's git hook section in {}",
-                path.display()
-            );
-        }
-    }
-
     let report = purge::execute_removals(plan);
     for path in &report.removed {
         println!("\x1b[32m✔\x1b[0m deleted {}", path.display());
@@ -214,41 +222,6 @@ async fn execute(plan: &PurgePlan, request: &PurgeRequest) -> usize {
         }
     }
     failures
-}
-
-/// Prints per-agent outcomes. Returns the number of failures.
-fn report_agents(outcomes: &[(String, AgentUninstallOutcome)], scope: &str) -> usize {
-    let mut failures = 0;
-    for (id, outcome) in outcomes {
-        match outcome {
-            AgentUninstallOutcome::Removed => {
-                println!("\x1b[32m✔\x1b[0m removed the {id} integration ({scope})");
-            }
-            AgentUninstallOutcome::NoLocalConfig | AgentUninstallOutcome::Unknown => {}
-            AgentUninstallOutcome::Failed(error) => {
-                println!(
-                    "\x1b[31m✘\x1b[0m could not remove the {id} integration ({scope}): {error}"
-                );
-                failures += 1;
-            }
-        }
-    }
-    failures
-}
-
-/// Clears the installed-agents registry when `config.toml` is kept (the beta
-/// channel shares it with stable). When the plan deletes the file there is
-/// nothing to clear.
-fn forget_installed_agents(plan: &PurgePlan) {
-    let deletes_config = plan.removals.iter().any(|r| {
-        r.path.file_name().and_then(|n| n.to_str()) == Some(purge::constants::USER_CONFIG_FILENAME)
-    });
-    if deletes_config || plan.global_agents.is_empty() {
-        return;
-    }
-    let mut config = tokensave::user_config::UserConfig::load();
-    config.installed_agents.clear();
-    config.save();
 }
 
 fn print_plan(

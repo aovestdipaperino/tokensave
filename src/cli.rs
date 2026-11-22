@@ -231,7 +231,10 @@ pub enum Commands {
         #[arg(long, conflicts_with = "wildcard_permissions")]
         explicit_permissions: bool,
     },
-    /// Remove agent integration (MCP server, permissions, hooks, prompt rules)
+    /// Disconnect TokenSave integrations while preserving the executable and data
+    ///
+    /// Use `tokensave purge` to review data deletion, or your original installer
+    /// (for example, `cargo uninstall tokensave`) to remove the executable.
     #[command(name = "uninstall", visible_alias = "claude-uninstall")]
     Uninstall {
         /// Agent to remove (removes all if omitted)
@@ -246,6 +249,15 @@ pub enum Commands {
         /// (#420).
         #[arg(long)]
         keep_git_hooks: bool,
+        /// Preview affected paths and operations without writing anything.
+        #[arg(long, conflicts_with = "quiet")]
+        dry_run: bool,
+        /// Include affected paths in progress output.
+        #[arg(short, long, conflicts_with = "quiet")]
+        verbose: bool,
+        /// Suppress routine progress and keep errors and executable guidance.
+        #[arg(short, long)]
+        quiet: bool,
     },
     /// Remove agent integrations and delete tokensave's settings, caches and indexes
     ///

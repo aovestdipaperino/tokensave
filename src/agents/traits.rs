@@ -18,6 +18,16 @@ pub trait AgentIntegration {
     /// Remove everything installed by [`AgentIntegration::install`].
     fn uninstall(&self, ctx: &InstallContext) -> crate::errors::Result<()>;
 
+    /// Inventory the owned integration artifacts without modifying configuration.
+    fn plan_uninstall(
+        &self,
+        _ctx: &InstallContext,
+        plan: &mut super::uninstall::UninstallPlan,
+    ) -> crate::errors::Result<()> {
+        plan.skipped("Integration", "no uninstall inventory available");
+        Ok(())
+    }
+
     /// Verify installation health (replaces agent-specific doctor checks).
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext);
 

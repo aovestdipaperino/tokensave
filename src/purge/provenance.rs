@@ -1,27 +1,12 @@
-//! How the running tokensave executable was installed (#1055).
+//! Live installer receipts and the optional versioned record of a verified install.
 //!
-//! `tokensave uninstall` and `tokensave purge` remove tokensave's data and
-//! integrations but never the executable: Cargo, Homebrew, Scoop and the
-//! other installers own it. They end with a reminder, and name an uninstall
-//! command only when the running executable carries strong evidence of the
-//! installer that put it there:
-//!
-//! * Homebrew: the canonical path is inside a `Cellar/tokensave/<version>/bin`
-//!   keg.
-//! * Scoop: the canonical path is `apps/tokensave/<version>/tokensave.exe`
-//!   and that version directory holds Scoop's `manifest.json`.
-//! * Cargo (including `cargo binstall`): the executable sits directly in
-//!   `<CARGO_HOME>/bin` and Cargo's install manifest (`.crates2.json` or
-//!   `.crates.toml`) records the `tokensave` package with a `tokensave`
-//!   binary.
-//!
-//! Anything else is [`InstallMethod::Unknown`]. A path that several tools
-//! could use is never enough on its own, and detection always looks at the
-//! running executable, not the first `tokensave` on `PATH`, so a copied
-//! binary or a second installation that shadows the first is reported as
-//! unknown rather than mapped to the wrong uninstall command. Nothing is
-//! recorded on disk, so there is no stored provenance that could go stale
-//! after a binary is copied or reinstalled another way.
+//! Always check the running executable's own receipts. A `TokenSave` record
+//! can corroborate the result but never confers ownership on its own.
+
+use std::io::{Read, Write};
+use std::time::UNIX_EPOCH;
+
+use serde::{Deserialize, Serialize};
 
 use std::path::{Component, Path, PathBuf};
 
@@ -32,7 +17,8 @@ use super::constants::{
 };
 
 /// The installer that owns the running executable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum InstallMethod {
     /// `cargo install` or `cargo binstall`.
     Cargo,
@@ -76,6 +62,93 @@ pub struct Provenance {
     pub executable: Option<PathBuf>,
 }
 
+pub(super) const INSTALLATION_RECORD: &str = "installation.json";
+const INSTALLATION_SCHEMA_VERSION: u32 = 1;
+const HOMEBREW_RECEIPT: &str = "INSTALL_RECEIPT.json";
+const HOMEBREW_TAP: &str = "aovestdipaperino/tap";
+const INSTALLER_METADATA_LIMIT: u64 = 1024 * 1024;
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct InstallationRecord {
+    schema_version: u32,
+    method: InstallMethod,
+    executable: PathBuf,
+    byte_len: u64,
+    modified_nanos: u128,
+}
+
+impl InstallationRecord {
+    fn new(provenance: &Provenance) -> Option<Self> {
+        if provenance.method == InstallMethod::Unknown {
+            return None;
+        }
+        let executable = provenance.executable.clone()?;
+        let metadata = std::fs::metadata(&executable).ok()?;
+        let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+        Some(Self {
+            schema_version: INSTALLATION_SCHEMA_VERSION,
+            method: provenance.method,
+            executable,
+            byte_len: metadata.len(),
+            modified_nanos: modified.as_nanos(),
+        })
+    }
+}
+
+fn record_path(home: &Path) -> PathBuf {
+    home.join(crate::config::TOKENSAVE_DIR)
+        .join(INSTALLATION_RECORD)
+}
+
+/// Record verified provenance after a successful global integration install.
+/// Installation still works on filesystems where the optional record cannot
+/// be created. Detection falls back to the same live receipts in that case.
+pub fn record_current_installation(home: &Path) -> std::io::Result<()> {
+    let Some(record) = InstallationRecord::new(&detect()) else {
+        return Ok(());
+    };
+    let path = record_path(home);
+    if std::fs::symlink_metadata(&path).is_ok_and(|metadata| !metadata.is_file()) {
+        return Err(std::io::Error::other(
+            "expected a regular installation record",
+        ));
+    }
+    if read_metadata(&path)
+        .and_then(|bytes| serde_json::from_slice::<InstallationRecord>(&bytes).ok())
+        .as_ref()
+        == Some(&record)
+    {
+        return Ok(());
+    }
+    let Some(dir) = path.parent() else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(dir)?;
+    let mut file = tempfile::NamedTempFile::new_in(dir)?;
+    serde_json::to_writer_pretty(&mut file, &record)?;
+    writeln!(file)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
+fn read_metadata(path: &Path) -> Option<Vec<u8>> {
+    if !std::fs::symlink_metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut buffer = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(INSTALLER_METADATA_LIMIT + 1)
+        .read_to_end(&mut buffer)
+        .ok()?;
+    (buffer.len() as u64 <= INSTALLER_METADATA_LIMIT).then_some(buffer)
+}
+
+fn json_metadata(path: &Path) -> Option<serde_json::Value> {
+    serde_json::from_slice(&read_metadata(path)?).ok()
+}
+
 /// Detects how the running executable was installed.
 pub fn detect() -> Provenance {
     let Ok(exe) = std::env::current_exe() else {
@@ -85,7 +158,24 @@ pub fn detect() -> Provenance {
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .or_else(|| crate::agents::home_dir().map(|h| h.join(CARGO_DEFAULT_HOME_DIR)));
-    detect_from(&exe, cargo_home.as_deref())
+    let mut result = detect_from(&exe, cargo_home.as_deref());
+    if result.method != InstallMethod::Unknown {
+        if let Some(path) = crate::agents::home_dir().map(|home| record_path(&home)) {
+            corroborate_record(&mut result, &path);
+        }
+    }
+    result
+}
+
+fn corroborate_record(provenance: &mut Provenance, path: &Path) {
+    let Some(stored) = read_metadata(path)
+        .and_then(|bytes| serde_json::from_slice::<InstallationRecord>(&bytes).ok())
+    else {
+        return;
+    };
+    if InstallationRecord::new(provenance).as_ref() == Some(&stored) {
+        provenance.evidence = "recorded and verified against the current installer receipt";
+    }
 }
 
 /// Detects the installer of `exe`, given Cargo's home directory.
@@ -93,25 +183,37 @@ pub fn detect() -> Provenance {
 /// Pure apart from filesystem reads, so tests can build each layout in a
 /// temporary directory.
 pub fn detect_from(exe: &Path, cargo_home: Option<&Path>) -> Provenance {
-    let canonical = canonical(exe);
-    let method = if is_homebrew_keg(&canonical) {
-        Some((
-            InstallMethod::Homebrew,
-            "executable is inside a Homebrew keg",
-        ))
-    } else if is_scoop_app(&canonical) {
-        Some((
-            InstallMethod::Scoop,
-            "executable is a Scoop app with a manifest",
-        ))
-    } else if cargo_home.is_some_and(|home| is_cargo_install(&canonical, home)) {
-        Some((
-            InstallMethod::Cargo,
-            "executable is recorded in Cargo's install manifest",
-        ))
-    } else {
-        None
+    let Ok(canonical) = exe.canonicalize() else {
+        return unknown(Some(exe.to_path_buf()));
     };
+    let candidates = [
+        (
+            is_homebrew_keg(&canonical),
+            InstallMethod::Homebrew,
+            "Homebrew receipt for aovestdipaperino/tap",
+        ),
+        (
+            is_scoop_app(&canonical),
+            InstallMethod::Scoop,
+            "matching Scoop app manifest",
+        ),
+        (
+            cargo_home.is_some_and(|home| is_cargo_install(&canonical, home)),
+            InstallMethod::Cargo,
+            "Cargo install manifest for the running executable",
+        ),
+    ];
+    let mut verified = candidates.into_iter().filter(|(matches, _, _)| *matches);
+    let method = verified
+        .next()
+        .map(|(_, method, evidence)| (method, evidence));
+    if verified.next().is_some() {
+        return Provenance {
+            method: InstallMethod::Unknown,
+            evidence: "conflicting installer receipts for the running executable",
+            executable: Some(canonical),
+        };
+    }
     match method {
         Some((method, evidence)) => Provenance {
             method,
@@ -163,6 +265,17 @@ fn is_homebrew_keg(exe: &Path) -> bool {
         && parts[n - 4] == PACKAGE_NAME
         && parts[n - 2] == HOMEBREW_BIN_DIR
         && parts[n - 1] == PACKAGE_NAME
+        && exe.parent().and_then(Path::parent).is_some_and(|keg| {
+            json_metadata(&keg.join(HOMEBREW_RECEIPT))
+                .and_then(|receipt| {
+                    receipt
+                        .pointer("/source/tap")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+                .as_deref()
+                == Some(HOMEBREW_TAP)
+        })
 }
 
 /// `.../apps/tokensave/<version>/tokensave.exe`, with Scoop's manifest next
@@ -177,8 +290,25 @@ fn is_scoop_app(exe: &Path) -> bool {
     {
         return false;
     }
-    exe.parent()
-        .is_some_and(|dir| dir.join(SCOOP_MANIFEST_FILENAME).is_file())
+    exe.parent().is_some_and(|dir| {
+        json_metadata(&dir.join(SCOOP_MANIFEST_FILENAME)).is_some_and(|manifest| {
+            manifest["version"].as_str() == Some(parts[n - 2].as_str())
+                && scoop_lists_binary(&manifest["bin"])
+        })
+    })
+}
+
+fn scoop_lists_binary(bins: &serde_json::Value) -> bool {
+    if let Some(bin) = bins.as_str() {
+        return bin.eq_ignore_ascii_case("tokensave.exe");
+    }
+    bins.as_array().is_some_and(|bins| {
+        bins.iter().any(|bin| {
+            bin.as_str()
+                .or_else(|| bin.get(0).and_then(serde_json::Value::as_str))
+                .is_some_and(|bin| bin.eq_ignore_ascii_case("tokensave.exe"))
+        })
+    })
 }
 
 /// The executable is `<cargo_home>/bin/tokensave[.exe]` and Cargo's install
@@ -187,8 +317,10 @@ fn is_cargo_install(exe: &Path, cargo_home: &Path) -> bool {
     if binary_stem(exe).as_deref() != Some(PACKAGE_NAME) {
         return false;
     }
-    let bin_dir = canonical(&cargo_home.join(CARGO_BIN_DIR));
-    if exe.parent() != Some(bin_dir.as_path()) {
+    let bin_dir = canonical(&cargo_home.join(CARGO_BIN_DIR))
+        .canonicalize()
+        .ok();
+    if exe.parent() != bin_dir.as_deref() {
         return false;
     }
     crates2_lists_tokensave(&cargo_home.join(CARGO_CRATES2_FILENAME))
@@ -205,10 +337,7 @@ fn names_tokensave_binary(bin: &str) -> bool {
 }
 
 fn crates2_lists_tokensave(path: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return false;
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+    let Some(json) = json_metadata(path) else {
         return false;
     };
     let Some(installs) = json
@@ -231,7 +360,10 @@ fn crates2_lists_tokensave(path: &Path) -> bool {
 }
 
 fn crates_toml_lists_tokensave(path: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Some(bytes) = read_metadata(path) else {
+        return false;
+    };
+    let Ok(text) = std::str::from_utf8(&bytes) else {
         return false;
     };
     let Ok(table) = text.parse::<toml::Table>() else {
@@ -370,6 +502,13 @@ mod tests {
             .join("bin")
             .join("tokensave");
         touch(&exe);
+        assert_eq!(detect_from(&exe, None).method, InstallMethod::Unknown);
+        let keg = exe.parent().and_then(Path::parent).expect("keg");
+        fs::write(
+            keg.join(HOMEBREW_RECEIPT),
+            r#"{"source":{"tap":"aovestdipaperino/tap"}}"#,
+        )
+        .unwrap();
         let p = detect_from(&exe, None);
         assert_eq!(p.method, InstallMethod::Homebrew);
         assert_eq!(
@@ -403,7 +542,11 @@ mod tests {
             .join("7.17.0");
         let exe = version_dir.join("tokensave.exe");
         touch(&exe);
-        touch(&version_dir.join("manifest.json"));
+        fs::write(
+            version_dir.join("manifest.json"),
+            r#"{"version":"7.17.0","bin":"tokensave.exe"}"#,
+        )
+        .unwrap();
         let p = detect_from(&exe, None);
         assert_eq!(p.method, InstallMethod::Scoop);
         assert_eq!(
@@ -438,6 +581,36 @@ mod tests {
         assert!(!reminder.contains("cargo uninstall"));
         assert!(!reminder.contains("brew uninstall"));
         assert!(!reminder.contains("scoop uninstall"));
+    }
+
+    #[test]
+    fn record_corroborates_only_the_same_live_install() {
+        let (tmp, cargo_home, exe) = cargo_layout(Some((
+            ".crates2.json",
+            r#"{"installs":{"tokensave 7.17.0 (registry+x)":{"bins":["tokensave"]}}}"#,
+        )));
+        let mut verified = detect_from(&exe, Some(&cargo_home));
+        let record = InstallationRecord::new(&verified).expect("verified receipt");
+        let path = tmp.path().join(INSTALLATION_RECORD);
+        fs::write(&path, serde_json::to_vec(&record).expect("record")).unwrap();
+        corroborate_record(&mut verified, &path);
+        assert!(verified.evidence.starts_with("recorded"));
+
+        fs::write(&exe, "replacement").unwrap();
+        let mut stale = detect_from(&exe, Some(&cargo_home));
+        corroborate_record(&mut stale, &path);
+        assert!(!stale.evidence.starts_with("recorded"));
+
+        let copy = tmp.path().join(exe_name());
+        fs::copy(&exe, &copy).unwrap();
+        let mut copied = detect_from(&copy, Some(&cargo_home));
+        corroborate_record(&mut copied, &path);
+        assert_eq!(copied.method, InstallMethod::Unknown);
+
+        fs::remove_file(cargo_home.join(CARGO_CRATES2_FILENAME)).unwrap();
+        let mut missing_receipt = detect_from(&exe, Some(&cargo_home));
+        corroborate_record(&mut missing_receipt, &path);
+        assert_eq!(missing_receipt.method, InstallMethod::Unknown);
     }
 
     #[test]

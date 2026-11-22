@@ -1652,11 +1652,111 @@ pub fn describe_git_hooks() -> Vec<String> {
     out
 }
 
-/// Remove tokensave's global git hooks: the `post-commit`, `post-checkout`,
-/// and `post-merge` sections, the pure forwarders installed for every other client-side hook
-/// (#164 follow-up), and `core.hooksPath` when tokensave's own default
-/// directory is left empty.
-///
+const ACTION_HOOKS: &[&str] = &["post-commit", "post-checkout", "post-merge"];
+
+/// Inspect global hook scripts and plan removal of `TokenSave` sections.
+pub fn plan_global_hook_removal(home: &Path, plan: &mut super::uninstall::UninstallPlan) {
+    let default = home.join(".config").join("git").join("hooks");
+    let configured = read_global_hooks_path(home);
+    let hooks_dir = configured.as_deref().unwrap_or(&default);
+    for name in ACTION_HOOKS.iter().chain(FORWARDED_REPO_HOOKS).copied() {
+        plan_hook_file(hooks_dir, name, plan);
+    }
+    // Git stops using repository hooks when a global hooksPath is set.
+    // Release our default path only when it will be emptied by this plan.
+    let deletes_own_hook = ACTION_HOOKS
+        .iter()
+        .any(|name| plan.will_delete(&hooks_dir.join(name)));
+    let only_owned_hooks = configured.as_deref() == Some(&default)
+        && deletes_own_hook
+        && std::fs::read_dir(hooks_dir).is_ok_and(|mut entries| {
+            entries.all(|entry| entry.is_ok_and(|entry| plan.will_delete(&entry.path())))
+        });
+    if only_owned_hooks {
+        plan.edit_if_directory_empty(
+            "Git core.hooksPath",
+            &home.join(".gitconfig"),
+            hooks_dir,
+            |contents| remove_owned_hookspath(contents, hooks_dir),
+        );
+    }
+}
+
+fn remove_owned_hookspath(contents: &str, expected_dir: &Path) -> Option<String> {
+    let expected = expected_dir.to_string_lossy().replace('\\', "/");
+    let mut result = String::with_capacity(contents.len());
+    let mut core = false;
+    let mut removed = false;
+    for line in contents.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            core = trimmed.eq_ignore_ascii_case("[core]");
+        }
+        if core
+            && trimmed.split_once('=').is_some_and(|(key, value)| {
+                key.trim().eq_ignore_ascii_case("hookspath")
+                    && value.trim().trim_matches('"').replace('\\', "/") == expected
+            })
+        {
+            removed = true;
+        } else {
+            result.push_str(line);
+        }
+    }
+    removed.then_some(result)
+}
+
+/// Inspect this repository's own Git hooks.
+pub fn plan_local_hook_removal(repo: &Path, plan: &mut super::uninstall::UninstallPlan) {
+    if let Some(hooks_dir) = repo_hooks_dir(repo) {
+        for name in ACTION_HOOKS {
+            plan_hook_file(&hooks_dir, name, plan);
+        }
+    }
+}
+
+fn plan_hook_file(dir: &Path, name: &str, plan: &mut super::uninstall::UninstallPlan) {
+    let path = dir.join(name);
+    let label = format!("Git hook {name}");
+    plan.inspect(&label, &path, |contents| {
+        let stripped = strip_owned_hook(contents, name);
+        use super::uninstall::Removal;
+        Ok((stripped != contents).then(|| {
+            if is_inert_hook(&stripped) {
+                Removal::Delete
+            } else {
+                Removal::Write(stripped)
+            }
+        }))
+    });
+}
+
+fn strip_owned_hook(contents: &str, name: &str) -> String {
+    let mut stripped = contents.to_string();
+    let marker = match name {
+        "post-commit" => Some((HOOK_MARKER, HOOK_MARKER_END)),
+        "post-checkout" => Some((HOOK_MARKER_CHECKOUT, HOOK_MARKER_CHECKOUT_END)),
+        "post-merge" => Some((HOOK_MARKER_MERGE, HOOK_MARKER_MERGE_END)),
+        _ => None,
+    };
+    if let Some((begin, end)) = marker {
+        loop {
+            let next = if name == "post-checkout" {
+                replace_fenced_block(&stripped, begin, end, "")
+                    .or_else(|| replace_legacy_checkout_block(&stripped, begin, end, ""))
+            } else {
+                replace_fenced_block(&stripped, begin, end, "")
+                    .or_else(|| replace_legacy_sync_line(&stripped, begin, end, ""))
+            };
+            let Some(next) = next else { break };
+            stripped = next;
+        }
+    }
+    let chain = chain_repo_hook_snippet(name);
+    let previous_chain = chain.replace("--git-common-dir", "--git-dir");
+    stripped.replace(&chain, "").replace(&previous_chain, "")
+}
+
 /// The inverse of [`offer_git_post_commit_hook`], and the missing half of
 /// `tokensave uninstall` (#420): before this, uninstalling from every agent
 /// and deleting a project's index still left a global `post-commit` hook that

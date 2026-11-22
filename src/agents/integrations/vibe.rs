@@ -81,6 +81,36 @@ impl AgentIntegration for VibeIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let config_path = vibe_config_path(&ctx.home);
+        plan.toml("MCP server", &config_path, |config| {
+            let Some(servers) = config
+                .get_mut("mcp_servers")
+                .and_then(toml_edit::Item::as_array_of_tables_mut)
+            else {
+                return false;
+            };
+            let before = servers.len();
+            servers.retain(|server| {
+                server.get("name").and_then(toml_edit::Item::as_str) != Some("tokensave")
+                    || !crate::agents::uninstall::is_tokensave_command(
+                        server.get("command").and_then(toml_edit::Item::as_str),
+                    )
+            });
+            servers.len() != before
+        });
+        plan.rules(
+            &vibe_prompt_path(&ctx.home),
+            crate::agents::rules::LEGACY_RULES_MARKER,
+            &[],
+        );
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mMistral Vibe integration\x1b[0m");
         doctor_check_config(dc, &ctx.home);

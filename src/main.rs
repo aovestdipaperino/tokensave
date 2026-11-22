@@ -15,6 +15,7 @@ mod profile_command;
 mod purge_command;
 mod serve;
 mod tool_command;
+mod uninstall_command;
 
 use cli::{Cli, Commands};
 
@@ -200,16 +201,19 @@ async fn main() {
     use tokensave::debug_log::{self, Level};
     let matches = Cli::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
-    let config_root = diagnostic_config_root(cli.command.as_ref());
-    let configured_level =
-        if cli.log_level.is_none() && !cli.debug && std::env::var_os("TOKENSAVE_LOG").is_none() {
-            tokensave::config::configured_log_level(&config_root).unwrap_or_else(|error| {
+    let configured_level = if !matches!(cli.command, Some(Commands::Uninstall { .. }))
+        && cli.log_level.is_none()
+        && !cli.debug
+        && std::env::var_os("TOKENSAVE_LOG").is_none()
+    {
+        tokensave::config::configured_log_level(&diagnostic_config_root(cli.command.as_ref()))
+            .unwrap_or_else(|error| {
                 eprintln!("Error: {error}");
                 process::exit(2);
             })
-        } else {
-            None
-        };
+    } else {
+        None
+    };
     debug_log::configure(cli.debug, cli.log_level, configured_level);
     let command = matches.subcommand_name().unwrap_or("default");
     debug_log::event(
@@ -303,6 +307,27 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     if let Commands::Grep { graph, command } = &command {
         let code = grep_command::run(graph.as_deref(), command).await?;
         process::exit(code);
+    }
+
+    if let Commands::Uninstall {
+        agent,
+        local,
+        keep_git_hooks,
+        dry_run,
+        verbose,
+        quiet,
+    } = &command
+    {
+        return uninstall_command::run(
+            agent.as_deref(),
+            resolve_install_scope(*local)?,
+            *keep_git_hooks,
+            tokensave::agents::uninstall::UninstallOutput {
+                dry_run: *dry_run,
+                verbose: *verbose,
+                quiet: *quiet,
+            },
+        );
     }
 
     // Purge deletes the user config this startup path would save, and a dry
@@ -1254,6 +1279,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     }
                 }
             }
+            if !local && !installed_names.is_empty() {
+                if let Err(error) = tokensave::purge::provenance::record_current_installation(&home)
+                {
+                    eprintln!("Warning: could not record executable provenance: {error}");
+                }
+            }
         }
         Commands::Reinstall {
             wildcard_permissions,
@@ -1336,88 +1367,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 &current_bin_path(),
             ));
         }
-        Commands::Uninstall {
-            agent,
-            local,
-            keep_git_hooks,
-        } => {
-            let home = tokensave::agents::home_dir().ok_or_else(|| {
-                tokensave::errors::TokenSaveError::Config {
-                    message: "could not determine home directory".to_string(),
-                }
-            })?;
-            let scope = resolve_install_scope(local)?;
-            let mut user_cfg = tokensave::user_config::UserConfig::load();
-            tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
-
-            if let Some(id) = agent {
-                let ag = tokensave::agents::get_integration(&id)?;
-                if local && !ag.supports_local() {
-                    return Err(tokensave::errors::TokenSaveError::Config {
-                        message: format!(
-                            "--local is not supported for \"{}\" — it has no project-scoped config. \
-                             Run a global uninstall instead (omit --local).",
-                            ag.id()
-                        ),
-                    });
-                }
-                let ctx = tokensave::agents::InstallContext {
-                    home,
-                    tokensave_bin: String::new(),
-                    tool_permissions: tokensave::agents::expected_tool_perms(),
-                    scope: scope.clone(),
-                    force_permission_style: false,
-                };
-                ag.uninstall(&ctx)?;
-                // A --local uninstall only removes project config; leave the
-                // global installed-agents registry untouched.
-                if !local {
-                    user_cfg.installed_agents.retain(|a| a != &id);
-                    user_cfg.save();
-                }
-            } else {
-                // Shared with `tokensave purge` (#1055). Per-agent failures
-                // are ignored here, as they always were for this command.
-                let outcomes =
-                    tokensave::agents::uninstall_agents(&home, &user_cfg.installed_agents, &scope);
-                for (id, outcome) in &outcomes {
-                    if *outcome == tokensave::agents::AgentUninstallOutcome::NoLocalConfig {
-                        let name = tokensave::agents::get_integration(id)
-                            .map_or_else(|_| id.clone(), |ag| ag.name().to_string());
-                        eprintln!(
-                            "  skipping {name} (no project-scoped config; --local unsupported)"
-                        );
-                    }
-                }
-                if local {
-                    eprintln!("Project-local agent integrations removed.");
-                } else {
-                    user_cfg.installed_agents.clear();
-                    user_cfg.save();
-                    eprintln!("All agent integrations removed.");
-                    // #420: the global post-commit hook outlives every agent
-                    // integration, so without this a commit in any repo
-                    // recreates the index the user just deleted. --local never
-                    // touches it: the hooks are global, not project-scoped.
-                    if keep_git_hooks {
-                        eprintln!(
-                            "  Global git hooks left in place (--keep-git-hooks). \
-                             Remove them later with `tokensave githooks off`."
-                        );
-                    } else {
-                        report_hook_removal(&tokensave::agents::remove_git_hooks());
-                    }
-                    // #1055: indexes, settings and the binary all stay.
-                    eprintln!(
-                        "  Indexes and settings were kept; `tokensave purge` deletes them.
-  {}",
-                        tokensave::purge::provenance::removal_reminder(
-                            &tokensave::purge::provenance::detect()
-                        )
-                    );
-                }
-            }
-        }
+        Commands::Uninstall { .. } => unreachable!("uninstall is dispatched before startup"),
         Commands::Purge { .. } => unreachable!("purge is dispatched before startup"),
         Commands::ExtractWorker => {
             // Handled by the early dispatch at the top of run(); this arm
@@ -2586,6 +2536,9 @@ mod startup_tests {
                 agent: Some("kiro".to_string()),
                 local: false,
                 keep_git_hooks: false,
+                dry_run: false,
+                verbose: false,
+                quiet: false,
             }
         ));
     }

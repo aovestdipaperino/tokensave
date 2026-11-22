@@ -92,6 +92,42 @@ impl AgentIntegration for CursorIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let mcp_path = ctx.base_dir().join(".cursor").join("mcp.json");
+        plan.mcp(&mcp_path, &["mcpServers"], false);
+
+        let hooks_path = cursor_hooks_path_for(ctx);
+        plan.json("Cursor hooks", &hooks_path, false, |config| {
+            let Some(hooks) = config
+                .get_mut("hooks")
+                .and_then(serde_json::Value::as_object_mut)
+            else {
+                return false;
+            };
+            let mut changed = false;
+            for entries in hooks
+                .values_mut()
+                .filter_map(serde_json::Value::as_array_mut)
+            {
+                let before = entries.len();
+                entries.retain(|entry| {
+                    ![HOOK_PRE_TOOL, HOOK_STOP, HOOK_PROMPT]
+                        .into_iter()
+                        .any(|subcommand| {
+                            crate::agents::uninstall::is_tokensave_hook(entry, subcommand)
+                        })
+                });
+                changed |= entries.len() != before;
+            }
+            changed
+        });
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mCursor integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home);

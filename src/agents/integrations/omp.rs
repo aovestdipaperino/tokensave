@@ -93,6 +93,27 @@ impl AgentIntegration for OmpIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let mut surfaces = Vec::new();
+        if ctx.is_local() {
+            surfaces.push(omp_paths(ctx)?);
+        } else {
+            let targets = uninstall_profile_dirs(&ctx.home)?;
+            for dir in targets {
+                surfaces.push((dir.join("mcp.json"), dir.join("rules").join("tokensave.md")));
+            }
+        }
+        for (mcp, rules) in surfaces {
+            plan.mcp(&mcp, &["mcpServers"], false);
+            plan.managed_rules(&rules);
+        }
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mOh My Pi integration\x1b[0m");
 
@@ -257,6 +278,23 @@ fn normalize_agent_dirs(agent_dirs: &mut Vec<PathBuf>) -> Result<()> {
     agent_dirs.sort();
     agent_dirs.dedup();
     Ok(())
+}
+
+fn uninstall_profile_dirs(home: &Path) -> Result<Vec<PathBuf>> {
+    // A global install records the resolved profile before writing its config.
+    // Use that record and the legacy default directory without launching OMP.
+    let mut paths = load_omp_profile_registry(home)?.agent_dirs;
+    paths.push(home.join(".omp").join("agent"));
+    normalize_agent_dirs(&mut paths)?;
+    Ok(paths)
+}
+
+pub(crate) fn has_recorded_integration(home: &Path) -> bool {
+    uninstall_profile_dirs(home).is_ok_and(|paths| {
+        paths
+            .iter()
+            .any(|dir| omp_mcp_has_tokensave(&dir.join("mcp.json")))
+    })
 }
 
 fn omp_candidate_dirs(home: &Path) -> Vec<PathBuf> {

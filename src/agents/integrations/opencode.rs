@@ -91,6 +91,35 @@ impl AgentIntegration for OpenCodeIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let config_path = opencode_config_path_for(ctx);
+        let rules_path = opencode_rules_path(&config_path);
+        let entry = instructions_entry_for(&ctx.scope, &rules_path);
+        plan.json(
+            "MCP server and instructions reference",
+            &config_path,
+            true,
+            |config| {
+                let legacy = crate::agents::uninstall::remove_mcp(config, &["mcp"]);
+                let current = crate::agents::uninstall::remove_mcp(config, &["mcp", "servers"]);
+                let instructions = crate::agents::rules_management_enabled()
+                    && remove_instructions_entry(config, &entry);
+                legacy || current || instructions
+            },
+        );
+        plan.rules(
+            &opencode_prompt_path_for(ctx),
+            crate::agents::rules::LEGACY_RULES_MARKER,
+            &[],
+        );
+        plan.managed_rules(&rules_path);
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mOpenCode integration\x1b[0m");
         let v2 = opencode_is_v2();

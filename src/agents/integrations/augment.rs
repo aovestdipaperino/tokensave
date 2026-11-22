@@ -66,6 +66,19 @@ impl AgentIntegration for AugmentIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let settings_path = augment_settings_path_for(ctx);
+        plan.mcp(&settings_path, &["mcpServers"], false);
+
+        let rules_path = augment_rules_path_for(ctx);
+        plan.managed_rules(&rules_path);
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mAugmentCode integration\x1b[0m");
         doctor_check_config(dc, &ctx.home);
