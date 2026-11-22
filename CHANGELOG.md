@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Added
+
+- **A shared server picks each call's project from the client's roots.** A `tokensave serve` with no default project now asks the calling client for its roots (`roots/list`) during each call that has no `graph_root`. It answers from the indexed project that contains them. One tokensave behind an MCP proxy such as MCPProxy, started from the proxy's folder, can now serve clients in several repositories at once. The server asks on every call and caches nothing, because a proxy carries many clients on one session. Calls with `graph_root`, servers started inside a project, and clients without the `roots` capability behave as before. See [Which project a call answers](docs/guide/MCP-TOOLS.md#which-project-a-call-answers).
+
 
 ## [7.17.0] - 2026-11-19
 

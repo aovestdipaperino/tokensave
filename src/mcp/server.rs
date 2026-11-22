@@ -24,7 +24,8 @@ use crate::tokensave::TokenSave;
 
 use super::graph_scope::{
     collapse_worktree_roots, decode_selected_inputs, merge_federated_results, qualify_result,
-    select_federated_graph, select_graph, validate_local_inputs, GraphSelector, FEDERATABLE_TOOLS,
+    select_federated_graph, select_graph, validate_local_inputs, GraphSelection, GraphSelector,
+    FEDERATABLE_TOOLS,
 };
 use super::tools::{
     baseline_policy, cap_baseline, get_listed_tool_definitions, get_tool_definitions,
@@ -400,12 +401,17 @@ enum ServedProjects<'a> {
     /// A default project is served; these initialized projects sit beside it.
     Default { siblings: &'a [String] },
     /// No default project (#606); these projects are registered.
-    None { registered: &'a [String] },
+    /// `client_roots`: the client declared the MCP `roots` capability.
+    None {
+        registered: &'a [String],
+        client_roots: bool,
+    },
 }
 
 /// Explains that this server has no default project (#606) and how a call
-/// can still be answered.
-fn no_default_project_message(registered: &[String]) -> String {
+/// can still be answered. `client_roots`: the client declared the MCP `roots`
+/// capability, so a call without `graph_root` uses them.
+fn no_default_project_message(registered: &[String], client_roots: bool) -> String {
     let choices = if registered.is_empty() {
         "No projects are registered yet; run `tokensave init` in a project first.".to_string()
     } else {
@@ -414,10 +420,16 @@ fn no_default_project_message(registered: &[String]) -> String {
             registered.join(", ")
         )
     };
+    let without_graph_root = if client_roots {
+        "answers from the indexed project that contains the client's roots (its workspace \
+         folders), and is refused when they lie in no indexed project or in several."
+    } else {
+        "has no graph to answer from."
+    };
     format!(
         "This tokensave server has no default project: it was started outside every indexed \
-         project, so a call without graph_root has no graph to answer from. {choices} To give \
-         the server a default project, start it inside one or with `--path <project>`."
+         project, so a call without graph_root {without_graph_root} {choices} To give the \
+         server a default project, start it inside one or with `--path <project>`."
     )
 }
 
@@ -493,6 +505,12 @@ pub struct McpServer {
     version_cache: std::sync::Mutex<VersionCheckState>,
     /// Pending JSON-RPC notifications to send before the next response.
     pending_notifications: std::sync::Mutex<Vec<Value>>,
+    /// Whether the client declared the MCP `roots` capability in
+    /// `initialize`. A server with no default project then asks for the
+    /// roots on each call without `graph_root`.
+    client_roots: AtomicBool,
+    /// Requests sent to the client (`roots/list`) and their answers.
+    client_requests: Arc<super::roots::ClientRequests>,
     /// The tool areas that `tokensave_more` listed in this session (#576).
     /// Only read when the core toolset is active.
     revealed_areas: std::sync::Mutex<std::collections::BTreeSet<String>>,
@@ -909,6 +927,8 @@ impl McpServer {
                 checked_at: None,
             }),
             pending_notifications: std::sync::Mutex::new(Vec::new()),
+            client_roots: AtomicBool::new(false),
+            client_requests: Arc::default(),
             revealed_areas: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             scope_prefix,
             shutdown_done: AtomicBool::new(false),
@@ -1205,7 +1225,63 @@ impl McpServer {
         } else {
             ServedProjects::None {
                 registered: &self.registered_projects,
+                client_roots: self.client_roots.load(Ordering::Relaxed),
             }
+        }
+    }
+
+    /// [`no_default_project_message`] for this server and client.
+    fn no_default_project_message(&self) -> String {
+        no_default_project_message(
+            &self.registered_projects,
+            self.client_roots.load(Ordering::Relaxed),
+        )
+    }
+
+    /// The project a call without `graph_root` answers from on a server with
+    /// no default project: the indexed project that contains the calling
+    /// client's roots, requested now because behind an MCP proxy each call
+    /// may come from a different client.
+    ///
+    /// `Ok(None)` when the client cannot be asked (no `roots` capability, no
+    /// answer in time, or an error), which leaves the call to the #606
+    /// refusal. `Err` explains a refusal: the roots lie in no indexed project
+    /// or in several.
+    async fn project_from_client_roots(&self) -> std::result::Result<Option<PathBuf>, String> {
+        if !self.client_roots.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let Some(roots) = self.client_requests.roots().await else {
+            return Ok(None);
+        };
+        let projects = super::roots::projects_for_roots(&roots);
+        crate::debug_log::event(
+            crate::debug_log::Level::Debug,
+            "mcp",
+            "client_roots",
+            || json!({ "roots": roots.len(), "projects": projects.len() }),
+        );
+        match projects.as_slice() {
+            [project] => Ok(Some(project.clone())),
+            [] if roots.is_empty() => Err(format!(
+                "The client reported no roots (behind an MCP proxy this also happens when it \
+                 cannot tell which client made the call). {}",
+                self.no_default_project_message()
+            )),
+            [] => Err(format!(
+                "None of the client's roots lies in an indexed project: {}. {}",
+                roots.join(", "),
+                self.no_default_project_message()
+            )),
+            several => Err(format!(
+                "The client's roots lie in several indexed projects: {}. Pass graph_root with \
+                 the one to query.",
+                several
+                    .iter()
+                    .map(|project| project.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
         }
     }
 
@@ -1233,12 +1309,14 @@ impl McpServer {
 
     /// The `tokensave_status` answer of a server with no default project
     /// (#606): that there is none, the registered projects `graph_root` can
-    /// select, how to proceed, and the server's own counters.
-    async fn no_default_project_status(&self) -> Value {
+    /// select, how to proceed, and the server's own counters. `hint`
+    /// replaces the default advice, e.g. with why the client's roots chose
+    /// no project.
+    async fn no_default_project_status(&self, hint: Option<String>) -> Value {
         let status = json!({
             "default_project": Value::Null,
             "registered_projects": self.registered_projects,
-            "hint": no_default_project_message(&self.registered_projects),
+            "hint": hint.unwrap_or_else(|| self.no_default_project_message()),
             "version": env!("CARGO_PKG_VERSION"),
             "server": self.server_stats_json().await,
         });
@@ -1253,7 +1331,7 @@ impl McpServer {
         JsonRpcResponse::error(
             id,
             ErrorCode::InvalidRequest,
-            no_default_project_message(&self.registered_projects),
+            self.no_default_project_message(),
         )
     }
 
@@ -2263,7 +2341,7 @@ impl McpServer {
     pub async fn run_with_halves(
         self: &Arc<Self>,
         mut reader: impl super::transport::McpReader + 'static,
-        mut writer: impl super::transport::McpWriter + 'static,
+        writer: impl super::transport::McpWriter + 'static,
         idle_timeout: Option<std::time::Duration>,
     ) -> Result<()> {
         let already_started = self.run_started.swap(true, Ordering::Relaxed);
@@ -2302,9 +2380,33 @@ impl McpServer {
         // cancellation-safe — a half-read line would be lost if the future
         // were dropped — so it must never be polled from a `select!`.
         let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel();
+        // The client's answer to a request of this server (`roots/list`) is
+        // handed to the waiting call here rather than queued for the loop,
+        // which may be stuck behind that call: running it inline, or waiting
+        // for a concurrency permit that the waiting calls hold.
+        let client_requests = Arc::clone(&self.client_requests);
         let reader_task = tokio::spawn(async move {
             while let Ok(Some(line)) = reader.read_line().await {
+                if client_requests.deliver(&line) {
+                    continue;
+                }
                 if line_tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Shared with the task that writes this server's requests to the
+        // client, for the same reason: the loop cannot write them while it is
+        // stuck behind the call that sends them.
+        let writer = Arc::new(tokio::sync::Mutex::new(writer));
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        self.client_requests.connect(request_tx);
+        let request_writer = Arc::clone(&writer);
+        let request_task = tokio::spawn(async move {
+            while let Some(line) = request_rx.recv().await {
+                let mut writer = request_writer.lock().await;
+                if writer.write_line(&line).await.is_err() || writer.flush().await.is_err() {
                     break;
                 }
             }
@@ -2361,7 +2463,8 @@ impl McpServer {
                         response = response_rx.recv() => {
                             match response {
                                 Some(response) => {
-                                    if !self.write_response(&mut writer, response).await {
+                                    let mut writer = writer.lock().await;
+                                    if !self.write_response(&mut *writer, response).await {
                                         break 'serve;
                                     }
                                 }
@@ -2413,7 +2516,8 @@ impl McpServer {
                         response = response_rx.recv() => {
                             match response {
                                 Some(response) => {
-                                    if !self.write_response(&mut writer, response).await {
+                                    let mut writer = writer.lock().await;
+                                    if !self.write_response(&mut *writer, response).await {
                                         break 'serve;
                                     }
                                 }
@@ -2445,13 +2549,19 @@ impl McpServer {
 
             let request = match parsed {
                 Ok(request) => request,
+                // A late answer to a request of this server, whose call
+                // stopped waiting: not a request, so it gets no reply.
+                Err(_) if super::roots::is_response(&line) => continue,
                 Err(e) => {
                     let response = JsonRpcResponse::error(
                         Value::Null,
                         ErrorCode::ParseError,
                         format!("failed to parse JSON-RPC request: {e}"),
                     );
-                    if !self.write_response(&mut writer, response).await {
+                    if !self
+                        .write_response(&mut *writer.lock().await, response)
+                        .await
+                    {
                         break 'serve;
                     }
                     continue;
@@ -2490,7 +2600,7 @@ impl McpServer {
 
             // Write response (if any) as a single line to stdout
             if let Some(resp) = response {
-                if !self.write_response(&mut writer, resp).await {
+                if !self.write_response(&mut *writer.lock().await, resp).await {
                     break 'serve;
                 }
             }
@@ -2499,6 +2609,8 @@ impl McpServer {
         // The reader is parked on the transport and will never return; the
         // loop is over, so it must not outlive it.
         reader_task.abort();
+        self.client_requests.disconnect();
+        request_task.abort();
         // Requests still running are given a moment to finish: they hold the
         // database, and the shutdown checkpoints it. A request that does not
         // finish in time is dropped rather than holding the exit open.
@@ -2704,14 +2816,22 @@ impl McpServer {
         let id = request.id.clone();
 
         let result = match request.method.as_str() {
-            "initialize" => Some(Self::handle_initialize(
-                id,
-                request.params.as_ref(),
-                self.report_savings(),
-                self.served_projects(),
-                self.toolset(),
-                crate::caveman::cooperation_enabled(self.served_root()),
-            )),
+            "initialize" => {
+                let client_roots = request
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.pointer("/capabilities/roots"))
+                    .is_some_and(Value::is_object);
+                self.client_roots.store(client_roots, Ordering::Relaxed);
+                Some(Self::handle_initialize(
+                    id,
+                    request.params.as_ref(),
+                    self.report_savings(),
+                    self.served_projects(),
+                    self.toolset(),
+                    crate::caveman::cooperation_enabled(self.served_root()),
+                ))
+            }
             "initialized" | "notifications/initialized" | "notifications/roots/list_changed" => {
                 // Known notifications - no response required
                 None
@@ -2813,9 +2933,12 @@ impl McpServer {
             // #606: without a default project every graph call needs
             // `graph_root`, so the session must learn that, and the choices,
             // before its first call is refused.
-            ServedProjects::None { registered } => {
+            ServedProjects::None {
+                registered,
+                client_roots,
+            } => {
                 instructions.push(' ');
-                instructions.push_str(&no_default_project_message(registered));
+                instructions.push_str(&no_default_project_message(registered, client_roots));
             }
         }
 
@@ -3307,6 +3430,27 @@ impl McpServer {
             None
         };
 
+        // A server with no default project answers a call without
+        // `graph_root` from the project that contains the calling client's
+        // roots, as if that call had named it. An explicit `graph_root`
+        // always wins, and a default project is never second-guessed.
+        let mut roots_refusal = None;
+        let selection = match selection {
+            None if self.cg.is_none() && self.graph_scoped_tools.contains(tool_name) => {
+                match self.project_from_client_roots().await {
+                    Ok(root) => root.map(|root| GraphSelection {
+                        roots: vec![root],
+                        branch: None,
+                    }),
+                    Err(reason) => {
+                        roots_refusal = Some(reason);
+                        None
+                    }
+                }
+            }
+            selection => selection,
+        };
+
         // Federation (#376). Handled before the single-graph pipeline because
         // it runs that pipeline once per root and merges. Selected calls are
         // already outside savings accounting (#363), so an early return here
@@ -3429,7 +3573,13 @@ impl McpServer {
             // that state instead of refusing.
             if self.cg.is_none() {
                 if tool_name == "tokensave_status" {
-                    return JsonRpcResponse::success(id, self.no_default_project_status().await);
+                    return JsonRpcResponse::success(
+                        id,
+                        self.no_default_project_status(roots_refusal).await,
+                    );
+                }
+                if let Some(reason) = roots_refusal {
+                    return JsonRpcResponse::error(id, ErrorCode::InvalidRequest, reason);
                 }
                 return self.no_default_project_error(id);
             }
