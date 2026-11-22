@@ -48,7 +48,7 @@ pub enum Commands {
         #[arg(long, default_value_t = 5000)]
         max_edges: usize,
     },
-    /// Validate or export Open Knowledge Format (OKF v0.2) bundles
+    /// Validate, export and import Open Knowledge Format (OKF v0.3) bundles
     Okf {
         #[command(subcommand)]
         action: OkfAction,
@@ -700,7 +700,7 @@ mod tests {
 
 #[derive(Subcommand)]
 pub enum OkfAction {
-    /// Check a bundle against the OKF v0.2 conformance rules
+    /// Check a bundle against the OKF v0.3 conformance rules
     ///
     /// Exits 0 when the bundle is conformant, 1 when it is not (or, with
     /// `--strict`, when there are warnings). Reads only the bundle.

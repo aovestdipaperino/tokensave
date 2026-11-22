@@ -1,11 +1,12 @@
-//! Export of the indexed code graph as an OKF v0.2 bundle.
+//! Export of the indexed code graph as an OKF v0.3 bundle.
 //!
 //! Each indexed source file becomes one concept (`type: Source File`) under
 //! `files/`, mirroring the repository layout. Its body lists the file's
 //! symbols and links to the files it depends on and that depend on it,
 //! aggregated from cross-file graph edges. TokenSave-specific metadata uses
-//! `tokensave_`-prefixed frontmatter keys, which OKF consumers preserve or
-//! ignore (§4.1). A `tokensave-export.md` concept records provenance.
+//! `x-tokensave-` extension keys, the namespace OKF reserves for producers
+//! (§4.1). A `tokensave-export.md` concept records provenance, and the
+//! bundle-root `index.md` carries the bundle metadata (§8.1).
 //!
 //! The export reads the index read-only, never syncs or migrates it, and
 //! writes the bundle to a new directory: an existing output path is
@@ -525,12 +526,12 @@ fn write_file_concept(
         ("description", json!(description)),
         ("tags", json!(["tokensave/source-file"])),
         ("generated", generated.clone()),
-        ("tokensave_path", json!(file.path)),
-        ("tokensave_content_hash", json!(file.content_hash)),
-        ("tokensave_size", json!(file.size)),
-        ("tokensave_node_count", json!(file.node_count)),
+        ("x-tokensave-path", json!(file.path)),
+        ("x-tokensave-content-hash", json!(file.content_hash)),
+        ("x-tokensave-size", json!(file.size)),
+        ("x-tokensave-node-count", json!(file.node_count)),
         (
-            "tokensave_symbols_truncated",
+            "x-tokensave-symbols-truncated",
             if truncated { json!(true) } else { Value::Null },
         ),
     ]);
@@ -591,13 +592,16 @@ fn write_export_concept(
         ),
         ("tags", json!(["tokensave/export"])),
         ("generated", generated.clone()),
-        ("tokensave_schema_version", json!(schema_version)),
-        ("tokensave_branch", json!(branch)),
-        ("tokensave_commit", json!(commit)),
-        ("tokensave_files", json!(summary.files)),
-        ("tokensave_symbols", json!(summary.symbols)),
-        ("tokensave_file_links", json!(summary.links)),
-        ("tokensave_truncated_files", json!(summary.truncated_files)),
+        ("x-tokensave-schema-version", json!(schema_version)),
+        ("x-tokensave-branch", json!(branch)),
+        ("x-tokensave-commit", json!(commit)),
+        ("x-tokensave-files", json!(summary.files)),
+        ("x-tokensave-symbols", json!(summary.symbols)),
+        ("x-tokensave-file-links", json!(summary.links)),
+        (
+            "x-tokensave-truncated-files",
+            json!(summary.truncated_files),
+        ),
     ]);
     let _ = write!(
         text,
@@ -608,7 +612,7 @@ fn write_export_concept(
          # Scope\n\n\
          * Symbols listed per file: at most {max_symbols}.\n\
          * Omitted: source bodies, signatures, docstrings, metrics and unresolved references.\n\
-         * Frontmatter keys starting with `tokensave_` are TokenSave extensions (OKF §4.1).\n",
+         * Frontmatter keys starting with `x-tokensave-` are TokenSave extensions (OKF §4.1).\n",
         files = summary.files,
         max_symbols = options.max_symbols_per_file,
     );
@@ -658,8 +662,21 @@ fn write_indexes(writer: &mut BundleWriter<'_>, files: &[FileRow]) -> Result<()>
         }
         writer.write(&format!("{dir}/index.md"), &text)?;
     }
-    let root = format!(
-        "---\nokf_version: \"{SPEC_VERSION}\"\n---\n\n# TokenSave code index\n\n\
+    let mut root = frontmatter(&[
+        ("okf_version", json!(SPEC_VERSION)),
+        ("title", json!("TokenSave code index")),
+        (
+            "description",
+            json!(
+                "Source files of a code repository with their symbols and file dependencies, \
+                 exported from a TokenSave index. Use it to find where code lives and what \
+                 depends on it."
+            ),
+        ),
+    ]);
+    let _ = write!(
+        root,
+        "\n# TokenSave code index\n\n\
          * [TokenSave index export](tokensave-export.md) - How this bundle was produced.\n\
          * [files/]({FILES_DIR}/index.md) - {} indexed source files, mirroring the repository \
          layout.\n",

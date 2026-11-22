@@ -1,7 +1,8 @@
-//! `tokensave okf` subcommands (#858).
+//! `tokensave okf` subcommands (#858, #1060).
 
 use std::fmt::Write as _;
 
+use tokensave::okf::consumer::ReadMode;
 use tokensave::okf::store;
 use tokensave::okf::store::ImportOptions;
 use tokensave::okf::store::ImportOutcome;
@@ -138,7 +139,7 @@ fn render_import(outcome: &ImportOutcome) -> String {
         r.bytes,
         if r.unreadable_concepts > 0 {
             format!(
-                "; {} concept files without a readable `type` are not searchable",
+                "; {} markdown files without a `type` are not concepts and are not searchable",
                 r.unreadable_concepts
             )
         } else {
@@ -185,11 +186,16 @@ fn render(report: &Report, verbose: bool) -> String {
     } else {
         "NOT conformant"
     };
-    let declared = report
-        .declared_version
-        .as_deref()
-        .map(|v| format!(", declares okf_version {v}"))
-        .unwrap_or_default();
+    let declared = match (report.declared_version.as_deref(), report.read_mode) {
+        (Some(v), ReadMode::Current) => format!(", declares okf_version {v}"),
+        (Some(v), ReadMode::Legacy) => {
+            format!(", declares okf_version {v} (read with v0.2 fallbacks)")
+        }
+        (Some(v), ReadMode::BestEffort) => {
+            format!(", declares okf_version {v} (unknown; read best-effort)")
+        }
+        (None, _) => ", no okf_version (read with v0.2 fallbacks)".to_string(),
+    };
     let _ = writeln!(
         out,
         "OKF v{}: {verdict} — {} concepts, {} index and {} log files{declared}; {} errors, {} \
