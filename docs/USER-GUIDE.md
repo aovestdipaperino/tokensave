@@ -231,6 +231,8 @@ That rules file is rewritten on install and on upgrade so improvements to the ru
 
 By default the tool grant is an explicit list (one `permissions.allow` entry per tool). Pass `--wildcard-permissions` to grant them via a single compact `mcp__tokensave__*` entry instead — both forms are fully honored by Claude Code, so this is purely a preference. The choice is remembered in `~/.tokensave/config.toml` (`wildcard_permissions`) for global installs; pass `--explicit-permissions` to switch back.
 
+The grant covers every tokensave tool, including the ones that edit files. To decide tool approvals yourself, set `manage_permissions = false` in `~/.tokensave/config.toml`: install, reinstall, the upgrade resync and uninstall then leave the approval settings of every agent alone, and `doctor` reports them as user-managed. `TOKENSAVE_MANAGE_PERMISSIONS=0` does the same for one run.
+
 ### Other agents
 
 Tokensave supports many agents. Pass `--agent` to install for a specific one:
@@ -1866,6 +1868,7 @@ watcher_debounce = "2s"      # quiet period for the opt-in watcher; unused while
 extraction_timeout_secs = 60 # per-file extraction timeout
 wildcard_permissions = false # true = grant Claude Code tools via one "mcp__tokensave__*" entry
 manage_rules = true          # false = leave ~/.claude/rules/tokensave.md and other rules files to you
+manage_permissions = true    # false = leave every agent's tool approvals to you
 auto_init = true             # false = never initialize a new git repository unasked (TOKENSAVE_AUTO_INIT overrides)
 ```
 

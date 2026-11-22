@@ -123,6 +123,15 @@ Run `tokensave sync` to bring a stale file up to date.
 
 See [Automatic initialization](INDEXING.md#automatic-initialization) for the guards that apply.
 
+## Settings for tool approvals
+
+| Setting | Where | Effect |
+|---|---|---|
+| `manage_permissions` | `~/.tokensave/config.toml` | `true` (default): `install`, `reinstall` and the upgrade resync pre-approve every tokensave tool in each agent that supports it, and `uninstall` removes the approval. `false`: tokensave leaves every agent's tool approvals alone and `doctor` reports them as user-managed. |
+| `TOKENSAVE_MANAGE_PERMISSIONS` | environment | Overrides `manage_permissions` for one run. `0`, `false`, `no`, `off` or empty turn it off; any other value turns it on. |
+
+See [Tool approvals](AGENT-INTEGRATIONS.md#tool-approvals) for what each agent gets.
+
 ## Settings for Caveman cooperation
 
 | Setting | Where | Effect |

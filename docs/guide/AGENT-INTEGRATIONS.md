@@ -54,6 +54,23 @@ Global OMP installs target the profile reported by bare `omp config path`, writi
 
 All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered global git post-commit and post-checkout hooks. `tokensave uninstall` removes those hooks along with the agent integrations; pass `--keep-git-hooks` to leave them, or manage them on their own with `tokensave githooks`.
 
+## Tool approvals
+
+Where an agent supports it, install also pre-approves the tokensave tools so the agent does not ask before each call:
+
+| Agent | Approval setting tokensave writes |
+|---|---|
+| Claude Code | `permissions.allow` in `settings.json` (one entry per tool, or `mcp__tokensave__*` with `--wildcard-permissions`) |
+| Codex CLI | `approval_mode = "auto"` for each tool in `~/.codex/config.toml` |
+| Gemini CLI, Qwen Code | `"trust": true` on the tokensave MCP server entry |
+| Kiro | `allowedTools` in the tokensave-managed Kiro agent |
+
+The approval covers every tokensave tool, including the tools that change source files or local state, such as `tokensave_str_replace`, `tokensave_rename` and `tokensave_record_decision`. Reinstall and the upgrade resync extend it to tools that a new release adds.
+
+To decide approvals yourself, set `manage_permissions = false` in `~/.tokensave/config.toml`. Install, reinstall, the upgrade resync and uninstall then leave every approval setting above as they find it: no grant is added, extended or removed. A new install approves nothing, so the agent asks before each tokensave tool call until you approve tools in its own settings. The post-upgrade warning about tools not yet permitted stops, and `doctor` reports approvals as user-managed. The MCP server, hooks and rules files are still managed as before. `TOKENSAVE_MANAGE_PERMISSIONS=0` does the same for one run.
+
+For Codex CLI and Gemini CLI/Qwen Code the approval sits inside the tokensave MCP server entry, so uninstall still removes it together with that entry.
+
 ## Installing for several agents at once
 
 Repeat `--agent` to install several agents in a single run. The permission grant, git-hook offer, and global config write each happen once, no matter how many agents you list:

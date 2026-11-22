@@ -425,7 +425,7 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - `src/resolution/` — cross-file reference resolution (resolver, touched-set tracking, variants).
 - `src/graph/` — higher-level algorithms: traversal, queries, SCC/cycles, imports, health.
 - `src/context/` — AI-ready context assembly (builder, formatter, ranking, read modes).
-- `src/mcp/` — stdio JSON-RPC server, tool definitions, handlers, transport.
+- `src/mcp/` — stdio JSON-RPC server, tool definitions, handlers, transport. `src/mcp/roots.rs`: with no default project, a call without `graph_root` sends `roots/list` to the client during the call and answers from the project containing its roots (for MCP proxies; never cached, never sent outside a call).
 - `src/agents/` — agent integrations (Claude, Codex, Cursor, etc.) and git hooks.
 - `src/okf/` — Open Knowledge Format v0.3 (#858, #1060; earlier versions read with the §12.1 fallbacks): bounded bundle reader, conformance validator, shared consumer rules (`consumer.rs`: version read modes, bundle metadata, lifecycle, attestation; `trust.rs`: trust tiers, freshness), read-only index export, and import into project state (`okf/<name>/`, no schema change) searched by the `tokensave_knowledge` MCP tool (`tokensave okf validate|export|import|list|remove`); official sample bundles per OKF version in `tests/fixtures/okf/official/v0.2/` and `v0.3/`, a reconstructed Graphify bundle in `tests/fixtures/okf/graphify/`; see `docs/guide/OKF.md`.
 - `src/caveman.rs` — opt-in, read-only Caveman discovery and the extra MCP `initialize` paragraph (#797); see `docs/CAVEMAN-COMPATIBILITY.md`.
@@ -462,6 +462,7 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - `TOKENSAVE_HOOK_DEBUG` — makes the `post-checkout` hook and `branch add --if-enabled` explain skipped actions on stderr and in `.tokensave/hook-debug.log` (initialized projects only; restarts at 256 KiB). Off by default so hooks stay quiet.
 - `TOKENSAVE_CAVEMAN_COMPATIBILITY` — per-run override of the user-level `caveman_compatibility` setting (default off; same parsing as `TOKENSAVE_AUTO_TRACK`).
 - `TOKENSAVE_AUTO_INIT` — per-run override of the user-level `auto_init` setting in `~/.tokensave/config.toml` (same parsing as `TOKENSAVE_AUTO_TRACK`).
+- `TOKENSAVE_MANAGE_PERMISSIONS` — per-run override of the user-level `manage_permissions` setting (#1067; same parsing). When off, every agent integration leaves its tool approvals (Claude `permissions.allow`, Codex `approval_mode`, Gemini/Qwen `trust`, Kiro `allowedTools`) alone; check `crate::agents::permissions_management_enabled` before writing or removing one.
 - `TOKENSAVE_STATE_DIR` — base directory for project state (#919), overriding `state_dir` in `~/.tokensave/config.toml`; empty selects the in-repo `.tokensave/` default. Resolution lives in `src/state_dir.rs` behind `config::get_tokensave_dir`; home-directory (global) state must use `config::get_global_tokensave_dir`, which is never relocated. `.cargo/config.toml` sets it empty (`force = false`) so tests ignore a developer's `state_dir`.
 - Bench vars: `TOKENSAVE_BENCH_REPOS_DIR` (required), `TOKENSAVE_BENCH_REPOS`, `TOKENSAVE_BENCH_SKIP_CLONE`; probe: `TOKENSAVE_PROBE_REPOS`.
 

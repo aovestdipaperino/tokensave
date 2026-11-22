@@ -9,6 +9,9 @@ pub(crate) mod graph_scope;
 /// Opt-in filesystem watcher for `serve` (#937).
 pub mod fs_watch;
 
+/// Choosing a project from the MCP client's roots.
+pub mod roots;
+
 /// MCP server implementation.
 pub mod server;
 
