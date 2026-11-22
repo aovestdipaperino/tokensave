@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+
+- **The PreToolUse hook no longer blocks non-code agents on generic wording (Refs #1078).** An untyped Agent prompt containing "explore", "read every", "full contents" or "architecture and structure" is now redirected only when it also names code (for example "source", "src", "repo", "function" or "module"). A prompt such as "Read every listed file in the list below" for OCR text now passes. Code-specific phrases such as "call graph" or "callers of" still redirect on their own. Reported by @dangeReis.
+
 ### Changed
 
 - **Open Knowledge Format v0.3 (Refs #1060).** `tokensave okf validate`, `okf import`, `okf export` and the `tokensave_knowledge` MCP tool now implement OKF v0.3 and read older bundles with the v0.2 fallbacks of §12.1, chosen from the declared `okf_version`. Path fields without a leading `/` resolve from the file's directory, with the bundle-root reading kept only for bundles that declare 0.2 or earlier, or no version. Markdown files without `type` are no longer concepts and are now warnings instead of errors (`OKF-W117`, `OKF-W118` replace `OKF-E001`, `OKF-E003`). The bundle-root `index.md` may carry `title`, `description`, `license` and extension keys. A `log.md` with frontmatter is an error in v0.3 bundles. Date-only timestamps are valid. Hidden files are not part of a bundle and are not imported. New checks cover actors, `superseded_by` targets and cycles, custom YAML tags and v0.2-style paths in v0.3 bundles. Exports declare `okf_version: "0.3"` with a bundle title and description, and write `x-tokensave-` extension keys instead of `tokensave_` keys; bundles from earlier exports still map to project files. `tokensave_knowledge` reports each concept's status, trust tier from current verifications only, freshness, replacement and attestability, treats path fields that resolve to a concept as graph edges, and adds a `current_only` filter. The official v0.3 sample bundles are vendored next to the v0.2 ones, and the v0.2 set is kept as a regression suite. See `docs/guide/OKF.md`.
