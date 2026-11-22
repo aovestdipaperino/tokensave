@@ -49,7 +49,7 @@ tokensave files [--filter dir] [--pattern glob] [--json]   # List indexed files
 tokensave affected <files...> [--stdin] [--depth N]        # Find affected test files
 tokensave install [--agent NAME]   # Configure agent integration
 tokensave reinstall                # Refresh settings for all installed agents
-tokensave uninstall [--agent NAME] # Remove agent integration
+tokensave uninstall [--agent NAME] [--local] [--keep-git-hooks] [--dry-run] [--verbose | --quiet]
 tokensave purge [--dry-run] [--yes] [--local | --project PATH | --all-projects] [--include-history]   # Uninstall, then delete tokensave's settings, caches and indexes
 tokensave serve [--idle-timeout-secs N] [--watch]   # Start MCP server (N: exit after N idle seconds; --watch: opt-in filesystem watcher)
 tokensave servers [--json]         # List running servers and the index each one holds

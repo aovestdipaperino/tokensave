@@ -68,6 +68,21 @@ impl AgentIntegration for QwenIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let qwen_dir = ctx.base_dir().join(".qwen");
+        let settings_path = qwen_dir.join("settings.json");
+
+        plan.mcp(&settings_path, &["mcpServers"], false);
+
+        let qwen_md = qwen_dir.join("QWEN.md");
+        plan.rules(&qwen_md, crate::agents::rules::LEGACY_RULES_MARKER, &[]);
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mQwen Code integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home, permissions_management_enabled(&ctx.home));

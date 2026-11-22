@@ -85,6 +85,18 @@ impl AgentIntegration for ClineIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let settings_path = cline_ext_dir(&ctx.home)
+            .join("settings")
+            .join("cline_mcp_settings.json");
+        plan.mcp(&settings_path, &["mcpServers"], false);
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mCline integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home);

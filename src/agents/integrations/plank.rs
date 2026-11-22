@@ -140,6 +140,16 @@ impl AgentIntegration for PlankIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let mcp_path = plank_config_path(ctx);
+        plan.mcp(&mcp_path, &["mcpServers"], false);
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mPlank integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home);

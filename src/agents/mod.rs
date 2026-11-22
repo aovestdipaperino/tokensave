@@ -150,6 +150,7 @@ pub mod integrations;
 pub mod registry;
 pub mod rules;
 pub mod traits;
+pub mod uninstall;
 
 use std::path::{Path, PathBuf};
 

@@ -17,6 +17,21 @@ pub fn load_json_file(path: &Path) -> serde_json::Value {
     }
 }
 
+pub(crate) fn parse_config_json(contents: &str, jsonc: bool) -> Result<serde_json::Value, String> {
+    let parsed = if jsonc {
+        serde_json::from_str(&remove_trailing_commas(&strip_jsonc_comments(contents)))
+    } else {
+        serde_json::from_str(contents)
+    };
+    parsed.map_err(|error| {
+        format!(
+            "invalid JSON at line {}, column {}; correct its syntax and retry",
+            error.line(),
+            error.column()
+        )
+    })
+}
+
 /// Load a JSON file for **editing**. Unlike [`load_json_file`], this returns
 /// an error if the file exists but cannot be parsed, preventing silent data
 /// loss when the modified value is written back.

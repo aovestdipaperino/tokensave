@@ -146,7 +146,7 @@ tokensave purge --all-projects --include-history   # ...and the token-savings hi
 - Project source files and repositories. Only the state directory tokensave creates (`.tokensave/`, or `<base>/projects/<id>` when [state is relocated](INDEXING.md#keeping-state-outside-the-repository)) is removed, and only when it holds a tokensave index.
 - Files it does not recognize. A file in `~/.tokensave` that tokensave does not create is listed as skipped and left in place.
 - Anything behind a symbolic link or junction. Purge does not follow them, and it checks each path again just before deleting it.
-- Other tools' settings in shared agent config files and git hooks tokensave did not write. Integration cleanup uses the same code as `uninstall`, which removes only tokensave's own entries and hook sections.
+- Other tools' settings in shared agent config files and git hooks tokensave did not write. Integration cleanup is scoped to tokensave entries and hook sections.
 - The beta channel's state, from a stable build, and the reverse. Settings in `~/.tokensave` are shared by both channels, so only a stable build deletes them.
 - The `tokensave` executable.
 
@@ -154,7 +154,12 @@ Deleting `config.toml` returns every setting to its default, including an opt-ou
 
 **Failures.** Purge reports each path it deleted, found already gone, or could not delete, and exits with status 1 if anything failed. On Windows a running MCP server keeps its database open, so close the agents that use tokensave (`tokensave servers` lists them) and run the same command again; it acts only on what is left. A refused or aborted run exits with status 2 and changes nothing.
 
-**Removing the executable.** Both `uninstall` and `purge` end by saying where the running executable is. They name the command that removes it only when the installer is certain: a Homebrew keg (`brew uninstall tokensave`), a Scoop app with its manifest (`scoop uninstall tokensave`), or a binary in Cargo's `bin` directory that Cargo's install manifest lists (`cargo uninstall tokensave`, which also covers `cargo binstall`). Otherwise, for example for a release archive or a copied binary, they ask you to remove it with the tool you used. `tokensave --version --verbose` shows the detected method as `install-method:`. Detection looks at the running executable each time and records nothing, so a copied or reinstalled binary is never reported with an outdated method.
+**Previewing integration cleanup.** Run `tokensave uninstall --dry-run` to list the files and operations in the selected scope. Add `--agent NAME` to target one integration or `--local` to target the current directory. Global Git hooks are included only when uninstalling all global integrations. Pass `--keep-git-hooks` to keep them. The command reports removed content, missing files, skipped files and failures. `--verbose` adds paths to routine progress, and `--quiet` keeps errors and the executable removal reminder. After a failure, resolve the reported problem and run the command again. It exits with status 1 when any requested cleanup fails.
+
+**Removing the executable.** Both `uninstall` and `purge` end by saying where the running executable is. They name the removal command when installer records match the running binary. Homebrew detection requires the TokenSave tap's keg receipt, Scoop detection requires a matching app manifest, and Cargo detection uses its installed-package manifest. For unknown installs, use your original installer or remove the executable if you copied it yourself.
+
+A successful global `tokensave install` records verified provenance in `~/.tokensave/installation.json` when available. Schema version 1 stores the method, canonical executable path, file length and modification timestamp. `tokensave --version --verbose` reports the current method and evidence. An outdated record or an unrecognized schema can be replaced by rerunning `tokensave install` after a verified reinstall. With no matching record, detection falls back to current installer receipts.
+
 
 ## Building from source
 

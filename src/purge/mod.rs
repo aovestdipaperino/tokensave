@@ -35,10 +35,9 @@ use std::path::{Path, PathBuf};
 
 use constants::{
     ATOMIC_TMP_INFIX, BENCHMARK_FILENAME, BETA_DIRNAME, GLOBAL_DB_FILENAME, GLOBAL_DB_SIDECARS,
-    INSTALLED_AGENTS_KEY, LOCKED_SETTINGS, LOCK_SUFFIX, MAX_SIZE_DEPTH, MEMORY_MMAP_FILENAME,
-    MONITOR_MMAP_FILENAME, PRICING_FILENAME, PROFILE_DIRNAME, PROJECT_OWNERSHIP_MARKERS,
-    SERVERS_DIRNAME, SIZE_STEP, SIZE_UNITS, STATE_BASES_FILENAME, STATE_FILENAME,
-    USER_CONFIG_FILENAME, WINDOWS_FILE_IN_USE,
+    LOCKED_SETTINGS, LOCK_SUFFIX, MAX_SIZE_DEPTH, MEMORY_MMAP_FILENAME, MONITOR_MMAP_FILENAME,
+    PRICING_FILENAME, PROFILE_DIRNAME, PROJECT_OWNERSHIP_MARKERS, SERVERS_DIRNAME, SIZE_STEP,
+    SIZE_UNITS, STATE_BASES_FILENAME, STATE_FILENAME, USER_CONFIG_FILENAME, WINDOWS_FILE_IN_USE,
 };
 
 /// What kind of data a planned removal holds.
@@ -304,6 +303,12 @@ fn classify_global_entry(name: &str, beta: bool) -> Option<(Category, &'static s
         return None;
     }
     match name {
+        provenance::INSTALLATION_RECORD => {
+            return Some((
+                Category::Settings,
+                "verified executable installation record",
+            ))
+        }
         USER_CONFIG_FILENAME => return Some((Category::Settings, "tokensave's user settings")),
         STATE_FILENAME => return Some((Category::Settings, "tokensave's machine-local state")),
         STATE_BASES_FILENAME => {
@@ -634,26 +639,5 @@ pub fn human_size(bytes: u64) -> String {
 /// whose config still carries tokensave. Read-only, unlike
 /// [`crate::agents::migrate_installed_agents`], so a dry run writes nothing.
 pub fn agents_to_clean(home: &Path) -> Vec<String> {
-    let mut agents: Vec<String> = fs::read_to_string(
-        home.join(crate::config::TOKENSAVE_DIR)
-            .join(USER_CONFIG_FILENAME),
-    )
-    .ok()
-    .and_then(|text| text.parse::<toml::Table>().ok())
-    .and_then(|table| {
-        table
-            .get(INSTALLED_AGENTS_KEY)
-            .and_then(|v| v.as_array())
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(|id| id.as_str().map(str::to_string))
-                    .collect()
-            })
-    })
-    .unwrap_or_default();
-    let mut seen = std::collections::HashSet::new();
-    agents.retain(|id| crate::agents::get_integration(id).is_ok() && seen.insert(id.clone()));
-    let missing = crate::agents::detect_missing_installed_agents(home, &agents);
-    agents.extend(missing);
-    agents
+    crate::agents::uninstall::registered_agents(home)
 }

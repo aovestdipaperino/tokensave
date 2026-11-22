@@ -973,6 +973,8 @@ pub fn caveman_compatibility_setting() -> bool {
         .is_some_and(|file| file.caveman_compatibility)
 }
 
+pub(crate) const CONFIG_LOCK_FILENAME: &str = "config.toml.lock";
+
 /// Returns the path to the advisory lock guarding `config.toml`'s
 /// read-modify-write span in `save()` (see `merge_config_file`'s doc
 /// comment). A distinct sidecar path rather than locking `config.toml`
@@ -980,7 +982,7 @@ pub fn caveman_compatibility_setting() -> bool {
 /// over it, and holding an OS lock on a file across it being renamed away
 /// out from under the lock is not portable.
 fn config_lock_path() -> Option<PathBuf> {
-    tokensave_dir().map(|d| d.join("config.toml.lock"))
+    tokensave_dir().map(|d| d.join(CONFIG_LOCK_FILENAME))
 }
 
 /// Moves an unparseable `config.toml`/`state.toml` aside rather than leaving

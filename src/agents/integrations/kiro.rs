@@ -149,6 +149,46 @@ impl AgentIntegration for KiroIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let base = kiro_base(ctx);
+        plan.mcp(&mcp_config_path_in(&base), &["mcpServers"], false);
+        plan.rules(
+            &steering_path_in(&base),
+            crate::agents::rules::LEGACY_RULES_MARKER,
+            &[],
+        );
+        let agent_path = managed_agent_path_in(&base);
+        let owned = std::fs::symlink_metadata(&agent_path).is_ok_and(|meta| meta.is_file())
+            && is_owned_agent_file(&agent_path);
+        if owned {
+            plan.json(
+                "Default agent reference",
+                &cli_config_path_in(&base),
+                false,
+                |config| {
+                    let Some(chat) = config
+                        .get_mut("chat")
+                        .and_then(serde_json::Value::as_object_mut)
+                    else {
+                        return false;
+                    };
+                    chat.get("defaultAgent").and_then(serde_json::Value::as_str)
+                        == Some(KIRO_AGENT_NAME)
+                        && chat.remove("defaultAgent").is_some()
+                },
+            );
+        }
+        plan.inspect("Managed agent", &agent_path, |text| {
+            let config = crate::agents::fs::parse_config_json(text, false)?;
+            Ok(is_owned_agent_config(&config).then_some(crate::agents::uninstall::Removal::Delete))
+        });
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mKiro integration\x1b[0m");
         let global_server = doctor_check_mcp_config(dc, &ctx.home);

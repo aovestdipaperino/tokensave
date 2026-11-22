@@ -99,6 +99,28 @@ impl AgentIntegration for DroidIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let mcp_path = droid_mcp_path_for(ctx);
+        plan.mcp(&mcp_path, &["mcpServers"], false);
+
+        let agents_md = droid_agents_md_for(ctx);
+        plan.rules(&agents_md, crate::agents::rules::LEGACY_RULES_MARKER, &[]);
+
+        let settings_path = droid_settings_path_for(ctx);
+        plan.json("Droid hooks", &settings_path, false, |config| {
+            crate::agents::uninstall::remove_grouped_hooks(
+                config,
+                DROID_PRE_TOOL_EVENT,
+                DROID_PRE_TOOL_HOOK,
+            )
+        });
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mFactory Droid integration\x1b[0m");
         doctor_check_config(dc, &ctx.home);

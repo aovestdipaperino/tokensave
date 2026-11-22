@@ -118,6 +118,25 @@ impl AgentIntegration for AntigravityIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let mcp_path = mcp_config_path(&ctx.home);
+        plan.mcp(&mcp_path, &["mcpServers"], false);
+        plan.inspect("CLI plugin", &cli_plugin_path(&ctx.home), |text| {
+            let mut config = crate::agents::fs::parse_config_json(text, false)?;
+            let is_owned = crate::agents::uninstall::remove_mcp(&mut config, &["mcpServers"]);
+            let empty = config.as_object().is_some_and(|object| object.len() == 1)
+                && config["mcpServers"]
+                    .as_object()
+                    .is_some_and(serde_json::Map::is_empty);
+            Ok((is_owned && empty).then_some(crate::agents::uninstall::Removal::Delete))
+        });
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mAntigravity integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home);

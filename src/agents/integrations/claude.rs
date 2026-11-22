@@ -40,6 +40,55 @@ impl AgentIntegration for ClaudeIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let (mcp, dir, prompt) = match &ctx.scope {
+            InstallScope::Global => {
+                let dir = claude_config_dir(&ctx.home);
+                (
+                    claude_json_path(&ctx.home),
+                    dir.clone(),
+                    dir.join("CLAUDE.md"),
+                )
+            }
+            InstallScope::Local { project_path } => (
+                project_path.join(".mcp.json"),
+                project_path.join(".claude"),
+                project_path.join("CLAUDE.md"),
+            ),
+        };
+        plan.mcp(&mcp, &["mcpServers"], false);
+        plan.json(
+            "Claude hooks, permissions and legacy MCP",
+            &dir.join("settings.json"),
+            false,
+            |config| {
+                let mcp = crate::agents::uninstall::remove_mcp(config, &["mcpServers"]);
+                let mut hooks = false;
+                for event in ["PreToolUse", "UserPromptSubmit", "Stop"] {
+                    hooks |= crate::agents::uninstall::remove_grouped_hooks(
+                        config,
+                        event,
+                        expected_hook_subcommand(event),
+                    );
+                }
+                let permissions =
+                    permissions_management_enabled(&ctx.home) && uninstall_permissions(config);
+                mcp || hooks || permissions
+            },
+        );
+        plan.rules(
+            &prompt,
+            "## MANDATORY: No Explore Agents When Tokensave Is Available",
+            &["## When you spawn an Explore agent in a tokensave-enabled project"],
+        );
+        plan.managed_rules(&claude_rules_path(&dir));
+        Ok(())
+    }
+
     fn supports_local(&self) -> bool {
         true
     }
@@ -773,7 +822,6 @@ fn uninstall_permissions(settings: &mut serde_json::Value) -> bool {
     } else {
         settings["permissions"]["allow"] = serde_json::Value::Array(filtered);
     }
-    crate::agent_note!("\x1b[32m✔\x1b[0m Removed tokensave tool permissions");
     true
 }
 

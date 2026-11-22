@@ -106,7 +106,7 @@ pub fn detect_missing_installed_agents(home: &Path, current: &[String]) -> Vec<S
     let mut additions = Vec::new();
     for ag in all_integrations() {
         let id = ag.id().to_string();
-        if ag.has_tokensave(home) && !current.contains(&id) {
+        if !current.contains(&id) && ag.has_tokensave(home) {
             additions.push(id);
         }
     }
@@ -205,8 +205,7 @@ pub enum AgentUninstallOutcome {
 
 /// Runs each agent's own `uninstall` under `scope`, in order.
 ///
-/// This is the one integration-cleanup path shared by `tokensave uninstall`
-/// and `tokensave purge` (#1055). It only touches what each integration's
+/// This compatibility API only touches what each integration's
 /// `uninstall` removes: tokensave's MCP entries, approvals, hooks and rules
 /// files, never the rest of a shared agent config. It does not change the
 /// `installed_agents` registry; the caller decides that.

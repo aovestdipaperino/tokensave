@@ -137,6 +137,8 @@ clap = { version = "4.6", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 toml = "1"
+toml_edit = "0.25"
+jsonc-parser = { version = "0.34.0", features = ["cst", "serde_json"] }
 yaml-rust2 = "0.10"
 ureq = { version = "3", features = ["json", "platform-verifier"] }
 tokio = { version = "1", features = ["full"] }
