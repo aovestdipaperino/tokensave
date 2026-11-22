@@ -258,7 +258,10 @@ pub fn try_acquire_auto_sync_lock(project_root: &Path) -> Result<AutoSyncLockGua
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => {
             return Err(TokenSaveError::AutoSyncLock {
-                message: format!("could not create lockfile: {error}"),
+                message: format!(
+                    "could not create lockfile '{}': {error}",
+                    lock_path.display()
+                ),
             });
         }
     }
@@ -321,7 +324,7 @@ pub fn try_acquire_sync_lock(project_root: &Path) -> Result<SyncLockGuard> {
         }
         Err(e) => {
             return Err(TokenSaveError::SyncLock {
-                message: format!("could not create lockfile: {e}"),
+                message: format!("could not create lockfile '{}': {e}", lock_path.display()),
             });
         }
     }
@@ -428,7 +431,10 @@ fn try_acquire_branch_operation_lock(tokensave_dir: &Path) -> Result<Option<Bran
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => {
             return Err(TokenSaveError::BranchLock {
-                message: format!("could not create branch add lockfile: {e}"),
+                message: format!(
+                    "could not create branch add lockfile '{}': {e}",
+                    lock_path.display()
+                ),
             });
         }
     }
