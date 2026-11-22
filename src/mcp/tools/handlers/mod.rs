@@ -948,9 +948,9 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            90
+            91
         } else {
-            89
+            90
         };
         assert_eq!(tools.len(), expected_total);
 
