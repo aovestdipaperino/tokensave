@@ -2402,29 +2402,17 @@ mod tests {
     }
 
     #[test]
-    fn doctor_passes_with_full_wildcard_grant() {
-        let settings = json!({ "permissions": { "allow": ["mcp__tokensave__*"] } });
-        let mut dc = DoctorCounters::new();
-        doctor_check_permissions(&mut dc, &settings);
-        assert_eq!(
-            dc.issues, 0,
-            "wildcard grant should satisfy all permissions"
-        );
-        assert_eq!(
-            dc.warnings, 0,
-            "wildcard grant must not be reported as a stale leftover"
-        );
-    }
-
-    #[test]
-    fn doctor_passes_with_bare_server_grant() {
-        let settings = json!({ "permissions": { "allow": ["mcp__tokensave"] } });
-        let mut dc = DoctorCounters::new();
-        doctor_check_permissions(&mut dc, &settings);
-        assert_eq!(
-            dc.issues, 0,
-            "bare server grant should satisfy all permissions"
-        );
+    fn doctor_warns_once_for_server_wide_grants() {
+        for grant in ["mcp__tokensave__*", "mcp__tokensave"] {
+            let settings = json!({ "permissions": { "allow": [grant] } });
+            let mut dc = DoctorCounters::new();
+            doctor_check_permissions(&mut dc, &settings);
+            assert_eq!(dc.issues, 0, "{grant} should satisfy all permissions");
+            assert_eq!(
+                dc.warnings, 1,
+                "{grant} should trigger only the server-wide approval warning"
+            );
+        }
     }
 
     #[test]
