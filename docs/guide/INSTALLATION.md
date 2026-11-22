@@ -67,16 +67,19 @@ For builds with isolated beta storage, follow the
 or returning to stable. Existing shared databases are preserved; beta uses a fresh
 index under `.tokensave/beta/`.
 
-## Self-upgrade
+## Upgrading
+
+Run `tokensave upgrade --dry-run` to see the installation evidence and the proposed action. For a managed install, `tokensave upgrade` prints instructions for the original installer. Use Cargo with the original source, features and install root, Homebrew with the TokenSave tap, or Scoop in the original install scope. The command makes no changes to managed binaries or package records.
+
+If you installed a standalone archive from GitHub Releases, run `tokensave upgrade --standalone`. TokenSave verifies the running binary against its published release and checks the replacement archive against the release checksums. Binaries that cannot be verified can be updated manually with their original installer or release channel.
 
 ```bash
-tokensave upgrade                  # upgrade to latest in current channel
-tokensave channel                  # show current channel (stable/beta)
-tokensave channel beta             # switch to beta channel
-tokensave channel stable           # switch back to stable
+tokensave channel                        # show the active channel
+tokensave channel beta --standalone      # switch a verified standalone installation to beta
+tokensave channel stable --standalone    # return a verified standalone installation to stable
 ```
 
-`tokensave upgrade` downloads the correct platform binary from GitHub releases and replaces the running binary in place. Supports stable and beta channels independently.
+Standalone upgrades stay on their current channel. To change channels for a managed installation, use a channel supplied by its installer or install the requested channel separately.
 
 ## Versioning and upgrades
 

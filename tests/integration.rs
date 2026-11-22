@@ -229,6 +229,7 @@ mod ts_phantom_call_edges_test;
 mod types_test;
 mod typescript_extraction_test;
 mod uninstall_test;
+mod upgrade_test;
 mod user_config_test;
 mod user_managed_permissions_test;
 mod user_managed_rules_test;

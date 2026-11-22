@@ -377,14 +377,23 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Download and install the latest version from GitHub
+    /// Show installer-specific update instructions or upgrade a verified standalone release
     Upgrade {
+        /// Verify and upgrade a standalone binary downloaded from GitHub
+        #[arg(long)]
+        standalone: bool,
+        /// Show installer evidence and the proposed action without making changes
+        #[arg(long)]
+        dry_run: bool,
         /// Kill other running tokensave processes without asking
         #[arg(long)]
         kill: bool,
     },
     /// Show or switch the update channel (stable or beta)
     Channel {
+        /// Verify and switch a standalone binary downloaded from GitHub
+        #[arg(long, requires = "channel")]
+        standalone: bool,
         /// Target channel: "stable" or "beta" (omit to show current)
         channel: Option<String>,
     },

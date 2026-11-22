@@ -55,7 +55,7 @@ tokensave serve [--idle-timeout-secs N] [--watch]   # Start MCP server (N: exit 
 tokensave servers [--json]         # List running servers and the index each one holds
 tokensave monitor                  # Live TUI showing MCP calls across all projects
 tokensave memory [--clean]         # Per-instance RSS report for all tokensave processes
-tokensave upgrade                  # Self-update to latest version
+tokensave upgrade [--dry-run] [--standalone] # Show installer guidance or verify and upgrade a standalone binary
 tokensave channel [stable|beta]    # Show or switch update channel
 tokensave doctor [--agent NAME]    # Check installation health
 tokensave doctor --caveman [--session-id ID]  # Also check Caveman compatibility; JSON report on stdout
