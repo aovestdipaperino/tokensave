@@ -302,6 +302,7 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         graph_scoped(def_test_risk()),
         graph_scoped(def_test_coverage()),
         def_dependencies(),
+        def_vuln_reachability(),
         def_session_start(),
         def_session_end(),
         graph_scoped(def_body()),
@@ -430,6 +431,7 @@ pub const TOOL_AREAS: &[(&str, &str, &[&str])] = &[
             "tokensave_inheritance_depth",
             "tokensave_dependency_depth",
             "tokensave_dependencies",
+            "tokensave_vuln_reachability",
         ],
     ),
     (
@@ -2299,6 +2301,15 @@ fn def_annotations() -> ToolDefinition {
             }
         }),
     )
+}
+
+fn def_vuln_reachability() -> ToolDefinition {
+    local_graph_no_selectors(def_rw(
+        "tokensave_vuln_reachability",
+        "Dependency Advisory Reachability",
+        "Review cached dependency advisories and static call evidence. The server can refresh the cache only when its operator has enabled OSV access.",
+        json!({ "type": "object", "properties": {} }),
+    ))
 }
 
 fn def_dependencies() -> ToolDefinition {

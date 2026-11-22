@@ -770,6 +770,15 @@ pub async fn handle_tool_call_with_session(
         "tokensave_test_risk" => health::handle_test_risk(cg, args, scope_prefix).await,
         "tokensave_test_coverage" => health::handle_test_coverage(cg, args).await,
         "tokensave_dependencies" => dependencies::handle_dependencies(cg, args).await,
+        "tokensave_vuln_reachability" => {
+            let online = crate::config::env_bool_override("TOKENSAVE_OSV_ONLINE", false);
+            let mut report = crate::vulnerability::check(cg, online).await?;
+            report.limit_for_mcp();
+            Ok(ToolResult {
+                value: json!({"content": [{"type": "text", "text": serde_json::to_string(&report)?}]}),
+                touched_files: vec![],
+            })
+        }
         "tokensave_session_start" => health::handle_session_start(cg, args, scope_prefix).await,
         "tokensave_session_end" => health::handle_session_end(cg, args, scope_prefix).await,
         "tokensave_blame" => blame::handle_blame(cg, args).await,
@@ -1071,6 +1080,7 @@ mod tests {
             "tokensave_replace_lines",
             "tokensave_rename",
             "tokensave_create_file",
+            "tokensave_vuln_reachability",
         ];
         for tool in &tools {
             let ann = tool

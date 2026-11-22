@@ -27,3 +27,11 @@ export DO_NOT_TRACK=1            # the cross-tool convention; any value but 0, f
 ```
 
 While either is set, tokensave makes no request to the counter (no upload, no total, no country flags) and does not queue the tokens saved meanwhile for a later upload. The variables take precedence over `upload_enabled` in `~/.tokensave/config.toml`, but they only turn telemetry off: `TOKENSAVE_TELEMETRY=on` does not re-enable an upload that `tokensave disable-upload-counter` turned off. `tokensave status` still shows the last worldwide total it saved, and `tokensave doctor` names the variable that disabled telemetry. Version checks (`TOKENSAVE_UPDATE_CHECK=off` turns off the passive one), the pricing refresh and commands that exist to reach the network, such as `tokensave upgrade`, are not telemetry and are unaffected.
+
+## Dependency advisory lookups
+
+`tokensave vuln-reachability` uses local cached data by default. Passing
+`--online`, or starting MCP with `TOKENSAVE_OSV_ONLINE=1`, authorizes sending
+dependency ecosystems, package names and versions to OSV and fetching advisory
+records by ID. These lookups send no source code, call graph data or project
+paths. The cache lives in the project's index database.

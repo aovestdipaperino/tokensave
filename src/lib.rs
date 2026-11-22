@@ -73,6 +73,7 @@ pub mod user_config;
 pub mod worktree;
 
 pub mod verify;
+pub mod vulnerability;
 
 /// Experimental Graphify file interchange.
 pub mod graphify;

@@ -377,6 +377,14 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Review dependency advisories and local call evidence
+    VulnReachability {
+        /// Initialized project path (default: discover from the current directory)
+        path: Option<String>,
+        /// Send declared dependency package names and versions to OSV if the cache needs a refresh
+        #[arg(long)]
+        online: bool,
+    },
     /// Show installer-specific update instructions or upgrade a verified standalone release
     Upgrade {
         /// Verify and upgrade a standalone binary downloaded from GitHub
