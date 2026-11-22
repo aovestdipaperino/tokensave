@@ -9,6 +9,8 @@
 pub mod cargo_env {
     /// Directory where the build script writes generated files.
     pub const OUT_DIR: &str = "OUT_DIR";
+    /// Package root, where the build script looks for commit provenance.
+    pub const MANIFEST_DIR: &str = "CARGO_MANIFEST_DIR";
     /// Path of the compiler used for this build.
     pub const RUSTC: &str = "RUSTC";
     /// Target triple of this build.
@@ -45,6 +47,14 @@ pub mod git {
     /// File that stores packed references.
     pub const PACKED_REFS: &str = "packed-refs";
 }
+
+/// Provenance file Cargo adds to every package built from a Git checkout
+/// (#1062); crates.io archives carry it instead of a `.git` directory.
+pub const CARGO_VCS_INFO_FILE_NAME: &str = ".cargo_vcs_info.json";
+/// Length of a full SHA-1 commit ID as recorded in [`CARGO_VCS_INFO_FILE_NAME`].
+pub const FULL_SHA1_LEN: usize = 40;
+/// Suffix added when Cargo recorded uncommitted changes in the package.
+pub const DIRTY_SUFFIX: &str = "-dirty";
 
 /// Value reported for build metadata that cannot be determined.
 pub const UNKNOWN: &str = "unknown";

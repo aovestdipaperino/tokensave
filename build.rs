@@ -7,7 +7,7 @@ use std::{
 #[path = "build/constants.rs"]
 mod constants;
 
-use constants::{cargo_env, git, rustc_env};
+use constants::{cargo_env, rustc_env};
 
 #[path = "build/provenance.rs"]
 mod provenance;
@@ -23,35 +23,12 @@ fn build_metadata() {
     // Git checkouts use `git rev-parse`; packaged crates (crates.io) use the
     // `.cargo_vcs_info.json` Cargo writes at package time (#1062). Only the
     // package root is inspected, so an unrelated parent repository is ignored.
-    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_else(|| ".".into());
+    let manifest_dir = std::env::var_os(cargo_env::MANIFEST_DIR).unwrap_or_else(|| ".".into());
     let provenance = provenance::resolve(Path::new(&manifest_dir));
     for path in &provenance.rerun_if_changed {
         println!("cargo::rerun-if-changed={path}");
     }
     let commit = provenance.commit;
-    let rustc = std::env::var_os("RUSTC")
-    // Do not pick up an unrelated parent repository for unpacked source archives.
-    let commit = if Path::new(git::DIR).exists() {
-        let current_ref = command_output("git", &["symbolic-ref", "-q", git::HEAD]);
-        for name in [
-            Some(git::HEAD),
-            Some(git::PACKED_REFS),
-            current_ref.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if let Some(path) = command_output("git", &["rev-parse", "--git-path", name]) {
-                println!("cargo::rerun-if-changed={path}");
-            }
-        }
-        let abbrev = format!("--short={}", constants::COMMIT_ABBREV_LEN);
-        command_output("git", &["rev-parse", &abbrev, git::HEAD]).filter(|sha| {
-            sha.len() >= constants::COMMIT_MIN_LEN && sha.bytes().all(|b| b.is_ascii_hexdigit())
-        })
-    } else {
-        None
-    };
     let rustc = std::env::var_os(cargo_env::RUSTC)
         .and_then(|path| Command::new(path).arg("--version").output().ok())
         .filter(|output| output.status.success())

@@ -7,12 +7,18 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+#[allow(
+    dead_code,
+    reason = "the module is shared with build.rs, which uses the items not exercised here"
+)]
+#[path = "../build/constants.rs"]
+mod constants;
+
 #[path = "../build/provenance.rs"]
 mod provenance;
 
-use provenance::{
-    commit_from_cargo_vcs_info, resolve, CARGO_VCS_INFO_FILE_NAME, DIRTY_SUFFIX, SHORT_COMMIT_LEN,
-};
+use constants::{CARGO_VCS_INFO_FILE_NAME, COMMIT_ABBREV_LEN, DIRTY_SUFFIX};
+use provenance::{commit_from_cargo_vcs_info, resolve};
 
 const SAMPLE_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -52,7 +58,7 @@ fn init_repo_with_commit(dir: &Path) -> String {
 fn cargo_vcs_info_reports_short_commit() {
     assert_eq!(
         commit_from_cargo_vcs_info(&clean_vcs_info(SAMPLE_SHA)).as_deref(),
-        Some(&SAMPLE_SHA[..SHORT_COMMIT_LEN])
+        Some(&SAMPLE_SHA[..COMMIT_ABBREV_LEN])
     );
     let compact = format!(
         r#"{{"git":{{"sha1":"{}"}},"path_in_vcs":""}}"#,
@@ -60,7 +66,7 @@ fn cargo_vcs_info_reports_short_commit() {
     );
     assert_eq!(
         commit_from_cargo_vcs_info(&compact).as_deref(),
-        Some(&SAMPLE_SHA[..SHORT_COMMIT_LEN])
+        Some(&SAMPLE_SHA[..COMMIT_ABBREV_LEN])
     );
 }
 
@@ -70,12 +76,15 @@ fn dirty_package_is_marked() {
         format!(r#"{{"git": {{"sha1": "{SAMPLE_SHA}", "dirty": true}}, "path_in_vcs": ""}}"#);
     assert_eq!(
         commit_from_cargo_vcs_info(&json),
-        Some(format!("{}{DIRTY_SUFFIX}", &SAMPLE_SHA[..SHORT_COMMIT_LEN]))
+        Some(format!(
+            "{}{DIRTY_SUFFIX}",
+            &SAMPLE_SHA[..COMMIT_ABBREV_LEN]
+        ))
     );
     let not_dirty = json.replace("true", "false");
     assert_eq!(
         commit_from_cargo_vcs_info(&not_dirty).as_deref(),
-        Some(&SAMPLE_SHA[..SHORT_COMMIT_LEN])
+        Some(&SAMPLE_SHA[..COMMIT_ABBREV_LEN])
     );
 }
 
@@ -86,7 +95,7 @@ fn malformed_vcs_info_reports_no_commit() {
         "{}".to_owned(),
         "not json".to_owned(),
         r#"{"path_in_vcs": ""}"#.to_owned(),
-        clean_vcs_info(&SAMPLE_SHA[..SHORT_COMMIT_LEN]),
+        clean_vcs_info(&SAMPLE_SHA[..COMMIT_ABBREV_LEN]),
         clean_vcs_info(&format!("{SAMPLE_SHA}00")),
         clean_vcs_info(&SAMPLE_SHA.replace('a', "g")),
         r#"{"git": {"sha1": 12345}}"#.to_owned(),
@@ -104,7 +113,7 @@ fn packaged_crate_uses_cargo_vcs_info() {
     let resolved = resolve(dir.path());
     assert_eq!(
         resolved.commit.as_deref(),
-        Some(&SAMPLE_SHA[..SHORT_COMMIT_LEN])
+        Some(&SAMPLE_SHA[..COMMIT_ABBREV_LEN])
     );
     assert_eq!(
         resolved.rerun_if_changed,
@@ -137,7 +146,7 @@ fn package_inside_unrelated_repository_ignores_that_repository() {
     )
     .expect("write vcs info");
     let commit = resolve(&with_info).commit.expect("packaged commit");
-    assert_eq!(commit, SAMPLE_SHA[..SHORT_COMMIT_LEN]);
+    assert_eq!(commit, SAMPLE_SHA[..COMMIT_ABBREV_LEN]);
     assert!(!unrelated.starts_with(&commit));
 }
 
@@ -152,6 +161,6 @@ fn git_checkout_reports_head_and_prefers_git_over_vcs_info() {
     .expect("write vcs info");
 
     let resolved = resolve(dir.path());
-    assert_eq!(resolved.commit.as_deref(), Some(&head[..SHORT_COMMIT_LEN]));
+    assert_eq!(resolved.commit.as_deref(), Some(&head[..COMMIT_ABBREV_LEN]));
     assert!(!resolved.rerun_if_changed.is_empty());
 }

@@ -2,7 +2,9 @@
 //!
 //! `build.rs` includes this file with `#[path]`, and
 //! `tests/build_provenance_test.rs` includes it the same way, so the logic is
-//! tested without running a build script. It must therefore only use `std`.
+//! tested without running a build script. It must therefore only use `std`
+//! and the shared names in `build/constants.rs`, which every includer must
+//! declare as the sibling module `constants`.
 //!
 //! Resolution order:
 //!
@@ -19,18 +21,9 @@
 use std::path::Path;
 use std::process::Command;
 
-/// Git metadata directory (a file in linked worktrees) in the package root.
-pub const GIT_DIR_NAME: &str = ".git";
-/// Provenance file Cargo adds to every package built from a Git checkout.
-pub const CARGO_VCS_INFO_FILE_NAME: &str = ".cargo_vcs_info.json";
-/// Number of hexadecimal digits reported for a commit.
-pub const SHORT_COMMIT_LEN: usize = 12;
-/// Shortest abbreviation accepted from `git rev-parse`.
-const MIN_GIT_COMMIT_LEN: usize = 7;
-/// Length of a full SHA-1 commit ID as recorded by Cargo.
-const FULL_SHA1_LEN: usize = 40;
-/// Suffix added when Cargo recorded uncommitted changes in the package.
-pub const DIRTY_SUFFIX: &str = "-dirty";
+use super::constants::{
+    git, CARGO_VCS_INFO_FILE_NAME, COMMIT_ABBREV_LEN, COMMIT_MIN_LEN, DIRTY_SUFFIX, FULL_SHA1_LEN,
+};
 
 /// Where a commit was found, with the files whose change must rerun the build
 /// script.
@@ -42,7 +35,7 @@ pub struct Provenance {
 
 /// Resolves the commit for the package rooted at `package_root`.
 pub fn resolve(package_root: &Path) -> Provenance {
-    if package_root.join(GIT_DIR_NAME).exists() {
+    if package_root.join(git::DIR).exists() {
         return from_git(package_root);
     }
     let vcs_info = package_root.join(CARGO_VCS_INFO_FILE_NAME);
@@ -60,15 +53,19 @@ pub fn resolve(package_root: &Path) -> Provenance {
 
 fn from_git(package_root: &Path) -> Provenance {
     let git = |args: &[&str]| command_output(package_root, "git", args);
-    let current_ref = git(&["symbolic-ref", "-q", "HEAD"]);
-    let rerun_if_changed = [Some("HEAD"), Some("packed-refs"), current_ref.as_deref()]
-        .into_iter()
-        .flatten()
-        .filter_map(|name| git(&["rev-parse", "--git-path", name]))
-        .collect();
-    let short = format!("--short={SHORT_COMMIT_LEN}");
-    let commit = git(&["rev-parse", &short, "HEAD"])
-        .filter(|sha| sha.len() >= MIN_GIT_COMMIT_LEN && is_hex(sha));
+    let current_ref = git(&["symbolic-ref", "-q", git::HEAD]);
+    let rerun_if_changed = [
+        Some(git::HEAD),
+        Some(git::PACKED_REFS),
+        current_ref.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|name| git(&["rev-parse", "--git-path", name]))
+    .collect();
+    let short = format!("--short={COMMIT_ABBREV_LEN}");
+    let commit = git(&["rev-parse", &short, git::HEAD])
+        .filter(|sha| sha.len() >= COMMIT_MIN_LEN && is_hex(sha));
     Provenance {
         commit,
         rerun_if_changed,
@@ -91,7 +88,7 @@ pub fn commit_from_cargo_vcs_info(json: &str) -> Option<String> {
     if sha.len() != FULL_SHA1_LEN || !is_hex(sha) {
         return None;
     }
-    let short = sha.get(..SHORT_COMMIT_LEN)?.to_ascii_lowercase();
+    let short = sha.get(..COMMIT_ABBREV_LEN)?.to_ascii_lowercase();
     let dirty = json_value_after_key(json, "dirty").is_some_and(|v| v.starts_with("true"));
     Some(if dirty {
         format!("{short}{DIRTY_SUFFIX}")

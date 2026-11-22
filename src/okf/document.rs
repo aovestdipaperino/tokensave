@@ -1,4 +1,4 @@
-//! Parsing of a single OKF markdown document (OKF v0.2 §4).
+//! Parsing of a single OKF markdown document (OKF v0.3 §4).
 
 use serde_json::Value;
 
@@ -17,6 +17,9 @@ pub struct Document {
     pub body: String,
     /// 1-based line on which the body starts.
     pub body_line: usize,
+    /// Custom YAML tags used in the frontmatter, which producers should not
+    /// use (§4).
+    pub custom_tags: Vec<String>,
 }
 
 /// Why a document's frontmatter could not be read.
@@ -63,6 +66,7 @@ pub fn parse(text: &str) -> Result<Document, FrontmatterError> {
             frontmatter: None,
             body: String::new(),
             body_line: 1,
+            custom_tags: Vec::new(),
         });
     };
     if !is_delimiter(first) {
@@ -70,6 +74,7 @@ pub fn parse(text: &str) -> Result<Document, FrontmatterError> {
             frontmatter: None,
             body: text.to_string(),
             body_line: 1,
+            custom_tags: Vec::new(),
         });
     }
     let start = first.len();
@@ -82,16 +87,17 @@ pub fn parse(text: &str) -> Result<Document, FrontmatterError> {
             if block.len() > MAX_FRONTMATTER_BYTES {
                 return Err(FrontmatterError::TooLarge);
             }
-            let value = yaml::load(block).map_err(FrontmatterError::Yaml)?;
-            let value = match value {
+            let loaded = yaml::load_detailed(block).map_err(FrontmatterError::Yaml)?;
+            let value = match loaded.value {
                 Value::Null => Value::Object(serde_json::Map::new()),
-                Value::Object(_) => value,
+                value @ Value::Object(_) => value,
                 _ => return Err(FrontmatterError::NotMapping),
             };
             return Ok(Document {
                 frontmatter: Some(value),
                 body: text[offset + line.len()..].to_string(),
                 body_line: line_number + 1,
+                custom_tags: loaded.custom_tags,
             });
         }
         offset += line.len();
@@ -133,6 +139,27 @@ pub struct BodyOutline {
     pub headings: Vec<Heading>,
     /// Footnote labels used as `[^label]` references, in first-use order.
     pub footnotes: Vec<String>,
+    /// 1-based lines that open a fenced code block.
+    pub fences: Vec<usize>,
+}
+
+impl BodyOutline {
+    /// Whether a fenced code block opens in a section with this heading
+    /// text, at any ATX level. A section ends at the next heading of the same
+    /// or a higher level (§10.3).
+    pub fn section_has_fence(&self, heading: &str) -> bool {
+        self.headings
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.text.eq_ignore_ascii_case(heading))
+            .any(|(index, h)| {
+                let end = self.headings[index + 1..]
+                    .iter()
+                    .find(|next| next.level <= h.level)
+                    .map_or(usize::MAX, |next| next.line);
+                self.fences.iter().any(|&line| line > h.line && line < end)
+            })
+    }
 }
 
 /// Extracts links, headings and footnote references from a markdown body.
@@ -159,6 +186,7 @@ pub fn outline(body: &str, first_line: usize) -> BodyOutline {
                 let width = trimmed.chars().take_while(|c| *c == marker).count();
                 if width >= 3 {
                     fence = Some((marker, width));
+                    out.fences.push(line_number);
                     continue;
                 }
             }
@@ -323,6 +351,7 @@ mod tests {
             frontmatter: None,
             body: String::new(),
             body_line: 0,
+            custom_tags: Vec::new(),
         });
         assert_eq!(doc.frontmatter.unwrap_or_default()["type"], "Metric");
         assert_eq!(doc.body, "\n# Body\n");
@@ -371,6 +400,20 @@ mod tests {
             .map(|h| (h.level, h.text.as_str()))
             .collect();
         assert_eq!(headings, [(1, "Schema"), (2, "2026-05-22")]);
+    }
+
+    #[test]
+    fn computation_section_is_found_at_any_level() {
+        let body = "## Computation\n\nText.\n\n```sql\nSELECT 1\n```\n## Notes\n";
+        let out = outline(body, 1);
+        assert_eq!(out.fences, [5]);
+        assert!(out.section_has_fence("computation"));
+        // A fence after the section has ended does not count.
+        let body = "# Computation\n\nProse only.\n\n# Examples\n\n```sql\nSELECT 1\n```\n";
+        assert!(!outline(body, 1).section_has_fence("Computation"));
+        // A deeper heading does not end the section.
+        let body = "# Computation\n## SQL\n```sql\nSELECT 1\n```\n";
+        assert!(outline(body, 1).section_has_fence("Computation"));
     }
 
     #[test]
