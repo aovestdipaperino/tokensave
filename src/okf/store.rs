@@ -16,7 +16,6 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use super::bundle;
-use super::bundle::Content;
 use super::bundle::Limits;
 use super::bundle::Role;
 use super::time;
@@ -65,9 +64,11 @@ pub struct ImportRecord {
     pub conformant: bool,
     pub errors: usize,
     pub warnings: usize,
-    /// Concept files with a readable, non-empty `type`.
+    /// Concepts: markdown files with a readable, non-empty `type` (§3.2).
     pub concepts: usize,
-    /// Concept files without one; they are kept but not searchable.
+    /// Other markdown files that are not reserved, such as a `README.md`
+    /// without frontmatter. They are kept but are not concepts, so they are
+    /// not searchable.
     pub unreadable_concepts: usize,
     /// Regular files copied, markdown or not.
     pub files: usize,
@@ -239,38 +240,36 @@ fn skip_reason(reason: &bundle::SkipReason) -> &'static str {
     match reason {
         bundle::SkipReason::Symlink => "symbolic link",
         bundle::SkipReason::HiddenDirectory => "hidden directory",
+        bundle::SkipReason::HiddenFile => "hidden file",
         bundle::SkipReason::TooLarge => "too large",
         bundle::SkipReason::Unreadable => "unreadable",
     }
 }
 
-/// Counts concepts that have a readable, non-empty `type`, and those that
-/// do not.
+/// Counts the concepts (markdown files with a non-empty `type`, §3.2) and
+/// the other markdown files that are not reserved.
 fn count_concepts(bundle: &bundle::Bundle) -> (usize, usize) {
-    let mut readable = 0usize;
-    let mut unreadable = 0usize;
-    for file in bundle.files.iter().filter(|f| f.role == Role::Concept) {
-        let has_type = matches!(&file.content, Content::Parsed { .. })
-            && file
-                .frontmatter()
-                .and_then(|fm| fm.get("type"))
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|t| !t.trim().is_empty());
-        if has_type {
-            readable += 1;
-        } else {
-            unreadable += 1;
-        }
-    }
-    (readable, unreadable)
+    let markdown = bundle
+        .files
+        .iter()
+        .filter(|f| f.role == Role::Concept)
+        .count();
+    let concepts = bundle
+        .files
+        .iter()
+        .filter(|f| f.concept_type().is_some())
+        .count();
+    (concepts, markdown - concepts)
 }
 
 /// Imports the bundle at `source` into the store of `project_root`.
 ///
 /// The bundle is copied as read, then the copy is validated. A bundle that
 /// is not conformant is still imported, as OKF §12 asks consumers to read
-/// best-effort, unless `options.strict` is set. Concepts without a readable
-/// `type` are kept in the copy but are not searchable.
+/// best-effort, unless `options.strict` is set. Markdown files without a
+/// readable `type` are not concepts (§3.2); they are kept in the copy but
+/// are not searchable. Hidden files and directories are not part of the
+/// bundle and are not copied.
 ///
 /// # Errors
 /// Fails when the project is not initialized, the name is invalid or taken

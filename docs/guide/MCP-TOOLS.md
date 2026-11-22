@@ -235,7 +235,7 @@ Use these so the agent doesn't have to re-explain architecture choices session-t
 
 | Tool | Purpose |
 |------|---------|
-| `tokensave_knowledge` | Search and read [Open Knowledge Format](OKF.md) bundles imported with `tokensave okf import`; lists the project files each concept refers to and whether they are indexed |
+| `tokensave_knowledge` | Search and read [Open Knowledge Format](OKF.md) bundles imported with `tokensave okf import`; lists the project files each concept refers to and whether they are indexed, and each concept's status, trust tier and freshness; `current_only` follows deprecated concepts to their replacements |
 
 It is read-only, is listed in the `memory` area of `tokensave_more`, and
 returns only a hint until a bundle is imported. See

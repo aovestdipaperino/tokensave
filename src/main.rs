@@ -193,7 +193,17 @@ async fn main() {
     use tokensave::debug_log::{self, Level};
     let matches = Cli::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
-    debug_log::configure(cli.debug, cli.log_level);
+    let config_root = diagnostic_config_root(cli.command.as_ref());
+    let configured_level =
+        if cli.log_level.is_none() && !cli.debug && std::env::var_os("TOKENSAVE_LOG").is_none() {
+            tokensave::config::configured_log_level(&config_root).unwrap_or_else(|error| {
+                eprintln!("Error: {error}");
+                process::exit(2);
+            })
+        } else {
+            None
+        };
+    debug_log::configure(cli.debug, cli.log_level, configured_level);
     let command = matches.subcommand_name().unwrap_or("default");
     debug_log::event(
         Level::Info,
@@ -223,6 +233,27 @@ async fn main() {
         eprintln!("Error: {}", e);
         process::exit(1);
     }
+}
+
+fn diagnostic_config_root(command: Option<&Commands>) -> std::path::PathBuf {
+    let path = match command {
+        Some(
+            Commands::Verify { path, .. }
+            | Commands::Init { path, .. }
+            | Commands::Tune { path, .. }
+            | Commands::Sync { path, .. }
+            | Commands::Status { path, .. }
+            | Commands::Serve { path, .. }
+            | Commands::CurrentCounter { path, .. }
+            | Commands::ResetCounter { path, .. }
+            | Commands::Gitignore { path, .. }
+            | Commands::Githooks { path, .. }
+            | Commands::Bench { path, .. },
+        ) => path.clone(),
+        Some(Commands::GraphifyExport { project, .. }) => project.clone(),
+        _ => None,
+    };
+    tokensave::config::resolve_path_with_discovery(path)
 }
 
 async fn run(cli: Cli) -> tokensave::errors::Result<()> {
