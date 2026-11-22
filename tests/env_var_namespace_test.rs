@@ -20,6 +20,9 @@ const EXTERNAL_ENV_VARS: &[&str] = &[
     "PI_CODING_AGENT_DIR",
     "VIBE_HOME",
     "TOOL_INPUT",
+    // Cross-tool telemetry opt-out (https://consoledonottrack.com), honored
+    // alongside TOKENSAVE_TELEMETRY (#1066).
+    "DO_NOT_TRACK",
     // Cargo supplies the compiler path used by build.rs for verbose version metadata.
     "RUSTC",
     // Cargo supplies the build script's output directory, where build.rs writes the

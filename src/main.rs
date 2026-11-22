@@ -407,7 +407,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     }
     user_config.save();
 
-    if is_first_run && !skip_agent_install_maintenance {
+    if is_first_run && !skip_agent_install_maintenance && tokensave::cloud::telemetry_enabled() {
         eprintln!(
             "note: tokensave uploads anonymous token-saved counts to a worldwide counter.\n\
              \x20     Run `tokensave disable-upload-counter` to opt out."
@@ -1653,6 +1653,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             config.upload_enabled = true;
             config.save();
             eprintln!("Worldwide counter upload enabled.");
+            if let Some(var) = tokensave::cloud::telemetry_opt_out() {
+                eprintln!("note: {var} disables telemetry in this environment, so nothing is uploaded while it is set.");
+            }
         }
         Commands::Githooks {
             action,

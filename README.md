@@ -599,7 +599,7 @@ tokensave status                   # shows project + global lifetime totals + co
 
 ### Worldwide counter
 
-All tokensave users contribute to an anonymous aggregate counter. `tokensave status` shows both your project total and the worldwide total. The upload sends only a single number (e.g. `4823`) with no identifying information. Opt out with `tokensave disable-upload-counter`.
+All tokensave users contribute to an anonymous aggregate counter. `tokensave status` shows both your project total and the worldwide total. The upload sends only a single number (e.g. `4823`) with no identifying information. Opt out with `tokensave disable-upload-counter`, or for one environment with `TOKENSAVE_TELEMETRY=off` or `DO_NOT_TRACK=1` (see [Turning telemetry off](docs/guide/PRIVACY.md#turning-telemetry-off)).
 
 ---
 
@@ -758,10 +758,12 @@ tokensave's core functionality (indexing, search, graph queries, MCP server) is 
 
 | Call | Data sent | When | Opt-out |
 |------|-----------|------|---------|
-| Worldwide counter upload | Token count (a number) + country (from IP) | sync, status, MCP sessions | `tokensave disable-upload-counter` |
-| Worldwide counter read | Nothing (GET request) | status | N/A (read-only, 1s timeout) |
+| Worldwide counter upload | Token count (a number) + country (from IP) | sync, status, MCP sessions | `tokensave disable-upload-counter`, `TOKENSAVE_TELEMETRY=off` or `DO_NOT_TRACK=1` |
+| Worldwide counter read | Nothing (GET request) | status, doctor | `TOKENSAVE_TELEMETRY=off` or `DO_NOT_TRACK=1` |
 | Version check | Nothing (GET request) | status (cached 5m), sync (parallel) | N/A (1s timeout, no-op on failure) |
 | Model pricing refresh | Nothing (GET request) | `tokensave cost` (cached 24h) | N/A (5s timeout, falls back to embedded pricing) |
+
+`TOKENSAVE_TELEMETRY=off` or `DO_NOT_TRACK=1` turns the worldwide counter off entirely; see [Turning telemetry off](docs/guide/PRIVACY.md#turning-telemetry-off).
 
 The worldwide counter upload sends a single HTTP POST with a JSON body like `{"amount": 4823}`. No cookies, no tracking, no user ID. The Cloudflare Worker logs the country of your IP address (derived from request headers) for aggregate geographic statistics -- your actual IP address is not stored.
 

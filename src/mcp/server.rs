@@ -2170,7 +2170,7 @@ impl McpServer {
             .unwrap_or_default()
             .as_secs() as i64;
         let last = self.last_flush_at.load(Ordering::Relaxed);
-        if now - last < FLUSH_CHECK_INTERVAL_SECS {
+        if now - last < FLUSH_CHECK_INTERVAL_SECS || !crate::cloud::telemetry_enabled() {
             return;
         }
         // Mark as attempted immediately to prevent re-entry.
@@ -2746,8 +2746,10 @@ impl McpServer {
         // always *persists* the accumulated total: the process is ending, so
         // `last_flushed_tokens` is about to be lost and the config file is the
         // only thing that will still remember these tokens.
+        // While the environment opts out of telemetry (#1066), nothing is
+        // queued for a later upload either.
         let last_flushed = self.last_flushed_tokens.load(Ordering::Relaxed);
-        if tokens_saved > last_flushed {
+        if tokens_saved > last_flushed && crate::cloud::telemetry_enabled() {
             let delta = tokens_saved - last_flushed;
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

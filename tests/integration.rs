@@ -213,6 +213,7 @@ mod symbol_target_669_test;
 mod symlink_walk_scope_test;
 mod sync_test;
 mod systemverilog_extraction_test;
+mod telemetry_env_test;
 mod terraform_extraction_test;
 mod tokensave_test;
 mod toml_extraction_test;

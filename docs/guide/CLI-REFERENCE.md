@@ -57,6 +57,7 @@ tokensave current-counter          # Show per-project token counter
 tokensave reset-counter            # Reset per-project token counter
 tokensave disable-upload-counter   # Opt out of worldwide counter uploads
 tokensave enable-upload-counter    # Re-enable worldwide counter uploads
+# TOKENSAVE_TELEMETRY=off or DO_NOT_TRACK=1 turns the counter off for one environment
 tokensave state list               # List relocated project state and the project of each
 tokensave state prune [--dry-run]  # Delete relocated state whose project directory is gone
 tokensave okf validate <dir> [--json] [--strict] [--verbose]  # Check an OKF bundle (v0.3; earlier versions with fallbacks)
