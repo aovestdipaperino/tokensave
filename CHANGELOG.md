@@ -29,6 +29,14 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - Move the build script's named values (Cargo and build-metadata variable keys, logo file names and width, the vendored grammar table) into `build/constants.rs`, pass the generated logo path to the crate through one build variable, and add an AGENTS.md/CONTRIBUTING.md rule and review checklist for named constants (Refs #1069).
 - Add a daily `Release drift` workflow that fails when crates.io carries a stable tokensave version without a published GitHub release, or when that release still lacks `SHA256SUMS` 12 hours after publication (Refs #1070). Without the release, `release.yml` never builds the binaries, Homebrew bottles and Scoop manifest, and `tokensave upgrade` reports the previous version as up to date, as happened with 7.17.0. The check was proposed by @0xreconlion.
 
+## [7.17.1] - 2026-11-22
+
+Patch release cut from 7.17.0 with only this fix cherry-picked; the entries under [Unreleased] above are not part of it.
+
+### Fixed
+
+- **`cargo install tokensave` no longer fails with a permission error (Refs #1064).** The build script wrote the generated ANSI logo into the crate's own `src/resources/` directory, which Cargo's registry source cache does not allow, so installing the published crate could panic in `build.rs` with `PermissionDenied` (seen on Windows). The logo is now generated in Cargo's `OUT_DIR`; the embedded logo is byte-identical.
+
 ## [7.17.0] - 2026-11-19
 
 ### Fixed
