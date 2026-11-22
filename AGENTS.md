@@ -2,6 +2,15 @@
 
 This file provides guidance to the agent when working with code in this repository.
 
+## Assistant-specific entry points
+
+`AGENTS.md` is the single source of agent guidance. Assistants that do not read
+it by default load it through thin pointer files: `CLAUDE.md` (Claude Code,
+via `@AGENTS.md`), `GEMINI.md` (Gemini CLI), `.github/copilot-instructions.md`
+(GitHub Copilot) and `.cursor/rules/agents.mdc` (Cursor). Keep those files as
+pointers only: never add rules to them, and put every change here. Keep the
+same pointer files on `master` and `beta`.
+
 ## Fork-specific branch workflow
 
 - Create new work branches in the user's fork rather than in the upstream
@@ -237,6 +246,45 @@ coverage changes, update the report's scope and limitations. Before finishing,
 review the source diff for SQL changes and verify that each is reflected in the
 report. Git history records the changes; the report describes the current source.
 
+## Named constants and single sources of truth
+
+These rules apply to new and modified code on every branch (#1069). The
+contributor-facing version is in
+[CONTRIBUTING.md](CONTRIBUTING.md#named-constants).
+
+- Do not scatter magic numbers or meaningful hard-coded strings through new or
+  modified code. Give domain-specific values (limits, widths, timeouts, sizes,
+  file and directory names, environment-variable keys including Cargo keys
+  such as `OUT_DIR`, protocol identifiers, default settings and build
+  artifacts) descriptive, appropriately scoped names.
+- Declare compile-time values with `const` where practical. Use `static`, lazy
+  initialization or runtime configuration only when their semantics require
+  it. Reuse one definition, or derive related values from it, instead of
+  duplicating literals that must stay synchronized.
+- Pass named constants to runtime APIs, for example
+  `std::env::var_os(cargo_env::OUT_DIR)`. Compile-time macros such as `env!`,
+  `include_str!` and `concat!` require string literals: keep those literals,
+  say where the authoritative definition lives in a nearby comment, and do not
+  break compilation to remove them. Where practical, pass a full value through
+  one key instead (for example `include_str!(env!("TOKENSAVE_BUILD_LOGO_ANSI_PATH"))`),
+  and add a test that checks the literal against its definition.
+- Put named constants in dedicated `constants.rs` files or modules instead of
+  declaring them throughout implementation files. Keep each module compact and
+  grouped by feature or domain, place it close to its owner, reuse an existing
+  module when one fits, and avoid a catch-all constants file. Expose constants
+  only as widely as needed, and do not merge unrelated concepts because their
+  values happen to match.
+- `build.rs` cannot import crate modules. Its constants live in
+  `build/constants.rs`, which `build.rs` includes with `#[path]` and
+  `tests/build_constants_test.rs` checks.
+- Conventional, self-explanatory literals such as `0` and `1`, and one-off
+  values without domain meaning, may stay inline. Avoid needless abstraction.
+- **Review checklist:** during each implementation and PR review, search the
+  changed code (including build scripts, tests and generated-asset paths) for
+  repeated or meaningful literals. Replace them with named constants in the
+  appropriate constants module, or record why an inline value is preferable.
+  Check that constants modules stay compact and logically grouped.
+
 ## Rust style guide (master only)
 
 TokenSave has adopted [Google's Rust Style Guide](https://google.github.io/styleguide/rustguide.html)
@@ -379,12 +427,12 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - `src/context/` — AI-ready context assembly (builder, formatter, ranking, read modes).
 - `src/mcp/` — stdio JSON-RPC server, tool definitions, handlers, transport. `src/mcp/roots.rs`: with no default project, a call without `graph_root` sends `roots/list` to the client during the call and answers from the project containing its roots (for MCP proxies; never cached, never sent outside a call).
 - `src/agents/` — agent integrations (Claude, Codex, Cursor, etc.) and git hooks.
-- `src/okf/` — Open Knowledge Format v0.2 (#858): bounded bundle reader, conformance validator, read-only index export, and import into project state (`okf/<name>/`, no schema change) searched by the `tokensave_knowledge` MCP tool (`tokensave okf validate|export|import|list|remove`); official sample bundles in `tests/fixtures/okf/official/`, a reconstructed Graphify bundle in `tests/fixtures/okf/graphify/`; see `docs/guide/OKF.md`.
+- `src/okf/` — Open Knowledge Format v0.3 (#858, #1060; earlier versions read with the §12.1 fallbacks): bounded bundle reader, conformance validator, shared consumer rules (`consumer.rs`: version read modes, bundle metadata, lifecycle, attestation; `trust.rs`: trust tiers, freshness), read-only index export, and import into project state (`okf/<name>/`, no schema change) searched by the `tokensave_knowledge` MCP tool (`tokensave okf validate|export|import|list|remove`); official sample bundles per OKF version in `tests/fixtures/okf/official/v0.2/` and `v0.3/`, a reconstructed Graphify bundle in `tests/fixtures/okf/graphify/`; see `docs/guide/OKF.md`.
 - `src/caveman.rs` — opt-in, read-only Caveman discovery and the extra MCP `initialize` paragraph (#797); see `docs/CAVEMAN-COMPATIBILITY.md`.
 - `src/grep_annotate/` — `tokensave grep` (#688): argument classification for `grep`, `rg` and `git grep`, hit parsing, and read-only index lookups that add `#ts` facts to each `path:line:` hit; the runner is `src/grep_command.rs`. It is dispatched before startup maintenance, runs the named search binary unchanged, and must not sync, migrate or write. Focused checks: `cargo test --test integration grep_annotate_test::` and `cargo test --lib grep_annotate`; see `docs/guide/CLI-REFERENCE.md`.
 - `src/sync.rs` — incremental sync (content hashing, stale/new/removed detection).
 - `src/bench.rs` — `tokensave bench` harness.
-- `build.rs` compiles vendored grammars (WGSL, ActionScript, GDScript) only when their feature is enabled.
+- `build.rs` compiles vendored grammars (WGSL, ActionScript, GDScript) only when their feature is enabled, generates the ANSI logo and records build metadata. Its named values, including the `VENDORED_GRAMMARS` table, are in `build/constants.rs`.
 
 ## Database channel compatibility
 
@@ -431,3 +479,4 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - **`codegraph` is a git submodule** (`codegraph/`), not part of the crate.
 - **`test-transport` feature** adds test-only JSON-RPC transport hooks in `src/mcp/`.
 - **Release workflow** builds per-platform binaries with `--locked` on the pinned toolchain and skips beta/prerelease tags. `release-beta.yml` is disabled: its jobs are gated on the `BETA_CHANNEL_ENABLED` repository variable (`vars`, because `env` is not available in a job-level `if:`), and beta installs from the `beta` branch.
+- **Publish a crate only through a GitHub release.** `release.yml` runs on `release: published` and is the only path that builds binaries, bottles, the Scoop manifest and the `SHA256SUMS` that `tokensave upgrade` reads; a manual `cargo publish` strands every binary channel on the previous version (#1070). `.github/workflows/release-drift.yml` checks (daily, on each published release, and on manual dispatch) that crates.io's stable version has a published, non-prerelease GitHub release with `SHA256SUMS` (12-hour grace for assets). It runs only in the upstream repository and is not part of `CI OK`.

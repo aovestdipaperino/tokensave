@@ -1,4 +1,5 @@
-//! Reading an OKF bundle directory (OKF v0.2 §3).
+//! Reading an OKF bundle directory (OKF v0.3 §3) and resolving the links
+//! and path fields inside it (§6).
 
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -81,6 +82,20 @@ impl BundleFile {
             _ => None,
         }
     }
+
+    /// The `type` of a concept (§3.2 rule 1): a non-reserved markdown file
+    /// whose frontmatter has a non-empty string `type`. Other markdown files
+    /// are not concepts, and consumers skip them (§3.2 rule 2).
+    pub fn concept_type(&self) -> Option<&str> {
+        if self.role != Role::Concept {
+            return None;
+        }
+        self.frontmatter()?
+            .get("type")?
+            .as_str()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+    }
 }
 
 /// Why an entry was not read.
@@ -89,6 +104,8 @@ impl BundleFile {
 pub enum SkipReason {
     Symlink,
     HiddenDirectory,
+    /// A file whose name starts with `.`; not part of the bundle (§3.2).
+    HiddenFile,
     TooLarge,
     Unreadable,
 }
@@ -103,7 +120,7 @@ pub struct Skipped {
 /// A bundle read from disk.
 #[derive(Debug, Clone, Default)]
 pub struct Bundle {
-    /// Markdown files in path order.
+    /// Markdown files, sorted by path.
     pub files: Vec<BundleFile>,
     /// Every regular file and directory path seen, for link checking.
     /// Directories end with `/`.
@@ -131,9 +148,10 @@ fn role_of(name: &str) -> Role {
 
 /// Reads every markdown file under `root`.
 ///
-/// Symbolic links are never followed and directories whose name starts with
-/// `.` (such as `.git`) are skipped. The walk stops at the configured limits
-/// and then reports `complete: false`.
+/// Symbolic links are never followed (§3.2 rule 5), and files and
+/// directories whose name starts with `.` (such as `.git`) are not part of
+/// the bundle (§3.2 rule 4). The walk stops at the configured limits and
+/// then reports `complete: false`.
 pub fn read(root: &Path, limits: Limits) -> std::io::Result<Bundle> {
     if !std::fs::metadata(root)?.is_dir() {
         return Err(std::io::Error::new(
@@ -201,6 +219,13 @@ pub fn read(root: &Path, limits: Limits) -> std::io::Result<Bundle> {
         if !file_type.is_file() {
             continue;
         }
+        if name.starts_with('.') {
+            bundle.skipped.push(Skipped {
+                path: rel,
+                reason: SkipReason::HiddenFile,
+            });
+            continue;
+        }
         bundle.entries.insert(rel.clone());
         if !name.ends_with(".md") {
             continue;
@@ -228,6 +253,9 @@ pub fn read(root: &Path, limits: Limits) -> std::io::Result<Bundle> {
             }),
         }
     }
+    // The walk sorts each directory by name, which is not path order
+    // (`a/x.md` comes before `a.md`); lookups need path order.
+    bundle.files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(bundle)
 }
 
@@ -301,7 +329,11 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Resolves a link destination written in the file at `from` (§6.1).
+/// Resolves a link destination or path field value written in the file at
+/// `from` (§6): a value with a URI scheme is external, a value that starts
+/// with `/` resolves from the bundle root, and any other value resolves from
+/// the directory of `from`. A value that climbs above the bundle root is
+/// external and is never read from the file system.
 pub fn resolve(from: &str, target: &str) -> Target {
     let target = target.trim();
     if target.is_empty()
@@ -340,6 +372,24 @@ pub fn resolve(from: &str, target: &str) -> Target {
     Target::Internal(joined)
 }
 
+/// Where a path field value (§6.2) points.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldTarget {
+    /// An absolute URL or another scheme; not checked.
+    External,
+    /// Climbs above the bundle root, so it is external (§6) and not read.
+    Escapes,
+    /// An existing entry of the bundle. `root_fallback` is true when it was
+    /// found only through the v0.2 bundle-root reading (§6.2, §12.1).
+    Found { path: String, root_fallback: bool },
+    /// Names nothing in the bundle. `root_only` is the bundle-root reading
+    /// when that one exists but the fallback is not allowed for the bundle.
+    Missing {
+        path: String,
+        root_only: Option<String>,
+    },
+}
+
 impl Bundle {
     /// Whether a resolved internal path names something in the bundle. The
     /// bundle root (an empty path) always exists.
@@ -347,6 +397,56 @@ impl Bundle {
         path.is_empty()
             || self.entries.contains(path)
             || (!path.ends_with('/') && self.entries.contains(&format!("{path}/")))
+    }
+
+    /// The markdown file at a bundle-relative path. `files` must be sorted
+    /// by path, as [`read`] leaves it.
+    pub fn file(&self, path: &str) -> Option<&BundleFile> {
+        self.files
+            .binary_search_by(|f| f.path.as_str().cmp(path))
+            .ok()
+            .and_then(|i| self.files.get(i))
+    }
+
+    /// Whether a bundle-relative path names a concept file (§3.2).
+    pub fn is_concept(&self, path: &str) -> bool {
+        self.file(path).is_some_and(|f| f.concept_type().is_some())
+    }
+
+    /// Resolves a path field value written in the file at `from` (§6.2).
+    ///
+    /// A value without a leading `/` resolves from the directory of `from`.
+    /// When it names nothing there, the bundle-root reading of v0.2 is tried:
+    /// it is accepted when `root_fallback` is set (bundles that declare
+    /// `okf_version` 0.2 or earlier, or none; §12.1) and otherwise only
+    /// reported in [`FieldTarget::Missing`]. Values that start with `./` or
+    /// `../` are explicitly relative and get no fallback.
+    pub fn resolve_field(&self, from: &str, value: &str, root_fallback: bool) -> FieldTarget {
+        let value = value.trim();
+        let path = match resolve(from, value) {
+            Target::External => return FieldTarget::External,
+            Target::Escapes => return FieldTarget::Escapes,
+            Target::Internal(path) => path,
+        };
+        if self.contains(&path) {
+            return FieldTarget::Found {
+                path,
+                root_fallback: false,
+            };
+        }
+        let explicit =
+            value.starts_with('/') || value.starts_with("./") || value.starts_with("../");
+        let from_root = match (explicit, resolve("", &format!("/{value}"))) {
+            (false, Target::Internal(p)) if self.contains(&p) => Some(p),
+            _ => None,
+        };
+        match from_root {
+            Some(root) if root_fallback => FieldTarget::Found {
+                path: root,
+                root_fallback: true,
+            },
+            root_only => FieldTarget::Missing { path, root_only },
+        }
     }
 }
 
@@ -387,6 +487,75 @@ mod tests {
         assert_eq!(resolve("a.md", "https://x.y/z.md"), Target::External);
         assert_eq!(resolve("a.md", "mailto:a@b"), Target::External);
         assert_eq!(resolve("a.md", "#section"), Target::External);
+    }
+
+    #[test]
+    fn traversal_in_any_spelling_escapes_the_root() {
+        let inside = Target::Internal("x.md".into());
+        for (target, expected) in [
+            ("../x.md", inside.clone()),
+            ("%2e%2e/x.md", inside.clone()),
+            ("a/../../x.md", inside),
+            ("../../x.md", Target::Escapes),
+            ("./%2E%2E/%2e%2e/etc/passwd", Target::Escapes),
+            ("/../x.md", Target::Escapes),
+            ("//host/x.md", Target::External),
+        ] {
+            assert_eq!(resolve("dir/a.md", target), expected, "{target}");
+        }
+    }
+
+    fn bundle_with(entries: &[&str]) -> Bundle {
+        Bundle {
+            entries: entries.iter().map(|e| (*e).to_string()).collect(),
+            complete: true,
+            ..Bundle::default()
+        }
+    }
+
+    #[test]
+    fn path_fields_resolve_from_the_file_then_optionally_the_root() {
+        let bundle = bundle_with(&["metrics/", "metrics/x.md", "policies/", "policies/p.md"]);
+        let found = |path: &str, root_fallback| FieldTarget::Found {
+            path: path.to_string(),
+            root_fallback,
+        };
+        assert_eq!(
+            bundle.resolve_field("metrics/a.md", "x.md", false),
+            found("metrics/x.md", false)
+        );
+        assert_eq!(
+            bundle.resolve_field("metrics/a.md", "/policies/p.md", false),
+            found("policies/p.md", false)
+        );
+        // A v0.2 bundle-root path: accepted only with the legacy fallback.
+        assert_eq!(
+            bundle.resolve_field("metrics/a.md", "policies/p.md", true),
+            found("policies/p.md", true)
+        );
+        assert_eq!(
+            bundle.resolve_field("metrics/a.md", "policies/p.md", false),
+            FieldTarget::Missing {
+                path: "metrics/policies/p.md".into(),
+                root_only: Some("policies/p.md".into())
+            }
+        );
+        // Explicitly relative values get no fallback.
+        assert_eq!(
+            bundle.resolve_field("metrics/a.md", "./policies/p.md", true),
+            FieldTarget::Missing {
+                path: "metrics/policies/p.md".into(),
+                root_only: None
+            }
+        );
+        assert_eq!(
+            bundle.resolve_field("a.md", "../../x.md", true),
+            FieldTarget::Escapes
+        );
+        assert_eq!(
+            bundle.resolve_field("a.md", "https://example.com/x.md", true),
+            FieldTarget::External
+        );
     }
 
     #[test]

@@ -5,7 +5,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 #[repr(u8)]
 pub enum Level {
     Off,
@@ -17,7 +20,7 @@ pub enum Level {
 }
 
 impl Level {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Off => "off",
             Self::Error => "error",
@@ -36,7 +39,7 @@ tokio::task_local! {
     static REQUEST: u64;
 }
 
-pub fn configure(debug: bool, cli_level: Option<Level>) {
+pub fn configure(debug: bool, cli_level: Option<Level>, configured_level: Option<Level>) {
     use clap::ValueEnum;
     let (level, source) = if let Some(level) = cli_level {
         (level, "flag")
@@ -54,7 +57,9 @@ pub fn configure(debug: bool, cli_level: Option<Level>) {
                     (Level::Off, "default")
                 }
             },
-            None => (Level::Off, "default"),
+            None => {
+                configured_level.map_or((Level::Off, "default"), |level| (level, "project_file"))
+            }
         }
     };
     LEVEL.store(level as u8, Ordering::Relaxed);

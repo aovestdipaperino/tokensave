@@ -178,6 +178,8 @@ async fn main() {
         && args.iter().any(|arg| arg == "--version")
         && args.iter().any(|arg| arg == "--verbose")
     {
+        // `env!` only accepts literal keys; build/constants.rs (`rustc_env`)
+        // defines them, and tests/build_constants_test.rs checks they agree.
         println!(
             "tokensave {}\ncommit: {}\nbuild-profile: {}\ntarget: {}\nrustc: {}",
             env!("CARGO_PKG_VERSION"),
@@ -191,7 +193,17 @@ async fn main() {
     use tokensave::debug_log::{self, Level};
     let matches = Cli::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
-    debug_log::configure(cli.debug, cli.log_level);
+    let config_root = diagnostic_config_root(cli.command.as_ref());
+    let configured_level =
+        if cli.log_level.is_none() && !cli.debug && std::env::var_os("TOKENSAVE_LOG").is_none() {
+            tokensave::config::configured_log_level(&config_root).unwrap_or_else(|error| {
+                eprintln!("Error: {error}");
+                process::exit(2);
+            })
+        } else {
+            None
+        };
+    debug_log::configure(cli.debug, cli.log_level, configured_level);
     let command = matches.subcommand_name().unwrap_or("default");
     debug_log::event(
         Level::Info,
@@ -221,6 +233,27 @@ async fn main() {
         eprintln!("Error: {}", e);
         process::exit(1);
     }
+}
+
+fn diagnostic_config_root(command: Option<&Commands>) -> std::path::PathBuf {
+    let path = match command {
+        Some(
+            Commands::Verify { path, .. }
+            | Commands::Init { path, .. }
+            | Commands::Tune { path, .. }
+            | Commands::Sync { path, .. }
+            | Commands::Status { path, .. }
+            | Commands::Serve { path, .. }
+            | Commands::CurrentCounter { path, .. }
+            | Commands::ResetCounter { path, .. }
+            | Commands::Gitignore { path, .. }
+            | Commands::Githooks { path, .. }
+            | Commands::Bench { path, .. },
+        ) => path.clone(),
+        Some(Commands::GraphifyExport { project, .. }) => project.clone(),
+        _ => None,
+    };
+    tokensave::config::resolve_path_with_discovery(path)
 }
 
 async fn run(cli: Cli) -> tokensave::errors::Result<()> {
@@ -871,7 +904,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     }
                 };
                 if !short {
-                    print!("{}", include_str!(concat!(env!("OUT_DIR"), "/logo.ansi")));
+                    // build.rs owns the logo's file name and location
+                    // (build/constants.rs); `env!` only accepts a literal key.
+                    print!("{}", include_str!(env!("TOKENSAVE_BUILD_LOGO_ANSI_PATH")));
                 }
                 let branch_info = cg.active_branch().map(|_| {
                     let ts_dir = tokensave::config::get_tokensave_dir(&project_path);

@@ -4,7 +4,9 @@ Every `tokensave` command at a glance.
 
 Use `tokensave --debug <command>` to emit structured diagnostics on stderr.
 Use `--log-level off|error|warn|info|debug|trace` to select a level or
-`TOKENSAVE_LOG` to pass a level to an agent-launched process. See
+`TOKENSAVE_LOG` to pass a level to an agent-launched process. Set `log_level`
+to the same values in `.tokensave/config.json` for a persistent project default.
+CLI flags override the environment, which overrides the project setting. See
 [Debug diagnostics](TROUBLESHOOTING.md#debug-diagnostics) for capture examples.
 
 ```bash
@@ -57,7 +59,7 @@ tokensave disable-upload-counter   # Opt out of worldwide counter uploads
 tokensave enable-upload-counter    # Re-enable worldwide counter uploads
 tokensave state list               # List relocated project state and the project of each
 tokensave state prune [--dry-run]  # Delete relocated state whose project directory is gone
-tokensave okf validate <dir> [--json] [--strict] [--verbose]  # Check an OKF v0.2 bundle
+tokensave okf validate <dir> [--json] [--strict] [--verbose]  # Check an OKF bundle (v0.3; earlier versions with fallbacks)
 tokensave okf export --output <dir> [--project P]  # Export the code index as an OKF bundle (no sync)
 tokensave okf import <dir> [--name N] [--replace] [--strict] [--json] [--project P]  # Import a bundle for tokensave_knowledge
 tokensave okf list [--json] [--project P]          # List imported bundles

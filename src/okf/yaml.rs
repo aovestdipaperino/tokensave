@@ -15,6 +15,7 @@ use serde_json::Value;
 use yaml_rust2::parser::Event;
 use yaml_rust2::parser::MarkedEventReceiver;
 use yaml_rust2::parser::Parser;
+use yaml_rust2::parser::Tag;
 use yaml_rust2::scanner::Marker;
 use yaml_rust2::Yaml;
 use yaml_rust2::YamlLoader;
@@ -63,9 +64,29 @@ struct ExpansionBudget {
     open: Vec<(usize, u64)>,
     documents: usize,
     exceeded: bool,
+    /// Tags outside the YAML core schema, as written (`!handle suffix`).
+    custom_tags: Vec<String>,
+}
+
+/// Largest number of distinct custom tags remembered per document.
+const MAX_REPORTED_TAGS: usize = 8;
+
+/// Whether `tag` is a YAML core-schema tag such as `!!str`.
+fn is_core_tag(tag: &Tag) -> bool {
+    tag.handle == "!!" || tag.handle.starts_with("tag:yaml.org,2002:")
 }
 
 impl ExpansionBudget {
+    fn note_tag(&mut self, tag: Option<&Tag>) {
+        let Some(tag) = tag.filter(|t| !is_core_tag(t)) else {
+            return;
+        };
+        let text = format!("{}{}", tag.handle, tag.suffix);
+        if self.custom_tags.len() < MAX_REPORTED_TAGS && !self.custom_tags.contains(&text) {
+            self.custom_tags.push(text);
+        }
+    }
+
     fn add(&mut self, nodes: u64) {
         self.expanded = self.expanded.saturating_add(nodes);
         if self.expanded > MAX_EXPANDED_NODES {
@@ -90,14 +111,16 @@ impl MarkedEventReceiver for ExpansionBudget {
         }
         match event {
             Event::DocumentStart => self.documents += 1,
-            Event::Scalar(_, _, anchor, _) => {
+            Event::Scalar(_, _, anchor, tag) => {
                 self.add(1);
+                self.note_tag(tag.as_ref());
                 if anchor != 0 {
                     self.anchor_sizes.insert(anchor, 1);
                 }
             }
-            Event::SequenceStart(anchor, _) | Event::MappingStart(anchor, _) => {
+            Event::SequenceStart(anchor, tag) | Event::MappingStart(anchor, tag) => {
                 self.add(1);
+                self.note_tag(tag.as_ref());
                 self.open.push((anchor, self.expanded));
                 if self.open.len() > MAX_DEPTH {
                     self.exceeded = true;
@@ -118,6 +141,21 @@ impl MarkedEventReceiver for ExpansionBudget {
 /// Empty text yields `Value::Null`. Mapping keys that are not strings are
 /// rendered with their scalar text; a non-scalar key becomes its JSON text.
 pub fn load(text: &str) -> Result<Value, YamlError> {
+    load_detailed(text).map(|loaded| loaded.value)
+}
+
+/// A loaded YAML document and what the loader noticed about its syntax.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Loaded {
+    pub value: Value,
+    /// Tags outside the YAML core schema, which OKF producers should not use
+    /// (§4); at most a few distinct ones.
+    pub custom_tags: Vec<String>,
+}
+
+/// Like [`load`], and also reports custom tags. Duplicate mapping keys are
+/// refused as invalid YAML by the parser (§4).
+pub fn load_detailed(text: &str) -> Result<Loaded, YamlError> {
     let mut budget = ExpansionBudget::default();
     Parser::new_from_str(text)
         .load(&mut budget, true)
@@ -129,7 +167,10 @@ pub fn load(text: &str) -> Result<Value, YamlError> {
         return Err(YamlError::MultipleDocuments);
     }
     let docs = YamlLoader::load_from_str(text).map_err(|e| YamlError::Syntax(e.to_string()))?;
-    Ok(docs.first().map_or(Value::Null, to_json))
+    Ok(Loaded {
+        value: docs.first().map_or(Value::Null, to_json),
+        custom_tags: budget.custom_tags,
+    })
 }
 
 /// Converts a YAML node to JSON. Real numbers that JSON cannot represent
@@ -221,6 +262,20 @@ mod tests {
     fn refuses_multiple_documents_and_bad_syntax() {
         assert_eq!(load("a: 1\n---\nb: 2\n"), Err(YamlError::MultipleDocuments));
         assert!(matches!(load("a: [1, 2"), Err(YamlError::Syntax(_))));
+    }
+
+    #[test]
+    fn duplicate_keys_are_refused() {
+        assert!(matches!(load("a: 1\na: 2\n"), Err(YamlError::Syntax(_))));
+    }
+
+    #[test]
+    fn custom_tags_are_reported_and_core_tags_are_not() {
+        let loaded = load_detailed("a: !!str 3\nb: !acme/thing x\n").ok();
+        assert_eq!(
+            loaded.map(|l| l.custom_tags),
+            Some(vec!["!acme/thing".to_string()])
+        );
     }
 
     #[test]

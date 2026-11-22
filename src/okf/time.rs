@@ -51,10 +51,10 @@ pub fn is_date(text: &str) -> bool {
     parse_date(text).is_some()
 }
 
-/// Parses an ISO 8601 datetime with an explicit UTC offset, such as
-/// `2026-06-30T14:00:00Z` or `2026-06-30T14:00:00.5+02:00`, into Unix
-/// seconds. Datetimes without an offset are refused: they name a different
-/// instant in every time zone.
+/// Parses an RFC 3339 `date-time`, such as `2026-06-30T14:00:00Z` or
+/// `2026-06-30T14:00:00.5+02:00`, into Unix seconds (OKF v0.3 §5). The
+/// offset is `Z` or `±HH:MM`. Datetimes without an offset are refused: they
+/// name a different instant in every time zone.
 pub fn parse_datetime(text: &str) -> Option<i64> {
     if !text.is_ascii() || text.len() < 20 {
         return None;
@@ -75,7 +75,7 @@ pub fn parse_datetime(text: &str) -> Option<i64> {
         return None;
     }
     let mut zone = &rest[8..];
-    if let Some(fraction) = zone.strip_prefix(['.', ',']) {
+    if let Some(fraction) = zone.strip_prefix('.') {
         let len = fraction.bytes().take_while(u8::is_ascii_digit).count();
         if len == 0 {
             return None;
@@ -91,12 +91,10 @@ pub fn parse_datetime(text: &str) -> Option<i64> {
                 _ => return None,
             };
             let body = &zone[1..];
-            let (h, m) = match body.len() {
-                5 if &body[2..3] == ":" => (digits(&body[0..2])?, digits(&body[3..5])?),
-                4 => (digits(&body[0..2])?, digits(&body[2..4])?),
-                2 => (digits(body)?, 0),
-                _ => return None,
-            };
+            if body.len() != 5 || &body[2..3] != ":" {
+                return None;
+            }
+            let (h, m) = (digits(&body[0..2])?, digits(&body[3..5])?);
             if h > 23 || m > 59 {
                 return None;
             }
@@ -104,6 +102,17 @@ pub fn parse_datetime(text: &str) -> Option<i64> {
         }
     };
     Some(days * 86_400 + hour * 3600 + minute * 60 + second - offset)
+}
+
+/// Parses an OKF timestamp (§5) into Unix seconds: an RFC 3339 `date-time`
+/// with an offset, or a `full-date` that means the start of that day in UTC.
+/// No other form is valid.
+pub fn parse_timestamp(text: &str) -> Option<i64> {
+    let text = text.trim();
+    if text.len() == 10 {
+        return parse_date(text).map(|days| days * 86_400);
+    }
+    parse_datetime(text)
 }
 
 /// Formats Unix seconds as `YYYY-MM-DDTHH:MM:SSZ`.
@@ -143,7 +152,8 @@ mod tests {
     fn parses_datetimes_with_offsets() {
         assert_eq!(parse_datetime("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(parse_datetime("1970-01-01T01:00:00+01:00"), Some(0));
-        assert_eq!(parse_datetime("1970-01-01T00:00:00.250-0030"), Some(1800));
+        assert_eq!(parse_datetime("1970-01-01T00:00:00.250-00:30"), Some(1800));
+        assert_eq!(parse_datetime("1970-01-01t00:00:00z"), Some(0));
         assert_eq!(parse_datetime("2026-06-30T14:00:00Z"), Some(1_782_828_000));
     }
 
@@ -156,9 +166,25 @@ mod tests {
             "2026-02-30T14:00:00Z",
             "2026-06-30T24:00:00Z",
             "2026-06-30T14:00:00+2:00",
+            "2026-06-30T14:00:00+0200",
+            "2026-06-30T14:00:00+02",
+            "2026-06-30T14:00:00,5Z",
             "2026-06-30T14:00:00.Z",
         ] {
             assert_eq!(parse_datetime(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn timestamps_accept_date_only_as_start_of_day_utc() {
+        assert_eq!(parse_timestamp("2026-06-30"), Some(1_782_777_600));
+        assert_eq!(
+            parse_timestamp("2026-06-30"),
+            parse_timestamp("2026-06-30T00:00:00Z")
+        );
+        assert_eq!(parse_timestamp("2026-06-30T14:00:00Z"), Some(1_782_828_000));
+        for text in ["2026-06-30T14:00:00", "2026-6-30", "June 2026", ""] {
+            assert_eq!(parse_timestamp(text), None, "{text}");
         }
     }
 

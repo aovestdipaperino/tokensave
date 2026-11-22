@@ -2721,8 +2721,9 @@ fn def_knowledge() -> ToolDefinition {
          `query` matches concept titles, IDs, tags, types, descriptions and bodies; `file` \
          finds concepts about a project file; `concept` returns one concept in full with its \
          links and backlinks; `related` traverses both directions of that graph. Results name \
-         the project files a concept refers to and whether \
-         they are indexed. With no arguments, lists the imported bundles.",
+         the project files a concept refers to and whether they are indexed, and give each \
+         concept's status, trust tier and freshness. With no arguments, lists the imported \
+         bundles.",
         json!({
             "type": "object",
             "properties": {
@@ -2753,6 +2754,10 @@ fn def_knowledge() -> ToolDefinition {
                 "type": {
                     "type": "string",
                     "description": "Concept `type` to restrict to (case-insensitive), e.g. \"Metric\"."
+                },
+                "current_only": {
+                    "type": "boolean",
+                    "description": "Only current (stable) concepts; a deprecated match is replaced by its `superseded_by` successor (default: false)."
                 },
                 "limit": {
                     "type": "number",
