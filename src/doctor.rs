@@ -205,6 +205,9 @@ fn check_binary(dc: &mut DoctorCounters) {
         dc.fail("Could not determine binary path");
     }
     dc.pass(&format!("Version: {}", env!("CARGO_PKG_VERSION")));
+    if let Some(hint) = crate::integrity::current_low_integrity_hint() {
+        dc.fail(&hint);
+    }
 }
 
 /// Check global database exists.

@@ -114,6 +114,16 @@ tokensave found a `-wal` file beside the database whose page size differs from t
 
 See [Database channel compatibility](../DATABASE-COMPATIBILITY.md#wal-sidecar-page-size-check) for details.
 
+## "Access denied (os error 5)" on Windows
+
+If `sync`, `init`, `install` or `doctor` fail with "Access denied" on lockfiles, `.tokensave/`, the SQLite database or `.git\hooks`, while your user account has full control over those folders, tokensave is probably running at low integrity level. Windows starts a program at the integrity level of its executable's mandatory label, and a low-integrity process cannot write to ordinary (medium-integrity) folders, whatever their ACLs say. `cargo install` builds in `%TEMP%`, so if `%TEMP%` carries a Low mandatory label (some sandboxing tools apply one), the installed `tokensave.exe` inherits it.
+
+tokensave detects this case: a failed command prints a `Hint:` line, and `tokensave doctor` reports it under **Binary**.
+
+- Check the executable: `icacls "%USERPROFILE%\.cargo\bin\tokensave.exe"`. A `Mandatory Label\Low Mandatory Level` entry confirms the cause
+- Reset it: `icacls "%USERPROFILE%\.cargo\bin\tokensave.exe" /setintegritylevel medium`
+- Check `%TEMP%` with `icacls "%TEMP%"`. While it carries the Low label, every later `cargo install` reapplies it to the new binary, so reset the binary after each upgrade or remove the label from `%TEMP%`
+
 ## Indexing is slow
 
 Large projects take longer on the first full index.

@@ -9,6 +9,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- **"Access denied" on Windows now explains a low-integrity binary (Refs #1063).** When `cargo install` builds in a `%TEMP%` that carries a Low mandatory label (some sandboxing tools apply one), the installed `tokensave.exe` inherits it. Windows then runs every tokensave command at low integrity, so `sync`, `init`, `install` and `doctor` fail with "Access denied (os error 5)" on lockfiles, `.tokensave/`, the database and `.git\hooks`, even though the user's ACLs allow the write. A failed command now checks the process integrity level and prints a `Hint:` line with the `icacls` commands that inspect and reset the label, and `tokensave doctor` reports it under **Binary**. Lockfile errors now name the lockfile path. See ["Access denied (os error 5)" on Windows](docs/guide/TROUBLESHOOTING.md#access-denied-os-error-5-on-windows).
 - **The PreToolUse hook no longer blocks non-code agents on generic wording (Refs #1078).** An untyped Agent prompt containing "explore", "read every", "full contents" or "architecture and structure" is now redirected only when it also names code (for example "source", "src", "repo", "function" or "module"). A prompt such as "Read every listed file in the list below" for OCR text now passes. Code-specific phrases such as "call graph" or "callers of" still redirect on their own. Reported by @dangeReis.
 ### Added
 

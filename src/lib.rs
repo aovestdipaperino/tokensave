@@ -49,6 +49,7 @@ pub mod grep_annotate;
 pub mod hardware;
 pub mod hooks;
 pub mod index_scope;
+pub mod integrity;
 pub mod language_detection;
 pub mod mcp;
 pub mod memory;

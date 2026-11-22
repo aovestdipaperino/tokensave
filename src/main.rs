@@ -231,6 +231,11 @@ async fn main() {
     );
     if let Err(e) = result {
         eprintln!("Error: {}", e);
+        // An access-denied failure on Windows is often a low-integrity
+        // process rather than an ACL problem (#1063); say so when it is.
+        if let Some(hint) = tokensave::integrity::current_low_integrity_hint() {
+            eprintln!("Hint: {hint}");
+        }
         process::exit(1);
     }
 }
