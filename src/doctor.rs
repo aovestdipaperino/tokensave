@@ -420,7 +420,9 @@ fn check_user_config(dc: &mut DoctorCounters) {
         if config_path.exists() {
             let config = crate::user_config::UserConfig::load();
             dc.pass(&format!("Config: {}", config_path.display()));
-            if config.upload_enabled {
+            if let Some(var) = crate::cloud::telemetry_opt_out() {
+                dc.info(&format!("Telemetry disabled by {var} (no counter upload)"));
+            } else if config.upload_enabled {
                 dc.pass("Upload enabled");
             } else {
                 dc.info("Upload disabled (opt-out)");
@@ -453,7 +455,11 @@ fn check_user_config(dc: &mut DoctorCounters) {
 /// Check network connectivity.
 fn check_network(dc: &mut DoctorCounters) {
     eprintln!("\n\x1b[1mNetwork\x1b[0m");
-    if let Some(total) = crate::cloud::fetch_worldwide_total() {
+    if let Some(var) = crate::cloud::telemetry_opt_out() {
+        dc.info(&format!(
+            "Worldwide counter check skipped ({var} disables telemetry)"
+        ));
+    } else if let Some(total) = crate::cloud::fetch_worldwide_total() {
         dc.pass(&format!(
             "Worldwide counter reachable (total: {})",
             format_token_count(total)

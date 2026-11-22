@@ -137,13 +137,64 @@ pub const UPLOAD_INTERVAL_SECS: i64 = 24 * 60 * 60;
 /// only thing standing between a broken network and a request per command.
 pub const FAILED_ATTEMPT_COOLDOWN_SECS: i64 = 60;
 
-/// Whether an upload is due: uploads are enabled, something is pending, a day
-/// has passed since the last success, and the last attempt did not just fail.
+/// Environment variable that turns telemetry off when set to a falsey value
+/// (`off`, `false`, `0`, `no`, `disable`, `disabled`) (#1066).
+pub const TELEMETRY_ENV: &str = "TOKENSAVE_TELEMETRY";
+
+/// The cross-tool convention (<https://consoledonottrack.com>): any non-empty
+/// value other than `0`, `false`, `no` or `off` turns telemetry off (#1066).
+pub const DO_NOT_TRACK_ENV: &str = "DO_NOT_TRACK";
+
+/// Names the environment variable that turned telemetry off, or `None` when
+/// the environment leaves it on.
+///
+/// Telemetry is the worldwide counter: the daily upload of the tokens-saved
+/// count and the reads of its total and country flags. While either variable
+/// opts out, none of those requests is made and the count is not accumulated
+/// for a later upload, whatever `upload_enabled` says in `config.toml`. The
+/// variables can only turn telemetry off; they never re-enable an upload the
+/// config file disabled. Version checks (`TOKENSAVE_UPDATE_CHECK`), pricing
+/// refreshes and commands that exist to reach the network are not telemetry
+/// and are unaffected.
+pub fn telemetry_opt_out() -> Option<&'static str> {
+    telemetry_opt_out_from(
+        std::env::var("TOKENSAVE_TELEMETRY").ok().as_deref(),
+        std::env::var("DO_NOT_TRACK").ok().as_deref(),
+    )
+}
+
+/// Whether the environment allows telemetry; see [`telemetry_opt_out`].
+pub fn telemetry_enabled() -> bool {
+    telemetry_opt_out().is_none()
+}
+
+fn telemetry_opt_out_from(
+    telemetry: Option<&str>,
+    do_not_track: Option<&str>,
+) -> Option<&'static str> {
+    if telemetry.is_some_and(|v| !update_check_enabled_from(Some(v))) {
+        return Some(TELEMETRY_ENV);
+    }
+    let dnt = do_not_track.map(|v| v.trim().to_ascii_lowercase());
+    if dnt.is_some_and(|v| !matches!(v.as_str(), "" | "0" | "false" | "no" | "off")) {
+        return Some(DO_NOT_TRACK_ENV);
+    }
+    None
+}
+
+/// Whether an upload is due: telemetry is allowed by the environment, uploads
+/// are enabled, something is pending, a day has passed since the last
+/// success, and the last attempt did not just fail.
 ///
 /// Every path that uploads goes through this, so the cadence is one decision
 /// in one place rather than a staleness check repeated per call site with its
 /// own threshold (and, at two of them, none at all).
 pub fn upload_is_due(config: &crate::user_config::UserConfig, now: i64) -> bool {
+    telemetry_enabled() && upload_schedule_due(config, now)
+}
+
+/// The config-and-clock part of [`upload_is_due`], without the environment.
+fn upload_schedule_due(config: &crate::user_config::UserConfig, now: i64) -> bool {
     if config.pending_upload == 0 || !config.upload_enabled {
         return false;
     }
@@ -160,8 +211,9 @@ pub fn upload_is_due(config: &crate::user_config::UserConfig, now: i64) -> bool 
 
 /// Uploads pending tokens to the worldwide counter.
 /// Returns the new worldwide total on success, or None on any failure.
+/// Makes no request while telemetry is disabled ([`telemetry_enabled`]).
 pub fn flush_pending(amount: u64) -> Option<u64> {
-    if amount == 0 {
+    if amount == 0 || !telemetry_enabled() {
         return None;
     }
     let body = serde_json::json!({ "amount": amount });
@@ -177,8 +229,12 @@ pub fn flush_pending(amount: u64) -> Option<u64> {
 }
 
 /// Fetches the current worldwide total from the worker.
-/// Returns None on timeout, network error, or parse failure.
+/// Returns None on timeout, network error, or parse failure, and without a
+/// request while telemetry is disabled ([`telemetry_enabled`]).
 pub fn fetch_worldwide_total() -> Option<u64> {
+    if !telemetry_enabled() {
+        return None;
+    }
     let agent = agent_with_timeout(FETCH_TIMEOUT);
     let parsed: WorkerResponse = agent
         .get(&format!("{WORKER_URL}/total"))
@@ -197,8 +253,12 @@ struct CountriesResponse {
 }
 
 /// Fetches country flags from the worldwide counter.
-/// Returns a list of emoji flags, or an empty vec on failure.
+/// Returns a list of emoji flags, or an empty vec on failure or while
+/// telemetry is disabled ([`telemetry_enabled`]).
 pub fn fetch_country_flags() -> Vec<String> {
+    if !telemetry_enabled() {
+        return Vec::new();
+    }
     let agent = agent_with_timeout(Duration::from_millis(500));
     let Ok(mut resp) = agent.get(&format!("{WORKER_URL}/countries")).call() else {
         return Vec::new();
@@ -811,15 +871,15 @@ mod tests {
     fn upload_is_due_only_once_a_day() {
         let now = 10 * DAY;
         assert!(
-            !upload_is_due(&cfg(500, now - 60, 0), now),
+            !upload_schedule_due(&cfg(500, now - 60, 0), now),
             "an upload a minute ago must not trigger another"
         );
         assert!(
-            !upload_is_due(&cfg(500, now - (DAY - 1), 0), now),
+            !upload_schedule_due(&cfg(500, now - (DAY - 1), 0), now),
             "one second short of a day is not due"
         );
         assert!(
-            upload_is_due(&cfg(500, now - DAY, now - DAY), now),
+            upload_schedule_due(&cfg(500, now - DAY, now - DAY), now),
             "a full day since the last success is due"
         );
     }
@@ -828,19 +888,19 @@ mod tests {
     fn upload_is_due_on_a_machine_that_has_never_uploaded() {
         // `last_upload_at` is 0 until the first success, which must read as due
         // rather than as "uploaded at the epoch, wait a day".
-        assert!(upload_is_due(&cfg(500, 0, 0), 10 * DAY));
+        assert!(upload_schedule_due(&cfg(500, 0, 0), 10 * DAY));
     }
 
     #[test]
     fn nothing_to_send_or_opted_out_is_never_due() {
         let now = 10 * DAY;
         assert!(
-            !upload_is_due(&cfg(0, 0, 0), now),
+            !upload_schedule_due(&cfg(0, 0, 0), now),
             "no pending tokens means no request"
         );
         let mut opted_out = cfg(500, 0, 0);
         opted_out.upload_enabled = false;
-        assert!(!upload_is_due(&opted_out, now), "opt-out is honored");
+        assert!(!upload_schedule_due(&opted_out, now), "opt-out is honored");
     }
 
     #[test]
@@ -850,12 +910,51 @@ mod tests {
         // the daily gate is still open — the cooldown is the only thing
         // stopping a request per command while the network is down.
         let just_failed = cfg(500, now - 5 * DAY, now - 1);
-        assert!(!upload_is_due(&just_failed, now));
+        assert!(!upload_schedule_due(&just_failed, now));
 
         let failed_a_while_ago = cfg(500, now - 5 * DAY, now - FAILED_ATTEMPT_COOLDOWN_SECS);
         assert!(
-            upload_is_due(&failed_a_while_ago, now),
+            upload_schedule_due(&failed_a_while_ago, now),
             "the cooldown must expire, or a single failure would wedge uploads for a day"
+        );
+    }
+
+    #[test]
+    fn telemetry_env_opt_out_values() {
+        assert_eq!(telemetry_opt_out_from(None, None), None);
+        for off in ["off", "0", "false", "No", " DISABLED ", "disable"] {
+            assert_eq!(
+                telemetry_opt_out_from(Some(off), None),
+                Some(TELEMETRY_ENV),
+                "TOKENSAVE_TELEMETRY={off:?} must disable telemetry"
+            );
+        }
+        for on in ["on", "1", "true", ""] {
+            assert_eq!(telemetry_opt_out_from(Some(on), None), None, "{on:?}");
+        }
+        for dnt in ["1", "true", "yes", " 1 "] {
+            assert_eq!(
+                telemetry_opt_out_from(None, Some(dnt)),
+                Some(DO_NOT_TRACK_ENV),
+                "DO_NOT_TRACK={dnt:?} must disable telemetry"
+            );
+        }
+        for unset in ["", "0", "false", "no", "off"] {
+            assert_eq!(telemetry_opt_out_from(None, Some(unset)), None, "{unset:?}");
+        }
+    }
+
+    #[test]
+    fn telemetry_env_cannot_override_another_opt_out() {
+        // Either variable is enough; an explicit `on` never re-enables what
+        // DO_NOT_TRACK turned off.
+        assert_eq!(
+            telemetry_opt_out_from(Some("on"), Some("1")),
+            Some(DO_NOT_TRACK_ENV)
+        );
+        assert_eq!(
+            telemetry_opt_out_from(Some("off"), Some("0")),
+            Some(TELEMETRY_ENV)
         );
     }
 

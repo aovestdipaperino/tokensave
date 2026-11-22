@@ -113,4 +113,4 @@ tokensave status                   # shows project + global lifetime totals + co
 
 ## Worldwide counter
 
-All tokensave users contribute to an anonymous aggregate counter. `tokensave status` shows both your project total and the worldwide total. The upload sends only a single number (e.g. `4823`) with no identifying information. Opt out with `tokensave disable-upload-counter`.
+All tokensave users contribute to an anonymous aggregate counter. `tokensave status` shows both your project total and the worldwide total. The upload sends only a single number (e.g. `4823`) with no identifying information. Opt out with `tokensave disable-upload-counter`, or for one environment with `TOKENSAVE_TELEMETRY=off` or `DO_NOT_TRACK=1` (see [Turning telemetry off](PRIVACY.md#turning-telemetry-off)).
