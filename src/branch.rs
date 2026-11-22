@@ -519,7 +519,7 @@ pub fn find_nearest_tracked_ancestor(
         };
 
         // Find merge-base between branch and tracked branch
-        let Ok(base_id) = repo.merge_base(branch_commit.id, tracked_commit.id) else {
+        let Ok(Some(base_id)) = repo.merge_base(branch_commit.id, tracked_commit.id) else {
             continue;
         };
 
