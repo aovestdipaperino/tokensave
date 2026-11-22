@@ -8,6 +8,13 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 ## [Unreleased]
 
 
+## [7.17.1] - 2026-11-22
+
+### Fixed
+
+- **`cargo install tokensave` no longer fails with a permission error (Refs #1064).** The build script wrote the generated ANSI logo into the crate's own `src/resources/` directory, which Cargo's registry source cache does not allow, so installing the published crate could panic in `build.rs` with `PermissionDenied` (seen on Windows). The logo is now generated in Cargo's `OUT_DIR`; the embedded logo is byte-identical. This patch release contains only this fix on top of 7.17.0.
+
+
 ## [7.17.0] - 2026-11-19
 
 ### Fixed
