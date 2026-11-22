@@ -77,6 +77,69 @@ fn debug_log_activation_precedence_and_cli_output() {
 }
 
 #[test]
+fn project_config_enables_logging_and_lower_precedence_sources_are_overridden() {
+    let dir = tempfile::tempdir().expect("isolated home and directory");
+    let path = dir.path();
+    let state = path.join(".tokensave");
+    std::fs::create_dir(&state).expect("create project state");
+    std::fs::write(
+        state.join("config.json"),
+        r#"{"version":2,"root_dir":"","exclude":[],"max_file_size":1048576,"extract_docstrings":true,"track_call_sites":true,"log_level":"debug"}"#,
+    )
+    .expect("write project config");
+
+    let configured = run(path, path, &["tool"], None, b"");
+    assert!(events(&configured).iter().any(|event| {
+        event["operation"] == "log_level"
+            && event["fields"] == json!({"source":"project_file","level":"debug"})
+    }));
+
+    let environment = run(path, path, &["tool"], Some("info"), b"");
+    assert!(events(&environment).iter().any(|event| {
+        event["operation"] == "log_level"
+            && event["fields"] == json!({"source":"environment","level":"info"})
+    }));
+
+    let flag = run(
+        path,
+        path,
+        &["--log-level", "warn", "tool"],
+        Some("debug"),
+        b"",
+    );
+    assert!(events(&flag).is_empty());
+}
+
+#[test]
+fn invalid_project_log_level_is_a_clear_configuration_error() {
+    let dir = tempfile::tempdir().expect("isolated home and directory");
+    let path = dir.path();
+    let state = path.join(".tokensave");
+    std::fs::create_dir(&state).expect("create project state");
+    std::fs::write(state.join("config.json"), r#"{"log_level":"verbose"}"#)
+        .expect("write project config");
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tokensave"));
+    let output = command
+        .current_dir(path)
+        .env("HOME", path)
+        .env("USERPROFILE", path)
+        .env("TOKENSAVE_AUTO_INIT", "0")
+        .env("TOKENSAVE_UPDATE_CHECK", "0")
+        .env_remove("TOKENSAVE_LOG")
+        .arg("tool")
+        .output()
+        .expect("run tokensave");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid log_level"), "{stderr}");
+    assert!(
+        stderr.contains("expected off, error, warn, info, debug or trace"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn debug_hook_explains_denial_without_logging_shell_input() {
     let project = tempfile::tempdir().expect("isolated project");
     let home = tempfile::tempdir().expect("isolated home");
