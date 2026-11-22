@@ -8,6 +8,7 @@ from pathlib import Path
 import platform
 import shlex
 import subprocess
+import sys
 import tempfile
 
 
@@ -51,6 +52,8 @@ def isolated_env(root, binary):
 
 
 def smoke(binary):
+    # CI redirects stdout through tee, which can select a Windows code page.
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     with tempfile.TemporaryDirectory(prefix="tokensave release smoke ") as directory:
         root = Path(directory).resolve()
         project = root / "git project"
