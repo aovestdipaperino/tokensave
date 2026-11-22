@@ -35,7 +35,11 @@ impl AgentIntegration for QwenIntegration {
         std::fs::create_dir_all(&qwen_dir).ok();
         let settings_path = qwen_dir.join("settings.json");
 
-        install_mcp_server(&settings_path, &ctx.tokensave_bin)?;
+        install_mcp_server(
+            &settings_path,
+            &ctx.tokensave_bin,
+            permissions_management_enabled(&ctx.home),
+        )?;
 
         let qwen_md = qwen_dir.join("QWEN.md");
         install_prompt_rules(&qwen_md)?;
@@ -66,7 +70,7 @@ impl AgentIntegration for QwenIntegration {
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mQwen Code integration\x1b[0m");
-        doctor_check_settings(dc, &ctx.home);
+        doctor_check_settings(dc, &ctx.home, permissions_management_enabled(&ctx.home));
         doctor_check_prompt(dc, &ctx.home);
     }
 
@@ -95,7 +99,14 @@ impl AgentIntegration for QwenIntegration {
 // ---------------------------------------------------------------------------
 
 /// Register MCP server in ~/.qwen/settings.json.
-fn install_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<()> {
+///
+/// With `manage_permissions` false (#1067) the `trust` flag is the user's:
+/// an existing value is carried over unchanged and none is added.
+fn install_mcp_server(
+    settings_path: &Path,
+    tokensave_bin: &str,
+    manage_permissions: bool,
+) -> Result<()> {
     let backup = backup_config_file(settings_path)?;
     let mut settings = match load_json_file_strict(settings_path) {
         Ok(v) => v,
@@ -111,11 +122,20 @@ fn install_mcp_server(settings_path: &Path, tokensave_bin: &str) -> Result<()> {
         settings.pointer("/mcpServers/tokensave/command"),
         tokensave_bin,
     );
-    settings["mcpServers"]["tokensave"] = json!({
+    let trust = if manage_permissions {
+        Some(serde_json::Value::Bool(true))
+    } else {
+        crate::agent_note!("{PERMISSIONS_USER_MANAGED_NOTE}");
+        settings.pointer("/mcpServers/tokensave/trust").cloned()
+    };
+    let mut entry = json!({
         "command": bin,
         "args": ["serve"],
-        "trust": true
     });
+    if let Some(trust) = trust {
+        entry["trust"] = trust;
+    }
+    settings["mcpServers"]["tokensave"] = entry;
 
     safe_write_json_file(settings_path, &settings, backup.as_deref())?;
     crate::agent_note!(
@@ -189,7 +209,7 @@ fn uninstall_prompt_rules(qwen_md: &Path) {
 // ---------------------------------------------------------------------------
 
 /// Check settings.json has tokensave registered.
-fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
+fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path, manage_permissions: bool) {
     let settings_path = home.join(".qwen").join("settings.json");
     if !settings_path.exists() {
         dc.warn(&format!(
@@ -223,6 +243,11 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path) {
         dc.pass("MCP server args include \"serve\"");
     } else {
         dc.fail("MCP server args missing \"serve\" — run `tokensave install --agent qwen`");
+    }
+
+    if !manage_permissions {
+        dc.pass(PERMISSIONS_USER_MANAGED_DOCTOR);
+        return;
     }
 
     // Check trust flag

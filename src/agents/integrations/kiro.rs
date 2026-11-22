@@ -113,7 +113,12 @@ impl AgentIntegration for KiroIntegration {
         install_steering_rules(&steering)?;
 
         let agent_path = managed_agent_path_in(&base);
-        let owns_agent = install_managed_agent(&agent_path, &ctx.tokensave_bin, &steering)?;
+        let owns_agent = install_managed_agent(
+            &agent_path,
+            &ctx.tokensave_bin,
+            &steering,
+            permissions_management_enabled(&ctx.home),
+        )?;
 
         let cli_path = cli_config_path_in(&base);
         install_default_agent(&cli_path, owns_agent)?;
@@ -154,7 +159,7 @@ impl AgentIntegration for KiroIntegration {
             global_server.as_ref(),
         );
         doctor_check_steering(dc, &ctx.home);
-        doctor_check_managed_agent(dc, &ctx.home);
+        doctor_check_managed_agent(dc, &ctx.home, permissions_management_enabled(&ctx.home));
         doctor_check_default_agent(dc, &ctx.home);
     }
 
@@ -297,7 +302,16 @@ fn install_mcp_server(path: &Path, tokensave_bin: &str) -> Result<()> {
 /// Returns true when tokensave owns the resulting agent file. A pre-existing
 /// user-managed `tokensave.json` is preserved and returns false so the default
 /// agent selector is not pointed at a file whose policy tokensave does not own.
-fn install_managed_agent(path: &Path, tokensave_bin: &str, steering_path: &Path) -> Result<bool> {
+///
+/// With `manage_permissions` false (#1067) the agent's `allowedTools` is the
+/// user's: the list already in tokensave's agent file is carried over
+/// unchanged, and a new agent pre-approves nothing.
+fn install_managed_agent(
+    path: &Path,
+    tokensave_bin: &str,
+    steering_path: &Path,
+    manage_permissions: bool,
+) -> Result<bool> {
     if path.exists() && !is_owned_agent_file(path) {
         crate::agent_note!(
             "  {} already exists and is user-managed, leaving unchanged",
@@ -307,7 +321,17 @@ fn install_managed_agent(path: &Path, tokensave_bin: &str, steering_path: &Path)
     }
 
     let backup = backup_config_file(path)?;
-    let config = managed_agent_config(tokensave_bin, steering_path);
+    let mut config = managed_agent_config(tokensave_bin, steering_path);
+    if !manage_permissions {
+        crate::agent_note!("{PERMISSIONS_USER_MANAGED_NOTE}");
+        let existing = load_json_file(path).get("allowedTools").cloned();
+        if let Some(object) = config.as_object_mut() {
+            match existing {
+                Some(allowed) => object.insert("allowedTools".to_string(), allowed),
+                None => object.remove("allowedTools"),
+            };
+        }
+    }
     safe_write_json_file(path, &config, backup.as_deref())?;
     crate::agent_note!(
         "\x1b[32m✔\x1b[0m Wrote tokensave Kiro agent to {}",
@@ -666,7 +690,7 @@ fn doctor_check_steering(dc: &mut DoctorCounters, home: &Path) {
     check_shared_rules_block(dc, &path, "kiro");
 }
 
-fn doctor_check_managed_agent(dc: &mut DoctorCounters, home: &Path) {
+fn doctor_check_managed_agent(dc: &mut DoctorCounters, home: &Path, manage_permissions: bool) {
     let path = managed_agent_path(home);
     if !path.exists() {
         dc.fail(&format!(
@@ -698,7 +722,11 @@ fn doctor_check_managed_agent(dc: &mut DoctorCounters, home: &Path) {
     }
 
     doctor_check_agent_tools(dc, &config);
-    doctor_check_agent_allowed_tools(dc, &config);
+    if manage_permissions {
+        doctor_check_agent_allowed_tools(dc, &config);
+    } else {
+        dc.pass(PERMISSIONS_USER_MANAGED_DOCTOR);
+    }
 
     let expected_resource = file_resource_uri(&steering_path(home));
     if config
