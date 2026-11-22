@@ -33,27 +33,54 @@ pub fn apply_to_workspace(ws: &mut Workspace) {
 // ---------------------------------------------------------------------------
 
 fn apply_cargo_lock(ws: &mut Workspace) {
-    let path = ws.root.join("Cargo.lock");
-    let Ok(raw) = std::fs::read_to_string(&path) else {
+    let Some(doc) = cargo_lock(&ws.root) else {
         return;
     };
-    let Ok(doc) = toml::from_str::<toml::Value>(&raw) else {
-        return;
-    };
-    // `Cargo.lock` is `[[package]]` array with `name`/`version` entries.
-    let mut versions: HashMap<String, String> = HashMap::new();
-    if let Some(arr) = doc.get("package").and_then(|v| v.as_array()) {
-        for pkg in arr {
-            let (Some(name), Some(version)) = (
-                pkg.get("name").and_then(|v| v.as_str()),
-                pkg.get("version").and_then(|v| v.as_str()),
-            ) else {
-                continue;
-            };
-            versions.insert(name.to_string(), version.to_string());
+    let versions = cargo_packages(&doc)
+        .map(|(name, version, _)| (name.to_string(), version.to_string()))
+        .collect();
+    fill_resolved(ws, &versions);
+}
+
+fn cargo_lock(root: &std::path::Path) -> Option<toml::Value> {
+    let raw = std::fs::read_to_string(root.join("Cargo.lock")).ok()?;
+    toml::from_str(&raw).ok()
+}
+
+fn cargo_packages(doc: &toml::Value) -> impl Iterator<Item = (&str, &str, Option<&str>)> {
+    doc.get("package")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|package| {
+            Some((
+                package.get("name")?.as_str()?,
+                package.get("version")?.as_str()?,
+                package.get("source").and_then(toml::Value::as_str),
+            ))
+        })
+}
+
+pub(super) fn registry_cargo_versions(
+    root: &std::path::Path,
+) -> Option<HashMap<String, Vec<String>>> {
+    let doc = cargo_lock(root)?;
+    let mut versions = HashMap::<String, Vec<String>>::new();
+    for (name, version, source) in cargo_packages(&doc) {
+        if matches!(
+            source,
+            Some(
+                "registry+https://github.com/rust-lang/crates.io-index"
+                    | "sparse+https://index.crates.io/"
+            )
+        ) {
+            versions
+                .entry(name.to_string())
+                .or_default()
+                .push(version.to_string());
         }
     }
-    fill_resolved(ws, &versions);
+    Some(versions)
 }
 
 // ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ pub use definitions::{
     GRAPH_SELECTOR_INSTRUCTIONS, MORE_TOOL, RENAME_DESCRIPTION, TOOL_AREAS,
 };
 pub use definitions::{tool_capability, ToolCapability};
+pub(crate) use handlers::dependencies::osv_inventory;
 pub use handlers::{handle_tool_call, handle_tool_call_with_session, SessionState};
 
 /// Maximum character length for a tool response before truncation.

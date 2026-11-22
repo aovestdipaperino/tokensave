@@ -117,6 +117,7 @@ and not a fallback to a parent branch's index).
 | `tokensave_annotations` | Attribute/annotation/decorator introspection -- histogram of all annotations or per-site listings with target filters |
 | `tokensave_doc` | Companion Markdown documentation for a source file -- doc content, the files it covers, and a staleness signal |
 | `tokensave_dependencies` | Package-manifest introspection across 17 ecosystems -- workspace summary, per-package lookup, license surface, version drift |
+| `tokensave_vuln_reachability` | Report cached OSV advisories and indexed call evidence. Set `TOKENSAVE_OSV_ONLINE=1` in the server environment to allow refreshes. |
 | `tokensave_status` | Index status, statistics, tokens saved |
 
 ### Call Graph & Impact

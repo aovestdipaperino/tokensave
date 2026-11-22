@@ -112,13 +112,24 @@ fn root_certs() -> ureq::tls::RootCerts {
 /// is one, ureq's bundled Mozilla roots where there is not. TLS verification
 /// itself is unaffected — only the set of trust anchors changes.
 pub fn agent_with_timeout(timeout: Duration) -> ureq::Agent {
+    configured_agent(timeout, None)
+}
+
+/// A bounded client for requests that must stay on their original host.
+pub(crate) fn agent_with_timeout_no_redirect(timeout: Duration) -> ureq::Agent {
+    configured_agent(timeout, Some(0))
+}
+
+fn configured_agent(timeout: Duration, redirects: Option<u32>) -> ureq::Agent {
     use ureq::tls::TlsConfig;
 
-    ureq::Agent::config_builder()
+    let mut config = ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
-        .tls_config(TlsConfig::builder().root_certs(root_certs()).build())
-        .build()
-        .into()
+        .tls_config(TlsConfig::builder().root_certs(root_certs()).build());
+    if let Some(limit) = redirects {
+        config = config.max_redirects(limit);
+    }
+    config.build().into()
 }
 
 /// How long a successful upload holds off the next one: once a day.

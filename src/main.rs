@@ -280,6 +280,22 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         None => return commands::handle_no_command().await,
     };
 
+    if let Commands::VulnReachability { path, online } = &command {
+        let root = tokensave::config::resolve_path_with_discovery(path.clone());
+        // Preflight initialization before an online run is allowed to open
+        // the writable project cache.
+        let read_only = TokenSave::open_read_only(&root, None).await?;
+        let project = if *online {
+            drop(read_only);
+            TokenSave::open(&root).await?
+        } else {
+            read_only
+        };
+        let report = tokensave::vulnerability::check(&project, *online).await?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
     if let Commands::Install {
         wildcard_permissions,
         approve_write_tools,
@@ -1381,6 +1397,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 &cwd,
                 &current_bin_path(),
             ));
+        }
+        Commands::VulnReachability { .. } => {
+            unreachable!("vulnerability review bypasses startup maintenance")
         }
         Commands::Uninstall { .. } => unreachable!("uninstall is dispatched before startup"),
         Commands::Purge { .. } => unreachable!("purge is dispatched before startup"),

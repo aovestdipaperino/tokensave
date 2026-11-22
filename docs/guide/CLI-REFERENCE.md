@@ -82,6 +82,36 @@ command does not open or initialize a project database.
 
 See [Open Knowledge Format](OKF.md) for the `okf` commands, their findings, the export layout and imported knowledge.
 
+## Dependency advisory reachability
+
+Run these commands from an indexed project, or pass its directory as a positional argument..
+
+```bash
+tokensave vuln-reachability --online
+tokensave vuln-reachability
+```
+
+The first command checks [OSV](https://osv.dev/) and caches the result in the
+project database for 24 hours. The second uses the current version inventory
+and matching cached data, if available, and reports its age. Only package
+ecosystems, names and versions are submitted. OSV receives no project paths
+or source code.
+
+The report covers declared Cargo, npm, Python and Go dependencies. It uses
+versions from supported lockfiles where available. Go declarations and
+manifest-only versions are approximate. npm and Python lockfile matches are
+also approximate because they are matched by package name across the workspace. Unresolved versions and local or
+overridden dependencies contribute to the unresolved count.
+
+- `reachable` includes a direct indexed call from a project symbol to an affected dependency symbol.
+- `imported_not_called` means the index contains a matching import with no matching call.
+- `not_reachable` means the index contains no matching import for the supplied symbols.
+- `unknown` covers missing symbol metadata or insufficient call evidence.
+
+Results describe the local index and the symbol metadata supplied with each
+advisory. Dynamic calls and Go receiver methods can require manual review.
+Run `tokensave sync` before checking recently edited code.
+
 ## Index facts on search output
 
 `tokensave grep COMMAND...` runs a `grep`, `rg` or `git grep` command and adds what the index knows to each hit. The search command runs unchanged: the flags, the regular expression dialect, the result set and the exit code are its own. The command reads the index directly and needs no MCP server.
