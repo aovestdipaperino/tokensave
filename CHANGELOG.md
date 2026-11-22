@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Fixed
+
+- `tokensave init` and other commands no longer try to refresh an agent that is registered but not installed (e.g. OMP never set up on the machine). The upgrade resync, `tokensave install` and `tokensave reinstall` drop such stale registrations with a note naming `tokensave install --agent <id>` to register them again, and an install that wrote every registered agent no longer triggers a redundant same-version resync on the next command (Refs #1094).
+
 ### Changed
 
 - Auto-approve read-only MCP tools by default where the integration supports exact grants. Write-tool approvals require an exact-name opt-in, and existing policy can be reset explicitly (Refs #1080).

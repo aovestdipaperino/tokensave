@@ -32,16 +32,24 @@ pub fn quiet_install() -> bool {
 ///   (b) Fallback for external upgrades (`brew upgrade`, `cargo install`):
 ///       the running version is newer than `last_installed_version`.
 ///
-/// `install` is called once per tracked agent id and returns `false` when that
-/// agent could not be updated. Version markers advance regardless of those
-/// failures — see [`ResyncOutcome::failed`]. Returns the outcome; the caller is
-/// responsible for persisting `config` and reporting failures.
-pub fn resync_installed_agents<F>(
+/// `is_present` is asked about each tracked agent once a resync is due, and
+/// an agent it rejects is dropped from `installed_agents` instead of being
+/// reinstalled — see [`ResyncOutcome::dropped`] (#1094). It is not consulted
+/// otherwise, so an ordinary command never pays for detection (OMP's spawns
+/// `omp`).
+///
+/// `install` is called once per remaining agent id and returns `false` when
+/// that agent could not be updated. Version markers advance regardless of
+/// those failures — see [`ResyncOutcome::failed`]. Returns the outcome; the
+/// caller is responsible for persisting `config` and reporting failures.
+pub fn resync_installed_agents<P, F>(
     config: &mut crate::user_config::UserConfig,
     running: &str,
+    mut is_present: P,
     mut install: F,
 ) -> ResyncOutcome
 where
+    P: FnMut(&str) -> bool,
     F: FnMut(&str) -> bool,
 {
     let previous_version = if config.previous_version.is_empty() {
@@ -65,19 +73,21 @@ where
             config.previous_version = running.to_string();
             return ResyncOutcome {
                 changed: true,
-                ran: false,
-                failed: Vec::new(),
+                ..ResyncOutcome::default()
             };
         }
-        return ResyncOutcome {
-            changed: false,
-            ran: false,
-            failed: Vec::new(),
-        };
+        return ResyncOutcome::default();
     }
 
-    let agents = config.installed_agents.clone();
-    let failed: Vec<String> = agents.into_iter().filter(|id| !install(id)).collect();
+    // A registration whose harness is gone has nothing to refresh, and
+    // installing it again only fails, on every upgrade (#1094).
+    let (agents, dropped): (Vec<String>, Vec<String>) = config
+        .installed_agents
+        .iter()
+        .cloned()
+        .partition(|id| is_present(id));
+    config.installed_agents.clone_from(&agents);
+    let failed: Vec<String> = agents.iter().filter(|id| !install(id)).cloned().collect();
 
     // Advance the markers even when some agents failed. A config path we can't
     // write (missing app, read-only location) fails identically on every run,
@@ -89,7 +99,9 @@ where
     ResyncOutcome {
         changed: true,
         ran: true,
+        refreshed: agents.len(),
         failed,
+        dropped,
     }
 }
 
@@ -119,8 +131,13 @@ pub struct ResyncOutcome {
     pub changed: bool,
     /// Whether the per-agent install loop actually ran.
     pub ran: bool,
+    /// How many agents the install loop was run for.
+    pub refreshed: usize,
     /// Ids of agents whose install failed. Non-fatal.
     pub failed: Vec<String>,
+    /// Ids dropped from `installed_agents` because their harness is no longer
+    /// on this machine (#1094). They were not reinstalled.
+    pub dropped: Vec<String>,
 }
 
 /// `eprintln!` for agent install progress: silent under [`set_quiet_install`].
@@ -486,19 +503,29 @@ mod resync_tests {
     fn resync_runs_once_then_stops_when_every_agent_succeeds() {
         let mut config = upgraded_config();
         let mut calls = 0;
-        let first = resync_installed_agents(&mut config, "7.4.0", |_| {
-            calls += 1;
-            true
-        });
+        let first = resync_installed_agents(
+            &mut config,
+            "7.4.0",
+            |_| true,
+            |_| {
+                calls += 1;
+                true
+            },
+        );
         assert!(first.ran);
         assert_eq!(calls, 2);
         assert!(first.failed.is_empty());
 
         // Second invocation at the same version must not reinstall again.
-        let second = resync_installed_agents(&mut config, "7.4.0", |_| {
-            calls += 1;
-            true
-        });
+        let second = resync_installed_agents(
+            &mut config,
+            "7.4.0",
+            |_| true,
+            |_| {
+                calls += 1;
+                true
+            },
+        );
         assert!(!second.ran, "resync repeated at an unchanged version");
         assert_eq!(calls, 2, "install ran again on the second invocation");
     }
@@ -517,7 +544,7 @@ mod resync_tests {
             id != "copilot"
         };
 
-        let first = resync_installed_agents(&mut config, "7.4.0", &mut installer);
+        let first = resync_installed_agents(&mut config, "7.4.0", |_| true, &mut installer);
         assert!(first.ran);
         assert_eq!(first.failed, vec!["copilot".to_string()]);
         assert!(first.changed, "markers must advance despite the failure");
@@ -527,7 +554,7 @@ mod resync_tests {
 
         // Every later run at the same version is a no-op.
         for _ in 0..3 {
-            let again = resync_installed_agents(&mut config, "7.4.0", &mut installer);
+            let again = resync_installed_agents(&mut config, "7.4.0", |_| true, &mut installer);
             assert!(!again.ran, "a failing agent re-triggered the resync (#255)");
             assert!(again.failed.is_empty());
         }
@@ -567,16 +594,84 @@ mod resync_tests {
         );
     }
 
+    /// #1094: an agent registered earlier whose harness is not on this
+    /// machine (OMP never installed) is dropped from the registry instead of
+    /// being reinstalled — which could only fail, on every upgrade, with a
+    /// warning about an agent the user never selected.
+    #[test]
+    fn resync_drops_absent_agents_instead_of_reinstalling_them() {
+        let mut config = UserConfig {
+            installed_agents: vec![
+                "claude".to_string(),
+                "omp".to_string(),
+                "codex".to_string(),
+                "copilot".to_string(),
+            ],
+            last_installed_version: "7.17.2".to_string(),
+            ..Default::default()
+        };
+        let mut attempted = Vec::new();
+        let outcome = resync_installed_agents(
+            &mut config,
+            "7.17.2",
+            |id| id != "omp",
+            |id| {
+                attempted.push(id.to_string());
+                true
+            },
+        );
+        assert!(outcome.ran);
+        assert!(outcome.changed);
+        assert_eq!(outcome.refreshed, 3);
+        assert_eq!(outcome.dropped, vec!["omp".to_string()]);
+        assert!(
+            outcome.failed.is_empty(),
+            "omp must not be reported as a failure"
+        );
+        assert_eq!(attempted, vec!["claude", "codex", "copilot"]);
+        assert_eq!(config.installed_agents, vec!["claude", "codex", "copilot"]);
+    }
+
+    /// Presence detection can be costly (OMP spawns `omp`), so it must not
+    /// run on the ordinary command where no resync is due.
+    #[test]
+    fn presence_is_not_checked_when_no_resync_is_due() {
+        let mut config = UserConfig {
+            installed_agents: vec!["omp".to_string()],
+            last_installed_version: "7.17.2".to_string(),
+            previous_version: "7.17.2".to_string(),
+            ..Default::default()
+        };
+        let mut checks = 0;
+        let outcome = resync_installed_agents(
+            &mut config,
+            "7.17.2",
+            |_| {
+                checks += 1;
+                true
+            },
+            |_| true,
+        );
+        assert_eq!(outcome, ResyncOutcome::default());
+        assert_eq!(checks, 0);
+        assert_eq!(config.installed_agents, vec!["omp"]);
+    }
+
     #[test]
     fn patch_bump_advances_marker_without_reinstalling() {
         let mut config = upgraded_config();
         config.last_installed_version = "7.4.0".to_string();
         config.previous_version = "7.4.1".to_string();
         let mut calls = 0;
-        let outcome = resync_installed_agents(&mut config, "7.4.2", |_| {
-            calls += 1;
-            true
-        });
+        let outcome = resync_installed_agents(
+            &mut config,
+            "7.4.2",
+            |_| true,
+            |_| {
+                calls += 1;
+                true
+            },
+        );
         assert!(!outcome.ran, "patch bump should not reinstall");
         assert_eq!(calls, 0);
         assert!(outcome.changed);
@@ -590,10 +685,15 @@ mod resync_tests {
             ..Default::default()
         };
         let mut calls = 0;
-        let outcome = resync_installed_agents(&mut config, "7.4.2", |_| {
-            calls += 1;
-            true
-        });
+        let outcome = resync_installed_agents(
+            &mut config,
+            "7.4.2",
+            |_| true,
+            |_| {
+                calls += 1;
+                true
+            },
+        );
         assert_eq!(outcome, ResyncOutcome::default());
         assert_eq!(calls, 0);
     }
