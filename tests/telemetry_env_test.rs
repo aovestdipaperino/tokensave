@@ -32,42 +32,45 @@ fn run_gain(home: &Path, env: &[(&str, &str)]) -> Output {
     output
 }
 
-fn config_path(home: &Path) -> std::path::PathBuf {
-    home.join(".tokensave").join("config.toml")
+fn state_dir(home: &Path) -> std::path::PathBuf {
+    home.join(".tokensave")
 }
 
-/// A home whose config has an upload that is due right now: tokens pending,
-/// never uploaded, no recent failure, uploads enabled.
+/// A home whose upload is due right now: tokens pending, never uploaded, no
+/// recent failure, uploads enabled. Written in the current split layout
+/// (preferences in `config.toml`, volatile counters in `state.toml`), because
+/// any save during the run migrates legacy state keys out of `config.toml`.
 fn home_with_due_upload() -> TempDir {
     let home = TempDir::new().expect("temp home");
-    std::fs::create_dir_all(home.path().join(".tokensave")).expect("state dir");
+    let dir = state_dir(home.path());
+    std::fs::create_dir_all(&dir).expect("state dir");
+    std::fs::write(dir.join("config.toml"), "upload_enabled = true\n").expect("config");
     std::fs::write(
-        config_path(home.path()),
-        "upload_enabled = true\n\
-         pending_upload = 100\n\
+        dir.join("state.toml"),
+        "pending_upload = 100\n\
          last_upload_at = 0\n\
          last_flush_attempt_at = 0\n\
          last_pricing_fetch_at = 4102444800\n",
     )
-    .expect("config");
+    .expect("state");
     home
 }
 
-fn read_config(home: &Path) -> toml::Table {
-    let text = std::fs::read_to_string(config_path(home)).expect("read config");
-    text.parse().expect("config is TOML")
+fn read_state(home: &Path) -> toml::Table {
+    let text = std::fs::read_to_string(state_dir(home).join("state.toml")).expect("read state");
+    text.parse().expect("state is TOML")
 }
 
 fn assert_no_upload_attempt(home: &Path, var: &str) {
-    let config = read_config(home);
+    let state = read_state(home);
     assert_eq!(
-        config
+        state
             .get("pending_upload")
             .and_then(toml::Value::as_integer),
         Some(100),
         "{var}: the pending count must be left alone"
     );
-    let attempted = config
+    let attempted = state
         .get("last_flush_attempt_at")
         .and_then(toml::Value::as_integer)
         .unwrap_or(0);
