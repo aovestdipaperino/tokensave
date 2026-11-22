@@ -9,7 +9,6 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
-- **"Access denied" on Windows now explains a low-integrity binary (Refs #1063).** When `cargo install` builds in a `%TEMP%` that carries a Low mandatory label (some sandboxing tools apply one), the installed `tokensave.exe` inherits it. Windows then runs every tokensave command at low integrity, so `sync`, `init`, `install` and `doctor` fail with "Access denied (os error 5)" on lockfiles, `.tokensave/`, the database and `.git\hooks`, even though the user's ACLs allow the write. A failed command now checks the process integrity level and prints a `Hint:` line with the `icacls` commands that inspect and reset the label, and `tokensave doctor` reports it under **Binary**. Lockfile errors now name the lockfile path. See ["Access denied (os error 5)" on Windows](docs/guide/TROUBLESHOOTING.md#access-denied-os-error-5-on-windows).
 - **The PreToolUse hook no longer blocks non-code agents on generic wording (Refs #1078).** An untyped Agent prompt containing "explore", "read every", "full contents" or "architecture and structure" is now redirected only when it also names code (for example "source", "src", "repo", "function" or "module"). A prompt such as "Read every listed file in the list below" for OCR text now passes. Code-specific phrases such as "call graph" or "callers of" still redirect on their own. Reported by @dangeReis.
 ### Added
 
@@ -29,6 +28,14 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 - Move the build script's named values (Cargo and build-metadata variable keys, logo file names and width, the vendored grammar table) into `build/constants.rs`, pass the generated logo path to the crate through one build variable, and add an AGENTS.md/CONTRIBUTING.md rule and review checklist for named constants (Refs #1069).
 - Add a daily `Release drift` workflow that fails when crates.io carries a stable tokensave version without a published GitHub release, or when that release still lacks `SHA256SUMS` 12 hours after publication (Refs #1070). Without the release, `release.yml` never builds the binaries, Homebrew bottles and Scoop manifest, and `tokensave upgrade` reports the previous version as up to date, as happened with 7.17.0. The check was proposed by @0xreconlion.
+
+## [7.17.2] - 2026-11-22
+
+Patch release cut from 7.17.1 with only this fix cherry-picked; the entries under [Unreleased] above are not part of it.
+
+### Fixed
+
+- **"Access denied" on Windows now explains a low-integrity binary (Refs #1063).** When `cargo install` builds in a `%TEMP%` that carries a Low mandatory label (some sandboxing tools apply one), the installed `tokensave.exe` inherits it. Windows then runs every tokensave command at low integrity, so `sync`, `init`, `install` and `doctor` fail with "Access denied (os error 5)" on lockfiles, `.tokensave/`, the database and `.git\hooks`, even though the user's ACLs allow the write. A failed command now checks the process integrity level and prints a `Hint:` line with the `icacls` commands that inspect and reset the label, and `tokensave doctor` reports it under **Binary**. Lockfile errors now name the lockfile path. See ["Access denied (os error 5)" on Windows](docs/guide/TROUBLESHOOTING.md#access-denied-os-error-5-on-windows).
 
 ## [7.17.1] - 2026-11-22
 
