@@ -425,9 +425,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             } else {
                 user_config.last_installed_version.clone()
             };
-            let agent_count = user_config.installed_agents.len();
-            let outcome =
-                tokensave::agents::resync_installed_agents(&mut user_config, running, |id| {
+            let outcome = tokensave::agents::resync_installed_agents(
+                &mut user_config,
+                running,
+                |id| tokensave::agents::installed_agent_is_present(&home, id),
+                |id| {
                     let Ok(ag) = tokensave::agents::get_integration(id) else {
                         return true;
                     };
@@ -442,7 +444,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         force_permission_style: false,
                     };
                     ag.install(&ctx).is_ok()
-                });
+                },
+            );
             if outcome.changed {
                 // #624: an upgrade also brings tokensave's section of hooks
                 // that are already installed up to this binary's shape, global
@@ -474,7 +477,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 }
             }
             tokensave::agents::set_quiet_install(false);
-            if outcome.ran {
+            if outcome.refreshed > 0 {
                 // Say what this was and why (#419). The user did not ask for an
                 // install — they may well have run a read-only query — so a
                 // write to their agent config has to name itself. Before this,
@@ -482,11 +485,17 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 // file layer, which read as though the query had done it.
                 eprintln!(
                     "\x1b[32m✔\x1b[0m {}",
-                    resync_summary(running, &resynced_from, agent_count)
+                    resync_summary(running, &resynced_from, outcome.refreshed)
                 );
                 if let Some(warning) = tokensave::agents::cargo_build_binary_warning(&bin) {
                     eprintln!("{warning}");
                 }
+            }
+            if !outcome.dropped.is_empty() {
+                eprintln!(
+                    "{}",
+                    tokensave::agents::dropped_agents_note(&outcome.dropped)
+                );
             }
             if !outcome.failed.is_empty() {
                 eprintln!(
@@ -991,6 +1000,15 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             let scope = resolve_install_scope(local)?;
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
+            // The picker below only offers detected agents, so a stale entry
+            // for an absent harness could never be removed there (#1094).
+            // Project-scoped installs leave the global registry alone.
+            if !local {
+                report_dropped_agents(&home, &mut user_cfg);
+            }
+            // Global installs performed by this run, to tell whether every
+            // registered agent is now current (see below).
+            let mut installed_ids: Vec<String> = Vec::new();
 
             // --wildcard-permissions / --explicit-permissions (mutually
             // exclusive, enforced by clap) override the persisted default for
@@ -1056,6 +1074,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                         force_permission_style,
                     };
                     ag.install(&ctx)?;
+                    installed_ids.push(id.clone());
                     // A --local install is project-scoped; it must not touch the
                     // global installed-agents registry (which `reinstall`
                     // replays as global installs) or persist global user
@@ -1119,6 +1138,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     };
                     ag.install(&ctx)?;
                     installed_names.push(ag.name().to_string());
+                    installed_ids.push(id.clone());
                     if !local && !user_cfg.installed_agents.contains(id) {
                         user_cfg.installed_agents.push(id.clone());
                     }
@@ -1143,6 +1163,18 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             // Skip global user-config writes for a project-scoped install.
             if !local {
                 user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
+                // When this run wrote every registered agent, nothing is left
+                // for the startup resync: record the transition as done too.
+                // Otherwise an unset `previous_version` reads as 6.0.0 and the
+                // next command reinstalls everything at the same version,
+                // "7.17.2 (was 7.17.2)" (#1094).
+                if user_cfg
+                    .installed_agents
+                    .iter()
+                    .all(|id| installed_ids.contains(id))
+                {
+                    user_cfg.previous_version = env!("CARGO_PKG_VERSION").to_string();
+                }
                 user_cfg.save();
                 if let Some(warning) = tokensave::agents::cargo_build_binary_warning(&tokensave_bin)
                 {
@@ -1203,6 +1235,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             })?;
             let mut user_cfg = tokensave::user_config::UserConfig::load();
             tokensave::agents::migrate_installed_agents(&home, &mut user_cfg);
+            report_dropped_agents(&home, &mut user_cfg);
 
             // See the matching comment on Commands::Install: a flag overrides
             // and persists the default for future silent reinstalls.
@@ -1250,6 +1283,8 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     );
                 }
                 user_cfg.last_installed_version = env!("CARGO_PKG_VERSION").to_string();
+                // Every registered agent was just reinstalled (#1094).
+                user_cfg.previous_version = env!("CARGO_PKG_VERSION").to_string();
                 user_cfg.save();
                 if let Some(warning) = tokensave::agents::cargo_build_binary_warning(&tokensave_bin)
                 {
@@ -2371,6 +2406,18 @@ fn report_hook_removal(r: &tokensave::agents::HookRemoval) {
             "  Left {} and core.hooksPath in place — the directory still holds hooks tokensave did not write",
             r.hooks_dir.display()
         );
+    }
+}
+
+/// Drop registered agents whose harness is gone, saying so (#1094).
+fn report_dropped_agents(
+    home: &std::path::Path,
+    user_cfg: &mut tokensave::user_config::UserConfig,
+) {
+    let dropped = tokensave::agents::prune_absent_installed_agents(home, user_cfg);
+    if !dropped.is_empty() {
+        eprintln!("{}", tokensave::agents::dropped_agents_note(&dropped));
+        user_cfg.save();
     }
 }
 

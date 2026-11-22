@@ -130,6 +130,52 @@ pub fn migrate_installed_agents(home: &Path, config: &mut crate::user_config::Us
     config.save();
 }
 
+/// Whether the registered agent `id` is still on this machine: its harness
+/// is detected, or tokensave's config is still written into it.
+///
+/// An agent that is neither has nothing to refresh: reinstalling it either
+/// fails (OMP without an `omp` binary) or recreates config for a harness the
+/// user does not have (#1094). Unknown ids count as present, so this never
+/// decides about an id it cannot interpret.
+pub fn installed_agent_is_present(home: &Path, id: &str) -> bool {
+    get_integration(id).map_or(true, |ag| ag.is_detected(home) || ag.has_tokensave(home))
+}
+
+/// Drop every registered agent that [`installed_agent_is_present`] reports
+/// as gone, returning the dropped ids in registry order.
+///
+/// The interactive installer only asks about detected agents, so a stale
+/// entry (left by an earlier install, or by a harness the user removed) was
+/// never offered for removal and stayed in `installed_agents` forever, making
+/// every upgrade resync try, and fail, to refresh it (#1094). Does not save;
+/// the caller persists `config`.
+pub fn prune_absent_installed_agents(
+    home: &Path,
+    config: &mut crate::user_config::UserConfig,
+) -> Vec<String> {
+    let (kept, dropped): (Vec<String>, Vec<String>) = config
+        .installed_agents
+        .drain(..)
+        .partition(|id| installed_agent_is_present(home, id));
+    config.installed_agents = kept;
+    dropped
+}
+
+/// The note printed when stale registrations are dropped, naming the
+/// command that registers an agent again (#1094).
+pub fn dropped_agents_note(dropped: &[String]) -> String {
+    let reinstall = dropped
+        .iter()
+        .map(|id| format!("tokensave install --agent {id}"))
+        .collect::<Vec<_>>()
+        .join(" / ");
+    format!(
+        "\x1b[33mnote:\x1b[0m stopped tracking {}: not installed on this machine.\n  \
+         Run \x1b[1m{reinstall}\x1b[0m to register it again.",
+        dropped.join(", ")
+    )
+}
+
 /// Interactively pick which agents to install/uninstall.
 ///
 /// - 0 detected agents → returns an error.
@@ -223,6 +269,37 @@ mod migrate_tests {
             additions.iter().any(|id| id == "claude"),
             "claude must be detected even when copilot is already in the list, got {additions:?}"
         );
+    }
+
+    /// #1094: a stale registration for a harness that is not on the machine
+    /// is pruned; a present agent (Claude with its config) and an unknown id
+    /// are kept. Cursor stands in for OMP here because its detection depends
+    /// only on `home`, while OMP's also asks a real `omp` binary.
+    #[test]
+    fn prune_drops_only_agents_absent_from_the_machine() {
+        let dir = tempfile::tempdir().unwrap();
+        install_claude_marker(dir.path());
+        let mut config = crate::user_config::UserConfig {
+            installed_agents: vec![
+                "claude".to_string(),
+                "cursor".to_string(),
+                "not-an-agent".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        let dropped = prune_absent_installed_agents(dir.path(), &mut config);
+
+        assert_eq!(dropped, vec!["cursor".to_string()]);
+        assert_eq!(config.installed_agents, vec!["claude", "not-an-agent"]);
+    }
+
+    /// The note names the agent and the command that registers it again.
+    #[test]
+    fn dropped_note_is_actionable() {
+        let note = dropped_agents_note(&["omp".to_string()]);
+        assert!(note.contains("stopped tracking omp"), "{note}");
+        assert!(note.contains("tokensave install --agent omp"), "{note}");
     }
 
     #[test]

@@ -1976,7 +1976,16 @@ warning: could not refresh tokensave config for: copilot.
   Run tokensave install to see the error.
 ```
 
-The automatic post-upgrade refresh could not write one agent's config. The usual causes are an agent that is registered but no longer installed, or a config file in a read-only or centrally-managed location. Everything else was refreshed, and tokensave will not retry that path on every subsequent command — run `tokensave install` when convenient to see the specific error, or `tokensave uninstall --agent <name>` to stop tracking an agent you no longer use.
+The automatic post-upgrade refresh could not write one agent's config. The usual cause is a config file in a read-only or centrally-managed location, or an agent whose harness is partly removed but whose tokensave config is still present. Everything else was refreshed, and tokensave will not retry that path on every subsequent command — run `tokensave install` when convenient to see the specific error, or `tokensave uninstall --agent <name>` to stop tracking an agent you no longer use.
+
+### "stopped tracking ...: not installed on this machine"
+
+```
+note: stopped tracking omp: not installed on this machine.
+  Run tokensave install --agent omp to register it again.
+```
+
+An agent was registered with tokensave earlier, but neither the agent nor tokensave's config for it is on this machine any more. Refreshing it could only fail, so the upgrade refresh, `tokensave install` and `tokensave reinstall` drop it from the registry instead. Nothing on disk is removed. If you install the agent later, run the command shown to register it again.
 
 ### "agent config references Cargo build output"
 
