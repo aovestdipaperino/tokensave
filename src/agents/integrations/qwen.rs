@@ -35,11 +35,7 @@ impl AgentIntegration for QwenIntegration {
         std::fs::create_dir_all(&qwen_dir).ok();
         let settings_path = qwen_dir.join("settings.json");
 
-        install_mcp_server(
-            &settings_path,
-            &ctx.tokensave_bin,
-            permissions_management_enabled(&ctx.home),
-        )?;
+        install_mcp_server(&settings_path, &ctx.tokensave_bin, ctx)?;
 
         let qwen_md = qwen_dir.join("QWEN.md");
         install_prompt_rules(&qwen_md)?;
@@ -57,7 +53,11 @@ impl AgentIntegration for QwenIntegration {
         let qwen_dir = ctx.base_dir().join(".qwen");
         let settings_path = qwen_dir.join("settings.json");
 
-        uninstall_mcp_server(&settings_path);
+        if has_user_trust(&settings_path, ctx) {
+            crate::agent_note!("  MCP entry kept because it contains user-managed trust.");
+        } else {
+            uninstall_mcp_server(&settings_path);
+        }
 
         let qwen_md = qwen_dir.join("QWEN.md");
         uninstall_prompt_rules(&qwen_md);
@@ -76,7 +76,11 @@ impl AgentIntegration for QwenIntegration {
         let qwen_dir = ctx.base_dir().join(".qwen");
         let settings_path = qwen_dir.join("settings.json");
 
-        plan.mcp(&settings_path, &["mcpServers"], false);
+        if has_user_trust(&settings_path, ctx) {
+            plan.skipped("MCP server", "contains user-managed trust");
+        } else {
+            plan.mcp(&settings_path, &["mcpServers"], false);
+        }
 
         let qwen_md = qwen_dir.join("QWEN.md");
         plan.rules(&qwen_md, crate::agents::rules::LEGACY_RULES_MARKER, &[]);
@@ -113,6 +117,13 @@ impl AgentIntegration for QwenIntegration {
 // Install helpers
 // ---------------------------------------------------------------------------
 
+fn has_user_trust(path: &Path, ctx: &InstallContext) -> bool {
+    !permissions_management_enabled(&ctx.home)
+        && load_json_file(path)
+            .pointer("/mcpServers/tokensave/trust")
+            .is_some()
+}
+
 /// Register MCP server in ~/.qwen/settings.json.
 ///
 /// With `manage_permissions` false (#1067) the `trust` flag is the user's:
@@ -120,8 +131,11 @@ impl AgentIntegration for QwenIntegration {
 fn install_mcp_server(
     settings_path: &Path,
     tokensave_bin: &str,
-    manage_permissions: bool,
+    ctx: &InstallContext,
 ) -> Result<()> {
+    if crate::agents::write_approvals_requested(&ctx.tool_permissions) {
+        crate::agent_note!("  This integration uses whole-server trust. Exact write-tool approvals were not applied; use the agent's interactive prompts.");
+    }
     let backup = backup_config_file(settings_path)?;
     let mut settings = match load_json_file_strict(settings_path) {
         Ok(v) => v,
@@ -137,18 +151,23 @@ fn install_mcp_server(
         settings.pointer("/mcpServers/tokensave/command"),
         tokensave_bin,
     );
-    let trust = if manage_permissions {
-        Some(serde_json::Value::Bool(true))
+    let mut entry = settings
+        .pointer("/mcpServers/tokensave")
+        .filter(|entry| entry.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    entry["command"] = json!(bin);
+    entry["args"] = json!(["serve"]);
+    if permissions_management_enabled(&ctx.home) {
+        if ctx.force_permission_style {
+            if let Some(entry) = entry.as_object_mut() {
+                entry.remove("trust");
+            }
+        } else if entry["trust"].as_bool() == Some(true) {
+            crate::agent_note!("  Existing whole-server trust kept. Run tokensave install --agent qwen --reset-tool-approvals to restore prompts.");
+        }
     } else {
         crate::agent_note!("{PERMISSIONS_USER_MANAGED_NOTE}");
-        settings.pointer("/mcpServers/tokensave/trust").cloned()
-    };
-    let mut entry = json!({
-        "command": bin,
-        "args": ["serve"],
-    });
-    if let Some(trust) = trust {
-        entry["trust"] = trust;
     }
     settings["mcpServers"]["tokensave"] = entry;
 
@@ -271,9 +290,9 @@ fn doctor_check_settings(dc: &mut DoctorCounters, home: &Path, manage_permission
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     if is_trusted {
-        dc.pass("MCP server has trust: true (tools auto-approved)");
+        dc.warn("Existing server-wide trust approves write tools. Run tokensave install --agent qwen --reset-tool-approvals to restore prompts.");
     } else {
-        dc.warn("MCP server missing trust: true — Qwen Code will prompt for each tool call");
+        dc.pass("MCP server missing trust: true — Qwen Code will prompt for each tool call");
     }
 }
 

@@ -225,8 +225,8 @@ fn test_gemini_install_creates_config() {
     // Verify trust flag
     assert_eq!(
         content["mcpServers"]["tokensave"]["trust"],
-        serde_json::json!(true),
-        "gemini should have trust: true"
+        serde_json::Value::Null,
+        "Gemini should leave trust unset"
     );
 
     // Check GEMINI.md
@@ -261,8 +261,8 @@ fn test_qwen_install_creates_config() {
     // Verify trust flag
     assert_eq!(
         content["mcpServers"]["tokensave"]["trust"],
-        serde_json::json!(true),
-        "qwen should have trust: true"
+        serde_json::Value::Null,
+        "Qwen should leave trust unset"
     );
 
     // Check QWEN.md
@@ -2096,7 +2096,7 @@ fn test_expected_tool_perms_not_empty() {
 
 #[test]
 fn test_tool_perms_match_tool_names() {
-    let names = tool_names();
+    let names = read_only_tool_names();
     let perms = expected_tool_perms();
     assert_eq!(
         names.len(),

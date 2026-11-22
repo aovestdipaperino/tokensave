@@ -166,7 +166,7 @@ See [Automatic initialization](INDEXING.md#automatic-initialization) for the gua
 
 | Setting | Where | Effect |
 |---|---|---|
-| `manage_permissions` | `~/.tokensave/config.toml` | `true` (default): `install`, `reinstall` and the upgrade resync pre-approve every tokensave tool in each agent that supports it, and `uninstall` removes the approval. `false`: tokensave leaves every agent's tool approvals alone and `doctor` reports them as user-managed. |
+| `manage_permissions` | `~/.tokensave/config.toml` | `true` (default) adds read-only approvals where supported. Use `--approve-write-tool NAME` for exact write-tool grants or `--reset-tool-approvals` to restore prompts. `false` preserves user-managed approvals. |
 | `TOKENSAVE_MANAGE_PERMISSIONS` | environment | Overrides `manage_permissions` for one run. `0`, `false`, `no`, `off` or empty turn it off; any other value turns it on. |
 
 See [Tool approvals](AGENT-INTEGRATIONS.md#tool-approvals) for what each agent gets.
@@ -186,6 +186,7 @@ See [Tool approvals](AGENT-INTEGRATIONS.md#tool-approvals) for what each agent g
 |---|---|---|
 | `state_dir` | `~/.tokensave/config.toml` | Unset (default): each project keeps its state in `.tokensave/` at its root. An absolute path, or one starting with `~`: state lives in `<state_dir>/projects/<name>-<hash>/` and nothing is written inside the repository. Read when a tokensave process starts. |
 | `TOKENSAVE_STATE_DIR` | environment | Overrides `state_dir`. Empty selects the default layout. |
+| `TOKENSAVE_USER_CONFIG_DIR` | environment | Optional absolute directory for machine configuration files and locks. Useful for disposable CLI tests. |
 
 See [Keeping state outside the repository](INDEXING.md#keeping-state-outside-the-repository) for how existing state is kept and how orphans are reported.
 

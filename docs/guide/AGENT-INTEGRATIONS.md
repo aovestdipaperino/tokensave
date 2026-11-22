@@ -48,7 +48,7 @@ Setup registers the MCP server and the agent's integration. It also offers globa
 
 The Pi extension and Pi session-accounting details below describe stable builds; beta currently retains its earlier Pi integration.
 
-Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Pi gets `"exposure": "direct"` on its MCP entry -- Pi otherwise defaults a server to `codemode`, which declares none of its tools to the model -- prompt rules in `AGENTS.md`, and a managed TypeScript extension that supplies the same guardrail, savings reset, and session receipt, because Pi has no shell hooks. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, and a tokensave-managed default agent with permissive built-in/tokensave tool approval, delegation guardrail hooks, and post-write sync; user-managed Kiro agents are preserved.
+Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Pi gets `"exposure": "direct"` on its MCP entry -- Pi otherwise defaults a server to `codemode`, which declares none of its tools to the model -- prompt rules in `AGENTS.md`, and a managed TypeScript extension that supplies the same guardrail, savings reset, and session receipt, because Pi has no shell hooks. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, and a tokensave-managed default agent with per-tool read-only approvals, delegation guardrail hooks, and post-write sync; user-managed Kiro agents are preserved.
 
 Global OMP installs target the profile reported by bare `omp config path`, writing `<resolved-agent-dir>/mcp.json` and `<resolved-agent-dir>/rules/tokensave.md`. Export `OMP_PROFILE` or OMP's compatible `PI_PROFILE` when installing into a named profile; OMP's resolver also honors `PI_CONFIG_DIR` and `PI_CODING_AGENT_DIR`. Tokensave trusts that native resolver rather than duplicating OMP's profile logic. Tokensave installs MCP and advisory rules for OMP; it does not install OMP hook enforcement.
 
@@ -56,20 +56,30 @@ All changes are idempotent -- safe to run again after upgrading. After agent set
 
 ## Tool approvals
 
-Where an agent supports it, install also pre-approves the tokensave tools so the agent does not ask before each call:
+Fresh installations auto-approve only classified read-only tools where per-tool approval is available. Write-capable tools remain available through the agent's confirmation flow.
 
-| Agent | Approval setting tokensave writes |
+| Agent | Default policy on a fresh install |
 |---|---|
-| Claude Code | `permissions.allow` in `settings.json` (one entry per tool, or `mcp__tokensave__*` with `--wildcard-permissions`) |
-| Codex CLI | `approval_mode = "auto"` for each tool in `~/.codex/config.toml` |
-| Gemini CLI, Qwen Code | `"trust": true` on the tokensave MCP server entry |
-| Kiro | `allowedTools` in the tokensave-managed Kiro agent |
+| Claude Code | Exact read-only entries in `permissions.allow` |
+| Codex CLI | `approval_mode = "auto"` for exact read-only tools |
+| Kiro CLI 2.x | Exact read-only MCP selectors in the TokenSave profile's `allowedTools` |
+| Gemini CLI and Qwen Code | Leave whole-server trust unset so the agent can prompt |
+| Other integrations | Leave approvals to the agent's policy |
 
-The approval covers every tokensave tool, including the tools that change source files or local state, such as `tokensave_str_replace`, `tokensave_rename` and `tokensave_record_decision`. Reinstall and the upgrade resync extend it to tools that a new release adds.
+Kiro CLI V3 uses capability-based permissions. Follow Kiro's profile migration instructions when converting a CLI 2.x profile. [Kiro configuration reference](https://kiro.dev/docs/cli/v3/agent-config/)
 
-To decide approvals yourself, set `manage_permissions = false` in `~/.tokensave/config.toml`. Install, reinstall, the upgrade resync and uninstall then leave every approval setting above as they find it: no grant is added, extended or removed. A new install approves nothing, so the agent asks before each tokensave tool call until you approve tools in its own settings. The post-upgrade warning about tools not yet permitted stops, and `doctor` reports approvals as user-managed. The MCP server, hooks and rules files are still managed as before. `TOKENSAVE_MANAGE_PERMISSIONS=0` does the same for one run.
+To auto-approve a particular write tool in a supported integration, use its exact MCP name. Repeat the option to select multiple tools. An invocation can approve only tools available in that build.
 
-For Codex CLI and Gemini CLI/Qwen Code the approval sits inside the tokensave MCP server entry, so uninstall still removes it together with that entry.
+```bash
+tokensave install --agent claude --approve-write-tool tokensave_str_replace
+tokensave install --agent claude --reset-tool-approvals
+```
+
+Regular install, reinstall and automatic upgrade maintenance add missing read-only grants while preserving existing approval choices. Older wildcard, whole-server trust and write grants can continue to approve writes. Use `--reset-tool-approvals` to replace TokenSave-specific write grants and old blanket trust with safe defaults while preserving other agents' and tools' settings. The old `--explicit-permissions` spelling is an alias for reset. `--wildcard-permissions` is rejected because it would automatically cover future write tools.
+
+The core capability registry supplies exact approval candidates and the MCP `readOnlyHint`. Source edits, session baseline and persistent memory changes, the diagnostics compiler and the test runner require write opt-in. Read-only classification describes the requested operation. Routine index freshness and bookkeeping can still occur, and listing more tools changes only the session's discovery state. An unclassified tool receives no generated approval.
+
+Set `manage_permissions = false` in `~/.tokensave/config.toml`, or `TOKENSAVE_MANAGE_PERMISSIONS=0` for one run, to manage policies yourself. Install and upgrade leave existing approvals as found. Uninstall preserves a server entry or Kiro profile when removing it would delete attached user-managed approvals. Remove those entries separately in the agent if you want to disconnect them too.
 
 ## Installing for several agents at once
 

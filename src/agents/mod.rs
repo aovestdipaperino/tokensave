@@ -380,43 +380,65 @@ pub fn tool_names() -> Vec<String> {
         .collect()
 }
 
+pub const TOOL_PERMISSION_PREFIX: &str = "mcp__tokensave__";
+pub const TOKENSAVE_WILDCARD_PERM: &str = "mcp__tokensave__*";
+
 pub fn read_only_tool_names() -> Vec<String> {
-    get_installable_tool_definitions()
-        .iter()
-        .filter(|t| {
-            t.annotations
-                .as_ref()
-                .and_then(|annotations| annotations.get("readOnlyHint"))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-        })
-        .map(|t| t.name.clone())
+    use crate::mcp::tools::{tool_capability, ToolCapability};
+    tool_names()
+        .into_iter()
+        .filter(|name| tool_capability(name) == Some(ToolCapability::ReadOnly))
         .collect()
 }
 
 pub fn expected_tool_perms() -> Vec<String> {
-    get_installable_tool_definitions()
-        .iter()
-        .map(|t| format!("mcp__tokensave__{}", t.name))
+    read_only_tool_names()
+        .into_iter()
+        .map(|name| format!("{TOOL_PERMISSION_PREFIX}{name}"))
         .collect()
 }
 
-/// The single compact permission entry that grants Claude Code all tokensave
-/// tools at once, as an alternative to enumerating every tool individually.
-/// Both this wildcard form and the bare `mcp__tokensave` form are fully
-/// honored by Claude Code as allow rules; this is the one tokensave writes
-/// when the compact style is requested.
-pub const TOKENSAVE_WILDCARD_PERM: &str = "mcp__tokensave__*";
-
-/// Tool permissions to install for Claude Code: either the single compact
-/// wildcard entry, or the full explicit per-tool list, depending on
-/// `wildcard`. See [`TOKENSAVE_WILDCARD_PERM`] and [`expected_tool_perms`].
-pub fn install_tool_perms(wildcard: bool) -> Vec<String> {
-    if wildcard {
-        vec![TOKENSAVE_WILDCARD_PERM.to_string()]
-    } else {
-        expected_tool_perms()
+/// Resolve a one-time, exact-name opt-in. Unknown or unavailable tools fail
+/// before any adapter is run.
+pub fn requested_tool_perms(write_tools: &[String]) -> crate::errors::Result<Vec<String>> {
+    use crate::mcp::tools::{tool_capability, ToolCapability};
+    let available = tool_names();
+    let mut permissions = expected_tool_perms();
+    for tool in write_tools {
+        if !available.contains(tool) || tool_capability(tool) != Some(ToolCapability::SideEffecting)
+        {
+            return Err(crate::errors::TokenSaveError::Config {
+                message: format!("{tool} is not an available write-capable tool. Provide its full MCP tool name."),
+            });
+        }
+        let permission = format!("{TOOL_PERMISSION_PREFIX}{tool}");
+        if !permissions.contains(&permission) {
+            permissions.push(permission);
+        }
     }
+    Ok(permissions)
+}
+
+pub(crate) fn approved_tool_names(permissions: &[String]) -> Vec<String> {
+    use crate::mcp::tools::{tool_capability, ToolCapability};
+    tool_names()
+        .into_iter()
+        .filter(|name| match tool_capability(name) {
+            Some(ToolCapability::ReadOnly) => true,
+            Some(ToolCapability::SideEffecting) => {
+                permissions.contains(&format!("{TOOL_PERMISSION_PREFIX}{name}"))
+            }
+            None => false,
+        })
+        .collect()
+}
+
+pub(crate) fn write_approvals_requested(permissions: &[String]) -> bool {
+    use crate::mcp::tools::{tool_capability, ToolCapability};
+    permissions
+        .iter()
+        .filter_map(|permission| permission.strip_prefix(TOOL_PERMISSION_PREFIX))
+        .any(|name| tool_capability(name) == Some(ToolCapability::SideEffecting))
 }
 
 /// Whether tokensave may grant, refresh, or revoke agent tool approvals

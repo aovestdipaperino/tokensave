@@ -25,6 +25,7 @@ pub use definitions::{
     is_tool_area, reachable_tool_name, tool_area, CONTEXT_DESCRIPTION, CORE_TOOLS,
     GRAPH_SELECTOR_INSTRUCTIONS, MORE_TOOL, RENAME_DESCRIPTION, TOOL_AREAS,
 };
+pub use definitions::{tool_capability, ToolCapability};
 pub(crate) use handlers::dependencies::osv_inventory;
 pub use handlers::{handle_tool_call, handle_tool_call_with_session, SessionState};
 

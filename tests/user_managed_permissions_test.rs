@@ -91,8 +91,8 @@ fn claude_install_grants_tools_by_default() {
     assert!(
         claude_allow(home)
             .iter()
-            .any(|p| p == "mcp__tokensave__tokensave_str_replace"),
-        "negative control: the default install should grant every tool"
+            .any(|p| p == "mcp__tokensave__tokensave_search"),
+        "negative control: the default install should grant read-only tools"
     );
 }
 
@@ -243,7 +243,7 @@ fn gemini_and_qwen_install_omit_trust_when_user_managed() {
 }
 
 #[test]
-fn gemini_and_qwen_install_trust_by_default() {
+fn gemini_and_qwen_leave_trust_unset_by_default() {
     for (integration, dir) in [
         (&GeminiIntegration as &dyn AgentIntegration, ".gemini"),
         (&QwenIntegration as &dyn AgentIntegration, ".qwen"),
@@ -251,8 +251,8 @@ fn gemini_and_qwen_install_trust_by_default() {
         let temp = TempDir::new().expect("temp home");
         assert_eq!(
             trust_after_install(integration, temp.path(), dir),
-            serde_json::Value::Bool(true),
-            "{dir}: negative control: the default install should set trust"
+            serde_json::Value::Null,
+            "{dir}: negative control: the default install should leave trust unset"
         );
     }
 }
@@ -331,4 +331,57 @@ fn kiro_reinstall_keeps_user_allowed_tools() {
         serde_json::json!(["@tokensave/tokensave_search"]),
         "reinstall must keep the user's allowedTools"
     );
+}
+
+#[test]
+fn user_owned_trust_survives_uninstall() {
+    let dir = TempDir::new().expect("temp home");
+    let home = dir.path();
+    opt_out(home);
+    let ctx = make_install_ctx(home);
+    GeminiIntegration.install(&ctx).expect("install");
+    let path = home.join(".gemini").join("settings.json");
+    let mut config = read_json(&path);
+    config["mcpServers"]["tokensave"]["trust"] = serde_json::json!(true);
+    std::fs::write(&path, serde_json::to_vec(&config).expect("serialize")).expect("write settings");
+    let mut plan = tokensave::agents::uninstall::UninstallPlan::default();
+    plan.plan_agent(&GeminiIntegration, &ctx);
+    let report = plan.apply(tokensave::agents::uninstall::UninstallOutput::default());
+    assert_eq!(report.failed, 0);
+    assert_eq!(read_json(&path)["mcpServers"]["tokensave"]["trust"], true);
+}
+
+#[test]
+fn codex_reinstall_preserves_exact_opt_in_without_adding_other_writes() {
+    let dir = TempDir::new().expect("temp home");
+    let home = dir.path();
+    let mut ctx = make_install_ctx(home);
+    ctx.tool_permissions =
+        tokensave::agents::requested_tool_perms(&["tokensave_diagnostics".into()])
+            .expect("exact opt-in");
+    CodexIntegration.install(&ctx).expect("install");
+    ctx.tool_permissions = tokensave::agents::expected_tool_perms();
+    CodexIntegration.install(&ctx).expect("reinstall");
+    let path = home.join(".codex").join("config.toml");
+    let config = std::fs::read_to_string(&path)
+        .expect("config")
+        .parse::<toml::Table>()
+        .expect("TOML");
+    let tools = &config["mcp_servers"]["tokensave"]["tools"];
+    assert_eq!(
+        tools["tokensave_diagnostics"]["approval_mode"].as_str(),
+        Some("auto")
+    );
+    assert!(tools.get("tokensave_str_replace").is_none());
+    assert_eq!(
+        tools["tokensave_search"]["approval_mode"].as_str(),
+        Some("auto")
+    );
+}
+
+#[test]
+fn unknown_and_wildcard_write_opt_ins_are_rejected() {
+    for tool in ["tokensave_new_tool", "tokensave_*", "tokensave_search"] {
+        assert!(tokensave::agents::requested_tool_perms(&[tool.into()]).is_err());
+    }
 }

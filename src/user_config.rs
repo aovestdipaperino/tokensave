@@ -119,13 +119,8 @@ pub struct UserConfig {
     #[serde(default = "default_extraction_timeout_secs")]
     pub extraction_timeout_secs: u64,
 
-    /// When true, `install`/`reinstall` grant Claude Code tokensave tools via
-    /// a single compact `mcp__tokensave__*` entry in `permissions.allow`
-    /// instead of enumerating every tool individually. Both forms are fully
-    /// honored by Claude Code; this only affects what gets written. Defaults
-    /// to `false` (explicit per-tool list) for continuity with existing
-    /// installs. Overridable per-invocation with `--wildcard-permissions` /
-    /// `--explicit-permissions`.
+    /// Legacy preference retained when round-tripping old configuration.
+    /// Installers now generate exact grants and ignore this preference.
     #[serde(default)]
     pub wildcard_permissions: bool,
 
@@ -884,7 +879,9 @@ fn set_test_write_failure(path: Option<PathBuf>) {
     TEST_WRITE_FAILURE.with(|cell| *cell.borrow_mut() = path);
 }
 
-/// Returns the `~/.tokensave` directory, or a test-injected override.
+/// Returns the machine configuration directory. An explicit absolute
+/// override lets disposable CLI runs isolate config even on Windows, where
+/// the OS profile directory is independent of HOME and USERPROFILE.
 fn tokensave_dir() -> Option<PathBuf> {
     #[cfg(test)]
     {
@@ -892,7 +889,10 @@ fn tokensave_dir() -> Option<PathBuf> {
             return Some(dir);
         }
     }
-    dirs::home_dir().map(|h| h.join(".tokensave"))
+    std::env::var_os("TOKENSAVE_USER_CONFIG_DIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| dirs::home_dir().map(|h| h.join(".tokensave")))
 }
 
 /// Returns the path to the config file: `~/.tokensave/config.toml`.

@@ -1072,7 +1072,7 @@ mod tests {
             "tokensave_session_end",
             "tokensave_record_decision",
             "tokensave_record_code_area",
-            // Tools defined via `def_rw` (mutate files / run subprocesses).
+            // Side-effecting tools with readOnlyHint=false.
             "tokensave_replace_symbol",
             "tokensave_insert_at_symbol",
             "tokensave_run_affected_tests",
@@ -1081,8 +1081,14 @@ mod tests {
             "tokensave_rename",
             "tokensave_create_file",
             "tokensave_vuln_reachability",
+            "tokensave_diagnostics",
         ];
         for tool in &tools {
+            assert!(
+                crate::mcp::tools::tool_capability(&tool.name).is_some(),
+                "unclassified tool {}",
+                tool.name
+            );
             let ann = tool
                 .annotations
                 .as_ref()

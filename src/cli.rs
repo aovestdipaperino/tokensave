@@ -206,30 +206,27 @@ pub enum Commands {
         /// plank).
         #[arg(long)]
         local: bool,
-        /// Grant Claude Code tokensave tools via a single compact
-        /// "mcp__tokensave__*" entry instead of listing every tool
-        /// individually. Persisted to ~/.tokensave/config.toml for global
-        /// installs, so future silent reinstalls keep the choice.
-        #[arg(long, conflicts_with = "explicit_permissions")]
-        wildcard_permissions: bool,
-        /// Grant Claude Code tokensave tools via the explicit per-tool list
-        /// (the default). Only useful to switch back after having enabled
-        /// `--wildcard-permissions`.
-        #[arg(long, conflicts_with = "wildcard_permissions")]
+        /// Auto-approve an exact write-capable MCP tool. Repeat to select multiple tools.
+        #[arg(long = "approve-write-tool", conflicts_with = "explicit_permissions")]
+        approve_write_tools: Vec<String>,
+        /// Replace existing TokenSave write grants and whole-server trust with safe defaults.
+        #[arg(long = "reset-tool-approvals", visible_alias = "explicit-permissions")]
         explicit_permissions: bool,
+        /// Removed because a wildcard approves future write tools.
+        #[arg(long, hide = true)]
+        wildcard_permissions: bool,
     },
     /// Refresh settings for all already-installed agents
     Reinstall {
-        /// Grant Claude Code tokensave tools via a single compact
-        /// "mcp__tokensave__*" entry instead of listing every tool
-        /// individually. Persisted to ~/.tokensave/config.toml.
-        #[arg(long, conflicts_with = "explicit_permissions")]
-        wildcard_permissions: bool,
-        /// Grant Claude Code tokensave tools via the explicit per-tool list
-        /// (the default). Only useful to switch back after having enabled
-        /// `--wildcard-permissions`.
-        #[arg(long, conflicts_with = "wildcard_permissions")]
+        /// Auto-approve an exact write-capable MCP tool. Repeat to select multiple tools.
+        #[arg(long = "approve-write-tool", conflicts_with = "explicit_permissions")]
+        approve_write_tools: Vec<String>,
+        /// Replace existing TokenSave write grants and whole-server trust with safe defaults.
+        #[arg(long = "reset-tool-approvals", visible_alias = "explicit-permissions")]
         explicit_permissions: bool,
+        /// Removed because a wildcard approves future write tools.
+        #[arg(long, hide = true)]
+        wildcard_permissions: bool,
     },
     /// Disconnect TokenSave integrations while preserving the executable and data
     ///
@@ -687,6 +684,7 @@ mod tests {
                 git_hook,
                 wildcard_permissions,
                 explicit_permissions,
+                ..
             }) => {
                 assert_eq!(agent, vec!["claude".to_string(), "cursor".to_string()]);
                 assert!(!local);

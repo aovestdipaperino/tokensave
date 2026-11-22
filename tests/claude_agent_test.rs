@@ -165,55 +165,30 @@ fn test_install_creates_settings_with_permissions() {
 }
 
 #[test]
-fn test_install_writes_single_wildcard_entry_when_requested() {
-    // Opt-in compact install (`--wildcard-permissions` / the
-    // `wildcard_permissions` config field): a single "mcp__tokensave__*"
-    // entry should be written instead of every tool individually.
-    let dir = TempDir::new().unwrap();
-    let home = dir.path();
+fn exact_write_opt_in_survives_reinstall_until_explicit_reset() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
     let mut ctx = make_install_ctx(home);
-    ctx.tool_permissions = tokensave::agents::install_tool_perms(true);
-    ctx.force_permission_style = true; // represents `--wildcard-permissions`
+    ctx.tool_permissions =
+        tokensave::agents::requested_tool_perms(&["tokensave_str_replace".to_string()]).unwrap();
     ClaudeIntegration.install(&ctx).unwrap();
-
-    let settings = read_json(&home.join(".claude").join("settings.json"));
-    let allow: Vec<&str> = settings["permissions"]["allow"]
-        .as_array()
-        .expect("permissions.allow should be an array")
-        .iter()
-        .filter_map(|v| v.as_str())
-        .collect();
-    assert_eq!(
-        allow,
-        vec!["mcp__tokensave__*"],
-        "wildcard install should write exactly one compact entry"
-    );
-}
-
-#[test]
-fn test_reinstall_switching_from_explicit_to_wildcard_prunes_old_entries() {
-    let dir = TempDir::new().unwrap();
-    let home = dir.path();
-    let ctx = make_install_ctx(home); // explicit per-tool list
+    ctx.tool_permissions = expected_tool_perms();
     ClaudeIntegration.install(&ctx).unwrap();
-
-    let mut wildcard_ctx = make_install_ctx(home);
-    wildcard_ctx.tool_permissions = tokensave::agents::install_tool_perms(true);
-    wildcard_ctx.force_permission_style = true; // represents `--wildcard-permissions`
-    ClaudeIntegration.install(&wildcard_ctx).unwrap();
-
-    let settings = read_json(&home.join(".claude").join("settings.json"));
-    let allow: Vec<&str> = settings["permissions"]["allow"]
+    let path = home.join(".claude").join("settings.json");
+    let grants = read_json(&path)["permissions"]["allow"]
         .as_array()
         .unwrap()
-        .iter()
-        .filter_map(|v| v.as_str())
-        .collect();
-    assert_eq!(
-        allow,
-        vec!["mcp__tokensave__*"],
-        "reinstalling with wildcard enabled should leave no explicit leftovers"
-    );
+        .clone();
+    assert!(grants.contains(&serde_json::json!("mcp__tokensave__tokensave_str_replace")));
+    assert!(!grants.contains(&serde_json::json!("mcp__tokensave__tokensave_create_file")));
+
+    ctx.force_permission_style = true;
+    ClaudeIntegration.install(&ctx).unwrap();
+    let grants = read_json(&path)["permissions"]["allow"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(!grants.contains(&serde_json::json!("mcp__tokensave__tokensave_str_replace")));
 }
 
 #[test]
