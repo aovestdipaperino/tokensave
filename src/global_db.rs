@@ -655,6 +655,31 @@ impl GlobalDb {
         total
     }
 
+    /// Lists tracked project paths through a read-only connection, without
+    /// creating, migrating or writing the database (#1055: `purge --dry-run`
+    /// must not change anything). `None` when the file is absent, fails the
+    /// compatibility preflight or cannot be read.
+    pub async fn read_project_paths(db_path: &Path) -> Option<Vec<String>> {
+        if !db_path.is_file() {
+            return None;
+        }
+        crate::db::compatibility::preflight(db_path, 0).await.ok()?;
+        let db = Builder::new_local(db_path)
+            .flags(libsql::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .build()
+            .await
+            .ok()?;
+        let conn = db.connect().ok()?;
+        let mut rows = conn.query("SELECT path FROM projects", ()).await.ok()?;
+        let mut paths = Vec::new();
+        while let Ok(Some(row)) = rows.next().await {
+            if let Ok(path) = row.get::<String>(0) {
+                paths.push(path);
+            }
+        }
+        Some(paths)
+    }
+
     /// Returns all tracked project paths.
     pub async fn list_project_paths(&self) -> Vec<String> {
         let Ok(mut rows) = self.conn.query("SELECT path FROM projects", ()).await else {

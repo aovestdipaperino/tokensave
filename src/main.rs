@@ -12,6 +12,7 @@ mod global;
 mod grep_command;
 mod okf_command;
 mod profile_command;
+mod purge_command;
 mod serve;
 mod tool_command;
 
@@ -180,13 +181,19 @@ async fn main() {
     {
         // `env!` only accepts literal keys; build/constants.rs (`rustc_env`)
         // defines them, and tests/build_constants_test.rs checks they agree.
+        // #1055: detected from the running executable on every call, so a
+        // copied or reinstalled binary never shows stale provenance.
+        let provenance = tokensave::purge::provenance::detect();
         println!(
-            "tokensave {}\ncommit: {}\nbuild-profile: {}\ntarget: {}\nrustc: {}",
+            "tokensave {}\ncommit: {}\nbuild-profile: {}\ntarget: {}\nrustc: {}\n\
+             install-method: {} ({})",
             env!("CARGO_PKG_VERSION"),
             env!("TOKENSAVE_BUILD_COMMIT"),
             env!("TOKENSAVE_BUILD_PROFILE"),
             env!("TOKENSAVE_BUILD_TARGET"),
             env!("TOKENSAVE_BUILD_RUSTC"),
+            provenance.method.label(),
+            provenance.evidence,
         );
         return;
     }
@@ -296,6 +303,32 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     if let Commands::Grep { graph, command } = &command {
         let code = grep_command::run(graph.as_deref(), command).await?;
         process::exit(code);
+    }
+
+    // Purge deletes the user config this startup path would save, and a dry
+    // run must not write anything, so it bypasses startup maintenance (#1055).
+    if let Commands::Purge {
+        dry_run,
+        yes,
+        local,
+        project,
+        all_projects,
+        include_history,
+    } = command
+    {
+        let code = purge_command::run(purge_command::PurgeArgs {
+            dry_run,
+            yes,
+            local,
+            project,
+            all_projects,
+            include_history,
+        })
+        .await?;
+        if code != 0 {
+            process::exit(code);
+        }
+        return Ok(());
     }
 
     // Verification must bypass config saves, telemetry and agent maintenance.
@@ -1343,23 +1376,17 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     user_cfg.save();
                 }
             } else {
-                for id in user_cfg.installed_agents.clone() {
-                    if let Ok(ag) = tokensave::agents::get_integration(&id) {
-                        if local && !ag.supports_local() {
-                            eprintln!(
-                                "  skipping {} (no project-scoped config; --local unsupported)",
-                                ag.name()
-                            );
-                            continue;
-                        }
-                        let ctx = tokensave::agents::InstallContext {
-                            home: home.clone(),
-                            tokensave_bin: String::new(),
-                            tool_permissions: tokensave::agents::expected_tool_perms(),
-                            scope: scope.clone(),
-                            force_permission_style: false,
-                        };
-                        ag.uninstall(&ctx).ok();
+                // Shared with `tokensave purge` (#1055). Per-agent failures
+                // are ignored here, as they always were for this command.
+                let outcomes =
+                    tokensave::agents::uninstall_agents(&home, &user_cfg.installed_agents, &scope);
+                for (id, outcome) in &outcomes {
+                    if *outcome == tokensave::agents::AgentUninstallOutcome::NoLocalConfig {
+                        let name = tokensave::agents::get_integration(id)
+                            .map_or_else(|_| id.clone(), |ag| ag.name().to_string());
+                        eprintln!(
+                            "  skipping {name} (no project-scoped config; --local unsupported)"
+                        );
                     }
                 }
                 if local {
@@ -1380,9 +1407,18 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                     } else {
                         report_hook_removal(&tokensave::agents::remove_git_hooks());
                     }
+                    // #1055: indexes, settings and the binary all stay.
+                    eprintln!(
+                        "  Indexes and settings were kept; `tokensave purge` deletes them.
+  {}",
+                        tokensave::purge::provenance::removal_reminder(
+                            &tokensave::purge::provenance::detect()
+                        )
+                    );
                 }
             }
         }
+        Commands::Purge { .. } => unreachable!("purge is dispatched before startup"),
         Commands::ExtractWorker => {
             // Handled by the early dispatch at the top of run(); this arm
             // exists only for clap match exhaustiveness.
@@ -2220,6 +2256,7 @@ fn should_skip_agent_install_maintenance(command: &Commands) -> bool {
         Commands::Install { .. }
             | Commands::Reinstall { .. }
             | Commands::Uninstall { .. }
+            | Commands::Purge { .. }
             | Commands::Doctor { .. }
             | Commands::AuditEdges { .. }
             // `Serve` is the hot path used by MCP clients (Claude Code,

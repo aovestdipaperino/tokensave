@@ -57,6 +57,14 @@ current `secure_delete` mode, Q0413 deletes every row with it on, and Q0414
 restores the recorded integer mode. Q0415-Q0418 are the inline test. No
 schema, binding or existing entry changes.
 
+Purge registry context (#1055, 2026-11-22): Q0426 is the read-only form of
+Q0279. `GlobalDb::read_project_paths` runs it on a `SQLITE_OPEN_READ_ONLY`
+connection after the compatibility preflight, so a purge dry run
+with `--all-projects` lists registered projects without creating,
+migrating or writing the global database. It binds nothing. A real purge
+drops the purged projects' rows with Q0278. One occurrence is added; no
+schema, binding or existing entry changes.
+
 Search-annotation context (#688, 2026-11-15): Q0419-Q0425 are the read-only
 lookups of `tokensave grep`, in the section "`tokensave grep` additions" at
 the end of the SQL sections. They add seven occurrences, one source file and
@@ -74,7 +82,7 @@ unchanged.
 ## Inventory summary
 
 - SQL-bearing source files: **41**.
-- SQL literal/template occurrences: **382**.
+- SQL literal/template occurrences: **383**.
 - Functions retained for construction/binding context: **182**.
 
 ## Source file index
@@ -106,7 +114,7 @@ unchanged.
 | [src/extraction/ruby_extractor.rs](../src/extraction/ruby_extractor.rs) | 1 |
 | [src/extraction/ruby_template_extractor.rs](../src/extraction/ruby_template_extractor.rs) | 1 |
 | [src/graphify.rs](../src/graphify.rs) | 5 |
-| [src/global_db.rs](../src/global_db.rs) | 50 |
+| [src/global_db.rs](../src/global_db.rs) | 51 |
 | [src/graph/imports.rs](../src/graph/imports.rs) | 1 |
 | [src/graph/queries.rs](../src/graph/queries.rs) | 5 |
 | [src/grep_annotate/index.rs](../src/grep_annotate/index.rs) | 7 |
@@ -3452,9 +3460,17 @@ Source: [src/global_db.rs:638](../src/global_db.rs#L638).
 DELETE FROM projects WHERE path IN ({})
 ```
 
+#### Q0426 — `read_project_paths`
+
+Source: [src/global_db.rs:673](../src/global_db.rs#L673).
+
+```sql
+SELECT path FROM projects
+```
+
 #### Q0279 — `list_project_paths`
 
-Source: [src/global_db.rs:654](../src/global_db.rs#L654).
+Source: [src/global_db.rs:679](../src/global_db.rs#L679).
 
 ```sql
 SELECT path FROM projects
@@ -3462,7 +3478,7 @@ SELECT path FROM projects
 
 #### Q0280 — `insert_turn`
 
-Source: [src/global_db.rs:672](../src/global_db.rs#L672).
+Source: [src/global_db.rs:697](../src/global_db.rs#L697).
 
 ```sql
 INSERT OR IGNORE INTO turns
@@ -3474,7 +3490,7 @@ INSERT OR IGNORE INTO turns
 
 #### Q0281 — `add_tool_result_tokens`
 
-Source: [src/global_db.rs:716](../src/global_db.rs#L716).
+Source: [src/global_db.rs:741](../src/global_db.rs#L741).
 
 ```sql
 UPDATE turns SET tool_result_tokens = tool_result_tokens + ?2 WHERE message_id = ?1
@@ -3482,7 +3498,7 @@ UPDATE turns SET tool_result_tokens = tool_result_tokens + ?2 WHERE message_id =
 
 #### Q0282 — `upsert_monotonic_turn`
 
-Source: [src/global_db.rs:802](../src/global_db.rs#L802).
+Source: [src/global_db.rs:827](../src/global_db.rs#L827).
 
 ```sql
 INSERT INTO turns
@@ -3539,7 +3555,7 @@ INSERT INTO turns
 
 #### Q0283 — `total_cost_since`
 
-Source: [src/global_db.rs:805](../src/global_db.rs#L805).
+Source: [src/global_db.rs:830](../src/global_db.rs#L830).
 
 ```sql
 SELECT COALESCE(SUM(cost_usd), 0.0) FROM turns WHERE timestamp >= ?1
@@ -3547,7 +3563,7 @@ SELECT COALESCE(SUM(cost_usd), 0.0) FROM turns WHERE timestamp >= ?1
 
 #### Q0284 — `total_tokens_since`
 
-Source: [src/global_db.rs:819](../src/global_db.rs#L819).
+Source: [src/global_db.rs:844](../src/global_db.rs#L844).
 
 ```sql
 SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM turns WHERE timestamp >= ?1
@@ -3555,7 +3571,7 @@ SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM turns WHERE timestamp
 
 #### Q0285 — `token_breakdown_since`
 
-Source: [src/global_db.rs:834](../src/global_db.rs#L834).
+Source: [src/global_db.rs:859](../src/global_db.rs#L859).
 
 ```sql
 SELECT COALESCE(SUM(input_tokens), 0),
@@ -3567,7 +3583,7 @@ SELECT COALESCE(SUM(input_tokens), 0),
 
 #### Q0286 — `cost_by_model_since`
 
-Source: [src/global_db.rs:865](../src/global_db.rs#L865).
+Source: [src/global_db.rs:890](../src/global_db.rs#L890).
 
 ```sql
 SELECT model, SUM(cost_usd),
@@ -3578,7 +3594,7 @@ SELECT model, SUM(cost_usd),
 
 #### Q0287 — `cost_by_category_since`
 
-Source: [src/global_db.rs:892](../src/global_db.rs#L892).
+Source: [src/global_db.rs:917](../src/global_db.rs#L917).
 
 ```sql
 SELECT category, SUM(cost_usd), COUNT(*)
@@ -3588,7 +3604,7 @@ SELECT category, SUM(cost_usd), COUNT(*)
 
 #### Q0288 — `nav_turns_since`
 
-Source: [src/global_db.rs:929](../src/global_db.rs#L929).
+Source: [src/global_db.rs:954](../src/global_db.rs#L954).
 
 ```sql
 SELECT tool_names, tool_result_tokens FROM turns WHERE timestamp >= ?1 AND agent = 'claude'
@@ -3596,7 +3612,7 @@ SELECT tool_names, tool_result_tokens FROM turns WHERE timestamp >= ?1 AND agent
 
 #### Q0289 — `cost_by_agent_since`
 
-Source: [src/global_db.rs:953](../src/global_db.rs#L953).
+Source: [src/global_db.rs:978](../src/global_db.rs#L978).
 
 ```sql
 SELECT agent,
@@ -3613,7 +3629,7 @@ SELECT agent,
 
 #### Q0290 — `get_parse_offset`
 
-Source: [src/global_db.rs:1001](../src/global_db.rs#L1001).
+Source: [src/global_db.rs:1026](../src/global_db.rs#L1026).
 
 ```sql
 SELECT byte_offset, mtime FROM parse_offsets WHERE file_path = ?1
@@ -3621,7 +3637,7 @@ SELECT byte_offset, mtime FROM parse_offsets WHERE file_path = ?1
 
 #### Q0291 — `set_parse_offset`
 
-Source: [src/global_db.rs:1017](../src/global_db.rs#L1017).
+Source: [src/global_db.rs:1042](../src/global_db.rs#L1042).
 
 ```sql
 INSERT INTO parse_offsets (file_path, byte_offset, mtime) VALUES (?1, ?2, ?3)
@@ -3630,7 +3646,7 @@ INSERT INTO parse_offsets (file_path, byte_offset, mtime) VALUES (?1, ?2, ?3)
 
 #### Q0292 — `checkpoint`
 
-Source: [src/global_db.rs:1028](../src/global_db.rs#L1028).
+Source: [src/global_db.rs:1053](../src/global_db.rs#L1053).
 
 ```sql
 PRAGMA wal_checkpoint(TRUNCATE);
@@ -3638,7 +3654,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 
 #### Q0293 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1128](../src/global_db.rs#L1128).
+Source: [src/global_db.rs:1153](../src/global_db.rs#L1153).
 
 ```sql
 DELETE FROM meta WHERE key = 'projects_path_normalized';
@@ -3647,7 +3663,7 @@ DELETE FROM meta WHERE key = 'projects_path_normalized';
 
 #### Q0294 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1140](../src/global_db.rs#L1140).
+Source: [src/global_db.rs:1165](../src/global_db.rs#L1165).
 
 ```sql
 INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
@@ -3655,7 +3671,7 @@ INSERT INTO projects (path, tokens_saved) VALUES (?1, ?2)
 
 #### Q0295 — `migration_merges_duplicates_and_drops_relative_rows`
 
-Source: [src/global_db.rs:1149](../src/global_db.rs#L1149).
+Source: [src/global_db.rs:1174](../src/global_db.rs#L1174).
 
 ```sql
 INSERT INTO savings_ledger (ts, project_path, tool_name, before_tokens, after_tokens) VALUES (42, ?1, 'tokensave_context', 1000, 100)
@@ -11292,7 +11308,7 @@ Source: [src/global_db.rs:629](../src/global_db.rs#L629).
 
 ### `migration_merges_duplicates_and_drops_relative_rows` — src/global_db.rs:1115
 
-Source: [src/global_db.rs:1115](../src/global_db.rs#L1115).
+Source: [src/global_db.rs:1140](../src/global_db.rs#L1140).
 
 ```rust
     async fn migration_merges_duplicates_and_drops_relative_rows() {
@@ -13057,7 +13073,7 @@ Source: [src/global_db.rs:450](../src/global_db.rs#L450).
 
 ### `upsert_monotonic_turn` — src/global_db.rs:802
 
-Source: [src/global_db.rs:802](../src/global_db.rs#L802).
+Source: [src/global_db.rs:827](../src/global_db.rs#L827).
 
 ```rust
     async fn upsert_monotonic_turn(
@@ -13469,7 +13485,7 @@ SELECT agent, credits, tool_result_tokens, usage_revision FROM turns LIMIT 0
 
 #### Q0392 — `legacy_codex_rows`
 
-Source: [src/global_db.rs:788](../src/global_db.rs#L788).
+Source: [src/global_db.rs:813](../src/global_db.rs#L813).
 
 ```sql
 SELECT COUNT(*) FROM turns WHERE agent = 'codex' AND usage_revision = 0
@@ -13487,7 +13503,7 @@ DROP TABLE turns
 
 #### Q0394 — `snapshot_migration_fails_closed_then_retries_when_writable`
 
-Source: [src/global_db.rs:1129](../src/global_db.rs#L1129).
+Source: [src/global_db.rs:1154](../src/global_db.rs#L1154).
 
 ```sql
 CREATE TABLE turns (agent TEXT, credits INTEGER, tool_result_tokens INTEGER);
@@ -13497,7 +13513,7 @@ CREATE TABLE turns (agent TEXT, credits INTEGER, tool_result_tokens INTEGER);
 
 #### Q0395 — `snapshot_migration_fails_closed_then_retries_when_writable`
 
-Source: [src/global_db.rs:1135](../src/global_db.rs#L1135).
+Source: [src/global_db.rs:1160](../src/global_db.rs#L1160).
 
 ```sql
 PRAGMA query_only = OFF;
@@ -13506,7 +13522,7 @@ PRAGMA query_only = OFF;
 
 #### Q0396 — `concurrent_snapshot_migrations_recheck_actual_schema`
 
-Source: [src/global_db.rs:1157](../src/global_db.rs#L1157).
+Source: [src/global_db.rs:1182](../src/global_db.rs#L1182).
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -13517,7 +13533,7 @@ PRAGMA journal_mode = WAL;
 
 #### Q0397 — `concurrent_snapshot_migrations_recheck_actual_schema`
 
-Source: [src/global_db.rs:1164](../src/global_db.rs#L1164).
+Source: [src/global_db.rs:1189](../src/global_db.rs#L1189).
 
 ```sql
 PRAGMA busy_timeout = 5000;
@@ -13583,7 +13599,7 @@ Source: [src/global_db.rs:337](../src/global_db.rs#L337).
 
 ### `legacy_codex_rows` — src/global_db.rs:784
 
-Source: [src/global_db.rs:784](../src/global_db.rs#L784).
+Source: [src/global_db.rs:809](../src/global_db.rs#L809).
 
 ```rust
     pub async fn legacy_codex_rows(&self) -> crate::errors::Result<u64> {
@@ -13608,7 +13624,7 @@ Source: [src/global_db.rs:784](../src/global_db.rs#L784).
 
 ### `snapshot_migration_fails_closed_then_retries_when_writable` — src/global_db.rs:1125
 
-Source: [src/global_db.rs:1125](../src/global_db.rs#L1125).
+Source: [src/global_db.rs:1150](../src/global_db.rs#L1150).
 
 ```rust
     async fn snapshot_migration_fails_closed_then_retries_when_writable() {
@@ -13636,7 +13652,7 @@ Source: [src/global_db.rs:1125](../src/global_db.rs#L1125).
 
 ### `concurrent_snapshot_migrations_recheck_actual_schema` — src/global_db.rs:1147
 
-Source: [src/global_db.rs:1147](../src/global_db.rs#L1147).
+Source: [src/global_db.rs:1172](../src/global_db.rs#L1172).
 
 ```rust
     async fn concurrent_snapshot_migrations_recheck_actual_schema() {

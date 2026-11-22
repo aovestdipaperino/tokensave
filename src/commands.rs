@@ -417,25 +417,14 @@ pub(crate) async fn handle_wipe(all: bool) -> tokensave::errors::Result<()> {
         if !ts_dir.exists() {
             continue;
         }
-        let removal = if !tokensave::cloud::is_beta() && ts_dir.join("beta").exists() {
-            // Beta owns this subtree; wiping stable must preserve it.
-            (|| -> std::io::Result<()> {
-                for entry in fs::read_dir(&ts_dir)? {
-                    let entry = entry?;
-                    if entry.file_name() == "beta" {
-                        continue;
-                    }
-                    if entry.file_type()?.is_dir() {
-                        fs::remove_dir_all(entry.path())?;
-                    } else {
-                        fs::remove_file(entry.path())?;
-                    }
-                }
-                Ok(())
-            })()
-        } else {
-            fs::remove_dir_all(&ts_dir)
-        };
+        // Beta owns its subtree; wiping stable must preserve it. Shared with
+        // `tokensave purge` (#1055), which also refuses to follow a link.
+        let keep = (!tokensave::cloud::is_beta()
+            && ts_dir
+                .join(tokensave::purge::constants::BETA_DIRNAME)
+                .exists())
+        .then_some(tokensave::purge::constants::BETA_DIRNAME);
+        let removal = tokensave::purge::remove_path(&ts_dir, keep).map(|_| ());
         match removal {
             Ok(()) => {
                 removed += 1;
