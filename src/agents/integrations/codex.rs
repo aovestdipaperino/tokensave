@@ -28,7 +28,11 @@ impl AgentIntegration for CodexIntegration {
         std::fs::create_dir_all(&codex_dir).ok();
         let config_path = codex_dir.join("config.toml");
 
-        install_mcp_server(&config_path, &ctx.tokensave_bin)?;
+        install_mcp_server(
+            &config_path,
+            &ctx.tokensave_bin,
+            permissions_management_enabled(&ctx.home),
+        )?;
 
         let agents_md = codex_dir.join("AGENTS.md");
         install_prompt_rules(&agents_md)?;
@@ -59,7 +63,7 @@ impl AgentIntegration for CodexIntegration {
         crate::agent_note!("\n\x1b[1mCodex CLI integration\x1b[0m");
         let codex_dir = ctx.home.join(".codex");
         let config_path = codex_dir.join("config.toml");
-        doctor_check_config(dc, &config_path);
+        doctor_check_config(dc, &config_path, permissions_management_enabled(&ctx.home));
         doctor_check_prompt(dc, &codex_dir);
     }
 
@@ -91,7 +95,15 @@ impl AgentIntegration for CodexIntegration {
 // ---------------------------------------------------------------------------
 
 /// Register MCP server and auto-approve tools in ~/.codex/config.toml.
-fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
+///
+/// With `manage_permissions` false (#1067) the per-tool approvals are the
+/// user's: an existing `tools` table is carried over unchanged and none is
+/// created.
+fn install_mcp_server(
+    config_path: &Path,
+    tokensave_bin: &str,
+    manage_permissions: bool,
+) -> Result<()> {
     let mut config = load_toml_file(config_path)?;
 
     // Ensure [mcp_servers.tokensave] exists
@@ -123,17 +135,24 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str) -> Result<()> {
         toml::Value::Array(vec![toml::Value::String("serve".to_string())]),
     );
 
-    // Auto-approve all tokensave tools so Codex doesn't prompt for each one
-    let mut tools_table = toml::map::Map::new();
-    for tool_name in tool_names() {
-        let mut tool_config = toml::map::Map::new();
-        tool_config.insert(
-            "approval_mode".to_string(),
-            toml::Value::String("auto".to_string()),
-        );
-        tools_table.insert(tool_name.clone(), toml::Value::Table(tool_config));
+    if manage_permissions {
+        // Auto-approve all tokensave tools so Codex doesn't prompt for each one
+        let mut tools_table = toml::map::Map::new();
+        for tool_name in tool_names() {
+            let mut tool_config = toml::map::Map::new();
+            tool_config.insert(
+                "approval_mode".to_string(),
+                toml::Value::String("auto".to_string()),
+            );
+            tools_table.insert(tool_name.clone(), toml::Value::Table(tool_config));
+        }
+        server_table.insert("tools".to_string(), toml::Value::Table(tools_table));
+    } else {
+        if let Some(existing) = servers.get("tokensave").and_then(|t| t.get("tools")) {
+            server_table.insert("tools".to_string(), existing.clone());
+        }
+        crate::agent_note!("{PERMISSIONS_USER_MANAGED_NOTE}");
     }
-    server_table.insert("tools".to_string(), toml::Value::Table(tools_table));
 
     servers.insert("tokensave".to_string(), toml::Value::Table(server_table));
 
@@ -205,7 +224,7 @@ fn uninstall_prompt_rules(agents_md: &Path) {
 // ---------------------------------------------------------------------------
 
 /// Check config.toml has tokensave registered.
-fn doctor_check_config(dc: &mut DoctorCounters, config_path: &Path) {
+fn doctor_check_config(dc: &mut DoctorCounters, config_path: &Path, manage_permissions: bool) {
     if !config_path.exists() {
         dc.warn(&format!(
             "{} not found — run `tokensave install --agent codex` if you use Codex CLI",
@@ -238,6 +257,11 @@ fn doctor_check_config(dc: &mut DoctorCounters, config_path: &Path) {
         "MCP server registered in {}",
         config_path.display()
     ));
+
+    if !manage_permissions {
+        dc.pass(PERMISSIONS_USER_MANAGED_DOCTOR);
+        return;
+    }
 
     // Check tool auto-approval
     let tools = config

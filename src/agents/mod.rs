@@ -143,6 +143,7 @@ macro_rules! agent_note_inline {
     };
 }
 
+pub mod constants;
 pub mod fs;
 pub mod hooks;
 pub mod integrations;
@@ -415,6 +416,29 @@ pub fn install_tool_perms(wildcard: bool) -> Vec<String> {
     } else {
         expected_tool_perms()
     }
+}
+
+/// Whether tokensave may grant, refresh, or revoke agent tool approvals
+/// (Claude Code `permissions.allow`, Codex `approval_mode`, Gemini/Qwen
+/// `trust`, Kiro `allowedTools`). `manage_permissions = false` in
+/// `<home>/.tokensave/config.toml`, or a falsy `TOKENSAVE_MANAGE_PERMISSIONS`,
+/// hands them to the user (#1067).
+///
+/// Read from `home`'s config file, the home the agent files are written
+/// under, so a setting read from one home never decides about files in
+/// another (#575) and tests with temporary homes stay hermetic. An absent or
+/// unreadable setting means tokensave manages approvals (the default).
+pub fn permissions_management_enabled(home: &std::path::Path) -> bool {
+    let from_config = std::fs::read_to_string(home.join(".tokensave").join("config.toml"))
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .and_then(|table| {
+            table
+                .get(constants::MANAGE_PERMISSIONS_KEY)
+                .and_then(toml::Value::as_bool)
+        })
+        .unwrap_or(true);
+    crate::config::env_bool_override(constants::MANAGE_PERMISSIONS_ENV, from_config)
 }
 
 /// Regression tests for #255: the silent reinstall-on-upgrade printed every
