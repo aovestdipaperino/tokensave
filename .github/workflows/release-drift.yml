@@ -4,8 +4,8 @@ name: Release drift
 # published GitHub release (#1070).
 #
 # release.yml builds the binaries, Homebrew bottles, Scoop manifest and the
-# SHA256SUMS asset that `tokensave upgrade` reads, and it runs only when a
-# GitHub release is published. A crate published by any other path (for
+# SHA256SUMS asset that `tokensave upgrade` reads, then publishes the tested
+# draft. A crate published by any other path (for
 # example a manual `cargo publish`) leaves every binary channel on the
 # previous version, and `tokensave upgrade` reports "Already up to date".
 # 7.17.0 reached crates.io this way with no tag and no release.
@@ -60,7 +60,7 @@ jobs:
 
           # The token has contents: read only, so a draft release is not
           # visible here; a draft is reported as missing, which is correct
-          # because release.yml has not run for it either.
+          # because the tested release is not public yet.
           if release_json=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
               --json tagName,isDraft,isPrerelease,publishedAt,assets 2>/dev/null); then
             if [ "$(jq -r .isPrerelease <<<"$release_json")" = "true" ]; then
@@ -78,7 +78,7 @@ jobs:
               fi
             fi
           else
-            problems+=("crates.io has tokensave $crate_version, but there is no published GitHub release $tag (latest: $latest_release). release.yml never ran for it, so no binaries, Homebrew bottles, Scoop manifest or SHA256SUMS exist, and \`tokensave upgrade\` cannot reach it. Publish a GitHub release for $tag (or for a newer version that includes it).")
+            problems+=("crates.io has tokensave $crate_version, but there is no published GitHub release $tag (latest: $latest_release). release.yml never ran for it, so no binaries, Homebrew bottles, Scoop manifest or SHA256SUMS exist, and \`tokensave upgrade\` cannot reach it. Run the Release workflow for the draft at $tag (or a newer version that includes it).")
             status=1
           fi
 

@@ -7,6 +7,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+### Internal
+
+- Gate release publication on packaged-crate and native CLI smoke tests, then verify the published crate from crates.io (Refs #1065).
+
 ### Fixed
 
 - **Installer-aware upgrades (Refs #1056).** `tokensave upgrade` uses the running binary's installer evidence to give Cargo, Homebrew or Scoop instructions. Verified standalone GitHub releases can update with `--standalone`, and `--dry-run` previews the action. Channel switching follows the same ownership rules.
