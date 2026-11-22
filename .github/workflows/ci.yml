@@ -56,6 +56,7 @@ jobs:
               - 'Cargo.lock'
               - '.cargo/**'
               - 'build.rs'
+              # Modules build.rs includes with #[path].
               - 'build/**'
               - 'vendor/**'
             # Library and binaries, including files pulled in with include_*!

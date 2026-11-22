@@ -9,6 +9,13 @@ to the same values in `.tokensave/config.json` for a persistent project default.
 CLI flags override the environment, which overrides the project setting. See
 [Debug diagnostics](TROUBLESHOOTING.md#debug-diagnostics) for capture examples.
 
+`tokensave --version --verbose` adds the source commit, build profile, target
+and compiler. A build from a Git checkout reports the checked-out commit; a
+crates.io install (`cargo install tokensave`) reports the release commit that
+Cargo recorded in the published package, with a `-dirty` suffix if the
+package was made from uncommitted changes. When neither is available, as in a
+source archive without that record, the commit is `unknown`.
+
 ```bash
 tokensave --version                # Print the installed version
 tokensave --version --verbose      # Include build metadata
