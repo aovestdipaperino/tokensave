@@ -717,7 +717,7 @@ impl AvailableUpdate {
     /// Two-line, ANSI-coloured notice for the terminal (printed on stderr).
     pub fn terminal_notice(&self) -> String {
         format!(
-            "\x1b[33mUpdate available: v{} → v{}\x1b[0m\n  Run: \x1b[1mtokensave upgrade\x1b[0m",
+            "\x1b[33mUpdate available: v{} → v{}\x1b[0m\n  Review installer-specific instructions with \x1b[1mtokensave upgrade\x1b[0m.",
             self.current, self.latest
         )
     }
@@ -726,7 +726,7 @@ impl AvailableUpdate {
     pub fn agent_notice(&self) -> String {
         format!(
             "⚠️ tokensave v{} is installed, but v{} is available. \
-             Run `tokensave upgrade` to update.",
+             Run `tokensave upgrade` to see installer-specific instructions.",
             self.current, self.latest
         )
     }
@@ -762,39 +762,6 @@ pub fn available_update(
         current: current.to_string(),
         latest: latest.to_string(),
     })
-}
-
-/// How tokensave was installed, detected from the binary path.
-pub enum InstallMethod {
-    Cargo,
-    Brew,
-    Scoop,
-    Unknown,
-}
-
-/// Detects how tokensave was installed by inspecting the binary path.
-pub fn detect_install_method() -> InstallMethod {
-    let Ok(exe) = std::env::current_exe() else {
-        return InstallMethod::Unknown;
-    };
-    let path = exe.to_string_lossy();
-    if path.contains(".cargo/bin") || path.contains(".cargo\\bin") {
-        InstallMethod::Cargo
-    } else if path.contains("/homebrew/") || path.contains("/Cellar/") {
-        InstallMethod::Brew
-    } else if path.contains("\\scoop\\") || path.contains("/scoop/") {
-        InstallMethod::Scoop
-    } else {
-        InstallMethod::Unknown
-    }
-}
-
-/// Returns the upgrade command string.
-///
-/// Always suggests `tokensave upgrade` which handles all install methods
-/// and channels automatically.
-pub fn upgrade_command(_method: &InstallMethod) -> &'static str {
-    "tokensave upgrade"
 }
 
 #[cfg(test)]

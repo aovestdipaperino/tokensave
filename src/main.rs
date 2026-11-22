@@ -201,8 +201,10 @@ async fn main() {
     use tokensave::debug_log::{self, Level};
     let matches = Cli::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
-    let configured_level = if !matches!(cli.command, Some(Commands::Uninstall { .. }))
-        && cli.log_level.is_none()
+    let configured_level = if !matches!(
+        cli.command,
+        Some(Commands::Uninstall { .. } | Commands::Upgrade { .. } | Commands::Channel { .. })
+    ) && cli.log_level.is_none()
         && !cli.debug
         && std::env::var_os("TOKENSAVE_LOG").is_none()
     {
@@ -328,6 +330,32 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 quiet: *quiet,
             },
         );
+    }
+
+    match &command {
+        Commands::Upgrade {
+            kill,
+            standalone,
+            dry_run,
+        } => {
+            return tokensave::upgrade::run_upgrade_with_options(*kill, *standalone, *dry_run)
+                .map(|_| ());
+        }
+        Commands::Channel {
+            channel,
+            standalone,
+        } => {
+            return match channel {
+                Some(target) => {
+                    tokensave::upgrade::switch_channel_with_options(target, *standalone).map(|_| ())
+                }
+                None => {
+                    tokensave::upgrade::show_channel();
+                    Ok(())
+                }
+            };
+        }
+        _ => {}
     }
 
     // Purge deletes the user config this startup path would save, and a dry
@@ -1611,15 +1639,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 print!("{}", tokensave::servers::render(&entries));
             }
         }
-        Commands::Upgrade { kill } => {
-            tokensave::upgrade::run_upgrade(kill)?;
+        Commands::Upgrade { .. } | Commands::Channel { .. } => {
+            unreachable!("upgrade and channel are dispatched before startup maintenance");
         }
-        Commands::Channel { channel } => match channel {
-            Some(target) => {
-                tokensave::upgrade::switch_channel(&target)?;
-            }
-            None => tokensave::upgrade::show_channel(),
-        },
         Commands::CurrentCounter { path } => {
             let project_path = tokensave::config::resolve_path_with_discovery(path);
             let cg = serve::ensure_initialized(&project_path).await?;

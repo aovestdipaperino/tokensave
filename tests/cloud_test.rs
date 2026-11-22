@@ -243,22 +243,3 @@ fn is_beta_returns_bool() {
     // Just verify it returns a bool and doesn't panic
     let _ = tokensave::cloud::is_beta();
 }
-
-#[test]
-fn upgrade_command_always_suggests_tokensave_upgrade() {
-    use tokensave::cloud::{upgrade_command, InstallMethod};
-    for method in &[
-        InstallMethod::Cargo,
-        InstallMethod::Brew,
-        InstallMethod::Scoop,
-        InstallMethod::Unknown,
-    ] {
-        assert_eq!(upgrade_command(method), "tokensave upgrade");
-    }
-}
-
-#[test]
-fn detect_install_method_no_panic() {
-    // Just verify it returns without panic
-    let _ = tokensave::cloud::detect_install_method();
-}

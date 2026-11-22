@@ -167,6 +167,102 @@ pub fn detect() -> Provenance {
     result
 }
 
+/// Recognizable package directories and stale records are sufficient reason
+/// to decline self-replacement, even if they cannot establish ownership.
+pub(crate) fn may_be_managed(executable: &Path) -> bool {
+    let managed_component = executable.components().any(|component| {
+        component.as_os_str().to_str().is_some_and(|part| {
+            [
+                "Cellar",
+                "scoop",
+                ".cargo",
+                "WinGet",
+                "WindowsApps",
+                "chocolatey",
+                "nix",
+            ]
+            .iter()
+            .any(|name| part.eq_ignore_ascii_case(name))
+        })
+    });
+    managed_component
+        || executable.parent().is_some_and(|dir| {
+            dir == Path::new("/usr/bin")
+                || dir == Path::new("/bin")
+                || dir.join(SCOOP_MANIFEST_FILENAME).exists()
+                || dir.parent().is_some_and(|root| {
+                    [
+                        CARGO_CRATES2_FILENAME,
+                        CARGO_CRATES_FILENAME,
+                        HOMEBREW_RECEIPT,
+                    ]
+                    .iter()
+                    .any(|name| root.join(name).exists())
+                })
+        })
+        || crate::agents::home_dir().is_some_and(|home| {
+            read_metadata(&record_path(&home))
+                .and_then(|bytes| serde_json::from_slice::<InstallationRecord>(&bytes).ok())
+                .is_some_and(|record| record.executable == executable)
+        })
+}
+
+/// Upgrade instructions shared by the upgrade and channel commands.
+pub fn upgrade_guidance(installation: &Provenance, beta: bool) -> &'static str {
+    match installation.method {
+        InstallMethod::Homebrew if !beta => "Upgrade with the Homebrew installation that owns this binary: brew upgrade aovestdipaperino/tap/tokensave",
+        InstallMethod::Scoop if !beta => "Upgrade in the Scoop scope that owns this binary: scoop update tokensave (add --global for a global install).",
+        InstallMethod::Homebrew | InstallMethod::Scoop => "This installer publishes the stable channel only. Install beta separately to keep this package managed.",
+        InstallMethod::Cargo => cargo_upgrade_guidance(installation, beta),
+        InstallMethod::Unknown => "Installer ownership could not be established. Update with your original installer. For a standalone GitHub release you installed yourself, use tokensave upgrade --standalone to verify and replace it, or download the matching channel manually.",
+    }
+}
+
+const CRATES_IO_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
+const TOKENSAVE_GIT_SOURCE: &str = "git+https://github.com/aovestdipaperino/tokensave.git";
+const ORIGINAL_CARGO_GUIDANCE: &str = "Repeat the original cargo install command with --locked --force. Keep its registry, Git URL and ref or source checkout, feature flags and installation root.";
+
+fn cargo_upgrade_guidance(installation: &Provenance, beta: bool) -> &'static str {
+    let source = installation
+        .executable
+        .as_deref()
+        .and_then(cargo_default_source);
+    match (source.as_deref(), beta) {
+        (Some(CRATES_IO_SOURCE), false) => "Upgrade with Cargo using the same installation root: cargo install tokensave --locked --force",
+        (Some(source), true) if git_branch_source(source, "beta") => "Upgrade the beta checkout using the same Cargo installation root: cargo install --git https://github.com/aovestdipaperino/tokensave.git --branch beta --locked --force",
+        (Some(source), false) if git_branch_source(source, "master") => "Upgrade the master checkout using the same Cargo installation root: cargo install --git https://github.com/aovestdipaperino/tokensave.git --branch master --locked --force",
+        _ => ORIGINAL_CARGO_GUIDANCE,
+    }
+}
+
+fn git_branch_source(source: &str, branch: &str) -> bool {
+    source
+        .strip_prefix(TOKENSAVE_GIT_SOURCE)
+        .and_then(|suffix| suffix.strip_prefix("?branch="))
+        .is_some_and(|reference| reference.split('#').next() == Some(branch))
+}
+
+fn cargo_default_source(executable: &Path) -> Option<String> {
+    let root = executable.parent()?.parent()?;
+    let receipt = json_metadata(&root.join(CARGO_CRATES2_FILENAME))?;
+    let installs = receipt.get(CARGO_CRATES2_INSTALLS_KEY)?.as_object()?;
+    let mut matching = installs
+        .iter()
+        .filter(|(id, entry)| is_tokensave_package_id(id) && entry_lists_tokensave(entry));
+    let (id, entry) = matching.next()?;
+    if matching.next().is_some()
+        || id.split_whitespace().nth(1) != Some(env!("CARGO_PKG_VERSION"))
+        || entry["profile"].as_str() != Some("release")
+        || !entry["features"].as_array().is_some_and(Vec::is_empty)
+        || entry["all_features"].as_bool() != Some(false)
+        || entry["no_default_features"].as_bool() != Some(false)
+    {
+        return None;
+    }
+    let (_, source) = id.strip_suffix(')')?.split_once(" (")?;
+    Some(source.to_string())
+}
+
 fn corroborate_record(provenance: &mut Provenance, path: &Path) {
     let Some(stored) = read_metadata(path)
         .and_then(|bytes| serde_json::from_slice::<InstallationRecord>(&bytes).ok())
@@ -198,7 +294,11 @@ pub fn detect_from(exe: &Path, cargo_home: Option<&Path>) -> Provenance {
             "matching Scoop app manifest",
         ),
         (
-            cargo_home.is_some_and(|home| is_cargo_install(&canonical, home)),
+            cargo_home.is_some_and(|home| is_cargo_install(&canonical, home))
+                || canonical
+                    .parent()
+                    .and_then(Path::parent)
+                    .is_some_and(|root| is_cargo_install(&canonical, root)),
             InstallMethod::Cargo,
             "Cargo install manifest for the running executable",
         ),
@@ -346,17 +446,20 @@ fn crates2_lists_tokensave(path: &Path) -> bool {
     else {
         return false;
     };
-    installs.iter().any(|(id, entry)| {
-        is_tokensave_package_id(id)
-            && entry
-                .get(CARGO_CRATES2_BINS_KEY)
-                .and_then(|b| b.as_array())
-                .is_some_and(|bins| {
-                    bins.iter()
-                        .filter_map(|b| b.as_str())
-                        .any(names_tokensave_binary)
-                })
-    })
+    installs
+        .iter()
+        .any(|(id, entry)| is_tokensave_package_id(id) && entry_lists_tokensave(entry))
+}
+
+fn entry_lists_tokensave(entry: &serde_json::Value) -> bool {
+    entry
+        .get(CARGO_CRATES2_BINS_KEY)
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|bins| {
+            bins.iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(names_tokensave_binary)
+        })
 }
 
 fn crates_toml_lists_tokensave(path: &Path) -> bool {

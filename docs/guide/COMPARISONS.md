@@ -32,7 +32,7 @@ tokensave is a ground-up Rust rewrite of [CodeGraph](https://www.npmjs.com/packa
 | **Code-health analytics** | Composite score, Gini, dependency depth, DSM, risk-weighted test gaps, session deltas | No |
 | **Edit primitives** | 4 atomic writers (`str_replace`, `multi_str_replace`, `insert_at`, `ast_grep_rewrite`) with auto re-indexing | No |
 | **Crash resilience** | Subprocess-isolated extraction; native grammar aborts skip the file, sync continues | No |
-| **Self-upgrade** | `tokensave upgrade` with stable/beta channels | `npm update` |
+| **Self-upgrade** | Installer guidance via `tokensave upgrade`, self-update for verified standalone releases | `npm update` |
 | **DB engine** | libsql (SQLite fork, WAL, async) | better-sqlite3 / wa-sqlite (WASM) |
 | **Indexing speed** | ~1.2s for 1,782 files | ~4s for 1,782 files |
 | **Binary size** | ~25 MB compressed download (all grammars bundled) | ~80 MB (node_modules + WASM) |

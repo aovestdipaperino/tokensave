@@ -8,8 +8,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::cloud::{self, InstallMethod};
+use crate::cloud;
 use crate::errors::{Result, TokenSaveError};
+use crate::purge::provenance::{self, InstallMethod, Provenance};
 use crate::user_config::UserConfig;
 
 const GITHUB_REPO: &str = "aovestdipaperino/tokensave";
@@ -370,43 +371,6 @@ fn extract_zip(data: &[u8], bin_name: &str, dest: &Path) -> Result<()> {
     })
 }
 
-/// Replaces the running binary with `new_exe`, dispatching to the
-/// appropriate strategy for the detected install method. Cleans up the
-/// temp file afterwards regardless of outcome.
-fn replace_binary(new_exe: &Path, method: &InstallMethod, new_version: &str) -> Result<()> {
-    let result = match method {
-        InstallMethod::Brew => replace_for_brew(new_exe, new_version),
-        InstallMethod::Scoop => replace_for_scoop(new_exe, new_version),
-        _ => replace_default(new_exe),
-    };
-    let _ = std::fs::remove_file(new_exe);
-    result
-}
-
-/// Default replacement using `self_replace`. Falls back to a direct copy
-/// when the running binary is behind a symlink (avoids ENOENT caused by
-/// `self_replace` resolving relative symlink targets from CWD).
-fn replace_default(new_exe: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let exe = std::env::current_exe().ok();
-        let canonical = exe.as_ref().and_then(|e| e.canonicalize().ok());
-        if let (Some(exe), Some(ref canonical)) = (&exe, canonical) {
-            if exe.as_path() != canonical.as_path() {
-                return install_binary(new_exe, canonical);
-            }
-        }
-    }
-
-    self_replace::self_replace(new_exe).map_err(|e| TokenSaveError::Config {
-        message: format!(
-            "binary replacement failed: {e}\n  \
-             The old version is still in place.\n  \
-             To upgrade manually: https://github.com/{GITHUB_REPO}/releases/latest"
-        ),
-    })
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UpgradeStatus<'a> {
     AlreadyCurrent,
@@ -426,234 +390,21 @@ fn classify_upgrade<'a>(current: &str, latest: &'a str) -> UpgradeStatus<'a> {
 /// Avoids `ETXTBSY` on Linux (rename swaps directory entries rather than
 /// writing into the running executable).
 #[cfg(unix)]
-fn install_binary(src: &Path, target: &Path) -> Result<()> {
+fn install_binary(src: &Path, target: &Path, published: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     let dir = target.parent().ok_or_else(|| TokenSaveError::Config {
         message: "cannot determine target directory".into(),
     })?;
-    let temp = dir.join(format!(".tokensave_upgrade_{}", std::process::id()));
-
-    std::fs::copy(src, &temp).map_err(io_err("cannot copy new binary"))?;
-
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))
-            .map_err(io_err("cannot set permissions"))?;
-    }
-
-    if let Err(e) = std::fs::rename(&temp, target) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(io_err("cannot replace binary")(e));
-    }
-
+    let temp = tempfile::NamedTempFile::new_in(dir).map_err(io_err("cannot stage new binary"))?;
+    std::fs::copy(src, temp.path()).map_err(io_err("cannot copy new binary"))?;
+    temp.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o755))
+        .map_err(io_err("cannot set executable mode"))?;
+    verify_standalone_bytes(target, published)?;
+    temp.persist(target)
+        .map_err(|error| io_err("cannot replace binary")(error.error))?;
     Ok(())
 }
-
-// ── Homebrew ────────────────────────────────────────────────────────────
-
-/// Replace the binary inside the Homebrew Cellar, then rename the version
-/// directory and update the symlink so that `brew` reports the new version.
-#[cfg(unix)]
-fn replace_for_brew(new_exe: &Path, new_version: &str) -> Result<()> {
-    let exe = std::env::current_exe().map_err(io_err("cannot determine current exe"))?;
-    let canonical = exe
-        .canonicalize()
-        .map_err(io_err("cannot resolve binary path"))?;
-
-    // Validate Cellar layout: <prefix>/Cellar/<formula>/<version>/bin/<binary>
-    let bin_dir = match canonical.parent() {
-        Some(p) if p.file_name().and_then(|n| n.to_str()) == Some("bin") => p,
-        _ => return replace_default(new_exe),
-    };
-    let Some(version_dir) = bin_dir.parent() else {
-        return replace_default(new_exe);
-    };
-    let Some(formula_dir) = version_dir.parent() else {
-        return replace_default(new_exe);
-    };
-    let cellar_dir = match formula_dir.parent() {
-        Some(p) if p.file_name().and_then(|n| n.to_str()) == Some("Cellar") => p,
-        _ => return replace_default(new_exe),
-    };
-    let Some(prefix) = cellar_dir.parent() else {
-        return replace_default(new_exe);
-    };
-
-    let Some(bin_name) = canonical.file_name() else {
-        return replace_default(new_exe);
-    };
-    let Some(old_version_os) = version_dir.file_name() else {
-        return replace_default(new_exe);
-    };
-    let old_version = old_version_os.to_string_lossy().to_string();
-
-    // Step 1 (critical): replace the binary atomically.
-    install_binary(new_exe, &canonical)?;
-
-    // Steps 2-4 update Cellar metadata so `brew` sees the correct version.
-    // These are best-effort — if they fail the binary itself is fine.
-    if old_version != new_version {
-        let new_version_dir = formula_dir.join(new_version);
-
-        // Step 2: rename the version directory (e.g. 4.0.3 → 4.0.4).
-        match std::fs::rename(version_dir, &new_version_dir) {
-            Ok(()) => {
-                // Step 3: update the symlink at <prefix>/bin/<binary>.
-                let symlink_path = prefix.join("bin").join(bin_name);
-                if let Ok(meta) = std::fs::symlink_metadata(&symlink_path) {
-                    if meta.file_type().is_symlink() {
-                        if let Ok(old_target) = std::fs::read_link(&symlink_path) {
-                            let new_target = std::path::PathBuf::from(
-                                old_target
-                                    .to_string_lossy()
-                                    .replacen(&old_version, new_version, 1),
-                            );
-                            let _ = std::fs::remove_file(&symlink_path);
-                            let _ = std::os::unix::fs::symlink(&new_target, &symlink_path);
-                        }
-                    }
-                }
-
-                // Step 4: patch INSTALL_RECEIPT.json so `brew info` is accurate.
-                let receipt = new_version_dir.join("INSTALL_RECEIPT.json");
-                if receipt.exists() {
-                    if let Ok(text) = std::fs::read_to_string(&receipt) {
-                        let _ = std::fs::write(&receipt, text.replace(&old_version, new_version));
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "\n  \x1b[33mwarning:\x1b[0m could not rename Cellar directory: {e}\n    \
-                     brew may still report the old version"
-                );
-            }
-        }
-    }
-
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn replace_for_brew(new_exe: &Path, _new_version: &str) -> Result<()> {
-    replace_default(new_exe)
-}
-
-// ── Scoop ───────────────────────────────────────────────────────────────
-
-/// Replace the binary via `self_replace` (handles Windows exe locking),
-/// then update Scoop's version directory and junction so that
-/// `scoop status` reports the new version.
-#[cfg(windows)]
-fn replace_for_scoop(new_exe: &Path, new_version: &str) -> Result<()> {
-    self_replace::self_replace(new_exe).map_err(|e| TokenSaveError::Config {
-        message: format!(
-            "binary replacement failed: {e}\n  \
-             The old version is still in place.\n  \
-             To upgrade manually: https://github.com/{GITHUB_REPO}/releases/latest"
-        ),
-    })?;
-
-    // Best-effort: update Scoop metadata for `scoop status` compatibility.
-    update_scoop_metadata(new_version);
-
-    Ok(())
-}
-
-#[cfg(windows)]
-fn update_scoop_metadata(new_version: &str) {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let canonical = exe.canonicalize().unwrap_or(exe);
-
-    let Some(version_dir) = find_scoop_version_dir(&canonical) else {
-        return;
-    };
-    let Some(app_dir) = version_dir.parent() else {
-        return;
-    };
-    let old_version = version_dir
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-
-    if old_version == new_version || old_version == "current" {
-        return;
-    }
-
-    let new_version_dir = app_dir.join(new_version);
-    if std::fs::create_dir_all(&new_version_dir).is_err() {
-        return;
-    }
-
-    // Copy files from old version directory to new.
-    if let Ok(entries) = std::fs::read_dir(&version_dir) {
-        for entry in entries.flatten() {
-            if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                continue;
-            }
-            let name = entry.file_name();
-            if name.to_string_lossy().contains("__self_delete__") {
-                continue;
-            }
-            let _ = std::fs::copy(entry.path(), new_version_dir.join(&name));
-        }
-    }
-
-    // Patch manifest.json version.
-    let manifest = new_version_dir.join("manifest.json");
-    if manifest.exists() {
-        if let Ok(text) = std::fs::read_to_string(&manifest) {
-            let _ = std::fs::write(&manifest, text.replace(&old_version, new_version));
-        }
-    }
-
-    // Update the `current` directory junction.
-    let current = app_dir.join("current");
-    let _ = std::fs::remove_dir(&current);
-    use std::os::windows::process::CommandExt;
-    let _ = std::process::Command::new("cmd")
-        .args([
-            "/c",
-            "mklink",
-            "/J",
-            &current.to_string_lossy(),
-            &new_version_dir.to_string_lossy(),
-        ])
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW
-        .status();
-}
-
-/// Walk the canonical path to find the Scoop version directory.
-/// Layout: `<scoop>/apps/<app>/<version>/…`
-#[cfg(windows)]
-fn find_scoop_version_dir(path: &Path) -> Option<std::path::PathBuf> {
-    let mut found_apps = false;
-    let mut depth_after_apps = 0u8;
-    let mut result = std::path::PathBuf::new();
-
-    for comp in path.components() {
-        result.push(comp);
-        if found_apps {
-            depth_after_apps += 1;
-            if depth_after_apps == 2 {
-                return Some(result);
-            }
-        } else if let std::path::Component::Normal(name) = comp {
-            if name.to_string_lossy().eq_ignore_ascii_case("apps") {
-                found_apps = true;
-            }
-        }
-    }
-    None
-}
-
-#[cfg(not(windows))]
-fn replace_for_scoop(new_exe: &Path, _new_version: &str) -> Result<()> {
-    replace_default(new_exe)
-}
-
-// ────────────────────────────────────────────────────────────────────────
 
 /// Downloads, extracts, and installs the binary for `version`/`is_beta`.
 /// Verifies the release asset exists on GitHub and returns the download URL.
@@ -689,60 +440,73 @@ fn record_previous_version() {
     }
 }
 
-fn perform_upgrade(version: &str, asset: &VerifiedAsset, method: &InstallMethod) -> Result<()> {
+fn stage_release(asset: &VerifiedAsset) -> Result<StagedBinary> {
     let bin_name = if cfg!(windows) {
         "tokensave.exe"
     } else {
         "tokensave"
     };
-
-    let staged = download_and_extract(&asset.url, bin_name, &asset.sha256)?;
-
-    let label = match method {
-        InstallMethod::Brew => " (Homebrew Cellar)",
-        InstallMethod::Scoop => " (Scoop)",
-        _ => "",
-    };
-    eprint!("  Replacing binary{label}...");
-    replace_binary(staged.path(), method, version)?;
-    eprintln!(" Done");
-
-    Ok(())
+    download_and_extract(&asset.url, bin_name, &asset.sha256)
 }
 
-fn brew_upgrade_command() -> (&'static str, [&'static str; 2]) {
-    ("brew", ["upgrade", "tokensave"])
-}
+fn binary_digest(path: &Path) -> Result<sha2::digest::Output<sha2::Sha256>> {
+    use sha2::{Digest, Sha256};
+    use std::io::BufRead;
 
-fn run_brew_upgrade(current: &str) -> Result<String> {
-    eprintln!("Updating Homebrew formula cache...");
-    let update_ok = std::process::Command::new("brew")
-        .args(["update", "--quiet"])
-        .status()
-        .is_ok_and(|s| s.success());
-    if !update_ok {
-        eprintln!("  warning: `brew update` failed — continuing with existing cache");
+    let file = std::fs::File::open(path).map_err(io_err("cannot read executable"))?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut hash = Sha256::new();
+    loop {
+        let chunk = reader
+            .fill_buf()
+            .map_err(io_err("cannot hash executable"))?;
+        if chunk.is_empty() {
+            break;
+        }
+        hash.update(chunk);
+        let count = chunk.len();
+        reader.consume(count);
     }
+    Ok(hash.finalize())
+}
 
-    let (program, args) = brew_upgrade_command();
-    eprintln!(
-        "Delegating upgrade to Homebrew: {program} {}",
-        args.join(" ")
-    );
+fn verify_standalone_bytes(executable: &Path, published: &Path) -> Result<()> {
+    if binary_digest(executable)? == binary_digest(published)? {
+        return Ok(());
+    }
+    Err(TokenSaveError::Update {
+        message: "running executable differs from the published GitHub release; upgrade with the original installer".into(),
+    })
+}
 
-    let status = std::process::Command::new(program)
-        .args(args)
-        .status()
-        .map_err(io_err("failed to run Homebrew upgrade"))?;
-
-    if status.success() {
-        record_previous_version();
-        Ok(current.to_string())
-    } else {
-        Err(TokenSaveError::Config {
-            message: format!("Homebrew upgrade failed with status: {status}"),
+fn standalone_target(installation: &Provenance) -> Result<&Path> {
+    installation
+        .executable
+        .as_deref()
+        .filter(|path| {
+            installation.method == InstallMethod::Unknown && !provenance::may_be_managed(path)
         })
+        .ok_or_else(|| TokenSaveError::Update {
+            message: "the executable may be package-managed; use the original installer".into(),
+        })
+}
+
+fn replace_verified_standalone(path: &Path, published: &Path, staged: &Path) -> Result<()> {
+    let installation = provenance::detect();
+    if standalone_target(&installation)? != path {
+        return Err(TokenSaveError::Update {
+            message: "executable location changed during the upgrade".into(),
+        });
     }
+    #[cfg(unix)]
+    install_binary(staged, path, published)?;
+    #[cfg(not(unix))]
+    {
+        verify_standalone_bytes(path, published)?;
+        self_replace::self_replace(staged).map_err(io_err("binary replacement failed"))?;
+    }
+    record_previous_version();
+    Ok(())
 }
 
 /// A running tokensave process other than this one.
@@ -990,115 +754,117 @@ fn handle_running_processes(kill: bool) -> Result<()> {
     post_kill_outcome(requested, killed)
 }
 
-/// Check for a newer version and perform the upgrade if one is available.
-///
-/// With `kill` set, any other running tokensave processes are terminated
-/// without prompting.
-///
-/// Returns the new version string on success.
+/// Show installer-specific guidance or upgrade a verified standalone release.
 pub fn run_upgrade(kill: bool) -> Result<String> {
+    run_upgrade_with_options(kill, false, false)
+}
+
+/// Run or preview an upgrade using the requested standalone policy.
+pub fn run_upgrade_with_options(kill: bool, standalone: bool, dry_run: bool) -> Result<String> {
     let current = env!("CARGO_PKG_VERSION");
-    let is_beta = cloud::is_beta();
-    let channel = if is_beta { "beta" } else { "stable" };
-    let method = cloud::detect_install_method();
-
-    let method_suffix = match &method {
-        InstallMethod::Brew => " · Homebrew",
-        InstallMethod::Scoop => " · Scoop",
-        InstallMethod::Cargo => " · cargo",
-        InstallMethod::Unknown => "",
-    };
-    eprintln!("Current version: v{current} ({channel} channel{method_suffix})");
-
-    if matches!(method, InstallMethod::Brew) {
-        // Homebrew decides for itself whether there is anything to do, so the
-        // running-process check has to happen before delegating.
-        handle_running_processes(kill)?;
-        return run_brew_upgrade(current);
+    let beta = cloud::is_beta();
+    let installation = provenance::detect();
+    eprintln!(
+        "Current version: v{current} ({}, {})",
+        channel_name(beta),
+        installation.method.label()
+    );
+    eprintln!("  Evidence: {}", installation.evidence);
+    if let Some(path) = &installation.executable {
+        eprintln!("  Executable: {}", path.display());
+    }
+    if installation.method != InstallMethod::Unknown || !standalone {
+        eprintln!("{}", provenance::upgrade_guidance(&installation, beta));
+        return Ok(current.to_string());
+    }
+    let path = standalone_target(&installation)?;
+    if dry_run {
+        eprintln!("Plan: verify the running binary against the current GitHub release, then replace it only if a newer {} release is available.", channel_name(beta));
+        return Ok(current.to_string());
     }
 
-    eprintln!("Checking for updates...");
-
-    // Name the condition that actually holds. A release with no asset for this
-    // platform used to be reported as an unreachable network, sending people to
-    // debug a working connection (#513).
-    let latest = cloud::try_fetch_latest_version().map_err(|e| TokenSaveError::Update {
-        message: match e {
-            cloud::VersionCheckError::Unreachable { .. } => {
-                format!("failed to check for updates — {e}")
-            }
-            _ => format!("{e}. Staying on v{current}"),
-        },
+    let latest = cloud::try_fetch_latest_version().map_err(|error| TokenSaveError::Update {
+        message: format!("failed to check for updates: {error}"),
     })?;
-
-    let latest = match classify_upgrade(current, &latest) {
-        UpgradeStatus::AlreadyCurrent => {
-            eprintln!("\x1b[32m✔\x1b[0m Already up to date (v{current}).");
-            return Ok(current.to_string());
-        }
-        UpgradeStatus::UpgradeAvailable(latest) => latest,
+    let UpgradeStatus::UpgradeAvailable(latest) = classify_upgrade(current, &latest) else {
+        eprintln!("Already up to date (v{current}).");
+        return Ok(current.to_string());
     };
-
-    eprintln!("Upgrading v{current} → v{latest}...");
-
-    handle_running_processes(kill)?;
-
-    let asset = preflight_asset_check(latest, is_beta)?;
-
-    perform_upgrade(latest, &asset, &method)?;
-    record_previous_version();
-    eprintln!("\x1b[32m✔\x1b[0m Successfully upgraded to v{latest}!");
+    eprintln!("Verifying standalone release before upgrading v{current} to v{latest}...");
+    upgrade_standalone(path, latest, beta, kill)?;
+    eprintln!("Successfully upgraded to v{latest}.");
     Ok(latest.to_string())
+}
+
+fn upgrade_standalone(path: &Path, version: &str, beta: bool, kill: bool) -> Result<()> {
+    let current = env!("CARGO_PKG_VERSION");
+    let published = stage_release(&preflight_asset_check(current, cloud::is_beta())?)?;
+    verify_standalone_bytes(path, published.path())?;
+    let staged = stage_release(&preflight_asset_check(version, beta)?)?;
+    handle_running_processes(kill)?;
+    replace_verified_standalone(path, published.path(), staged.path())
+}
+
+fn channel_name(beta: bool) -> &'static str {
+    if beta {
+        "beta"
+    } else {
+        "stable"
+    }
 }
 
 /// Print the current channel.
 pub fn show_channel() {
-    let current = env!("CARGO_PKG_VERSION");
-    let channel = if cloud::is_beta() { "beta" } else { "stable" };
-    eprintln!("v{current} ({channel})");
+    eprintln!(
+        "v{} ({})",
+        env!("CARGO_PKG_VERSION"),
+        channel_name(cloud::is_beta())
+    );
 }
 
-/// Switch to a different channel by downloading the latest release from it.
+/// Channel switching has the same installer policy as upgrading.
 pub fn switch_channel(target_channel: &str) -> Result<String> {
-    let current = env!("CARGO_PKG_VERSION");
-    let current_is_beta = cloud::is_beta();
-    let current_channel = if current_is_beta { "beta" } else { "stable" };
-    let method = cloud::detect_install_method();
+    switch_channel_with_options(target_channel, false)
+}
 
-    let target_is_beta = match target_channel {
+/// Switch release channels for an explicitly selected standalone install.
+pub fn switch_channel_with_options(target_channel: &str, standalone: bool) -> Result<String> {
+    let current = env!("CARGO_PKG_VERSION");
+    let beta = match target_channel {
         "beta" => true,
         "stable" => false,
-        other => {
+        _ => {
             return Err(TokenSaveError::Config {
-                message: format!("unknown channel '{other}'. Valid channels: stable, beta"),
-            });
+                message: format!(
+                    "unknown channel '{target_channel}'. Valid channels: stable, beta"
+                ),
+            })
         }
     };
-
-    if target_is_beta == current_is_beta {
-        eprintln!("Already on the {current_channel} channel (v{current}).");
-        eprintln!("Run `tokensave upgrade` to check for updates within this channel.");
+    if beta == cloud::is_beta() {
+        eprintln!("Already on the {target_channel} channel (v{current}).");
         return Ok(current.to_string());
     }
-
-    eprintln!("Switching from {current_channel} to {target_channel}...");
-
-    let latest = if target_is_beta {
+    let installation = provenance::detect();
+    if installation.method != InstallMethod::Unknown || !standalone {
+        return Err(TokenSaveError::Update {
+            message: format!(
+                "Cannot switch this installation in place to {target_channel}. Use your original installer's channel or install the requested channel separately. {}",
+                provenance::upgrade_guidance(&installation, cloud::is_beta()),
+            ),
+        });
+    }
+    let path = standalone_target(&installation)?;
+    let latest = if beta {
         cloud::try_fetch_latest_beta_version()
     } else {
         cloud::try_fetch_latest_stable_version()
     }
-    .map_err(|e| TokenSaveError::Update {
-        message: format!("cannot switch to the {target_channel} channel — {e}"),
+    .map_err(|error| TokenSaveError::Update {
+        message: format!("cannot switch to the {target_channel} channel: {error}"),
     })?;
-
-    eprintln!("  Target: v{latest}");
-
-    let asset = preflight_asset_check(&latest, target_is_beta)?;
-
-    perform_upgrade(&latest, &asset, &method)?;
-    record_previous_version();
-    eprintln!("\x1b[32m✔\x1b[0m Switched to {target_channel} channel: v{latest}");
+    upgrade_standalone(path, &latest, beta, false)?;
+    eprintln!("Switched to {target_channel} channel: v{latest}");
     Ok(latest)
 }
 
@@ -1112,6 +878,43 @@ pub fn switch_channel(target_channel: &str) -> Result<String> {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standalone_requires_current_release_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let installed = dir.path().join("installed");
+        let published = dir.path().join("published");
+        std::fs::write(&installed, b"standalone release").unwrap();
+        std::fs::write(&published, b"standalone release").unwrap();
+        assert!(verify_standalone_bytes(&installed, &published).is_ok());
+        std::fs::write(&installed, b"locally rebuilt").unwrap();
+        assert!(verify_standalone_bytes(&installed, &published).is_err());
+        assert_eq!(std::fs::read(installed).unwrap(), b"locally rebuilt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_homebrew_executable_stays_out_of_standalone_path_with_or_without_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let keg = dir.path().join("Cellar").join("tokensave").join("7.17.0");
+        let bin = keg.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let executable = bin.join("tokensave");
+        std::fs::write(&executable, b"token").unwrap();
+        let link = dir.path().join("tokensave");
+        std::os::unix::fs::symlink(&executable, &link).unwrap();
+        let without_receipt = provenance::detect_from(&link, None);
+        assert_eq!(without_receipt.method, InstallMethod::Unknown);
+        assert!(standalone_target(&without_receipt).is_err());
+        std::fs::write(
+            keg.join("INSTALL_RECEIPT.json"),
+            r#"{"source":{"tap":"aovestdipaperino/tap"}}"#,
+        )
+        .unwrap();
+        let with_receipt = provenance::detect_from(&link, None);
+        assert_eq!(with_receipt.method, InstallMethod::Homebrew);
+        assert!(standalone_target(&with_receipt).is_err());
+    }
 
     /// The staging directory must not be at a name another local user can
     /// predict. The old path was `temp_dir()/tokensave_upgrade_<pid>`, and a
@@ -1577,14 +1380,6 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  tokensave-v1.2
     }
 
     #[test]
-    fn brew_upgrade_command_delegates_to_homebrew() {
-        let (program, args) = brew_upgrade_command();
-
-        assert_eq!(program, "brew");
-        assert_eq!(args, ["upgrade", "tokensave"]);
-    }
-
-    #[test]
     fn test_asset_name_matches_ci_convention() {
         let stable = asset_name("3.3.3", false);
         let platform = current_platform();
@@ -1631,387 +1426,31 @@ ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  tokensave-v1.2
         assert_eq!(result.unwrap(), current);
     }
 
-    // ── Regression tests for symlink upgrade bug ────────────────────────
-    //
-    // The self-replace crate resolves symlinks via `fs::read_link`, which
-    // returns the raw target (often relative for Homebrew). Subsequent
-    // operations resolve that relative path from CWD instead of the
-    // symlink's parent, causing ENOENT.
-    //
-    // Our fix: canonicalize the exe path before passing it to self_update.
-    // These tests verify the canonicalization works correctly for every
-    // symlink layout we've seen in the wild.
-
     #[cfg(unix)]
-    mod symlink_upgrade_regression {
-        use std::fs;
-        use std::os::unix::fs::symlink;
-        use std::path::PathBuf;
+    #[test]
+    fn verified_standalone_replacement_preserves_a_separate_install() {
+        use std::os::unix::fs::PermissionsExt;
 
-        /// Helper: create a fake binary file in a Homebrew-style Cellar layout.
-        /// Returns (cellar_binary_path, symlink_path, tmp_guard).
-        fn homebrew_layout() -> (PathBuf, PathBuf, tempfile::TempDir) {
-            let tmp = tempfile::tempdir().unwrap();
-            // Cellar/tokensave/4.1.1-beta.1/bin/tokensave
-            let cellar_bin_dir = tmp
-                .path()
-                .join("Cellar")
-                .join("tokensave")
-                .join("4.1.1-beta.1")
-                .join("bin");
-            fs::create_dir_all(&cellar_bin_dir).unwrap();
-            let real_binary = cellar_bin_dir.join("tokensave");
-            fs::write(&real_binary, b"fake-binary").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let installed = dir.path().join("tokensave");
+        let published = dir.path().join("published");
+        let staged = dir.path().join("staged");
+        let other = dir.path().join("other-install");
+        std::fs::write(&installed, b"old release").unwrap();
+        std::fs::write(&published, b"old release").unwrap();
+        std::fs::write(&staged, b"new release").unwrap();
+        std::fs::write(&other, b"package-managed").unwrap();
 
-            // bin/tokensave -> ../Cellar/tokensave/4.1.1-beta.1/bin/tokensave
-            let bin_dir = tmp.path().join("bin");
-            fs::create_dir_all(&bin_dir).unwrap();
-            let link_path = bin_dir.join("tokensave");
-            symlink("../Cellar/tokensave/4.1.1-beta.1/bin/tokensave", &link_path).unwrap();
+        install_binary(&staged, &installed, &published).unwrap();
+        assert_eq!(std::fs::read(&installed).unwrap(), b"new release");
+        assert_eq!(std::fs::read(&other).unwrap(), b"package-managed");
+        assert_eq!(
+            std::fs::metadata(&installed).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 4);
 
-            (real_binary, link_path, tmp)
-        }
-
-        #[test]
-        fn read_link_returns_relative_path_for_homebrew_symlink() {
-            let (_real, link, _tmp) = homebrew_layout();
-            let target = fs::read_link(&link).unwrap();
-            assert!(
-                target.is_relative(),
-                "Homebrew symlink target should be relative, got: {target:?}"
-            );
-            assert_eq!(
-                target,
-                PathBuf::from("../Cellar/tokensave/4.1.1-beta.1/bin/tokensave")
-            );
-        }
-
-        #[test]
-        fn relative_read_link_fails_from_wrong_cwd() {
-            // This is the exact bug: read_link returns a relative path, and
-            // metadata() resolves it from CWD rather than the symlink's parent.
-            let (_real, link, _tmp) = homebrew_layout();
-            let target = fs::read_link(&link).unwrap();
-
-            // From a different directory (e.g. the user's home), the relative
-            // path doesn't resolve to anything valid.
-            let other_dir = tempfile::tempdir().unwrap();
-            let wrong_path = other_dir.path().join(&target);
-            assert!(
-                wrong_path.metadata().is_err(),
-                "relative symlink target should NOT resolve from an unrelated directory"
-            );
-        }
-
-        #[test]
-        fn canonicalize_resolves_relative_symlink_to_absolute() {
-            let (real, link, _tmp) = homebrew_layout();
-            let canonical = link.canonicalize().unwrap();
-            let real_canonical = real.canonicalize().unwrap();
-            assert_eq!(
-                canonical, real_canonical,
-                "canonicalize should resolve symlink to the real Cellar path"
-            );
-            assert!(canonical.is_absolute());
-        }
-
-        #[test]
-        fn canonical_path_differs_from_symlink_path() {
-            // This is the key property our fix relies on: after canonicalization,
-            // the path differs from the symlink path, which makes self_update
-            // choose the Move code path instead of the buggy self_replace path.
-            let (_real, link, _tmp) = homebrew_layout();
-            let canonical = link.canonicalize().unwrap();
-            assert_ne!(
-                canonical, link,
-                "canonical path and symlink path must differ so self_update uses Move"
-            );
-        }
-
-        #[test]
-        fn canonical_path_parent_exists() {
-            // Move::to_dest needs the parent directory to exist for rename().
-            let (_real, link, _tmp) = homebrew_layout();
-            let canonical = link.canonicalize().unwrap();
-            assert!(
-                canonical.parent().unwrap().is_dir(),
-                "parent of canonical path must be a real directory"
-            );
-        }
-
-        #[test]
-        fn canonicalize_is_identity_for_non_symlink() {
-            // For direct installs (cargo install, manual copy), canonicalize
-            // returns the same path, so self_replace is still used — no
-            // behavior change for non-symlink installs.
-            let tmp = tempfile::tempdir().unwrap();
-            let binary = tmp.path().join("tokensave");
-            fs::write(&binary, b"fake-binary").unwrap();
-
-            let canonical = binary.canonicalize().unwrap();
-            let original_canonical = binary.canonicalize().unwrap();
-            assert_eq!(canonical, original_canonical);
-        }
-
-        #[test]
-        fn canonicalize_resolves_absolute_symlink() {
-            // Some package managers use absolute symlinks.
-            let tmp = tempfile::tempdir().unwrap();
-            let real_dir = tmp.path().join("lib");
-            fs::create_dir_all(&real_dir).unwrap();
-            let real_binary = real_dir.join("tokensave");
-            fs::write(&real_binary, b"fake-binary").unwrap();
-
-            let bin_dir = tmp.path().join("bin");
-            fs::create_dir_all(&bin_dir).unwrap();
-            let link = bin_dir.join("tokensave");
-            symlink(&real_binary, &link).unwrap();
-
-            let canonical = link.canonicalize().unwrap();
-            assert_eq!(canonical, real_binary.canonicalize().unwrap());
-            assert_ne!(canonical, link);
-        }
-
-        #[test]
-        fn canonicalize_resolves_chained_symlinks() {
-            // A -> B -> C: canonicalize must reach C.
-            let tmp = tempfile::tempdir().unwrap();
-            let real = tmp.path().join("real_binary");
-            fs::write(&real, b"fake-binary").unwrap();
-
-            let link_b = tmp.path().join("link_b");
-            symlink(&real, &link_b).unwrap();
-
-            let link_a = tmp.path().join("link_a");
-            symlink(&link_b, &link_a).unwrap();
-
-            let canonical = link_a.canonicalize().unwrap();
-            assert_eq!(canonical, real.canonicalize().unwrap());
-        }
-
-        #[test]
-        fn canonicalize_resolves_symlink_with_dotdot_in_real_path() {
-            // Real path contains ".." components — canonicalize normalizes them.
-            let tmp = tempfile::tempdir().unwrap();
-            let deep = tmp.path().join("a").join("b").join("c");
-            fs::create_dir_all(&deep).unwrap();
-            let real = deep.join("tokensave");
-            fs::write(&real, b"fake-binary").unwrap();
-
-            // Construct a path with ".." that still reaches the same file
-            let dotdot_path = tmp.path().join("a/b/c/../c/tokensave");
-            let canonical = dotdot_path.canonicalize().unwrap();
-            assert_eq!(canonical, real.canonicalize().unwrap());
-            assert!(
-                !canonical.to_string_lossy().contains(".."),
-                "canonical path should have no '..' components"
-            );
-        }
-
-        #[test]
-        fn rename_works_for_canonical_cellar_path() {
-            // Simulate what Move::to_dest does: rename a new binary over the
-            // canonical (Cellar) path. The symlink continues to work.
-            let (real, link, _tmp) = homebrew_layout();
-
-            // "New binary" in a temp location (same filesystem)
-            let new_binary = real.parent().unwrap().join(".tokensave.__temp__");
-            fs::write(&new_binary, b"upgraded-binary").unwrap();
-
-            // Rename new binary over the real path (what Move does)
-            let canonical = link.canonicalize().unwrap();
-            fs::rename(&new_binary, &canonical).unwrap();
-
-            // Verify: reading through the symlink yields the new content
-            let content = fs::read(&link).unwrap();
-            assert_eq!(content, b"upgraded-binary");
-
-            // Verify: the canonical path also has new content
-            let content = fs::read(&canonical).unwrap();
-            assert_eq!(content, b"upgraded-binary");
-        }
-
-        #[test]
-        fn symlink_survives_rename_replacement() {
-            // After the upgrade replaces the Cellar binary, the Homebrew
-            // symlink must still point to a valid file.
-            let (_real, link, _tmp) = homebrew_layout();
-            let canonical = link.canonicalize().unwrap();
-
-            // Replace the binary at the canonical path
-            fs::write(&canonical, b"new-version").unwrap();
-
-            // Symlink still works
-            assert!(
-                link.exists(),
-                "symlink must still resolve after replacement"
-            );
-            assert!(
-                fs::symlink_metadata(&link)
-                    .unwrap()
-                    .file_type()
-                    .is_symlink(),
-                "must still be a symlink"
-            );
-            assert_eq!(fs::read(&link).unwrap(), b"new-version");
-        }
-
-        #[test]
-        fn canonicalize_fails_for_dangling_symlink() {
-            // If the Cellar dir was removed (brew cleanup), canonicalize
-            // should fail and we gracefully fall back to the default.
-            let tmp = tempfile::tempdir().unwrap();
-            let bin_dir = tmp.path().join("bin");
-            fs::create_dir_all(&bin_dir).unwrap();
-            let link = bin_dir.join("tokensave");
-            symlink("../Cellar/tokensave/old/bin/tokensave", &link).unwrap();
-            // Target doesn't exist — dangling symlink
-            assert!(
-                link.canonicalize().is_err(),
-                "canonicalize should fail for dangling symlinks"
-            );
-        }
-
-        #[test]
-        fn our_fix_pattern_handles_all_cases() {
-            // Simulate the exact pattern used in run_upgrade/switch_channel:
-            //   if let Ok(canonical) = path.canonicalize() { ... }
-            // Verify it does the right thing for each scenario.
-
-            // Case 1: relative symlink (Homebrew) — canonical differs
-            let (_, link, _tmp) = homebrew_layout();
-            let canonical = link.canonicalize();
-            assert!(canonical.is_ok());
-            assert_ne!(canonical.unwrap(), link);
-
-            // Case 2: direct file — canonical matches
-            let tmp2 = tempfile::tempdir().unwrap();
-            let direct = tmp2.path().join("tokensave");
-            fs::write(&direct, b"binary").unwrap();
-            let canonical = direct.canonicalize().unwrap();
-            // After canonicalization of the tmpdir itself, they match
-            assert_eq!(canonical, direct.canonicalize().unwrap());
-
-            // Case 3: dangling symlink — canonical fails, we skip setting
-            // bin_install_path and let self_update use its default
-            let tmp3 = tempfile::tempdir().unwrap();
-            let dangling = tmp3.path().join("tokensave");
-            symlink("/nonexistent/path/tokensave", &dangling).unwrap();
-            assert!(dangling.canonicalize().is_err());
-        }
-
-        // ── install_binary tests ───────────────────────────────────────
-
-        #[test]
-        fn install_binary_replaces_target_atomically() {
-            let tmp = tempfile::tempdir().unwrap();
-            let target = tmp.path().join("tokensave");
-            fs::write(&target, b"old-binary").unwrap();
-
-            let src = tmp.path().join("new-binary");
-            fs::write(&src, b"new-binary-content").unwrap();
-
-            super::super::install_binary(&src, &target).unwrap();
-
-            assert_eq!(fs::read(&target).unwrap(), b"new-binary-content");
-            // Temp file should be cleaned up
-            assert!(!tmp
-                .path()
-                .join(format!(".tokensave_upgrade_{}", std::process::id()))
-                .exists());
-        }
-
-        #[test]
-        fn install_binary_sets_executable_permission() {
-            use std::os::unix::fs::PermissionsExt;
-
-            let tmp = tempfile::tempdir().unwrap();
-            let target = tmp.path().join("tokensave");
-            fs::write(&target, b"old").unwrap();
-
-            let src = tmp.path().join("new");
-            fs::write(&src, b"new").unwrap();
-
-            super::super::install_binary(&src, &target).unwrap();
-
-            let mode = fs::metadata(&target).unwrap().permissions().mode();
-            assert_eq!(mode & 0o755, 0o755, "binary should be executable");
-        }
-
-        // ── Brew upgrade flow ──────────────────────────────────────────
-
-        #[test]
-        fn brew_upgrade_renames_version_dir_and_updates_symlink() {
-            let (_real, link, _tmp) = homebrew_layout();
-
-            // Write an "upgraded" binary via the Cellar path
-            let canonical = link.canonicalize().unwrap();
-            fs::write(&canonical, b"v5.0.0-binary").unwrap();
-
-            // Simulate the Cellar directory rename (4.1.1-beta.1 → 5.0.0)
-            let bin_dir = canonical.parent().unwrap();
-            let version_dir = bin_dir.parent().unwrap();
-            let formula_dir = version_dir.parent().unwrap();
-            let cellar_dir = formula_dir.parent().unwrap();
-            let _prefix = cellar_dir.parent().unwrap();
-
-            let new_version_dir = formula_dir.join("5.0.0");
-            fs::rename(version_dir, &new_version_dir).unwrap();
-
-            // Update the symlink
-            let old_target = fs::read_link(&link).unwrap();
-            let new_target = PathBuf::from(old_target.to_string_lossy().replacen(
-                "4.1.1-beta.1",
-                "5.0.0",
-                1,
-            ));
-            fs::remove_file(&link).unwrap();
-            symlink(&new_target, &link).unwrap();
-
-            // Verify: symlink resolves and has the new content
-            assert!(link.exists(), "symlink must resolve after dir rename");
-            assert_eq!(fs::read(&link).unwrap(), b"v5.0.0-binary");
-
-            // Verify: new version directory exists, old one doesn't
-            assert!(new_version_dir.exists());
-            assert!(!version_dir.exists());
-
-            // Verify: brew would see "5.0.0" as the installed version
-            // (brew reads directory names under Cellar/<formula>/)
-            let versions: Vec<_> = fs::read_dir(formula_dir)
-                .unwrap()
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .collect();
-            assert_eq!(versions, vec!["5.0.0"]);
-        }
-
-        #[test]
-        fn brew_upgrade_updates_install_receipt() {
-            let tmp = tempfile::tempdir().unwrap();
-            let cellar = tmp.path().join("Cellar").join("tokensave").join("4.0.3");
-            fs::create_dir_all(cellar.join("bin")).unwrap();
-            fs::write(cellar.join("bin").join("tokensave"), b"binary").unwrap();
-
-            let receipt_content = r#"{
-  "source": {
-    "versions": { "stable": "4.0.3" }
-  },
-  "tabfile": "/opt/homebrew/Cellar/tokensave/4.0.3/INSTALL_RECEIPT.json"
-}"#;
-            fs::write(cellar.join("INSTALL_RECEIPT.json"), receipt_content).unwrap();
-
-            // Simulate rename + receipt update
-            let new_dir = tmp.path().join("Cellar").join("tokensave").join("4.0.4");
-            fs::rename(&cellar, &new_dir).unwrap();
-
-            let text = fs::read_to_string(new_dir.join("INSTALL_RECEIPT.json")).unwrap();
-            let updated = text.replace("4.0.3", "4.0.4");
-            fs::write(new_dir.join("INSTALL_RECEIPT.json"), &updated).unwrap();
-
-            assert!(updated.contains("\"stable\": \"4.0.4\""));
-            assert!(updated.contains("/4.0.4/INSTALL_RECEIPT.json"));
-            assert!(!updated.contains("4.0.3"));
-        }
+        // A second updater that verified the previous release cannot replace it again.
+        assert!(install_binary(&staged, &installed, &published).is_err());
     }
 }

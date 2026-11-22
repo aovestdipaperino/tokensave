@@ -9,6 +9,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- **Installer-aware upgrades (Refs #1056).** `tokensave upgrade` uses the running binary's installer evidence to give Cargo, Homebrew or Scoop instructions. Verified standalone GitHub releases can update with `--standalone`, and `--dry-run` previews the action. Channel switching follows the same ownership rules.
+
 - Update the locked `url` dependency to 2.5.9 to address RUSTSEC-2026-0592.
 
 - **The PreToolUse hook no longer blocks non-code agents on generic wording (Refs #1078).** An untyped Agent prompt containing "explore", "read every", "full contents" or "architecture and structure" is now redirected only when it also names code (for example "source", "src", "repo", "function" or "module"). A prompt such as "Read every listed file in the list below" for OCR text now passes. Code-specific phrases such as "call graph" or "callers of" still redirect on their own. Reported by @dangeReis.

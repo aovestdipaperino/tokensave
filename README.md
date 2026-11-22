@@ -637,15 +637,12 @@ If you don't recall the exact name: `launchctl list | grep tokensave` / `systemc
 ## Self-Upgrade
 
 ```bash
-tokensave upgrade                  # upgrade to latest in current channel
-tokensave channel                  # show current channel (stable/beta)
-tokensave channel beta             # switch to beta channel
-tokensave channel stable           # switch back to stable
+tokensave upgrade --dry-run        # preview installer-specific guidance
+tokensave upgrade --standalone     # verify and update a standalone GitHub release
+tokensave channel                  # show the current channel
 ```
 
-`tokensave upgrade` downloads the correct platform binary from GitHub releases and replaces the running binary in place. Supports stable and beta channels independently.
-
----
+Managed installations are updated through their original installer. See [Upgrading](docs/guide/INSTALLATION.md#upgrading) for standalone verification and channel switching.
 
 ## Versioning & upgrades
 
