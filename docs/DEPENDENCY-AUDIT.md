@@ -28,12 +28,11 @@ The compatible-update preview proposed 135 package selections in the audit
 environment. Several would change native parsers, runtime libraries, or
 proc-macro dependencies. This PR selects `equivalent` 1.0.3 (from 1.0.2).
 It is pulled in by `indexmap` and `hashbrown`. The published Rust source
-diff consists of trait documentation clarifications, and the lockfile changes
-only this package's version and checksum. Its Rust 1.6 minimum is below
+diff consists of trait documentation clarifications, and its dependency list is unchanged. Its Rust 1.6 minimum is below
 TokenSave's MSRV. Review of `itoa` 1.0.19 found new unchecked buffer writes
 in integer formatting, so this audit retains 1.0.18 pending a focused review.
-The selected update leaves executable dependency source unchanged, so the PR
-does not use timing measurements to infer performance effects.
+The selected updates leave the parser, database engine, and indexing and
+search algorithms unchanged. This audit uses no timing measurements.
 
 ## Candidates from the installation output
 
@@ -54,10 +53,12 @@ All seven packages are direct dependencies of TokenSave on master.
 
 [#960](https://github.com/aovestdipaperino/tokensave/issues/960) has already
 landed its security changes, including selecting the local-only libsql feature
-set and upgrading the Windows zip dependency. Use the existing
-`.cargo/audit.toml` policy for the candidate and compare with the master
-baseline. Any new advisory affecting an unchanged package belongs in its
-security follow-up.
+set and upgrading the Windows zip dependency. The PR's first RustSec run flagged `cookie` 0.18.1, also present in the master
+baseline, under [RUSTSEC-2026-0594](https://rustsec.org/advisories/RUSTSEC-2026-0594.html).
+The patch updates the locked version to 0.18.3, the first fixed release,
+without changing other package selections or the existing audit policy.
+`ureq` lists `cookie` as optional. The all-target, all-feature workspace tree
+has no enabled path to it.
 
 `cargo install --locked tokensave --version 7.17.3` checks the published
 stable package. A published install verifies that release's lockfile. The
