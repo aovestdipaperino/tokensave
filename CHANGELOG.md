@@ -7,10 +7,6 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
-### Fixed
-
-- `tokensave init` and other commands no longer try to refresh an agent that is registered but not installed (e.g. OMP never set up on the machine). The upgrade resync, `tokensave install` and `tokensave reinstall` drop such stale registrations with a note naming `tokensave install --agent <id>` to register them again, and an install that wrote every registered agent no longer triggers a redundant same-version resync on the next command (Refs #1094).
-
 ### Changed
 
 - Auto-approve read-only MCP tools by default where the integration supports exact grants. Write-tool approvals require an exact-name opt-in, and existing policy can be reset explicitly (Refs #1080).
@@ -49,6 +45,14 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 - Upgrade `gix` from 0.81 to 0.90 (Refs #1084, #1059). `merge_base` now reports a missing merge base as `None` instead of an error, and tree-diff callbacks return `gix::Error`; tokensave keeps its previous behavior in both cases. `heapless` 0.8 is still in `Cargo.lock` through `faster-hex` 0.10.1, so the RUSTSEC ignores in `.cargo/audit.toml` stay until a `gix` release adopts `faster-hex` 2.
 - Move the build script's named values (Cargo and build-metadata variable keys, logo file names and width, the vendored grammar table) into `build/constants.rs`, pass the generated logo path to the crate through one build variable, and add an AGENTS.md/CONTRIBUTING.md rule and review checklist for named constants (Refs #1069).
 - Add a daily `Release drift` workflow that fails when crates.io carries a stable tokensave version without a published GitHub release, or when that release still lacks `SHA256SUMS` 12 hours after publication (Refs #1070). Without the release, `release.yml` never builds the binaries, Homebrew bottles and Scoop manifest, and `tokensave upgrade` reports the previous version as up to date, as happened with 7.17.0. The check was proposed by @0xreconlion.
+
+## [7.17.3] - 2026-11-23
+
+Patch release cut from 7.17.2 with only this fix cherry-picked; the entries under [Unreleased] above are not part of it.
+
+### Fixed
+
+- `tokensave init` and other commands no longer try to refresh an agent that is registered but not installed (e.g. OMP never set up on the machine). The upgrade resync, `tokensave install` and `tokensave reinstall` drop such stale registrations with a note naming `tokensave install --agent <id>` to register them again, and an install that wrote every registered agent no longer triggers a redundant same-version resync on the next command (Refs #1094).
 
 ## [7.17.2] - 2026-11-22
 
