@@ -7,6 +7,13 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ## [Unreleased]
 
+## [7.17.3] - 2026-11-23
+
+Patch release cut from 7.17.2 with only this fix cherry-picked; the entries under [Unreleased] on `master` are not part of it.
+
+### Fixed
+
+- `tokensave init` and other commands no longer try to refresh an agent that is registered but not installed (e.g. OMP never set up on the machine). The upgrade resync, `tokensave install` and `tokensave reinstall` drop such stale registrations with a note naming `tokensave install --agent <id>` to register them again, and an install that wrote every registered agent no longer triggers a redundant same-version resync on the next command (Refs #1094).
 
 ## [7.17.2] - 2026-11-22
 
