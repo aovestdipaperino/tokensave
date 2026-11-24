@@ -217,7 +217,7 @@ pub fn hook_pre_tool_use_codex() {
     let decision = if raw.trim().is_empty() {
         evaluate_hook_decision(&std::env::var("TOOL_INPUT").unwrap_or_default())
     } else {
-        evaluate_claude_pre_tool_use(&raw)
+        evaluate_pre_tool_use_event(&raw, &HookEnv::from_runtime(), false)
     };
     let decision_json =
         serde_json::from_str::<serde_json::Value>(&decision).unwrap_or(serde_json::Value::Null);
@@ -268,14 +268,25 @@ pub fn evaluate_claude_pre_tool_use(raw: &str) -> String {
 /// The snapshot is a base: when the event reports its own `cwd`, the project is
 /// re-discovered from there.
 pub fn evaluate_claude_pre_tool_use_with_env(raw: &str, env: &HookEnv) -> String {
-    let event = serde_json::from_str::<serde_json::Value>(raw).ok();
-    let env = event
-        .as_ref()
-        .map_or_else(|| env.clone(), |event| env.for_event(event));
-    let tool_input = event
-        .and_then(|v| v.get("tool_input").cloned())
-        .map_or_else(|| raw.to_string(), |ti| ti.to_string());
-    evaluate_hook_decision_with_env(&tool_input, &env)
+    evaluate_pre_tool_use_event(raw, env, true)
+}
+
+fn evaluate_pre_tool_use_event(raw: &str, env: &HookEnv, advise_on_bash: bool) -> String {
+    let Ok(event) = serde_json::from_str::<Value>(raw) else {
+        return String::new();
+    };
+    let env = env.for_event(&event);
+    let tool_input = event.get("tool_input").unwrap_or(&event);
+    if advise_on_bash && event.get("tool_name").and_then(Value::as_str) == Some("Bash") {
+        let Some(command) = tool_input.get("command").and_then(Value::as_str) else {
+            return String::new();
+        };
+        if let Some(reason) = evaluate_find_command(command, &env) {
+            return build_block_message(&reason);
+        }
+        return bash_search_advice(command, &env).unwrap_or_default();
+    }
+    evaluate_hook_decision_with_env(&tool_input.to_string(), &env)
 }
 
 /// Pure decision logic for the `PreToolUse` hook, using the real process
@@ -403,15 +414,16 @@ fn build_block_message(reason: &str) -> String {
 /// Fails closed: an index that cannot be opened or queried keeps the
 /// pre-#686 deny, and so does a missing `project_root` (hermetic tests).
 fn is_symbol_indexed(env: &HookEnv, symbol: &str) -> bool {
-    let Some(root) = env.project_root.as_deref() else {
-        log_index_probe("no_project_root_fail_closed");
-        return true;
-    };
+    probe_indexed_symbol(env, symbol).unwrap_or(true)
+}
+
+/// A failed probe cannot establish that a symbol lookup is useful.
+fn probe_indexed_symbol(env: &HookEnv, symbol: &str) -> Option<bool> {
+    let root = env.project_root.as_deref()?;
     let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
-    // Fail closed, like an index that cannot be opened (#940).
     if crate::db::compatibility::check_wal_sidecar(&db_path).is_err() {
-        log_index_probe("wal_refused_fail_closed");
-        return true;
+        log_index_probe("wal_refused");
+        return None;
     }
     let sql = "SELECT 1 FROM nodes WHERE LOWER(name) = ? LIMIT 1";
     let name = symbol.to_lowercase();
@@ -440,9 +452,9 @@ fn is_symbol_indexed(env: &HookEnv, symbol: &str) -> bool {
     log_index_probe(match ran {
         Some(true) => "symbol_found",
         Some(false) => "symbol_absent",
-        None => "index_unavailable_fail_closed",
+        None => "index_unavailable",
     });
-    ran.unwrap_or(true)
+    ran
 }
 
 fn log_index_probe(outcome: &'static str) {
@@ -742,6 +754,88 @@ fn split_top_level_segments(command: &str) -> Option<Vec<Vec<&str>>> {
     } else {
         Some(out)
     }
+}
+
+/// Claude can attach a suggestion without replacing the search or granting
+/// permission. Its hook input cannot establish MCP availability or freshness.
+fn bash_search_advice(command: &str, env: &HookEnv) -> Option<String> {
+    if !env.in_tokensave_project || env.disable_grep_hook {
+        return None;
+    }
+    let stripped = strip_command_prefixes(command.trim());
+    if stripped.disables_hook
+        || stripped.cd_target.is_some()
+        || command.contains([
+            '\n', '$', '`', '|', ';', '&', '<', '>', '#', '*', '?', '[', '{', '~',
+        ])
+    {
+        return None;
+    }
+
+    // Only suggest a definition lookup for simple scoped searches. The
+    // general grep parser accepts options that can change what gets matched.
+    let tokens = shell_split(stripped.rest);
+    let (tool, args) = tokens.split_first()?;
+    if !constants::BASH_ADVISORY_GREP_TOOLS.contains(&tool.as_str()) {
+        return None;
+    }
+    let first_positional = args.iter().take_while(|arg| arg.starts_with('-')).count();
+    if !args[..first_positional].iter().all(|flag| {
+        flag.strip_prefix('-').is_some_and(|flags| {
+            !flags.is_empty()
+                && flags
+                    .chars()
+                    .all(|flag| constants::BASH_ADVISORY_GREP_FLAGS.contains(flag))
+        })
+    }) {
+        return None;
+    }
+    let [pattern, target] = &args[first_positional..] else {
+        return None;
+    };
+    if pattern.len() > MAX_PATTERN_LEN || !target_looks_like_code(target, &[], "", env) {
+        return None;
+    }
+    let found = classify_symbol_pattern(pattern)?;
+    let simple_pattern = match found.shape {
+        PatternShape::BareSymbol => pattern == found.symbol,
+        PatternShape::WordBoundary => true,
+        PatternShape::Definition => pattern.split_once(' ').is_some_and(|(keyword, name)| {
+            DEFINITION_KEYWORDS.contains(&keyword) && name == found.symbol
+        }),
+    };
+    if !simple_pattern || target.starts_with('-') {
+        return None;
+    }
+
+    let root = env.project_root.as_deref()?.canonicalize().ok()?;
+    let target = env.base()?.join(target).canonicalize().ok()?;
+    let relative = target.strip_prefix(&root).ok()?;
+    let mut scope = relative.to_str()?.to_owned();
+    if target.is_dir() && !scope.is_empty() {
+        scope.push(std::path::MAIN_SEPARATOR);
+    }
+    if !probe_indexed_symbol(env, found.symbol)? {
+        return None;
+    }
+    let mut args = serde_json::json!({ "query": found.symbol, "graph_root": root });
+    if !scope.is_empty() {
+        args["path_include"] = serde_json::json!([scope]);
+    }
+    let advice = format!(
+        "For indexed definitions in this search scope, use tokensave_search {args} when \
+         available. Use the Bash results for exact text matches or when the index is stale \
+         or unavailable."
+    );
+    Some(
+        serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": advice,
+            }
+        })
+        .to_string(),
+    )
 }
 
 fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {

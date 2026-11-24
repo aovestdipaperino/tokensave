@@ -1992,45 +1992,83 @@ fn indexed_project_with_code_dir(dir: &str) -> (tempfile::TempDir, PathBuf) {
     (tmp, root)
 }
 
-#[test]
-fn test_relative_target_resolves_against_the_event_cwd() {
-    let (_tmp, root) = indexed_project_with_code_dir("mypkg");
+fn claude_bash_at(cwd: &Path, command: &str) -> String {
     let input = serde_json::json!({
         "tool_name": "Bash",
-        "cwd": root.to_string_lossy(),
-        "tool_input": {"command": "grep -rn handle_request mypkg/"},
-    })
-    .to_string();
-    // The hook process itself sits outside any project, which is how a harness
-    // spawns it: the event's `cwd` is the only thing that can resolve `mypkg/`.
-    let result = evaluate_claude_pre_tool_use_with_env(&input, &env_not_indexed());
-    assert!(
-        is_blocked(&result),
-        "a relative target must resolve against the event cwd, not the hook process cwd: {result}"
-    );
+        "cwd": cwd,
+        "tool_input": {"command": command},
+    });
+    evaluate_claude_pre_tool_use_with_env(&input.to_string(), &env_not_indexed())
 }
 
 #[test]
-fn test_relative_target_resolves_against_a_subdirectory_event_cwd() {
-    let (_tmp, root) = indexed_project();
+fn test_claude_bash_suggests_scoped_definitions_without_deciding_permission() {
+    let (_tmp, root) = indexed_project_with_nodes(&["verify"]);
     let nested = root.join("crate_a");
-    std::fs::create_dir_all(nested.join("mypkg")).expect("create nested code dir");
-    std::fs::write(
-        nested.join("mypkg").join("lib.rs"),
-        b"fn handle_request() {}",
+    let source_dir = nested.join("src");
+    std::fs::create_dir_all(&source_dir).expect("create source directory");
+    std::fs::write(source_dir.join("auth.rs"), "fn verify() {}\n// fn verify")
+        .expect("write source");
+
+    let directory_scope = format!("crate_a{0}src{0}", std::path::MAIN_SEPARATOR);
+    let file_scope = format!("{directory_scope}auth.rs");
+    for (command, scope) in [
+        ("grep -n 'fn verify' src/auth.rs", file_scope.as_str()),
+        ("grep -rn verify src/", directory_scope.as_str()),
+    ] {
+        let result = claude_bash_at(&nested, command);
+        let response: serde_json::Value = serde_json::from_str(&result).expect("hook output");
+        let output = &response["hookSpecificOutput"];
+        assert_eq!(output["hookEventName"], "PreToolUse");
+        assert!(output.get("permissionDecision").is_none());
+        assert!(output.get("updatedInput").is_none());
+        assert!(response.get("permission").is_none());
+        let advice = output["additionalContext"].as_str().expect("search advice");
+        let (args, _) = advice
+            .split_once("tokensave_search ")
+            .expect("search call")
+            .1
+            .split_once(" when available.")
+            .expect("end of search call");
+        let args: serde_json::Value = serde_json::from_str(args).expect("search args");
+        assert_eq!(args["query"], "verify");
+        assert_eq!(
+            args["graph_root"],
+            serde_json::json!(root.canonicalize().expect("canonical root"))
+        );
+        assert_eq!(args["path_include"], serde_json::json!([scope]));
+        assert!(advice.contains("stale or unavailable"));
+    }
+
+    for command in [
+        "grep -Fn 'fn verify' src/auth.rs",
+        "grep -n '^fn verify' src/auth.rs",
+        "grep -n 'verify(' src/auth.rs",
+        "grep -vn verify src/auth.rs",
+        "grep -n verify src/auth.rs | head",
+        "grep -n verify src/auth.rs src/other.rs",
+        "TOKENSAVE_DISABLE_GREP_HOOK=1 grep -n 'fn verify' src/auth.rs",
+    ] {
+        assert!(claude_bash_at(&nested, command).is_empty(), "{command}");
+    }
+    assert!(!claude_bash_at(
+        &nested,
+        "TOKENSAVE_DISABLE_GREP_HOOK=0 grep -n verify src/auth.rs"
     )
-    .expect("write source");
-    let input = serde_json::json!({
-        "tool_name": "Bash",
-        "cwd": nested.to_string_lossy(),
-        "tool_input": {"command": "grep -rn handle_request mypkg/"},
-    })
-    .to_string();
-    let result = evaluate_claude_pre_tool_use_with_env(&input, &env_not_indexed());
-    assert!(
-        is_blocked(&result),
-        "a session in a subdirectory spells its targets relative to that subdirectory: {result}"
-    );
+    .is_empty());
+}
+
+#[test]
+fn test_claude_bash_falls_through_with_missing_unreadable_or_stale_index() {
+    let (_tmp, missing_root) = indexed_project_with_nodes(&["verify"]);
+    std::fs::remove_file(tokensave::config::get_tokensave_dir(&missing_root).join("tokensave.db"))
+        .expect("remove index");
+    let (_tmp2, unreadable_root) = indexed_project();
+    let (_tmp3, stale_root) = indexed_project_with_nodes(&["old_name"]);
+    for root in [&missing_root, &unreadable_root, &stale_root] {
+        std::fs::write(root.join("auth.rs"), "fn verify() {}").expect("write source");
+        assert!(claude_bash_at(root, "grep -n 'fn verify' auth.rs").is_empty());
+    }
 }
 
 #[test]

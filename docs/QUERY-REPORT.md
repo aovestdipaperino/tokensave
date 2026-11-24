@@ -3777,9 +3777,9 @@ SELECT DISTINCT n1.file_path AS src_file, n2.file_path AS tgt_file FROM edges e 
 
 ### src/hooks.rs
 
-#### Q0302 — `is_symbol_indexed`
+#### Q0302 — `probe_indexed_symbol`
 
-Source: [src/hooks.rs:410](../src/hooks.rs#L410).
+Source: [src/hooks.rs:428](../src/hooks.rs#L428).
 
 ```sql
 SELECT 1 FROM nodes WHERE LOWER(name) = ? LIMIT 1
@@ -11878,19 +11878,21 @@ Source: [src/graph/queries.rs:619](../src/graph/queries.rs#L619).
     }
 ```
 
-### `is_symbol_indexed` — src/hooks.rs:401
+### `probe_indexed_symbol` — src/hooks.rs:421
 
-Source: [src/hooks.rs:401](../src/hooks.rs#L401).
+Source: [src/hooks.rs:421](../src/hooks.rs#L421).
+
+The read-only probe binds the lowercase symbol name. Claude Bash advice
+requires a successful hit. The existing redirect paths treat a probe failure
+as an eligible symbol.
 
 ```rust
-fn is_symbol_indexed(env: &HookEnv, symbol: &str) -> bool {
-    let Some(root) = env.project_root.as_deref() else {
-        return true;
-    };
+fn probe_indexed_symbol(env: &HookEnv, symbol: &str) -> Option<bool> {
+    let root = env.project_root.as_deref()?;
     let db_path = crate::config::get_tokensave_dir(root).join("tokensave.db");
-    // Fail closed, like an index that cannot be opened (#940).
     if crate::db::compatibility::check_wal_sidecar(&db_path).is_err() {
-        return true;
+        log_index_probe("wal_refused");
+        return None;
     }
     let sql = "SELECT 1 FROM nodes WHERE LOWER(name) = ? LIMIT 1";
     let name = symbol.to_lowercase();
@@ -11916,7 +11918,12 @@ fn is_symbol_indexed(env: &HookEnv, symbol: &str) -> bool {
             .ok()
             .and_then(|rt| rt.block_on(probe).ok()),
     };
-    ran.unwrap_or(true)
+    log_index_probe(match ran {
+        Some(true) => "symbol_found",
+        Some(false) => "symbol_absent",
+        None => "index_unavailable",
+    });
+    ran
 }
 ```
 
