@@ -185,7 +185,12 @@ Use `tokensave_search` for a symbol by name, `tokensave_search` with \
 `tokensave_files` for files by path. A search that is not about code (logs, \
 docs, config) passes when it names the file type, e.g. `--include='*.md'` or a \
 `*.md` glob. Set `TOKENSAVE_DISABLE_GREP_HOOK=1` only for a search that is \
-genuinely not about code symbols and still gets denied, and never pre-emptively.\n";
+genuinely not about code symbols and still gets denied, and never pre-emptively.\n\n\
+### Bash search suggestions\n\n\
+Claude Code Bash searches run with their usual permissions. If the hook \
+suggests an indexed definition lookup, use the Bash output for exact matches \
+or when the MCP tool or a fresh index is unavailable. To skip advice for one \
+Bash call, prefix the command with `TOKENSAVE_DISABLE_GREP_HOOK=1`.\n";
 
 /// The Pi-specific overlay on top of the canonical body.
 ///

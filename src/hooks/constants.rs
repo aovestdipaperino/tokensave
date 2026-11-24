@@ -61,3 +61,7 @@ pub(super) const CODE_CONTEXT_WORDS: &[&str] = &[
     "implementation",
     "implementations",
 ];
+
+/// Commands and short options recognized by Claude's Bash search advice.
+pub(super) const BASH_ADVISORY_GREP_TOOLS: &[&str] = &["grep", "rg", "ag"];
+pub(super) const BASH_ADVISORY_GREP_FLAGS: &str = "nrRw";
