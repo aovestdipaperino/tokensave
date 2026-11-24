@@ -9,6 +9,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Harden crates.io commit provenance resolution: packaged metadata is accepted
+  only from its `git.sha1` field, and remains available when incomplete root
+  Git metadata cannot resolve a valid commit (Refs #1098).
+
 - `tokensave init` and other commands no longer try to refresh an agent that is registered but not installed (e.g. OMP never set up on the machine). The upgrade resync, `tokensave install` and `tokensave reinstall` drop such stale registrations with a note naming `tokensave install --agent <id>` to register them again, and an install that wrote every registered agent no longer triggers a redundant same-version resync on the next command (Refs #1094).
 
 ### Changed

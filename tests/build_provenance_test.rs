@@ -99,9 +99,27 @@ fn malformed_vcs_info_reports_no_commit() {
         clean_vcs_info(&format!("{SAMPLE_SHA}00")),
         clean_vcs_info(&SAMPLE_SHA.replace('a', "g")),
         r#"{"git": {"sha1": 12345}}"#.to_owned(),
+        format!(r#"{{"sha1":"{SAMPLE_SHA}","git":{{}}}}"#),
+        format!(r#"{{"other":{{"sha1":"{SAMPLE_SHA}"}},"git":{{}}}}"#),
     ] {
         assert_eq!(commit_from_cargo_vcs_info(&json), None, "input: {json:?}");
     }
+}
+
+#[test]
+fn invalid_git_metadata_falls_back_to_cargo_vcs_info() {
+    let dir = tempfile::tempdir().expect("create package directory");
+    fs::create_dir(dir.path().join(constants::git::DIR)).expect("create invalid git metadata");
+    fs::write(
+        dir.path().join(CARGO_VCS_INFO_FILE_NAME),
+        clean_vcs_info(SAMPLE_SHA),
+    )
+    .expect("write vcs info");
+
+    assert_eq!(
+        resolve(dir.path()).commit.as_deref(),
+        Some(&SAMPLE_SHA[..COMMIT_ABBREV_LEN])
+    );
 }
 
 #[test]
