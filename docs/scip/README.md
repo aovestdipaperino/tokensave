@@ -31,7 +31,8 @@ an experimental command that:
 
 It opens the graph exactly as `graphify-export` does: read-only, after the
 channel/schema preflight, inside one read transaction. It runs no sync, no
-migration and no write, and makes no network call. No MCP tool, query, or
+migration and no database write, and makes no network call. It holds the
+project's sync lock while it runs, so the graph cannot change underneath it. No MCP tool, query, or
 edge contract changes.
 
 ```mermaid
@@ -97,30 +98,84 @@ candidate. One that no graph edge covers is a false negative, and becomes a
 symbol}`. Recall is reported overall, for call syntax, and for other references,
 because tokensave deliberately does not model every type mention.
 
-### Precedence, deduplication and invalidation (proposed for a write path)
+### Proposed write path: SCIP evidence consulted by the resolver
 
-The prototype only reports. A future import should follow these rules, which
-the report already supports:
+The prototype only reports. A future import should not patch `edges` after
+resolution: `edges` stores no column, so a post-hoc import could only match by
+line, and it would have to find and replace the heuristic edges it
+contradicts. `unresolved_refs` already stores `line` and `col` for every
+reference the resolver handles, so SCIP should meet the graph there, as
+evidence the resolver consults before its heuristics.
 
-- **Precedence:** a confirmed edge keeps its existing row, and SCIP only
-  upgrades its provenance. A contradicted heuristic edge (`*-scored`,
-  `simple-name-match`, `same-file-blocklist`, `build-variant`) is replaced by
-  the SCIP target. An exact resolver result is never replaced without review.
-  An edge the extractor emitted directly is never touched.
-- **Deduplication:** key on `(source, target, kind, line)`, the same key as
-  today's unique edge index, and order duplicates by `Edge::provenance_rank`
-  with a new exact `ResolvedBy` code for SCIP.
-- **Invalidation:** SCIP has no content hash, so freshness is per document.
-  The graph's `files.content_hash` must match the source, and every definition
-  range must still spell its symbol's name. Sync must drop a document's SCIP
-  edges whenever that file's hash changes, and keep the indexer version so a
-  tool upgrade can invalidate everything.
+```mermaid
+graph TD
+    I[index.scip] --> C["tokensave scip-import<br/>(explicit, holds the sync lock)"]
+    C -->|per-file checks pass| T[("scip_documents<br/>scip_refs")]
+    U[unresolved_refs<br/>file, line, col] --> R{Resolver}
+    T -->|file hash matches| R
+    R -->|SCIP hit| E["edges<br/>resolved_by = scip"]
+    R -->|no hit| H[Existing strategies] --> E
+    S[sync: file hash changed] -->|delete that file's rows| T
+```
+
+- **Storage:** two new tables. `scip_documents(file_path, content_hash,
+  tool, tool_version, imported_at)` records the file version each document
+  was verified against. `scip_refs(file_path, line, col_start, col_end,
+  target_node_id, role)` keeps only references whose target maps to a project
+  node. It stores no locals, no external symbols and no raw symbol strings.
+  The estimate in [Cost](#cost) for `calls` edges only (+3–4 % database size)
+  is the expected order of magnitude; measure the real row count first.
+- **Import:** an explicit `tokensave scip-import --index <file>` command runs
+  the same per-document checks as `scip-compare`, holds the sync lock and
+  writes in one transaction. It never runs the external indexer, so normal
+  operation still has no external dependency, and with no import the tables
+  stay empty and behavior is unchanged.
+- **Precedence:** SCIP is the first resolver strategy. For an unresolved
+  reference in a file whose `scip_documents.content_hash` matches
+  `files.content_hash`, a `scip_refs` row at that position becomes the edge,
+  with a new `ResolvedBy` code (append-only storage format) ranked first by
+  `Edge::provenance_rank`. A miss falls through to the existing strategies.
+  Contradicted heuristic edges are therefore never created, and an edge an
+  extractor emitted directly is never touched.
+- **Deduplication:** unchanged. Edges stay keyed on `(source, target, kind,
+  line)`, and duplicates keep the strongest provenance, which is SCIP.
+- **Invalidation:** when sync sees a file's hash change, it deletes that
+  file's `scip_documents` and `scip_refs` rows together with its nodes and
+  edges. It must also invalidate references from other documents to nodes
+  removed or re-extracted in that file. Include those source documents in
+  re-resolution so their existing SCIP-derived edges are removed. A source
+  hash alone cannot verify a cross-file target after a sync. The affected
+  references fall back to the tree-sitter strategies until the next import.
+  An import with a different indexer or indexer version replaces all SCIP
+  rows.
+- **Contracts:** edges stay in one table, so `tokensave_callers`,
+  `tokensave_impact`, rename and ranking need no change.
+
+Open points to verify before implementing:
+
+- **Column units and spans.** tree-sitter columns are bytes; SCIP ranges are
+  UTF-8, UTF-16 or UTF-32 offsets, which the decoder already converts. A
+  reference's `col` can point at the start of `alpha::helper` while the SCIP
+  range covers only `helper`, so a match must test that the SCIP range lies
+  inside the reference's span on that line. Check this on the fixtures.
+- **Freshness for a write path.** Definition checks can miss edits to
+  references before import. Evaluate requiring an index generated from a
+  snapshot with recorded per-document hashes before applying evidence.
+- **Schema change.** New tables need a migration and a new `LATEST_VERSION`,
+  which forces a full reindex (`TOKENSAVE-VERSIONING.md`). Land it on `beta`
+  first, following [DATABASE-COMPATIBILITY.md](../DATABASE-COMPATIBILITY.md),
+  and list the new SQL in [QUERY-REPORT.md](../QUERY-REPORT.md).
+- **Alternatives rejected:** writing SCIP edges into `edges` after resolution
+  (line-only matching, replacement and invalidation logic); running the
+  indexer inside `sync` (20–70 s and over 1 GiB per crate); merging SCIP data
+  at query time (every MCP tool would change).
 
 ## Stale, malformed and incompatible indexes
 
 | Condition | Behavior |
 |---|---|
 | Index larger than `--max-index-mib` (default 256) | Refused before reading. |
+| A sync is running for the project | Refused: `another sync is already in progress`. The comparison holds the sync lock, because sync commits files, nodes and edges separately and a mid-sync snapshot could pass the hash check with edges not yet resolved. |
 | Truncated field, overlong varint, group wire type, field number 0, invalid UTF-8, out-of-range `int32` | Refused: `malformed SCIP index: …`. |
 | More than 200k documents, 20M occurrences, 5M symbols, or a string over 64 KiB | Refused, naming the limit. |
 | Protocol version other than 0 | Refused. |
@@ -164,9 +219,22 @@ cargo test --lib scip::
 cargo test --test integration scip_compare_test::
 ```
 
+[The TypeScript fixture](../../tests/fixtures/scip/typescript) uses two modules
+with same-named classes and helpers, an aliased import, and a qualified call
+to the other module's helper. Its normalized index regenerates byte-for-byte
+with `@sourcegraph/scip-typescript` 0.6.1:
+
+```sh
+SCIP_TYPESCRIPT=/path/to/node_modules/.bin/scip-typescript scripts/scip/regenerate-typescript.sh
+```
+
+The indexer emits zero-width module definitions, synthetic constructor names
+and type parameter ranges. The verifier checks those ranges for bounds and
+skips the name comparison for those definitions.
+
 ## Results
 
-### Correctness on the fixture
+### Correctness on the Rust fixture
 
 Fixture run on 2026-11-24 against this branch:
 
@@ -196,10 +264,40 @@ The seven call-syntax misses are `alpha::Config::new()`, `beta::Config::new()`,
 `lib.rs`, and `crate::alpha::helper()` in `beta.rs`. The last one was bound to
 the wrong function. The others stay in `unresolved_refs`.
 
-The recorded #921 baseline
-([RESOLVER-PRECISION-BASELINE.md](../RESOLVER-PRECISION-BASELINE.md)) scored
-1.0 on its probes because they have no name collisions. This fixture
-deliberately does.
+The [#921 baseline](../RESOLVER-PRECISION-BASELINE.md) checks selected
+reference positions and rename plans with language servers across Rust,
+TypeScript and Python. These probes use unambiguous bindings. SCIP comparison
+adds a batch check over indexed documents, including name collisions,
+per-strategy precision and edge coverage. Keep the position-aware probes for
+rename and use SCIP reports alongside them for broader resolver diagnostics.
+The two methods use different denominators and their scores are reported
+independently.
+
+### TypeScript fixture
+
+Measured on Linux x86-64 with a debug build and `scip-typescript` 0.6.1.
+The indexer took 1.36 s (220 MiB peak RSS), tokensave initialization took
+0.12 s, and comparison took 8.7 ms. The SCIP index was 7,319 bytes and the
+graph database was 483,328 bytes.
+
+| Metric | Value |
+|---|---|
+| Documents compared | 4 / 4 |
+| Definitions mapped | 11 / 17 (four module namespaces and two constructors unmapped) |
+| Graph edges confirmed / contradicted / unverifiable | 4 / 1 / 5 |
+| Unverifiable share of classified edges | 50% (5 / 10) |
+| Edge precision (confirmed / decided) | 0.800 (4 / 5) |
+| Recall, call-syntax references | 0 / 8 |
+| Recall, other references | 4 / 6 |
+| SCIP implementation relationships covered | 2 / 4 |
+| Proposed import edges | 9 (7 `calls`, 2 `uses`) |
+
+At `beta.ts:12`, `simple-name-match-scored` resolves `alpha.helper()` to
+`beta.ts`'s own `helper`. SCIP identifies the helper in `alpha.ts`. All
+five unverifiable edges come from `relative-import`. The precision figure
+covers five decided edges, including two `implements` edges. It should be
+read alongside the zero call-syntax recall. This fixture is too small for a
+general TypeScript estimate.
 
 ### Cost
 
@@ -232,6 +330,7 @@ Correctness on the same crates:
 | Documents compared | 50 / 50 | 31 / 31 |
 | Definitions mapped | 1,431 / 1,625 | 940 / 991 |
 | Edges confirmed / contradicted / unverifiable | 1,380 / 731 / 1,032 | 954 / 353 / 296 |
+| Unverifiable share of classified edges | 32.8% (1,032 / 3,143) | 18.5% (296 / 1,603) |
 | Edge precision | 0.654 | 0.730 |
 | Recall, call syntax | 0.569 (1,210 / 2,126) | 0.497 (509 / 1,025) |
 | Recall, other references | 0.038 (164 / 4,348) | 0.173 (386 / 2,233) |
@@ -274,14 +373,9 @@ was not measured, because the prototype does not write.
 
 ## Limitations
 
-- **One ecosystem prototyped.** Only rust-analyzer output was exercised. The
-  decoder and mapping are language-neutral, but the `impl` descriptor rule and
-  the call-syntax heuristic (`(` or `::<` after the reference) are tuned to
-  Rust. Maintained indexers exist for TypeScript/JavaScript (`scip-typescript`),
-  Python (`scip-python`), Java/Scala/Kotlin (`scip-java`), C/C++ (`scip-clang`),
-  C# (`scip-dotnet`), Ruby (`scip-ruby`) and Go (`scip-go`). Each must be
-  checked before it is claimed as supported, because descriptor conventions
-  and range semantics differ.
+- **Two indexers exercised.** Rust has fixture and published-crate results.
+  TypeScript coverage is limited to the pinned fixture. Other producers
+  require validation of their descriptor conventions and range semantics.
 - **Line-level matching.** Edges are matched on `(file, line, target)` because
   `edges` stores no column. Two references to same-named targets on one line
   can therefore be confirmed by either. The fixture's `lib.rs:15` is such a
@@ -314,13 +408,15 @@ Proceed with SCIP as an **optional verifier first, importer second**:
    self-binding of delegating wrappers (`self.map.clear()`), associated types
    (`V::Value`), and type names that collide with enum variants. On the fixture
    the gap is `Type::new()` and `module::fn()` calls left unresolved. These
-   are tree-sitter-side fixes that help users without SCIP.
-3. **Only then add an opt-in import**, behind a setting and per document. It
-   needs a new `ResolvedBy` code (storage format, append-only), the precedence
-   and invalidation rules above, and a check that `tokensave_callers`,
-   `tokensave_impact` and `tokensave_rename` treat SCIP edges as exact without
-   contract changes. Measure the database growth with the real row count
-   before enabling it.
+   are tree-sitter-side fixes tracked in [#1109](https://github.com/aovestdipaperino/tokensave/issues/1109).
+3. **Only then add an opt-in import**, as described in
+   [Proposed write path](#proposed-write-path-scip-evidence-consulted-by-the-resolver):
+   SCIP evidence in its own tables, consulted by the resolver as its first
+   strategy, invalidated per file by sync. It needs a new `ResolvedBy` code
+   (storage format, append-only), a schema migration landed on `beta` first,
+   and a check that `tokensave_callers`, `tokensave_impact` and
+   `tokensave_rename` treat SCIP edges as exact without contract changes.
+   Measure the database growth with the real row count before enabling it.
 
 Do not make an external indexer a requirement, do not replace tree-sitter, and
 do not import edges from documents that fail the freshness checks.

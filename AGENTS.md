@@ -420,7 +420,8 @@ portable string formats, and documented path-syntax test fixtures.
 - `tokensave scip-compare` (#1100) reads a SCIP index and the graph read-only:
   no sync, migration or database write. Keep its index, document, string and
   source-size bounds, the per-document freshness checks, and the refusal of a
-  foreign `project_root` without `--rebase-root`. Its SQL is listed in
+  foreign `project_root` without `--rebase-root`. It holds the sync lock for
+  its whole run, so it never reads a mid-sync graph. Its SQL is listed in
   `docs/QUERY-REPORT.md` (Q0427–Q0431).
 - Run `cargo test --lib scip::` and
   `cargo test --test integration scip_compare_test::` for focused checks.

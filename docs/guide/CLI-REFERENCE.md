@@ -85,12 +85,14 @@ See [Open Knowledge Format](OKF.md) for the `okf` commands, their findings, the 
 
 `scip-compare` is an experimental, read-only prototype. It reads a
 [SCIP](https://github.com/sourcegraph/scip) index from an external indexer,
-such as `rust-analyzer scip`, and prints a JSON report that classifies
+such as `rust-analyzer scip` or `scip-typescript`, and prints a JSON report that classifies
 the graph's edges as confirmed, contradicted or unverifiable. It also lists
 the references the graph lacks, as a dry-run import plan. It never writes the
-index. An index whose `project_root` names another directory needs
-`--rebase-root`. Each document is checked against the current sources, and
-stale, unindexed or malformed documents are skipped and counted. See the
+index. It refuses to run while a sync of the same project is in progress,
+and holds the sync lock while it runs. An index whose `project_root` names
+another directory needs `--rebase-root`. Each document is checked against the
+current sources, and stale, unindexed or malformed documents are skipped and
+counted. See the
 [SCIP evaluation](https://github.com/aovestdipaperino/tokensave/blob/master/docs/scip/README.md)
 for the format mapping, limits and results.
 

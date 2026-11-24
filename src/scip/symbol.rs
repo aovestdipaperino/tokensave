@@ -45,6 +45,17 @@ pub enum Symbol {
 }
 
 impl Symbol {
+    /// Whether the last descriptor is a type parameter (`[T]`), whose range
+    /// spells the parameter rather than the item [`Symbol::primary`] names.
+    #[must_use]
+    pub fn last_is_type_parameter(&self) -> bool {
+        matches!(
+            self,
+            Symbol::Global { descriptors, .. }
+                if descriptors.last().is_some_and(|d| d.suffix == Suffix::TypeParameter)
+        )
+    }
+
     /// The descriptor that names the symbol itself: the last one that is not
     /// a type parameter or parameter. `None` for locals and for parameters,
     /// which have no graph node of their own.

@@ -5,7 +5,8 @@
 //! each graph edge in a verified document is classified as confirmed,
 //! contradicted or unverifiable. SCIP references that no edge covers become
 //! a dry-run import plan. Nothing is written: no sync, migration, or database
-//! write happens, and the graph's contracts are unchanged.
+//! write happens, and the graph's contracts are unchanged. The project's sync
+//! lock is held for the duration, so the graph cannot change mid-comparison.
 
 use super::symbol::{self, Suffix};
 use super::wire::{self, Document, Limits, ROLE_DEFINITION, ROLE_IMPORT};
@@ -138,15 +139,26 @@ fn verify(doc: &Document, lines: &[&str]) -> std::result::Result<(), Skip> {
         {
             return Err(Skip::RangeOutOfBounds);
         }
-        if occ.roles & ROLE_DEFINITION == 0 || r.start_line != r.end_line {
+        // A zero-width definition (scip-typescript's module symbol at 0:0)
+        // spells nothing, so it cannot prove staleness.
+        if occ.roles & ROLE_DEFINITION == 0
+            || r.start_line != r.end_line
+            || r.start_char == r.end_char
+        {
             continue;
         }
-        let Some(primary) = symbol::parse(&occ.symbol).and_then(|s| s.primary().cloned()) else {
+        let Some(parsed) = symbol::parse(&occ.symbol) else {
             continue;
         };
-        // Synthetic descriptors (rust-analyzer's `impl#`) do not appear at
-        // their range; only real identifiers can prove staleness.
-        if primary.name.is_empty() || primary.name == "impl" {
+        // A type parameter's range spells the parameter, not the item that
+        // `primary` names.
+        if parsed.last_is_type_parameter() {
+            continue;
+        }
+        let Some(primary) = parsed.primary().cloned() else {
+            continue;
+        };
+        if is_synthetic_name(&primary.name) {
             continue;
         }
         let text = slice(start, r.start_char, r.end_char, doc.position_encoding);
@@ -156,6 +168,13 @@ fn verify(doc: &Document, lines: &[&str]) -> std::result::Result<(), Skip> {
         }
     }
     Ok(())
+}
+
+/// Descriptor names that never appear verbatim at their range: empty names,
+/// rust-analyzer's `impl` blocks, and angle-bracketed names such as
+/// scip-typescript's `<constructor>`.
+fn is_synthetic_name(name: &str) -> bool {
+    name.is_empty() || name == "impl" || (name.starts_with('<') && name.ends_with('>'))
 }
 
 fn safe_relative(path: &str) -> bool {
@@ -310,6 +329,12 @@ pub async fn compare(options: &Options) -> Result<Value> {
     // 3. Open the graph read-only, exactly as the Graphify export does.
     let t = Instant::now();
     let db_path = crate::graphify::database_path(&root)?;
+    // Sync commits files, nodes and edges in separate transactions, so a
+    // snapshot taken mid-sync can pass the per-file hash check while that
+    // file's edges are not yet resolved. Holding the sync lock for the whole
+    // comparison (well under a second on measured crates) keeps every
+    // snapshot complete; a running sync makes the comparison fail instead.
+    let _sync_lock = crate::tokensave::try_acquire_sync_lock(&root)?;
     crate::db::compatibility::preflight(&db_path, crate::db::migrations::latest_version()).await?;
     let db_bytes = std::fs::metadata(&db_path).map_or(0, |m| m.len());
     let db = libsql::Builder::new_local(&db_path)
@@ -827,6 +852,34 @@ mod tests {
         let mut encoding = doc(vec![]);
         encoding.position_encoding = 9;
         assert_eq!(verify(&encoding, &lines), Err(Skip::UnsupportedEncoding));
+    }
+
+    #[test]
+    fn verify_ignores_definitions_that_spell_no_name() {
+        // Shapes scip-typescript 0.6.1 emits: a zero-width module symbol, a
+        // synthetic `<constructor>` and a type parameter.
+        let lines = ["export class Box<T> {", "  constructor() {}", "}"];
+        let ok = doc(vec![
+            occ(0, 0, 0, "s m p v src/`box.ts`/", ROLE_DEFINITION),
+            occ(0, 13, 16, "s m p v src/`box.ts`/Box#", ROLE_DEFINITION),
+            occ(0, 17, 18, "s m p v src/`box.ts`/Box#[T]", ROLE_DEFINITION),
+            occ(
+                1,
+                2,
+                13,
+                "s m p v src/`box.ts`/Box#`<constructor>`().",
+                ROLE_DEFINITION,
+            ),
+        ]);
+        assert_eq!(verify(&ok, &lines), Ok(()));
+        let renamed = doc(vec![occ(
+            0,
+            13,
+            16,
+            "s m p v src/`box.ts`/Bag#",
+            ROLE_DEFINITION,
+        )]);
+        assert_eq!(verify(&renamed, &lines), Err(Skip::DefinitionMismatch));
     }
 
     #[test]

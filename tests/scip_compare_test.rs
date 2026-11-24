@@ -138,6 +138,31 @@ async fn refuses_malformed_and_oversized_indexes() {
 }
 
 #[tokio::test]
+async fn refuses_while_a_sync_holds_the_lock() {
+    let p = project().await;
+    let lock_path = p.dir.path().join(".tokensave").join("sync.lock");
+
+    // A running sync holds the lock: the comparison must not read a
+    // partially committed graph.
+    let guard = tokensave::tokensave::try_acquire_sync_lock(p.dir.path()).unwrap();
+    let err = compare(&options(p.dir.path(), committed_index()))
+        .await
+        .expect_err("comparison must refuse while a sync holds the lock");
+    assert!(
+        err.to_string().contains("sync is already in progress"),
+        "{err}"
+    );
+    drop(guard);
+    assert!(!lock_path.exists());
+
+    // Once the sync finishes the comparison runs, and releases the lock.
+    compare(&options(p.dir.path(), committed_index()))
+        .await
+        .unwrap();
+    assert!(!lock_path.exists(), "comparison must release the sync lock");
+}
+
+#[tokio::test]
 async fn skips_documents_when_either_index_is_stale() {
     let p = project().await;
     let alpha = p.dir.path().join("src").join("alpha.rs");
@@ -168,4 +193,43 @@ async fn skips_documents_when_either_index_is_stale() {
     assert_eq!(stale, 1, "{report:#}");
     let skipped = sample(&report, "skipped_documents");
     assert_eq!(skipped[0]["path"], "src/alpha.rs");
+}
+
+fn typescript_fixture() -> PathBuf {
+    fixture_dir().parent().unwrap().join("typescript")
+}
+
+fn typescript_source(name: &str) -> String {
+    std::fs::read_to_string(typescript_fixture().join("src").join(name)).unwrap()
+}
+
+#[tokio::test]
+async fn compares_scip_typescript_index() {
+    // scip-typescript 0.6.1 emits zero-width module definitions and
+    // `<constructor>` symbols; neither may mark a document as stale.
+    let p = Project::new(&[
+        ("src/validate.ts", typescript_source("validate.ts")),
+        ("src/alpha.ts", typescript_source("alpha.ts")),
+        ("src/beta.ts", typescript_source("beta.ts")),
+        ("src/index.ts", typescript_source("index.ts")),
+    ])
+    .await;
+    let report = compare(&options(
+        p.dir.path(),
+        typescript_fixture().join("index.scip"),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(report["index"]["tool"], "scip-typescript");
+    assert_eq!(report["documents"]["compared"], 4, "{report:#}");
+
+    // `alpha.helper()` inside beta.ts is a known wrong binding (#1109).
+    let contradicted = sample(&report, "contradicted_edges");
+    assert!(
+        contradicted.iter().any(|e| e["file"] == "src/beta.ts"
+            && e["scip_targets"][0]
+                .as_str()
+                .is_some_and(|t| t.ends_with("alpha.ts::helper"))),
+        "{report:#}"
+    );
 }
