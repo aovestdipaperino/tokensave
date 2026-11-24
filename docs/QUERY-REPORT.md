@@ -3779,7 +3779,7 @@ SELECT DISTINCT n1.file_path AS src_file, n2.file_path AS tgt_file FROM edges e 
 
 #### Q0302 — `probe_indexed_symbol`
 
-Source: [src/hooks.rs:428](../src/hooks.rs#L428).
+Source: [src/hooks.rs:440](../src/hooks.rs#L440).
 
 ```sql
 SELECT 1 FROM nodes WHERE LOWER(name) = ? LIMIT 1
@@ -11878,9 +11878,9 @@ Source: [src/graph/queries.rs:619](../src/graph/queries.rs#L619).
     }
 ```
 
-### `probe_indexed_symbol` — src/hooks.rs:421
+### `probe_indexed_symbol` — src/hooks.rs:433
 
-Source: [src/hooks.rs:421](../src/hooks.rs#L421).
+Source: [src/hooks.rs:433](../src/hooks.rs#L433).
 
 The read-only probe binds the lowercase symbol name. Claude Bash advice
 requires a successful hit. The existing redirect paths treat a probe failure

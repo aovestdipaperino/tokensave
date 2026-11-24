@@ -284,7 +284,19 @@ fn evaluate_pre_tool_use_event(raw: &str, env: &HookEnv, advise_on_bash: bool) -
         if let Some(reason) = evaluate_find_command(command, &env) {
             return build_block_message(&reason);
         }
-        return bash_search_advice(command, &env).unwrap_or_default();
+        let advice = bash_search_advice(command, &env);
+        crate::debug_log::event(
+            crate::debug_log::Level::Debug,
+            "hook",
+            "grep_decision",
+            || {
+                serde_json::json!({
+                    "tool": "Bash",
+                    "decision": if advice.is_some() { "advise" } else { "allow" },
+                })
+            },
+        );
+        return advice.unwrap_or_default();
     }
     evaluate_hook_decision_with_env(&tool_input.to_string(), &env)
 }
