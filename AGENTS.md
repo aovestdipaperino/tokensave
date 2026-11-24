@@ -415,6 +415,20 @@ portable string formats, and documented path-syntax test fixtures.
   branch-specific until the implementation is merged; do not copy commands to
   branches that lack the implementation.
 
+## Experimental SCIP comparison (master candidate)
+
+- `tokensave scip-compare` (#1100) reads a SCIP index and the graph read-only:
+  no sync, migration or database write. Keep its index, document, string and
+  source-size bounds, the per-document freshness checks, and the refusal of a
+  foreign `project_root` without `--rebase-root`. Its SQL is listed in
+  `docs/QUERY-REPORT.md` (Q0427–Q0431).
+- Run `cargo test --lib scip::` and
+  `cargo test --test integration scip_compare_test::` for focused checks.
+  Regenerate the fixture index with `scripts/scip/regenerate.sh` (needs a
+  rust-analyzer with the `scip` subcommand); see
+  [the evaluation](docs/scip/README.md). This candidate guidance is
+  branch-specific until the implementation is merged.
+
 ## Architecture
 
 Pipeline: source files → tree-sitter parse → language extractors → nodes/edges/unresolved refs → reference resolver → SQLite (libSQL) graph → graph queries → CLI + MCP server.

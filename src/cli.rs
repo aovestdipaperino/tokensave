@@ -48,6 +48,25 @@ pub enum Commands {
         #[arg(long, default_value_t = 5000)]
         max_edges: usize,
     },
+    /// Compare a SCIP index with the graph, read-only (experimental, no sync)
+    ScipCompare {
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// SCIP index file produced by an external indexer
+        #[arg(long)]
+        index: std::path::PathBuf,
+        /// Accept an index whose project_root names another directory;
+        /// documents are still verified against this checkout
+        #[arg(long)]
+        rebase_root: bool,
+        /// Refuse indexes larger than this many MiB
+        #[arg(long, default_value_t = 256)]
+        max_index_mib: u64,
+        /// Examples kept per report category (max 1000)
+        #[arg(long, default_value_t = 20)]
+        samples: usize,
+    },
     /// Validate, export and import Open Knowledge Format (OKF v0.3) bundles
     Okf {
         #[command(subcommand)]
