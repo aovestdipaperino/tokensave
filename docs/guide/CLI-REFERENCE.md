@@ -73,7 +73,7 @@ tokensave okf export --output <dir> [--project P]  # Export the code index as an
 tokensave okf import <dir> [--name N] [--replace] [--strict] [--json] [--project P]  # Import a bundle for tokensave_knowledge
 tokensave okf list [--json] [--project P]          # List imported bundles
 tokensave okf remove <name> [--project P]          # Remove an imported bundle
-tokensave scip-compare --index <file.scip> [--rebase-root] [--project P]  # Experimental: compare a SCIP index with the graph (read-only, no sync)
+tokensave scip-compare --index <file.scip> [--rebase-root] [--project P]  # Experimental, read-only
 ```
 
 Verbose version output includes the build commit, Cargo build profile, target
@@ -83,7 +83,7 @@ command does not open or initialize a project database.
 
 See [Open Knowledge Format](OKF.md) for the `okf` commands, their findings, the export layout and imported knowledge.
 
-`scip-compare` is an experimental, read-only prototype. Set
+`scip-compare` is an experimental, read-only prototype. It appears in CLI help and is disabled by default. Set
 `"enable_scip": true` in the project’s `.tokensave/config.json` to enable
 comparison. A missing setting or `false` disables it. The command reads a
 [SCIP](https://github.com/sourcegraph/scip) index from an external indexer,
@@ -93,10 +93,11 @@ the references the graph lacks, as a dry-run import plan. It never writes the
 index. It refuses to run while a sync of the same project is in progress,
 and holds the sync lock while it runs. An index whose `project_root` names
 another directory needs `--rebase-root`. Each document is checked against the
-current sources, and stale, unindexed or malformed documents are skipped and
+current sources, including a hash comparison when the SCIP index contains
+document text. Stale, unindexed or malformed documents are skipped and
 counted. See the
 [SCIP evaluation](https://github.com/aovestdipaperino/tokensave/blob/master/docs/scip/README.md)
-for the format mapping, limits and results.
+for the format mapping, limits, and write-enabled fixture experiment.
 
 ## Dependency advisory reachability
 

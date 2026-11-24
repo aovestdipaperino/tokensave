@@ -428,7 +428,10 @@ portable string formats, and documented path-syntax test fixtures.
   `cargo test --test integration scip_compare_test::` for focused checks.
   Regenerate the fixture index with `scripts/scip/regenerate.sh` (needs a
   rust-analyzer with the `scip` subcommand); see
-  [the evaluation](docs/scip/README.md). This candidate guidance is
+  [the evaluation](docs/scip/README.md). The evaluation also documents
+  `scripts/scip/import_preview.py`, which applies the plan only to a fresh
+  disposable fixture graph and measures storage and incoming-edge queries.
+  This candidate guidance is
   branch-specific until the implementation is merged.
 
 ## Architecture

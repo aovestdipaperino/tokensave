@@ -72,6 +72,7 @@ enum Skip {
     TooLarge,
     NotIndexed,
     GraphStale,
+    SourceMismatch,
     UnsupportedEncoding,
     MalformedRange,
     RangeOutOfBounds,
@@ -87,6 +88,7 @@ impl Skip {
             Skip::TooLarge => "source_too_large",
             Skip::NotIndexed => "not_indexed_by_tokensave",
             Skip::GraphStale => "tokensave_index_stale",
+            Skip::SourceMismatch => "scip_stale_source_mismatch",
             Skip::UnsupportedEncoding => "unsupported_position_encoding",
             Skip::MalformedRange => "malformed_range",
             Skip::RangeOutOfBounds => "scip_stale_range_out_of_bounds",
@@ -95,26 +97,35 @@ impl Skip {
     }
 }
 
-/// Returns the text a SCIP range covers on one line.
-fn slice(line: &str, start: u32, end: u32, encoding: u64) -> Option<&str> {
-    let (start, end) = (start as usize, end as usize);
+/// Converts a SCIP column to a UTF-8 byte boundary in the source line.
+fn byte_column(line: &str, column: u32, encoding: u64) -> Option<usize> {
+    let column = column as usize;
     match encoding {
-        // Unspecified is treated as UTF-8, which every known Rust producer
-        // writes; documented as a limitation.
-        0 | 1 => line.get(start..end),
+        0 | 1 => line.is_char_boundary(column).then_some(column),
         2 | 3 => {
-            let mut offsets = Vec::with_capacity(line.len() + 1);
-            let mut unit = 0usize;
-            for (i, c) in line.char_indices() {
-                offsets.push((unit, i));
-                unit += if encoding == 2 { c.len_utf16() } else { 1 };
+            let mut units = 0;
+            for (offset, ch) in line.char_indices() {
+                if units >= column {
+                    return (units == column).then_some(offset);
+                }
+                units += if encoding == 2 { ch.len_utf16() } else { 1 };
             }
-            offsets.push((unit, line.len()));
-            let find = |u: usize| offsets.iter().find(|(o, _)| *o == u).map(|(_, b)| *b);
-            line.get(find(start)?..find(end)?)
+            (units == column).then_some(line.len())
         }
         _ => None,
     }
+}
+
+/// Returns the text a SCIP range covers on one line.
+fn slice(line: &str, start: u32, end: u32, encoding: u64) -> Option<&str> {
+    line.get(byte_column(line, start, encoding)?..byte_column(line, end, encoding)?)
+}
+
+fn follows_call_syntax(line: &str, end: u32, encoding: u64) -> bool {
+    byte_column(line, end, encoding).is_some_and(|offset| {
+        let after = line[offset..].trim_start();
+        after.starts_with('(') || after.starts_with("::<")
+    })
 }
 
 /// Checks a document's ranges against the current source. A SCIP index has
@@ -134,8 +145,8 @@ fn verify(doc: &Document, lines: &[&str]) -> std::result::Result<(), Skip> {
         ) else {
             return Err(Skip::RangeOutOfBounds);
         };
-        if slice(start, r.start_char, r.start_char, doc.position_encoding).is_none()
-            || slice(end, r.end_char, r.end_char, doc.position_encoding).is_none()
+        if byte_column(start, r.start_char, doc.position_encoding).is_none()
+            || byte_column(end, r.end_char, doc.position_encoding).is_none()
         {
             return Err(Skip::RangeOutOfBounds);
         }
@@ -414,16 +425,25 @@ pub async fn compare(options: &Options) -> Result<Value> {
             None => None,
         };
         drop(hashes);
+        let source_hash = crate::sync::content_hash(&source);
         match indexed {
             None => {
                 skip(Skip::NotIndexed);
                 continue;
             }
-            Some(h) if h != crate::sync::content_hash(&source) => {
+            Some(h) if h != source_hash => {
                 skip(Skip::GraphStale);
                 continue;
             }
             Some(_) => {}
+        }
+        if doc
+            .text_hash
+            .as_ref()
+            .is_some_and(|hash| hash != &source_hash)
+        {
+            skip(Skip::SourceMismatch);
+            continue;
         }
         let lines: Vec<String> = source
             .split('\n')
@@ -535,11 +555,9 @@ pub async fn compare(options: &Options) -> Result<Value> {
                 .filter(|n| !ignored_kind(&n.kind) && n.start_line <= line && line <= n.end_line)
                 .min_by_key(|n| (n.span(), std::cmp::Reverse(n.start_line)))
                 .map(|n| n.id.clone());
-            let after = lines
+            let call_syntax = lines
                 .get(r.end_line as usize)
-                .and_then(|l| l.get(r.end_char as usize..))
-                .unwrap_or("")
-                .trim_start();
+                .is_some_and(|line| follows_call_syntax(line, r.end_char, doc.position_encoding));
             scip_refs.push(ScipRef {
                 file: path.clone(),
                 line,
@@ -547,7 +565,7 @@ pub async fn compare(options: &Options) -> Result<Value> {
                 symbol: occ.symbol.clone(),
                 source,
                 import: occ.roles & ROLE_IMPORT != 0,
-                call_syntax: after.starts_with('(') || after.starts_with("::<"),
+                call_syntax,
             });
         }
     }
@@ -671,7 +689,7 @@ pub async fn compare(options: &Options) -> Result<Value> {
     let mut by_syntax = [[0u64; 2]; 2];
     let mut imports = 0u64;
     let mut self_refs = 0u64;
-    let mut proposed: HashSet<(&str, &str, u32)> = HashSet::new();
+    let mut proposed = HashSet::new();
     let mut proposed_calls = 0u64;
     for r in &scip_refs {
         if r.import {
@@ -694,13 +712,14 @@ pub async fn compare(options: &Options) -> Result<Value> {
             continue;
         }
         let edge_kind = if r.call_syntax { "calls" } else { "uses" };
-        if proposed.insert((source, r.target.as_str(), r.line)) {
+        if proposed.insert((source, r.target.as_str(), edge_kind, r.line)) {
             if r.call_syntax {
                 proposed_calls += 1;
             }
             samples.push("proposed_import", || {
                 let target = id_to_node.get(r.target.as_str());
                 json!({"file": r.file, "line": r.line + 1, "kind": edge_kind,
+                       "source_id": source, "target_id": r.target,
                        "source": id_to_node.get(source).map(|n| n.qualified_name.as_str()),
                        "target": target.map(|n| n.qualified_name.as_str()),
                        "provenance": {"origin": "scip", "tool": index.metadata.tool_name,
@@ -890,6 +909,15 @@ mod tests {
         assert_eq!(slice(line, 2, 3, 3), Some("x"));
         assert_eq!(slice(line, 1, 2, 1), None, "inside a UTF-8 sequence");
         assert_eq!(slice(line, 2, 3, 2), None, "inside a surrogate pair");
+    }
+
+    #[test]
+    fn detects_call_syntax_after_multibyte_text() {
+        let line = "é😀helper()";
+        assert!(follows_call_syntax(line, 12, 1));
+        assert!(follows_call_syntax(line, 9, 2));
+        assert!(follows_call_syntax(line, 8, 3));
+        assert!(!follows_call_syntax(line, 2, 2));
     }
 
     #[test]

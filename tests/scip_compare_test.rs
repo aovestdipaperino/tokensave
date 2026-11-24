@@ -195,6 +195,21 @@ async fn skips_documents_when_either_index_is_stale() {
     assert_eq!(skipped[0]["path"], "src/alpha.rs");
 }
 
+#[tokio::test]
+async fn skips_embedded_source_that_differs_from_the_graph_snapshot() {
+    let p = project().await;
+    let index = p.dir.path().join("embedded-source.scip");
+    // Index.metadata.project_root and one document with a path and stale text.
+    let bytes = b"\x0a\x0b\x1a\x09file:///p\x12\x15\x0a\x0csrc/alpha.rs\x2a\x05stale";
+    std::fs::write(&index, bytes).unwrap();
+    let report = compare(&options(p.dir.path(), index)).await.unwrap();
+    assert_eq!(report["documents"]["compared"], 0);
+    assert_eq!(
+        report["documents"]["skipped"]["scip_stale_source_mismatch"],
+        1
+    );
+}
+
 fn typescript_fixture() -> PathBuf {
     fixture_dir().parent().unwrap().join("typescript")
 }

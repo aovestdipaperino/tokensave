@@ -12,18 +12,23 @@ two real crates the prototype found that 27–35 % of the resolver edges SCIP
 could judge were wrong. Those errors were concentrated in the scored and
 blocklist fallbacks. It also found that half of call-syntax references had no
 edge. Comparison takes under 0.1 s, but producing the index took 21–69 s and
-more than 1 GiB of memory. Writing SCIP edges into the graph needs the follow-up work listed
-under [Recommendation](#recommendation) first. The prototype
+more than 1 GiB of memory. The [fixture prototype](#write-enabled-fixture-prototype)
+measures real writes on disposable graphs. A live importer needs the checks
+listed under [Recommendation](#recommendation). The prototype
 does not claim compiler-level correctness for any construct the external
 indexer does not cover.
 
 ## What was built
 
-Set `"enable_scip": true` in the project’s `.tokensave/config.json` to enable
-comparison. The setting defaults to `false`.
+The experimental `scip-compare` command is included in default builds and
+is disabled by default. Set `"enable_scip": true` in the project’s
+`.tokensave/config.json` to enable it.
 
-`tokensave scip-compare --index <file.scip> [--rebase-root] [--project P]` is
-an experimental command that:
+```sh
+tokensave scip-compare --index <file.scip>
+```
+
+The command:
 
 1. decodes the index with a bounded, hand-written protobuf reader
    ([src/scip/wire.rs](../../src/scip/wire.rs)), adding no dependency;
@@ -101,9 +106,51 @@ candidate. One that no graph edge covers is a false negative, and becomes a
 symbol}`. Recall is reported overall, for call syntax, and for other references,
 because tokensave deliberately does not model every type mention.
 
-### Proposed write path: SCIP evidence consulted by the resolver
+### Write-enabled fixture prototype
 
-The prototype only reports. A future import should not patch `edges` after
+`scripts/scip/import_preview.py` applies the full dry-run plan to a fresh,
+disposable graph. Run it with Python 3, Git, and a TokenSave binary built from
+this branch:
+
+```sh
+python3 -B scripts/scip/import_preview.py --tokensave target/debug/tokensave --fixture ambiguous
+python3 -B scripts/scip/import_preview.py --tokensave target/debug/tokensave --fixture typescript
+```
+
+The harness checks a pinned SHA-256 snapshot of the source and SCIP index,
+indexes a private copy, and enables SCIP in the copy's configuration. It
+refuses a partial plan, validates the exact graph node IDs in the plan, and
+inserts missing edges and their provenance in one SQLite transaction. The
+existing unique edge key handles duplicates. The harness adds evidence
+without replacing existing bindings, so a contradicted heuristic edge can
+coexist with the imported edge. It records provenance by edge ID in an
+experiment-only table and removes the entire project on exit. It accepts only
+the bundled fixture names.
+
+The benchmark captures database pages before and after the commit and runs
+the same indexed incoming-edge query for each affected target. It checks that
+all inserted edges are visible to that query. These timings cover SQL and
+row retrieval on a warm connection. MCP startup, response formatting,
+transitive impact queries, and live resolver invalidation are outside this
+experiment.
+
+Measured on Linux x86-64 with a debug build. Each result is the median of
+three fresh runs. Each timing sweep takes the median of 101 repetitions of
+the target lookups on that connection.
+
+| Fixture | Edges inserted | Database bytes before → after | Incoming rows per sweep before → after | Query sweep before → after | Import transaction |
+|---|---:|---:|---:|---:|---:|
+| Rust | 20 | 483,328 → 491,520 | 1 → 21 across 9 targets | 72.5 → 71.0 µs | 0.90 ms |
+| TypeScript | 9 | 483,328 → 491,520 | 3 → 12 across 8 targets | 67.4 → 53.9 µs | 0.65 ms |
+
+All proposed edges were inserted. The extra 8 KiB per graph includes the
+provenance table and SQLite page allocation. The query timings show no
+slowdown on these small snapshots. They cannot establish a speedup or
+predict the cost of larger graphs or transitive queries.
+
+### Proposed live write path: SCIP evidence consulted by the resolver
+
+The command reports a dry-run plan. A future live import should not patch `edges` after
 resolution: `edges` stores no column, so a post-hoc import could only match by
 line, and it would have to find and replace the heuristic edges it
 contradicts. `unresolved_refs` already stores `line` and `col` for every
@@ -154,16 +201,29 @@ graph TD
 - **Contracts:** edges stay in one table, so `tokensave_callers`,
   `tokensave_impact`, rename and ranking need no change.
 
-Open points to verify before implementing:
+Constraints for the beta implementation:
 
 - **Column units and spans.** tree-sitter columns are bytes; SCIP ranges are
-  UTF-8, UTF-16 or UTF-32 offsets, which the decoder already converts. A
-  reference's `col` can point at the start of `alpha::helper` while the SCIP
-  range covers only `helper`, so a match must test that the SCIP range lies
-  inside the reference's span on that line. Check this on the fixtures.
+  UTF-8, UTF-16 or UTF-32 offsets. The comparison converts them to UTF-8
+  byte positions. On the Rust fixture's `beta.rs:15`, the persisted
+  reference `crate::alpha::helper` starts at byte 21 and SCIP reports
+  `helper` at bytes 35–41. On the TypeScript fixture's `beta.ts:12`,
+  `alpha.helper` starts at byte 35 and SCIP reports `helper` at bytes 41–47.
+  Both ranges are zero-based and half-open. Match the target to a unique
+  terminal identifier span inside the extracted reference. If the span is
+  ambiguous or cannot be recovered, fall back to the existing resolver.
 - **Freshness for a write path.** Definition checks can miss edits to
-  references before import. Evaluate requiring an index generated from a
-  snapshot with recorded per-document hashes before applying evidence.
+  references before import. Require source identity from embedded text or
+  from a trusted manifest that binds the SCIP index digest to the exact
+  source snapshot used to generate it. Reject changed documents and
+  references whose target document did not pass the same check.
+- **Resolver entry points.** The full index resolves extracted references in
+  memory and persists them to `unresolved_refs`. Incremental sync uses
+  `resolve_all_streamed` to replay selected persisted references. Import must
+  explicitly replay the affected sites, and the incremental touched set must
+  include their source files when evidence is invalidated. Apply a verified
+  hit before name prefiltering, which can discard references spelled with an
+  alias. Preserve the existing batch finalization and derived edge rebuilds.
 - **Schema change.** New tables need a migration and a new `LATEST_VERSION`,
   which forces a full reindex (`TOKENSAVE-VERSIONING.md`). Land it on `beta`
   first, following [DATABASE-COMPATIBILITY.md](../DATABASE-COMPATIBILITY.md),
@@ -186,6 +246,7 @@ Open points to verify before implementing:
 | Document path absolute, containing `..` or `\`, or escaping the root | Skipped: `unsafe_path`. |
 | Source missing, over 16 MiB, or not UTF-8 | Skipped: `missing_source`, `source_too_large`, `source_not_utf8`. |
 | File not indexed, or graph hash differs from the source | Skipped: `not_indexed_by_tokensave`, `tokensave_index_stale`. |
+| Optional embedded SCIP document text differs from the source | Skipped: `scip_stale_source_mismatch`. |
 | Range with the wrong arity or negative values | Skipped: `malformed_range`. |
 | Range past the end of the file or of a line | Skipped: `scip_stale_range_out_of_bounds`. |
 | Definition range no longer spelling its name (raw `r#name` allowed) | Skipped: `scip_stale_definition_mismatch`. |
@@ -328,6 +389,9 @@ on every sync.
 
 Correctness on the same crates:
 
+The follow-up comparison reproduced the document, edge, call-recall and
+proposed-import counts below using the same SCIP indexes and graph snapshots.
+
 | Metric | serde_json | toml_edit |
 |---|---:|---:|
 | Documents compared | 50 / 50 | 31 / 31 |
@@ -371,8 +435,7 @@ about 1.6 MB (+22 %) to serde_json's database and 0.8 MB (+14 %) to
 toml_edit's. Importing only `calls` edges would add about 0.3 MB (+4 %) and
 0.2 MB (+3 %). Edge rows would grow by 143 % and 98 % for all edges, or by
 27 % and 22 % for `calls` only. `tokensave_callers` and `tokensave_impact`
-fan-out grows roughly with edge count. That query overhead is an estimate and
-was not measured, because the prototype does not write.
+fan-out grows roughly with edge count. Those larger-crate projections are estimates. Actual writes and incoming-edge query timings were measured on the two disposable fixtures.
 
 ## Limitations
 
@@ -394,9 +457,10 @@ was not measured, because the prototype does not write.
 - **Memory.** The whole index is read into memory, bounded by
   `--max-index-mib`, and decoded with the limits above. A streaming decoder
   would be needed for very large monorepos.
-- **Freshness is inferred.** SCIP carries no per-document hash, so a source
-  edit that leaves every definition in place on the same line and column
-  cannot be detected. The graph side is hash-checked.
+- **Freshness depends on the index.** When SCIP includes document text,
+  TokenSave hashes it and compares it with the source. Without embedded
+  text, an edit that preserves all definition names and positions can
+  escape detection. The graph side is always hash-checked.
 
 ## Recommendation
 
@@ -413,7 +477,7 @@ Proceed with SCIP as an **optional verifier first, importer second**:
    the gap is `Type::new()` and `module::fn()` calls left unresolved. These
    are tree-sitter-side fixes tracked in [#1109](https://github.com/aovestdipaperino/tokensave/issues/1109).
 3. **Only then add an opt-in import**, as described in
-   [Proposed write path](#proposed-write-path-scip-evidence-consulted-by-the-resolver):
+   [Proposed live write path](#proposed-live-write-path-scip-evidence-consulted-by-the-resolver):
    SCIP evidence in its own tables, consulted by the resolver as its first
    strategy, invalidated per file by sync. It needs a new `ResolvedBy` code
    (storage format, append-only), a schema migration landed on `beta` first,
