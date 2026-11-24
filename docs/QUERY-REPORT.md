@@ -81,9 +81,9 @@ unchanged.
 
 ## Inventory summary
 
-- SQL-bearing source files: **41**.
-- SQL literal/template occurrences: **383**.
-- Functions retained for construction/binding context: **182**.
+- SQL-bearing source files: **42**.
+- SQL literal/template occurrences: **388**.
+- Functions retained for construction/binding context: **183**.
 
 ## Source file index
 
@@ -124,6 +124,7 @@ unchanged.
 | [src/okf/export.rs](../src/okf/export.rs) | 5 |
 | [src/quality_diff.rs](../src/quality_diff.rs) | 2 |
 | [src/runtime_telemetry.rs](../src/runtime_telemetry.rs) | 4 |
+| [src/scip/compare.rs](../src/scip/compare.rs) | 5 |
 | [src/tokensave/memory.rs](../src/tokensave/memory.rs) | 7 |
 | [src/tokensave/rename.rs](../src/tokensave/rename.rs) | 3 |
 | [src/tokensave/runtime.rs](../src/tokensave/runtime.rs) | 2 |
@@ -13715,3 +13716,69 @@ Source: [src/accounting/codex.rs:710](../src/accounting/codex.rs#L710).
         assert_eq!(result.coverage.state, CoverageState::Partial);
     }
 ```
+
+
+## SCIP comparison additions (Refs #1100)
+
+Source: [src/scip/compare.rs](../src/scip/compare.rs), `compare`. This section
+adds five occurrences and one construction/binding context to the existing
+inventory. No existing query was changed, moved or removed. Snapshot inspected
+2026-11-24. The comparison opens the branch database found by
+`graphify::database_path` read-only, after `compatibility::preflight`, like the
+Graphify export. The transaction API owns BEGIN and rollback on drop; the
+transaction is dropped without COMMIT because nothing is written.
+
+#### Q0427 — `compare`: Read-only connection limits
+
+```sql
+PRAGMA query_only=1; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192;
+```
+
+Fixed batch, no parameters; executes before the read transaction.
+
+#### Q0428 — `compare`: Current-schema check
+
+```sql
+PRAGMA user_version
+```
+
+No bindings; exactly one scalar row. Versions unequal to latest_version() are
+refused; the comparison never migrates.
+
+#### Q0429 — `compare`: Per-document graph freshness
+
+```sql
+SELECT content_hash FROM files WHERE path=?1 AND kind='code'
+```
+
+?1 is a SCIP document's relative path after it has been checked to be a safe
+relative path inside the canonical project root. At most one row; it is
+compared with the content hash of the bounded (16 MiB) UTF-8 source. A missing
+row or a different hash skips the document.
+
+#### Q0430 — `compare`: Nodes of a verified document
+
+```sql
+SELECT id, name, kind, qualified_name, start_line, end_line FROM nodes WHERE file_path=?1
+```
+
+?1 is a document that passed Q0429 and the SCIP range checks. Runs once per
+such document; rows are kept in memory to map SCIP definitions and to find the
+node enclosing each reference.
+
+#### Q0431 — `compare`: Outgoing non-containment edges of a document
+
+```sql
+SELECT e.source, e.kind, e.line, e.resolved_by, t.name, t.qualified_name, t.file_path FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target WHERE s.file_path = ?1 AND e.kind != 'contains'
+```
+
+?1 is a document that passed Q0429; runs once per verified document after all
+of them are loaded. The nullable `resolved_by` code is decoded with
+`ResolvedBy::from_code`; rows without a line are counted and not classified.
+Targets are compared by qualified name, so a type and its `impl` nodes match.
+
+Construction context: SQL templates are fixed; only the document path is
+bound, and no index or user text is interpolated. Q0428–Q0431 share one read
+transaction for a consistent snapshot. Document count is bounded by the SCIP
+decoder's document limit and the index-size limit. No migrations or writes
+occur.

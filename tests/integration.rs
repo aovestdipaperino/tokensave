@@ -250,3 +250,5 @@ mod language_aliases_test;
 
 mod graphify_export_test;
 mod profile_sharing_test;
+
+mod scip_compare_test;

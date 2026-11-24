@@ -329,6 +329,29 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         return tokensave::graphify::export_file(&root, file, output, *max_nodes, *max_edges).await;
     }
 
+    // Experimental SCIP comparison is read-only and bypasses startup maintenance.
+    if let Commands::ScipCompare {
+        project,
+        index,
+        rebase_root,
+        max_index_mib,
+        samples,
+    } = &command
+    {
+        let root = tokensave::config::resolve_path_with_discovery(project.clone());
+        tokensave::cancel::install_signal_handlers();
+        let report = tokensave::scip::compare(&tokensave::scip::Options {
+            root,
+            index: index.clone(),
+            rebase_root: *rebase_root,
+            max_index_bytes: max_index_mib.saturating_mul(1024 * 1024),
+            samples: *samples,
+        })
+        .await?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
     // OKF commands never touch the code index or the user config (import
     // writes only the project's `okf/` state); skip startup maintenance.
     if let Commands::Okf { action } = &command {
@@ -938,6 +961,7 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
             }
         }
         Commands::GraphifyExport { .. } => unreachable!("export dispatched before startup"),
+        Commands::ScipCompare { .. } => unreachable!("SCIP comparison dispatched before startup"),
         Commands::Okf { .. } => unreachable!("okf dispatched before startup"),
         Commands::Grep { .. } => unreachable!("grep is dispatched before startup"),
         Commands::Verify { .. } => unreachable!("verify is dispatched before startup"),
