@@ -5,7 +5,7 @@ use std::{
 use tempfile::TempDir;
 use tokensave::{
     db::Database,
-    integrity::{self, Check},
+    db_integrity::{self, Check},
 };
 
 fn executable() -> &'static Path {
@@ -92,7 +92,7 @@ async fn concurrent_writer_and_rollback_do_not_block_or_report_corruption() {
     assert_eq!(check.report().unwrap().outcome, "healthy");
     drop(check);
     db.conn().execute_batch("ROLLBACK").await.unwrap();
-    assert_eq!(integrity::inspect(&path, true).await.outcome, "healthy");
+    assert_eq!(db_integrity::inspect(&path, true).await.outcome, "healthy");
 }
 #[tokio::test]
 async fn process_lock_and_cancellation_release_resources() {
@@ -115,19 +115,19 @@ async fn process_lock_and_cancellation_release_resources() {
 async fn logical_inconsistency_is_not_file_corruption() {
     let (_dir, path, db) = database().await;
     db.conn().execute_batch("PRAGMA foreign_keys=OFF; INSERT INTO edges(source,target,kind) VALUES ('missing','also_missing','calls');").await.unwrap();
-    assert_eq!(integrity::inspect(&path, true).await.outcome, "healthy");
+    assert_eq!(db_integrity::inspect(&path, true).await.outcome, "healthy");
 }
 #[tokio::test]
 async fn scheduler_defers_when_busy_and_disabled_without_launching_work() {
     let (_dir, path, _db) = database().await;
-    let mut scheduler = integrity::Scheduler::new(path.clone(), 1);
+    let mut scheduler = db_integrity::Scheduler::new(path.clone(), 1);
     scheduler.tick(true).await.unwrap();
-    assert!(integrity::load(&path).is_err());
-    let mut scheduler = integrity::Scheduler::new(path.clone(), 0);
+    assert!(db_integrity::load(&path).is_err());
+    let mut scheduler = db_integrity::Scheduler::new(path.clone(), 0);
     for _ in 0..100 {
         scheduler.tick(false).await.unwrap();
     }
-    assert!(integrity::load(&path).is_err());
+    assert!(db_integrity::load(&path).is_err());
 }
 #[test]
 fn config_defaults_to_disabled_checks_and_accepts_an_interval() {
@@ -155,7 +155,7 @@ async fn damaged_page_is_reported_without_recovery() {
         .unwrap();
     drop(file);
     let bytes = std::fs::read(&path).unwrap();
-    let report = integrity::inspect(&path, false).await;
+    let report = db_integrity::inspect(&path, false).await;
     assert_ne!(report.outcome, "healthy", "{report:?}");
     assert!(!report.diagnostics.is_empty());
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
@@ -188,7 +188,7 @@ async fn recent_attempt_gate_is_cheap_and_does_not_spawn() {
         .unwrap();
     finish(&mut check).await;
     drop(check);
-    let before = integrity::load(&path).unwrap();
+    let before = db_integrity::load(&path).unwrap();
     let start = Instant::now();
     for _ in 0..100 {
         // A nonexistent executable proves due-check gating never spawns work.
@@ -200,7 +200,7 @@ async fn recent_attempt_gate_is_cheap_and_does_not_spawn() {
     }
     eprintln!("100 persisted interval gates: {:?}", start.elapsed());
     assert_eq!(
-        integrity::load(&path).unwrap().started_at,
+        db_integrity::load(&path).unwrap().started_at,
         before.started_at
     );
 }
@@ -229,7 +229,7 @@ fn sidecar(path: &Path, suffix: &str) -> std::path::PathBuf {
     name.into()
 }
 fn write_report(path: &Path, outcome: &str, age_secs: i64) {
-    let report = integrity::Report {
+    let report = db_integrity::Report {
         started_at: tokensave::tokensave::current_timestamp() - age_secs,
         finished_at: None,
         outcome: outcome.into(),
@@ -246,7 +246,7 @@ fn write_report(path: &Path, outcome: &str, age_secs: i64) {
 #[tokio::test]
 async fn deferred_attempts_retry_sooner_than_failed_ones() {
     let (_dir, path, _db) = database().await;
-    let retry = i64::try_from(integrity::DEFERRED_RETRY_SECS).unwrap();
+    let retry = i64::try_from(db_integrity::DEFERRED_RETRY_SECS).unwrap();
     // Nonexistent executable: a gated attempt returns None, a due one fails to spawn.
     let gated = |path: &Path| {
         Check::start(path, Path::new("nonexistent-checker"), false, Some(86400))
@@ -281,10 +281,10 @@ async fn gated_ticks_do_not_create_the_lockfile() {
 async fn status_reports_an_orphaned_running_record_as_interrupted() {
     let (_dir, path, _db) = database().await;
     write_report(&path, "running", 0);
-    let report = integrity::status(&path).unwrap();
+    let report = db_integrity::status(&path).unwrap();
     assert_eq!(report.outcome, "interrupted");
     assert_eq!(report.exit_code(), 2);
     let mut check = start_after_release(&path).await;
-    assert_eq!(integrity::status(&path).unwrap().outcome, "running");
+    assert_eq!(db_integrity::status(&path).unwrap().outcome, "running");
     finish(&mut check).await;
 }

@@ -98,13 +98,11 @@ fn test_install_creates_global_mcp_steering_agent_and_default() {
         agent["tools"].as_array().unwrap(),
         &[serde_json::json!("*")]
     );
-    assert_eq!(
-        agent["allowedTools"].as_array().unwrap(),
-        &[
-            serde_json::json!("@builtin"),
-            serde_json::json!("@tokensave")
-        ]
-    );
+    let allowed = agent["allowedTools"].as_array().unwrap();
+    assert!(allowed.contains(&serde_json::json!("@tokensave/tokensave_search")));
+    assert!(!allowed.contains(&serde_json::json!("@tokensave/tokensave_str_replace")));
+    assert!(!allowed.contains(&serde_json::json!("@builtin")));
+    assert!(!allowed.contains(&serde_json::json!("@tokensave")));
     assert_hook(
         &agent,
         "userPromptSubmit",

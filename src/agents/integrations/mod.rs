@@ -42,6 +42,7 @@ pub use roo_code::RooCodeIntegration;
 pub use vibe::VibeIntegration;
 pub use zed::ZedIntegration;
 
+use crate::agents::constants::{PERMISSIONS_USER_MANAGED_DOCTOR, PERMISSIONS_USER_MANAGED_NOTE};
 use crate::agents::fs::{
     backup_and_write_json, backup_config_file, copilot_cli_dir, copilot_jetbrains_dir, home_dir,
     load_json_file, load_json_file_strict, load_jsonc_file, load_jsonc_file_strict, load_toml_file,
@@ -56,4 +57,4 @@ use crate::agents::rules::{
 use crate::agents::traits::{
     AgentIntegration, DoctorCounters, HealthcheckContext, InstallContext, InstallScope,
 };
-use crate::agents::{expected_tool_perms, tool_names};
+use crate::agents::{expected_tool_perms, permissions_management_enabled};

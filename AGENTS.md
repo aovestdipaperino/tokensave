@@ -2,6 +2,15 @@
 
 This file provides guidance to the agent when working with code in this repository.
 
+## Assistant-specific entry points
+
+`AGENTS.md` is the single source of agent guidance. Assistants that do not read
+it by default load it through thin pointer files: `CLAUDE.md` (Claude Code,
+via `@AGENTS.md`), `GEMINI.md` (Gemini CLI), `.github/copilot-instructions.md`
+(GitHub Copilot) and `.cursor/rules/agents.mdc` (Cursor). Keep those files as
+pointers only: never add rules to them, and put every change here. Keep the
+same pointer files on `master` and `beta`.
+
 ## Fork-specific branch workflow
 
 - Create new work branches in the user's fork rather than in the upstream
@@ -237,6 +246,45 @@ coverage changes, update the report's scope and limitations. Before finishing,
 review the source diff for SQL changes and verify that each is reflected in the
 report. Git history records the changes; the report describes the current source.
 
+## Named constants and single sources of truth
+
+These rules apply to new and modified code on every branch (#1069). The
+contributor-facing version is in
+[CONTRIBUTING.md](CONTRIBUTING.md#named-constants).
+
+- Do not scatter magic numbers or meaningful hard-coded strings through new or
+  modified code. Give domain-specific values (limits, widths, timeouts, sizes,
+  file and directory names, environment-variable keys including Cargo keys
+  such as `OUT_DIR`, protocol identifiers, default settings and build
+  artifacts) descriptive, appropriately scoped names.
+- Declare compile-time values with `const` where practical. Use `static`, lazy
+  initialization or runtime configuration only when their semantics require
+  it. Reuse one definition, or derive related values from it, instead of
+  duplicating literals that must stay synchronized.
+- Pass named constants to runtime APIs, for example
+  `std::env::var_os(cargo_env::OUT_DIR)`. Compile-time macros such as `env!`,
+  `include_str!` and `concat!` require string literals: keep those literals,
+  say where the authoritative definition lives in a nearby comment, and do not
+  break compilation to remove them. Where practical, pass a full value through
+  one key instead (for example `include_str!(env!("TOKENSAVE_BUILD_LOGO_ANSI_PATH"))`),
+  and add a test that checks the literal against its definition.
+- Put named constants in dedicated `constants.rs` files or modules instead of
+  declaring them throughout implementation files. Keep each module compact and
+  grouped by feature or domain, place it close to its owner, reuse an existing
+  module when one fits, and avoid a catch-all constants file. Expose constants
+  only as widely as needed, and do not merge unrelated concepts because their
+  values happen to match.
+- `build.rs` cannot import crate modules. Its constants live in
+  `build/constants.rs`, which `build.rs` includes with `#[path]` and
+  `tests/build_constants_test.rs` checks.
+- Conventional, self-explanatory literals such as `0` and `1`, and one-off
+  values without domain meaning, may stay inline. Avoid needless abstraction.
+- **Review checklist:** during each implementation and PR review, search the
+  changed code (including build scripts, tests and generated-asset paths) for
+  repeated or meaningful literals. Replace them with named constants in the
+  appropriate constants module, or record why an inline value is preferable.
+  Check that constants modules stay compact and logically grouped.
+
 ## Rust style guide (master only)
 
 TokenSave has adopted [Google's Rust Style Guide](https://google.github.io/styleguide/rustguide.html)
@@ -389,14 +437,15 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - `src/resolution/` — cross-file reference resolution (resolver, touched-set tracking, variants).
 - `src/graph/` — higher-level algorithms: traversal, queries, SCC/cycles, imports, health.
 - `src/context/` — AI-ready context assembly (builder, formatter, ranking, read modes).
-- `src/mcp/` — stdio JSON-RPC server, tool definitions, handlers, transport.
+- `src/mcp/` — stdio JSON-RPC server, tool definitions, handlers, transport. `src/mcp/roots.rs`: with no default project, a call without `graph_root` sends `roots/list` to the client during the call and answers from the project containing its roots (for MCP proxies; never cached, never sent outside a call).
 - `src/agents/` — agent integrations (Claude, Codex, Cursor, etc.) and git hooks.
-- `src/okf/` — Open Knowledge Format v0.2 (#858): bounded bundle reader, conformance validator, read-only index export, and import into project state (`okf/<name>/`, no schema change) searched by the `tokensave_knowledge` MCP tool (`tokensave okf validate|export|import|list|remove`); official sample bundles in `tests/fixtures/okf/official/`, a reconstructed Graphify bundle in `tests/fixtures/okf/graphify/`; see `docs/guide/OKF.md`.
+- `src/okf/` — Open Knowledge Format v0.3 (#858, #1060; earlier versions read with the §12.1 fallbacks): bounded bundle reader, conformance validator, shared consumer rules (`consumer.rs`: version read modes, bundle metadata, lifecycle, attestation; `trust.rs`: trust tiers, freshness), read-only index export, and import into project state (`okf/<name>/`, no schema change) searched by the `tokensave_knowledge` MCP tool (`tokensave okf validate|export|import|list|remove`); official sample bundles per OKF version in `tests/fixtures/okf/official/v0.2/` and `v0.3/`, a reconstructed Graphify bundle in `tests/fixtures/okf/graphify/`; see `docs/guide/OKF.md`.
+- `src/purge/` — `tokensave purge` (#1055): plan-first, ownership-checked deletion of tokensave-owned global and project state (only entries named in `purge/constants.rs`; links never followed), and `provenance.rs`, which detects the installer of the running executable for the binary-removal reminder and `--version --verbose`. The CLI side is `src/purge_command.rs`; integration cleanup is shared with `uninstall` through `agents::uninstall_agents`.
 - `src/caveman.rs` — opt-in, read-only Caveman discovery and the extra MCP `initialize` paragraph (#797); see `docs/CAVEMAN-COMPATIBILITY.md`.
 - `src/grep_annotate/` — `tokensave grep` (#688): argument classification for `grep`, `rg` and `git grep`, hit parsing, and read-only index lookups that add `#ts` facts to each `path:line:` hit; the runner is `src/grep_command.rs`. It is dispatched before startup maintenance, runs the named search binary unchanged, and must not sync, migrate or write. Focused checks: `cargo test --test integration grep_annotate_test::` and `cargo test --lib grep_annotate`; see `docs/guide/CLI-REFERENCE.md`.
 - `src/sync.rs` — incremental sync (content hashing, stale/new/removed detection).
 - `src/bench.rs` — `tokensave bench` harness.
-- `build.rs` compiles vendored grammars (WGSL, ActionScript, GDScript) only when their feature is enabled.
+- `build.rs` compiles vendored grammars (WGSL, ActionScript, GDScript) only when their feature is enabled, generates the ANSI logo and records build metadata. Its named values, including the `VENDORED_GRAMMARS` table, are in `build/constants.rs`.
 
 ## Database channel compatibility
 
@@ -422,10 +471,13 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - `TOKENSAVE_LOG` controls structured stderr diagnostics (off by default). `--log-level` and `--debug` override it. Keep fields allowlisted and review hook and MCP stdout isolation when adding events. See [Debug diagnostics](docs/guide/TROUBLESHOOTING.md#debug-diagnostics).
 - `TOKENSAVE_WORKER_TOKEN` — auth for the hidden `extract-worker` subcommand (256-bit token, also required as first 32 bytes on stdin). Direct invocation fails. `TOKENSAVE_DISABLE_SUBPROCESS=1` opts out of the worker pool.
 - `TOKENSAVE_DISABLE_GREP_HOOK=1` — opt out of the Claude PreToolUse grep guardrail (useful for headless/subagent dispatch).
+- `TOKENSAVE_TELEMETRY` (falsey value) or `DO_NOT_TRACK` (any value but `0`/`false`/`no`/`off`/empty) — turns the worldwide counter off: no upload, total or flags request and no pending accumulation (#1066). The gate is `cloud::telemetry_enabled`; route any new telemetry call through it. Env can only disable, never re-enable `upload_enabled`.
 - `TOKENSAVE_AUTO_TRACK` — per-run override of the `auto_track` config field (truthy values enable; `0`/`false`/`no`/`off`/empty disable).
 - `TOKENSAVE_HOOK_DEBUG` — makes the `post-checkout` hook and `branch add --if-enabled` explain skipped actions on stderr and in `.tokensave/hook-debug.log` (initialized projects only; restarts at 256 KiB). Off by default so hooks stay quiet.
 - `TOKENSAVE_CAVEMAN_COMPATIBILITY` — per-run override of the user-level `caveman_compatibility` setting (default off; same parsing as `TOKENSAVE_AUTO_TRACK`).
 - `TOKENSAVE_AUTO_INIT` — per-run override of the user-level `auto_init` setting in `~/.tokensave/config.toml` (same parsing as `TOKENSAVE_AUTO_TRACK`).
+- `TOKENSAVE_MANAGE_PERMISSIONS` — per-run override of the user-level `manage_permissions` setting (#1067; same parsing). When off, every agent integration leaves its tool approvals (Claude `permissions.allow`, Codex `approval_mode`, Gemini/Qwen `trust`, Kiro `allowedTools`) alone; check `crate::agents::permissions_management_enabled` before writing or removing one.
+- `TOKENSAVE_USER_CONFIG_DIR` — optional absolute override for machine configuration files and locks, used by isolated release smoke runs. Set the agent home separately for isolated integration configuration.
 - `TOKENSAVE_STATE_DIR` — base directory for project state (#919), overriding `state_dir` in `~/.tokensave/config.toml`; empty selects the in-repo `.tokensave/` default. Resolution lives in `src/state_dir.rs` behind `config::get_tokensave_dir`; home-directory (global) state must use `config::get_global_tokensave_dir`, which is never relocated. `.cargo/config.toml` sets it empty (`force = false`) so tests ignore a developer's `state_dir`.
 - Bench vars: `TOKENSAVE_BENCH_REPOS_DIR` (required), `TOKENSAVE_BENCH_REPOS`, `TOKENSAVE_BENCH_SKIP_CLONE`; probe: `TOKENSAVE_PROBE_REPOS`.
 
@@ -437,8 +489,10 @@ Pipeline: source files → tree-sitter parse → language extractors → nodes/e
 - **CI disk-space flake.** The Linux runner ships ~10 GB free; the ~713 MB cache restore plus the cargo target dir (34 tree-sitter parsers) can exceed it, so CI frees disk space first.
 - **CI jobs are gated per job by changed paths.** The `changes` job in `.github/workflows/ci.yml` runs `dorny/paths-filter`, and each job runs only when one of its inputs changed (for example, docs-only changes run no Rust job). When a change adds a file that a build or test reads outside the existing filters (a new `include_str!` source, a fixture directory), extend the matching filters in the same change. `CI OK` aggregates the results and is the check to require; `workflow_dispatch` runs every job.
 - **No daemon; file watcher is opt-in.** Since 6.1.1 the design is on-demand staleness: every MCP tool call checks for stale files (30 s cooldown), and the server runs a catch-up sync on connect. CLI-only workflows rely on git hooks (`scripts/post-commit`, `scripts/post-checkout`) to keep the index fresh. An opt-in `notify` watcher (#937; `src/mcp/fs_watch.rs`, scoping in `src/tokensave/watch.rs`) runs inside `serve` only when `filesystem_watch_enabled = true` or `serve --watch`; it is off by default, must stay bounded, and feeds the existing sync rather than replacing the on-demand check.
+  FreeBSD uses the kqueue backend in `src/mcp/fs_watch/freebsd.rs` with a shared file and directory watch budget. The native recreation tests in `tests/fs_watch_test.rs` exercise both recreation sequences without an extra file event or MCP tool call.
 - **`init` vs `sync`.** `sync <path>` only updates already-initialized projects. A pathless `sync` (what the `post-commit`/`post-merge` hooks run) and `serve` initialize an uninitialized git repository top level when the user-level `auto_init` setting allows it (default on, #876); the gate and its guards (temp dir, `$HOME`, bare/subdirectory, `max_auto_sync_files`) live in `src/auto_init.rs`. Repositories under the system temp dir are always skipped, so tests that expect the old behavior keep it; tests of auto-init give the child its own `TMPDIR`.
 - **Multi-agent work assumes git worktrees.** tokensave detects nested worktrees and serves the correct branch graph; changes accumulate independently and reconcile via merge/rebase.
 - **`codegraph` is a git submodule** (`codegraph/`), not part of the crate.
 - **`test-transport` feature** adds test-only JSON-RPC transport hooks in `src/mcp/`.
 - **Release workflow** builds per-platform binaries with `--locked` on the pinned toolchain and skips beta/prerelease tags. `release-beta.yml` is disabled: its jobs are gated on the `BETA_CHANNEL_ENABLED` repository variable (`vars`, because `env` is not available in a job-level `if:`), and beta installs from the `beta` branch.
+- **Publish through the Release workflow.** Create a stable draft with an existing tag, then dispatch `release.yml` with the tag and `publish_draft=true`. The same commit must pass the packaged-crate matrix and native release smoke checks before the workflow makes the draft public. See [release smoke tests](docs/RELEASE-SMOKE.md) for local commands, recovery and post-publication verification. A manual `cargo publish` bypasses the gate and leaves the binary distributions and checksums behind. The separate release-drift workflow checks the resulting stable package and GitHub release.

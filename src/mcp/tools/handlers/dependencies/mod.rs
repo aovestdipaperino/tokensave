@@ -405,3 +405,110 @@ fn _all_kinds_referenced() {
     let _ = DepKind::Normal;
     let _ = DepKind::Build;
 }
+
+pub(crate) fn osv_inventory(root: &Path) -> Result<crate::vulnerability::Inventory> {
+    use crate::vulnerability::{Dependency, Inventory, Package};
+
+    const OSV_ECOSYSTEMS: &[(&str, &str)] = &[
+        ("rust", "crates.io"),
+        ("node", "npm"),
+        ("python", "PyPI"),
+        ("go", "Go"),
+    ];
+    let mut inventory = Inventory::default();
+    for &(language, ecosystem) in OSV_ECOSYSTEMS {
+        for mut workspace in detect_workspaces(root, Some(language))? {
+            let cargo_versions = (language == "rust")
+                .then(|| lockfiles::registry_cargo_versions(&workspace.root))
+                .flatten();
+            if matches!(language, "node" | "python") {
+                lockfiles::apply_to_workspace(&mut workspace);
+            }
+            for dependency in workspace.members.iter().flat_map(|member| &member.deps) {
+                let name = dependency.name.as_str();
+                if !queryable_package(name)
+                    || dependency.local_path.is_some()
+                    || workspace.patches.iter().any(|patch| patch.name == name)
+                {
+                    inventory.unresolved += 1;
+                    continue;
+                }
+                let versions = if let Some(locked) = &cargo_versions {
+                    locked
+                        .get(name)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|version| queryable_version(version))
+                        .map(|version| (version, false))
+                        .collect::<Vec<_>>()
+                } else {
+                    // npm and Python workspace resolution is matched by name.
+                    // Go uses go.mod declarations because go.sum may list old versions.
+                    dependency
+                        .resolved
+                        .as_deref()
+                        .and_then(queryable_version)
+                        .or_else(|| dependency.version.as_deref().and_then(queryable_version))
+                        .map(|version| (version, true))
+                        .into_iter()
+                        .collect()
+                };
+                if versions.is_empty() {
+                    inventory.unresolved += 1;
+                }
+                for (version, approximate) in versions {
+                    let query = Dependency {
+                        package: Package {
+                            ecosystem: ecosystem.to_string(),
+                            name: name.to_string(),
+                        },
+                        version: if language == "go" {
+                            version.strip_prefix('v').unwrap_or(version).to_string()
+                        } else {
+                            version.to_string()
+                        },
+                    };
+                    inventory
+                        .queries
+                        .entry(query)
+                        .and_modify(|old| *old &= approximate)
+                        .or_insert(approximate);
+                }
+            }
+        }
+    }
+    Ok(inventory)
+}
+
+fn queryable_version(version: &str) -> Option<&str> {
+    let version = version
+        .trim()
+        .strip_prefix("==")
+        .unwrap_or(version.trim())
+        .trim();
+    let numeric = version.strip_prefix('v').unwrap_or(version);
+    let release = numeric.split(['-', '+']).next()?;
+    if release.contains('.')
+        && release
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+        && version.len() <= 100
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'!'))
+    {
+        Some(version)
+    } else {
+        None
+    }
+}
+
+fn queryable_package(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 160
+        && !name.contains("..")
+        && !name.starts_with('/')
+        && name.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'@' | b'.' | b'-' | b'_')
+        })
+}

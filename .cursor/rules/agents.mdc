@@ -1,0 +1,8 @@
+---
+description: Repository guidance lives in AGENTS.md
+alwaysApply: true
+---
+
+This repository keeps all agent guidance in AGENTS.md at the repository root.
+Read and follow @AGENTS.md before making any change. Do not add rules here;
+edit AGENTS.md instead.

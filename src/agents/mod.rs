@@ -32,16 +32,24 @@ pub fn quiet_install() -> bool {
 ///   (b) Fallback for external upgrades (`brew upgrade`, `cargo install`):
 ///       the running version is newer than `last_installed_version`.
 ///
-/// `install` is called once per tracked agent id and returns `false` when that
-/// agent could not be updated. Version markers advance regardless of those
-/// failures — see [`ResyncOutcome::failed`]. Returns the outcome; the caller is
-/// responsible for persisting `config` and reporting failures.
-pub fn resync_installed_agents<F>(
+/// `is_present` is asked about each tracked agent once a resync is due, and
+/// an agent it rejects is dropped from `installed_agents` instead of being
+/// reinstalled — see [`ResyncOutcome::dropped`] (#1094). It is not consulted
+/// otherwise, so an ordinary command never pays for detection (OMP's spawns
+/// `omp`).
+///
+/// `install` is called once per remaining agent id and returns `false` when
+/// that agent could not be updated. Version markers advance regardless of
+/// those failures — see [`ResyncOutcome::failed`]. Returns the outcome; the
+/// caller is responsible for persisting `config` and reporting failures.
+pub fn resync_installed_agents<P, F>(
     config: &mut crate::user_config::UserConfig,
     running: &str,
+    mut is_present: P,
     mut install: F,
 ) -> ResyncOutcome
 where
+    P: FnMut(&str) -> bool,
     F: FnMut(&str) -> bool,
 {
     let previous_version = if config.previous_version.is_empty() {
@@ -65,19 +73,21 @@ where
             config.previous_version = running.to_string();
             return ResyncOutcome {
                 changed: true,
-                ran: false,
-                failed: Vec::new(),
+                ..ResyncOutcome::default()
             };
         }
-        return ResyncOutcome {
-            changed: false,
-            ran: false,
-            failed: Vec::new(),
-        };
+        return ResyncOutcome::default();
     }
 
-    let agents = config.installed_agents.clone();
-    let failed: Vec<String> = agents.into_iter().filter(|id| !install(id)).collect();
+    // A registration whose harness is gone has nothing to refresh, and
+    // installing it again only fails, on every upgrade (#1094).
+    let (agents, dropped): (Vec<String>, Vec<String>) = config
+        .installed_agents
+        .iter()
+        .cloned()
+        .partition(|id| is_present(id));
+    config.installed_agents.clone_from(&agents);
+    let failed: Vec<String> = agents.iter().filter(|id| !install(id)).cloned().collect();
 
     // Advance the markers even when some agents failed. A config path we can't
     // write (missing app, read-only location) fails identically on every run,
@@ -89,7 +99,9 @@ where
     ResyncOutcome {
         changed: true,
         ran: true,
+        refreshed: agents.len(),
         failed,
+        dropped,
     }
 }
 
@@ -119,8 +131,13 @@ pub struct ResyncOutcome {
     pub changed: bool,
     /// Whether the per-agent install loop actually ran.
     pub ran: bool,
+    /// How many agents the install loop was run for.
+    pub refreshed: usize,
     /// Ids of agents whose install failed. Non-fatal.
     pub failed: Vec<String>,
+    /// Ids dropped from `installed_agents` because their harness is no longer
+    /// on this machine (#1094). They were not reinstalled.
+    pub dropped: Vec<String>,
 }
 
 /// `eprintln!` for agent install progress: silent under [`set_quiet_install`].
@@ -143,12 +160,14 @@ macro_rules! agent_note_inline {
     };
 }
 
+pub mod constants;
 pub mod fs;
 pub mod hooks;
 pub mod integrations;
 pub mod registry;
 pub mod rules;
 pub mod traits;
+pub mod uninstall;
 
 use std::path::{Path, PathBuf};
 
@@ -378,43 +397,88 @@ pub fn tool_names() -> Vec<String> {
         .collect()
 }
 
+pub const TOOL_PERMISSION_PREFIX: &str = "mcp__tokensave__";
+pub const TOKENSAVE_WILDCARD_PERM: &str = "mcp__tokensave__*";
+
 pub fn read_only_tool_names() -> Vec<String> {
-    get_installable_tool_definitions()
-        .iter()
-        .filter(|t| {
-            t.annotations
-                .as_ref()
-                .and_then(|annotations| annotations.get("readOnlyHint"))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-        })
-        .map(|t| t.name.clone())
+    use crate::mcp::tools::{tool_capability, ToolCapability};
+    tool_names()
+        .into_iter()
+        .filter(|name| tool_capability(name) == Some(ToolCapability::ReadOnly))
         .collect()
 }
 
 pub fn expected_tool_perms() -> Vec<String> {
-    get_installable_tool_definitions()
-        .iter()
-        .map(|t| format!("mcp__tokensave__{}", t.name))
+    read_only_tool_names()
+        .into_iter()
+        .map(|name| format!("{TOOL_PERMISSION_PREFIX}{name}"))
         .collect()
 }
 
-/// The single compact permission entry that grants Claude Code all tokensave
-/// tools at once, as an alternative to enumerating every tool individually.
-/// Both this wildcard form and the bare `mcp__tokensave` form are fully
-/// honored by Claude Code as allow rules; this is the one tokensave writes
-/// when the compact style is requested.
-pub const TOKENSAVE_WILDCARD_PERM: &str = "mcp__tokensave__*";
-
-/// Tool permissions to install for Claude Code: either the single compact
-/// wildcard entry, or the full explicit per-tool list, depending on
-/// `wildcard`. See [`TOKENSAVE_WILDCARD_PERM`] and [`expected_tool_perms`].
-pub fn install_tool_perms(wildcard: bool) -> Vec<String> {
-    if wildcard {
-        vec![TOKENSAVE_WILDCARD_PERM.to_string()]
-    } else {
-        expected_tool_perms()
+/// Resolve a one-time, exact-name opt-in. Unknown or unavailable tools fail
+/// before any adapter is run.
+pub fn requested_tool_perms(write_tools: &[String]) -> crate::errors::Result<Vec<String>> {
+    use crate::mcp::tools::{tool_capability, ToolCapability};
+    let available = tool_names();
+    let mut permissions = expected_tool_perms();
+    for tool in write_tools {
+        if !available.contains(tool) || tool_capability(tool) != Some(ToolCapability::SideEffecting)
+        {
+            return Err(crate::errors::TokenSaveError::Config {
+                message: format!("{tool} is not an available write-capable tool. Provide its full MCP tool name."),
+            });
+        }
+        let permission = format!("{TOOL_PERMISSION_PREFIX}{tool}");
+        if !permissions.contains(&permission) {
+            permissions.push(permission);
+        }
     }
+    Ok(permissions)
+}
+
+pub(crate) fn approved_tool_names(permissions: &[String]) -> Vec<String> {
+    use crate::mcp::tools::{tool_capability, ToolCapability};
+    tool_names()
+        .into_iter()
+        .filter(|name| match tool_capability(name) {
+            Some(ToolCapability::ReadOnly) => true,
+            Some(ToolCapability::SideEffecting) => {
+                permissions.contains(&format!("{TOOL_PERMISSION_PREFIX}{name}"))
+            }
+            None => false,
+        })
+        .collect()
+}
+
+pub(crate) fn write_approvals_requested(permissions: &[String]) -> bool {
+    use crate::mcp::tools::{tool_capability, ToolCapability};
+    permissions
+        .iter()
+        .filter_map(|permission| permission.strip_prefix(TOOL_PERMISSION_PREFIX))
+        .any(|name| tool_capability(name) == Some(ToolCapability::SideEffecting))
+}
+
+/// Whether tokensave may grant, refresh, or revoke agent tool approvals
+/// (Claude Code `permissions.allow`, Codex `approval_mode`, Gemini/Qwen
+/// `trust`, Kiro `allowedTools`). `manage_permissions = false` in
+/// `<home>/.tokensave/config.toml`, or a falsy `TOKENSAVE_MANAGE_PERMISSIONS`,
+/// hands them to the user (#1067).
+///
+/// Read from `home`'s config file, the home the agent files are written
+/// under, so a setting read from one home never decides about files in
+/// another (#575) and tests with temporary homes stay hermetic. An absent or
+/// unreadable setting means tokensave manages approvals (the default).
+pub fn permissions_management_enabled(home: &std::path::Path) -> bool {
+    let from_config = std::fs::read_to_string(home.join(".tokensave").join("config.toml"))
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .and_then(|table| {
+            table
+                .get(constants::MANAGE_PERMISSIONS_KEY)
+                .and_then(toml::Value::as_bool)
+        })
+        .unwrap_or(true);
+    crate::config::env_bool_override(constants::MANAGE_PERMISSIONS_ENV, from_config)
 }
 
 /// Regression tests for #255: the silent reinstall-on-upgrade printed every
@@ -439,19 +503,29 @@ mod resync_tests {
     fn resync_runs_once_then_stops_when_every_agent_succeeds() {
         let mut config = upgraded_config();
         let mut calls = 0;
-        let first = resync_installed_agents(&mut config, "7.4.0", |_| {
-            calls += 1;
-            true
-        });
+        let first = resync_installed_agents(
+            &mut config,
+            "7.4.0",
+            |_| true,
+            |_| {
+                calls += 1;
+                true
+            },
+        );
         assert!(first.ran);
         assert_eq!(calls, 2);
         assert!(first.failed.is_empty());
 
         // Second invocation at the same version must not reinstall again.
-        let second = resync_installed_agents(&mut config, "7.4.0", |_| {
-            calls += 1;
-            true
-        });
+        let second = resync_installed_agents(
+            &mut config,
+            "7.4.0",
+            |_| true,
+            |_| {
+                calls += 1;
+                true
+            },
+        );
         assert!(!second.ran, "resync repeated at an unchanged version");
         assert_eq!(calls, 2, "install ran again on the second invocation");
     }
@@ -470,7 +544,7 @@ mod resync_tests {
             id != "copilot"
         };
 
-        let first = resync_installed_agents(&mut config, "7.4.0", &mut installer);
+        let first = resync_installed_agents(&mut config, "7.4.0", |_| true, &mut installer);
         assert!(first.ran);
         assert_eq!(first.failed, vec!["copilot".to_string()]);
         assert!(first.changed, "markers must advance despite the failure");
@@ -480,7 +554,7 @@ mod resync_tests {
 
         // Every later run at the same version is a no-op.
         for _ in 0..3 {
-            let again = resync_installed_agents(&mut config, "7.4.0", &mut installer);
+            let again = resync_installed_agents(&mut config, "7.4.0", |_| true, &mut installer);
             assert!(!again.ran, "a failing agent re-triggered the resync (#255)");
             assert!(again.failed.is_empty());
         }
@@ -520,16 +594,84 @@ mod resync_tests {
         );
     }
 
+    /// #1094: an agent registered earlier whose harness is not on this
+    /// machine (OMP never installed) is dropped from the registry instead of
+    /// being reinstalled — which could only fail, on every upgrade, with a
+    /// warning about an agent the user never selected.
+    #[test]
+    fn resync_drops_absent_agents_instead_of_reinstalling_them() {
+        let mut config = UserConfig {
+            installed_agents: vec![
+                "claude".to_string(),
+                "omp".to_string(),
+                "codex".to_string(),
+                "copilot".to_string(),
+            ],
+            last_installed_version: "7.17.2".to_string(),
+            ..Default::default()
+        };
+        let mut attempted = Vec::new();
+        let outcome = resync_installed_agents(
+            &mut config,
+            "7.17.2",
+            |id| id != "omp",
+            |id| {
+                attempted.push(id.to_string());
+                true
+            },
+        );
+        assert!(outcome.ran);
+        assert!(outcome.changed);
+        assert_eq!(outcome.refreshed, 3);
+        assert_eq!(outcome.dropped, vec!["omp".to_string()]);
+        assert!(
+            outcome.failed.is_empty(),
+            "omp must not be reported as a failure"
+        );
+        assert_eq!(attempted, vec!["claude", "codex", "copilot"]);
+        assert_eq!(config.installed_agents, vec!["claude", "codex", "copilot"]);
+    }
+
+    /// Presence detection can be costly (OMP spawns `omp`), so it must not
+    /// run on the ordinary command where no resync is due.
+    #[test]
+    fn presence_is_not_checked_when_no_resync_is_due() {
+        let mut config = UserConfig {
+            installed_agents: vec!["omp".to_string()],
+            last_installed_version: "7.17.2".to_string(),
+            previous_version: "7.17.2".to_string(),
+            ..Default::default()
+        };
+        let mut checks = 0;
+        let outcome = resync_installed_agents(
+            &mut config,
+            "7.17.2",
+            |_| {
+                checks += 1;
+                true
+            },
+            |_| true,
+        );
+        assert_eq!(outcome, ResyncOutcome::default());
+        assert_eq!(checks, 0);
+        assert_eq!(config.installed_agents, vec!["omp"]);
+    }
+
     #[test]
     fn patch_bump_advances_marker_without_reinstalling() {
         let mut config = upgraded_config();
         config.last_installed_version = "7.4.0".to_string();
         config.previous_version = "7.4.1".to_string();
         let mut calls = 0;
-        let outcome = resync_installed_agents(&mut config, "7.4.2", |_| {
-            calls += 1;
-            true
-        });
+        let outcome = resync_installed_agents(
+            &mut config,
+            "7.4.2",
+            |_| true,
+            |_| {
+                calls += 1;
+                true
+            },
+        );
         assert!(!outcome.ran, "patch bump should not reinstall");
         assert_eq!(calls, 0);
         assert!(outcome.changed);
@@ -543,10 +685,15 @@ mod resync_tests {
             ..Default::default()
         };
         let mut calls = 0;
-        let outcome = resync_installed_agents(&mut config, "7.4.2", |_| {
-            calls += 1;
-            true
-        });
+        let outcome = resync_installed_agents(
+            &mut config,
+            "7.4.2",
+            |_| true,
+            |_| {
+                calls += 1;
+                true
+            },
+        );
         assert_eq!(outcome, ResyncOutcome::default());
         assert_eq!(calls, 0);
     }

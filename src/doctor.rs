@@ -204,7 +204,7 @@ fn check_integrity_schedule(dc: &mut DoctorCounters, ts: &TokenSave) {
     if interval == 0 {
         dc.info(&format!(
             "Periodic integrity checks: off (opt-in; set integrity_interval_secs = {} for daily checks)",
-            crate::integrity::SUGGESTED_INTERVAL_SECS
+            crate::db_integrity::SUGGESTED_INTERVAL_SECS
         ));
         return;
     }
@@ -213,7 +213,7 @@ fn check_integrity_schedule(dc: &mut DoctorCounters, ts: &TokenSave) {
          (set integrity_interval_secs = 0 to disable)"
     ));
     let db_path = ts.db_path();
-    match crate::integrity::status(&db_path) {
+    match crate::db_integrity::status(&db_path) {
         Ok(report) => match report.outcome.as_str() {
             "healthy" | "deferred" | "running" => {
                 dc.info(&format!("Last integrity check: {}", report.outcome));
@@ -240,6 +240,9 @@ fn check_binary(dc: &mut DoctorCounters) {
         dc.fail("Could not determine binary path");
     }
     dc.pass(&format!("Version: {}", env!("CARGO_PKG_VERSION")));
+    if let Some(hint) = crate::integrity::current_low_integrity_hint() {
+        dc.fail(&hint);
+    }
 }
 
 /// Check global database exists.
@@ -455,7 +458,9 @@ fn check_user_config(dc: &mut DoctorCounters) {
         if config_path.exists() {
             let config = crate::user_config::UserConfig::load();
             dc.pass(&format!("Config: {}", config_path.display()));
-            if config.upload_enabled {
+            if let Some(var) = crate::cloud::telemetry_opt_out() {
+                dc.info(&format!("Telemetry disabled by {var} (no counter upload)"));
+            } else if config.upload_enabled {
                 dc.pass("Upload enabled");
             } else {
                 dc.info("Upload disabled (opt-out)");
@@ -488,7 +493,11 @@ fn check_user_config(dc: &mut DoctorCounters) {
 /// Check network connectivity.
 fn check_network(dc: &mut DoctorCounters) {
     eprintln!("\n\x1b[1mNetwork\x1b[0m");
-    if let Some(total) = crate::cloud::fetch_worldwide_total() {
+    if let Some(var) = crate::cloud::telemetry_opt_out() {
+        dc.info(&format!(
+            "Worldwide counter check skipped ({var} disables telemetry)"
+        ));
+    } else if let Some(total) = crate::cloud::fetch_worldwide_total() {
         dc.pass(&format!(
             "Worldwide counter reachable (total: {})",
             format_token_count(total)

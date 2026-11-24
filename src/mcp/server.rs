@@ -24,7 +24,8 @@ use crate::tokensave::TokenSave;
 
 use super::graph_scope::{
     collapse_worktree_roots, decode_selected_inputs, merge_federated_results, qualify_result,
-    select_federated_graph, select_graph, validate_local_inputs, GraphSelector, FEDERATABLE_TOOLS,
+    select_federated_graph, select_graph, validate_local_inputs, GraphSelection, GraphSelector,
+    FEDERATABLE_TOOLS,
 };
 use super::tools::{
     baseline_policy, cap_baseline, get_listed_tool_definitions, get_tool_definitions,
@@ -400,12 +401,17 @@ enum ServedProjects<'a> {
     /// A default project is served; these initialized projects sit beside it.
     Default { siblings: &'a [String] },
     /// No default project (#606); these projects are registered.
-    None { registered: &'a [String] },
+    /// `client_roots`: the client declared the MCP `roots` capability.
+    None {
+        registered: &'a [String],
+        client_roots: bool,
+    },
 }
 
 /// Explains that this server has no default project (#606) and how a call
-/// can still be answered.
-fn no_default_project_message(registered: &[String]) -> String {
+/// can still be answered. `client_roots`: the client declared the MCP `roots`
+/// capability, so a call without `graph_root` uses them.
+fn no_default_project_message(registered: &[String], client_roots: bool) -> String {
     let choices = if registered.is_empty() {
         "No projects are registered yet; run `tokensave init` in a project first.".to_string()
     } else {
@@ -414,10 +420,16 @@ fn no_default_project_message(registered: &[String]) -> String {
             registered.join(", ")
         )
     };
+    let without_graph_root = if client_roots {
+        "answers from the indexed project that contains the client's roots (its workspace \
+         folders), and is refused when they lie in no indexed project or in several."
+    } else {
+        "has no graph to answer from."
+    };
     format!(
         "This tokensave server has no default project: it was started outside every indexed \
-         project, so a call without graph_root has no graph to answer from. {choices} To give \
-         the server a default project, start it inside one or with `--path <project>`."
+         project, so a call without graph_root {without_graph_root} {choices} To give the \
+         server a default project, start it inside one or with `--path <project>`."
     )
 }
 
@@ -493,6 +505,12 @@ pub struct McpServer {
     version_cache: std::sync::Mutex<VersionCheckState>,
     /// Pending JSON-RPC notifications to send before the next response.
     pending_notifications: std::sync::Mutex<Vec<Value>>,
+    /// Whether the client declared the MCP `roots` capability in
+    /// `initialize`. A server with no default project then asks for the
+    /// roots on each call without `graph_root`.
+    client_roots: AtomicBool,
+    /// Requests sent to the client (`roots/list`) and their answers.
+    client_requests: Arc<super::roots::ClientRequests>,
     /// The tool areas that `tokensave_more` listed in this session (#576).
     /// Only read when the core toolset is active.
     revealed_areas: std::sync::Mutex<std::collections::BTreeSet<String>>,
@@ -909,6 +927,8 @@ impl McpServer {
                 checked_at: None,
             }),
             pending_notifications: std::sync::Mutex::new(Vec::new()),
+            client_roots: AtomicBool::new(false),
+            client_requests: Arc::default(),
             revealed_areas: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             scope_prefix,
             shutdown_done: AtomicBool::new(false),
@@ -1205,7 +1225,63 @@ impl McpServer {
         } else {
             ServedProjects::None {
                 registered: &self.registered_projects,
+                client_roots: self.client_roots.load(Ordering::Relaxed),
             }
+        }
+    }
+
+    /// [`no_default_project_message`] for this server and client.
+    fn no_default_project_message(&self) -> String {
+        no_default_project_message(
+            &self.registered_projects,
+            self.client_roots.load(Ordering::Relaxed),
+        )
+    }
+
+    /// The project a call without `graph_root` answers from on a server with
+    /// no default project: the indexed project that contains the calling
+    /// client's roots, requested now because behind an MCP proxy each call
+    /// may come from a different client.
+    ///
+    /// `Ok(None)` when the client cannot be asked (no `roots` capability, no
+    /// answer in time, or an error), which leaves the call to the #606
+    /// refusal. `Err` explains a refusal: the roots lie in no indexed project
+    /// or in several.
+    async fn project_from_client_roots(&self) -> std::result::Result<Option<PathBuf>, String> {
+        if !self.client_roots.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let Some(roots) = self.client_requests.roots().await else {
+            return Ok(None);
+        };
+        let projects = super::roots::projects_for_roots(&roots);
+        crate::debug_log::event(
+            crate::debug_log::Level::Debug,
+            "mcp",
+            "client_roots",
+            || json!({ "roots": roots.len(), "projects": projects.len() }),
+        );
+        match projects.as_slice() {
+            [project] => Ok(Some(project.clone())),
+            [] if roots.is_empty() => Err(format!(
+                "The client reported no roots (behind an MCP proxy this also happens when it \
+                 cannot tell which client made the call). {}",
+                self.no_default_project_message()
+            )),
+            [] => Err(format!(
+                "None of the client's roots lies in an indexed project: {}. {}",
+                roots.join(", "),
+                self.no_default_project_message()
+            )),
+            several => Err(format!(
+                "The client's roots lie in several indexed projects: {}. Pass graph_root with \
+                 the one to query.",
+                several
+                    .iter()
+                    .map(|project| project.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
         }
     }
 
@@ -1233,12 +1309,14 @@ impl McpServer {
 
     /// The `tokensave_status` answer of a server with no default project
     /// (#606): that there is none, the registered projects `graph_root` can
-    /// select, how to proceed, and the server's own counters.
-    async fn no_default_project_status(&self) -> Value {
+    /// select, how to proceed, and the server's own counters. `hint`
+    /// replaces the default advice, e.g. with why the client's roots chose
+    /// no project.
+    async fn no_default_project_status(&self, hint: Option<String>) -> Value {
         let status = json!({
             "default_project": Value::Null,
             "registered_projects": self.registered_projects,
-            "hint": no_default_project_message(&self.registered_projects),
+            "hint": hint.unwrap_or_else(|| self.no_default_project_message()),
             "version": env!("CARGO_PKG_VERSION"),
             "server": self.server_stats_json().await,
         });
@@ -1253,7 +1331,7 @@ impl McpServer {
         JsonRpcResponse::error(
             id,
             ErrorCode::InvalidRequest,
-            no_default_project_message(&self.registered_projects),
+            self.no_default_project_message(),
         )
     }
 
@@ -1617,7 +1695,7 @@ impl McpServer {
 
         let (tx, rx) = tokio::sync::mpsc::channel(CHANNEL_CAPACITY);
         let overflow = Arc::new(AtomicBool::new(false));
-        let mut native = match NativeWatcher::start(
+        let native = match NativeWatcher::start(
             &root,
             mode,
             dirs,
@@ -1646,26 +1724,61 @@ impl McpServer {
             settings.debounce.as_millis()
         );
 
-        let apply_weak = weak.clone();
-        fs_watch::run_watch_loop(
+        let uses_kqueue = NativeWatcher::uses_kqueue();
+        fs_watch::run_watch_loop_inner(
             rx,
             overflow,
             settings,
             cancel,
-            move |batch| {
-                let weak = apply_weak.clone();
+            native,
+            move |batch, removed, mut native| {
+                let weak = weak.clone();
                 async move {
-                    match weak.upgrade() {
-                        Some(server) => server.apply_watch_batch(batch).await,
-                        None => fs_watch::WatchOutcome::default(),
+                    #[cfg(target_os = "freebsd")]
+                    let file_dirs = native.file_directories_for_batch(&batch.changes);
+                    let mut watch_ignore = if uses_kqueue {
+                        crate::tokensave::WatchIgnore::kqueue()
+                    } else {
+                        crate::tokensave::WatchIgnore::default()
+                    };
+                    let server = weak.upgrade();
+                    let (mut outcome, _recover_watches) = match &server {
+                        Some(server) => {
+                            let kqueue_watches =
+                                uses_kqueue.then_some((native.watched_directories(), &removed));
+                            server
+                                .apply_native_watch_batch(batch, kqueue_watches, &mut watch_ignore)
+                                .await
+                        }
+                        None => (fs_watch::WatchOutcome::default(), false),
+                    };
+                    #[cfg(not(target_os = "freebsd"))]
+                    if !removed.is_empty() || !outcome.new_dirs.is_empty() {
+                        native.update_dirs(removed, std::mem::take(&mut outcome.new_dirs));
                     }
+                    #[cfg(target_os = "freebsd")]
+                    {
+                        let mut dirs = native.update_freebsd_dirs(
+                            &removed,
+                            std::mem::take(&mut outcome.new_dirs),
+                            file_dirs,
+                        );
+                        if let Some(server) = &server {
+                            if native.needs_freebsd_recovery(_recover_watches, outcome.reconciled) {
+                                dirs.extend(server.recover_freebsd_watch_dirs(&mut native).await);
+                                dirs.sort_unstable();
+                                dirs.dedup();
+                            }
+                            server
+                                .register_freebsd_watch_files(&mut native, &dirs, &mut watch_ignore)
+                                .await;
+                        }
+                    }
+                    (outcome, native)
                 }
             },
-            |new_dirs| native.add_dirs(new_dirs),
         )
         .await;
-        // Dropping the native watcher releases every registered watch.
-        drop(native);
         fs_watch::set_state(&stats, "stopped");
     }
 
@@ -1678,11 +1791,22 @@ impl McpServer {
         &self,
         batch: super::fs_watch::WatchBatch,
     ) -> super::fs_watch::WatchOutcome {
+        self.apply_native_watch_batch(batch, None, &mut crate::tokensave::WatchIgnore::default())
+            .await
+            .0
+    }
+
+    async fn apply_native_watch_batch(
+        &self,
+        mut batch: super::fs_watch::WatchBatch,
+        kqueue_watches: Option<(&HashSet<PathBuf>, &HashSet<PathBuf>)>,
+        watch_ignore: &mut crate::tokensave::WatchIgnore,
+    ) -> (super::fs_watch::WatchOutcome, bool) {
         let mut outcome = super::fs_watch::WatchOutcome::default();
         let stats = &self.fs_watch_stats;
         stats.record_batch(batch.changes.len());
         let Some(cg) = self.cg.as_ref() else {
-            return outcome;
+            return (outcome, false);
         };
         // Same guard as an automatic sync (#400): never write one branch's
         // files into another branch's database.
@@ -1691,29 +1815,76 @@ impl McpServer {
                 "the working tree is on branch '{}' but this server serves '{}'",
                 drift.working_tree, drift.serving
             ));
-            return outcome;
+            let recover =
+                kqueue_watches.is_some_and(|(_, removed)| batch.rescan || !removed.is_empty());
+            if recover {
+                outcome.retry_rescan_after = Some(super::fs_watch::MIN_RECONCILE_INTERVAL);
+            }
+            return (outcome, recover);
         }
         stats.clear_drift();
 
-        let plan = cg.plan_watch_batch(&batch.changes).await;
+        if let Some((watched, removed)) = kqueue_watches.filter(|_| !batch.rescan) {
+            match cg.kqueue_directory_changes(&batch.changes, watched, removed, watch_ignore) {
+                Ok(children) => {
+                    let mut changes = HashMap::<_, bool>::new();
+                    for change in batch.changes.into_iter().chain(children) {
+                        *changes.entry(change.path).or_default() |= change.structural;
+                    }
+                    batch.changes = changes
+                        .into_iter()
+                        .map(|(path, structural)| crate::tokensave::WatchedChange {
+                            path,
+                            structural,
+                        })
+                        .collect();
+                }
+                Err(error) => {
+                    batch.rescan = true;
+                    batch.reasons.push(error.to_string());
+                }
+            }
+        }
+        let plan = cg
+            .plan_watch_batch_with_ignore(&batch.changes, watch_ignore)
+            .await;
+        let watched_dir_removed = kqueue_watches
+            .is_some_and(|(watched, removed)| removed.iter().any(|path| watched.contains(path)));
         // A per-directory watcher needs the whole new subtree: `mkdir -p` or
         // a moved-in folder brings nested directories with no event of their
         // own. A recursive watch already covers them.
         if super::fs_watch::WatchMode::for_platform() == super::fs_watch::WatchMode::PerDirectory {
-            for dir in &plan.new_dirs {
-                if let Some(subtree) = cg.watch_directories(dir, super::fs_watch::MAX_WATCHED_DIRS)
+            let mut seen = HashSet::new();
+            let mut candidates = plan.new_dirs;
+            candidates.sort_unstable();
+            for dir in &candidates {
+                if seen.contains(dir) {
+                    continue;
+                }
+                let remaining = super::fs_watch::MAX_WATCHED_DIRS - seen.len();
+                if let Some(subtree) =
+                    cg.watch_directories_with_ignore(dir, remaining, watch_ignore)
                 {
-                    outcome.new_dirs.extend(subtree);
+                    for path in subtree {
+                        if seen.insert(path.clone()) {
+                            outcome.new_dirs.push(path);
+                        }
+                    }
                 } else {
                     stats.record_error(&format!(
-                        "{} holds more than {} directories; not watching it",
-                        dir.display(),
-                        super::fs_watch::MAX_WATCHED_DIRS
+                        "{} exceeds the remaining budget of {remaining} directories",
+                        dir.display()
                     ));
                 }
             }
         }
-        if batch.rescan || plan.reconcile {
+        if !batch.rescan && watch_ignore.exhausted() {
+            batch.rescan = true;
+            batch
+                .reasons
+                .push("FreeBSD ignore scan reached its batch budget".to_string());
+        }
+        if batch.rescan || plan.reconcile || watched_dir_removed {
             if batch.rescan {
                 stats.record_error(&format!(
                     "{}; reconciling with a bounded scan",
@@ -1725,7 +1896,7 @@ impl McpServer {
                 // scan once the interval has passed.
                 self.sync_watched_files(cg, &plan.files).await;
                 outcome.retry_rescan_after = Some(wait);
-                return outcome;
+                return (outcome, batch.rescan);
             }
             // Shares the lazy resync's overlap guard (#535): if a resync is
             // already walking the tree, retry rather than walk it twice.
@@ -1736,7 +1907,7 @@ impl McpServer {
             {
                 self.sync_watched_files(cg, &plan.files).await;
                 outcome.retry_rescan_after = Some(super::fs_watch::MIN_RECONCILE_INTERVAL);
-                return outcome;
+                return (outcome, batch.rescan);
             }
             self.run_lazy_resync().await;
             self.lazy_sync_in_flight.store(false, Ordering::Release);
@@ -1747,10 +1918,69 @@ impl McpServer {
                 .as_secs() as i64;
             self.last_staleness_check_at.store(now, Ordering::Release);
             outcome.reconciled = true;
-            return outcome;
+            return (outcome, batch.rescan);
         }
         self.sync_watched_files(cg, &plan.files).await;
-        outcome
+        (outcome, false)
+    }
+
+    #[cfg(target_os = "freebsd")]
+    async fn recover_freebsd_watch_dirs(
+        self: &Arc<Self>,
+        native: &mut super::fs_watch::NativeWatcher,
+    ) -> Vec<PathBuf> {
+        let server = Arc::clone(self);
+        let walk = tokio::task::spawn_blocking(move || {
+            let cg = server.cg.as_ref()?;
+            if cg.branch_drift().is_some() {
+                return None;
+            }
+            cg.watch_directories(cg.project_root(), super::fs_watch::MAX_WATCHED_DIRS)
+        })
+        .await;
+        match walk {
+            Ok(Some(dirs)) => native.refresh_freebsd_dirs(dirs),
+            _ => {
+                self.fs_watch_stats.record_error(
+                    "could not rescan FreeBSD directory watches within scope and budget",
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    #[cfg(target_os = "freebsd")]
+    async fn register_freebsd_watch_files(
+        &self,
+        native: &mut super::fs_watch::NativeWatcher,
+        dirs: &[PathBuf],
+        watch_ignore: &mut crate::tokensave::WatchIgnore,
+    ) {
+        let Some(cg) = self.cg.as_ref() else {
+            return;
+        };
+        if dirs.is_empty() || cg.branch_drift().is_some() {
+            return;
+        }
+        let (candidates, limited) = match cg.kqueue_watch_files(dirs, watch_ignore) {
+            Ok(listing) => listing,
+            Err(error) => {
+                self.fs_watch_stats
+                    .record_error(&format!("could not list FreeBSD file watches: {error}"));
+                return;
+            }
+        };
+        if limited {
+            self.fs_watch_stats
+                .record_error("FreeBSD file or ignore listing reached its batch budget");
+        }
+        let paths: Vec<_> = native
+            .register_explicit(candidates, false)
+            .iter()
+            .filter_map(|path| cg.watch_relative(path))
+            .collect();
+        // Catch edits made between indexing the recreated subtree and opening its file watches.
+        self.sync_watched_files(cg, &paths).await;
     }
 
     /// Syncs the files of a watcher batch and refreshes the token map.
@@ -1940,7 +2170,7 @@ impl McpServer {
             .unwrap_or_default()
             .as_secs() as i64;
         let last = self.last_flush_at.load(Ordering::Relaxed);
-        if now - last < FLUSH_CHECK_INTERVAL_SECS {
+        if now - last < FLUSH_CHECK_INTERVAL_SECS || !crate::cloud::telemetry_enabled() {
             return;
         }
         // Mark as attempted immediately to prevent re-entry.
@@ -2111,7 +2341,7 @@ impl McpServer {
     pub async fn run_with_halves(
         self: &Arc<Self>,
         mut reader: impl super::transport::McpReader + 'static,
-        mut writer: impl super::transport::McpWriter + 'static,
+        writer: impl super::transport::McpWriter + 'static,
         idle_timeout: Option<std::time::Duration>,
     ) -> Result<()> {
         let already_started = self.run_started.swap(true, Ordering::Relaxed);
@@ -2150,9 +2380,33 @@ impl McpServer {
         // cancellation-safe — a half-read line would be lost if the future
         // were dropped — so it must never be polled from a `select!`.
         let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel();
+        // The client's answer to a request of this server (`roots/list`) is
+        // handed to the waiting call here rather than queued for the loop,
+        // which may be stuck behind that call: running it inline, or waiting
+        // for a concurrency permit that the waiting calls hold.
+        let client_requests = Arc::clone(&self.client_requests);
         let reader_task = tokio::spawn(async move {
             while let Ok(Some(line)) = reader.read_line().await {
+                if client_requests.deliver(&line) {
+                    continue;
+                }
                 if line_tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Shared with the task that writes this server's requests to the
+        // client, for the same reason: the loop cannot write them while it is
+        // stuck behind the call that sends them.
+        let writer = Arc::new(tokio::sync::Mutex::new(writer));
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        self.client_requests.connect(request_tx);
+        let request_writer = Arc::clone(&writer);
+        let request_task = tokio::spawn(async move {
+            while let Some(line) = request_rx.recv().await {
+                let mut writer = request_writer.lock().await;
+                if writer.write_line(&line).await.is_err() || writer.flush().await.is_err() {
                     break;
                 }
             }
@@ -2177,7 +2431,10 @@ impl McpServer {
         let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
         let mut integrity = self.cg.as_ref().map(|cg| {
-            crate::integrity::Scheduler::new(cg.db_path(), cg.get_config().integrity_interval_secs)
+            crate::db_integrity::Scheduler::new(
+                cg.db_path(),
+                cg.get_config().integrity_interval_secs,
+            )
         });
         'serve: loop {
             // Maintenance ticks must not restart the user-facing idle deadline.
@@ -2215,7 +2472,8 @@ impl McpServer {
                             match response {
                                 Some(response) => {
                                     idle_timer = Box::pin(idle_deadline(idle_timeout));
-                                    if !self.write_response(&mut writer, response).await {
+                                    let mut writer = writer.lock().await;
+                                    if !self.write_response(&mut *writer, response).await {
                                         break 'serve;
                                     }
                                 }
@@ -2230,7 +2488,7 @@ impl McpServer {
                         // orphan watchdog, which has no signal to deliver at
                         // all (#450).
                         () = crate::cancel::cancelled() => break 'serve,
-                        () = idle_deadline(integrity.as_ref().map(crate::integrity::Scheduler::delay)) => {
+                        () = idle_deadline(integrity.as_ref().map(crate::db_integrity::Scheduler::delay)) => {
                             if let Some(scheduler) = integrity.as_mut() {
                                 let busy = self.startup_work_in_flight() || self.lazy_sync_in_flight()
                                     || in_flight.load(Ordering::Acquire) > 0
@@ -2279,7 +2537,8 @@ impl McpServer {
                             match response {
                                 Some(response) => {
                                     idle_timer = Box::pin(idle_deadline(idle_timeout));
-                                    if !self.write_response(&mut writer, response).await {
+                                    let mut writer = writer.lock().await;
+                                    if !self.write_response(&mut *writer, response).await {
                                         break 'serve;
                                     }
                                 }
@@ -2288,7 +2547,7 @@ impl McpServer {
                         }
                         _ = tokio::signal::ctrl_c() => break 'serve,
                         () = crate::cancel::cancelled() => break 'serve,
-                        () = idle_deadline(integrity.as_ref().map(crate::integrity::Scheduler::delay)) => {
+                        () = idle_deadline(integrity.as_ref().map(crate::db_integrity::Scheduler::delay)) => {
                             if let Some(scheduler) = integrity.as_mut() {
                                 let busy = self.startup_work_in_flight() || self.lazy_sync_in_flight()
                                     || in_flight.load(Ordering::Acquire) > 0
@@ -2327,13 +2586,19 @@ impl McpServer {
 
             let request = match parsed {
                 Ok(request) => request,
+                // A late answer to a request of this server, whose call
+                // stopped waiting: not a request, so it gets no reply.
+                Err(_) if super::roots::is_response(&line) => continue,
                 Err(e) => {
                     let response = JsonRpcResponse::error(
                         Value::Null,
                         ErrorCode::ParseError,
                         format!("failed to parse JSON-RPC request: {e}"),
                     );
-                    if !self.write_response(&mut writer, response).await {
+                    if !self
+                        .write_response(&mut *writer.lock().await, response)
+                        .await
+                    {
                         break 'serve;
                     }
                     continue;
@@ -2372,7 +2637,7 @@ impl McpServer {
 
             // Write response (if any) as a single line to stdout
             if let Some(resp) = response {
-                if !self.write_response(&mut writer, resp).await {
+                if !self.write_response(&mut *writer.lock().await, resp).await {
                     break 'serve;
                 }
             }
@@ -2386,6 +2651,8 @@ impl McpServer {
             }
         }
         reader_task.abort();
+        self.client_requests.disconnect();
+        request_task.abort();
         // Requests still running are given a moment to finish: they hold the
         // database, and the shutdown checkpoints it. A request that does not
         // finish in time is dropped rather than holding the exit open.
@@ -2521,8 +2788,10 @@ impl McpServer {
         // always *persists* the accumulated total: the process is ending, so
         // `last_flushed_tokens` is about to be lost and the config file is the
         // only thing that will still remember these tokens.
+        // While the environment opts out of telemetry (#1066), nothing is
+        // queued for a later upload either.
         let last_flushed = self.last_flushed_tokens.load(Ordering::Relaxed);
-        if tokens_saved > last_flushed {
+        if tokens_saved > last_flushed && crate::cloud::telemetry_enabled() {
             let delta = tokens_saved - last_flushed;
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -2591,14 +2860,22 @@ impl McpServer {
         let id = request.id.clone();
 
         let result = match request.method.as_str() {
-            "initialize" => Some(Self::handle_initialize(
-                id,
-                request.params.as_ref(),
-                self.report_savings(),
-                self.served_projects(),
-                self.toolset(),
-                crate::caveman::cooperation_enabled(self.served_root()),
-            )),
+            "initialize" => {
+                let client_roots = request
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.pointer("/capabilities/roots"))
+                    .is_some_and(Value::is_object);
+                self.client_roots.store(client_roots, Ordering::Relaxed);
+                Some(Self::handle_initialize(
+                    id,
+                    request.params.as_ref(),
+                    self.report_savings(),
+                    self.served_projects(),
+                    self.toolset(),
+                    crate::caveman::cooperation_enabled(self.served_root()),
+                ))
+            }
             "initialized" | "notifications/initialized" | "notifications/roots/list_changed" => {
                 // Known notifications - no response required
                 None
@@ -2700,9 +2977,12 @@ impl McpServer {
             // #606: without a default project every graph call needs
             // `graph_root`, so the session must learn that, and the choices,
             // before its first call is refused.
-            ServedProjects::None { registered } => {
+            ServedProjects::None {
+                registered,
+                client_roots,
+            } => {
                 instructions.push(' ');
-                instructions.push_str(&no_default_project_message(registered));
+                instructions.push_str(&no_default_project_message(registered, client_roots));
             }
         }
 
@@ -3194,6 +3474,27 @@ impl McpServer {
             None
         };
 
+        // A server with no default project answers a call without
+        // `graph_root` from the project that contains the calling client's
+        // roots, as if that call had named it. An explicit `graph_root`
+        // always wins, and a default project is never second-guessed.
+        let mut roots_refusal = None;
+        let selection = match selection {
+            None if self.cg.is_none() && self.graph_scoped_tools.contains(tool_name) => {
+                match self.project_from_client_roots().await {
+                    Ok(root) => root.map(|root| GraphSelection {
+                        roots: vec![root],
+                        branch: None,
+                    }),
+                    Err(reason) => {
+                        roots_refusal = Some(reason);
+                        None
+                    }
+                }
+            }
+            selection => selection,
+        };
+
         // Federation (#376). Handled before the single-graph pipeline because
         // it runs that pipeline once per root and merges. Selected calls are
         // already outside savings accounting (#363), so an early return here
@@ -3316,7 +3617,13 @@ impl McpServer {
             // that state instead of refusing.
             if self.cg.is_none() {
                 if tool_name == "tokensave_status" {
-                    return JsonRpcResponse::success(id, self.no_default_project_status().await);
+                    return JsonRpcResponse::success(
+                        id,
+                        self.no_default_project_status(roots_refusal).await,
+                    );
+                }
+                if let Some(reason) = roots_refusal {
+                    return JsonRpcResponse::error(id, ErrorCode::InvalidRequest, reason);
                 }
                 return self.no_default_project_error(id);
             }

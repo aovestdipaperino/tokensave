@@ -18,6 +18,16 @@ pub trait AgentIntegration {
     /// Remove everything installed by [`AgentIntegration::install`].
     fn uninstall(&self, ctx: &InstallContext) -> crate::errors::Result<()>;
 
+    /// Inventory the owned integration artifacts without modifying configuration.
+    fn plan_uninstall(
+        &self,
+        _ctx: &InstallContext,
+        plan: &mut super::uninstall::UninstallPlan,
+    ) -> crate::errors::Result<()> {
+        plan.skipped("Integration", "no uninstall inventory available");
+        Ok(())
+    }
+
     /// Verify installation health (replaces agent-specific doctor checks).
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext);
 
@@ -67,14 +77,9 @@ pub struct InstallContext {
     pub tokensave_bin: String,
     pub tool_permissions: Vec<String>,
     pub scope: InstallScope,
-    /// Whether the caller explicitly requested a permission style this run
-    /// (`--wildcard-permissions` / `--explicit-permissions`). `false` on
-    /// every default/silent path (flagless `install`/`reinstall`, the
-    /// silent reinstall-on-upgrade). Used by the Claude integration: when
-    /// `false`, an existing covering grant the user already has (e.g. a
-    /// hand-written `mcp__tokensave__*`) is left untouched instead of being
-    /// churned back into the explicit per-tool list; when `true`, the
-    /// requested style is written exactly, tearing down the other style.
+    /// Whether the user explicitly requested a reset of `TokenSave` approvals.
+    /// Regular installs, reinstalls and automatic maintenance merge exact
+    /// grants without replacing an existing approval policy.
     pub force_permission_style: bool,
 }
 

@@ -199,6 +199,26 @@ impl AgentIntegration for PiIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let mcp_path = pi_mcp_path(ctx);
+        plan.mcp(&mcp_path, &["mcpServers"], false);
+        plan.rules(
+            &pi_instructions_path(ctx),
+            crate::agents::rules::LEGACY_RULES_MARKER,
+            &[],
+        );
+        plan.inspect("Guardrail extension", &pi_extension_path(ctx), |text| {
+            Ok(text
+                .starts_with(PI_EXTENSION_MARKER)
+                .then_some(crate::agents::uninstall::Removal::Delete))
+        });
+        Ok(())
+    }
+
     fn supports_local(&self) -> bool {
         true
     }

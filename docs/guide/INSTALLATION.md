@@ -67,16 +67,19 @@ For builds with isolated beta storage, follow the
 or returning to stable. Existing shared databases are preserved; beta uses a fresh
 index under `.tokensave/beta/`.
 
-## Self-upgrade
+## Upgrading
+
+Run `tokensave upgrade --dry-run` to see the installation evidence and the proposed action. For a managed install, `tokensave upgrade` prints instructions for the original installer. Use Cargo with the original source, features and install root, Homebrew with the TokenSave tap, or Scoop in the original install scope. The command makes no changes to managed binaries or package records.
+
+If you installed a standalone archive from GitHub Releases, run `tokensave upgrade --standalone`. TokenSave verifies the running binary against its published release and checks the replacement archive against the release checksums. Binaries that cannot be verified can be updated manually with their original installer or release channel.
 
 ```bash
-tokensave upgrade                  # upgrade to latest in current channel
-tokensave channel                  # show current channel (stable/beta)
-tokensave channel beta             # switch to beta channel
-tokensave channel stable           # switch back to stable
+tokensave channel                        # show the active channel
+tokensave channel beta --standalone      # switch a verified standalone installation to beta
+tokensave channel stable --standalone    # return a verified standalone installation to stable
 ```
 
-`tokensave upgrade` downloads the correct platform binary from GitHub releases and replaces the running binary in place. Supports stable and beta channels independently.
+Standalone upgrades stay on their current channel. To change channels for a managed installation, use a channel supplied by its installer or install the requested channel separately.
 
 ## Versioning and upgrades
 
@@ -116,6 +119,50 @@ If you still have a daemon autostart from 5.x, remove it:
 - Windows: `sc.exe delete tokensave-daemon` (from an elevated terminal)
 
 If you don't recall the exact name: `launchctl list | grep tokensave` / `systemctl --user list-units | grep tokensave` / `sc.exe query state= all | findstr -i tokensave`.
+
+## Uninstalling
+
+Removing tokensave takes up to three steps, and each one leaves the others' data alone:
+
+| Command | Removes | Keeps |
+| --- | --- | --- |
+| `tokensave uninstall` | Agent integrations (MCP entries, approvals, hooks, rules) and tokensave's global git hooks | Indexes, settings, caches, usage history |
+| `tokensave purge` | Everything `uninstall` removes, plus tokensave's settings, caches and indexes in the chosen scope | Usage history (unless `--include-history`) |
+| Your installer | The `tokensave` executable | — |
+
+`purge` always prints its plan first: every path it will delete, why it recognizes the path as tokensave's, its category and its approximate size, plus what it keeps or skips and why. `--dry-run` prints that plan and changes nothing. A real run asks you to type `purge` to confirm. When stdin is not a terminal it refuses unless you pass `--yes`. `--yes` skips only the question; the ownership checks below still apply.
+
+```bash
+tokensave purge --dry-run                 # global state: integrations, global git hooks, ~/.tokensave settings and caches
+tokensave purge --local --dry-run         # the project containing the current directory
+tokensave purge --project ~/src/app       # one project (repeat --project for several)
+tokensave purge --all-projects            # global state and every project in the registry
+tokensave purge --all-projects --include-history   # ...and the token-savings history
+```
+
+**Scopes.** Without a scope flag, purge acts on global state only: agent integrations, global git hooks, and the settings and caches in `~/.tokensave` (`config.toml`, `state.toml`, the benchmark and pricing caches, telemetry rings, the server registry and profiler data). Project indexes stay. `--local` and `--project <PATH>` act on projects only: the project's index directory, its project-scoped agent config and tokensave's section of its own git hooks. `--all-projects` acts on global state and on every project in the global registry, listing each one in the plan. Registry paths are checked like paths you type, and a project whose directory no longer exists is skipped (`tokensave state prune` removes relocated state left behind by such projects).
+
+**History.** The global database (`global.db`) holds your token-savings history and cost records, which cannot be rebuilt. Purge keeps it unless you pass `--include-history`, which is only accepted with the global scope.
+
+**What purge never deletes.**
+
+- Project source files and repositories. Only the state directory tokensave creates (`.tokensave/`, or `<base>/projects/<id>` when [state is relocated](INDEXING.md#keeping-state-outside-the-repository)) is removed, and only when it holds a tokensave index.
+- Files it does not recognize. A file in `~/.tokensave` that tokensave does not create is listed as skipped and left in place.
+- Anything behind a symbolic link or junction. Purge does not follow them, and it checks each path again just before deleting it.
+- Other tools' settings in shared agent config files and git hooks tokensave did not write. Integration cleanup is scoped to tokensave entries and hook sections.
+- The beta channel's state, from a stable build, and the reverse. Settings in `~/.tokensave` are shared by both channels, so only a stable build deletes them.
+- The `tokensave` executable.
+
+Deleting `config.toml` returns every setting to its default, including an opt-out of the worldwide counter. Set `TOKENSAVE_TELEMETRY=0` or run `tokensave disable-upload-counter` afterwards to keep it off. Indexes come back the usual way, with `tokensave init`.
+
+**Failures.** Purge reports each path it deleted, found already gone, or could not delete, and exits with status 1 if anything failed. On Windows a running MCP server keeps its database open, so close the agents that use tokensave (`tokensave servers` lists them) and run the same command again; it acts only on what is left. A refused or aborted run exits with status 2 and changes nothing.
+
+**Previewing integration cleanup.** Run `tokensave uninstall --dry-run` to list the files and operations in the selected scope. Add `--agent NAME` to target one integration or `--local` to target the current directory. Global Git hooks are included only when uninstalling all global integrations. Pass `--keep-git-hooks` to keep them. The command reports removed content, missing files, skipped files and failures. `--verbose` adds paths to routine progress, and `--quiet` keeps errors and the executable removal reminder. After a failure, resolve the reported problem and run the command again. It exits with status 1 when any requested cleanup fails.
+
+**Removing the executable.** Both `uninstall` and `purge` end by saying where the running executable is. They name the removal command when installer records match the running binary. Homebrew detection requires the TokenSave tap's keg receipt, Scoop detection requires a matching app manifest, and Cargo detection uses its installed-package manifest. For unknown installs, use your original installer or remove the executable if you copied it yourself.
+
+A successful global `tokensave install` records verified provenance in `~/.tokensave/installation.json` when available. Schema version 1 stores the method, canonical executable path, file length and modification timestamp. `tokensave --version --verbose` reports the current method and evidence. An outdated record or an unrecognized schema can be replaced by rerunning `tokensave install` after a verified reinstall. With no matching record, detection falls back to current installer receipts.
+
 
 ## Building from source
 

@@ -1,9 +1,14 @@
-//! OKF v0.2 conformance checking (§11) with actionable diagnostics.
+//! OKF v0.3 conformance checking (§11) with actionable diagnostics.
 //!
-//! Errors are violations of the three conformance rules in §11. Warnings
-//! flag SHOULD-level guidance from §5 to §10 that a producer can fix. Info
-//! findings are facts the specification says consumers must tolerate, such
-//! as broken links, reported so authors can see them.
+//! Errors are violations of the two conformance rules of §11.1: frontmatter
+//! that does not parse as a YAML mapping, and reserved files (`index.md`,
+//! `log.md`) that do not follow §8 and §9. Warnings flag guidance from §3 to
+//! §10 that a producer can fix. Info findings are facts the specification
+//! says consumers must tolerate, such as broken links, reported so authors
+//! can see them.
+//!
+//! A bundle that declares `okf_version` 0.2 or earlier, or none, is read
+//! with the fallbacks of §12.1; see [`ReadMode`].
 
 use std::collections::BTreeMap;
 
@@ -13,10 +18,19 @@ use serde_json::Value;
 use super::bundle::Bundle;
 use super::bundle::BundleFile;
 use super::bundle::Content;
+use super::bundle::FieldTarget;
 use super::bundle::Role;
 use super::bundle::SkipReason;
 use super::bundle::Target;
+use super::consumer;
+use super::consumer::items;
+use super::consumer::present;
+use super::consumer::BundleMeta;
+use super::consumer::NotAttestable;
+use super::consumer::ReadMode;
+use super::consumer::Supersession;
 use super::time;
+use super::trust;
 use super::SPEC_VERSION;
 
 /// How serious a finding is.
@@ -41,7 +55,7 @@ impl std::fmt::Display for Severity {
 /// One validation finding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Diagnostic {
-    /// Stable identifier, e.g. `OKF-E003`.
+    /// Stable identifier, e.g. `OKF-E002`.
     pub code: &'static str,
     pub severity: Severity,
     /// Bundle-relative path, or empty for the bundle as a whole.
@@ -59,13 +73,21 @@ pub struct Report {
     pub spec_version: &'static str,
     /// `okf_version` declared by the bundle-root `index.md`, if any.
     pub declared_version: Option<String>,
+    /// Which version rules were applied (§12).
+    pub read_mode: ReadMode,
+    /// Bundle metadata from the bundle-root `index.md` (§8.1).
+    pub metadata: BundleMeta,
+    /// Markdown files that are concepts (§3.2).
     pub concepts: usize,
+    /// Other markdown files that are not reserved: no frontmatter or no
+    /// `type`. Consumers skip them.
+    pub non_concepts: usize,
     pub index_files: usize,
     pub log_files: usize,
     /// False when a reader limit stopped the walk before the whole bundle
     /// was checked.
     pub complete: bool,
-    /// True when the bundle meets every §11 conformance rule and was
+    /// True when the bundle meets every §11.1 conformance rule and was
     /// checked completely.
     pub conformant: bool,
     pub errors: usize,
@@ -73,12 +95,14 @@ pub struct Report {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-struct Checker {
+struct Checker<'a> {
+    bundle: &'a Bundle,
     now: i64,
+    mode: ReadMode,
     diagnostics: Vec<Diagnostic>,
 }
 
-impl Checker {
+impl Checker<'_> {
     fn push(
         &mut self,
         code: &'static str,
@@ -95,13 +119,25 @@ impl Checker {
             message: message.into(),
         });
     }
+
+    fn warn(&mut self, code: &'static str, path: &str, message: impl Into<String>) {
+        self.push(code, Severity::Warning, path, Some(1), message);
+    }
+
+    fn info(&mut self, code: &'static str, path: &str, message: impl Into<String>) {
+        self.push(code, Severity::Info, path, Some(1), message);
+    }
 }
 
 /// Validates a bundle that has been read. `now` is the Unix time used for
 /// staleness findings.
 pub fn validate(bundle: &Bundle, now: i64) -> Report {
+    let metadata = BundleMeta::of(bundle);
+    let mode = metadata.read_mode();
     let mut checker = Checker {
+        bundle,
         now,
+        mode,
         diagnostics: Vec::new(),
     };
     if !bundle.complete {
@@ -114,19 +150,24 @@ pub fn validate(bundle: &Bundle, now: i64) -> Report {
         );
     }
     for skipped in &bundle.skipped {
-        let what = match skipped.reason {
-            SkipReason::Symlink => "symbolic link not followed",
-            SkipReason::HiddenDirectory => "hidden directory skipped",
-            SkipReason::TooLarge => "file exceeds the per-file size limit and was not checked",
-            SkipReason::Unreadable => "entry could not be read",
-        };
-        let severity = match skipped.reason {
-            SkipReason::TooLarge | SkipReason::Unreadable => Severity::Warning,
-            SkipReason::Symlink | SkipReason::HiddenDirectory => Severity::Info,
+        let (severity, what) = match skipped.reason {
+            SkipReason::Symlink => (Severity::Info, "symbolic link not followed (§3.2)"),
+            SkipReason::HiddenDirectory => (
+                Severity::Info,
+                "hidden directory is not part of the bundle (§3.2)",
+            ),
+            SkipReason::HiddenFile => (
+                Severity::Info,
+                "hidden file is not part of the bundle (§3.2)",
+            ),
+            SkipReason::TooLarge => (
+                Severity::Warning,
+                "file exceeds the per-file size limit and was not checked",
+            ),
+            SkipReason::Unreadable => (Severity::Warning, "entry could not be read"),
         };
         checker.push("OKF-I203", severity, &skipped.path, None, what);
     }
-    let mut declared_version = None;
     for file in &bundle.files {
         match &file.content {
             Content::NotUtf8 => checker.push(
@@ -141,35 +182,54 @@ pub fn validate(bundle: &Bundle, now: i64) -> Report {
                 Severity::Error,
                 &file.path,
                 Some(1),
-                format!("frontmatter is not parseable: {e} (§11 rule 1)"),
+                format!("frontmatter is not a parseable YAML mapping: {e} (§4, §11.1 rule 1)"),
             ),
-            Content::Parsed { .. } => match file.role {
-                Role::Concept => check_concept(&mut checker, bundle, file),
-                Role::Index => {
-                    if let Some(version) = check_index(&mut checker, file) {
-                        declared_version = Some(version);
-                    }
+            Content::Parsed { document, .. } => {
+                if !document.custom_tags.is_empty() {
+                    checker.warn(
+                        "OKF-W124",
+                        &file.path,
+                        format!(
+                            "frontmatter uses custom YAML tags ({}); producers should not (§4)",
+                            document.custom_tags.join(", ")
+                        ),
+                    );
                 }
-                Role::Log => check_log(&mut checker, file),
-            },
+                match file.role {
+                    Role::Concept => check_markdown(&mut checker, file),
+                    Role::Index => check_index(&mut checker, file),
+                    Role::Log => check_log(&mut checker, file),
+                }
+            }
         }
-        check_links(&mut checker, bundle, file);
+        check_links(&mut checker, file);
     }
-    check_case_collisions(&mut checker, bundle);
-    if let Some(version) = &declared_version {
-        if version != SPEC_VERSION {
-            checker.push(
+    check_case_collisions(&mut checker);
+    check_supersession_cycles(&mut checker);
+    match &metadata.okf_version {
+        Some(version) if version != SPEC_VERSION => {
+            let how = if mode.legacy() {
+                "read with the v0.2 fallbacks of §12.1"
+            } else {
+                "an unknown version, read best-effort (§12)"
+            };
+            checker.info(
                 "OKF-I207",
-                Severity::Info,
                 "index.md",
-                None,
-                format!(
-                    "bundle declares okf_version {version:?}; checked against {SPEC_VERSION} on a \
-                     best-effort basis (§12)"
-                ),
+                format!("bundle declares okf_version {version:?}: {how}; checked against OKF {SPEC_VERSION}"),
             );
         }
+        Some(_) => {}
+        None => checker.push(
+            "OKF-I210",
+            Severity::Info,
+            "",
+            None,
+            "bundle declares no okf_version, so it is read with the v0.2 fallbacks of §12.1; \
+             declare it in the frontmatter of the bundle-root index.md (§8.1)",
+        ),
     }
+
     let mut diagnostics = checker.diagnostics;
     diagnostics.sort_by(|a, b| {
         (a.severity, &a.path, a.line, a.code).cmp(&(b.severity, &b.path, b.line, b.code))
@@ -183,10 +243,18 @@ pub fn validate(bundle: &Bundle, now: i64) -> Report {
         .filter(|d| d.severity == Severity::Warning)
         .count();
     let count = |role| bundle.files.iter().filter(|f| f.role == role).count();
+    let concepts = bundle
+        .files
+        .iter()
+        .filter(|f| f.concept_type().is_some())
+        .count();
     Report {
         spec_version: SPEC_VERSION,
-        declared_version,
-        concepts: count(Role::Concept),
+        declared_version: metadata.okf_version.clone(),
+        read_mode: mode,
+        metadata,
+        concepts,
+        non_concepts: count(Role::Concept) - concepts,
         index_files: count(Role::Index),
         log_files: count(Role::Log),
         complete: bundle.complete,
@@ -197,271 +265,275 @@ pub fn validate(bundle: &Bundle, now: i64) -> Report {
     }
 }
 
-fn check_concept(checker: &mut Checker, bundle: &Bundle, file: &BundleFile) {
+/// Checks a markdown file that is not reserved. Only files with a
+/// non-empty `type` are concepts (§3.2); others are skipped with a warning.
+fn check_markdown(checker: &mut Checker<'_>, file: &BundleFile) {
     let path = file.path.as_str();
     let Some(fm) = file.frontmatter() else {
-        checker.push(
-            "OKF-E001",
-            Severity::Error,
+        checker.warn(
+            "OKF-W117",
             path,
-            Some(1),
-            "concept has no YAML frontmatter block; add one with at least `type:` (§11 rule 1)",
+            "file has no frontmatter, so it is not a concept and consumers skip it; add \
+             frontmatter with `type:` if it should be one (§3.2)",
         );
         return;
     };
-    let type_name = match fm.get("type") {
-        Some(Value::String(s)) if !s.trim().is_empty() => Some(s.as_str()),
-        Some(Value::String(_) | Value::Null) | None => {
-            checker.push(
-                "OKF-E003",
-                Severity::Error,
-                path,
-                Some(1),
-                "frontmatter has no non-empty `type` (§11 rule 2)",
-            );
-            None
-        }
-        Some(_) => {
-            checker.push(
-                "OKF-E003",
-                Severity::Error,
-                path,
-                Some(1),
-                "`type` must be a string (§4.1)",
-            );
-            None
-        }
-    };
-    for key in ["title", "description", "resource"] {
-        if let Some(value) = fm.get(key) {
-            if !value.is_string() {
-                checker.push(
-                    "OKF-W109",
-                    Severity::Warning,
-                    path,
-                    Some(1),
-                    format!("`{key}` should be a string (§4.1)"),
-                );
+    if file.concept_type().is_none() {
+        let message = match fm.get("type") {
+            Some(value) if !consumer::is_absent(value) && !value.is_string() => {
+                "`type` is not a string, so the file is not a concept (§3.2, §4.1)"
             }
+            _ => {
+                "frontmatter has no non-empty `type`, so the file is not a concept and \
+                  consumers skip it (§3.2)"
+            }
+        };
+        checker.warn("OKF-W118", path, message);
+        return;
+    }
+    for key in ["title", "description", "resource"] {
+        if present(fm, key).is_some_and(|v| !v.is_string()) {
+            checker.warn(
+                "OKF-W109",
+                path,
+                format!("`{key}` should be a string (§4.1)"),
+            );
         }
     }
-    if let Some(tags) = fm.get("tags") {
-        let ok = tags
-            .as_array()
-            .is_some_and(|items| items.iter().all(Value::is_string));
-        if !ok {
-            checker.push(
-                "OKF-W109",
-                Severity::Warning,
-                path,
-                Some(1),
-                "`tags` should be a YAML list of strings (§4.1)",
-            );
-        }
+    match present(fm, "tags") {
+        Some(Value::String(tag)) if tag.contains(',') => checker.warn(
+            "OKF-W109",
+            path,
+            "`tags` is one string with commas; a scalar is one tag and consumers do not split \
+             it, so write a YAML list (§4.1, §11.2)",
+        ),
+        Some(Value::String(_)) | None => {}
+        Some(Value::Array(tags)) if tags.iter().all(Value::is_string) => {}
+        Some(_) => checker.warn(
+            "OKF-W109",
+            path,
+            "`tags` should be a YAML list of strings (§4.1)",
+        ),
     }
     check_trust(checker, path, fm);
-    check_sources(checker, bundle, file, fm);
-    if type_name == Some("Attested Computation") {
-        check_computation(checker, bundle, file, fm);
+    check_sources(checker, file, fm);
+    for (field, value) in consumer::path_fields(fm) {
+        if field != "computation" && field != "superseded_by" {
+            check_path_field(checker, file, &field, value, true);
+        }
+    }
+    check_lifecycle(checker, file, fm);
+    if file.concept_type() == Some(consumer::ATTESTED_COMPUTATION) {
+        check_computation(checker, file, fm);
     }
 }
 
-fn check_timestamp(checker: &mut Checker, path: &str, field: &str, value: &Value) -> Option<i64> {
-    let parsed = value.as_str().and_then(time::parse_datetime);
+fn check_timestamp(
+    checker: &mut Checker<'_>,
+    path: &str,
+    field: &str,
+    value: &Value,
+) -> Option<i64> {
+    let parsed = trust::timestamp(value);
     if parsed.is_none() {
-        checker.push(
+        checker.warn(
             "OKF-W102",
-            Severity::Warning,
             path,
-            Some(1),
             format!(
-                "`{field}` should be an ISO 8601 datetime with an explicit UTC offset, e.g. \
-                 2026-06-30T14:00:00Z (§5)"
+                "`{field}` should be an RFC 3339 date-time with an offset, such as \
+                 2026-06-30T14:00:00Z, or a date such as 2026-06-30 (§5)"
             ),
         );
     }
     parsed
 }
 
-fn check_trust(checker: &mut Checker, path: &str, fm: &Value) {
-    match fm.get("generated") {
+fn check_actor(checker: &mut Checker<'_>, path: &str, field: &str, actor: &str) {
+    if !trust::is_actor(actor) {
+        checker.warn(
+            "OKF-W119",
+            path,
+            format!(
+                "`{field}` {actor:?} should be an actor: `<producer>/<version>` or \
+                 `<scheme>:<id>`, such as human:<id> (§7)"
+            ),
+        );
+    }
+}
+
+fn check_trust(checker: &mut Checker<'_>, path: &str, fm: &Value) {
+    match present(fm, "generated") {
         None => {
-            if fm.get("timestamp").is_some() {
-                checker.push(
+            if present(fm, "timestamp").is_some() {
+                let how = if checker.mode.legacy() {
+                    "read as `generated.at`"
+                } else {
+                    "not read in a v0.3 bundle"
+                };
+                checker.info(
                     "OKF-I205",
-                    Severity::Info,
                     path,
-                    Some(1),
-                    "legacy v0.1 `timestamp` without `generated`; v0.2 records it as \
-                     `generated: { by, at }` (§13.1)",
+                    format!("legacy v0.1 `timestamp` without `generated` ({how}); write `generated: {{ by, at }}` (Appendix B)"),
                 );
             }
         }
         Some(Value::Object(generated)) => {
-            if !generated.get("by").is_some_and(Value::is_string) {
-                checker.push(
+            match generated.get("by").and_then(Value::as_str) {
+                Some(by) if !by.trim().is_empty() => check_actor(checker, path, "generated.by", by),
+                _ => checker.warn(
                     "OKF-W103",
-                    Severity::Warning,
                     path,
-                    Some(1),
-                    "`generated.by` is required within `generated` and should name an actor \
-                     (§5.2, §7)",
-                );
+                    "`generated.by` is required within `generated` and names an actor (§5.2, §7)",
+                ),
             }
-            if let Some(at) = generated.get("at") {
+            if let Some(at) = generated.get("at").filter(|v| !consumer::is_absent(v)) {
                 check_timestamp(checker, path, "generated.at", at);
             }
         }
-        Some(_) => checker.push(
+        Some(_) => checker.warn(
             "OKF-W103",
-            Severity::Warning,
             path,
-            Some(1),
             "`generated` should be a mapping `{ by, at }` (§5.2)",
         ),
     }
-    if let Some(verified) = fm.get("verified") {
+    if let Some(verified) = present(fm, "verified") {
         // §5.2: a bare mapping is a one-element list.
-        let events: Vec<&Value> = match verified {
-            Value::Array(items) => items.iter().collect(),
-            other => vec![other],
-        };
-        for (index, event) in events.into_iter().enumerate() {
-            let ok = event.as_object().is_some_and(|e| {
-                e.get("by").is_some_and(Value::is_string) && e.get("at").is_some()
-            });
-            if !ok {
-                checker.push(
+        for (index, event) in items(verified).into_iter().enumerate() {
+            let by = event.get("by").and_then(Value::as_str);
+            let at = event.get("at").filter(|v| !consumer::is_absent(v));
+            match (by, at) {
+                (Some(by), Some(at)) if !by.trim().is_empty() => {
+                    check_actor(checker, path, &format!("verified[{index}].by"), by);
+                    check_timestamp(checker, path, &format!("verified[{index}].at"), at);
+                }
+                _ => checker.warn(
                     "OKF-W104",
-                    Severity::Warning,
                     path,
-                    Some(1),
                     format!(
-                        "`verified` entry {index} should be a mapping with `by` and `at` (§5.2)"
+                        "`verified` entry {index} needs both `by` and `at`; consumers ignore it \
+                         (§5.2)"
                     ),
-                );
-            } else if let Some(at) = event.get("at") {
-                check_timestamp(checker, path, &format!("verified[{index}].at"), at);
+                ),
             }
         }
     }
-    if let Some(status) = fm.get("status") {
+    let assessed = trust::assess(fm, checker.mode);
+    if !assessed.earlier.is_empty() {
+        checker.info(
+            "OKF-I208",
+            path,
+            format!(
+                "{} verification(s) predate the last change (`generated.at`) and are history, \
+                 not approval of the current content; trust tier: {} (§5.3)",
+                assessed.earlier.len(),
+                assessed.tier
+            ),
+        );
+    }
+    if let Some(status) = present(fm, "status") {
         if !matches!(status.as_str(), Some("draft" | "stable" | "deprecated")) {
-            checker.push(
+            checker.warn(
                 "OKF-W101",
-                Severity::Warning,
                 path,
-                Some(1),
-                "`status` should be one of draft, stable, deprecated (§5.4)",
+                "`status` should be one of draft, stable, deprecated; other values are not \
+                 current knowledge (§5.4)",
             );
         }
     }
-    if let Some(stale_after) = fm.get("stale_after") {
-        if let Some(instant) = check_timestamp(checker, path, "stale_after", stale_after) {
-            if checker.now >= instant {
-                checker.push(
-                    "OKF-I204",
-                    Severity::Info,
-                    path,
-                    Some(1),
-                    format!(
-                        "concept is stale: `stale_after` {} has passed (§5.5)",
-                        stale_after.as_str().unwrap_or_default()
-                    ),
-                );
-            }
+    if let Some(stale_after) = present(fm, "stale_after") {
+        match check_timestamp(checker, path, "stale_after", stale_after) {
+            Some(instant) if checker.now >= instant => checker.info(
+                "OKF-I204",
+                path,
+                format!(
+                    "concept is stale: `stale_after` {} has passed; check it again (§5.5)",
+                    stale_after.as_str().unwrap_or_default()
+                ),
+            ),
+            // W102 already says it cannot be read; consumers never treat it
+            // as fresh (§5.5).
+            Some(_) | None => {}
         }
     }
 }
 
-fn check_sources(checker: &mut Checker, bundle: &Bundle, file: &BundleFile, fm: &Value) {
+fn check_sources(checker: &mut Checker<'_>, file: &BundleFile, fm: &Value) {
     let path = file.path.as_str();
-    if let Some(window) = fm.get("usage_window") {
+    if let Some(window) = present(fm, "usage_window") {
         check_window(checker, path, "usage_window", window);
     }
-    let Some(sources) = fm.get("sources") else {
-        return;
-    };
-    let Some(sources) = sources.as_array() else {
-        checker.push(
-            "OKF-W105",
-            Severity::Warning,
-            path,
-            Some(1),
-            "`sources` should be a list of entries (§5.1)",
-        );
-        return;
-    };
     let mut ids = Vec::new();
-    for (index, source) in sources.iter().enumerate() {
-        let Some(entry) = source.as_object() else {
-            checker.push(
-                "OKF-W105",
-                Severity::Warning,
-                path,
-                Some(1),
-                format!("`sources[{index}]` should be a mapping (§5.1)"),
-            );
-            continue;
-        };
-        match entry.get("resource").and_then(Value::as_str) {
-            Some(resource) if !resource.trim().is_empty() => {
-                check_path_field(
-                    checker,
-                    bundle,
-                    file,
-                    &format!("sources[{index}].resource"),
-                    resource,
-                );
-            }
-            _ => checker.push(
-                "OKF-W105",
-                Severity::Warning,
-                path,
-                Some(1),
-                format!("`sources[{index}]` is missing the required `resource` (§5.1)"),
-            ),
-        }
-        if let Some(id) = entry.get("id").and_then(Value::as_str) {
-            if ids.contains(&id) {
-                checker.push(
-                    "OKF-W110",
-                    Severity::Warning,
-                    path,
-                    Some(1),
-                    format!("source id {id:?} is used more than once (§5.1)"),
-                );
-            }
-            ids.push(id);
-        }
-        if let Some(count) = entry.get("usage_count") {
-            if count.as_u64().is_none() {
-                checker.push(
+    if let Some(sources) = present(fm, "sources") {
+        for (index, source) in items(sources).into_iter().enumerate() {
+            let Some(entry) = source.as_object() else {
+                checker.warn(
                     "OKF-W105",
-                    Severity::Warning,
                     path,
-                    Some(1),
+                    format!("`sources[{index}]` should be a mapping (§5.1)"),
+                );
+                continue;
+            };
+            let has_resource = entry
+                .get("resource")
+                .and_then(Value::as_str)
+                .is_some_and(|r| !r.trim().is_empty());
+            if !has_resource {
+                checker.warn(
+                    "OKF-W105",
+                    path,
                     format!(
-                        "`sources[{index}].usage_count` should be a non-negative integer (§5.1)"
+                        "`sources[{index}]` is missing the required `resource`; consumers ignore \
+                         it (§5.1)"
                     ),
                 );
             }
-        }
-        if let Some(modified) = entry.get("last_modified") {
-            check_timestamp(
-                checker,
-                path,
-                &format!("sources[{index}].last_modified"),
-                modified,
-            );
-        }
-        if let Some(window) = entry.get("usage_window") {
-            check_window(
-                checker,
-                path,
-                &format!("sources[{index}].usage_window"),
-                window,
-            );
+            if let Some(id) = entry.get("id").and_then(Value::as_str) {
+                if ids.contains(&id) {
+                    checker.warn(
+                        "OKF-W110",
+                        path,
+                        format!("source id {id:?} is used more than once (§5.1)"),
+                    );
+                }
+                ids.push(id);
+            }
+            if let Some(author) = entry.get("author").and_then(Value::as_str) {
+                check_actor(checker, path, &format!("sources[{index}].author"), author);
+            }
+            if let Some(count) = entry.get("usage_count").filter(|v| !consumer::is_absent(v)) {
+                if count.as_u64().is_none() {
+                    checker.warn(
+                        "OKF-W105",
+                        path,
+                        format!(
+                            "`sources[{index}].usage_count` should be a non-negative integer \
+                             (§5.1)"
+                        ),
+                    );
+                }
+            }
+            if let Some(modified) = entry
+                .get("last_modified")
+                .filter(|v| !consumer::is_absent(v))
+            {
+                check_timestamp(
+                    checker,
+                    path,
+                    &format!("sources[{index}].last_modified"),
+                    modified,
+                );
+            }
+            if let Some(window) = entry
+                .get("usage_window")
+                .filter(|v| !consumer::is_absent(v))
+            {
+                check_window(
+                    checker,
+                    path,
+                    &format!("sources[{index}].usage_window"),
+                    window,
+                );
+            }
         }
     }
     if let Some(outline) = file.outline() {
@@ -479,190 +551,334 @@ fn check_sources(checker: &mut Checker, bundle: &Bundle, file: &BundleFile, fm: 
     }
 }
 
-fn check_window(checker: &mut Checker, path: &str, field: &str, window: &Value) {
+fn check_window(checker: &mut Checker<'_>, path: &str, field: &str, window: &Value) {
     let Some(map) = window.as_object() else {
-        checker.push(
+        checker.warn(
             "OKF-W102",
-            Severity::Warning,
             path,
-            Some(1),
             format!("`{field}` should be a mapping `{{ from, to }}` (§5.1)"),
         );
         return;
     };
     for bound in ["from", "to"] {
-        match map.get(bound) {
+        match map.get(bound).filter(|v| !consumer::is_absent(v)) {
             Some(value) => {
                 check_timestamp(checker, path, &format!("{field}.{bound}"), value);
             }
-            None => checker.push(
+            None => checker.warn(
                 "OKF-W102",
-                Severity::Warning,
                 path,
-                Some(1),
                 format!("`{field}` should have `{bound}` (§5.1)"),
             ),
         }
     }
 }
 
-/// Reports path-valued fields (§6.2) that point at nothing in the bundle.
-/// A bare relative path is tried against the document's directory and the
-/// bundle root, since published bundles use both readings.
+/// Resolves a path field (§6.2) and reports how: a bare path that resolves
+/// only from the bundle root is a v0.2 reading, accepted for legacy bundles
+/// (`OKF-I211`) and a defect in v0.3 bundles (`OKF-W123`). With
+/// `report_missing`, a path that names nothing is reported as `OKF-I201`.
 fn check_path_field(
-    checker: &mut Checker,
-    bundle: &Bundle,
+    checker: &mut Checker<'_>,
     file: &BundleFile,
     field: &str,
     value: &str,
-) {
-    // A value with whitespace is a scope descriptor, not a path (§5.1).
-    if value.chars().any(char::is_whitespace) || !value.contains(['/', '.']) {
-        return;
+    report_missing: bool,
+) -> FieldTarget {
+    let target = checker
+        .bundle
+        .resolve_field(&file.path, value, checker.mode.legacy());
+    match &target {
+        FieldTarget::Found {
+            path,
+            root_fallback: true,
+        } => checker.info(
+            "OKF-I211",
+            &file.path,
+            format!(
+                "`{field}` {value:?} resolves only from the bundle root, read with the v0.2 \
+                 fallback (§6.2, §12.1); write \"/{path}\" before declaring okf_version 0.3"
+            ),
+        ),
+        FieldTarget::Missing {
+            root_only: Some(root),
+            ..
+        } => checker.warn(
+            "OKF-W123",
+            &file.path,
+            format!(
+                "`{field}` {value:?} does not resolve from the file's directory; OKF 0.3 reads \
+                 paths without a leading `/` there, not from the bundle root (§6.2). Write \
+                 \"/{root}\""
+            ),
+        ),
+        FieldTarget::Missing {
+            root_only: None, ..
+        } if report_missing => checker.info(
+            "OKF-I201",
+            &file.path,
+            format!("`{field}` {value:?} does not resolve to a file in the bundle (§6.2)"),
+        ),
+        FieldTarget::Escapes => checker.info(
+            "OKF-I202",
+            &file.path,
+            format!(
+                "`{field}` {value:?} points outside the bundle root, so it is external and not \
+                 read (§6)"
+            ),
+        ),
+        FieldTarget::Found { .. } | FieldTarget::Missing { .. } | FieldTarget::External => {}
     }
-    let candidates = if value.starts_with('/') || value.starts_with('.') {
-        vec![super::bundle::resolve(&file.path, value)]
-    } else {
-        vec![
-            super::bundle::resolve(&file.path, value),
-            super::bundle::resolve("", &format!("/{value}")),
-        ]
-    };
-    if candidates.iter().any(|t| match t {
-        Target::External => true,
-        Target::Internal(p) => bundle.contains(p),
-        Target::Escapes => false,
-    }) {
-        return;
-    }
-    checker.push(
-        "OKF-I201",
-        Severity::Info,
-        &file.path,
-        Some(1),
-        format!("`{field}` {value:?} does not resolve to a file in the bundle (§6.2)"),
-    );
+    target
 }
 
-fn check_computation(checker: &mut Checker, bundle: &Bundle, file: &BundleFile, fm: &Value) {
+/// `status` and `superseded_by` (§5.4).
+fn check_lifecycle(checker: &mut Checker<'_>, file: &BundleFile, fm: &Value) {
     let path = file.path.as_str();
-    let runtime = fm.get("runtime").and_then(Value::as_str);
-    if runtime.is_none_or(|r| r.trim().is_empty()) {
-        checker.push(
-            "OKF-W106",
-            Severity::Warning,
+    let Some(value) = present(fm, "superseded_by") else {
+        return;
+    };
+    let Some(value) = value.as_str() else {
+        checker.warn(
+            "OKF-W121",
             path,
-            Some(1),
-            "an Attested Computation requires a non-empty `runtime` (§10.2)",
+            "`superseded_by` should be one path to the replacing concept (§5.4)",
+        );
+        return;
+    };
+    if consumer::status(fm) != "deprecated" {
+        checker.warn(
+            "OKF-W120",
+            path,
+            "`superseded_by` has a meaning only with `status: deprecated` (§5.4)",
         );
     }
-    if let Some(parameters) = fm.get("parameters") {
-        let ok = parameters.as_array().is_some_and(|items| {
-            items
-                .iter()
-                .all(|p| p.get("name").is_some_and(Value::is_string))
-        });
-        if !ok {
-            checker.push(
-                "OKF-W108",
-                Severity::Warning,
+    match check_path_field(checker, file, "superseded_by", value, false) {
+        FieldTarget::Found { path: target, .. } if !checker.bundle.is_concept(&target) => {
+            checker.warn(
+                "OKF-W121",
                 path,
-                Some(1),
-                "`parameters` should be a list of `{ name, type, required }` entries (§10.2)",
+                format!("`superseded_by` {value:?} is not a concept of the bundle (§5.4)"),
             );
         }
+        FieldTarget::Missing {
+            root_only: None, ..
+        } => checker.warn(
+            "OKF-W121",
+            path,
+            format!(
+                "`superseded_by` {value:?} names nothing in the bundle, so consumers cannot \
+                 follow it to the replacement (§5.4)"
+            ),
+        ),
+        _ => {}
     }
-    if let Some(computation) = fm.get("computation").and_then(Value::as_str) {
-        check_path_field(checker, bundle, file, "computation", computation);
-    } else {
-        let has_heading = file.outline().is_some_and(|o| {
-            o.headings
-                .iter()
-                .any(|h| h.level == 1 && h.text.eq_ignore_ascii_case("Computation"))
-        });
-        if !has_heading {
-            checker.push(
-                "OKF-W111",
-                Severity::Warning,
-                path,
-                Some(1),
-                "an Attested Computation needs a `computation` path or a `# Computation` \
-                 section with the computation (§10.3)",
-            );
+}
+
+/// Deprecated concepts whose `superseded_by` chain leads back to themselves.
+fn check_supersession_cycles(checker: &mut Checker<'_>) {
+    let mut next: BTreeMap<&str, String> = BTreeMap::new();
+    for file in &checker.bundle.files {
+        let deprecated = file
+            .frontmatter()
+            .is_some_and(|fm| consumer::status(fm) == "deprecated");
+        if !deprecated || file.concept_type().is_none() {
+            continue;
+        }
+        if let Some(Supersession::Concept(target)) =
+            consumer::superseded_by(checker.bundle, file, checker.mode)
+        {
+            next.insert(file.path.as_str(), target);
         }
     }
-    for key in ["executor", "attester"] {
-        if let Some(value) = fm.get(key) {
-            match value.get("resource").and_then(Value::as_str) {
-                Some(resource) => {
-                    check_path_field(checker, bundle, file, &format!("{key}.resource"), resource);
+    let mut cyclic = Vec::new();
+    for start in next.keys() {
+        let mut current = next.get(start);
+        for _ in 0..=next.len() {
+            match current {
+                Some(path) if path == start => {
+                    cyclic.push((*start).to_string());
+                    break;
                 }
-                None => checker.push(
-                    "OKF-W108",
-                    Severity::Warning,
-                    path,
-                    Some(1),
-                    format!("`{key}` should name a `resource` (§10.2)"),
-                ),
+                Some(path) => current = next.get(path.as_str()),
+                None => break,
             }
         }
     }
+    for path in cyclic {
+        checker.warn(
+            "OKF-W122",
+            &path,
+            "`superseded_by` leads back to this concept, so no replacement can be found (§5.4)",
+        );
+    }
 }
 
-/// Checks an `index.md` (§8) and returns the declared `okf_version` of the
-/// bundle-root index.
-fn check_index(checker: &mut Checker, file: &BundleFile) -> Option<String> {
-    let fm = file.frontmatter()?;
-    let is_root = file.path == "index.md";
-    if !is_root {
-        checker.push(
-            "OKF-E004",
-            Severity::Error,
-            &file.path,
-            Some(1),
-            "index files contain no frontmatter outside the bundle root (§8, §11 rule 3)",
+fn check_computation(checker: &mut Checker<'_>, file: &BundleFile, fm: &Value) {
+    let path = file.path.as_str();
+    if consumer::string(fm, "runtime").is_none() {
+        checker.warn(
+            "OKF-W106",
+            path,
+            "an Attested Computation requires a non-empty `runtime` (§10.2)",
         );
-        return None;
     }
-    let map = fm.as_object()?;
-    let extra: Vec<&str> = map
-        .keys()
-        .map(String::as_str)
-        .filter(|k| *k != "okf_version")
-        .collect();
-    if !extra.is_empty() {
-        checker.push(
-            "OKF-E004",
-            Severity::Error,
-            &file.path,
-            Some(1),
+    if let Some(parameters) = present(fm, "parameters") {
+        let ok = items(parameters).iter().all(|p| {
+            p.get("name").is_some_and(Value::is_string)
+                && p.get("type").is_some_and(Value::is_string)
+                && p.get("required")
+                    .is_none_or(|r| r.is_boolean() || r.is_null())
+        });
+        if !ok {
+            checker.warn(
+                "OKF-W108",
+                path,
+                "`parameters` entries need a string `name` and `type`, and an optional boolean \
+                 `required` (§10.2)",
+            );
+        }
+    }
+    if let Some(computation) = present(fm, "computation") {
+        match computation.as_str() {
+            Some(value) => {
+                check_path_field(checker, file, "computation", value, false);
+            }
+            None => checker.warn("OKF-W108", path, "`computation` should be a path (§10.2)"),
+        }
+    }
+    for key in ["executor", "attester"] {
+        let Some(value) = present(fm, key) else {
+            continue;
+        };
+        let has_resource = value
+            .get("resource")
+            .and_then(Value::as_str)
+            .is_some_and(|r| !r.trim().is_empty());
+        if !has_resource {
+            checker.warn(
+                "OKF-W108",
+                path,
+                format!("`{key}` should be a mapping with a `resource` path (§10.2)"),
+            );
+        }
+    }
+    let receipt_ok = present(fm, "executor")
+        .and_then(|e| e.get("receipt"))
+        .is_none_or(|r| r.is_null() || items(r).iter().all(|f| f.is_string()));
+    if !receipt_ok {
+        checker.warn(
+            "OKF-W108",
+            path,
+            "`executor.receipt` should be a list of field names (§10.2)",
+        );
+    }
+    let gaps = consumer::attestation_gaps(checker.bundle, file, checker.mode);
+    if gaps.contains(&NotAttestable::NoComputation) {
+        checker.warn(
+            "OKF-W111",
+            path,
+            "an Attested Computation needs a `computation` path or a fenced code block in a \
+             `Computation` section (§10.3)",
+        );
+    }
+    if gaps.contains(&NotAttestable::ComputationMissing) {
+        checker.warn(
+            "OKF-W111",
+            path,
+            "`computation` names no file in the bundle, so the computation is missing (§10.3)",
+        );
+    }
+    if !gaps.is_empty() {
+        let reasons: Vec<&str> = gaps
+            .iter()
+            .map(|gap| match gap {
+                NotAttestable::NoRuntime => "no runtime",
+                NotAttestable::NoAttester => "no attester",
+                NotAttestable::AttesterMissing => "attester file not in the bundle",
+                NotAttestable::NoComputation | NotAttestable::ComputationMissing => {
+                    "no computation"
+                }
+            })
+            .collect();
+        checker.info(
+            "OKF-I209",
+            path,
             format!(
-                "the bundle-root index.md may only carry `okf_version` in frontmatter; found {} \
-                 (§8, §11 rule 3)",
-                extra.join(", ")
+                "not attestable ({}); consumers must not show its values as attested (§10.2)",
+                reasons.join(", ")
             ),
         );
     }
-    match map.get("okf_version") {
-        Some(Value::String(v)) => Some(v.clone()),
-        // `okf_version: 0.2` without quotes is a YAML number.
-        Some(Value::Number(n)) => Some(n.to_string()),
-        Some(_) => {
-            checker.push(
-                "OKF-W112",
-                Severity::Warning,
+}
+
+/// Checks an `index.md` (§8): only the bundle-root index may have
+/// frontmatter, with the bundle metadata of §8.1.
+fn check_index(checker: &mut Checker<'_>, file: &BundleFile) {
+    let Some(fm) = file.frontmatter() else {
+        return;
+    };
+    if file.path != "index.md" {
+        checker.push(
+            "OKF-E004",
+            Severity::Error,
+            &file.path,
+            Some(1),
+            "an index.md outside the bundle root has no frontmatter (§8, §11.1 rule 2)",
+        );
+        return;
+    }
+    match present(fm, "okf_version") {
+        None | Some(Value::String(_)) => {}
+        Some(Value::Number(_)) => checker.warn(
+            "OKF-W112",
+            &file.path,
+            "`okf_version` should be a quoted string such as \"0.3\"; unquoted it is a YAML \
+             number (§4, §8.1)",
+        ),
+        Some(_) => checker.warn(
+            "OKF-W112",
+            &file.path,
+            "`okf_version` should be a string such as \"0.3\" (§8.1)",
+        ),
+    }
+    for key in ["title", "description", "license"] {
+        if present(fm, key).is_some_and(|v| !v.is_string()) {
+            checker.warn(
+                "OKF-W115",
                 &file.path,
-                Some(1),
-                "`okf_version` should be a string such as \"0.2\" (§12)",
+                format!("bundle metadata `{key}` should be a string (§8.1)"),
             );
-            None
         }
-        None => None,
+    }
+    // `license` is an SPDX expression or a path to a license file (§8.1).
+    // SPDX expressions contain no `/`.
+    if let Some(license) = consumer::string(fm, "license").filter(|l| l.contains('/')) {
+        check_path_field(checker, file, "license", license, true);
     }
 }
 
-/// Checks a `log.md` (§9): level-2 headings are ISO 8601 dates, newest first.
-fn check_log(checker: &mut Checker, file: &BundleFile) {
+/// Checks a `log.md` (§9): no frontmatter, level-2 headings are ISO 8601
+/// dates, newest first.
+fn check_log(checker: &mut Checker<'_>, file: &BundleFile) {
+    if file.frontmatter().is_some() {
+        if checker.mode.legacy() {
+            checker.warn(
+                "OKF-W116",
+                &file.path,
+                "log.md has frontmatter; OKF 0.3 log files have none (§9). Tolerated because \
+                 the bundle is read with the v0.2 fallbacks",
+            );
+        } else {
+            checker.push(
+                "OKF-E007",
+                Severity::Error,
+                &file.path,
+                Some(1),
+                "log.md has no frontmatter (§9, §11.1 rule 2)",
+            );
+        }
+    }
     let Some(outline) = file.outline() else {
         return;
     };
@@ -675,7 +891,7 @@ fn check_log(checker: &mut Checker, file: &BundleFile) {
                 &file.path,
                 Some(heading.line),
                 format!(
-                    "log date heading {:?} must use ISO 8601 YYYY-MM-DD form (§9, §11 rule 3)",
+                    "log date heading {:?} must use ISO 8601 YYYY-MM-DD form (§9, §11.1 rule 2)",
                     heading.text
                 ),
             );
@@ -694,7 +910,7 @@ fn check_log(checker: &mut Checker, file: &BundleFile) {
     }
 }
 
-fn check_links(checker: &mut Checker, bundle: &Bundle, file: &BundleFile) {
+fn check_links(checker: &mut Checker<'_>, file: &BundleFile) {
     let Some(outline) = file.outline() else {
         return;
     };
@@ -707,12 +923,13 @@ fn check_links(checker: &mut Checker, bundle: &Bundle, file: &BundleFile) {
                 &file.path,
                 Some(link.line),
                 format!(
-                    "link {:?} points outside the bundle root (§6.1)",
+                    "link {:?} points outside the bundle root, so it is external and not read \
+                     (§6)",
                     link.target
                 ),
             ),
             Target::Internal(target) => {
-                if !bundle.contains(&target) {
+                if !checker.bundle.contains(&target) {
                     checker.push(
                         "OKF-I201",
                         Severity::Info,
@@ -730,22 +947,29 @@ fn check_links(checker: &mut Checker, bundle: &Bundle, file: &BundleFile) {
     }
 }
 
-/// Concept IDs that differ only in letter case collide on case-insensitive
-/// file systems, so such a bundle cannot be checked out intact everywhere.
-fn check_case_collisions(checker: &mut Checker, bundle: &Bundle) {
+/// Paths that differ only in letter case collide on case-insensitive file
+/// systems, so such a bundle cannot be checked out intact everywhere (§6).
+fn check_case_collisions(checker: &mut Checker<'_>) {
     let mut seen: BTreeMap<String, &str> = BTreeMap::new();
-    for file in &bundle.files {
+    let mut found = Vec::new();
+    for file in &checker.bundle.files {
         let folded = file.path.to_lowercase();
         if let Some(first) = seen.get(&folded) {
-            checker.push(
-                "OKF-W114",
-                Severity::Warning,
-                &file.path,
-                None,
-                format!("path differs from {first:?} only in letter case; one is lost on case-insensitive file systems"),
-            );
+            found.push((file.path.clone(), (*first).to_string()));
         } else {
             seen.insert(folded, &file.path);
         }
+    }
+    for (path, first) in found {
+        checker.push(
+            "OKF-W114",
+            Severity::Warning,
+            &path,
+            None,
+            format!(
+                "path differs from {first:?} only in letter case; producers should not do this, \
+                 and one is lost on case-insensitive file systems (§6)"
+            ),
+        );
     }
 }

@@ -48,7 +48,7 @@ pub enum Commands {
         #[arg(long, default_value_t = 5000)]
         max_edges: usize,
     },
-    /// Validate or export Open Knowledge Format (OKF v0.2) bundles
+    /// Validate, export and import Open Knowledge Format (OKF v0.3) bundles
     Okf {
         #[command(subcommand)]
         action: OkfAction,
@@ -218,32 +218,32 @@ pub enum Commands {
         /// plank).
         #[arg(long)]
         local: bool,
-        /// Grant Claude Code tokensave tools via a single compact
-        /// "mcp__tokensave__*" entry instead of listing every tool
-        /// individually. Persisted to ~/.tokensave/config.toml for global
-        /// installs, so future silent reinstalls keep the choice.
-        #[arg(long, conflicts_with = "explicit_permissions")]
-        wildcard_permissions: bool,
-        /// Grant Claude Code tokensave tools via the explicit per-tool list
-        /// (the default). Only useful to switch back after having enabled
-        /// `--wildcard-permissions`.
-        #[arg(long, conflicts_with = "wildcard_permissions")]
+        /// Auto-approve an exact write-capable MCP tool. Repeat to select multiple tools.
+        #[arg(long = "approve-write-tool", conflicts_with = "explicit_permissions")]
+        approve_write_tools: Vec<String>,
+        /// Replace existing TokenSave write grants and whole-server trust with safe defaults.
+        #[arg(long = "reset-tool-approvals", visible_alias = "explicit-permissions")]
         explicit_permissions: bool,
+        /// Removed because a wildcard approves future write tools.
+        #[arg(long, hide = true)]
+        wildcard_permissions: bool,
     },
     /// Refresh settings for all already-installed agents
     Reinstall {
-        /// Grant Claude Code tokensave tools via a single compact
-        /// "mcp__tokensave__*" entry instead of listing every tool
-        /// individually. Persisted to ~/.tokensave/config.toml.
-        #[arg(long, conflicts_with = "explicit_permissions")]
-        wildcard_permissions: bool,
-        /// Grant Claude Code tokensave tools via the explicit per-tool list
-        /// (the default). Only useful to switch back after having enabled
-        /// `--wildcard-permissions`.
-        #[arg(long, conflicts_with = "wildcard_permissions")]
+        /// Auto-approve an exact write-capable MCP tool. Repeat to select multiple tools.
+        #[arg(long = "approve-write-tool", conflicts_with = "explicit_permissions")]
+        approve_write_tools: Vec<String>,
+        /// Replace existing TokenSave write grants and whole-server trust with safe defaults.
+        #[arg(long = "reset-tool-approvals", visible_alias = "explicit-permissions")]
         explicit_permissions: bool,
+        /// Removed because a wildcard approves future write tools.
+        #[arg(long, hide = true)]
+        wildcard_permissions: bool,
     },
-    /// Remove agent integration (MCP server, permissions, hooks, prompt rules)
+    /// Disconnect TokenSave integrations while preserving the executable and data
+    ///
+    /// Use `tokensave purge` to review data deletion, or your original installer
+    /// (for example, `cargo uninstall tokensave`) to remove the executable.
     #[command(name = "uninstall", visible_alias = "claude-uninstall")]
     Uninstall {
         /// Agent to remove (removes all if omitted)
@@ -258,6 +258,45 @@ pub enum Commands {
         /// (#420).
         #[arg(long)]
         keep_git_hooks: bool,
+        /// Preview affected paths and operations without writing anything.
+        #[arg(long, conflicts_with = "quiet")]
+        dry_run: bool,
+        /// Include affected paths in progress output.
+        #[arg(short, long, conflicts_with = "quiet")]
+        verbose: bool,
+        /// Suppress routine progress and keep errors and executable guidance.
+        #[arg(short, long)]
+        quiet: bool,
+    },
+    /// Remove agent integrations and delete tokensave's settings, caches and indexes
+    ///
+    /// Does everything `uninstall` does, then deletes the data tokensave owns
+    /// in the chosen scope. Without a scope flag it purges global state:
+    /// agent integrations, global git hooks, and the settings and caches in
+    /// ~/.tokensave. `--local` and `--project` purge project indexes instead;
+    /// `--all-projects` purges global state and every registered project.
+    /// The token-savings history is kept unless `--include-history` is given.
+    /// The plan is shown before anything changes, and the tokensave
+    /// executable itself is never removed.
+    Purge {
+        /// Show what would be removed and exit without changing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Do not ask for confirmation (required when stdin is not a terminal)
+        #[arg(short, long)]
+        yes: bool,
+        /// Purge only the project containing the current directory
+        #[arg(long, conflicts_with_all = ["project", "all_projects"])]
+        local: bool,
+        /// Purge only this project (repeat for several)
+        #[arg(long, value_name = "PATH", action = ArgAction::Append, num_args = 1, conflicts_with = "all_projects")]
+        project: Vec<std::path::PathBuf>,
+        /// Purge global state and every project in the global registry
+        #[arg(long)]
+        all_projects: bool,
+        /// Also delete the token-savings history (global.db), which cannot be rebuilt
+        #[arg(long, conflicts_with_all = ["local", "project"])]
+        include_history: bool,
     },
     /// Extraction worker (spawned by tokensave itself; not for direct use).
     #[command(name = "extract-worker", hide = true)]
@@ -347,14 +386,31 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Download and install the latest version from GitHub
+    /// Review dependency advisories and local call evidence
+    VulnReachability {
+        /// Initialized project path (default: discover from the current directory)
+        path: Option<String>,
+        /// Send declared dependency package names and versions to OSV if the cache needs a refresh
+        #[arg(long)]
+        online: bool,
+    },
+    /// Show installer-specific update instructions or upgrade a verified standalone release
     Upgrade {
+        /// Verify and upgrade a standalone binary downloaded from GitHub
+        #[arg(long)]
+        standalone: bool,
+        /// Show installer evidence and the proposed action without making changes
+        #[arg(long)]
+        dry_run: bool,
         /// Kill other running tokensave processes without asking
         #[arg(long)]
         kill: bool,
     },
     /// Show or switch the update channel (stable or beta)
     Channel {
+        /// Verify and switch a standalone binary downloaded from GitHub
+        #[arg(long, requires = "channel")]
+        standalone: bool,
         /// Target channel: "stable" or "beta" (omit to show current)
         channel: Option<String>,
     },
@@ -640,6 +696,7 @@ mod tests {
                 git_hook,
                 wildcard_permissions,
                 explicit_permissions,
+                ..
             }) => {
                 assert_eq!(agent, vec!["claude".to_string(), "cursor".to_string()]);
                 assert!(!local);
@@ -712,7 +769,7 @@ mod tests {
 
 #[derive(Subcommand)]
 pub enum OkfAction {
-    /// Check a bundle against the OKF v0.2 conformance rules
+    /// Check a bundle against the OKF v0.3 conformance rules
     ///
     /// Exits 0 when the bundle is conformant, 1 when it is not (or, with
     /// `--strict`, when there are warnings). Reads only the bundle.

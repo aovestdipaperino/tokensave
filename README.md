@@ -75,7 +75,7 @@ flowchart TB
 | **Smart Context Building** | **Semantic Search** | **Impact Analysis** |
 | One tool call returns everything the agent needs -- entry points, related symbols, and code snippets. | Find code by meaning, not just text. Search for "authentication" and find `login`, `validateToken`, `AuthService`. | Know exactly what breaks before you change it. Trace callers, callees, and the full impact radius of any symbol. |
 | **80+ MCP Tools** | **50+ Languages** | **12+ Agent Integrations** |
-| From call graph traversal to dead code detection, atomic edit primitives, code-health metrics, test mapping, and complexity analysis. | Rust, Go, Java, Python, TypeScript, C, C++, Swift, Svelte, Astro, and 48 more including WGSL/HLSL/Metal shaders, CUDA/HIP, and Markdown. Three tiers (lite/medium/full) control binary size. | Claude Code, Codex CLI, Gemini CLI, Qwen Code, Kiro, Cursor, OpenCode, Copilot, Cline, Roo Code, Zed, Antigravity, Kilo CLI, Kimi CLI, Mistral Vibe, Grok Build, Factory Droid, OMP, Pi, Plank. |
+| From call graph traversal to dead code detection, atomic edit primitives, code-health metrics, test mapping, and complexity analysis. | Rust, Go, Java, Python, TypeScript, C, C++, Swift, Svelte, Astro, and 43 more including WGSL/HLSL/Metal shaders, CUDA/HIP, and Markdown. Three tiers (lite/medium/full) control binary size. | Claude Code, Codex CLI, Gemini CLI, Qwen Code, Kiro, Cursor, OpenCode, Copilot, Cline, Roo Code, Zed, Antigravity, Kilo CLI, Kimi CLI, Mistral Vibe, Grok Build, Factory Droid, OMP, Pi, Plank. |
 | **Multi-Branch Indexing** | **100% Local** | **Always Fresh** |
 | Per-branch databases, tracked automatically as you check out branches. Cross-branch diff and search without switching your checkout. | No data leaves your machine. No API keys. No external services. Everything runs on a local libSQL database. | On-demand staleness check on every MCP call (30 s cooldown) plus catch-up sync when the server connects. Multi-agent work is expected to use git worktrees — each agent gets its own checkout and the index diverges are merged by git, not by a file watcher. |
 | **Subprocess-Isolated Extraction** | **Code-Health Analytics** | **Atomic Edit Primitives** |
@@ -599,7 +599,7 @@ tokensave status                   # shows project + global lifetime totals + co
 
 ### Worldwide counter
 
-All tokensave users contribute to an anonymous aggregate counter. `tokensave status` shows both your project total and the worldwide total. The upload sends only a single number (e.g. `4823`) with no identifying information. Opt out with `tokensave disable-upload-counter`.
+All tokensave users contribute to an anonymous aggregate counter. `tokensave status` shows both your project total and the worldwide total. The upload sends only a single number (e.g. `4823`) with no identifying information. Opt out with `tokensave disable-upload-counter`, or for one environment with `TOKENSAVE_TELEMETRY=off` or `DO_NOT_TRACK=1` (see [Turning telemetry off](docs/guide/PRIVACY.md#turning-telemetry-off)).
 
 ---
 
@@ -637,15 +637,12 @@ If you don't recall the exact name: `launchctl list | grep tokensave` / `systemc
 ## Self-Upgrade
 
 ```bash
-tokensave upgrade                  # upgrade to latest in current channel
-tokensave channel                  # show current channel (stable/beta)
-tokensave channel beta             # switch to beta channel
-tokensave channel stable           # switch back to stable
+tokensave upgrade --dry-run        # preview installer-specific guidance
+tokensave upgrade --standalone     # verify and update a standalone GitHub release
+tokensave channel                  # show the current channel
 ```
 
-`tokensave upgrade` downloads the correct platform binary from GitHub releases and replaces the running binary in place. Supports stable and beta channels independently.
-
----
+Managed installations are updated through their original installer. See [Upgrading](docs/guide/INSTALLATION.md#upgrading) for standalone verification and channel switching.
 
 ## Versioning & upgrades
 
@@ -705,6 +702,7 @@ tokensave affected <files...> [--stdin] [--depth N]        # Find affected test 
 tokensave install [--agent NAME]   # Configure agent integration
 tokensave reinstall                # Refresh settings for all installed agents
 tokensave uninstall [--agent NAME] # Remove agent integration
+tokensave purge [--dry-run] [--yes] [--local | --project PATH | --all-projects] [--include-history]   # Uninstall, then delete tokensave's settings, caches and indexes
 tokensave serve [--idle-timeout-secs N]   # Start MCP server (N: exit after N idle seconds)
 tokensave servers [--json]         # List running servers and the index each one holds
 tokensave monitor                  # Live TUI showing MCP calls across all projects
@@ -758,10 +756,12 @@ tokensave's core functionality (indexing, search, graph queries, MCP server) is 
 
 | Call | Data sent | When | Opt-out |
 |------|-----------|------|---------|
-| Worldwide counter upload | Token count (a number) + country (from IP) | sync, status, MCP sessions | `tokensave disable-upload-counter` |
-| Worldwide counter read | Nothing (GET request) | status | N/A (read-only, 1s timeout) |
+| Worldwide counter upload | Token count (a number) + country (from IP) | sync, status, MCP sessions | `tokensave disable-upload-counter`, `TOKENSAVE_TELEMETRY=off` or `DO_NOT_TRACK=1` |
+| Worldwide counter read | Nothing (GET request) | status, doctor | `TOKENSAVE_TELEMETRY=off` or `DO_NOT_TRACK=1` |
 | Version check | Nothing (GET request) | status (cached 5m), sync (parallel) | N/A (1s timeout, no-op on failure) |
 | Model pricing refresh | Nothing (GET request) | `tokensave cost` (cached 24h) | N/A (5s timeout, falls back to embedded pricing) |
+
+`TOKENSAVE_TELEMETRY=off` or `DO_NOT_TRACK=1` turns the worldwide counter off entirely; see [Turning telemetry off](docs/guide/PRIVACY.md#turning-telemetry-off).
 
 The worldwide counter upload sends a single HTTP POST with a JSON body like `{"amount": 4823}`. No cookies, no tracking, no user ID. The Cloudflare Worker logs the country of your IP address (derived from request headers) for aggregate geographic statistics -- your actual IP address is not stored.
 

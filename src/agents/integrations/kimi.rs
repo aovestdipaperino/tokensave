@@ -58,6 +58,20 @@ impl AgentIntegration for KimiIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let kimi_dir = ctx.home.join(".kimi");
+        let mcp_path = kimi_dir.join("mcp.json");
+        plan.mcp(&mcp_path, &["mcpServers"], false);
+
+        let agents_md = kimi_dir.join("AGENTS.md");
+        plan.rules(&agents_md, crate::agents::rules::LEGACY_RULES_MARKER, &[]);
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mKimi CLI integration\x1b[0m");
         let kimi_dir = ctx.home.join(".kimi");

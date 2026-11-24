@@ -29,6 +29,7 @@ pub mod config;
 pub mod context;
 pub mod cpu;
 pub mod db;
+pub mod db_integrity;
 #[doc(hidden)]
 pub mod debug_log;
 pub mod derive_table;
@@ -57,6 +58,7 @@ pub mod memstats;
 pub mod monitor;
 pub mod profile;
 pub mod project_manifest;
+pub mod purge;
 pub mod quality_diff;
 pub mod redundancy;
 pub mod resolution;
@@ -72,6 +74,7 @@ pub mod user_config;
 pub mod worktree;
 
 pub mod verify;
+pub mod vulnerability;
 
 /// Experimental Graphify file interchange.
 pub mod graphify;

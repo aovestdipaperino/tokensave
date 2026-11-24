@@ -10,6 +10,38 @@ The server exposes more than 80 tools (one fewer when the optional `ast-grep` bi
 
 With the core toolset the server also lists `tokensave_more`. A call with an `area` (`analysis`, `edit`, `git`, `memory`, `navigate` or `all`) lists the tools of that area for the rest of the session, and the server sends `notifications/tools/list_changed` so the client fetches the list again. A session pays only for the areas it uses: the `git` area adds about 6 KB. A client that ignores `list_changed` keeps the core list. `tokensave install` grants `tokensave_more` along with every other tool, so it does not prompt; an install from before this release prompts once, until `tokensave reinstall` or the upgrade resync refreshes the permission list.
 
+## Which project a call answers
+
+When `tokensave serve` starts, it picks a default project:
+
+1. With `--path <dir>`, the project at that directory, or none if it has no index.
+2. Otherwise, the project that contains the working directory (the nearest `.tokensave/` above it). A git repository without an index is initialized first when [`auto_init`](CLI-REFERENCE.md#settings-for-automatic-initialization) allows it.
+3. Failing that, the index of the main checkout when the working directory is a linked worktree. Next comes a registered project (the only one, or the one that contains or sits under the working directory). Last is a `roots` list that some clients put in their `initialize` request.
+4. If nothing matches, the server starts with **no default project** and logs `serving with no default project`.
+
+Each tool call then answers from the first of these that applies:
+
+1. **`graph_root`**, when the call passes it. An explicit `graph_root` always wins. See [Query another initialized project](#query-another-initialized-project).
+2. **The default project.** A server that has one never looks at the client's roots.
+3. **The client's roots**, when there is no default project and the client declared the MCP `roots` capability in `initialize`. During the call the server sends `roots/list` to the client. A root can be a project root or any folder inside one, and the server answers from the indexed project that contains the roots. The call then behaves as if it had passed that project as `graph_root`: the graph is opened read-only, node IDs are graph-qualified, no savings are recorded, and only tools that take `graph_root` can answer this way. The call is refused, with the reason, when the roots lie in no indexed project or in several, or when the client reports no roots. Pass `graph_root` in those cases.
+4. **Otherwise** the call is refused with the list of registered projects to pass as `graph_root`. `tokensave_status` answers with the same explanation instead of refusing.
+
+### Behind an MCP proxy or gateway
+
+An MCP proxy (aggregator or gateway), such as [MCPProxy](https://github.com/smart-mcp-proxy/mcpproxy-go), can run one tokensave process for every client: several Claude Code sessions in different repositories, an editor, and so on. They share one MCP session, so the server cannot have a single right default project. Instead, start it with no default project and let each call's roots choose:
+
+- Configure the proxy to run `tokensave serve` without `--path`, from a folder that is in no indexed project. The proxy's install folder is a common choice.
+- The proxy must declare the `roots` capability to tokensave and forward a `roots/list` request sent during a tool call to the client that made that call. tokensave asks again on every call and caches nothing, so the proxy does not need to forward `notifications/roots/list_changed`. tokensave never asks outside a tool call, where a proxy has no caller to forward to.
+
+Limits:
+
+- A call whose caller has no roots is refused unless it passes `graph_root`. This covers REST or CLI calls through the proxy, a client without the `roots` capability, and any call the proxy cannot attribute to a client (MCPProxy cannot when several calls to the same stdio server are in flight). The proxy answers such calls with an empty list. tokensave waits up to 5 seconds for an answer and then refuses the call the same way.
+- A call answered from the roots reads its project like a `graph_root` call. The [on-demand staleness check and catch-up sync](INDEXING.md#index-freshness) run only for a default project, so keep these projects fresh with the git hooks that `tokensave install` offers, or with `tokensave sync`.
+- Tools without a `graph_root` parameter, such as the edit, git and session-memory tools, need a default project.
+- If only one project is registered, `serve` started outside every project uses it as the default project (step 3 above), and roots are not consulted.
+
+A client that launches tokensave inside its own project is unaffected: that project is the default, and the server never sends `roots/list`.
+
 ## Query another initialized project
 
 Semantic read tools can query an explicitly selected local graph without
@@ -85,6 +117,7 @@ and not a fallback to a parent branch's index).
 | `tokensave_annotations` | Attribute/annotation/decorator introspection -- histogram of all annotations or per-site listings with target filters |
 | `tokensave_doc` | Companion Markdown documentation for a source file -- doc content, the files it covers, and a staleness signal |
 | `tokensave_dependencies` | Package-manifest introspection across 17 ecosystems -- workspace summary, per-package lookup, license surface, version drift |
+| `tokensave_vuln_reachability` | Report cached OSV advisories and indexed call evidence. Set `TOKENSAVE_OSV_ONLINE=1` in the server environment to allow refreshes. |
 | `tokensave_status` | Index status, statistics, tokens saved |
 
 ### Call Graph & Impact
@@ -235,7 +268,7 @@ Use these so the agent doesn't have to re-explain architecture choices session-t
 
 | Tool | Purpose |
 |------|---------|
-| `tokensave_knowledge` | Search and read [Open Knowledge Format](OKF.md) bundles imported with `tokensave okf import`; lists the project files each concept refers to and whether they are indexed |
+| `tokensave_knowledge` | Search and read [Open Knowledge Format](OKF.md) bundles imported with `tokensave okf import`; lists the project files each concept refers to and whether they are indexed, and each concept's status, trust tier and freshness; `current_only` follows deprecated concepts to their replacements |
 
 It is read-only, is listed in the `memory` area of `tokensave_more`, and
 returns only a hint until a bundle is imported. See

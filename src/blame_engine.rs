@@ -417,7 +417,7 @@ fn probe_rename_at_boundary(
                     }
                 }
             }
-            Ok::<_, std::convert::Infallible>(std::ops::ControlFlow::Continue(()))
+            Ok(std::ops::ControlFlow::Continue(()))
         })
         .map_err(|e| format!("tree diff: {e}"))?;
 
@@ -749,21 +749,17 @@ pub fn compute_target_fingerprint(
 fn lang_key_is_known(key: &str) -> bool {
     matches!(
         key,
-        "awk"
-            | "bash"
+        "bash"
             | "batch"
             | "c"
             | "c_sharp"
             | "clojure"
             | "cobol"
-            | "commonlisp"
             | "cpp"
-            | "cuda"
             | "dart"
             | "dockerfile"
             | "elixir"
             | "erlang"
-            | "flatbuffers"
             | "fortran"
             | "fsharp"
             | "glsl"
@@ -792,14 +788,12 @@ fn lang_key_is_known(key: &str) -> bool {
             | "ruby"
             | "rust"
             | "scala"
-            | "scheme"
             | "sql"
             | "swift"
             | "toml"
             | "tsx"
             | "typescript"
             | "vbnet"
-            | "wolfram"
             | "zig"
     ) || (cfg!(feature = "lang-wgsl") && key == "wgsl")
         || (cfg!(feature = "lang-hlsl") && key == "hlsl")

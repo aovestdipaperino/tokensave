@@ -48,11 +48,38 @@ Setup registers the MCP server and the agent's integration. It also offers globa
 
 The Pi extension and Pi session-accounting details below describe stable builds; beta currently retains its earlier Pi integration.
 
-Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Pi gets `"exposure": "direct"` on its MCP entry -- Pi otherwise defaults a server to `codemode`, which declares none of its tools to the model -- prompt rules in `AGENTS.md`, and a managed TypeScript extension that supplies the same guardrail, savings reset, and session receipt, because Pi has no shell hooks. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, and a tokensave-managed default agent with permissive built-in/tokensave tool approval, delegation guardrail hooks, and post-write sync; user-managed Kiro agents are preserved.
+Each agent gets its MCP server registered in the native config format. Claude Code additionally gets a PreToolUse hook (blocks wasteful Explore agents), a UserPromptSubmit hook, a Stop hook, prompt rules in CLAUDE.md, and auto-allowed tool permissions. Pi gets `"exposure": "direct"` on its MCP entry -- Pi otherwise defaults a server to `codemode`, which declares none of its tools to the model -- prompt rules in `AGENTS.md`, and a managed TypeScript extension that supplies the same guardrail, savings reset, and session receipt, because Pi has no shell hooks. Kiro gets global MCP config, `tokensave.md` steering loaded as a resource, and a tokensave-managed default agent with per-tool read-only approvals, delegation guardrail hooks, and post-write sync; user-managed Kiro agents are preserved.
 
 Global OMP installs target the profile reported by bare `omp config path`, writing `<resolved-agent-dir>/mcp.json` and `<resolved-agent-dir>/rules/tokensave.md`. Export `OMP_PROFILE` or OMP's compatible `PI_PROFILE` when installing into a named profile; OMP's resolver also honors `PI_CONFIG_DIR` and `PI_CODING_AGENT_DIR`. Tokensave trusts that native resolver rather than duplicating OMP's profile logic. Tokensave installs MCP and advisory rules for OMP; it does not install OMP hook enforcement.
 
-All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered global git post-commit and post-checkout hooks. `tokensave uninstall` removes those hooks along with the agent integrations; pass `--keep-git-hooks` to leave them, or manage them on their own with `tokensave githooks`.
+All changes are idempotent -- safe to run again after upgrading. After agent setup, you'll be offered global git post-commit and post-checkout hooks. `tokensave uninstall` removes those hooks along with the agent integrations; pass `--keep-git-hooks` to leave them, or manage them on their own with `tokensave githooks`. `uninstall` keeps every index and setting; to delete those as well, see [Uninstalling](INSTALLATION.md#uninstalling).
+
+## Tool approvals
+
+Fresh installations auto-approve only classified read-only tools where per-tool approval is available. Write-capable tools remain available through the agent's confirmation flow.
+
+| Agent | Default policy on a fresh install |
+|---|---|
+| Claude Code | Exact read-only entries in `permissions.allow` |
+| Codex CLI | `approval_mode = "auto"` for exact read-only tools |
+| Kiro CLI 2.x | Exact read-only MCP selectors in the TokenSave profile's `allowedTools` |
+| Gemini CLI and Qwen Code | Leave whole-server trust unset so the agent can prompt |
+| Other integrations | Leave approvals to the agent's policy |
+
+Kiro CLI V3 uses capability-based permissions. Follow Kiro's profile migration instructions when converting a CLI 2.x profile. [Kiro configuration reference](https://kiro.dev/docs/cli/v3/agent-config/)
+
+To auto-approve a particular write tool in a supported integration, use its exact MCP name. Repeat the option to select multiple tools. An invocation can approve only tools available in that build.
+
+```bash
+tokensave install --agent claude --approve-write-tool tokensave_str_replace
+tokensave install --agent claude --reset-tool-approvals
+```
+
+Regular install, reinstall and automatic upgrade maintenance add missing read-only grants while preserving existing approval choices. Older wildcard, whole-server trust and write grants can continue to approve writes. Use `--reset-tool-approvals` to replace TokenSave-specific write grants and old blanket trust with safe defaults while preserving other agents' and tools' settings. The old `--explicit-permissions` spelling is an alias for reset. `--wildcard-permissions` is rejected because it would automatically cover future write tools.
+
+The core capability registry supplies exact approval candidates and the MCP `readOnlyHint`. Source edits, session baseline and persistent memory changes, the diagnostics compiler and the test runner require write opt-in. Read-only classification describes the requested operation. Routine index freshness and bookkeeping can still occur, and listing more tools changes only the session's discovery state. An unclassified tool receives no generated approval.
+
+Set `manage_permissions = false` in `~/.tokensave/config.toml`, or `TOKENSAVE_MANAGE_PERMISSIONS=0` for one run, to manage policies yourself. Install and upgrade leave existing approvals as found. Uninstall preserves a server entry or Kiro profile when removing it would delete attached user-managed approvals. Remove those entries separately in the agent if you want to disconnect them too.
 
 ## Installing for several agents at once
 
@@ -73,7 +100,7 @@ tokensave install --local --agent omp
 
 This writes project-scoped config you can commit and share with your team. For Claude that's `./.mcp.json`, `./.claude/settings.json`, and `./CLAUDE.md`; OMP uses `./.omp/mcp.json` and `./.omp/rules/tokensave.md` without invoking the OMP CLI. Supported agents: **claude, cursor, droid, gemini, zed, opencode, roo-code, kiro, auggie, omp, plank, pi** (each writes its own project file, e.g. `.cursor/mcp.json`, `.factory/mcp.json`, `.gemini/settings.json`, `.zed/settings.json`, `opencode.json`, `.roo/mcp.json`, `.kiro/settings/mcp.json`, `.augment/settings.json`, `.omp/mcp.json`, `.mcp.json` for plank, `.pi/mcp.json` and `./AGENTS.md` for pi). Other agents have no project-scoped config and report an error with `--local`.
 
-Remove a project-local install with `tokensave uninstall --local`.
+Preview a project-local uninstall with `tokensave uninstall --local --dry-run`. Run it again without `--dry-run` to disconnect those integrations.
 
 To accept or skip the Git hooks without a prompt, add `--git-hook yes` or `--git-hook no`. Use `tokensave githooks` to inspect them, or `tokensave githooks off` to remove them.
 
@@ -97,6 +124,8 @@ For agent-specific instructions, see [Connecting to Your Agent](../USER-GUIDE.md
 ### PreToolUse hook
 
 The native `tokensave hook-pre-tool-use` command handles Agent, Grep, Glob, and Bash tool calls without requiring bash or jq. It blocks Explore agents, redirects eligible single-symbol searches to `tokensave_search`, and redirects path-shaped discovery (`Glob`, `find -name`, `fd --extension`) over code extensions to `tokensave_files`.
+
+An Agent call with an explicit non-Explore `subagent_type` always passes. An untyped Agent call is redirected only when its prompt reads as code research. Code-specific phrases such as "call graph", "callers of" or "codebase structure" are enough on their own. Generic phrases such as "explore", "read every" or "full contents" also need a code word in the prompt ("code", "source", "src", "repo", "function", "class", "module" and similar), so an agent that reads plain-text or OCR files is not blocked.
 
 Grep patterns containing a pipe pass through, including extended regex alternation (`|`) and basic regex alternation (`\|`). This preserves matches in comments, strings, and other source text even when an alternative matches an indexed symbol. Other unrecognized regex patterns, searches outside the index, searches over non-code extensions, and `find` predicates such as `-exec`, `-delete`, and `-mtime` also pass through. Set `TOKENSAVE_DISABLE_GREP_HOOK=1` to opt out per shell.
 

@@ -35,8 +35,57 @@ impl AgentIntegration for ClaudeIntegration {
     fn uninstall(&self, ctx: &InstallContext) -> Result<()> {
         match &ctx.scope {
             InstallScope::Global => uninstall_global(ctx),
-            InstallScope::Local { project_path } => uninstall_local(project_path),
+            InstallScope::Local { project_path } => uninstall_local(ctx, project_path),
         }
+        Ok(())
+    }
+
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let (mcp, dir, prompt) = match &ctx.scope {
+            InstallScope::Global => {
+                let dir = claude_config_dir(&ctx.home);
+                (
+                    claude_json_path(&ctx.home),
+                    dir.clone(),
+                    dir.join("CLAUDE.md"),
+                )
+            }
+            InstallScope::Local { project_path } => (
+                project_path.join(".mcp.json"),
+                project_path.join(".claude"),
+                project_path.join("CLAUDE.md"),
+            ),
+        };
+        plan.mcp(&mcp, &["mcpServers"], false);
+        plan.json(
+            "Claude hooks, permissions and legacy MCP",
+            &dir.join("settings.json"),
+            false,
+            |config| {
+                let mcp = crate::agents::uninstall::remove_mcp(config, &["mcpServers"]);
+                let mut hooks = false;
+                for event in ["PreToolUse", "UserPromptSubmit", "Stop"] {
+                    hooks |= crate::agents::uninstall::remove_grouped_hooks(
+                        config,
+                        event,
+                        expected_hook_subcommand(event),
+                    );
+                }
+                let permissions =
+                    permissions_management_enabled(&ctx.home) && uninstall_permissions(config);
+                mcp || hooks || permissions
+            },
+        );
+        plan.rules(
+            &prompt,
+            "## MANDATORY: No Explore Agents When Tokensave Is Available",
+            &["## When you spawn an Explore agent in a tokensave-enabled project"],
+        );
+        plan.managed_rules(&claude_rules_path(&dir));
         Ok(())
     }
 
@@ -165,11 +214,7 @@ fn install_global(ctx: &InstallContext) -> Result<()> {
     } else {
         install_hook(&mut settings, &ctx.tokensave_bin);
     }
-    install_permissions(
-        &mut settings,
-        &ctx.tool_permissions,
-        ctx.force_permission_style,
-    );
+    install_permissions_if_managed(&mut settings, ctx);
     write_json_file(&settings_path, &settings)?;
 
     // Migration: strip any pre-#256 inline block from CLAUDE.md, then write
@@ -209,11 +254,7 @@ fn install_local(ctx: &InstallContext, project: &Path) -> Result<()> {
     } else {
         install_hook(&mut settings, &ctx.tokensave_bin);
     }
-    install_permissions(
-        &mut settings,
-        &ctx.tool_permissions,
-        ctx.force_permission_style,
-    );
+    install_permissions_if_managed(&mut settings, ctx);
     write_json_file(&settings_path, &settings)?;
 
     uninstall_claude_md_rules(&claude_md_path)?;
@@ -238,7 +279,7 @@ fn uninstall_global(ctx: &InstallContext) {
     let claude_md_path = claude_dir.join("CLAUDE.md");
 
     uninstall_mcp_server(&claude_json_path);
-    uninstall_settings(&settings_path);
+    uninstall_settings(&settings_path, permissions_management_enabled(&ctx.home));
     uninstall_claude_md_rules(&claude_md_path).ok(); // legacy pre-#256 installs, best-effort like the rest of uninstall
     remove_managed_rules_file(&claude_rules_path(&claude_dir));
 
@@ -247,9 +288,12 @@ fn uninstall_global(ctx: &InstallContext) {
     crate::agent_note!("Start a new Claude Code session for changes to take effect.");
 }
 
-fn uninstall_local(project: &Path) {
+fn uninstall_local(ctx: &InstallContext, project: &Path) {
     uninstall_mcp_server(&project.join(".mcp.json"));
-    uninstall_settings(&project.join(".claude").join("settings.json"));
+    uninstall_settings(
+        &project.join(".claude").join("settings.json"),
+        permissions_management_enabled(&ctx.home),
+    );
     uninstall_claude_md_rules(&project.join("CLAUDE.md")).ok(); // legacy pre-#256 installs, best-effort like the rest of uninstall
     remove_managed_rules_file(&claude_rules_path(&project.join(".claude")));
 
@@ -436,70 +480,54 @@ fn find_tokensave_hook(
     })
 }
 
-/// True for any tokensave-owned permission entry: an individual tool grant,
-/// the bare server-wide grant, or the compact wildcard. Shared by
-/// `install_permissions` (to prune before re-adding, so switching between the
-/// explicit and compact styles never leaves stale entries behind) and
-/// `uninstall_permissions`.
+/// Whether a grant targets `TokenSave`'s MCP server or one of its tools.
 fn is_tokensave_perm(s: &str) -> bool {
     s == "mcp__tokensave" || s.starts_with("mcp__tokensave__")
 }
 
-/// Add MCP tool permissions (idempotent). Any previously-installed
-/// tokensave-owned entries are dropped first, so re-running install after
-/// switching between the explicit per-tool list and the compact wildcard
-/// (see `wildcard_permissions` in `UserConfig`) always leaves exactly the
-/// entries in `tool_permissions` — never a mix of both styles.
-///
-/// `force_style` distinguishes an explicit `--wildcard-permissions` /
-/// `--explicit-permissions` request from every default/silent path (flagless
-/// `install`/`reinstall`, the silent reinstall-on-upgrade). When `false` and
-/// the existing `allow` list already has a single entry that covers every
-/// expected tool (a hand-written `mcp__tokensave__*`, bare `mcp__tokensave`,
-/// or an anchored glob spanning all tools), that grant is left untouched
-/// instead of being pruned and re-inflated into the explicit list — a user's
-/// existing compact grant should survive a silent reinstall, not get
-/// clobbered just because their config predates this feature.
-fn install_permissions(
-    settings: &mut serde_json::Value,
-    tool_permissions: &[String],
-    force_style: bool,
-) {
-    let existing: Vec<String> = settings["permissions"]["allow"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
-                .collect()
-        })
+/// Write the tool permissions unless the user manages them
+/// (`manage_permissions = false`, #1067), in which case `permissions.allow`
+/// is left exactly as found.
+fn install_permissions_if_managed(settings: &mut serde_json::Value, ctx: &InstallContext) {
+    if permissions_management_enabled(&ctx.home) {
+        install_permissions(settings, &ctx.tool_permissions, ctx.force_permission_style);
+    } else {
+        crate::agent_note!("{PERMISSIONS_USER_MANAGED_NOTE}");
+    }
+}
+
+/// Merge exact grants and retain untargeted existing policy. Only an explicit
+/// reset removes old broad or per-write grants.
+fn install_permissions(settings: &mut serde_json::Value, tool_permissions: &[String], reset: bool) {
+    if settings
+        .pointer("/permissions/allow")
+        .is_some_and(|allow| !allow.is_array())
+    {
+        return;
+    }
+    let mut allow = settings
+        .pointer("/permissions/allow")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
         .unwrap_or_default();
-
-    if !force_style {
-        let expected = expected_tool_perms();
-        let has_compact_cover = existing.iter().any(|e| {
-            let single = [e.as_str()];
-            expected.iter().all(|p| perm_is_covered(p, &single))
-        });
-        if has_compact_cover {
-            crate::agent_note!("\x1b[32m✔\x1b[0m Tool permissions already granted");
-            return;
-        }
+    if reset {
+        allow.retain(|entry| !entry.as_str().is_some_and(is_tokensave_perm));
+    } else if allow
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .any(|entry| is_tokensave_perm(entry) && (entry.contains('*') || entry == "mcp__tokensave"))
+    {
+        crate::agent_note!("  Existing Claude Code server-wide approval kept. Run tokensave install --agent claude --reset-tool-approvals to restore write prompts.");
     }
-
-    let mut allow: Vec<String> = existing
+    let existing: Vec<&str> = allow.iter().filter_map(serde_json::Value::as_str).collect();
+    let additions: Vec<_> = crate::agents::approved_tool_names(tool_permissions)
         .into_iter()
-        .filter(|e| !is_tokensave_perm(e))
+        .map(|name| format!("{}{name}", crate::agents::TOOL_PERMISSION_PREFIX))
+        .filter(|permission| !perm_is_covered(permission, &existing))
+        .map(serde_json::Value::String)
         .collect();
-    for tool in tool_permissions {
-        if !allow.iter().any(|e| e == tool) {
-            allow.push(tool.clone());
-        }
-    }
-    allow.sort();
-    allow.dedup();
-    settings["permissions"]["allow"] =
-        serde_json::Value::Array(allow.into_iter().map(serde_json::Value::String).collect());
-    crate::agent_note!("\x1b[32m✔\x1b[0m Added tool permissions");
+    allow.extend(additions);
+    settings["permissions"]["allow"] = serde_json::Value::Array(allow);
 }
 
 /// Clean up local project config (.mcp.json and settings.local.json).
@@ -642,8 +670,9 @@ fn uninstall_mcp_server(claude_json_path: &Path) {
     }
 }
 
-/// Remove hook, permissions, and stale MCP from settings.json.
-fn uninstall_settings(settings_path: &Path) {
+/// Remove hook, permissions, and stale MCP from settings.json. Permissions
+/// stay when `manage_permissions` is false: they are the user's (#1067).
+fn uninstall_settings(settings_path: &Path, manage_permissions: bool) {
     if !settings_path.exists() {
         return;
     }
@@ -657,7 +686,11 @@ fn uninstall_settings(settings_path: &Path) {
 
     modified |= uninstall_stale_mcp(&mut settings);
     modified |= uninstall_hook(&mut settings);
-    modified |= uninstall_permissions(&mut settings);
+    if manage_permissions {
+        modified |= uninstall_permissions(&mut settings);
+    } else {
+        crate::agent_note!("{PERMISSIONS_USER_MANAGED_NOTE}");
+    }
 
     if modified && backup_and_write_json(settings_path, &settings) {
         crate::agent_note!("\x1b[32m✔\x1b[0m Wrote {}", settings_path.display());
@@ -762,7 +795,6 @@ fn uninstall_permissions(settings: &mut serde_json::Value) -> bool {
     } else {
         settings["permissions"]["allow"] = serde_json::Value::Array(filtered);
     }
-    crate::agent_note!("\x1b[32m✔\x1b[0m Removed tokensave tool permissions");
     true
 }
 
@@ -893,7 +925,12 @@ fn doctor_check_settings_json(dc: &mut DoctorCounters, home: &Path) {
         doctor_check_hook(dc, &settings);
         doctor_fix_hooks(dc, &settings_path, &settings);
     }
-    doctor_check_permissions(dc, &settings);
+    if permissions_management_enabled(home) {
+        doctor_check_permissions(dc, &settings);
+    } else {
+        // #1067: the user owns the approval policy; nothing to prescribe.
+        dc.pass(PERMISSIONS_USER_MANAGED_DOCTOR);
+    }
 }
 
 /// Expected subcommand for each hook event.
@@ -1113,6 +1150,11 @@ fn doctor_check_permissions(dc: &mut DoctorCounters, settings: &serde_json::Valu
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
 
+    if installed.iter().any(|entry| {
+        is_tokensave_perm(entry) && (entry.contains('*') || *entry == "mcp__tokensave")
+    }) {
+        dc.warn("Existing Claude Code server-wide approval includes write tools. Use --reset-tool-approvals to restore write prompts.");
+    }
     let expected = expected_tool_perms();
     let missing: Vec<&String> = expected
         .iter()
@@ -1140,7 +1182,8 @@ fn doctor_check_permissions(dc: &mut DoctorCounters, settings: &serde_json::Valu
         .filter(|p| {
             p.starts_with("mcp__tokensave__")
                 && !p.ends_with('*')
-                && !expected.contains(&p.to_string())
+                && p.strip_prefix(crate::agents::TOOL_PERMISSION_PREFIX)
+                    .is_some_and(|name| crate::mcp::tools::tool_capability(name).is_none())
         })
         .collect();
     if !stale.is_empty() {
@@ -1257,9 +1300,13 @@ pub fn check_install_stale() {
 
     // --- user-level settings: permissions warning + hook backfill ---
     let user_settings_path = claude_config_dir(&home).join("settings.json");
-    if let Ok(contents) = std::fs::read_to_string(&user_settings_path) {
-        if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&contents) {
-            warn_missing_permissions(&settings);
+    // #1067: user-managed approvals get no "run reinstall" nag; reinstall
+    // would not grant anything anyway.
+    if permissions_management_enabled(&home) {
+        if let Ok(contents) = std::fs::read_to_string(&user_settings_path) {
+            if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&contents) {
+                warn_missing_permissions(&settings);
+            }
         }
     }
     // #693: with the opt-out on, the silent backfill must not re-add hooks.
@@ -1429,7 +1476,7 @@ fn extract_tokensave_bin_from_hooks(settings: &serde_json::Value) -> Option<Stri
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::agents::{install_tool_perms, TOKENSAVE_WILDCARD_PERM};
+    use crate::agents::TOKENSAVE_WILDCARD_PERM;
     use serde_json::json;
 
     #[test]
@@ -2355,29 +2402,17 @@ mod tests {
     }
 
     #[test]
-    fn doctor_passes_with_full_wildcard_grant() {
-        let settings = json!({ "permissions": { "allow": ["mcp__tokensave__*"] } });
-        let mut dc = DoctorCounters::new();
-        doctor_check_permissions(&mut dc, &settings);
-        assert_eq!(
-            dc.issues, 0,
-            "wildcard grant should satisfy all permissions"
-        );
-        assert_eq!(
-            dc.warnings, 0,
-            "wildcard grant must not be reported as a stale leftover"
-        );
-    }
-
-    #[test]
-    fn doctor_passes_with_bare_server_grant() {
-        let settings = json!({ "permissions": { "allow": ["mcp__tokensave"] } });
-        let mut dc = DoctorCounters::new();
-        doctor_check_permissions(&mut dc, &settings);
-        assert_eq!(
-            dc.issues, 0,
-            "bare server grant should satisfy all permissions"
-        );
+    fn doctor_warns_once_for_server_wide_grants() {
+        for grant in ["mcp__tokensave__*", "mcp__tokensave"] {
+            let settings = json!({ "permissions": { "allow": [grant] } });
+            let mut dc = DoctorCounters::new();
+            doctor_check_permissions(&mut dc, &settings);
+            assert_eq!(dc.issues, 0, "{grant} should satisfy all permissions");
+            assert_eq!(
+                dc.warnings, 1,
+                "{grant} should trigger only the server-wide approval warning"
+            );
+        }
     }
 
     #[test]
@@ -2402,85 +2437,17 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Opt-in compact install (`install_tool_perms`, prune-then-add)
-    // -----------------------------------------------------------------------
-
     #[test]
-    fn install_tool_perms_wildcard_is_single_entry() {
-        assert_eq!(
-            install_tool_perms(true),
-            vec![TOKENSAVE_WILDCARD_PERM.to_string()]
-        );
-    }
-
-    #[test]
-    fn install_tool_perms_explicit_is_full_list() {
-        assert_eq!(install_tool_perms(false), expected_tool_perms());
-    }
-
-    #[test]
-    fn install_permissions_writes_wildcard_entry() {
-        let mut settings = json!({});
-        // Represents an explicit `--wildcard-permissions` request.
-        install_permissions(&mut settings, &install_tool_perms(true), true);
-        let allow: Vec<&str> = settings["permissions"]["allow"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
-        assert_eq!(allow, vec![TOKENSAVE_WILDCARD_PERM]);
-    }
-
-    #[test]
-    fn install_permissions_switching_to_wildcard_prunes_explicit_list() {
-        let mut settings = json!({});
-        // A plain, flagless install writes the (default) explicit list.
-        install_permissions(&mut settings, &expected_tool_perms(), false);
-        // Sanity check the explicit list was actually written.
-        assert!(
-            settings["permissions"]["allow"].as_array().unwrap().len() > 1,
-            "explicit install should have written more than one entry"
-        );
-
-        // Represents an explicit `--wildcard-permissions` request.
-        install_permissions(&mut settings, &install_tool_perms(true), true);
-        let allow: Vec<&str> = settings["permissions"]["allow"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
-        assert_eq!(
-            allow,
-            vec![TOKENSAVE_WILDCARD_PERM],
-            "switching to wildcard must prune the stale explicit entries"
-        );
-    }
-
-    #[test]
-    fn install_permissions_switching_to_explicit_prunes_wildcard() {
-        let mut settings = json!({});
-        // Represents an explicit `--wildcard-permissions` request.
-        install_permissions(&mut settings, &install_tool_perms(true), true);
-
-        // Represents an explicit `--explicit-permissions` request: force_style
-        // must be `true` here, since a flagless call would instead preserve
-        // the existing wildcard (see `install_permissions_default_preserves_*`).
+    fn explicit_reset_removes_broad_and_write_grants() {
+        let mut settings = json!({"permissions":{"allow":[
+            TOKENSAVE_WILDCARD_PERM, "mcp__tokensave__tokensave_str_replace", "Bash(git status)"
+        ]}});
         install_permissions(&mut settings, &expected_tool_perms(), true);
-        let allow: Vec<&str> = settings["permissions"]["allow"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
-        assert!(
-            !allow.contains(&TOKENSAVE_WILDCARD_PERM),
-            "switching to explicit must prune the stale wildcard entry"
-        );
-        for perm in expected_tool_perms() {
-            assert!(allow.contains(&perm.as_str()));
-        }
+        let allow = settings["permissions"]["allow"].as_array().unwrap();
+        assert!(allow.contains(&json!("Bash(git status)")));
+        assert!(allow.contains(&json!("mcp__tokensave__tokensave_search")));
+        assert!(!allow.contains(&json!(TOKENSAVE_WILDCARD_PERM)));
+        assert!(!allow.contains(&json!("mcp__tokensave__tokensave_str_replace")));
     }
 
     #[test]
@@ -2510,21 +2477,5 @@ mod tests {
             .filter_map(|v| v.as_str())
             .collect();
         assert_eq!(allow, vec!["mcp__tokensave"]);
-    }
-
-    #[test]
-    fn install_permissions_preserves_non_tokensave_entries_across_style_switch() {
-        let mut settings = json!({ "permissions": { "allow": ["Bash", "Read"] } });
-        install_permissions(&mut settings, &expected_tool_perms(), false);
-        install_permissions(&mut settings, &install_tool_perms(true), true);
-        let allow: Vec<&str> = settings["permissions"]["allow"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
-        assert!(allow.contains(&"Bash"));
-        assert!(allow.contains(&"Read"));
-        assert!(allow.contains(&TOKENSAVE_WILDCARD_PERM));
     }
 }

@@ -161,6 +161,10 @@ them on every changed Rust file:
   and then a `// SAFETY:` comment and a stated justification.
 - **Macros:** prefer functions, types and traits to macros; prefer
   `macro_rules!` to procedural macros.
+- **Literals:** no new magic numbers or repeated meaningful strings; name them
+  in the right constants module, or justify the inline value (see
+  [Named Constants](#named-constants)). Include build scripts, tests and
+  generated-asset paths.
 
 ### Exceptions and cleanup
 
@@ -192,6 +196,26 @@ Separate component calls let Rust insert the OS-native separator, avoiding mixed
 separators in Windows paths and displayed output. Review new and modified path
 construction against this rule; do not mechanically rewrite string operations
 or intentional path-syntax fixtures.
+
+## Named Constants
+
+Contributors and AI coding agents MUST name meaningful values in new and
+modified code (#1069). [AGENTS.md](AGENTS.md#named-constants-and-single-sources-of-truth)
+holds the full rule; in short:
+
+- Give limits, widths, timeouts, sizes, file and directory names,
+  environment-variable keys, protocol identifiers, defaults and build-artifact
+  names descriptive `const` names, defined once and reused or derived where
+  values must stay synchronized.
+- Keep them in compact, domain-grouped `constants.rs` modules next to their
+  owner, with the narrowest visibility that works; do not create a catch-all
+  constants file.
+- Compile-time macros (`env!`, `include_str!`, `concat!`) need literals. Keep
+  them, point to the authoritative definition in a comment, and cover the
+  pairing with a test.
+- Build-script values live in `build/constants.rs`, included by `build.rs`
+  with `#[path]` because build scripts cannot import crate modules.
+- Plain `0`/`1` and one-off values without domain meaning may stay inline.
 
 ## Memory and Resource Management
 
@@ -286,7 +310,7 @@ mapped files and `process::exit`. The checks are listed in
 
 ## Adding a New Language Extractor
 
-1. Add a tree-sitter grammar dependency (or vendor it under `vendor/`).
+1. Add a tree-sitter grammar dependency (or vendor it under `vendor/` and add it to `VENDORED_GRAMMARS` in `build/constants.rs`).
 2. Create `src/extraction/{lang}_extractor.rs` implementing the `Extractor` trait.
 3. Register it in the `LanguageRegistry` with a feature flag (e.g., `lang-{name}`).
 4. Add a fixture file `tests/fixtures/sample.{ext}` and a test file `tests/{lang}_extraction_test.rs`, then declare it as `mod {lang}_extraction_test;` in `tests/integration.rs` (test files are not auto-discovered; see [Test layout](#test-layout)).

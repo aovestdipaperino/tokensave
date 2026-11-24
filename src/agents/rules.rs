@@ -68,7 +68,13 @@ fn manage_rules_setting() -> bool {
         .and_then(|path| std::fs::read_to_string(path).ok())
         .and_then(|contents| contents.parse::<toml::Table>().ok())
         .and_then(|table| table.get("manage_rules").and_then(toml::Value::as_bool));
-    from_agent_home.unwrap_or_else(|| crate::user_config::UserConfig::load().manage_rules)
+    from_agent_home
+        .or_else(|| {
+            let contents = std::fs::read_to_string(crate::user_config::config_path()?).ok()?;
+            let table = contents.parse::<toml::Table>().ok()?;
+            table.get("manage_rules").and_then(toml::Value::as_bool)
+        })
+        .unwrap_or(true)
 }
 
 /// Split a managed rules file at its provenance marker into tokensave's
@@ -643,6 +649,48 @@ pub fn remove_rules_block(path: &Path) -> Result<bool> {
         path.display()
     );
     Ok(true)
+}
+
+pub(crate) fn strip_uninstall_rules(
+    contents: &str,
+    agent: Option<&str>,
+    marker: &str,
+    headings: &[&str],
+) -> Option<String> {
+    let mut stripped = String::with_capacity(contents.len());
+    let mut remaining = contents;
+    while let Some((_, start, end)) = find_rules_block(remaining) {
+        stripped.push_str(&remaining[..start]);
+        let block = &remaining[start..end];
+        let belongs_to_agent = agent.is_some_and(|id| {
+            block.lines().next().is_some_and(|line| {
+                line.starts_with(&format!("{BLOCK_START_PREFIX} (agent: {id},"))
+            })
+        });
+        if !belongs_to_agent {
+            stripped.push_str(block);
+        }
+        remaining = &remaining[end..];
+    }
+    stripped.push_str(remaining);
+    // Older unfenced files carry no agent identifier, and can be shared by
+    // multiple agents. Avoid treating headings inside a fenced block as legacy.
+    if !stripped.contains(BLOCK_START_PREFIX) && stripped.lines().any(|line| line == marker) {
+        stripped = remove_legacy_rules_block_from_contents(&stripped, marker, headings);
+    }
+    (stripped != contents).then_some(stripped)
+}
+
+pub(crate) fn strip_managed_rules(contents: &str) -> Option<super::uninstall::Removal> {
+    use super::uninstall::Removal;
+    let (_, suffix) = split_managed_file(contents)?;
+    if suffix.trim().is_empty() {
+        Some(Removal::Delete)
+    } else {
+        Some(Removal::Write(
+            suffix.trim_start_matches(['\r', '\n']).to_string(),
+        ))
+    }
 }
 
 /// Remove a tokensave rules block from `contents` in memory, returning the

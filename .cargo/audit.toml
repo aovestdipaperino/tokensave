@@ -13,9 +13,26 @@
 #   - the issue that tracks removing the entry.
 # Remove the entry once Cargo.lock no longer contains an affected version.
 # Prefer upgrading the dependency to ignoring the advisory.
-#
-# No advisory is ignored at present.
-ignore = []
+ignore = [
+    # heapless 0.8.0 is unsound (RUSTSEC-2026-0574 to RUSTSEC-2026-0582:
+    # broken Deque/IndexMap invariants, Spsc ordering, panicking Drop,
+    # FindMutView use after free; fixed in 0.9.4). It reaches tokensave only
+    # through gix -> faster-hex 0.10.1, which depends on heapless 0.8 for
+    # builds without its `alloc` feature and uses it only behind
+    # `#[cfg(not(feature = "alloc"))]`. gix-hash enables faster-hex/std,
+    # which enables `alloc`, so no heapless code is called. The latest gix
+    # (0.90) still uses faster-hex 0.10.1, so no fixed version can be adopted.
+    # Tracked by #1059.
+    "RUSTSEC-2026-0574",
+    "RUSTSEC-2026-0575",
+    "RUSTSEC-2026-0576",
+    "RUSTSEC-2026-0577",
+    "RUSTSEC-2026-0578",
+    "RUSTSEC-2026-0579",
+    "RUSTSEC-2026-0580",
+    "RUSTSEC-2026-0581",
+    "RUSTSEC-2026-0582",
+]
 
 [output]
 # Vulnerabilities always fail the check. Unsound and yanked crates fail it

@@ -11,8 +11,10 @@ pub(crate) async fn update_global_db(cg: &TokenSave) {
         let previous = gdb.get_project_tokens(cg.project_root()).await;
         gdb.upsert(cg.project_root(), tokens).await;
 
-        // Accumulate delta into pending upload
-        if tokens > previous {
+        // Accumulate delta into pending upload. While the environment opts
+        // out of telemetry (#1066) nothing is queued, so re-enabling it later
+        // never uploads tokens saved during the opt-out.
+        if tokens > previous && tokensave::cloud::telemetry_enabled() {
             let mut config = tokensave::user_config::UserConfig::load();
             config.pending_upload += tokens - previous;
             config.save();

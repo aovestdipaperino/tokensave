@@ -231,6 +231,8 @@ That rules file is rewritten on install and on upgrade so improvements to the ru
 
 By default the tool grant is an explicit list (one `permissions.allow` entry per tool). Pass `--wildcard-permissions` to grant them via a single compact `mcp__tokensave__*` entry instead — both forms are fully honored by Claude Code, so this is purely a preference. The choice is remembered in `~/.tokensave/config.toml` (`wildcard_permissions`) for global installs; pass `--explicit-permissions` to switch back.
 
+The grant covers every tokensave tool, including the ones that edit files. To decide tool approvals yourself, set `manage_permissions = false` in `~/.tokensave/config.toml`: install, reinstall, the upgrade resync and uninstall then leave the approval settings of every agent alone, and `doctor` reports them as user-managed. `TOKENSAVE_MANAGE_PERMISSIONS=0` does the same for one run.
+
 ### Other agents
 
 Tokensave supports many agents. Pass `--agent` to install for a specific one:
@@ -1866,6 +1868,7 @@ watcher_debounce = "2s"      # quiet period for the opt-in watcher; unused while
 extraction_timeout_secs = 60 # per-file extraction timeout
 wildcard_permissions = false # true = grant Claude Code tools via one "mcp__tokensave__*" entry
 manage_rules = true          # false = leave ~/.claude/rules/tokensave.md and other rules files to you
+manage_permissions = true    # false = leave every agent's tool approvals to you
 auto_init = true             # false = never initialize a new git repository unasked (TOKENSAVE_AUTO_INIT overrides)
 ```
 
@@ -1976,7 +1979,16 @@ warning: could not refresh tokensave config for: copilot.
   Run tokensave install to see the error.
 ```
 
-The automatic post-upgrade refresh could not write one agent's config. The usual causes are an agent that is registered but no longer installed, or a config file in a read-only or centrally-managed location. Everything else was refreshed, and tokensave will not retry that path on every subsequent command — run `tokensave install` when convenient to see the specific error, or `tokensave uninstall --agent <name>` to stop tracking an agent you no longer use.
+The automatic post-upgrade refresh could not write one agent's config. The usual cause is a config file in a read-only or centrally-managed location, or an agent whose harness is partly removed but whose tokensave config is still present. Everything else was refreshed, and tokensave will not retry that path on every subsequent command — run `tokensave install` when convenient to see the specific error, or `tokensave uninstall --agent <name>` to stop tracking an agent you no longer use.
+
+### "stopped tracking ...: not installed on this machine"
+
+```
+note: stopped tracking omp: not installed on this machine.
+  Run tokensave install --agent omp to register it again.
+```
+
+An agent was registered with tokensave earlier, but neither the agent nor tokensave's config for it is on this machine any more. Refreshing it could only fail, so the upgrade refresh, `tokensave install` and `tokensave reinstall` drop it from the registry instead. Nothing on disk is removed. If you install the agent later, run the command shown to register it again.
 
 ### "agent config references Cargo build output"
 

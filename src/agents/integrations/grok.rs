@@ -57,6 +57,21 @@ impl AgentIntegration for GrokIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let grok_dir = ctx.home.join(".grok");
+        let config_path = grok_dir.join("config.toml");
+
+        plan.toml_mcp(&config_path);
+
+        let agents_md = grok_dir.join("AGENTS.md");
+        plan.rules(&agents_md, crate::agents::rules::LEGACY_RULES_MARKER, &[]);
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mGrok Build integration\x1b[0m");
         let grok_dir = ctx.home.join(".grok");

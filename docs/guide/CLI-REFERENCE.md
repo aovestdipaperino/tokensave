@@ -4,8 +4,17 @@ Every `tokensave` command at a glance.
 
 Use `tokensave --debug <command>` to emit structured diagnostics on stderr.
 Use `--log-level off|error|warn|info|debug|trace` to select a level or
-`TOKENSAVE_LOG` to pass a level to an agent-launched process. See
+`TOKENSAVE_LOG` to pass a level to an agent-launched process. Set `log_level`
+to the same values in `.tokensave/config.json` for a persistent project default.
+CLI flags override the environment, which overrides the project setting. See
 [Debug diagnostics](TROUBLESHOOTING.md#debug-diagnostics) for capture examples.
+
+`tokensave --version --verbose` adds the source commit, build profile, target
+and compiler. A build from a Git checkout reports the checked-out commit; a
+crates.io install (`cargo install tokensave`) reports the release commit that
+Cargo recorded in the published package, with a `-dirty` suffix if the
+package was made from uncommitted changes. When neither is available, as in a
+source archive without that record, the commit is `unknown`.
 
 ```bash
 tokensave --version                # Print the installed version
@@ -42,12 +51,13 @@ tokensave files [--filter dir] [--pattern glob] [--json]   # List indexed files
 tokensave affected <files...> [--stdin] [--depth N]        # Find affected test files
 tokensave install [--agent NAME]   # Configure agent integration
 tokensave reinstall                # Refresh settings for all installed agents
-tokensave uninstall [--agent NAME] # Remove agent integration
+tokensave uninstall [--agent NAME] [--local] [--keep-git-hooks] [--dry-run] [--verbose | --quiet]
+tokensave purge [--dry-run] [--yes] [--local | --project PATH | --all-projects] [--include-history]   # Uninstall, then delete tokensave's settings, caches and indexes
 tokensave serve [--idle-timeout-secs N] [--watch]   # Start MCP server (N: exit after N idle seconds; --watch: opt-in filesystem watcher)
 tokensave servers [--json]         # List running servers and the index each one holds
 tokensave monitor                  # Live TUI showing MCP calls across all projects
 tokensave memory [--clean]         # Per-instance RSS report for all tokensave processes
-tokensave upgrade                  # Self-update to latest version
+tokensave upgrade [--dry-run] [--standalone] # Show installer guidance or verify and upgrade a standalone binary
 tokensave channel [stable|beta]    # Show or switch update channel
 tokensave doctor [--agent NAME]    # Check installation health
 tokensave doctor --caveman [--session-id ID]  # Also check Caveman compatibility; JSON report on stdout
@@ -57,9 +67,10 @@ tokensave current-counter          # Show per-project token counter
 tokensave reset-counter            # Reset per-project token counter
 tokensave disable-upload-counter   # Opt out of worldwide counter uploads
 tokensave enable-upload-counter    # Re-enable worldwide counter uploads
+# TOKENSAVE_TELEMETRY=off or DO_NOT_TRACK=1 turns the counter off for one environment
 tokensave state list               # List relocated project state and the project of each
 tokensave state prune [--dry-run]  # Delete relocated state whose project directory is gone
-tokensave okf validate <dir> [--json] [--strict] [--verbose]  # Check an OKF v0.2 bundle
+tokensave okf validate <dir> [--json] [--strict] [--verbose]  # Check an OKF bundle (v0.3; earlier versions with fallbacks)
 tokensave okf export --output <dir> [--project P]  # Export the code index as an OKF bundle (no sync)
 tokensave okf import <dir> [--name N] [--replace] [--strict] [--json] [--project P]  # Import a bundle for tokensave_knowledge
 tokensave okf list [--json] [--project P]          # List imported bundles
@@ -72,6 +83,36 @@ triple and Rust compiler version. Values unavailable at build time are shown as
 command does not open or initialize a project database.
 
 See [Open Knowledge Format](OKF.md) for the `okf` commands, their findings, the export layout and imported knowledge.
+
+## Dependency advisory reachability
+
+Run these commands from an indexed project, or pass its directory as a positional argument..
+
+```bash
+tokensave vuln-reachability --online
+tokensave vuln-reachability
+```
+
+The first command checks [OSV](https://osv.dev/) and caches the result in the
+project database for 24 hours. The second uses the current version inventory
+and matching cached data, if available, and reports its age. Only package
+ecosystems, names and versions are submitted. OSV receives no project paths
+or source code.
+
+The report covers declared Cargo, npm, Python and Go dependencies. It uses
+versions from supported lockfiles where available. Go declarations and
+manifest-only versions are approximate. npm and Python lockfile matches are
+also approximate because they are matched by package name across the workspace. Unresolved versions and local or
+overridden dependencies contribute to the unresolved count.
+
+- `reachable` includes a direct indexed call from a project symbol to an affected dependency symbol.
+- `imported_not_called` means the index contains a matching import with no matching call.
+- `not_reachable` means the index contains no matching import for the supplied symbols.
+- `unknown` covers missing symbol metadata or insufficient call evidence.
+
+Results describe the local index and the symbol metadata supplied with each
+advisory. Dynamic calls and Go receiver methods can require manual review.
+Run `tokensave sync` before checking recently edited code.
 
 ## Index facts on search output
 
@@ -123,6 +164,15 @@ Run `tokensave sync` to bring a stale file up to date.
 
 See [Automatic initialization](INDEXING.md#automatic-initialization) for the guards that apply.
 
+## Settings for tool approvals
+
+| Setting | Where | Effect |
+|---|---|---|
+| `manage_permissions` | `~/.tokensave/config.toml` | `true` (default) adds read-only approvals where supported. Use `--approve-write-tool NAME` for exact write-tool grants or `--reset-tool-approvals` to restore prompts. `false` preserves user-managed approvals. |
+| `TOKENSAVE_MANAGE_PERMISSIONS` | environment | Overrides `manage_permissions` for one run. `0`, `false`, `no`, `off` or empty turn it off; any other value turns it on. |
+
+See [Tool approvals](AGENT-INTEGRATIONS.md#tool-approvals) for what each agent gets.
+
 ## Settings for Caveman cooperation
 
 | Setting | Where | Effect |
@@ -138,6 +188,7 @@ See [Automatic initialization](INDEXING.md#automatic-initialization) for the gua
 |---|---|---|
 | `state_dir` | `~/.tokensave/config.toml` | Unset (default): each project keeps its state in `.tokensave/` at its root. An absolute path, or one starting with `~`: state lives in `<state_dir>/projects/<name>-<hash>/` and nothing is written inside the repository. Read when a tokensave process starts. |
 | `TOKENSAVE_STATE_DIR` | environment | Overrides `state_dir`. Empty selects the default layout. |
+| `TOKENSAVE_USER_CONFIG_DIR` | environment | Optional absolute directory for machine configuration files and locks. Useful for disposable CLI tests. |
 
 See [Keeping state outside the repository](INDEXING.md#keeping-state-outside-the-repository) for how existing state is kept and how orphans are reported.
 

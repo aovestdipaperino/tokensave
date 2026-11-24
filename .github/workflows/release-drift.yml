@@ -1,0 +1,107 @@
+name: Release drift
+
+# Fails when crates.io carries a stable tokensave version that has no
+# published GitHub release (#1070).
+#
+# release.yml builds the binaries, Homebrew bottles, Scoop manifest and the
+# SHA256SUMS asset that `tokensave upgrade` reads, then publishes the tested
+# draft. A crate published by any other path (for
+# example a manual `cargo publish`) leaves every binary channel on the
+# previous version, and `tokensave upgrade` reports "Already up to date".
+# 7.17.0 reached crates.io this way with no tag and no release.
+#
+# Like advisories.yml, this check depends on external state rather than on
+# the change under review, so it is kept out of `CI OK` in ci.yml.
+on:
+  schedule:
+    - cron: '17 6 * * *' # daily
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-drift
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: crates.io vs GitHub releases
+    # Forks have no crate of their own; only upstream can drift.
+    if: github.repository == 'aovestdipaperino/tokensave'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Compare published versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A release that was just published may still be building its
+          # assets; a missing SHA256SUMS only fails after this many hours.
+          ASSET_GRACE_HOURS: '12'
+        run: |
+          set -euo pipefail
+
+          # crates.io requires an identifying User-Agent for API clients.
+          crate_json=$(curl -fsSL --retry 3 \
+            -A "tokensave-release-drift (https://github.com/${GITHUB_REPOSITORY})" \
+            https://crates.io/api/v1/crates/tokensave)
+          crate_version=$(jq -r '.crate.max_stable_version // empty' <<<"$crate_json")
+          if [ -z "$crate_version" ]; then
+            echo "::error::crates.io returned no stable version for tokensave"
+            exit 1
+          fi
+          tag="v${crate_version}"
+          latest_release=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || echo "none")
+
+          status=0
+          problems=()
+
+          # The token has contents: read only, so a draft release is not
+          # visible here; a draft is reported as missing, which is correct
+          # because the tested release is not public yet.
+          if release_json=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+              --json tagName,isDraft,isPrerelease,publishedAt,assets 2>/dev/null); then
+            if [ "$(jq -r .isPrerelease <<<"$release_json")" = "true" ]; then
+              problems+=("GitHub release $tag is marked as a prerelease, so release.yml skipped it and \`tokensave upgrade\` ignores it.")
+              status=1
+            fi
+            if ! jq -e '.assets | map(.name) | index("SHA256SUMS")' <<<"$release_json" >/dev/null; then
+              published=$(jq -r .publishedAt <<<"$release_json")
+              age_hours=$(( ( $(date -u +%s) - $(date -u -d "$published" +%s) ) / 3600 ))
+              if [ "$age_hours" -ge "$ASSET_GRACE_HOURS" ]; then
+                problems+=("GitHub release $tag has no SHA256SUMS asset ${age_hours}h after publication, so \`tokensave upgrade\` cannot verify it. Check the Release workflow run for $tag.")
+                status=1
+              else
+                echo "::notice::$tag was published ${age_hours}h ago and has no SHA256SUMS yet; assuming the Release workflow is still running."
+              fi
+            fi
+          else
+            problems+=("crates.io has tokensave $crate_version, but there is no published GitHub release $tag (latest: $latest_release). release.yml never ran for it, so no binaries, Homebrew bottles, Scoop manifest or SHA256SUMS exist, and \`tokensave upgrade\` cannot reach it. Run the Release workflow for the draft at $tag (or a newer version that includes it).")
+            status=1
+          fi
+
+          {
+            if [ "$status" -eq 0 ]; then
+              echo "### Release drift: none"
+              echo
+              echo "crates.io stable \`$crate_version\` has a published GitHub release \`$tag\`."
+            else
+              echo "### Release drift: found"
+              echo
+              for p in "${problems[@]}"; do
+                echo "- $p"
+              done
+            fi
+            echo
+            echo "| Source | Version |"
+            echo "|---|---|"
+            echo "| crates.io \`max_stable_version\` | \`$crate_version\` |"
+            echo "| Latest GitHub release | \`$latest_release\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for p in ${problems[@]+"${problems[@]}"}; do
+            echo "::error::$p"
+          done
+          exit "$status"

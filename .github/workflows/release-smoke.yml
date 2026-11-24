@@ -1,0 +1,52 @@
+name: Packaged release smoke
+
+on:
+  workflow_call:
+    inputs:
+      revision:
+        required: true
+        type: string
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - '.github/workflows/release-smoke.yml'
+      - 'scripts/release-smoke/**'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Packaged crate smoke (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-22.04-arm, macos-latest, windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+
+      - uses: dtolnay/rust-toolchain@1.100.0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install the packaged crate and exercise the installed CLI
+        shell: bash
+        env:
+          CARGO_HOME: ${{ runner.temp }}/tokensave-smoke-cargo
+        run: |
+          set -o pipefail
+          python -Bu scripts/release-smoke/install-package.py --source . 2>&1 | tee "$RUNNER_TEMP/packaged-smoke.log"
+
+      - name: Retain smoke log
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: packaged-smoke-${{ matrix.runner }}
+          path: ${{ runner.temp }}/packaged-smoke.log

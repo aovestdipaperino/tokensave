@@ -22,7 +22,7 @@ tokensave gain --json
 
 `--by-tool` prints one row per tool name for the selected range and project, most-called first. With `--json` each row is an object with `tool`, `calls` and `saved_tokens`. It reads the same ledger as the other views, so it counts the same calls; it cannot be combined with `--history`. The ledger has no session id, so there is no per-session breakdown.
 
-A row is written for each `tools/call` on the served project that its tool handler answers. These calls write no row: `tokensave_more`; calls with a `graph_root` or `graph_branch` selector, which query another graph; calls refused before dispatch (an invalid argument, no default project, a branch-drift or strict-mode refusal); and calls whose handler fails. The write is best-effort: if the global database cannot be opened, the row is skipped. The `tokensave_metrics` line and `report_savings` do not affect it.
+A row is written for each `tools/call` on the served project that its tool handler answers. These calls write no row: `tokensave_more`; calls with a `graph_root` or `graph_branch` selector, which query another graph, and calls a server with no default project answers from the client's roots, which query a graph the same way; calls refused before dispatch (an invalid argument, no default project, a branch-drift or strict-mode refusal); and calls whose handler fails. The write is best-effort: if the global database cannot be opened, the row is skipped. The `tokensave_metrics` line and `report_savings` do not affect it.
 
 Dollar estimates use the existing pricing module (Sonnet input pricing, refreshed daily via LiteLLM).
 
@@ -113,4 +113,4 @@ tokensave status                   # shows project + global lifetime totals + co
 
 ## Worldwide counter
 
-All tokensave users contribute to an anonymous aggregate counter. `tokensave status` shows both your project total and the worldwide total. The upload sends only a single number (e.g. `4823`) with no identifying information. Opt out with `tokensave disable-upload-counter`.
+All tokensave users contribute to an anonymous aggregate counter. `tokensave status` shows both your project total and the worldwide total. The upload sends only a single number (e.g. `4823`) with no identifying information. Opt out with `tokensave disable-upload-counter`, or for one environment with `TOKENSAVE_TELEMETRY=off` or `DO_NOT_TRACK=1` (see [Turning telemetry off](PRIVACY.md#turning-telemetry-off)).

@@ -95,6 +95,16 @@ impl AgentIntegration for RooCodeIntegration {
         Ok(())
     }
 
+    fn plan_uninstall(
+        &self,
+        ctx: &InstallContext,
+        plan: &mut crate::agents::uninstall::UninstallPlan,
+    ) -> Result<()> {
+        let settings_path = roo_settings_path(ctx);
+        plan.mcp(&settings_path, &["mcpServers"], false);
+        Ok(())
+    }
+
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mRoo Code integration\x1b[0m");
         doctor_check_settings(dc, &ctx.home);

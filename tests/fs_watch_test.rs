@@ -68,6 +68,23 @@ async fn has_symbol(server: &McpServer, name: &str) -> bool {
         .is_empty()
 }
 
+async fn wait_for_watcher(server: &McpServer) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let status = server.filesystem_watch_status();
+        match status["state"].as_str() {
+            Some("active") => return,
+            Some("failed") => panic!("watcher failed to start: {status}"),
+            _ => {}
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "watcher never started"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn watcher_is_off_unless_started() {
     let (_tmp, root) = indexed_project().await;
@@ -225,20 +242,7 @@ async fn native_watcher_indexes_changes_and_stops() {
         debounce: Duration::from_millis(100),
     });
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        let status = server.filesystem_watch_status();
-        match status["state"].as_str() {
-            Some("active") => break,
-            Some("failed") => panic!("watcher failed to start: {status}"),
-            _ => {}
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "watcher never started"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait_for_watcher(&server).await;
     // Some backends deliver events registered just before the watch began;
     // give the registration a moment so the write below is unambiguous.
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -261,4 +265,73 @@ async fn native_watcher_indexes_changes_and_stops() {
 
     server.shutdown().await;
     assert_eq!(server.filesystem_watch_status()["state"], "stopped");
+}
+
+#[cfg(target_os = "freebsd")]
+async fn wait_for_symbol(server: &McpServer, name: &str, present: bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while has_symbol(server, name).await != present {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "expected {name} presence {present}: {}",
+            server.filesystem_watch_status()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(target_os = "freebsd")]
+async fn follow_up_edits_after_recreation(wait_for_deletion: bool) {
+    use std::io::Write;
+
+    let (_tmp, root) = indexed_project().await;
+    let subtree = root.join("watched.v1");
+    let nested = subtree.join("deep");
+    std::fs::create_dir_all(&nested).expect("initial subtree");
+    let file = nested.join("lib.rs");
+    std::fs::write(&file, "pub fn initial_seed() {}\n").expect("initial seed");
+    let server = server_for(&root).await;
+    wait_for_symbol(&server, "initial_seed", true).await;
+    server.start_filesystem_watch(WatchSettings {
+        debounce: Duration::from_millis(100),
+    });
+    wait_for_watcher(&server).await;
+
+    let mut old = "initial_seed".to_string();
+    for cycle in 0..2 {
+        std::fs::remove_dir_all(&subtree).expect("remove watched subtree");
+        if wait_for_deletion {
+            wait_for_symbol(&server, &old, false).await;
+        }
+        std::fs::create_dir_all(&nested).expect("recreate watched subtree");
+        let seed = format!("recreated_seed_{cycle}");
+        std::fs::write(&file, format!("pub fn {seed}() {{}}\n")).expect("write recreated seed");
+        wait_for_symbol(&server, &seed, true).await;
+
+        // Let pending reconciliation finish before testing the file event.
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        let edit = format!("recreated_edit_{cycle}");
+        let mut writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&file)
+            .expect("open recreated file for in-place edit");
+        write!(writer, "pub fn {edit}() {{}}\n").expect("overwrite recreated seed");
+        drop(writer);
+        wait_for_symbol(&server, &edit, true).await;
+        assert!(!has_symbol(&server, &seed).await);
+        old = edit;
+    }
+    server.shutdown().await;
+}
+
+#[cfg(target_os = "freebsd")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_watcher_indexes_follow_up_after_immediate_recreation() {
+    follow_up_edits_after_recreation(false).await;
+}
+
+#[cfg(target_os = "freebsd")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_watcher_indexes_follow_up_after_indexed_deletion() {
+    follow_up_edits_after_recreation(true).await;
 }

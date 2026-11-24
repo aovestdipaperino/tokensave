@@ -12,6 +12,10 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+mod constants;
+
+use constants::{CODE_CONTEXT_WORDS, CODE_RESEARCH_PHRASES, GENERIC_EXPLORATION_PHRASES};
+
 const TOKENSAVE_RESEARCH_BLOCK_REASON: &str = "STOP: Use tokensave MCP tools \
 (tokensave_context, tokensave_search, tokensave_callees, tokensave_callers, \
 tokensave_impact, tokensave_files, tokensave_affected) instead of agents for \
@@ -2159,28 +2163,30 @@ fn shell_split(s: &str) -> Vec<String> {
     out
 }
 
+/// Whether an untyped agent prompt looks like code research that tokensave
+/// MCP tools should answer.
+///
+/// Code-specific phrases ("call graph", "callers of", ...) match on their
+/// own. Generic phrases ("explore", "read every", ...) also describe
+/// non-code work, so they match only when the prompt also names code
+/// (#1078).
 fn is_code_research_prompt(prompt: &str) -> bool {
     let lower = prompt.to_ascii_lowercase();
-    let exploration_patterns = [
-        "explore",
-        "codebase structure",
-        "codebase architecture",
-        "codebase overview",
-        "source files contents",
-        "read every",
-        "full contents",
-        "entire codebase",
-        "architecture and structure",
-        "call graph",
-        "call path",
-        "call chain",
-        "symbol relat",
-        "symbol lookup",
-        "who calls",
-        "callers of",
-        "callees of",
-    ];
-    exploration_patterns.iter().any(|pat| lower.contains(pat))
+    if CODE_RESEARCH_PHRASES.iter().any(|pat| lower.contains(pat)) {
+        return true;
+    }
+    GENERIC_EXPLORATION_PHRASES
+        .iter()
+        .any(|pat| lower.contains(pat))
+        && mentions_code(&lower)
+}
+
+/// Whether a lowercased prompt contains a [`CODE_CONTEXT_WORDS`] entry as a
+/// whole word.
+fn mentions_code(lower: &str) -> bool {
+    lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| CODE_CONTEXT_WORDS.contains(&word))
 }
 
 /// Kiro `preToolUse` hook handler.
