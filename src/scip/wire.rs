@@ -9,6 +9,8 @@
 
 use std::fmt;
 
+const DOCUMENT_TEXT_FIELD: u64 = 5;
+
 /// `SymbolRole.Definition`.
 pub const ROLE_DEFINITION: i32 = 0x1;
 /// `SymbolRole.Import`.
@@ -100,6 +102,8 @@ pub struct Document {
     pub language: String,
     pub occurrences: Vec<Occurrence>,
     pub symbols: Vec<SymbolInformation>,
+    /// Hash of the optional embedded source, retained in place of the text.
+    pub text_hash: Option<String>,
     /// `PositionEncoding`: 0 unspecified, 1 UTF-8, 2 UTF-16, 3 UTF-32 code
     /// units from the line start.
     pub position_encoding: u64,
@@ -337,8 +341,13 @@ fn decode_document(
                 doc.symbols.push(decode_symbol(r.bytes()?, limits)?);
             }
             4 => doc.language = string(&mut r, wire, "Document.language", limits)?,
+            DOCUMENT_TEXT_FIELD => {
+                expect(wire, Wire::Len, "Document.text")?;
+                let text = std::str::from_utf8(r.bytes()?)
+                    .map_err(|_| DecodeError("invalid UTF-8 in Document.text".into()))?;
+                doc.text_hash = Some(crate::sync::content_hash(text));
+            }
             6 => doc.position_encoding = uint(&mut r, wire, "Document.position_encoding")?,
-            // 5 is the optional document text: not needed, never retained.
             _ => r.skip(wire)?,
         }
     }
@@ -500,7 +509,7 @@ pub(crate) mod encode {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::encode::{len, occurrence, uint};
-    use super::{decode_index, Limits, Range, ROLE_DEFINITION};
+    use super::{decode_index, Limits, Range, DOCUMENT_TEXT_FIELD, ROLE_DEFINITION};
 
     fn index_with(doc: &[u8]) -> Vec<u8> {
         let mut meta = Vec::new();
@@ -524,11 +533,17 @@ mod tests {
         len(2, &occurrence(&[1, 2, 5], "t . . . f().", 1), &mut doc);
         len(2, &occurrence(&[3, 0, 4, 1], "local 1", 0), &mut doc);
         len(3, &sym, &mut doc);
+        let embedded_source = "fn f() {}";
+        len(DOCUMENT_TEXT_FIELD, embedded_source.as_bytes(), &mut doc);
         len(99, b"unknown field is skipped", &mut doc);
         let index = decode_index(&index_with(&doc), &Limits::default()).unwrap();
         assert_eq!(index.metadata.project_root, "file:///p");
         let d = &index.documents[0];
         assert_eq!(d.relative_path, "src/a.rs");
+        assert_eq!(
+            d.text_hash,
+            Some(crate::sync::content_hash(embedded_source))
+        );
         assert_eq!(
             d.occurrences[0].range,
             Some(Range {

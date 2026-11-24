@@ -13754,7 +13754,8 @@ SELECT content_hash FROM files WHERE path=?1 AND kind='code'
 ?1 is a SCIP document's relative path after it has been checked to be a safe
 relative path inside the canonical project root. At most one row; it is
 compared with the content hash of the bounded (16 MiB) UTF-8 source. A missing
-row or a different hash skips the document.
+row or a different hash skips the document. When the SCIP document embeds
+source text, its hash must also match the current source.
 
 #### Q0430 — `compare`: Nodes of a verified document
 
@@ -13762,7 +13763,7 @@ row or a different hash skips the document.
 SELECT id, name, kind, qualified_name, start_line, end_line FROM nodes WHERE file_path=?1
 ```
 
-?1 is a document that passed Q0429 and the SCIP range checks. Runs once per
+?1 is a document that passed Q0429 and the SCIP source and range checks. Runs once per
 such document; rows are kept in memory to map SCIP definitions and to find the
 node enclosing each reference.
 
