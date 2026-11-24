@@ -19,6 +19,9 @@ indexer does not cover.
 
 ## What was built
 
+Set `"enable_scip": true` in the project’s `.tokensave/config.json` to enable
+comparison. The setting defaults to `false`.
+
 `tokensave scip-compare --index <file.scip> [--rebase-root] [--project P]` is
 an experimental command that:
 

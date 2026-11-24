@@ -167,6 +167,9 @@ pub struct TokenSaveConfig {
     /// user changes it.
     #[serde(default = "default_auto_track")]
     pub auto_track: bool,
+    /// Enable experimental SCIP comparison for this project.
+    #[serde(default)]
+    pub enable_scip: bool,
     /// Automatically collect indexes for deleted Git branches on open and
     /// MCP freshness checks. Opt-in; `TOKENSAVE_AUTO_GC` overrides per run.
     #[serde(default)]
@@ -353,6 +356,7 @@ impl Default for TokenSaveConfig {
             docs_dir: default_docs_dir(),
             last_indexed_version: String::new(),
             auto_track: default_auto_track(),
+            enable_scip: false,
             auto_gc: false,
             strict_tree: false,
             max_auto_sync_files: default_max_auto_sync_files(),
@@ -1493,6 +1497,16 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let back: TokenSaveConfig = serde_json::from_str(&json).unwrap();
         assert!(!back.report_savings);
+    }
+
+    #[test]
+    fn scip_defaults_to_disabled_in_new_and_existing_configurations() {
+        let default = TokenSaveConfig::default();
+        assert!(!default.enable_scip);
+        let mut json = serde_json::to_value(default).unwrap();
+        json.as_object_mut().unwrap().remove("enable_scip");
+        let config: TokenSaveConfig = serde_json::from_value(json).unwrap();
+        assert!(!config.enable_scip);
     }
 
     #[test]
