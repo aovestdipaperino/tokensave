@@ -339,6 +339,14 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     } = &command
     {
         let root = tokensave::config::resolve_path_with_discovery(project.clone());
+        if !tokensave::config::load_config(&root)?.enable_scip {
+            return Err(tokensave::errors::TokenSaveError::Config {
+                message: format!(
+                    "SCIP comparison is disabled. Set \"enable_scip\": true in '{}'.",
+                    tokensave::config::get_config_path(&root).display()
+                ),
+            });
+        }
         tokensave::cancel::install_signal_handlers();
         let report = tokensave::scip::compare(&tokensave::scip::Options {
             root,

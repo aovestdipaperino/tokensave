@@ -83,7 +83,9 @@ command does not open or initialize a project database.
 
 See [Open Knowledge Format](OKF.md) for the `okf` commands, their findings, the export layout and imported knowledge.
 
-`scip-compare` is an experimental, read-only prototype. It reads a
+`scip-compare` is an experimental, read-only prototype. Set
+`"enable_scip": true` in the project’s `.tokensave/config.json` to enable
+comparison. A missing setting or `false` disables it. The command reads a
 [SCIP](https://github.com/sourcegraph/scip) index from an external indexer,
 such as `rust-analyzer scip` or `scip-typescript`, and prints a JSON report that classifies
 the graph's edges as confirmed, contradicted or unverifiable. It also lists

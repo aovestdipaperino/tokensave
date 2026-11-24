@@ -417,7 +417,8 @@ portable string formats, and documented path-syntax test fixtures.
 
 ## Experimental SCIP comparison (master candidate)
 
-- `tokensave scip-compare` (#1100) reads a SCIP index and the graph read-only:
+- `tokensave scip-compare` (#1100) requires `"enable_scip": true` in the project
+  configuration and reads the SCIP index and graph read-only:
   no sync, migration or database write. Keep its index, document, string and
   source-size bounds, the per-document freshness checks, and the refusal of a
   foreign `project_root` without `--rebase-root`. It holds the sync lock for
