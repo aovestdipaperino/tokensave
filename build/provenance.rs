@@ -36,7 +36,10 @@ pub struct Provenance {
 /// Resolves the commit for the package rooted at `package_root`.
 pub fn resolve(package_root: &Path) -> Provenance {
     if package_root.join(git::DIR).exists() {
-        return from_git(package_root);
+        let provenance = from_git(package_root);
+        if provenance.commit.is_some() {
+            return provenance;
+        }
     }
     let vcs_info = package_root.join(CARGO_VCS_INFO_FILE_NAME);
     match std::fs::read_to_string(&vcs_info) {
@@ -81,7 +84,8 @@ fn from_git(package_root: &Path) -> Provenance {
 /// than an invented value. A dirty package keeps its commit with
 /// [`DIRTY_SUFFIX`], because its sources differ from that commit.
 pub fn commit_from_cargo_vcs_info(json: &str) -> Option<String> {
-    let sha = json_value_after_key(json, "sha1")?
+    let git = json_object_after_key(json, "git")?;
+    let sha = json_value_after_key(git, "sha1")?
         .strip_prefix('"')?
         .split('"')
         .next()?;
@@ -89,12 +93,44 @@ pub fn commit_from_cargo_vcs_info(json: &str) -> Option<String> {
         return None;
     }
     let short = sha.get(..COMMIT_ABBREV_LEN)?.to_ascii_lowercase();
-    let dirty = json_value_after_key(json, "dirty").is_some_and(|v| v.starts_with("true"));
+    let dirty = json_value_after_key(git, "dirty").is_some_and(|v| v.starts_with("true"));
     Some(if dirty {
         format!("{short}{DIRTY_SUFFIX}")
     } else {
         short
     })
+}
+
+/// Returns the object stored under `key`, excluding its braces.
+fn json_object_after_key<'a>(json: &'a str, key: &str) -> Option<&'a str> {
+    let value = json_value_after_key(json, key)?.strip_prefix('{')?;
+    let mut depth = 1_usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, byte) in value.bytes().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return value.get(..index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Returns the text after `"key":` (whitespace trimmed), or `None` when the
