@@ -94,6 +94,17 @@ The AI agent doesn't see tokensave tools.
 - Verify the file isn't excluded by `.gitignore`
 - Check the `exclude` globs in `.tokensave/config.json`: the defaults skip directories such as `build/`, `out/` and `bin/`, which some projects use for source (see [Default excludes](INDEXING.md#default-excludes))
 
+## GitHub Copilot clients in `doctor`
+
+`tokensave install --agent copilot` configures VS Code and the Copilot CLI, and VS Code Insiders and JetBrains IDEs when they are present. Doctor reports each of them separately:
+
+- **not detected**: the client is not on this machine
+- **detected, tokensave not configured there**: for example a Copilot CLI-only setup on a machine that also has VS Code. This is not counted as a problem.
+- **configured**: the MCP registration and the instructions are both checked
+- **partially configured**: one of the two is missing, so doctor reports an issue. When the VS Code instructions are current but `User/mcp.json` has no `tokensave` server, the registration was removed after installation, for example by a manual edit, a reset or Settings Sync replacing `mcp.json` from another machine. Run `tokensave install --agent copilot` to restore it.
+
+VS Code profiles that do not share the default profile's settings read their own `mcp.json` under `User/profiles/<id>/`. Doctor lists how many profiles exist and how many of them register tokensave. Add the server to a profile from that profile with **MCP: Add Server**.
+
 ## "branch '…' is not tracked" after a checkout
 
 Automatic branch tracking is on by default, but a project can turn it off. With `auto_track` disabled, the `post-checkout` hook runs on every checkout but intentionally does not register new branches, and tokensave serves them from the nearest tracked ancestor's index. Projects initialized before tracking became the default have `"auto_track": false` written in their config and keep it after an upgrade.

@@ -1063,34 +1063,120 @@ fn test_healthcheck_detects_no_tokensave_in_existing_vscode() {
     );
 }
 
+/// A Copilot CLI whose instructions were installed but whose MCP entry is
+/// gone is a broken surface (#1117).
 #[test]
 fn test_healthcheck_detects_no_tokensave_in_existing_cli() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
-
-    // Create VS Code mcp.json with proper tokensave (so that check passes)
-    let mcp_json_path = vscode_mcp_json_path(home);
-    std::fs::create_dir_all(mcp_json_path.parent().unwrap()).unwrap();
-    std::fs::write(
-        &mcp_json_path,
-        r#"{"servers": {"tokensave": {"type": "stdio", "command": "tokensave", "args": ["serve"]}}}"#,
-    )
-    .unwrap();
-
-    // Create CLI config without tokensave
-    let cli_path = cli_config_path(home);
-    std::fs::create_dir_all(cli_path.parent().unwrap()).unwrap();
-    std::fs::write(&cli_path, r#"{"mcpServers": {}}"#).unwrap();
+    CopilotIntegration.install(&make_ctx(home)).unwrap();
+    std::fs::write(cli_config_path(home), r#"{"mcpServers": {}}"#).unwrap();
 
     let mut dc = DoctorCounters::new();
-    let hctx = HealthcheckContext {
-        home: home.to_path_buf(),
-        project_path: home.to_path_buf(),
-    };
-    CopilotIntegration.healthcheck(&mut dc, &hctx);
+    CopilotIntegration.healthcheck(&mut dc, &hctx(home));
     assert!(
         dc.issues > 0,
         "healthcheck should report issue when tokensave is not in CLI config"
+    );
+}
+
+fn hctx(home: &Path) -> HealthcheckContext {
+    HealthcheckContext {
+        home: home.to_path_buf(),
+        project_path: home.to_path_buf(),
+    }
+}
+
+fn vscode_user_dir(home: &Path) -> std::path::PathBuf {
+    tokensave::agents::vscode_data_dir(home).join("User")
+}
+
+/// CLI-only install (#1117): VS Code is on the machine but tokensave was
+/// never configured there. That is not applicable, not an issue.
+#[test]
+fn test_healthcheck_cli_only_install_is_not_a_broken_vscode() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    CopilotIntegration.install(&make_ctx(home)).unwrap();
+    let user = vscode_user_dir(home);
+    std::fs::remove_file(user.join("mcp.json")).unwrap();
+    std::fs::remove_file(user.join("prompts").join("copilot-instructions.md")).unwrap();
+    assert!(user.is_dir(), "VS Code itself is still detected");
+
+    let mut dc = DoctorCounters::new();
+    CopilotIntegration.healthcheck(&mut dc, &hctx(home));
+    assert_eq!(dc.issues, 0, "CLI-only install must not fail on VS Code");
+}
+
+/// VS Code-only install: no Copilot CLI on the machine.
+#[test]
+fn test_healthcheck_vscode_only_install_has_no_issues() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    CopilotIntegration.install(&make_ctx(home)).unwrap();
+    std::fs::remove_dir_all(home.join(".copilot")).unwrap();
+
+    let mut dc = DoctorCounters::new();
+    CopilotIntegration.healthcheck(&mut dc, &hctx(home));
+    assert_eq!(
+        dc.issues, 0,
+        "VS Code-only install must not fail on the CLI"
+    );
+}
+
+/// Combined install: both surfaces configured, nothing to report.
+#[test]
+fn test_healthcheck_combined_install_has_no_issues_or_surface_warnings() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    CopilotIntegration.install(&make_ctx(home)).unwrap();
+
+    let mut dc = DoctorCounters::new();
+    CopilotIntegration.healthcheck(&mut dc, &hctx(home));
+    assert_eq!(dc.issues, 0);
+    assert_eq!(
+        dc.warnings, 0,
+        "undetected Insiders and JetBrains must not warn"
+    );
+}
+
+/// The reported state (#1117): VS Code instructions up to date and the CLI
+/// registered, but `User/mcp.json` without tokensave. That is a broken VS
+/// Code surface, not a CLI-only install.
+#[test]
+fn test_healthcheck_vscode_registration_removed_after_install_is_an_issue() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    CopilotIntegration.install(&make_ctx(home)).unwrap();
+    std::fs::write(
+        vscode_user_dir(home).join("mcp.json"),
+        r#"{"servers": {"other": {"command": "x"}}}"#,
+    )
+    .unwrap();
+
+    let mut dc = DoctorCounters::new();
+    CopilotIntegration.healthcheck(&mut dc, &hctx(home));
+    assert_eq!(dc.issues, 1, "exactly the VS Code registration is missing");
+}
+
+/// VS Code profiles are reported for information only: whether a profile
+/// shares the default profile's MCP servers is not readable reliably.
+#[test]
+fn test_healthcheck_vscode_profiles_do_not_change_totals() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path();
+    CopilotIntegration.install(&make_ctx(home)).unwrap();
+    let mut before = DoctorCounters::new();
+    CopilotIntegration.healthcheck(&mut before, &hctx(home));
+
+    let profile = vscode_user_dir(home).join("profiles").join("-1a2b3c");
+    std::fs::create_dir_all(&profile).unwrap();
+    std::fs::write(profile.join("mcp.json"), r#"{"servers": {}}"#).unwrap();
+    let mut after = DoctorCounters::new();
+    CopilotIntegration.healthcheck(&mut after, &hctx(home));
+    assert_eq!(
+        (after.issues, after.warnings),
+        (before.issues, before.warnings)
     );
 }
 
