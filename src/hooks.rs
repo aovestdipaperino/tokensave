@@ -1132,47 +1132,17 @@ struct SymbolMatch<'a> {
     symbol: &'a str,
 }
 
-/// One `tokensave_search` call spelled the way an agent would type it, so the
-/// denial can be copied verbatim (#654). `serde_json` quotes the query, which
-/// keeps the call valid JSON whatever the symbol contains.
-fn search_call(query: &str, literal: bool) -> String {
-    let query = Value::String(query.to_string());
-    if literal {
-        format!("tokensave_search {{\"query\": {query}, \"literal\": true}}")
-    } else {
-        format!("tokensave_search {{\"query\": {query}}}")
-    }
-}
-
-/// The replacement calls for one symbol: where it is defined, where it is
-/// called as a method, and every call site. Uses go to a literal search, never
-/// to `tokensave_callers_for`, which takes node ids and is not a core tool
-/// (#649).
-fn symbol_suggestions(symbol: &str) -> String {
-    // A qualified name (`Type::method`) is called as `.method(` on a value.
-    let short = symbol.rsplit("::").next().unwrap_or(symbol);
-    format!(
-        "{} for the definition, {} for method-call uses, or {} for every call",
-        search_call(symbol, false),
-        search_call(&format!(".{short}("), true),
-        search_call(&format!("{symbol}("), true),
-    )
-}
-
 fn redirect_message(tool_label: &str, pattern: &str, found: &SymbolMatch<'_>) -> String {
-    let suggestion = if found.shape == PatternShape::Definition {
-        format!(
-            "{} to find the definition",
-            search_call(found.symbol, false)
-        )
-    } else {
-        symbol_suggestions(found.symbol)
-    };
+    let definitions = serde_json::json!({ "query": found.symbol });
     format!(
-        "STOP: This {tool_label} targets a code file in a tokensave-indexed project and the \
-         pattern `{pattern}` looks like a symbol search. Use {suggestion}. Symbol-indexed \
-         lookups are faster and more accurate than text grep. To override for this one call, \
-         set TOKENSAVE_DISABLE_GREP_HOOK=1 in the shell."
+        "STOP: This {tool_label} targets indexed code and the pattern `{pattern}` looks \
+         like a symbol search. Use tokensave_search {definitions} for indexed definitions. \
+         For text matches, including references and comments, keep the original pattern, \
+         paths, and filters. For a supported shell search, run it as `tokensave grep` \
+         followed by the original grep, rg, or git grep command to add index facts. \
+         To run the original search directly, prefix a Bash command with \
+         TOKENSAVE_DISABLE_GREP_HOOK=1, or set it in the agent's launch environment \
+         for the Grep tool."
     )
 }
 
@@ -1276,7 +1246,7 @@ fn classify_definition_pattern(pattern: &str) -> Option<(PatternShape, &str)> {
     }
     // A declaration keyword pins the intent to the definition. A bare paren
     // does not — `foo(` is as often a hunt for call sites — so it gets the
-    // same both-ways suggestion a bare identifier gets.
+    // same definition and text-search guidance as a bare identifier.
     if had_keyword {
         Some((PatternShape::Definition, rest))
     } else {

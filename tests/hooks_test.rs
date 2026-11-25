@@ -373,7 +373,7 @@ fn test_kiro_allows_invalid_json() {
 
 // ============================================================================
 // Grep tool redirect — symbol-shaped patterns against code files should
-// redirect to tokensave_search (by name, or literal for call sites).
+// suggest indexed definitions and a fallback for text matches.
 // ============================================================================
 
 #[test]
@@ -2201,6 +2201,52 @@ fn indexed_project_with_nodes(names: &[&str]) -> (tempfile::TempDir, PathBuf) {
 
 fn grep_input(pattern: &str) -> String {
     format!(r#"{{"pattern": "{pattern}", "path": "src/main.rs", "output_mode": "content"}}"#,)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn grep_denial_distinguishes_definitions_from_text_references() {
+    let project = tempfile::tempdir().expect("create project");
+    let root = project.path();
+    let source = "example.js";
+    std::fs::write(
+        root.join(source),
+        "const EXAMPLE_VALUE = 42;\nconst currentValue = EXAMPLE_VALUE;\n\
+         let mutableValue = currentValue;\n\
+         function readValue() { return mutableValue; }\n// EXAMPLE_VALUE reference\n",
+    )
+    .expect("write JavaScript fixture");
+    let index = tokensave::tokensave::TokenSave::init(root)
+        .await
+        .expect("initialize index");
+    index.sync().await.expect("index JavaScript fixture");
+    drop(index);
+
+    let env = env_rooted_at(root);
+    for symbol in ["EXAMPLE_VALUE", "currentValue", "readValue"] {
+        let input = serde_json::json!({
+            "pattern": symbol,
+            "path": source,
+            "output_mode": "content",
+        });
+        let result = evaluate_hook_decision_with_env(&input.to_string(), &env);
+        assert!(is_blocked(&result), "{symbol}: {result}");
+        let reason = get_block_reason(&result);
+        let args = serde_json::json!({ "query": symbol });
+        assert!(reason.contains(&format!("tokensave_search {args} for indexed definitions")));
+        assert!(reason.contains("references and comments"));
+        assert!(reason.contains("original pattern, paths, and filters"));
+        assert!(reason.contains("`tokensave grep`"));
+        assert!(!reason.contains(&format!("{symbol}(")));
+    }
+
+    for symbol in ["mutableValue", "UnknownSymbol"] {
+        let input = serde_json::json!({
+            "pattern": symbol,
+            "path": source,
+            "output_mode": "content",
+        });
+        assert!(evaluate_hook_decision_with_env(&input.to_string(), &env).is_empty());
+    }
 }
 
 #[test]
