@@ -1,6 +1,7 @@
 //! Resolves references from tree-sitter extraction against known graph nodes.
 //!
 //! The resolver borrows preloaded nodes; persistence stays with the caller.
+mod constants;
 mod js_specifier;
 mod resolver;
 mod touched;

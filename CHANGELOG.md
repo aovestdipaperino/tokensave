@@ -9,6 +9,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- **Fewer wrong `calls`, `type_of` and `returns` edges from the name-based resolver fallbacks (Refs #1109).** Measured with `tokensave scip-compare` against rust-analyzer 1.88, edge precision rose from 0.654 to 0.856 on serde_json 1.0.154 and from 0.730 to 0.915 on toml_edit 0.22.27, and call-syntax recall rose from 0.569 to 0.585 and from 0.497 to 0.515. A call on another value (`self.map.clear()`) no longer binds to the method that makes it, so delegating wrappers stop showing fake recursion, and the `same-file-blocklist` strategy no longer binds such calls at all. A `::` path or an imported-module receiver (`crate::alpha::helper()`, TypeScript `alpha.helper()`) prefers candidates in the module or type it names, so `Box::new()` and `fmt::Result` no longer bind to a file's own `new` or `Result`. Rust type positions skip enum variants, `impl` blocks and associated types, and Rust type paths are now extracted whole, so `Self::Error`, `V::Value` and `std::io::Error` no longer bind to project types named `Error` or `Value`. A scored match that would pick a trait or interface declaration over its implementations stays unresolved. The `same-file-blocklist` and scored strategies now carry a lower confidence than the exact strategies. Existing graphs keep their old edges until the affected files are re-indexed (`tokensave sync --force`).
+
 - Claude Code Bash text searches keep their original scope and output. Simple
   symbol searches can include a scoped definition lookup suggestion, and an
   inline `TOKENSAVE_DISABLE_GREP_HOOK=1` suppresses that suggestion for one

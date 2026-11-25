@@ -84,30 +84,35 @@ async fn compares_fixture_and_maps_ambiguous_references() {
             .count() as u64
     );
 
-    // `crate::alpha::helper()` in beta.rs: SCIP binds it to alpha::helper.
-    // tokensave either agrees (confirmed), binds another `helper`
-    // (contradicted), or lacks the edge (proposed for import).
+    // `crate::alpha::helper()` in beta.rs: SCIP binds it to alpha::helper,
+    // and so does tokensave since #1109. Before, the same-file bonus bound it
+    // to beta's own helper and `a.check()` to the trait declaration; both
+    // were contradictions.
+    let nodes = p.cg.get_all_nodes().await.unwrap();
+    let alpha_helper = nodes
+        .iter()
+        .find(|n| n.file_path == "src/alpha.rs" && n.name == "helper")
+        .unwrap();
+    assert!(
+        all_edges
+            .iter()
+            .any(|e| e.line == Some(14) && e.target == alpha_helper.id),
+        "{report:#}"
+    );
     let refers_to_alpha_helper = |v: &Value| {
         v["file"] == "src/beta.rs"
             && v["line"] == 15
-            && (v["target"] == "src/alpha.rs::helper"
-                || v["scip_targets"]
-                    .as_array()
-                    .is_some_and(|t| t.iter().any(|t| t == "src/alpha.rs::helper")))
+            && v["scip_targets"]
+                .as_array()
+                .is_some_and(|t| t.iter().any(|t| t == "src/alpha.rs::helper"))
     };
-    let confirmed_alpha_helper = all_edges.iter().any(|e| {
-        e.line == Some(14) && e.target.contains("alpha.rs") && e.target.contains("helper")
-    });
     assert!(
-        confirmed_alpha_helper
-            || sample(&report, "proposed_import")
-                .iter()
-                .any(refers_to_alpha_helper),
+        !sample(&report, "proposed_import")
+            .iter()
+            .any(refers_to_alpha_helper),
         "{report:#}"
     );
-    for contradiction in sample(&report, "contradicted_edges") {
-        assert_ne!(contradiction["resolved_by"], "extractor");
-    }
+    assert_eq!(edges["contradicted"], 0, "{report:#}");
 }
 
 #[tokio::test]
@@ -238,13 +243,33 @@ async fn compares_scip_typescript_index() {
     assert_eq!(report["index"]["tool"], "scip-typescript");
     assert_eq!(report["documents"]["compared"], 4, "{report:#}");
 
-    // `alpha.helper()` inside beta.ts is a known wrong binding (#1109).
-    let contradicted = sample(&report, "contradicted_edges");
-    assert!(
-        contradicted.iter().any(|e| e["file"] == "src/beta.ts"
-            && e["scip_targets"][0]
-                .as_str()
-                .is_some_and(|t| t.ends_with("alpha.ts::helper"))),
+    // `alpha.helper()` inside beta.ts names the namespace-imported module's
+    // helper, not beta.ts's own (#1109).
+    assert_eq!(
+        report["tokensave_edges"]["classified"]["contradicted"], 0,
         "{report:#}"
     );
+    let edges = p.cg.get_all_edges().await.unwrap();
+    let nodes = p.cg.get_all_nodes().await.unwrap();
+    let helper = |file: &str| {
+        nodes
+            .iter()
+            .find(|n| n.file_path == file && n.name == "helper")
+            .unwrap()
+            .id
+            .clone()
+    };
+    let in_beta: std::collections::HashSet<&str> = nodes
+        .iter()
+        .filter(|n| n.file_path == "src/beta.ts")
+        .map(|n| n.id.as_str())
+        .collect();
+    // index.ts calls `beta.helper()` legitimately; only beta.ts's calls count.
+    let beta_calls = |target: &str| {
+        edges.iter().any(|e| {
+            e.kind.as_str() == "calls" && in_beta.contains(e.source.as_str()) && e.target == target
+        })
+    };
+    assert!(beta_calls(&helper("src/alpha.ts")), "{edges:#?}");
+    assert!(!beta_calls(&helper("src/beta.ts")), "{edges:#?}");
 }

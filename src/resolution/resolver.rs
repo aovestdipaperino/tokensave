@@ -2,6 +2,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use super::constants::{
+    CONFIDENCE_FLOOR, DIRECTORY_MODULE_STEMS, MAX_SCOPE_OWNER_DEPTH, RELATIVE_PATH_SEGMENTS,
+    RUST_EXTERNAL_ROOTS, SAME_FILE_BLOCKLIST_CONFIDENCE, SCORED_MATCH_CONFIDENCE, SELF_RECEIVERS,
+    SELF_TYPE,
+};
 use crate::types::{
     AmbiguousCall, Edge, EdgeKind, Node, NodeKind, ResolutionResult, ResolvedBy, ResolvedRef,
     UnresolvedRef, Visibility,
@@ -1006,16 +1011,19 @@ impl<'a> ReferenceResolver<'a> {
                 return Some(resolved);
             }
             // Fall through to try exact name match with the simple name
-            let simple_name = uref
+            let (qualifier, simple_name) = uref
                 .reference_name
-                .rsplit("::")
-                .next()
-                .unwrap_or(&uref.reference_name);
-            if let Some(resolved) = self.try_exact_name_match_simple(
+                .rsplit_once("::")
+                .unwrap_or(("", &uref.reference_name));
+            if self.is_unresolvable_path(uref, qualifier) {
+                return None;
+            }
+            if let Some(resolved) = self.try_exact_name_match_scoped(
                 uref,
                 simple_name,
                 Reachability::Unrestricted,
                 PATH_TAIL_MATCH,
+                path_scope(qualifier),
             ) {
                 return Some(resolved);
             }
@@ -1055,11 +1063,12 @@ impl<'a> ReferenceResolver<'a> {
                 return self.try_csharp_receiver_fallback(uref, simple_name);
             }
             if simple_name != uref.reference_name {
-                if let Some(resolved) = self.try_exact_name_match_simple(
+                if let Some(resolved) = self.try_exact_name_match_scoped(
                     uref,
                     simple_name,
                     Reachability::Required,
                     SIMPLE_NAME_MATCH,
+                    self.module_receiver_scope(uref),
                 ) {
                     return Some(resolved);
                 }
@@ -1257,7 +1266,7 @@ impl<'a> ReferenceResolver<'a> {
         let mut failed: IndexedRefs<'_> = hopeless;
         for (i, uref, res) in results {
             match res {
-                Some(r) if r.confidence >= 0.6 => resolved.push(r),
+                Some(r) if r.confidence >= CONFIDENCE_FLOOR => resolved.push(r),
                 Some(_) | None => failed.push((i, uref)), // below confidence floor or unresolved
             }
         }
@@ -1893,31 +1902,121 @@ impl<'a> ReferenceResolver<'a> {
         self.ruby_constant_owners_at(constant_path)
     }
 
+    /// Whether `node` may be the target of `uref` at all: its kind fits the
+    /// reference, it is not the caller's own type reached through a call on
+    /// another value, and it is not an associated type named by a bare type.
+    fn is_candidate(&self, uref: &UnresolvedRef, node: &Node) -> bool {
+        kind_compatible(uref, &node.kind)
+            && !self.is_own_type_via_other_value(uref, node)
+            && !self.is_associated_type_of_bare_type_ref(uref, node)
+    }
+
+    /// Whether binding `uref` to `node` would make a call on another value
+    /// land on the caller itself or on a method of the caller's own type.
+    ///
+    /// `self.map.contains_key(key)` inside `Map::contains_key` calls the
+    /// inner map's method. Its only same-named candidate in the file is the
+    /// wrapper, so the name strategies bound the call to its own caller and
+    /// created fake recursion (#1109); `self.items.clear()` in
+    /// `InlineTable::clear` bound to the type's other `clear` in the same way.
+    /// A call on `self`/`this` may target its own type. The C# receiver
+    /// fallback applies the same rule (#642).
+    ///
+    /// Rust refs only lose the caller itself. A bare-name ref also stands for
+    /// `self.f()` calls whose typed `Type::f` ref does not resolve (generic
+    /// impls): dropping the whole own type cost 3% of `serde_json`'s call
+    /// recall in the SCIP comparison. The dotted ref beside it must resolve
+    /// the same way, or it adds a second edge to another type's method.
+    fn is_own_type_via_other_value(&self, uref: &UnresolvedRef, node: &Node) -> bool {
+        let is_self = node.id == uref.from_node_id;
+        match receiver_shape(uref) {
+            ReceiverShape::Foreign if lang_from_path(&uref.file_path) == "rust" => return is_self,
+            ReceiverShape::Foreign => {}
+            ReceiverShape::MaybeForeign => return is_self && is_method_kind(&node.kind),
+            ReceiverShape::NoReceiver | ReceiverShape::OwnObject => return false,
+        }
+        if is_self {
+            return true;
+        }
+        let Some(caller) = self.node_id_cache.get(uref.from_node_id.as_str()) else {
+            return false;
+        };
+        is_method_kind(&caller.kind)
+            && is_method_kind(&node.kind)
+            && same_owner(&caller.qualified_name, &node.qualified_name)
+    }
+
+    /// Whether a bare Rust type reference would bind to an associated type.
+    ///
+    /// `type Item = ...;` inside an `impl` or `trait` is reachable only as
+    /// `Self::Item` or `T::Item`, never as a bare `Item`, so a bare `Item` in a
+    /// signature names a module-level type (#1109).
+    fn is_associated_type_of_bare_type_ref(&self, uref: &UnresolvedRef, node: &Node) -> bool {
+        matches!(uref.reference_kind, EdgeKind::TypeOf | EdgeKind::Returns)
+            && node.kind == NodeKind::TypeAlias
+            && !uref.reference_name.contains("::")
+            && lang_from_path(&uref.file_path) == "rust"
+            && node
+                .parent_id
+                .as_deref()
+                .and_then(|id| self.node_id_cache.get(id))
+                .is_some_and(|parent| matches!(parent.kind, NodeKind::Impl | NodeKind::Trait))
+    }
+
+    /// The `same-file-blocklist` strategy: a blocklisted common name binds
+    /// only to the one same-file candidate, and only when the call shape
+    /// allows that candidate.
+    ///
+    /// A blocklisted name on a receiver whose type is unknown
+    /// (`self.map.clear()`, `buf.clone()`) is a call on some other object,
+    /// usually a standard-library type, so the same-file method with that name
+    /// is almost never the target: SCIP measured this strategy at 5% and 7%
+    /// precision on `serde_json` and `toml_edit` (#1109). Such a call stays
+    /// unresolved. A Rust bare-name ref may be the sibling of such a call, so
+    /// it may still bind to a free function but not to a method.
+    ///
+    /// A path names its owner: `Box::new()` and `fmt::Result` bind only to a
+    /// candidate in `scope` (`Box`, `fmt`), never to the file's own `new` or
+    /// `Result`.
+    fn same_file_blocklist_match(
+        &self,
+        uref: &UnresolvedRef,
+        name: &str,
+        scope: Option<&str>,
+    ) -> Option<ResolvedRef> {
+        let receiver = receiver_shape(uref);
+        if receiver == ReceiverShape::Foreign {
+            return None;
+        }
+        // Still apply the same kind-compatibility filter as the non-blocklist
+        // path — otherwise a `Calls` ref to `new()` happily binds to a
+        // same-file `struct new` because that's the only same-file node with
+        // the name.
+        let candidates = self.name_cache.get(name)?;
+        let same_file: Vec<&Node> = candidates
+            .iter()
+            .copied()
+            .filter(|n| n.file_path == uref.file_path)
+            .filter(|n| self.is_candidate(uref, n))
+            .filter(|n| receiver != ReceiverShape::MaybeForeign || !is_method_kind(&n.kind))
+            .filter(|n| scope.is_none_or(|scope| self.is_in_scope(n, scope)))
+            .collect();
+        let [only] = same_file.as_slice() else {
+            return None;
+        };
+        Some(ResolvedRef {
+            original: uref.clone(),
+            target_node_id: only.id.clone(),
+            confidence: SAME_FILE_BLOCKLIST_CONFIDENCE,
+            resolved_by: ResolvedBy::SameFileBlocklist.as_str().to_string(),
+        })
+    }
+
     /// Strategy 2: exact name match using the name cache.
     fn try_exact_name_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
         // Skip cross-file resolution for blocklisted names (too ambiguous).
         if CROSS_FILE_BLOCKLIST.contains(&uref.reference_name.as_str()) {
-            // Still allow same-file resolution, but apply the same
-            // kind-compatibility filter as the non-blocklist path —
-            // otherwise a `Calls` ref to `new()` happily binds to a
-            // same-file `struct new` because that's the only same-file
-            // node with the name.
-            let candidates = self.name_cache.get(uref.reference_name.as_str())?;
-            let same_file: Vec<&Node> = candidates
-                .iter()
-                .copied()
-                .filter(|n| n.file_path == uref.file_path)
-                .filter(|n| kind_compatible(uref, &n.kind))
-                .collect();
-            if same_file.len() == 1 {
-                return Some(ResolvedRef {
-                    original: uref.clone(),
-                    target_node_id: same_file[0].id.clone(),
-                    confidence: 0.9,
-                    resolved_by: "same-file-blocklist".to_string(),
-                });
-            }
-            return None;
+            return self.same_file_blocklist_match(uref, &uref.reference_name, None);
         }
 
         let raw_candidates = self.name_cache.get(uref.reference_name.as_str())?;
@@ -1929,7 +2028,7 @@ impl<'a> ReferenceResolver<'a> {
         let kind_filtered: Vec<&Node> = raw_candidates
             .iter()
             .copied()
-            .filter(|n| kind_compatible(uref, &n.kind))
+            .filter(|n| self.is_candidate(uref, n))
             .collect();
         if kind_filtered.is_empty() {
             return None;
@@ -1989,12 +2088,15 @@ impl<'a> ReferenceResolver<'a> {
         let [best] = winners.as_slice() else {
             return None;
         };
+        if is_unsupported_declaration(uref, best, candidates, &self.node_id_cache) {
+            return None;
+        }
 
         Some(ResolvedRef {
             original: uref.clone(),
             target_node_id: best.id.clone(),
-            confidence: 0.7,
-            resolved_by: "exact-match-scored".to_string(),
+            confidence: SCORED_MATCH_CONFIDENCE,
+            resolved_by: ResolvedBy::ExactMatchScored.as_str().to_string(),
         })
     }
 
@@ -2005,33 +2107,46 @@ impl<'a> ReferenceResolver<'a> {
         reachability: Reachability,
         tag: &str,
     ) -> Option<ResolvedRef> {
+        self.try_exact_name_match_scoped(uref, simple_name, reachability, tag, None)
+    }
+
+    /// Matches the trailing name of a path or receiver call.
+    ///
+    /// `scope` is a module or type the reference names explicitly
+    /// (`alpha` in `crate::alpha::helper`, `Config` in `Config::check`). When
+    /// some candidates live in that scope, the others are dropped before
+    /// scoring: without this, the same-file bonus bound
+    /// `crate::alpha::helper()` in `beta.rs` to `beta::helper` (#1109).
+    /// When no candidate lives there, the scope is ignored, as before.
+    fn try_exact_name_match_scoped(
+        &self,
+        uref: &UnresolvedRef,
+        simple_name: &str,
+        reachability: Reachability,
+        tag: &str,
+        scope: Option<&str>,
+    ) -> Option<ResolvedRef> {
         if CROSS_FILE_BLOCKLIST.contains(&simple_name) {
-            let candidates = self.name_cache.get(simple_name)?;
-            // Same fix as `try_exact_name_match`: filter by kind before
-            // returning a same-file blocklisted match.
-            let same_file: Vec<&Node> = candidates
-                .iter()
-                .copied()
-                .filter(|n| n.file_path == uref.file_path)
-                .filter(|n| kind_compatible(uref, &n.kind))
-                .collect();
-            if same_file.len() == 1 {
-                return Some(ResolvedRef {
-                    original: uref.clone(),
-                    target_node_id: same_file[0].id.clone(),
-                    confidence: 0.9,
-                    resolved_by: "same-file-blocklist".to_string(),
-                });
-            }
-            return None;
+            let path_scope = scope.filter(|_| uref.reference_name.contains("::"));
+            return self.same_file_blocklist_match(uref, simple_name, path_scope);
         }
 
         let raw_candidates = self.name_cache.get(simple_name)?;
-        let kind_filtered: Vec<&Node> = raw_candidates
+        let mut kind_filtered: Vec<&Node> = raw_candidates
             .iter()
             .copied()
-            .filter(|n| kind_compatible(uref, &n.kind))
+            .filter(|n| self.is_candidate(uref, n))
             .collect();
+        if let Some(scope) = scope {
+            let in_scope: Vec<&Node> = kind_filtered
+                .iter()
+                .copied()
+                .filter(|n| self.is_in_scope(n, scope))
+                .collect();
+            if !in_scope.is_empty() {
+                kind_filtered = in_scope;
+            }
+        }
         if kind_filtered.is_empty() {
             return None;
         }
@@ -2081,13 +2196,95 @@ impl<'a> ReferenceResolver<'a> {
         let [best] = winners.as_slice() else {
             return None;
         };
+        if is_unsupported_declaration(uref, best, candidates, &self.node_id_cache) {
+            return None;
+        }
 
         Some(ResolvedRef {
             original: uref.clone(),
             target_node_id: best.id.clone(),
-            confidence: 0.7,
+            confidence: SCORED_MATCH_CONFIDENCE,
             resolved_by: format!("{tag}-scored"),
         })
+    }
+
+    /// Whether `node` lives in the module or type named `scope`: its file is
+    /// that module, one of its owners has that name, or its qualified name
+    /// has that segment.
+    fn is_in_scope(&self, node: &Node, scope: &str) -> bool {
+        // `Map<String, Value>` is the type `Map`.
+        let names_scope = |name: &str| name.split('<').next().map(str::trim) == Some(scope);
+        if module_name(&node.file_path) == Some(scope) {
+            return true;
+        }
+        if node
+            .qualified_name
+            .rsplit_once("::")
+            .is_some_and(|(owners, _)| owners.split("::").any(names_scope))
+        {
+            return true;
+        }
+        let mut owner = node.parent_id.as_deref();
+        for _ in 0..MAX_SCOPE_OWNER_DEPTH {
+            let Some(parent) = owner.and_then(|id| self.node_id_cache.get(id)) else {
+                break;
+            };
+            if parent.kind == NodeKind::File {
+                break;
+            }
+            if names_scope(&parent.name) {
+                return true;
+            }
+            owner = parent.parent_id.as_deref();
+        }
+        false
+    }
+
+    /// The module a dotted receiver names, when it is an imported module
+    /// rather than a value: `alpha` in `alpha.helper()` after
+    /// `import * as alpha from "./alpha"` (TypeScript) or `import alpha`
+    /// (Python). Any other receiver is a value and names no scope.
+    fn module_receiver_scope<'r>(&self, uref: &'r UnresolvedRef) -> Option<&'r str> {
+        let (receiver, _) = uref.reference_name.rsplit_once('.')?;
+        if receiver.is_empty() || !receiver.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return None;
+        }
+        let imports = self.import_index.get(&uref.file_path)?;
+        let imported = imports.iter().any(|entry| {
+            entry == receiver
+                || entry.rsplit('.').next() == Some(receiver)
+                || module_name(entry) == Some(receiver)
+        });
+        imported.then_some(receiver)
+    }
+
+    /// Whether a `Q::Name` path cannot name a project
+    /// declaration through its last segment.
+    ///
+    /// `Self::Error` and `V::Value` are associated types: their last segment
+    /// is no evidence for a project type named `Error` or `Value`, and binding
+    /// them that way was a recurring SCIP contradiction (#1109). The same goes
+    /// for a qualified projection (`<V as Visitor>::Value`), a type parameter
+    /// (an upper-case qualifier that names nothing in the graph), and a
+    /// standard-library path (`std::io::Error`, Rust only).
+    fn is_unresolvable_path(&self, uref: &UnresolvedRef, qualifier: &str) -> bool {
+        if lang_from_path(&uref.file_path) == "rust"
+            && qualifier
+                .split("::")
+                .next()
+                .is_some_and(|root| RUST_EXTERNAL_ROOTS.contains(&root))
+        {
+            return true;
+        }
+        if !matches!(uref.reference_kind, EdgeKind::TypeOf | EdgeKind::Returns) {
+            return false;
+        }
+        if qualifier == SELF_TYPE || qualifier.starts_with('<') {
+            return true;
+        }
+        !qualifier.contains("::")
+            && qualifier.chars().next().is_some_and(char::is_uppercase)
+            && !self.is_known_name(qualifier)
     }
 
     /// Scores one candidate against a reference.
@@ -2362,9 +2559,141 @@ fn kind_compatible(uref: &UnresolvedRef, target_kind: &NodeKind) -> bool {
         // attachment, so binding to it is equally wrong under this kind.
         // A ref that matches nothing simply stays unresolved.
         EdgeKind::Annotates => false,
+        // A Rust enum variant is a value and an `impl` block is a scope;
+        // neither is a type. `buf: &mut String` names `std::string::String`,
+        // not a same-file `ParserNumber::String` or `impl PartialEq for
+        // String` (#1109).
+        EdgeKind::TypeOf | EdgeKind::Returns if lang_from_path(&uref.file_path) == "rust" => {
+            !matches!(target_kind, NodeKind::EnumVariant | NodeKind::Impl)
+        }
         // Uses / TypeOf / Returns / Contains / Receives — permissive.
         _ => true,
     }
+}
+
+/// How a call reference reaches its target, as far as its text shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReceiverShape {
+    /// Not a call, a `::` path call, or a bare call.
+    NoReceiver,
+    /// A dotted call on the running object (`self.clear()`).
+    OwnObject,
+    /// A dotted call on any other value (`self.map.clear()`).
+    Foreign,
+    /// A Rust bare-name call. The extractor emits one beside every dotted
+    /// call, so it may stand for a call on another value.
+    MaybeForeign,
+}
+
+fn receiver_shape(uref: &UnresolvedRef) -> ReceiverShape {
+    if uref.reference_kind != EdgeKind::Calls || uref.reference_name.contains("::") {
+        return ReceiverShape::NoReceiver;
+    }
+    if let Some((receiver, _)) = uref.reference_name.rsplit_once('.') {
+        return if SELF_RECEIVERS.contains(&receiver) {
+            ReceiverShape::OwnObject
+        } else {
+            ReceiverShape::Foreign
+        };
+    }
+    if lang_from_path(&uref.file_path) == "rust" {
+        ReceiverShape::MaybeForeign
+    } else {
+        ReceiverShape::NoReceiver
+    }
+}
+
+/// Node kinds that are invoked through a receiver.
+fn is_method_kind(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Method
+            | NodeKind::StructMethod
+            | NodeKind::AbstractMethod
+            | NodeKind::SingletonMethod
+    )
+}
+
+/// Whether two qualified names share their owner: `src/map.rs::Map` for
+/// `src/map.rs::Map::clear`. Generic arguments are ignored so that
+/// `Map<K, V>` and `Map` agree. Compares without allocating, since it runs for
+/// every method candidate of a receiver call.
+fn same_owner(a: &str, b: &str) -> bool {
+    fn plain(owner: &str) -> impl Iterator<Item = char> + '_ {
+        let mut depth = 0_usize;
+        owner.chars().filter(move |c| match c {
+            '<' => {
+                depth += 1;
+                false
+            }
+            '>' => {
+                depth = depth.saturating_sub(1);
+                false
+            }
+            _ => depth == 0,
+        })
+    }
+    match (a.rsplit_once("::"), b.rsplit_once("::")) {
+        (Some((owner_a, _)), Some((owner_b, _))) => plain(owner_a).eq(plain(owner_b)),
+        _ => false,
+    }
+}
+
+/// Whether `node` declares a method without being an implementation of it:
+/// an abstract method, or a method of a trait or interface.
+fn is_declaration(node: &Node, node_by_id: &HashMap<&str, &Node>) -> bool {
+    node.kind == NodeKind::AbstractMethod
+        || node
+            .parent_id
+            .as_deref()
+            .and_then(|id| node_by_id.get(id))
+            .is_some_and(|parent| {
+                matches!(
+                    parent.kind,
+                    NodeKind::Trait | NodeKind::Interface | NodeKind::InterfaceType
+                )
+            })
+}
+
+/// Whether a scored winner is a trait or interface declaration chosen over
+/// implementations of the same name.
+///
+/// Scoring knows nothing about the receiver's type, and the declaration
+/// often wins on file or module proximity alone: `a.check()` bound to
+/// `Validate::check` rather than to `alpha::Config::check` (#1109). Without
+/// evidence for either, the call is left unresolved.
+fn is_unsupported_declaration(
+    uref: &UnresolvedRef,
+    best: &Node,
+    candidates: &[&Node],
+    node_by_id: &HashMap<&str, &Node>,
+) -> bool {
+    uref.reference_kind == EdgeKind::Calls
+        && is_declaration(best, node_by_id)
+        && candidates.iter().any(|c| !is_declaration(c, node_by_id))
+}
+
+/// The module a source path or import specifier stands for: its file stem,
+/// or its directory for a `mod.rs` / `index.ts` / `__init__.py` file.
+fn module_name(path: &str) -> Option<&str> {
+    let mut components = path.rsplit('/');
+    let file = components.next()?;
+    let stem = file.split('.').next().filter(|stem| !stem.is_empty())?;
+    if DIRECTORY_MODULE_STEMS.contains(&stem) {
+        return components.next().filter(|dir| !dir.is_empty());
+    }
+    Some(stem)
+}
+
+/// The module or type a `::` path qualifier names, for narrowing its tail
+/// match. `crate::alpha` names `alpha`; `Self`, `crate`, `super` and generic
+/// arguments name no scope.
+fn path_scope(qualifier: &str) -> Option<&str> {
+    let last = qualifier.rsplit("::").next()?;
+    if last.is_empty() || RELATIVE_PATH_SEGMENTS.contains(&last) || last.contains(['<', '>']) {
+        return None;
+    }
+    Some(last)
 }
 
 /// Resolution helper used after the kind filter has reduced the
@@ -2532,10 +2861,13 @@ fn resolve_from_filtered_named(
     let [best] = winners.as_slice() else {
         return None;
     };
+    if is_unsupported_declaration(uref, best, kind_filtered, node_by_id) {
+        return None;
+    }
     Some(ResolvedRef {
         original: uref.clone(),
         target_node_id: best.id.clone(),
-        confidence: 0.65,
+        confidence: SCORED_MATCH_CONFIDENCE,
         resolved_by: format!("{resolved_by}-scored"),
     })
 }

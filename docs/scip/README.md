@@ -429,6 +429,72 @@ checked by hand were all real binding errors:
 - `V::Value` and `Self::Error` associated types are bound to project types
   named `Value` and `Error`.
 
+### After the resolver fixes (#1109)
+
+The fallbacks were restricted in [#1109](https://github.com/aovestdipaperino/tokensave/issues/1109)
+and measured again on 2026-11-25 on Windows x86-64 with a debug `lite`
+build, before and after the change. rust-analyzer was 1.88.0, run on
+disposable copies of the same crates.io sources. Windows rust-analyzer writes
+document paths with `\`, which `scip-compare` rejects as unsafe, so the
+separators were rewritten to `/` before the comparison. The baseline
+reproduced every count in the tables above.
+
+| Metric | serde_json before | serde_json after | toml_edit before | toml_edit after |
+|---|---:|---:|---:|---:|
+| Edges confirmed / contradicted / unverifiable | 1,380 / 731 / 1,032 | 1,616 / 272 / 936 | 954 / 353 / 296 | 1,199 / 112 / 269 |
+| Edge precision | 0.654 | 0.856 | 0.730 | 0.915 |
+| Recall, call syntax | 0.569 (1,210) | 0.585 (1,244) | 0.497 (509) | 0.515 (528) |
+| Recall, other references | 0.038 (164) | 0.081 (353) | 0.173 (386) | 0.273 (609) |
+
+Precision by resolver path after the change (confirmed / contradicted):
+
+| `resolved_by` | serde_json | toml_edit |
+|---|---:|---:|
+| `qualified-match` | 0.967 (175 / 6) | 0.996 (228 / 1) |
+| `exact-match` | 0.926 (1,155 / 93) | 0.980 (820 / 17) |
+| `path-tail-match` | 0.719 (69 / 27) | 0.862 (50 / 8) |
+| `exact-match-scored` | 0.592 (167 / 115) | 0.308 (37 / 83) |
+| `path-tail-match-scored` | 0.426 (23 / 31) | 0.923 (36 / 3) |
+| `same-file-blocklist` | 1.0 (15 / 0) | 1.0 (4 / 0) |
+| `simple-name-match-scored` | — | 1.0 (24 / 0) |
+
+Most edges that `exact-match-scored` used to confirm now resolve as
+`exact-match`, because the filters leave a single candidate. Its lower
+toml_edit precision covers 120 decided edges, against 526 before. The
+remaining errors are mostly trait methods: an implementation and its trait
+declaration, or a free function and a trait method of the same name, which a
+name-based resolver cannot separate without the receiver's type.
+
+The changes, in `src/resolution/resolver.rs`:
+
+- A call on another value (`self.map.clear()`) never binds to the method
+  that makes it. Outside Rust it also skips the caller's own type, as the C#
+  receiver fallback does (#642). In Rust, the bare-name ref emitted beside each
+  dotted call still reaches the own type, because it also stands for
+  `self.f()` calls whose typed ref does not resolve. Dropping the own type
+  there cost 3% of serde_json's call recall.
+- `same-file-blocklist` does not bind a dotted call on another value, binds a
+  Rust bare-name ref only to a free function, and binds a path
+  (`Box::new`, `fmt::Result`) only to a candidate in the module or type the
+  path names.
+- A path or imported-module receiver (`crate::alpha::helper`, TypeScript
+  `alpha.helper` after `import * as alpha`) keeps only the candidates in the
+  module or type it names when there are any.
+- Rust type positions skip enum variants, `impl` blocks and associated types.
+  The extractor emits path types whole (`V::Value`), and a type path through
+  `Self`, a type parameter, a qualified projection or `std`/`core`/`alloc`
+  does not fall back to its last segment.
+- A scored winner that is a trait or interface declaration while an
+  implementation is also a candidate stays unresolved.
+- `same-file-blocklist` and the scored strategies have confidence 0.65,
+  below the exact strategies (0.85 and above) and above the 0.6 floor.
+  Confidence is not stored on edges; consumers that filter on it see it only
+  through `ResolvedBy::is_exact`.
+
+On the fixtures, Rust precision went from 0.714 to 1.0 (8 confirmed, 0
+contradicted) with call-syntax recall from 2 / 9 to 5 / 9, and TypeScript
+precision from 0.800 to 1.0 with call-syntax recall from 0 / 8 to 2 / 8.
+
 **Estimated import cost.** The edge table plus its four indexes takes about
 345 bytes per edge in both databases. Importing every proposed edge would add
 about 1.6 MB (+22 %) to serde_json's database and 0.8 MB (+14 %) to
@@ -476,6 +542,8 @@ Proceed with SCIP as an **optional verifier first, importer second**:
    (`V::Value`), and type names that collide with enum variants. On the fixture
    the gap is `Type::new()` and `module::fn()` calls left unresolved. These
    are tree-sitter-side fixes tracked in [#1109](https://github.com/aovestdipaperino/tokensave/issues/1109).
+   The first round raised precision to 0.856 and 0.915 without losing call
+   recall; see [After the resolver fixes](#after-the-resolver-fixes-1109).
 3. **Only then add an opt-in import**, as described in
    [Proposed live write path](#proposed-live-write-path-scip-evidence-consulted-by-the-resolver):
    SCIP evidence in its own tables, consulted by the resolver as its first

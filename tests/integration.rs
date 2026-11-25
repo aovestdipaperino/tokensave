@@ -189,6 +189,7 @@ mod resolution_slim_nodes_test;
 mod resolution_streaming_test;
 mod resolution_test;
 mod resolved_by_test;
+mod resolver_fallback_precision_test;
 mod ruby_extraction_test;
 mod ruby_reopenings_test;
 mod ruby_template_extraction_test;
