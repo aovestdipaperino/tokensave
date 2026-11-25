@@ -73,6 +73,34 @@ The `tokensave status` header includes a cost row showing today's spend, 7-day t
 
 Task classification categories: Coding, Debugging, Feature Dev, Refactoring, Testing, Exploration, Planning, Delegation, Git Ops, Build/Deploy, Brainstorming, Conversation, General. Classification is deterministic (pattern matching on tool names and Bash commands), requires no LLM calls, and is adapted from [AgentSeal/codeburn](https://github.com/AgentSeal/codeburn).
 
+## Missed opportunities
+
+```bash
+tokensave discover                 # last 30 days (default)
+tokensave discover --since today   # today, 7d, 30d, month or all
+tokensave discover --json          # machine-readable report
+```
+
+`tokensave discover` reads the same Claude Code turns as `tokensave cost` and lists turns that a tokensave query could have answered more cheaply. A turn counts only when every tool it used is navigation: `Read`, `Grep`, `Glob`, or a Bash code search. Turns that also edit files or run other commands are left out, so the figures are a lower bound. The **Addressable** column is the measured size of those tools' results; **Recoverable** claims half of it.
+
+A Bash command counts as a code search when it is a `grep`, `rg`, `ag` or `git grep` for one symbol in code: a bare identifier, `\bname\b`, a declaration such as `fn name` or `class Name`, or `const`/`let`/`var NAME` in a JavaScript or TypeScript file. It may be followed by read-only filters such as `| head`. tokensave classifies the command when it ingests the turn, using the same rules as the Claude Code search hook, and stores only the verdict, never the command text.
+
+Bash searches that do not count are listed under **Bash searches not counted** (`excluded_bash_searches` in JSON), one line per reason:
+
+| Reason | Meaning |
+|---|---|
+| `explicit_opt_out` | The command set `TOKENSAVE_DISABLE_GREP_HOOK` inline |
+| `compound_command` | The search was chained with other commands, or piped into one that does more than filter |
+| `unsupported_shell_syntax` | Command substitution, redirects or other syntax the classifier does not model |
+| `revision_search` | `git grep` with an argument that may name a revision |
+| `pattern_too_long` | The pattern is too long for a symbol lookup |
+| `non_symbol_pattern` | A regex or text pattern, not one symbol |
+| `declaration_outside_js_ts` | `const`/`let`/`var NAME` searched outside a JavaScript or TypeScript file |
+| `non_code_target` | The searched paths, globs or type filter are not indexed code |
+| `mixed_with_other_tools` | The search qualified, but the same turn used non-navigation tools |
+
+Bash turns ingested by an earlier version were stored without this classification and are not counted. `find` and `cat` navigation is not classified.
+
 ## Live monitor
 
 ```bash

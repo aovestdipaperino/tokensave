@@ -1079,6 +1079,230 @@ fn evaluate_find_command(command: &str, env: &HookEnv) -> Option<String> {
     Some(files_redirect_message("Bash find", &inv.globs.join(", ")))
 }
 
+/// Offline verdict on a recorded `Bash` command, for `tokensave discover`
+/// (#1118).
+///
+/// The hook decides with the live filesystem and index; a transcript is read
+/// later, possibly on another machine, so this verdict uses only the command
+/// text: the same grep parser and symbol-pattern rules as the hook, and the
+/// name-based code-target rules (a default [`HookEnv`] never touches disk).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BashSearchVerdict {
+    /// Not a `grep`/`rg`/`ag`/`git grep` search at all.
+    NotSearch,
+    /// A code search for one symbol that a graph query could have answered.
+    Replaceable,
+    /// A search the analyzer deliberately does not count, and why.
+    Excluded(BashSearchExclusion),
+}
+
+/// Why a recognized Bash search is not counted as replaceable (#1118).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum BashSearchExclusion {
+    /// `TOKENSAVE_DISABLE_GREP_HOOK` was set inline: a deliberate text search.
+    ExplicitOptOut,
+    /// Sequenced with other work, or piped into something that is not a
+    /// read-only filter.
+    CompoundCommand,
+    /// Substitution, redirects or other shell syntax the parser does not model.
+    UnsupportedShellSyntax,
+    /// `git grep` with an argument that may name a revision.
+    RevisionSearch,
+    /// The pattern is longer than a symbol lookup plausibly is.
+    PatternTooLong,
+    /// The pattern is a regex or prose, not a single symbol.
+    NonSymbolPattern,
+    /// `const`/`let`/`var NAME` outside a concrete JavaScript or TypeScript
+    /// file, where those words may be prose or another language.
+    DeclarationOutsideJsTs,
+    /// A search path, glob or type filter that is not indexed code.
+    NonCodeTarget,
+}
+
+impl BashSearchExclusion {
+    /// Every exclusion, in report order.
+    pub const ALL: [Self; 8] = [
+        Self::ExplicitOptOut,
+        Self::CompoundCommand,
+        Self::UnsupportedShellSyntax,
+        Self::RevisionSearch,
+        Self::PatternTooLong,
+        Self::NonSymbolPattern,
+        Self::DeclarationOutsideJsTs,
+        Self::NonCodeTarget,
+    ];
+
+    /// Stable snake-case code, stored in the accounting database and shown in
+    /// `discover --json`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ExplicitOptOut => "explicit_opt_out",
+            Self::CompoundCommand => "compound_command",
+            Self::UnsupportedShellSyntax => "unsupported_shell_syntax",
+            Self::RevisionSearch => "revision_search",
+            Self::PatternTooLong => "pattern_too_long",
+            Self::NonSymbolPattern => "non_symbol_pattern",
+            Self::DeclarationOutsideJsTs => "declaration_outside_js_ts",
+            Self::NonCodeTarget => "non_code_target",
+        }
+    }
+
+    /// Parse a code written by [`Self::as_str`].
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|e| e.as_str() == code)
+    }
+
+    /// One-line human explanation for the `discover` report.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::ExplicitOptOut => "explicit TOKENSAVE_DISABLE_GREP_HOOK opt-out",
+            Self::CompoundCommand => "chained with other commands",
+            Self::UnsupportedShellSyntax => "shell syntax the classifier does not model",
+            Self::RevisionSearch => "git grep over a possible revision",
+            Self::PatternTooLong => "pattern too long for a symbol lookup",
+            Self::NonSymbolPattern => "regex or text pattern, not one symbol",
+            Self::DeclarationOutsideJsTs => {
+                "const/let/var pattern outside a JavaScript or TypeScript file"
+            }
+            Self::NonCodeTarget => "searches files that are not indexed code",
+        }
+    }
+}
+
+/// Is `segment` (after leading noise) a search tool invocation?
+fn is_search_head(segment: &str) -> bool {
+    let rest = strip_command_prefixes(segment.trim()).rest;
+    strip_git_grep(rest).is_some()
+        || ["grep ", "rg ", "ag "]
+            .iter()
+            .any(|prefix| rest.starts_with(prefix))
+}
+
+/// Classify a recorded Bash command for `tokensave discover` (#1118).
+///
+/// Pure function of the command text; see [`BashSearchVerdict`].
+pub fn classify_bash_search(command: &str) -> BashSearchVerdict {
+    let command = command.trim();
+    // The whole command first: this is the only path that models a leading
+    // `cd`, exactly as in `evaluate_bash_command_inner`.
+    let whole = classify_bash_search_segment(command);
+    if whole != BashSearchVerdict::NotSearch
+        && whole != BashSearchVerdict::Excluded(BashSearchExclusion::UnsupportedShellSyntax)
+    {
+        return whole;
+    }
+    let Some(segments) = split_top_level_segments(command) else {
+        return whole;
+    };
+    // One pipeline whose later stages only filter is still just the search.
+    if let [stages] = segments.as_slice() {
+        if let Some((first, filters)) = stages.split_first() {
+            if filters.iter().all(|stage| is_read_only_filter(stage)) {
+                return classify_bash_search_segment(first);
+            }
+        }
+    }
+    let has_search = segments
+        .iter()
+        .any(|stages| stages.first().is_some_and(|first| is_search_head(first)));
+    if has_search {
+        BashSearchVerdict::Excluded(BashSearchExclusion::CompoundCommand)
+    } else {
+        BashSearchVerdict::NotSearch
+    }
+}
+
+/// [`classify_bash_search`] for one command with no top-level sequencing.
+fn classify_bash_search_segment(command: &str) -> BashSearchVerdict {
+    use BashSearchExclusion as Why;
+    let stripped = strip_command_prefixes(command);
+    if !is_search_head(stripped.rest) {
+        return BashSearchVerdict::NotSearch;
+    }
+    if stripped.disables_hook {
+        return BashSearchVerdict::Excluded(Why::ExplicitOptOut);
+    }
+    let Some(mut inv) = extract_grep_invocation(command) else {
+        return BashSearchVerdict::Excluded(Why::UnsupportedShellSyntax);
+    };
+    if inv.pattern.is_empty() {
+        return BashSearchVerdict::Excluded(Why::NonSymbolPattern);
+    }
+    if inv.pattern.len() > MAX_PATTERN_LEN {
+        return BashSearchVerdict::Excluded(Why::PatternTooLong);
+    }
+    // Offline there is no working tree to ask whether a `git grep` argument
+    // is a path or a revision, so only arguments that name code count.
+    let env = HookEnv::default();
+    if !inv.git_trees.is_empty() {
+        if !inv
+            .git_trees
+            .iter()
+            .all(|tree| target_looks_like_code(tree, &[], "", &env))
+        {
+            return BashSearchVerdict::Excluded(Why::RevisionSearch);
+        }
+        let trees = std::mem::take(&mut inv.git_trees);
+        inv.targets.splice(0..0, trees);
+    }
+    // After `cd DIR &&`, a search of `.` searches DIR.
+    let cd_target = stripped
+        .cd_target
+        .map(|cd| unescape_shell_backslashes(unquote(cd)).into_owned());
+    let mut targets: Vec<String> = inv
+        .targets
+        .iter()
+        // `2>/dev/null` is the one redirect the parser accepts; the splitter
+        // stops at `>` and leaves its `2` behind, which is not a search path.
+        .filter(|t| !(t.as_str() == "2" && command.contains("2>")))
+        .map(|t| match &cd_target {
+            Some(cd) if t.is_empty() || t == "." || t == "./" => cd.clone(),
+            Some(cd) => Path::new(cd).join(t).to_string_lossy().into_owned(),
+            None => t.clone(),
+        })
+        .collect();
+    if targets.is_empty() {
+        targets.push(cd_target.unwrap_or_default());
+    }
+    let globs: Vec<&str> = inv.globs.iter().map(String::as_str).collect();
+    let ty = inv.ty.as_deref().unwrap_or("");
+    if !targets
+        .iter()
+        .all(|target| target_looks_like_code(target, &globs, ty, &env))
+    {
+        return BashSearchVerdict::Excluded(Why::NonCodeTarget);
+    }
+    if classify_symbol_pattern(&inv.pattern).is_some() {
+        return BashSearchVerdict::Replaceable;
+    }
+    // `const NAME`, `let NAME`, `var NAME`: the advisory path accepts these
+    // only for a concrete JavaScript or TypeScript file, so does this.
+    if let Some((keyword, name)) = inv.pattern.split_once(' ') {
+        if constants::JS_VARIABLE_DECLARATION_KEYWORDS.contains(&keyword)
+            && is_pure_identifier(name)
+            && !name.contains(':')
+        {
+            let js_ts_file = |target: &String| {
+                Path::new(target)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| {
+                        TypeScriptExtractor
+                            .extensions()
+                            .iter()
+                            .any(|known| known.eq_ignore_ascii_case(ext))
+                    })
+            };
+            return if targets.iter().all(js_ts_file) {
+                BashSearchVerdict::Replaceable
+            } else {
+                BashSearchVerdict::Excluded(Why::DeclarationOutsideJsTs)
+            };
+        }
+    }
+    BashSearchVerdict::Excluded(Why::NonSymbolPattern)
+}
+
 /// Inspect a `Glob` tool call. Returns `Some(reason)` to redirect.
 fn evaluate_glob_tool_input(parsed: &Value, env: &HookEnv) -> Option<String> {
     if !env.in_tokensave_project || env.disable_grep_hook {

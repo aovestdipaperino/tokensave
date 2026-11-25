@@ -24,6 +24,7 @@ mod auto_sync_bound_test;
 mod bare_invocation_stdout_test;
 mod bare_name_reachability_test;
 mod bash_extraction_test;
+mod bash_search_classification_test;
 mod batch_extraction_test;
 mod bench_repo_cleanup_test;
 mod bench_test;

@@ -9,6 +9,7 @@
 mod augment;
 pub mod classifier;
 mod codex;
+pub mod constants;
 mod copilot;
 pub mod discover;
 mod droid;

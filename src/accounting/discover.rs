@@ -25,9 +25,14 @@
 //!
 //! Two limits remain, and we stay strictly within what the data supports:
 //!
-//! 1. Bash-based navigation (`grep`/`find`/`cat`/`rg`) cannot be detected here,
-//!    because command text is not in the table. Those turns are simply not
-//!    counted — this makes the analyzer a lower bound, never an over-claim.
+//! 1. Bash commands are not stored. Since #1118 ingestion classifies each
+//!    `Bash` use with the `PreToolUse` hook's grep parser and stores only the
+//!    verdict: `Bash:grep` for a single-symbol code search (`grep -n "fn foo"
+//!    src/lib.rs`, `grep -n "const X" app.js`), `Bash:grep-skip:<reason>`
+//!    for a search deliberately not counted (see
+//!    [`crate::hooks::BashSearchExclusion`]), and plain `Bash` for anything
+//!    else. Turns ingested before that carry plain `Bash` and stay uncounted,
+//!    and `cat`/`find` navigation is still not classified: a lower bound.
 //! 2. Turns parsed before #474 carry `tool_result_tokens = 0` and so contribute
 //!    nothing to the addressable total. The figure is not recomputed for them:
 //!    it comes from transcript lines the database does not keep, and re-reading
@@ -53,6 +58,9 @@
 /// recoverable column, and the addressable figure stands on its own.
 pub const RECOVERABLE_FRACTION: f64 = 0.5;
 
+use crate::accounting::constants::{BASH_SEARCH_EXCLUDED_PREFIX, BASH_SEARCH_TOOL};
+use crate::hooks::BashSearchExclusion;
+
 /// Which tokensave graph query would have replaced a navigation tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NavBucket {
@@ -62,6 +70,8 @@ pub enum NavBucket {
     Grep,
     /// `Glob` file discovery → `files` / `search`.
     Glob,
+    /// A `Bash` `grep`/`rg`/`git grep` for one symbol in code (#1118).
+    BashGrep,
 }
 
 impl NavBucket {
@@ -71,6 +81,7 @@ impl NavBucket {
             Self::Read => "read",
             Self::Grep => "grep",
             Self::Glob => "glob",
+            Self::BashGrep => "bash_grep",
         }
     }
 
@@ -80,6 +91,7 @@ impl NavBucket {
             Self::Read => "Read",
             Self::Grep => "Grep",
             Self::Glob => "Glob",
+            Self::BashGrep => "Bash grep",
         }
     }
 
@@ -89,12 +101,13 @@ impl NavBucket {
             Self::Read => "outline / read / node",
             Self::Grep => "search / callers / callees / impact",
             Self::Glob => "files / search",
+            Self::BashGrep => "search / callers / impact",
         }
     }
 }
 
 /// The navigation tool names this analyzer recognizes from `tool_names`.
-const NAV_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
+const NAV_TOOLS: [&str; 4] = ["Read", "Grep", "Glob", BASH_SEARCH_TOOL];
 
 /// Per-bucket tally of replaceable navigation turns.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +151,39 @@ pub struct DiscoverReport {
     pub total_turns: u64,
     /// Per-bucket stats, ranked by addressable input tokens descending.
     pub buckets: Vec<BucketStat>,
+    /// Turns holding a Bash code search that were not counted, by reason
+    /// (#1118), in [`ExclusionReason`] order. A turn is counted once per
+    /// distinct reason it carries.
+    pub exclusions: Vec<(ExclusionReason, u64)>,
+}
+
+/// Why a turn holding a Bash code search was left out of the buckets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ExclusionReason {
+    /// The search itself is not a single-symbol code search.
+    Command(BashSearchExclusion),
+    /// The search qualified, but the turn also used a tool that is not
+    /// navigation (an edit, another command, a delegation), so none of the
+    /// turn's cost is attributed to navigation.
+    MixedWithOtherTools,
+}
+
+impl ExclusionReason {
+    /// Stable snake-case code for machine output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Command(why) => why.as_str(),
+            Self::MixedWithOtherTools => "mixed_with_other_tools",
+        }
+    }
+
+    /// One-line explanation for the text report.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Command(why) => why.description(),
+            Self::MixedWithOtherTools => "same turn also used non-navigation tools",
+        }
+    }
 }
 
 impl DiscoverReport {
@@ -190,8 +236,9 @@ fn split_tools(tool_names: &str) -> Vec<&str> {
 /// recognized navigation tool. Mixed turns (navigation + edit/Bash/etc.) return
 /// `None` so their cost is never attributed to navigation. When several
 /// navigation tools appear, the bucket is chosen by a fixed priority
-/// (`Grep` > `Glob` > `Read`): a cross-file search is the strongest signal of
-/// an opportunity a graph query would have answered, so it wins attribution.
+/// (`Grep` > Bash grep > `Glob` > `Read`): a cross-file search is the strongest
+/// signal of an opportunity a graph query would have answered, so it wins
+/// attribution.
 fn classify_nav(tools: &[&str]) -> Option<NavBucket> {
     if tools.is_empty() {
         return None;
@@ -201,11 +248,31 @@ fn classify_nav(tools: &[&str]) -> Option<NavBucket> {
     }
     if tools.contains(&"Grep") {
         Some(NavBucket::Grep)
+    } else if tools.contains(&BASH_SEARCH_TOOL) {
+        Some(NavBucket::BashGrep)
     } else if tools.contains(&"Glob") {
         Some(NavBucket::Glob)
     } else {
         Some(NavBucket::Read)
     }
+}
+
+/// Why a turn that holds a Bash code search was not counted, if it was not.
+fn turn_exclusions(tools: &[&str], counted: bool) -> Vec<ExclusionReason> {
+    let mut reasons: Vec<ExclusionReason> = tools
+        .iter()
+        .filter_map(|t| t.strip_prefix(BASH_SEARCH_EXCLUDED_PREFIX))
+        .filter_map(BashSearchExclusion::from_code)
+        .map(ExclusionReason::Command)
+        .collect();
+    if !counted && tools.contains(&BASH_SEARCH_TOOL) {
+        reasons.push(ExclusionReason::MixedWithOtherTools);
+    }
+    // A turn that was counted is reported by its bucket; a skipped search
+    // beside counted navigation is still worth naming.
+    reasons.sort_unstable();
+    reasons.dedup();
+    reasons
 }
 
 /// Analyze `(tool_names, input_tokens)` rows into a ranked [`DiscoverReport`].
@@ -231,14 +298,27 @@ pub fn analyze(turns: &[(String, u64)]) -> DiscoverReport {
         addressable_input_tokens: 0,
         turns_with_measured_sizes: 0,
     };
+    let mut bash_grep = BucketStat {
+        bucket: NavBucket::BashGrep,
+        turns: 0,
+        addressable_input_tokens: 0,
+        turns_with_measured_sizes: 0,
+    };
+    let mut exclusions: std::collections::BTreeMap<ExclusionReason, u64> =
+        std::collections::BTreeMap::new();
 
     for (tool_names, input_tokens) in turns {
         let tools = split_tools(tool_names);
-        if let Some(bucket) = classify_nav(&tools) {
+        let bucket = classify_nav(&tools);
+        for reason in turn_exclusions(&tools, bucket.is_some()) {
+            *exclusions.entry(reason).or_default() += 1;
+        }
+        if let Some(bucket) = bucket {
             let stat = match bucket {
                 NavBucket::Read => &mut read,
                 NavBucket::Grep => &mut grep,
                 NavBucket::Glob => &mut glob,
+                NavBucket::BashGrep => &mut bash_grep,
             };
             stat.turns += 1;
             stat.addressable_input_tokens =
@@ -251,7 +331,7 @@ pub fn analyze(turns: &[(String, u64)]) -> DiscoverReport {
 
     // Keep only buckets that actually fired, ranked by addressable tokens
     // descending (ties broken by the stable bucket identifier).
-    let mut buckets: Vec<BucketStat> = [read, grep, glob]
+    let mut buckets: Vec<BucketStat> = [read, grep, glob, bash_grep]
         .into_iter()
         .filter(|b| b.turns > 0)
         .collect();
@@ -264,6 +344,7 @@ pub fn analyze(turns: &[(String, u64)]) -> DiscoverReport {
     DiscoverReport {
         total_turns: turns.len() as u64,
         buckets,
+        exclusions: exclusions.into_iter().collect(),
     }
 }
 
@@ -322,9 +403,50 @@ mod tests {
 
     #[test]
     fn bash_only_turn_is_not_counted() {
-        // Bash command content is not stored, so Bash turns are never nav.
+        // An untagged Bash use is not a recognized search (or predates #1118).
         let report = analyze(&[t("Bash", 3000)]);
         assert!(report.buckets.is_empty());
+        assert!(report.exclusions.is_empty());
+    }
+
+    #[test]
+    fn tagged_bash_search_turn_is_bash_grep_bucket() {
+        let report = analyze(&[t("Bash:grep", 700), t("Read,Bash:grep", 300)]);
+        assert_eq!(report.buckets.len(), 1);
+        assert_eq!(report.buckets[0].bucket, NavBucket::BashGrep);
+        assert_eq!(report.buckets[0].turns, 2);
+        assert_eq!(report.buckets[0].addressable_input_tokens, 1000);
+        assert!(report.exclusions.is_empty());
+    }
+
+    #[test]
+    fn native_grep_outranks_bash_grep_in_one_turn() {
+        let report = analyze(&[t("Grep,Bash:grep", 100)]);
+        assert_eq!(report.buckets[0].bucket, NavBucket::Grep);
+    }
+
+    #[test]
+    fn excluded_and_mixed_bash_searches_are_explained() {
+        let report = analyze(&[
+            t("Bash:grep-skip:non_code_target", 100),
+            t(
+                "Bash:grep-skip:non_code_target,Bash:grep-skip:non_code_target",
+                100,
+            ),
+            t("Bash:grep,Edit", 100),
+            t("Bash:grep-skip:unknown_future_code", 100),
+        ]);
+        assert!(report.buckets.is_empty());
+        assert_eq!(
+            report.exclusions,
+            vec![
+                (
+                    ExclusionReason::Command(BashSearchExclusion::NonCodeTarget),
+                    2
+                ),
+                (ExclusionReason::MixedWithOtherTools, 1),
+            ]
+        );
     }
 
     #[test]

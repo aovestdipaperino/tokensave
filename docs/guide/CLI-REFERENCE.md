@@ -44,6 +44,7 @@ tokensave cost --by-agent          # Cost grouped by supported agent
 tokensave cost --by-model          # Cost grouped by model
 tokensave cost --by-task           # Cost grouped by task category
 tokensave cost --export json|csv   # Export cost data
+tokensave discover [--since RANGE] [--json]  # Navigation turns a tokensave query could have served (default: 30d)
 tokensave gain [--all] [--range R] [--json]   # Tokens saved by MCP calls (default: this project, 30d)
 tokensave gain --history           # Tokens saved per day
 tokensave gain --by-tool           # Calls and tokens saved per tool
