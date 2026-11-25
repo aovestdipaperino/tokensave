@@ -20,7 +20,7 @@ use crate::cloud::UpdateNoticeScope;
 use crate::errors::{Result, TokenSaveError};
 use crate::global_db::GlobalDb;
 use crate::profile::McpPhase;
-use crate::tokensave::TokenSave;
+use crate::tokensave::{BranchLease, TokenSave};
 
 use super::graph_scope::{
     collapse_worktree_roots, decode_selected_inputs, merge_federated_results, qualify_result,
@@ -3100,7 +3100,7 @@ impl McpServer {
                 )
             }
         };
-        let cg = lease.as_deref().unwrap_or(cg);
+        let cg = lease.graph().unwrap_or(cg);
         match uri {
             "tokensave://status" => Self::read_resource_status(cg, id).await,
             "tokensave://files" => Self::read_resource_files(cg, id).await,
@@ -3565,7 +3565,7 @@ impl McpServer {
         };
         let local_graph = runtime_lease
             .as_ref()
-            .and_then(|lease| lease.as_deref())
+            .and_then(|lease| lease.graph())
             .or(self.cg.as_ref());
         resolution.finish();
 
@@ -3607,14 +3607,22 @@ impl McpServer {
             let quality_comparison = tool_name == "tokensave_branch_diff"
                 && arguments.get("quality").and_then(Value::as_bool) == Some(true);
             let freshness = crate::profile::span(McpPhase::Freshness);
-            if !quality_comparison && runtime_lease.as_ref().is_some_and(|lease| lease.is_none()) {
+            if !quality_comparison
+                && runtime_lease
+                    .as_ref()
+                    .is_some_and(|lease| !lease.is_switched())
+            {
                 self.maybe_sync_if_stale().await;
             }
 
             // Evaluate the local project's version-aware reindex on every
             // local path. The atomic once-gate keeps this at most once per
             // session without letting a selected call consume the check.
-            if !quality_comparison && runtime_lease.as_ref().is_some_and(|lease| lease.is_none()) {
+            if !quality_comparison
+                && runtime_lease
+                    .as_ref()
+                    .is_some_and(|lease| !lease.is_switched())
+            {
                 self.maybe_reindex_on_version_bump();
             }
             freshness.finish();
@@ -3639,7 +3647,7 @@ impl McpServer {
             (None, Some(cg)) => (cg, self.scope_prefix()),
             (None, None) => return self.no_default_project_error(id),
         };
-        if selected.is_none() && runtime_lease.as_ref().is_some_and(|lease| lease.is_some()) {
+        if selected.is_none() && runtime_lease.as_ref().is_some_and(BranchLease::is_switched) {
             if let Ok(fresh) = dispatch_graph.get_file_token_map().await {
                 if let Ok(mut map) = self.file_token_map.lock() {
                     *map = fresh;
@@ -3855,6 +3863,22 @@ impl McpServer {
                                 content.push(json!({"type": "text", "text": marker}));
                             }
                         }
+                    }
+                }
+
+                // Warn if a concurrent sync kept this branch's index from
+                // being refreshed (#1123).
+                if let Some(warning) = runtime_lease
+                    .as_ref()
+                    .and_then(BranchLease::freshness_warning)
+                {
+                    let warning = format!("WARNING: {warning}");
+                    if let Some(content) = result
+                        .value
+                        .get_mut("content")
+                        .and_then(|c| c.as_array_mut())
+                    {
+                        content.insert(0, json!({"type": "text", "text": &warning}));
                     }
                 }
 

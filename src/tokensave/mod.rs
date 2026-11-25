@@ -26,6 +26,7 @@ use crate::types::{
     TaskContext, UnresolvedRef,
 };
 
+mod constants;
 mod extract;
 mod guard;
 mod indexing;
@@ -45,7 +46,7 @@ pub use guard::{
 };
 pub use indexing::{detect_skipped_hidden_dirs, detect_tracked_ambiguous_excludes};
 pub use rename::{validate_identifier, RenameConfidence, RenameOutcome, RenamePlan, RenameSite};
-pub use runtime::BranchRuntime;
+pub use runtime::{BranchLease, BranchRuntime};
 pub use staleness::{AutoSyncScope, BranchDrift, DEFAULT_MAX_AUTO_SYNC_FILES};
 pub use util::is_test_file;
 pub(crate) use util::*;
