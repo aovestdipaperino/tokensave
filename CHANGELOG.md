@@ -9,6 +9,8 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- `tokensave doctor` no longer counts agents that tokensave was never installed in. It checks an agent in full only when the agent is registered or its configuration has the tokensave MCP server, or when tokensave content was left behind (a partial install or incomplete removal, which also gets one warning naming the repair and removal commands). Other agents are listed in a new **Agent integrations** summary, separated into detected and not installed, without adding issues or warnings. `doctor --agent ID` for an agent without tokensave prints one warning (Refs #1116).
+
 - Grep hook denials suggest indexed definitions and preserve the original
   text-search pattern, paths, and filters in the fallback guidance. The hook
   no longer adds call syntax to bare identifiers such as constants (Refs #1115).

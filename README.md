@@ -728,7 +728,7 @@ Run a comprehensive health check of your tokensave installation:
 tokensave doctor
 ```
 
-Checks: binary location, project index, global DB, user config, agent integration (MCP server, hooks, permissions, prompt rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave install`. Use `--agent` to check a specific agent only.
+Checks: binary location, project index, global DB, user config, agent integration (MCP server, hooks, permissions, prompt rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave install`. Use `--agent` to check a specific agent only. Agents where tokensave was never installed are listed but not counted as issues; see [Troubleshooting](docs/guide/TROUBLESHOOTING.md#tokensave-doctor).
 
 Doctor also validates that each installed hook uses the correct tokensave subcommand and auto-repairs broken hooks.
 

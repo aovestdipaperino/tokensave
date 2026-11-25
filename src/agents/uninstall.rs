@@ -337,6 +337,15 @@ impl UninstallPlan {
         self.entries.is_empty()
     }
 
+    /// True when the inventory found TokenSave-owned content to remove, or a
+    /// file it could not inspect. `doctor` uses this to tell a partial or
+    /// incomplete removal from an agent that was never set up (#1116).
+    pub fn has_owned_content(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| matches!(entry.change, Change::Edit { .. } | Change::Failed(_)))
+    }
+
     pub fn print(&self, output: UninstallOutput) {
         if !output.quiet {
             for entry in &self.entries {
