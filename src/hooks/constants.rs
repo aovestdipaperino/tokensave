@@ -65,3 +65,6 @@ pub(super) const CODE_CONTEXT_WORDS: &[&str] = &[
 /// Commands and short options recognized by Claude's Bash search advice.
 pub(super) const BASH_ADVISORY_GREP_TOOLS: &[&str] = &["grep", "rg", "ag"];
 pub(super) const BASH_ADVISORY_GREP_FLAGS: &str = "nrRw";
+
+/// Variable declaration prefixes understood by Claude's Bash search advice.
+pub(super) const JS_VARIABLE_DECLARATION_KEYWORDS: &[&str] = &["const", "let", "var"];

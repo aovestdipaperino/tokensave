@@ -2058,6 +2058,81 @@ fn test_claude_bash_suggests_scoped_definitions_without_deciding_permission() {
     .is_empty());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_bash_advises_on_indexed_javascript_declarations() {
+    let project = tempfile::tempdir().expect("create project");
+    let root = project.path();
+    let source_dir = root.join("src");
+    std::fs::create_dir(&source_dir).expect("create source directory");
+    std::fs::write(
+        source_dir.join("example.js"),
+        "const EXAMPLE_VALUE = 42;\nlet readValue = () => EXAMPLE_VALUE;\n\
+         var legacyValue = EXAMPLE_VALUE;\nfunction getValue() { return readValue(); }\n",
+    )
+    .expect("write JavaScript fixture");
+    std::fs::write(root.join("README.md"), "const EXAMPLE_VALUE").expect("write Markdown");
+    std::fs::write(source_dir.join("example.rs"), "// const EXAMPLE_VALUE")
+        .expect("write Rust fixture");
+
+    let index = tokensave::tokensave::TokenSave::init(root)
+        .await
+        .expect("initialize index");
+    index.sync().await.expect("index fixture");
+    drop(index);
+
+    for (pattern, symbol) in [
+        ("const EXAMPLE_VALUE", "EXAMPLE_VALUE"),
+        ("let readValue", "readValue"),
+        ("function getValue", "getValue"),
+        ("EXAMPLE_VALUE", "EXAMPLE_VALUE"),
+    ] {
+        let command = format!("grep -n '{pattern}' src/example.js");
+        let result = claude_bash_at(root, &command);
+        let response: serde_json::Value = serde_json::from_str(&result).expect(&command);
+        let output = &response["hookSpecificOutput"];
+        assert!(output.get("permissionDecision").is_none());
+        assert!(output.get("updatedInput").is_none());
+        let scope = format!("src{}example.js", std::path::MAIN_SEPARATOR);
+        let args = serde_json::json!({
+            "query": symbol,
+            "graph_root": root.canonicalize().expect("canonical project root"),
+            "path_include": [scope],
+        });
+        let advice = output["additionalContext"].as_str().expect("search advice");
+        assert!(
+            advice.contains(&format!("tokensave_search {args}")),
+            "{command}"
+        );
+    }
+
+    for command in [
+        "grep -n 'var legacyValue' src/example.js",
+        "grep -n 'let unknown' src/example.js",
+        "grep -n 'const EXAMPLE_VALUE' README.md",
+        "grep -n 'const EXAMPLE_VALUE' src/example.rs",
+        "grep -n 'const EXAMPLE_VALUE is documented' src/example.js",
+        "grep -n '^const EXAMPLE_VALUE' src/example.js",
+        "grep -n 'const .*VALUE' src/example.js",
+        "grep -rn 'const EXAMPLE_VALUE' src/",
+        "tokensave grep grep -n 'const EXAMPLE_VALUE' src/example.js",
+    ] {
+        assert!(claude_bash_at(root, command).is_empty(), "{command}");
+    }
+}
+
+#[test]
+fn claude_bash_advises_on_var_prefix_when_name_is_indexed() {
+    let (_tmp, root) = indexed_project_with_nodes(&["legacyValue"]);
+    std::fs::write(root.join("example.js"), "var legacyValue = 42;").expect("write source");
+    let result = claude_bash_at(&root, "rg -n 'var legacyValue' example.js");
+    let response: serde_json::Value = serde_json::from_str(&result).expect("search advice");
+    let output = &response["hookSpecificOutput"];
+    assert!(output.get("permissionDecision").is_none());
+    assert!(output["additionalContext"]
+        .as_str()
+        .is_some_and(|advice| advice.contains(r#""query":"legacyValue""#)));
+}
+
 #[test]
 fn test_claude_bash_falls_through_with_missing_unreadable_or_stale_index() {
     let (_tmp, missing_root) = indexed_project_with_nodes(&["verify"]);

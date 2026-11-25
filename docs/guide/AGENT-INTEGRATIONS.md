@@ -129,6 +129,8 @@ An Agent call with an explicit non-Explore `subagent_type` always passes. An unt
 
 **Bash text searches.** The Bash hook can suggest a scoped `tokensave_search` lookup for definitions when a simple `grep`, `rg`, or `ag` command names one indexed symbol and one file or directory. Scope is expressed using the MCP tool's path substring filter. The original Bash command runs with Claude Code's usual permissions and supplies the exact matches, line numbers, and shell output. When the MCP tool is missing, disconnected, or returns stale or incomplete results, use the Bash results directly. Explicit fixed-string searches, structural patterns, and compound Bash commands run without a symbol suggestion.
 
+Searches within a single JavaScript or TypeScript file can include a `const`, `let`, `var`, or `function` declaration prefix when the name is indexed.
+
 To suppress the suggestion for one invocation, prefix the search in the Bash tool's command field:
 
 ```bash
