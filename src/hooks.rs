@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::extraction::{LanguageExtractor, TypeScriptExtractor};
+
 mod constants;
 
 use constants::{CODE_CONTEXT_WORDS, CODE_RESEARCH_PHRASES, GENERIC_EXPLORATION_PHRASES};
@@ -805,32 +807,24 @@ fn bash_search_advice(command: &str, env: &HookEnv) -> Option<String> {
     let [pattern, target] = &args[first_positional..] else {
         return None;
     };
-    if pattern.len() > MAX_PATTERN_LEN || !target_looks_like_code(target, &[], "", env) {
+    if pattern.len() > MAX_PATTERN_LEN
+        || target.starts_with('-')
+        || !target_looks_like_code(target, &[], "", env)
+    {
         return None;
     }
-    let found = classify_symbol_pattern(pattern)?;
-    let simple_pattern = match found.shape {
-        PatternShape::BareSymbol => pattern == found.symbol,
-        PatternShape::WordBoundary => true,
-        PatternShape::Definition => pattern.split_once(' ').is_some_and(|(keyword, name)| {
-            DEFINITION_KEYWORDS.contains(&keyword) && name == found.symbol
-        }),
-    };
-    if !simple_pattern || target.starts_with('-') {
-        return None;
-    }
-
     let root = env.project_root.as_deref()?.canonicalize().ok()?;
     let target = env.base()?.join(target).canonicalize().ok()?;
     let relative = target.strip_prefix(&root).ok()?;
+    let symbol = bash_advisory_symbol(pattern, &target)?;
     let mut scope = relative.to_str()?.to_owned();
     if target.is_dir() && !scope.is_empty() {
         scope.push(std::path::MAIN_SEPARATOR);
     }
-    if !probe_indexed_symbol(env, found.symbol)? {
+    if !probe_indexed_symbol(env, symbol)? {
         return None;
     }
-    let mut args = serde_json::json!({ "query": found.symbol, "graph_root": root });
+    let mut args = serde_json::json!({ "query": symbol, "graph_root": root });
     if !scope.is_empty() {
         args["path_include"] = serde_json::json!([scope]);
     }
@@ -848,6 +842,35 @@ fn bash_search_advice(command: &str, env: &HookEnv) -> Option<String> {
         })
         .to_string(),
     )
+}
+
+fn bash_advisory_symbol<'a>(pattern: &'a str, target: &Path) -> Option<&'a str> {
+    if let Some(found) = classify_symbol_pattern(pattern) {
+        let simple_pattern = match found.shape {
+            PatternShape::BareSymbol => pattern == found.symbol,
+            PatternShape::WordBoundary => true,
+            PatternShape::Definition => pattern.split_once(' ').is_some_and(|(keyword, name)| {
+                DEFINITION_KEYWORDS.contains(&keyword) && name == found.symbol
+            }),
+        };
+        return simple_pattern.then_some(found.symbol);
+    }
+
+    // Interpret variable prefixes only for a concrete JavaScript or TypeScript
+    // file. A directory or another language can contain those words as prose.
+    let (keyword, name) = pattern.split_once(' ')?;
+    if !constants::JS_VARIABLE_DECLARATION_KEYWORDS.contains(&keyword)
+        || !is_pure_identifier(name)
+        || name.contains(':')
+    {
+        return None;
+    }
+    let extension = target.extension()?.to_str()?;
+    let supported = TypeScriptExtractor
+        .extensions()
+        .iter()
+        .any(|ext| ext.eq_ignore_ascii_case(extension));
+    (supported && target.is_file()).then_some(name)
 }
 
 fn evaluate_bash_command(command: &str, env: &HookEnv) -> Option<String> {

@@ -18,6 +18,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
   inline `TOKENSAVE_DISABLE_GREP_HOOK=1` suppresses that suggestion for one
   invocation (Refs #1110).
 
+- Claude Code Bash searches for simple JavaScript and TypeScript variable
+  declarations can suggest scoped indexed definitions while the original text
+  search runs with its usual permissions (Refs #1114).
+
 - Harden crates.io commit provenance resolution: packaged metadata is accepted
   only from its `git.sha1` field, and remains available when incomplete root
   Git metadata cannot resolve a valid commit (Refs #1098).
