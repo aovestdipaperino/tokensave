@@ -16,6 +16,10 @@ Cargo recorded in the published package, with a `-dirty` suffix if the
 package was made from uncommitted changes. When neither is available, as in a
 source archive without that record, the commit is `unknown`.
 
+Use `tokensave tool --help` or `tokensave help tool` for the tool subcommand's
+help, and `tokensave tool <name> --help` for a specific tool's parameters.
+Place global diagnostics flags before the tool name.
+
 ```bash
 tokensave --version                # Print the installed version
 tokensave --version --verbose      # Include build metadata
