@@ -39,6 +39,12 @@ The same rule applies to a detached HEAD, which uses the index of the default br
 
 `tokensave_status` (and the CLI `tokensave status`) also explain *why* the branch is untracked. The status response gains `auto_track` (the effective setting) and `auto_track_hint`, which says whether automatic tracking is disabled, turned off for this run by `TOKENSAVE_AUTO_TRACK`, failed, or does not apply to a read-only view, and how to track the branch or enable automatic tracking. The hint itself is reported by the status tool only; the one exception is a tracking *failure*, whose reason is appended to the shared fallback warning so that MCP clients, which never see stderr, learn about it too.
 
+## Switching branches while the MCP server runs
+
+When the checkout moves to another branch, the MCP server switches to that branch's index and refreshes it before it answers the next local tool call. The `post-checkout` hook may be syncing in the background at that moment and holding the project sync lock. The server then waits up to 30 seconds for that sync to finish instead of failing the call. If the other sync has already refreshed the index, the server does not sync it a second time. The same wait applies when the server refreshes the current branch's index after an extractor change.
+
+If the lock is still held after 30 seconds, the call is answered from the existing index of the checked-out branch, never from another branch's index. The response starts with a `WARNING:` line that names the branch, says how long ago its index was last synced and which process holds the lock, and notes that a newly tracked branch may still hold a copy of its parent's index. The next call tries the refresh again. Errors that waiting cannot fix, such as an unreadable or malformed lockfile or a permission failure, are still reported as errors. A lock held by a running process is never removed.
+
 ## Default branch
 
 `tokensave init` records the repository's default branch in `.tokensave/branch-meta.json`. It uses the branch `refs/remotes/origin/HEAD` points to while that branch still exists locally or under `origin/`, then a local `main` or `master`, then the branch checked out at the time. `tokensave branch add` detects it the same way when it creates the branch metadata.
