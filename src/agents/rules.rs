@@ -176,16 +176,13 @@ prompt:\n\n\
 > for the files a literal search reports as `unscanned`, and Read only\n\
 > the ranges a result points to.\n\n\
 ### When the hook denies a search\n\n\
-A denied grep, glob, or find means the search looked like a code-symbol lookup \
-and a tokensave tool answers it better. It is not an obstacle to route around. \
-Use `tokensave_search` for a symbol by name, `tokensave_search` with \
-`literal: true` (searching each form a call takes in the file's language) or \
-`tokensave_callers` for its uses, `tokensave_impact` for what depends on it, \
-`tokensave_context` for a concept, and \
-`tokensave_files` for files by path. A search that is not about code (logs, \
-docs, config) passes when it names the file type, e.g. `--include='*.md'` or a \
-`*.md` glob. Set `TOKENSAVE_DISABLE_GREP_HOOK=1` only for a search that is \
-genuinely not about code symbols and still gets denied, and never pre-emptively.\n\n\
+Use `tokensave_search` by name for indexed definitions. For text matches \
+(including references and comments), preserve the original pattern, scope, and \
+filters. Use `tokensave grep` with a supported grep, rg, or git grep command to \
+add index facts, or run the original command with `TOKENSAVE_DISABLE_GREP_HOOK=1`. \
+Use `tokensave_callers` for indexed call edges, `tokensave_impact` for what depends \
+on a symbol, `tokensave_context` for a concept, and `tokensave_files` for paths. \
+For logs, docs, or config, name the file type, e.g. `--include='*.md'` or a `*.md` glob.\n\n\
 ### Bash search suggestions\n\n\
 Claude Code Bash searches run with their usual permissions. If the hook \
 suggests an indexed definition lookup, use the Bash output for exact matches \
