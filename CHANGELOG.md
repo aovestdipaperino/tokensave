@@ -38,6 +38,13 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Changed
 
+- Clarified in [Supported Languages](docs/guide/LANGUAGES.md) that Lite, Medium,
+  and Full tiers are Cargo compilation feature groups rather than semantic
+  quality levels, documented the language extractor contribution and upgrade
+  workflow (including syntactic extraction vs. semantic resolution), listed
+  missing Full-tier languages (`GDScript`, `XAML`, `Obsidian Canvas`), and
+  recorded current F# extraction limitations (Refs #1126).
+
 - Auto-approve read-only MCP tools by default where the integration supports exact grants. Write-tool approvals require an exact-name opt-in, and existing policy can be reset explicitly (Refs #1080).
 ### Internal
 
