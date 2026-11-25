@@ -25,9 +25,19 @@ fn tokensave(args: &[&str]) -> String {
 #[test]
 fn cli_tool_help_forms() {
     let subcommand_help = tokensave(&["help", "tool"]);
-    assert!(subcommand_help.contains("Usage: tokensave tool"));
     assert_eq!(tokensave(&["tool", "--help"]), subcommand_help);
-    assert!(tokensave(&["tool", "-h"]).contains("Usage: tokensave tool"));
+    let short_help = tokensave(&["tool", "-h"]);
+    for help in [&subcommand_help, &short_help] {
+        // Clap uses the executable's file name, which can include .exe.
+        assert!(
+            help.lines().any(|line| {
+                line.strip_prefix("Usage: ")
+                    .and_then(|usage| usage.split_whitespace().nth(1))
+                    == Some("tool")
+            }),
+            "expected tool subcommand usage in:\n{help}"
+        );
+    }
 
     for flag in ["--help", "-h"] {
         let tool_help = tokensave(&["tool", "search", flag]);
