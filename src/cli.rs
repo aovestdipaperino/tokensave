@@ -182,19 +182,15 @@ pub enum Commands {
     ///
     /// Run `tokensave tool` (no name) to list every available tool.
     /// Run `tokensave tool <name> --help` to see that tool's parameters.
-    //
-    // `disable_help_flag = true` lets `-h`/`--help` flow through to our parser
-    // so we can print the per-tool schema instead of clap's generic help.
-    #[command(disable_help_flag = true)]
     Tool {
-        /// MCP tool name (with or without the `tokensave_` prefix). Omit to list all tools.
-        name: Option<String>,
-        /// Tool arguments as alternating `--key value` flags, plus reserved flags
-        /// `--json`, `--project <path>`, `--args <json>`, and `-h`/`--help`.
-        /// Any value starting with `@` is read from that file (handy for
-        /// multi-line replacement bodies).
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
+        /// Optional MCP tool name (with or without the `tokensave_` prefix),
+        /// followed by tool arguments. Omit the name to list all tools.
+        /// Tool flags include `--json`, `--project <path>`, `--args <json>`,
+        /// and `-h`/`--help`. Values starting with `@` are read from a file.
+        // Capturing the name in the trailing positional lets clap handle help
+        // before the name and passes everything after it to the tool parser.
+        #[arg(trailing_var_arg = true, value_name = "TOOL_AND_ARGS")]
+        invocation: Vec<String>,
     },
     /// Configure agent integration (MCP server, permissions, hooks, prompt rules)
     #[command(name = "install", visible_alias = "claude-install")]

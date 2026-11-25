@@ -1,8 +1,5 @@
-//! `tokensave tool` prints whole results, so `format: "json"` output piped to
-//! a script always parses (#673). The MCP server's 15,000-character cap is
-//! for an agent's context window; on the CLI it used to cut JSON mid-object.
-//!
-//! Driven through the real binary because the cap is lifted in the CLI path.
+//! Exercise help routing (#1120) and uncapped JSON output (#673) through the
+//! real `tokensave tool` command.
 
 use std::process::{Command, Stdio};
 
@@ -26,6 +23,20 @@ fn tokensave(args: &[&str]) -> String {
 }
 
 #[test]
+fn cli_tool_help_forms() {
+    let subcommand_help = tokensave(&["help", "tool"]);
+    assert!(subcommand_help.contains("Usage: tokensave tool"));
+    assert_eq!(tokensave(&["tool", "--help"]), subcommand_help);
+    assert!(tokensave(&["tool", "-h"]).contains("Usage: tokensave tool"));
+
+    for flag in ["--help", "-h"] {
+        let tool_help = tokensave(&["tool", "search", flag]);
+        assert!(tool_help.starts_with("tokensave tool search"));
+        assert!(tool_help.contains("--query"));
+    }
+}
+
+#[test]
 fn cli_search_json_is_not_capped_and_parses() {
     let dir = TempDir::new().unwrap();
     let source: String = (0..300)
@@ -39,18 +50,19 @@ fn cli_search_json_is_not_capped_and_parses() {
     let root = dir.path().to_str().unwrap();
     tokensave(&["init", root]);
 
-    let out = tokensave(&[
-        "tool",
-        "search",
-        "--project",
-        root,
+    let args = [
         "--query",
         "shared_handler_name",
+        "--project",
+        root,
         "--limit",
         "300",
         "--format",
         "json",
-    ]);
+    ];
+    let out = tokensave(&[&["tool", "search"], args.as_slice()].concat());
+    let after_separator = tokensave(&[&["tool", "search", "--"], args.as_slice()].concat());
+    assert_eq!(out, after_separator);
 
     assert!(
         out.len() > 15_000,

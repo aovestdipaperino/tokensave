@@ -1161,8 +1161,12 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 global::check_for_update(&mut config, false, true);
             }
         }
-        Commands::Tool { name, args } => {
-            tool_command::run(name, args).await?;
+        Commands::Tool { invocation } => {
+            let mut invocation = invocation.into_iter().peekable();
+            let name = invocation.next();
+            // Clap used to consume the separator before the trailing arguments.
+            invocation.next_if(|arg| arg == "--");
+            tool_command::run(name, invocation.collect()).await?;
         }
         Commands::Install {
             agent,
