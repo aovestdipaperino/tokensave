@@ -181,21 +181,16 @@ fn denial_never_points_at_callers_for() {
 }
 
 #[test]
-fn denial_carries_copyable_calls_with_the_symbol() {
+fn denial_offers_definition_lookup_and_preserves_text_search() {
     let (_tmp, root) = project();
-    let r = reason("grep -rn MySymbol src", &root);
+    let message = reason("grep -rn MySymbol src", &root);
+    assert!(message.contains("references and comments"), "{message}");
     assert!(
-        r.contains(r#"tokensave_search {"query": "MySymbol"}"#),
-        "definition call missing: {r}"
+        message.contains("original pattern, paths, and filters"),
+        "{message}"
     );
-    assert!(
-        r.contains(r#"tokensave_search {"query": ".MySymbol(", "literal": true}"#),
-        "method-use call missing: {r}"
-    );
-    assert!(
-        r.contains(r#"tokensave_search {"query": "MySymbol(", "literal": true}"#),
-        "every-call call missing: {r}"
-    );
+    assert!(message.contains("`tokensave grep`"), "{message}");
+    assert!(!message.contains("MySymbol("), "{message}");
 }
 
 #[test]
@@ -208,8 +203,20 @@ fn denial_names_the_symbol_from_each_shape() {
         ("grep -rn 'def my_symbol' src", "my_symbol"),
     ] {
         let r = reason(command, &root);
-        let call = format!(r#"tokensave_search {{"query": "{symbol}"}}"#);
-        assert!(r.contains(&call), "{command}: expected `{call}` in {r}");
+        let (_, suggestion) = r
+            .split_once("tokensave_search ")
+            .expect("definition lookup");
+        let (arguments, _) = suggestion
+            .split_once(" for indexed definitions")
+            .expect("definition lookup purpose");
+        let arguments: serde_json::Value =
+            serde_json::from_str(arguments).expect("copyable JSON arguments");
+        assert_eq!(
+            arguments,
+            serde_json::json!({ "query": symbol }),
+            "{command}"
+        );
+        assert_eq!(r.matches("tokensave_search ").count(), 1, "{command}: {r}");
     }
 }
 
