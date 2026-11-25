@@ -979,6 +979,8 @@ The AI agent doesn't see tokensave tools.
 2. Restart the agent completely
 3. Check that `tokensave` is in your PATH: `which tokensave`
 
+Codex CLI drops MCP servers that start slower than its startup timeout; see [Codex CLI](docs/guide/TROUBLESHOOTING.md#codex-cli) for the checks `tokensave doctor --agent codex` runs.
+
 ### Missing symbols in search
 
 - Run `tokensave sync` to update the index

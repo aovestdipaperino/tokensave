@@ -164,6 +164,7 @@ pub mod constants;
 pub mod fs;
 pub mod hooks;
 pub mod integrations;
+pub mod mcp_probe;
 pub mod registry;
 pub mod rules;
 pub mod traits;

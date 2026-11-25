@@ -45,6 +45,7 @@ mod caveman_test;
 mod claude_agent_test;
 mod cloud_test;
 mod cobol_extraction_test;
+mod codex_doctor_test;
 mod complexity_test;
 mod config_test;
 mod constructors_language_test;
