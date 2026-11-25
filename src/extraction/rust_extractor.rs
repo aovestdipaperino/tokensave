@@ -1714,6 +1714,11 @@ impl RustExtractor {
     /// for every named type identifier it contains. For a type like
     /// `Result<Vec<T>, MyError>` this yields refs for `Result`, `Vec`, `T`,
     /// and `MyError` — letting the resolver wire them up to declared nodes.
+    ///
+    /// A path type (`io::Error`, `V::Value`, `Self::Error`) is emitted whole.
+    /// Its last segment alone would bind `Self::Error`, an associated type, to
+    /// whatever project type is named `Error` (#1109); the qualifier lets the
+    /// resolver check where the name lives, or decline.
     fn emit_type_refs(
         state: &mut ExtractionState,
         type_node: TsNode<'_>,
@@ -1731,6 +1736,22 @@ impl RustExtractor {
         kind: EdgeKind,
     ) {
         let n = cursor.node();
+        if n.kind() == "scoped_type_identifier" {
+            let path: String = state
+                .node_text(n)
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            state.unresolved_refs.push(UnresolvedRef {
+                from_node_id: from_id.to_string(),
+                reference_name: path,
+                reference_kind: kind,
+                line: n.start_position().row as u32,
+                column: n.start_position().column as u32,
+                file_path: state.file_path.clone(),
+            });
+            return;
+        }
         if n.kind() == "type_identifier" || n.kind() == "primitive_type" {
             state.unresolved_refs.push(UnresolvedRef {
                 from_node_id: from_id.to_string(),
