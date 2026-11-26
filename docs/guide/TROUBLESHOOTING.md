@@ -87,6 +87,20 @@ The AI agent doesn't see tokensave tools.
 2. Restart the agent completely
 3. Check that `tokensave` is in your PATH: `which tokensave`
 
+### Codex CLI
+
+Codex starts MCP servers when a session starts and drops any server that has not listed its tools within its startup timeout, which is 10 seconds unless configured. The session then has no `tokensave_*` tools and may show no error. Before `serve` answers, it can build a first index or migrate the index schema, and on a large project that can take longer than 10 seconds.
+
+`tokensave install --agent codex` sets `startup_timeout_sec = 60` in `[mcp_servers.tokensave]` in `~/.codex/config.toml`, unless the table already has a `startup_timeout_sec` or `startup_timeout_ms`. Run `tokensave doctor --agent codex` from an indexed project. Besides the registration and approvals, it checks:
+
+- that the server is not disabled with `enabled = false`
+- that the configured `command` can be found and its `args` include `serve`
+- the startup timeout, with a warning when it is not set
+- that `enabled_tools` or `disabled_tools` do not hide tokensave's read-only tools
+- a live startup: doctor launches the configured command with its `env` table, the way Codex would, in the current project. It sends `initialize` and `tools/list` and compares the time with the startup timeout. The probe runs only for a `tokensave` executable and only in an indexed project, so it never indexes a new repository. It stops the server afterwards.
+
+If the probe is slower than the timeout, raise `startup_timeout_sec`. If it fails, run the configured command with `serve` in the project to see its error output. Then start a new Codex session, because Codex reads MCP servers only at startup.
+
 ## Missing symbols in search
 
 - Run `tokensave sync` to update the index

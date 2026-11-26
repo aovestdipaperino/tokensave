@@ -1362,7 +1362,8 @@ fn test_healthcheck_gemini_clean_install() {
 fn test_healthcheck_codex_after_install() {
     let dir = TempDir::new().unwrap();
     let home = dir.path();
-    let ctx = make_install_ctx(home);
+    // Doctor now checks that Codex can launch the configured command (#587).
+    let ctx = make_install_ctx_with_real_bin(home);
     CodexIntegration.install(&ctx).unwrap();
 
     let mut dc = DoctorCounters::new();

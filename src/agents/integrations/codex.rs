@@ -5,11 +5,39 @@
 //! file (`~/.codex/config.toml`), per-tool auto-approval settings,
 //! and prompt rules via `AGENTS.md`. Codex has no hook system.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::errors::{Result, TokenSaveError};
 
 use super::*;
+
+/// Keys and defaults of a Codex `[mcp_servers.<name>]` table (#587).
+mod codex_config {
+    /// Seconds Codex waits for a server to finish `initialize` and
+    /// `tools/list`; slower servers are dropped and their tools never appear.
+    pub const STARTUP_TIMEOUT_SEC_KEY: &str = "startup_timeout_sec";
+    /// Older spelling of the same timeout, in milliseconds.
+    pub const STARTUP_TIMEOUT_MS_KEY: &str = "startup_timeout_ms";
+    /// Codex's own default when neither key is set.
+    pub const DEFAULT_STARTUP_TIMEOUT_SECS: u64 = 10;
+    /// What `install` writes: room for a first index or a schema migration
+    /// before `serve` answers `initialize`.
+    pub const INSTALLED_STARTUP_TIMEOUT_SECS: i64 = 60;
+    /// `false` keeps Codex from starting the server at all.
+    pub const ENABLED_KEY: &str = "enabled";
+    /// Allow list: when present, only these tools are exposed.
+    pub const ENABLED_TOOLS_KEY: &str = "enabled_tools";
+    /// Deny list: these tools are hidden.
+    pub const DISABLED_TOOLS_KEY: &str = "disabled_tools";
+    /// Extra environment for the server process.
+    pub const ENV_KEY: &str = "env";
+    /// Extra time the doctor probe allows past the timeout, to tell "slow"
+    /// from "hung".
+    pub const PROBE_GRACE_SECS: u64 = 10;
+    /// File stem of a command the doctor probe is willing to launch.
+    pub const TOKENSAVE_COMMAND_STEM: &str = "tokensave";
+}
 
 /// `OpenAI` Codex CLI agent.
 pub struct CodexIntegration;
@@ -83,6 +111,15 @@ impl AgentIntegration for CodexIntegration {
         let codex_dir = ctx.home.join(".codex");
         let config_path = codex_dir.join("config.toml");
         doctor_check_config(dc, &config_path, permissions_management_enabled(&ctx.home));
+        if let Some(server) = load_toml_file(&config_path).ok().and_then(|config| {
+            config
+                .get("mcp_servers")
+                .and_then(|servers| servers.get("tokensave"))
+                .and_then(toml::Value::as_table)
+                .cloned()
+        }) {
+            doctor_check_launch(dc, &server, &ctx.project_path);
+        }
         doctor_check_prompt(dc, &codex_dir);
     }
 
@@ -165,6 +202,17 @@ fn install_mcp_server(config_path: &Path, tokensave_bin: &str, ctx: &InstallCont
         "args".to_string(),
         toml::Value::Array(vec![toml::Value::String("serve".to_string())]),
     );
+    // Codex drops a server that has not listed its tools within 10 s, and a
+    // first index or schema migration can take longer (#587). Keep any
+    // timeout the user chose.
+    if !server_table.contains_key(codex_config::STARTUP_TIMEOUT_SEC_KEY)
+        && !server_table.contains_key(codex_config::STARTUP_TIMEOUT_MS_KEY)
+    {
+        server_table.insert(
+            codex_config::STARTUP_TIMEOUT_SEC_KEY.to_string(),
+            toml::Value::Integer(codex_config::INSTALLED_STARTUP_TIMEOUT_SECS),
+        );
+    }
 
     if manage_permissions {
         let tools = server_table
@@ -342,6 +390,218 @@ fn doctor_check_config(dc: &mut DoctorCounters, config_path: &Path, manage_permi
         ));
     } else {
         dc.warn("No tools auto-approved — Codex will prompt for each tool call");
+    }
+}
+
+/// Resolve an MCP `command` the way a process launcher would: a path is
+/// taken as written, a bare name is looked up on `PATH`.
+fn resolve_command(command: &str) -> Option<PathBuf> {
+    let path = Path::new(command);
+    if path.components().count() > 1 || path.is_absolute() {
+        return path.is_file().then(|| path.to_path_buf());
+    }
+    let search = std::env::var_os("PATH")?;
+    std::env::split_paths(&search).find_map(|dir| {
+        let candidate = dir.join(command);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if cfg!(windows) {
+            let exe = candidate.with_extension(std::env::consts::EXE_EXTENSION);
+            if exe.is_file() {
+                return Some(exe);
+            }
+        }
+        None
+    })
+}
+
+/// The startup timeout Codex applies to this server, and whether the config
+/// sets it explicitly.
+fn startup_timeout(server: &toml::Table) -> (Duration, bool) {
+    let as_secs = |v: &toml::Value| {
+        v.as_float()
+            .or_else(|| v.as_integer().map(|i| i as f64))
+            .filter(|s| s.is_finite() && *s > 0.0)
+    };
+    if let Some(secs) = server
+        .get(codex_config::STARTUP_TIMEOUT_SEC_KEY)
+        .and_then(as_secs)
+    {
+        return (Duration::from_secs_f64(secs), true);
+    }
+    if let Some(ms) = server
+        .get(codex_config::STARTUP_TIMEOUT_MS_KEY)
+        .and_then(as_secs)
+    {
+        return (Duration::from_secs_f64(ms / 1000.0), true);
+    }
+    (
+        Duration::from_secs(codex_config::DEFAULT_STARTUP_TIMEOUT_SECS),
+        false,
+    )
+}
+
+/// Read-only core tools a Codex tool filter hides, by name.
+fn filtered_core_tools(server: &toml::Table) -> Vec<String> {
+    let names = |key: &str| -> Option<Vec<String>> {
+        server.get(key).and_then(toml::Value::as_array).map(|list| {
+            list.iter()
+                .filter_map(toml::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+    };
+    let enabled = names(codex_config::ENABLED_TOOLS_KEY);
+    let disabled = names(codex_config::DISABLED_TOOLS_KEY).unwrap_or_default();
+    crate::agents::read_only_tool_names()
+        .into_iter()
+        .filter(|name| {
+            disabled.contains(name) || enabled.as_ref().is_some_and(|list| !list.contains(name))
+        })
+        .collect()
+}
+
+/// Check what decides whether Codex can start the server and see its tools
+/// (#587): `enabled`, the command, `args`, the startup timeout and tool
+/// filters, then a live handshake when that is safe to run.
+fn doctor_check_launch(dc: &mut DoctorCounters, server: &toml::Table, project_path: &Path) {
+    if server
+        .get(codex_config::ENABLED_KEY)
+        .and_then(toml::Value::as_bool)
+        == Some(false)
+    {
+        dc.fail(
+            "tokensave MCP server is disabled (enabled = false) in config.toml — Codex will \
+             not start it; remove the line or set it to true",
+        );
+        return;
+    }
+
+    let args: Vec<String> = server
+        .get("args")
+        .and_then(toml::Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(toml::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    if args.iter().any(|a| a == "serve") {
+        dc.pass("MCP server args include \"serve\"");
+    } else {
+        dc.fail("MCP server args missing \"serve\" — run `tokensave install --agent codex`");
+    }
+
+    let Some(command) = server.get("command").and_then(toml::Value::as_str) else {
+        dc.fail("MCP server entry has no command — run `tokensave install --agent codex`");
+        return;
+    };
+    let Some(resolved) = resolve_command(command) else {
+        dc.fail(&format!(
+            "MCP command not found: {command} — Codex cannot start the server; \
+             run `tokensave install --agent codex`"
+        ));
+        return;
+    };
+    dc.pass(&format!("MCP command resolves to {}", resolved.display()));
+
+    let (timeout, explicit) = startup_timeout(server);
+    if explicit {
+        dc.pass(&format!(
+            "Codex startup timeout: {:.0} s",
+            timeout.as_secs_f64()
+        ));
+    } else {
+        dc.warn(&format!(
+            "{key} not set: Codex drops servers that take over {default} s to list their \
+             tools, and a first index or schema migration can take longer — run \
+             `tokensave install --agent codex` to set {key} = {installed}",
+            key = codex_config::STARTUP_TIMEOUT_SEC_KEY,
+            default = codex_config::DEFAULT_STARTUP_TIMEOUT_SECS,
+            installed = codex_config::INSTALLED_STARTUP_TIMEOUT_SECS,
+        ));
+    }
+
+    let hidden = filtered_core_tools(server);
+    if !hidden.is_empty() {
+        dc.warn(&format!(
+            "{} / {} in config.toml hide {} tokensave tool(s) from Codex: {}",
+            codex_config::ENABLED_TOOLS_KEY,
+            codex_config::DISABLED_TOOLS_KEY,
+            hidden.len(),
+            hidden.join(", ")
+        ));
+    }
+
+    doctor_probe_handshake(dc, &resolved, &args, server, project_path, timeout);
+}
+
+/// Launch the configured server once and time `initialize` + `tools/list`
+/// against Codex's startup timeout (#587).
+///
+/// Runs only for a tokensave executable and from an indexed project: the
+/// server it starts is the one Codex would start here, and it neither
+/// indexes a new repository nor runs a command doctor does not recognize.
+fn doctor_probe_handshake(
+    dc: &mut DoctorCounters,
+    command: &Path,
+    args: &[String],
+    server: &toml::Table,
+    project_path: &Path,
+    timeout: Duration,
+) {
+    let is_tokensave = command
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.eq_ignore_ascii_case(codex_config::TOKENSAVE_COMMAND_STEM));
+    if !is_tokensave {
+        dc.info("Startup probe skipped: the MCP command is not a tokensave executable");
+        return;
+    }
+    if !crate::tokensave::TokenSave::is_initialized(project_path) {
+        dc.info(
+            "Startup probe skipped: run `tokensave doctor --agent codex` from an indexed \
+             project to time the server's startup",
+        );
+        return;
+    }
+    let envs: Vec<(String, String)> = server
+        .get(codex_config::ENV_KEY)
+        .and_then(toml::Value::as_table)
+        .map(|env| {
+            env.iter()
+                .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let deadline = timeout + Duration::from_secs(codex_config::PROBE_GRACE_SECS);
+    match crate::agents::mcp_probe::probe_stdio_server(command, args, project_path, &envs, deadline)
+    {
+        Ok(timings) if timings.tool_count == 0 => dc
+            .fail("Server started but listed no tools — check `tokensave serve` output for errors"),
+        Ok(timings) if timings.total > timeout => dc.fail(&format!(
+            "Server listed {} tools in {:.1} s, over Codex's {:.0} s startup timeout — Codex \
+             starts without tokensave tools; raise {} in config.toml",
+            timings.tool_count,
+            timings.total.as_secs_f64(),
+            timeout.as_secs_f64(),
+            codex_config::STARTUP_TIMEOUT_SEC_KEY
+        )),
+        Ok(timings) => dc.pass(&format!(
+            "Server answered initialize in {:.2} s and listed {} tools in {:.2} s \
+             (startup timeout {:.0} s)",
+            timings.initialize.as_secs_f64(),
+            timings.tool_count,
+            timings.total.as_secs_f64(),
+            timeout.as_secs_f64()
+        )),
+        Err(e) => dc.fail(&format!(
+            "Startup probe failed: {e}. Codex would start without tokensave tools; \
+             run `{} serve` in this project to see its error output",
+            command.display()
+        )),
     }
 }
 
