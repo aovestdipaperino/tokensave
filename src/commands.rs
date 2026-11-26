@@ -1313,6 +1313,22 @@ pub async fn handle_gain(
     Ok(())
 }
 
+/// Print why Bash code searches in range were not counted (#1118).
+fn print_discover_exclusions(report: &tokensave::accounting::DiscoverReport) {
+    if report.exclusions.is_empty() {
+        return;
+    }
+    println!();
+    println!("  Bash searches not counted:");
+    for (reason, turns) in &report.exclusions {
+        println!(
+            "    {turns:>6} turn(s)  {:<26} {}",
+            reason.as_str(),
+            reason.description()
+        );
+    }
+}
+
 /// Handle `tokensave discover`: surface file-navigation turns that a tokensave
 /// graph query could have served far more cheaply.
 ///
@@ -1361,6 +1377,17 @@ pub async fn handle_discover(since: &str, json_output: bool) -> tokensave::error
                 })
             })
             .collect();
+        let exclusions: Vec<_> = report
+            .exclusions
+            .iter()
+            .map(|(reason, turns)| {
+                serde_json::json!({
+                    "reason": reason.as_str(),
+                    "description": reason.description(),
+                    "turns": turns,
+                })
+            })
+            .collect();
         let out = serde_json::json!({
             "since": since,
             "recoverable_fraction": discover::RECOVERABLE_FRACTION,
@@ -1370,6 +1397,7 @@ pub async fn handle_discover(since: &str, json_output: bool) -> tokensave::error
             "total_addressable_input_tokens": report.total_addressable_input_tokens(),
             "total_recoverable_input_tokens": report.total_recoverable_input_tokens(),
             "buckets": buckets,
+            "excluded_bash_searches": exclusions,
         });
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
         return Ok(());
@@ -1381,16 +1409,17 @@ pub async fn handle_discover(since: &str, json_output: bool) -> tokensave::error
             "  No replaceable file-navigation turns found in {} examined turns.",
             report.total_turns
         );
+        print_discover_exclusions(&report);
         return Ok(());
     }
 
     println!(
-        "  {:<8} {:<32} {:>6} {:>14} {:>14}",
+        "  {:<9} {:<32} {:>6} {:>14} {:>14}",
         "Tool", "TokenSave alternative", "Turns", "Addressable", "Recoverable"
     );
     for b in &report.buckets {
         println!(
-            "  {:<8} {:<32} {:>6} {:>14} {:>14}",
+            "  {:<9} {:<32} {:>6} {:>14} {:>14}",
             b.bucket.tool_name(),
             b.bucket.suggestion(),
             b.turns,
@@ -1407,10 +1436,11 @@ pub async fn handle_discover(since: &str, json_output: bool) -> tokensave::error
     );
     println!(
         "  Conservative recoverable \u{2248} {} (lower bound: {:.0}% of addressable; \
-         excludes Bash grep/find/cat/rg, whose command text is not stored).",
+         Bash find/cat and Bash turns ingested before search classification are not counted).",
         tokensave::display::format_token_count(report.total_recoverable_input_tokens()),
         discover::RECOVERABLE_FRACTION * 100.0,
     );
+    print_discover_exclusions(&report);
 
     // Turns ingested before #474 carry no tool-result size, so a range reaching
     // back before the upgrade reports navigation turns worth zero tokens. Say
