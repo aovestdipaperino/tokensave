@@ -1989,6 +1989,8 @@ impl<'a> ReferenceResolver<'a> {
                     .copied()
                     .filter(|n| {
                         is_swift(&n.file_path)
+                            && (n.visibility != Visibility::Private
+                                || n.file_path == uref.file_path)
                             && matches!(
                                 n.kind,
                                 NodeKind::Class
@@ -2024,7 +2026,17 @@ impl<'a> ReferenceResolver<'a> {
             // both owners yield the same member: keep one copy per node.
             raw_matched.sort_unstable_by(|a, b| a.id.cmp(&b.id));
             raw_matched.dedup_by(|a, b| a.id == b.id);
-            let matched = filter_swift_overloads(uref, raw_matched);
+            let mut matched = filter_swift_overloads(uref, raw_matched);
+            if SWIFT_STDLIB_METHODS.contains(&method_name)
+                && split_swift_call_selector(&uref.reference_name).1.is_none()
+            {
+                matched.retain(|n| {
+                    !matches!(
+                        n.kind,
+                        NodeKind::Function | NodeKind::Method | NodeKind::Constructor
+                    ) || swift_sig_accepts_short_unlabeled(n.signature.as_deref())
+                });
+            }
             if matched.len() == 1 {
                 return Some(ResolvedRef {
                     original: uref.clone(),
@@ -2055,6 +2067,8 @@ impl<'a> ReferenceResolver<'a> {
                     if let Some(base_nodes) = self.name_cache.get(base_name) {
                         for b in base_nodes {
                             if is_swift(&b.file_path)
+                                && (b.visibility != Visibility::Private
+                                    || b.file_path == uref.file_path)
                                 && matches!(
                                     b.kind,
                                     NodeKind::Class
@@ -2172,6 +2186,10 @@ impl<'a> ReferenceResolver<'a> {
         kind_compatible(uref, &node.kind)
             && !self.is_own_type_via_other_value(uref, node)
             && !self.is_associated_type_of_bare_type_ref(uref, node)
+            && !(is_swift(&uref.file_path)
+                && is_swift(&node.file_path)
+                && node.file_path != uref.file_path
+                && node.visibility == Visibility::Private)
             && self.swift_target_visible(&uref.file_path, &node.file_path)
     }
 
@@ -2816,49 +2834,50 @@ fn swift_base_types(signature: &str) -> Vec<&str> {
 /// Narrow Swift callable overload candidates sharing the same qualified name by
 /// matching call-site argument labels/arity against parameter signatures.
 fn filter_swift_overloads<'n>(uref: &UnresolvedRef, candidates: Vec<&'n Node>) -> Vec<&'n Node> {
-    if !is_swift(&uref.file_path) || uref.reference_kind != EdgeKind::Calls || candidates.len() < 2
+    if !is_swift(&uref.file_path) || uref.reference_kind != EdgeKind::Calls || candidates.is_empty()
     {
         return candidates;
     }
     let (_, selector) = split_swift_call_selector(&uref.reference_name);
-    match selector {
-        Some(call_labels) => candidates
+    if let Some(call_labels) = selector {
+        return candidates
             .iter()
             .copied()
-            .filter(|n| swift_sig_matches_labels(n.signature.as_deref(), &call_labels))
-            .collect(),
-        None => {
-            // Only narrow unlabeled/0-1-arg calls when multiple candidates share
-            // a qualified name (true overloads), leaving singletons/function refs intact.
-            let mut has_overload_group = false;
-            for (idx, a) in candidates.iter().enumerate() {
-                if candidates[idx + 1..]
-                    .iter()
-                    .any(|b| a.qualified_name == b.qualified_name)
-                {
-                    has_overload_group = true;
-                    break;
-                }
-            }
-            if !has_overload_group {
-                return candidates;
-            }
-            let filtered: Vec<&'n Node> = candidates
-                .iter()
-                .copied()
-                .filter(|n| swift_sig_accepts_short_unlabeled(n.signature.as_deref()))
-                .collect();
-            if filtered.is_empty() {
-                candidates
-            } else {
-                filtered
-            }
+            .filter(|n| swift_sig_matches_node(n, &call_labels))
+            .collect();
+    }
+    if candidates.len() < 2 {
+        return candidates;
+    }
+    // Only narrow unlabeled/0-1-arg calls when multiple candidates share
+    // a qualified name (true overloads), leaving singletons/function refs intact.
+    let mut has_overload_group = false;
+    for (idx, a) in candidates.iter().enumerate() {
+        if candidates[idx + 1..]
+            .iter()
+            .any(|b| a.qualified_name == b.qualified_name)
+        {
+            has_overload_group = true;
+            break;
         }
+    }
+    if !has_overload_group {
+        return candidates;
+    }
+    let filtered: Vec<&'n Node> = candidates
+        .iter()
+        .copied()
+        .filter(|n| swift_sig_accepts_short_unlabeled(n.signature.as_deref()))
+        .collect();
+    if filtered.is_empty() {
+        candidates
+    } else {
+        filtered
     }
 }
 
-/// Parse Swift callable parameter specs `(external_label, has_default)` from `signature`.
-fn parse_swift_signature_params(signature: &str) -> Option<Vec<(String, bool)>> {
+/// Parse Swift callable parameter specs `(external_label, has_default, is_variadic)` from `signature`.
+fn parse_swift_signature_params(signature: &str) -> Option<Vec<(String, bool, bool)>> {
     let inner = swift_parameter_clause(signature)?;
     if inner.trim().is_empty() {
         return Some(Vec::new());
@@ -2940,19 +2959,37 @@ fn swift_matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
     None
 }
 
-fn parse_swift_single_param(param: &str) -> Option<(String, bool)> {
+fn parse_swift_single_param(param: &str) -> Option<(String, bool, bool)> {
     let trimmed = param.trim();
     if trimmed.is_empty() {
         return None;
     }
     let has_default = trimmed.contains('=');
-    let head = trimmed.split(':').next()?.trim();
+    let (head, tail) = match trimmed.split_once(':') {
+        Some((h, t)) => (h.trim(), Some(t)),
+        None => (trimmed, None),
+    };
+    let is_variadic = tail.is_some_and(|ty| {
+        ty.split('=')
+            .next()
+            .is_some_and(|t| t.trim().ends_with("..."))
+    });
     // A parameter attribute (`@ViewBuilder content: ...`) precedes its label.
     let label = head
         .split_whitespace()
         .find(|token| !token.starts_with('@'))?
         .to_string();
-    Some((label, has_default))
+    Some((label, has_default, is_variadic))
+}
+
+fn swift_sig_matches_node(node: &Node, call_labels: &[&str]) -> bool {
+    if !matches!(
+        node.kind,
+        NodeKind::Function | NodeKind::Method | NodeKind::Constructor
+    ) {
+        return true;
+    }
+    swift_sig_matches_labels(node.signature.as_deref(), call_labels)
 }
 
 fn swift_sig_matches_labels(signature: Option<&str>, call_labels: &[&str]) -> bool {
@@ -2960,11 +2997,16 @@ fn swift_sig_matches_labels(signature: Option<&str>, call_labels: &[&str]) -> bo
         return true;
     };
     let mut li = 0usize;
-    for (label, has_default) in &params {
+    for (label, has_default, is_variadic) in &params {
         let call_label = call_labels.get(li).copied();
         if call_label == Some(SWIFT_TRAILING_CLOSURE_LABEL) || call_label == Some(label.as_str()) {
             li += 1;
-        } else if !*has_default {
+            if *is_variadic {
+                while call_labels.get(li).copied() == Some("_") {
+                    li += 1;
+                }
+            }
+        } else if !*has_default && !*is_variadic {
             return false;
         }
     }
@@ -2977,8 +3019,8 @@ fn swift_sig_accepts_short_unlabeled(signature: Option<&str>) -> bool {
     };
     let required: Vec<&str> = params
         .iter()
-        .filter(|(_, has_default)| !*has_default)
-        .map(|(lbl, _)| lbl.as_str())
+        .filter(|(_, has_default, is_variadic)| !*has_default && !*is_variadic)
+        .map(|(lbl, _, _)| lbl.as_str())
         .collect();
     required.is_empty() || (required.len() == 1 && required[0] == "_")
 }
@@ -3507,19 +3549,22 @@ mod swift_resolver_unit_tests {
             parse_swift_signature_params(
                 "func request(_ handler: @escaping (Int) -> Void, queue: Int)"
             ),
-            Some(vec![("_".to_string(), false), ("queue".to_string(), false)])
+            Some(vec![
+                ("_".to_string(), false, false),
+                ("queue".to_string(), false, false),
+            ])
         );
         assert_eq!(
             parse_swift_signature_params("@available(macOS 10.15, *) func paint(color: Int)"),
-            Some(vec![("color".to_string(), false)])
+            Some(vec![("color".to_string(), false, false)])
         );
         assert_eq!(
             parse_swift_signature_params("init(@ViewBuilder content: () -> Content)"),
-            Some(vec![("content".to_string(), false)])
+            Some(vec![("content".to_string(), false, false)])
         );
         assert_eq!(
             parse_swift_signature_params("func make<T: Equatable>(item: T) -> [T]"),
-            Some(vec![("item".to_string(), false)])
+            Some(vec![("item".to_string(), false, false)])
         );
         assert!(swift_sig_matches_labels(
             Some("func load(id: Int, completion: (Int) -> Void)"),
@@ -3551,11 +3596,29 @@ mod swift_resolver_unit_tests {
                 "func run(pair: (Int, String), map: Dictionary<String, [Int]>, flag: Bool = false)"
             ),
             Some(vec![
-                ("pair".to_string(), false),
-                ("map".to_string(), false),
-                ("flag".to_string(), true),
+                ("pair".to_string(), false, false),
+                ("map".to_string(), false, false),
+                ("flag".to_string(), true, false),
             ])
         );
+        assert_eq!(
+            parse_swift_signature_params("func log(_ items: String..., level: Int = 0)"),
+            Some(vec![
+                ("_".to_string(), false, true),
+                ("level".to_string(), true, false),
+            ])
+        );
+        assert!(swift_sig_matches_labels(
+            Some("func log(_ items: String..., level: Int = 0)"),
+            &["_", "_", "level"]
+        ));
+        assert!(swift_sig_matches_labels(
+            Some("func log(_ items: String...)"),
+            &["_", "_", "_"]
+        ));
+        assert!(swift_sig_accepts_short_unlabeled(Some(
+            "func log(_ items: String...)"
+        )));
         assert!(swift_sig_matches_labels(None, &["x"]));
         assert!(swift_sig_matches_labels(
             Some("func run(a: Int, b: Int = 1)"),
@@ -3906,7 +3969,65 @@ mod swift_resolver_unit_tests {
         // `parse_swift_signature_params` empty comma segments (`seg_start..i` and trailing `seg_start..`).
         assert_eq!(
             parse_swift_signature_params("func f(, a: Int, )"),
-            Some(vec![("a".to_string(), false)])
+            Some(vec![("a".to_string(), false, false)])
         );
+
+        // Single-candidate explicit selector rejection prevents `self.init(...0:)` self-recursion.
+        let single_init = swift_node(
+            "tile-init",
+            NodeKind::Constructor,
+            "init",
+            "Tile::init",
+            "Sources/App/Tile.swift",
+            Some("init(route: Int)"),
+        );
+        let single_init_ref = UnresolvedRef {
+            from_node_id: "tile-init".to_string(),
+            reference_name: "self.init(route:0:)".to_string(),
+            reference_kind: EdgeKind::Calls,
+            line: 20,
+            column: 8,
+            file_path: "Sources/App/Tile.swift".to_string(),
+        };
+        assert!(filter_swift_overloads(&single_init_ref, vec![&single_init]).is_empty());
+
+        // Non-callable property target is never rejected by `swift_sig_matches_node`.
+        let closure_prop = swift_node(
+            "cb-prop",
+            NodeKind::Property,
+            "cb",
+            "Tile::cb",
+            "Sources/App/Tile.swift",
+            Some("var cb: (Int) -> Void"),
+        );
+        assert_eq!(
+            filter_swift_overloads(&single_init_ref, vec![&closure_prop]).len(),
+            1
+        );
+
+        // Cross-file `Visibility::Private` Swift node is rejected by `is_candidate`.
+        let mut priv_method = swift_node(
+            "priv-ext-append",
+            NodeKind::Method,
+            "append",
+            "Array::append",
+            "Sources/App/PrivateExt.swift",
+            Some("mutating func append(optional: String?, key: String)"),
+        );
+        priv_method.visibility = Visibility::Private;
+        let cross_file_ref = UnresolvedRef {
+            from_node_id: "caller-fn".to_string(),
+            reference_name: "Array::append".to_string(),
+            reference_kind: EdgeKind::Calls,
+            line: 21,
+            column: 4,
+            file_path: "Sources/App/Caller.swift".to_string(),
+        };
+        assert!(!resolver.is_candidate(&cross_file_ref, &priv_method));
+        let same_file_ref = UnresolvedRef {
+            file_path: "Sources/App/PrivateExt.swift".to_string(),
+            ..cross_file_ref
+        };
+        assert!(resolver.is_candidate(&same_file_ref, &priv_method));
     }
 }

@@ -320,7 +320,7 @@ fn test_swift_callee_names_by_receiver_shape() {
             "Double",
             "Inner::make",
             "helper",
-            "items.allSatisfy",
+            "items.allSatisfy(0:)",
             "poll",
             "worker.start"
         ]
@@ -1011,7 +1011,7 @@ class Widget: Foundation.NSObject, Sendable {
         .iter()
         .find(|n| n.kind == NodeKind::Enum && n.name == "Mode")
         .expect("Mode enum");
-    assert_eq!(mode_enum.visibility, Visibility::Pub);
+    assert_eq!(mode_enum.visibility, Visibility::PubCrate);
     let internal_fn = res
         .nodes
         .iter()
@@ -1102,4 +1102,176 @@ func {pad_293}中Suffix(param: Int) {{
         .expect("utf8_fn");
     let utf8_sig = utf8_fn.signature.as_deref().expect("utf8_sig");
     assert!(utf8_sig.len() < 300, "sig len {}", utf8_sig.len());
+}
+
+#[test]
+fn test_swift_private_extension_guards_nested_fns_shorthand_trailing_and_defaults() {
+    let source = r#"import Foundation
+
+private extension Array {
+    mutating func append(optional: String?, key: String) {}
+    public func exposedHelper() {}
+    var countTag: Int { 1 }
+}
+
+struct Repo {
+    func save() {}
+}
+
+struct Collector {
+    static func appleSignature(_ path: String) -> Bool { true }
+    init(isAppleSigned: (String) -> Bool = Collector.appleSignature) {}
+}
+
+struct HeroView {
+    var body: String { uptime }
+    var uptime: String {
+        style(.body.weight())
+    }
+    var isEnabled: Bool { true }
+    func check() -> Bool { !isEnabled }
+}
+
+final class Reader {
+    func servers(for key: String) -> [String] { [] }
+    private static func parseValue(_ raw: String?) -> String? { raw }
+    static func parse(_ object: [String: Any], maybeRepo: Repo?) {
+        func localHelper() {}
+        func flush() {
+            localHelper()
+            _ = parseValue("x")
+        }
+        flush()
+        guard let servers = object["mcpServers"] as? [String: String],
+              let repo = maybeRepo else {
+            return
+        }
+        _ = servers["main"]
+        _ = servers[computeKey()]
+        repo.save()
+        _ = installedTerminals { true }
+    }
+}
+"#;
+    let result = SwiftExtractor.extract("EdgeCases.swift", source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+    // B1: private extension and unannotated members inherit Private; explicit `public` keeps Pub.
+    let priv_ext = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Extension && n.name == "Array")
+        .expect("Array extension");
+    assert_eq!(priv_ext.visibility, Visibility::Private);
+    let priv_append = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Method && n.name == "append")
+        .expect("append method");
+    assert_eq!(priv_append.visibility, Visibility::Private);
+    let pub_helper = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Method && n.name == "exposedHelper")
+        .expect("exposedHelper method");
+    assert_eq!(pub_helper.visibility, Visibility::Pub);
+    let priv_prop = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Property && n.name == "countTag")
+        .expect("countTag prop");
+    assert_eq!(priv_prop.visibility, Visibility::Private);
+
+    // Collect calls emitted by `Reader::parse`.
+    let parse_node = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Method && n.name == "parse")
+        .expect("parse method");
+    let parse_calls: Vec<&str> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.from_node_id == parse_node.id && r.reference_kind == EdgeKind::Calls)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+
+    // B2: `servers["main"]` must not emit `servers`, while `computeKey()` inside subscript is kept,
+    // and `guard let repo` stays bound in the enclosing frame.
+    assert!(
+        !parse_calls.contains(&"servers"),
+        "subscript must not emit call to `servers`: {parse_calls:?}"
+    );
+    assert!(
+        parse_calls.contains(&"computeKey"),
+        "call inside subscript index must be kept: {parse_calls:?}"
+    );
+    assert!(
+        parse_calls.contains(&"Repo::save"),
+        "guard let binding must persist after guard: {parse_calls:?}"
+    );
+
+    // B4: nested local `flush` attributes inner `parseValue` call to `parse`, without emitting `flush` or `localHelper`.
+    assert!(
+        parse_calls.contains(&"parseValue"),
+        "call inside nested local func must be attributed to enclosing method: {parse_calls:?}"
+    );
+    assert!(
+        !parse_calls.contains(&"flush") && !parse_calls.contains(&"localHelper"),
+        "local func calls should stay local: {parse_calls:?}"
+    );
+
+    // B6a: single trailing-closure call emits `(0:)`.
+    assert!(
+        parse_calls.contains(&"installedTerminals(0:)"),
+        "single trailing-closure call should carry `(0:)`: {parse_calls:?}"
+    );
+
+    // B5: `.body.weight()` must NOT emit `HeroView::body`, while `!isEnabled` keeps `HeroView::isEnabled`.
+    let uptime_node = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Property && n.name == "uptime")
+        .expect("uptime property");
+    let uptime_calls: Vec<&str> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.from_node_id == uptime_node.id && r.reference_kind == EdgeKind::Calls)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    assert!(
+        !uptime_calls.contains(&"HeroView::body"),
+        "leading-dot `.body` must not emit computed property read: {uptime_calls:?}"
+    );
+    let check_node = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Method && n.name == "check")
+        .expect("check method");
+    let check_calls: Vec<&str> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.from_node_id == check_node.id && r.reference_kind == EdgeKind::Calls)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    assert!(
+        check_calls.contains(&"HeroView::isEnabled"),
+        "`!isEnabled` must still emit computed property read: {check_calls:?}"
+    );
+
+    // B6c: default parameter value emits `Collector::appleSignature`.
+    let init_node = result
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Constructor && n.name == "init")
+        .expect("Collector.init");
+    let init_calls: Vec<&str> = result
+        .unresolved_refs
+        .iter()
+        .filter(|r| r.from_node_id == init_node.id && r.reference_kind == EdgeKind::Calls)
+        .map(|r| r.reference_name.as_str())
+        .collect();
+    assert!(
+        init_calls.contains(&"Collector::appleSignature"),
+        "default param function ref missing: {init_calls:?}"
+    );
 }

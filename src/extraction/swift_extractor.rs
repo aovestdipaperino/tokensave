@@ -27,10 +27,15 @@ struct SwiftScope {
     local_frames: Vec<HashSet<String>>,
     /// Function/closure-only locals that shadow enclosing type members.
     local_value_frames: Vec<HashSet<String>>,
+    /// Nested local function names (`func helper()`) bound in lexical frames.
+    local_fn_frames: Vec<HashSet<String>>,
     /// Callable member names (methods + computed properties) per enclosing type.
     callable_frames: Vec<HashSet<String>>,
     /// Computed property names per enclosing type.
     computed_prop_frames: Vec<HashSet<String>>,
+    /// Depth of enclosing `private` / `fileprivate` extensions whose members
+    /// default to file-private visibility.
+    private_extension_depth: usize,
 }
 
 impl SwiftScope {
@@ -58,12 +63,31 @@ impl SwiftScope {
         self.type_frames.push(HashMap::new());
         self.local_frames.push(HashSet::new());
         self.local_value_frames.push(HashSet::new());
+        self.local_fn_frames.push(HashSet::new());
     }
 
     fn pop_frame(&mut self) {
+        self.local_fn_frames.pop();
         self.local_value_frames.pop();
         self.local_frames.pop();
         self.type_frames.pop();
+    }
+
+    fn bind_local_function(&mut self, name: String) {
+        if name.is_empty() {
+            return;
+        }
+        if let Some(fns) = self.local_fn_frames.last_mut() {
+            fns.insert(name);
+        }
+    }
+
+    fn is_local_function(&self, name: &str) -> bool {
+        self.local_fn_frames.iter().rev().any(|f| f.contains(name))
+    }
+
+    fn in_private_extension(&self) -> bool {
+        self.private_extension_depth > 0
     }
 
     fn bind(&mut self, name: String, ty: Option<String>, is_local_value: bool) {
@@ -367,6 +391,7 @@ impl SwiftExtractor {
     /// Extract a class definition.
     fn visit_class(state: &mut ExtractionState, scope: &mut SwiftScope, node: TsNode<'_>) {
         let name = Self::extract_type_name(state, node);
+        let visibility = Self::extract_member_visibility(state, scope, node);
         let docstring = Self::extract_docstring(state, node);
         let signature = Self::extract_decl_signature(state, node);
         let start_line = node.start_position().row as u32;
@@ -389,7 +414,7 @@ impl SwiftExtractor {
             end_column,
             signature,
             docstring,
-            visibility: Visibility::Pub,
+            visibility,
             is_async: false,
             branches: 0,
             loops: 0,
@@ -441,6 +466,7 @@ impl SwiftExtractor {
     /// Extract a struct definition.
     fn visit_struct(state: &mut ExtractionState, scope: &mut SwiftScope, node: TsNode<'_>) {
         let name = Self::extract_type_name(state, node);
+        let visibility = Self::extract_member_visibility(state, scope, node);
         let docstring = Self::extract_docstring(state, node);
         let signature = Self::extract_decl_signature(state, node);
         let start_line = node.start_position().row as u32;
@@ -463,7 +489,7 @@ impl SwiftExtractor {
             end_column,
             signature,
             docstring,
-            visibility: Visibility::Pub,
+            visibility,
             is_async: false,
             branches: 0,
             loops: 0,
@@ -515,6 +541,7 @@ impl SwiftExtractor {
     /// Extract an enum definition.
     fn visit_enum(state: &mut ExtractionState, scope: &mut SwiftScope, node: TsNode<'_>) {
         let name = Self::extract_type_name(state, node);
+        let visibility = Self::extract_member_visibility(state, scope, node);
         let docstring = Self::extract_docstring(state, node);
         let signature = Self::extract_decl_signature(state, node);
         let start_line = node.start_position().row as u32;
@@ -537,7 +564,7 @@ impl SwiftExtractor {
             end_column,
             signature,
             docstring,
-            visibility: Visibility::Pub,
+            visibility,
             is_async: false,
             branches: 0,
             loops: 0,
@@ -681,6 +708,8 @@ impl SwiftExtractor {
             },
         );
 
+        let visibility = Self::extract_visibility(state, node);
+        let is_private_extension = visibility == Visibility::Private;
         let docstring = Self::extract_docstring(state, node);
         let signature = Self::extract_decl_signature(state, node);
         let start_line = node.start_position().row as u32;
@@ -703,7 +732,7 @@ impl SwiftExtractor {
             end_column,
             signature,
             docstring,
-            visibility: Visibility::Pub,
+            visibility,
             is_async: false,
             branches: 0,
             loops: 0,
@@ -740,9 +769,15 @@ impl SwiftExtractor {
         state.node_stack.push((name.clone(), id));
         state.class_depth += 1;
         scope.push_type(&name);
+        if is_private_extension {
+            scope.private_extension_depth += 1;
+        }
         if let Some(body) = node.child_by_field_name("body") {
             Self::seed_type_member_bindings(state, scope, body);
             Self::visit_children(state, scope, body);
+        }
+        if is_private_extension {
+            scope.private_extension_depth -= 1;
         }
         scope.pop_type();
         state.class_depth -= 1;
@@ -759,6 +794,7 @@ impl SwiftExtractor {
             .child_by_field_name("name")
             .map_or_else(|| "<anonymous>".to_string(), |n| state.node_text(n));
 
+        let visibility = Self::extract_member_visibility(state, scope, node);
         let docstring = Self::extract_docstring(state, node);
         let signature = Self::extract_decl_signature(state, node);
         let start_line = node.start_position().row as u32;
@@ -781,7 +817,7 @@ impl SwiftExtractor {
             end_column,
             signature,
             docstring,
-            visibility: Visibility::Pub,
+            visibility,
             is_async: false,
             branches: 0,
             loops: 0,
@@ -930,7 +966,7 @@ impl SwiftExtractor {
         } else {
             NodeKind::Function
         };
-        let visibility = Self::extract_visibility(state, node);
+        let visibility = Self::extract_member_visibility(state, scope, node);
         let is_async = Self::has_async_keyword(node, &state.source);
         let signature = Self::extract_decl_signature(state, node);
         let docstring = Self::extract_docstring(state, node);
@@ -988,6 +1024,7 @@ impl SwiftExtractor {
         // Seed parameter bindings, then extract call sites from the function body.
         scope.push_frame();
         Self::seed_parameter_bindings(state, scope, node);
+        Self::extract_default_param_func_refs(state, scope, node, &id);
         Self::extract_call_sites(state, scope, node, &id);
         scope.pop_frame();
 
@@ -1002,7 +1039,7 @@ impl SwiftExtractor {
     /// Extract an init declaration as a Constructor node.
     fn visit_init(state: &mut ExtractionState, scope: &mut SwiftScope, node: TsNode<'_>) {
         let name = "init".to_string();
-        let visibility = Self::extract_visibility(state, node);
+        let visibility = Self::extract_member_visibility(state, scope, node);
         let signature = Self::extract_decl_signature(state, node);
         let docstring = Self::extract_docstring(state, node);
         let start_line = node.start_position().row as u32;
@@ -1059,6 +1096,7 @@ impl SwiftExtractor {
         // Seed parameter bindings, then extract call sites from the init body.
         scope.push_frame();
         Self::seed_parameter_bindings(state, scope, node);
+        Self::extract_default_param_func_refs(state, scope, node, &id);
         Self::extract_call_sites(state, scope, node, &id);
         scope.pop_frame();
 
@@ -1087,7 +1125,7 @@ impl SwiftExtractor {
         } else {
             NodeKind::Const
         };
-        let visibility = Self::extract_visibility(state, node);
+        let visibility = Self::extract_member_visibility(state, scope, node);
         let start_line = node.start_position().row as u32;
         let end_line = node.end_position().row as u32;
         let start_column = node.start_position().column as u32;
@@ -1303,10 +1341,11 @@ impl SwiftExtractor {
         "<anonymous>".to_string()
     }
 
-    /// Extract the visibility modifier from a node's modifiers children.
-    ///
-    /// Looks for a `visibility_modifier` inside `modifiers` to determine visibility.
-    fn extract_visibility(state: &ExtractionState, node: TsNode<'_>) -> Visibility {
+    /// Extract an explicit visibility modifier from a node's `modifiers` children.
+    fn extract_explicit_visibility(
+        state: &ExtractionState,
+        node: TsNode<'_>,
+    ) -> Option<Visibility> {
         let mut cursor = node.walk();
         if cursor.goto_first_child() {
             loop {
@@ -1314,11 +1353,11 @@ impl SwiftExtractor {
                 if child.kind() == "modifiers" {
                     if let Some(vis_mod) = find_child_by_kind(child, "visibility_modifier") {
                         let text = state.node_text(vis_mod);
-                        return match text.as_str() {
+                        return Some(match text.as_str() {
                             "private" | "fileprivate" => Visibility::Private,
                             "internal" => Visibility::PubCrate,
                             _ => Visibility::Pub,
-                        };
+                        });
                     }
                 }
                 if !cursor.goto_next_sibling() {
@@ -1326,8 +1365,29 @@ impl SwiftExtractor {
                 }
             }
         }
+        None
+    }
+
+    /// Extract the visibility modifier from a node's modifiers children.
+    ///
+    /// Looks for a `visibility_modifier` inside `modifiers` to determine visibility.
+    fn extract_visibility(state: &ExtractionState, node: TsNode<'_>) -> Visibility {
         // Default: Swift internal (we map to Pub for simplicity, like other extractors).
-        Visibility::Pub
+        Self::extract_explicit_visibility(state, node).unwrap_or(Visibility::Pub)
+    }
+
+    /// Extract member visibility, inheriting file-private visibility inside a
+    /// `private` or `fileprivate` extension when no explicit modifier is present.
+    fn extract_member_visibility(
+        state: &ExtractionState,
+        scope: &SwiftScope,
+        node: TsNode<'_>,
+    ) -> Visibility {
+        Self::extract_explicit_visibility(state, node).unwrap_or(if scope.in_private_extension() {
+            Visibility::Private
+        } else {
+            Visibility::Pub
+        })
     }
 
     /// Check if a function declaration has the `async` keyword.
@@ -1695,7 +1755,15 @@ impl SwiftExtractor {
                                     bindings.push((bound, ty));
                                 }
                             }
-                            Some("condition") => {
+                            Some("condition")
+                                if child.is_named()
+                                    && !matches!(
+                                        child.kind(),
+                                        "value_binding_pattern"
+                                            | "where_clause"
+                                            | "availability_condition"
+                                    ) =>
+                            {
                                 if let Some(bound) = pending.take() {
                                     let ty = Self::infer_expr_type(state, scope, child);
                                     bindings.push((bound, ty));
@@ -1734,17 +1802,19 @@ impl SwiftExtractor {
                 let child = cursor.node();
                 match child.kind() {
                     "call_expression" => {
-                        if let Some(name) = Self::extract_callee_name(state, scope, child) {
-                            state.unresolved_refs.push(UnresolvedRef {
-                                from_node_id: fn_node_id.to_string(),
-                                reference_name: name,
-                                reference_kind: EdgeKind::Calls,
-                                line: child.start_position().row as u32,
-                                column: child.start_position().column as u32,
-                                file_path: state.file_path.clone(),
-                            });
+                        if !Self::is_subscript_call(child) {
+                            if let Some(name) = Self::extract_callee_name(state, scope, child) {
+                                state.unresolved_refs.push(UnresolvedRef {
+                                    from_node_id: fn_node_id.to_string(),
+                                    reference_name: name,
+                                    reference_kind: EdgeKind::Calls,
+                                    line: child.start_position().row as u32,
+                                    column: child.start_position().column as u32,
+                                    file_path: state.file_path.clone(),
+                                });
+                            }
+                            Self::extract_function_reference_args(state, scope, child, fn_node_id);
                         }
-                        Self::extract_function_reference_args(state, scope, child, fn_node_id);
                         Self::extract_call_sites(state, scope, child, fn_node_id);
                     }
                     "selector_expression" => {
@@ -1753,11 +1823,28 @@ impl SwiftExtractor {
                     "simple_identifier" => {
                         Self::maybe_emit_computed_prop_read(state, scope, child, fn_node_id);
                     }
-                    // Skip nested definitions to avoid polluting call sites.
-                    "function_declaration"
-                    | "init_declaration"
-                    | "class_declaration"
-                    | "protocol_declaration" => {}
+                    // Nested local `func helper()` attributes inner calls to the enclosing callable,
+                    // while suppressing bare calls/reads to the local helper name itself.
+                    "function_declaration" => {
+                        let local_fn_name = child
+                            .child_by_field_name("name")
+                            .map(|n| state.node_text(n))
+                            .or_else(|| {
+                                find_child_by_kind(child, "simple_identifier")
+                                    .map(|n| state.node_text(n))
+                            })
+                            .unwrap_or_default();
+                        scope.bind_local_function(local_fn_name);
+                        scope.push_frame();
+                        Self::seed_parameter_bindings(state, scope, child);
+                        Self::extract_default_param_func_refs(state, scope, child, fn_node_id);
+                        if let Some(body) = child.child_by_field_name("body") {
+                            Self::extract_call_sites(state, scope, body, fn_node_id);
+                        }
+                        scope.pop_frame();
+                    }
+                    // Skip nested type/init definitions to avoid polluting call sites.
+                    "init_declaration" | "class_declaration" | "protocol_declaration" => {}
                     "lambda_literal" => {
                         scope.push_frame();
                         Self::seed_lambda_parameters(state, scope, child);
@@ -1769,7 +1856,12 @@ impl SwiftExtractor {
                         Self::extract_call_sites(state, scope, child, fn_node_id);
                         Self::record_block_bindings(state, scope, child);
                     }
-                    "if_statement" | "guard_statement" | "for_statement" | "while_statement" => {
+                    "guard_statement" => {
+                        // Guard bindings enter the enclosing scope after its condition/else run.
+                        Self::extract_call_sites(state, scope, child, fn_node_id);
+                        Self::record_block_bindings(state, scope, child);
+                    }
+                    "if_statement" | "for_statement" | "while_statement" => {
                         scope.push_frame();
                         Self::record_block_bindings(state, scope, child);
                         Self::extract_call_sites(state, scope, child, fn_node_id);
@@ -1797,6 +1889,7 @@ impl SwiftExtractor {
         let ident = state.node_text(ident_node);
         if SWIFT_LITERAL_IDENTIFIERS.contains(&ident.as_str())
             || scope.is_shadowed_by_local_value(&ident)
+            || scope.is_local_function(&ident)
         {
             return;
         }
@@ -1806,6 +1899,7 @@ impl SwiftExtractor {
         if Self::is_direct_callee_ident(ident_node)
             || Self::is_non_read_identifier_position(ident_node)
             || Self::is_member_of_foreign_receiver(state, ident_node)
+            || Self::is_leading_dot_shorthand(ident_node)
         {
             return;
         }
@@ -1817,6 +1911,46 @@ impl SwiftExtractor {
             column: ident_node.start_position().column as u32,
             file_path: state.file_path.clone(),
         });
+    }
+
+    /// Whether `node` is the member in `.member` leading-dot shorthand (e.g. `.body`).
+    fn is_leading_dot_shorthand(node: TsNode<'_>) -> bool {
+        node.parent().is_some_and(|p| {
+            p.kind() == "prefix_expression"
+                && p.child_by_field_name("operation")
+                    .is_some_and(|op| op.kind() == ".")
+        })
+    }
+
+    /// Whether `call_node` is a subscript (`receiver[idx]`) rather than a call (`receiver(...)`).
+    fn is_subscript_call(call_node: TsNode<'_>) -> bool {
+        let Some(suffix) = find_child_by_kind(call_node, "call_suffix") else {
+            return false;
+        };
+        let Some(args) = find_child_by_kind(suffix, "value_arguments") else {
+            return false;
+        };
+        args.child(0).is_some_and(|c| c.kind() == "[")
+    }
+
+    /// Extract function references passed as parameter default values (`fn: T = Type.helper`).
+    fn extract_default_param_func_refs(
+        state: &mut ExtractionState,
+        scope: &SwiftScope,
+        callable: TsNode<'_>,
+        fn_node_id: &str,
+    ) {
+        let mut cursor = callable.walk();
+        if cursor.goto_first_child() {
+            loop {
+                if cursor.field_name() == Some("default_value") {
+                    Self::emit_func_ref_value(state, scope, cursor.node(), fn_node_id, false);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
     }
 
     /// Whether `node` is the member in `receiver.member` for a receiver other
@@ -1935,6 +2069,7 @@ impl SwiftExtractor {
                     || ident.chars().next().is_some_and(|c| c.is_ascii_uppercase())
                     || scope.is_bound_local(&ident)
                     || scope.is_shadowed_by_local_value(&ident)
+                    || scope.is_local_function(&ident)
                 {
                     return;
                 }
@@ -2091,13 +2226,14 @@ impl SwiftExtractor {
     }
 
     /// Build Swift argument-label selector `(label1:label2:)` when a call has
-    /// `>= 2` arguments or `>= 1` explicitly labeled argument.
+    /// `>= 2` arguments, `>= 1` explicitly labeled argument, or a trailing closure.
     fn extract_call_selector_suffix(state: &ExtractionState, call_node: TsNode<'_>) -> String {
         let Some(suffix) = find_child_by_kind(call_node, "call_suffix") else {
             return String::new();
         };
         let mut labels: Vec<String> = Vec::new();
         let mut has_named_label = false;
+        let mut has_trailing_closure = false;
         let mut cursor = suffix.walk();
         if cursor.goto_first_child() {
             loop {
@@ -2108,7 +2244,10 @@ impl SwiftExtractor {
                     }
                     // A trailing closure fills the next parameter whatever its
                     // label, so it is recorded with the match-any marker.
-                    "lambda_literal" => labels.push(format!("{SWIFT_TRAILING_CLOSURE_LABEL}:")),
+                    "lambda_literal" => {
+                        has_trailing_closure = true;
+                        labels.push(format!("{SWIFT_TRAILING_CLOSURE_LABEL}:"));
+                    }
                     _ => {}
                 }
                 if !cursor.goto_next_sibling() {
@@ -2116,7 +2255,7 @@ impl SwiftExtractor {
                 }
             }
         }
-        if labels.len() >= 2 || has_named_label {
+        if labels.len() >= 2 || has_named_label || has_trailing_closure {
             format!("({})", labels.join(""))
         } else {
             String::new()
@@ -2169,35 +2308,38 @@ impl SwiftExtractor {
         node: TsNode<'_>,
     ) -> Option<String> {
         let callee = Self::callee_expression(node.named_child(0)?)?;
-        let base = match callee.kind() {
-            "navigation_expression" => {
-                let method = Self::navigation_suffix_ident(state, callee)?;
-                if let Some(type_name) = Self::receiver_type_name(state, callee) {
-                    format!("{type_name}::{method}")
-                } else if let Some(target) = callee.child_by_field_name("target") {
-                    if Self::receiver_is_self_type(state, target) {
+        let base = if callee.kind() == "navigation_expression" {
+            let method = Self::navigation_suffix_ident(state, callee)?;
+            if let Some(type_name) = Self::receiver_type_name(state, callee) {
+                format!("{type_name}::{method}")
+            } else if let Some(target) = callee.child_by_field_name("target") {
+                if Self::receiver_is_self_type(state, target) {
+                    method
+                } else if let Some(inferred_ty) =
+                    Self::resolve_navigation_receiver_type(state, scope, target)
+                {
+                    if inferred_ty.is_empty() {
                         method
-                    } else if let Some(inferred_ty) =
-                        Self::resolve_navigation_receiver_type(state, scope, target)
-                    {
-                        if inferred_ty.is_empty() {
-                            method
-                        } else {
-                            format!("{inferred_ty}::{method}")
-                        }
                     } else {
-                        let receiver_text = Self::receiver_chain_text(state, target);
-                        if receiver_text.is_empty() {
-                            format!("<expr>.{method}")
-                        } else {
-                            format!("{receiver_text}.{method}")
-                        }
+                        format!("{inferred_ty}::{method}")
                     }
                 } else {
-                    format!(".{method}")
+                    let receiver_text = Self::receiver_chain_text(state, target);
+                    if receiver_text.is_empty() {
+                        format!("<expr>.{method}")
+                    } else {
+                        format!("{receiver_text}.{method}")
+                    }
                 }
+            } else {
+                format!(".{method}")
             }
-            _ => state.node_text(callee),
+        } else {
+            let name = state.node_text(callee);
+            if callee.kind() == "simple_identifier" && scope.is_local_function(&name) {
+                return None;
+            }
+            name
         };
         let selector = Self::extract_call_selector_suffix(state, node);
         if selector.is_empty() {

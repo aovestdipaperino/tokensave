@@ -686,6 +686,18 @@ async fn call_target_nodes<'n>(cg: &TokenSave, nodes: &'n [Node], source: &Node)
     nodes.iter().filter(|n| targets.contains(&n.id)).collect()
 }
 
+async fn call_source_nodes<'n>(cg: &TokenSave, nodes: &'n [Node], target: &Node) -> Vec<&'n Node> {
+    let incoming: Vec<String> = cg
+        .get_incoming_edges(&target.id)
+        .await
+        .expect("get_incoming_edges")
+        .into_iter()
+        .filter(|e| e.kind == EdgeKind::Calls)
+        .map(|e| e.source)
+        .collect();
+    nodes.iter().filter(|n| incoming.contains(&n.id)).collect()
+}
+
 /// Catches: a `Sources/` directory without a `Package.swift` (the Tuist and
 /// XcodeGen layout, files placed directly in `Sources/`) being split into
 /// fake `SwiftPM` targets, which dropped every cross-file call and base class.
@@ -980,5 +992,349 @@ func persistAll(values: [Int]) {
     assert!(
         !targets.contains(&append.id),
         "copy.append(1) must not bind to Store.append: {targets:?}"
+    );
+}
+
+/// Catches the 6 residual real-repo Swift edge cases (B1-B6):
+/// - B1: `private extension Array` in another file capturing `Array::append`, and `internal`
+///   multi-param extensions matching single-arg stdlib `Array.append`.
+/// - B2: `guard let` local variable not shadowing same-named class method + subscript `servers[k]`.
+/// - B3: `.formatted(...)` on a value matching another type's `formatted` method.
+/// - B4: calls inside nested local functions (`func flush()`, `func visit()`) missing from graph.
+/// - B5: leading-dot `.body` shorthand emitting a false computed-property read to `var body`.
+/// - B6: single trailing-closure overloads (`installedTerminals { ... }`), extension
+///   `self.init(...) { ... }` self-recursion, default-parameter function refs, and variadics.
+#[tokio::test]
+async fn swift_residual_real_repo_edge_cases_b1_to_b6() {
+    let (_dir, cg) = index_files(&[
+        (
+            "Sources/App/PrivateExt.swift",
+            r#"struct SystemInfoRow {}
+private extension Array where Element == SystemInfoRow {
+    mutating func append(optional value: String?, key: String) {}
+}
+func usePrivateExt() {
+    var rows: [SystemInfoRow] = []
+    rows.append(optional: "v", key: "k")
+}
+"#,
+        ),
+        (
+            "Sources/App/InternalExt.swift",
+            r#"extension Array where Element == Int {
+    mutating func append(extra value: Int, label: String) {}
+}
+"#,
+        ),
+        (
+            "Sources/App/Models.swift",
+            r#"struct LiveHistory {
+    var values: [Int] = []
+    mutating func append(_ value: Int) {
+        Self.append(value, to: &values)
+    }
+    private static func append(_ value: Int, to values: inout [Int]) {
+        values.append(value)
+    }
+}
+"#,
+        ),
+        (
+            "Sources/App/McpReader.swift",
+            r#"import Foundation
+actor McpReader {
+    func servers(for key: String) -> [String] { [] }
+    static func parse(_ object: [String: Any]) -> [String] {
+        guard let servers = object["mcpServers"] as? [String: String] else {
+            return []
+        }
+        return servers.keys.sorted().compactMap { name in
+            servers[name]
+        }
+    }
+}
+"#,
+        ),
+        (
+            "Sources/App/Formatting.swift",
+            r#"struct Formatting {
+    static func percent(_ value: Double) -> String {
+        "\(max(0, value).formatted())%"
+    }
+}
+struct RankingView {
+    func formatted(_ value: Double) -> String { Formatting.percent(value) }
+}
+"#,
+        ),
+        (
+            "Sources/App/NestedAndDefault.swift",
+            r#"struct StartupParser {
+    private static func parseValue(_ raw: String?) -> String? { raw }
+    private static func parseDisposition(_ raw: String) -> String { raw }
+    static func load(items: [String]) -> [String] {
+        var out: [String] = []
+        func flush(_ item: String) {
+            if let v = parseValue(item) {
+                out.append(parseDisposition(v))
+            }
+        }
+        for item in items { flush(item) }
+        return out
+    }
+}
+struct DevCollector {
+    static func appleSignature(_ path: String) -> Bool { true }
+    let checker: (String) -> Bool
+    init(isAppleSigned: @escaping (String) -> Bool = DevCollector.appleSignature) {
+        self.checker = isAppleSigned
+    }
+}
+"#,
+        ),
+        (
+            "Sources/App/Views.swift",
+            r#"struct FontStyle {
+    static let body = FontStyle()
+    func weight() -> FontStyle { self }
+}
+func styleFont(_ f: FontStyle) -> String { "ok" }
+struct SummaryHero {
+    var body: String { uptime }
+    var uptime: String { styleFont(.body.weight()) }
+}
+struct SummaryTile {
+    init(title: String, visual: () -> String) {}
+}
+extension SummaryTile {
+    init(title: String) {
+        self.init(title: title) { "empty" }
+    }
+}
+"#,
+        ),
+        (
+            "Sources/App/Terminals.swift",
+            r#"struct TerminalRegistry {
+    static func installedTerminals(isInstalled: (String) -> Bool) -> [String] {
+        ["a"].filter(isInstalled)
+    }
+    static func installedTerminals() -> [String] {
+        installedTerminals { $0 == "a" }
+    }
+    static func log(_ items: String...) {}
+    static func emitLogs() {
+        log("one", "two")
+    }
+}
+"#,
+        ),
+    ])
+    .await;
+
+    let nodes = cg.get_all_nodes().await.expect("nodes");
+
+    // B1: private extension append receives ONLY its same-file caller, never Models.swift;
+    // internal extension `append(extra:label:)` is never hit by `values.append(value)`.
+    let priv_append = find_node(
+        &nodes,
+        "Sources/App/PrivateExt.swift",
+        "append",
+        NodeKind::Method,
+    );
+    let priv_callers = call_source_nodes(&cg, &nodes, priv_append).await;
+    assert_eq!(
+        priv_callers.len(),
+        1,
+        "B1 private ext callers: {priv_callers:?}"
+    );
+    assert_eq!(priv_callers[0].name, "usePrivateExt");
+
+    let int_append = find_node(
+        &nodes,
+        "Sources/App/InternalExt.swift",
+        "append",
+        NodeKind::Method,
+    );
+    let int_callers = call_source_nodes(&cg, &nodes, int_append).await;
+    assert!(
+        int_callers.is_empty(),
+        "B1 single-arg Array.append must not bind to multi-param internal extension: {int_callers:?}"
+    );
+
+    // B2: `McpReader.parse` must NOT call `McpReader.servers`.
+    let mcp_parse = find_node(
+        &nodes,
+        "Sources/App/McpReader.swift",
+        "parse",
+        NodeKind::Method,
+    );
+    let mcp_servers = find_node(
+        &nodes,
+        "Sources/App/McpReader.swift",
+        "servers",
+        NodeKind::Method,
+    );
+    let parse_targets = outgoing_call_targets(&cg, &mcp_parse.id).await;
+    assert!(
+        !parse_targets.contains(&mcp_servers.id),
+        "B2 guard let + subscript must not call McpReader.servers: {parse_targets:?}"
+    );
+
+    // B3: `Formatting.percent` must NOT call `RankingView.formatted`.
+    let fmt_percent = find_node(
+        &nodes,
+        "Sources/App/Formatting.swift",
+        "percent",
+        NodeKind::Method,
+    );
+    let ranking_formatted = find_node(
+        &nodes,
+        "Sources/App/Formatting.swift",
+        "formatted",
+        NodeKind::Method,
+    );
+    let percent_targets = outgoing_call_targets(&cg, &fmt_percent.id).await;
+    assert!(
+        !percent_targets.contains(&ranking_formatted.id),
+        "B3 `.formatted()` must not bind to RankingView.formatted: {percent_targets:?}"
+    );
+
+    // B4: `parseValue` & `parseDisposition` called from nested `func flush` are called by `load`.
+    let startup_load = find_node(
+        &nodes,
+        "Sources/App/NestedAndDefault.swift",
+        "load",
+        NodeKind::Method,
+    );
+    let load_targets = outgoing_call_targets(&cg, &startup_load.id).await;
+    for helper in ["parseValue", "parseDisposition"] {
+        let helper_node = find_node(
+            &nodes,
+            "Sources/App/NestedAndDefault.swift",
+            helper,
+            NodeKind::Method,
+        );
+        assert!(
+            load_targets.contains(&helper_node.id),
+            "B4 nested local call to `{helper}` missing: {load_targets:?}"
+        );
+    }
+
+    // B5: `SummaryHero.body` calls `uptime`, while `uptime` must NOT call `SummaryHero.body`.
+    let hero_body = find_node(
+        &nodes,
+        "Sources/App/Views.swift",
+        "body",
+        NodeKind::Property,
+    );
+    let hero_uptime = find_node(
+        &nodes,
+        "Sources/App/Views.swift",
+        "uptime",
+        NodeKind::Property,
+    );
+    let body_targets = outgoing_call_targets(&cg, &hero_body.id).await;
+    let uptime_targets = outgoing_call_targets(&cg, &hero_uptime.id).await;
+    assert!(
+        body_targets.contains(&hero_uptime.id),
+        "B5 body should read uptime: {body_targets:?}"
+    );
+    assert!(
+        !uptime_targets.contains(&hero_body.id),
+        "B5 `.body.weight()` must not emit uptime -> body recursion: {uptime_targets:?}"
+    );
+
+    // B6: `installedTerminals()` resolves to `installedTerminals(isInstalled:)` (no self-loop),
+    // extension `SummaryTile.init` has no self-loop, `DevCollector.appleSignature` has caller,
+    // and variadic `log("one", "two")` resolves.
+    let term_zero = nodes
+        .iter()
+        .find(|n| {
+            n.file_path == "Sources/App/Terminals.swift"
+                && n.kind == NodeKind::Method
+                && n.name == "installedTerminals"
+                && n.signature
+                    .as_deref()
+                    .is_some_and(|s| s.contains("installedTerminals()"))
+        })
+        .expect("installedTerminals()");
+    let term_pred = nodes
+        .iter()
+        .find(|n| {
+            n.file_path == "Sources/App/Terminals.swift"
+                && n.kind == NodeKind::Method
+                && n.name == "installedTerminals"
+                && n.signature
+                    .as_deref()
+                    .is_some_and(|s| s.contains("isInstalled:"))
+        })
+        .expect("installedTerminals(isInstalled:)");
+    let term_targets = outgoing_call_targets(&cg, &term_zero.id).await;
+    assert_eq!(
+        term_targets,
+        vec![term_pred.id.clone()],
+        "B6a installedTerminals() must target isInstalled overload: {term_targets:?}"
+    );
+
+    let ext_tile_init = nodes
+        .iter()
+        .find(|n| {
+            n.file_path == "Sources/App/Views.swift"
+                && n.kind == NodeKind::Constructor
+                && n.signature
+                    .as_deref()
+                    .is_some_and(|s| !s.contains("visual:"))
+        })
+        .expect("extension SummaryTile.init(title:)");
+    let struct_tile_init = nodes
+        .iter()
+        .find(|n| {
+            n.file_path == "Sources/App/Views.swift"
+                && n.kind == NodeKind::Constructor
+                && n.signature
+                    .as_deref()
+                    .is_some_and(|s| s.contains("visual:"))
+        })
+        .expect("struct SummaryTile.init(title:visual:)");
+    let tile_targets = outgoing_call_targets(&cg, &ext_tile_init.id).await;
+    assert!(
+        !tile_targets.contains(&ext_tile_init.id),
+        "B6b extension SummaryTile.init must not self-recurse: {tile_targets:?}"
+    );
+    assert!(
+        tile_targets.contains(&struct_tile_init.id),
+        "B6b extension SummaryTile.init should target visual overload: {tile_targets:?}"
+    );
+
+    let apple_sig = find_node(
+        &nodes,
+        "Sources/App/NestedAndDefault.swift",
+        "appleSignature",
+        NodeKind::Method,
+    );
+    let apple_callers = call_source_nodes(&cg, &nodes, apple_sig).await;
+    assert_eq!(
+        apple_callers.len(),
+        1,
+        "B6c default param ref caller missing: {apple_callers:?}"
+    );
+
+    let emit_logs = find_node(
+        &nodes,
+        "Sources/App/Terminals.swift",
+        "emitLogs",
+        NodeKind::Method,
+    );
+    let log_fn = find_node(
+        &nodes,
+        "Sources/App/Terminals.swift",
+        "log",
+        NodeKind::Method,
+    );
+    let emit_targets = outgoing_call_targets(&cg, &emit_logs.id).await;
+    assert!(
+        emit_targets.contains(&log_fn.id),
+        "B6 variadic log(\"one\", \"two\") must still resolve: {emit_targets:?}"
     );
 }

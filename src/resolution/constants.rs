@@ -85,6 +85,7 @@ pub(super) const SWIFT_STDLIB_METHODS: &[&str] = &[
     "firstIndex",
     "flatMap",
     "forEach",
+    "formatted",
     "formUnion",
     "hasPrefix",
     "hasSuffix",
