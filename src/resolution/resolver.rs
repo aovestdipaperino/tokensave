@@ -1132,6 +1132,12 @@ impl<'a> ReferenceResolver<'a> {
             return self.try_ruby_template_helper_match(uref);
         }
 
+        // A bare Swift call (`helper(x)`) has no receiver, so only a free
+        // function or a member visible from the caller's own type can answer it.
+        if uref.reference_kind == EdgeKind::Calls && is_swift(&uref.file_path) {
+            return self.try_swift_bare_call(uref);
+        }
+
         // Strategy 2: exact name match
         self.try_exact_name_match(uref)
     }
@@ -1980,34 +1986,261 @@ impl<'a> ReferenceResolver<'a> {
     fn try_swift_typed_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
         let (base_ref, _) = split_swift_call_selector(&uref.reference_name);
         let (type_name, method_name) = base_ref.split_once("::")?;
-        let mut owners: Vec<&'a Node> = self
-            .name_cache
+        let owners = self.swift_owner_nodes(uref, type_name);
+        if owners.is_empty() {
+            return self.try_swift_protocol_extension_member(uref, method_name);
+        }
+        self.try_swift_member_of(uref, owners, method_name)
+    }
+
+    /// Indexed Swift declarations and extensions of the type named `type_name`
+    /// that `uref` may see.
+    fn swift_owner_nodes(&self, uref: &UnresolvedRef, type_name: &str) -> Vec<&'a Node> {
+        self.name_cache
             .get(type_name)
             .map(|nodes| {
                 nodes
                     .iter()
                     .copied()
-                    .filter(|n| {
-                        is_swift(&n.file_path)
-                            && (n.visibility != Visibility::Private
-                                || n.file_path == uref.file_path)
-                            && matches!(
-                                n.kind,
-                                NodeKind::Class
-                                    | NodeKind::Struct
-                                    | NodeKind::Enum
-                                    | NodeKind::Interface
-                                    | NodeKind::Extension
-                            )
-                            && self.swift_target_visible(&uref.file_path, &n.file_path)
-                    })
+                    .filter(|n| self.is_swift_owner_candidate(uref, n))
                     .collect()
             })
-            .unwrap_or_default();
-        if owners.is_empty() {
+            .unwrap_or_default()
+    }
+
+    fn is_swift_owner_candidate(&self, uref: &UnresolvedRef, n: &Node) -> bool {
+        is_swift(&n.file_path)
+            && (n.visibility != Visibility::Private || n.file_path == uref.file_path)
+            && matches!(
+                n.kind,
+                NodeKind::Class
+                    | NodeKind::Struct
+                    | NodeKind::Enum
+                    | NodeKind::Interface
+                    | NodeKind::Extension
+            )
+            && self.swift_target_visible(&uref.file_path, &n.file_path)
+    }
+
+    /// A call on a receiver whose type is not indexed (`HStack(...).banner()`,
+    /// a framework type) can only reach project code through a protocol
+    /// extension or a protocol requirement (`extension View { func banner() }`).
+    /// Members of indexed concrete types are never candidates.
+    fn try_swift_protocol_extension_member(
+        &self,
+        uref: &UnresolvedRef,
+        method_name: &str,
+    ) -> Option<ResolvedRef> {
+        if SWIFT_STDLIB_METHODS.contains(&method_name) {
             return None;
         }
+        let candidates: Vec<&'a Node> = self
+            .name_cache
+            .get(method_name)?
+            .iter()
+            .copied()
+            .filter(|n| self.is_candidate(uref, n))
+            .filter(|n| {
+                n.parent_id
+                    .as_deref()
+                    .and_then(|id| self.node_id_cache.get(id))
+                    .is_some_and(|parent| self.is_protocol_side_owner(parent))
+            })
+            .collect();
+        let candidates = filter_swift_overloads(uref, candidates);
+        if candidates.is_empty() {
+            return None;
+        }
+        resolve_from_filtered_named(
+            uref,
+            &candidates,
+            SIMPLE_NAME_MATCH,
+            &self.import_index,
+            Reachability::Unrestricted,
+            &self.node_id_cache,
+        )
+    }
 
+    /// An extension of a type with no indexed concrete declaration: a
+    /// protocol extension or an extension of a framework type. Protocol
+    /// requirements are left out, since an unindexed type is not known to
+    /// conform (`NSSound.stop()` is not a project protocol's `stop`).
+    fn is_protocol_side_owner(&self, owner: &Node) -> bool {
+        owner.kind == NodeKind::Extension
+            && !self
+                .name_cache
+                .get(owner.name.as_str())
+                .is_some_and(|nodes| {
+                    nodes.iter().any(|n| {
+                        is_swift(&n.file_path)
+                            && matches!(n.kind, NodeKind::Class | NodeKind::Struct | NodeKind::Enum)
+                    })
+                })
+    }
+
+    /// A bare Swift call: a free function, or a member of a type the caller
+    /// sits in (its own type, enclosing types, their extensions, superclasses
+    /// and conformed protocols). Never a member of an unrelated type: that
+    /// needs a receiver.
+    fn try_swift_bare_call(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
+        let name = split_swift_call_selector(&uref.reference_name).0;
+        let raw = self.name_cache.get(name)?;
+        let visible_types = self.swift_types_visible_from(uref);
+        let candidates: Vec<&'a Node> = raw
+            .iter()
+            .copied()
+            .filter(|n| self.is_candidate(uref, n))
+            .filter(|n| {
+                match n
+                    .parent_id
+                    .as_deref()
+                    .and_then(|id| self.node_id_cache.get(id))
+                {
+                    Some(parent) if is_swift_type_kind(&parent.kind) => {
+                        visible_types.contains(parent.name.as_str())
+                    }
+                    _ => n.kind == NodeKind::Function,
+                }
+            })
+            .collect();
+        let candidates = filter_swift_overloads(uref, candidates);
+        if candidates.is_empty() {
+            return None;
+        }
+        resolve_from_filtered_named(
+            uref,
+            &candidates,
+            SIMPLE_NAME_MATCH,
+            &self.import_index,
+            Reachability::Unrestricted,
+            &self.node_id_cache,
+        )
+    }
+
+    /// Names of the types whose members a bare call in `uref`'s caller can
+    /// reach: the enclosing types and, transitively, their declared bases.
+    fn swift_types_visible_from(&self, uref: &UnresolvedRef) -> HashSet<&'a str> {
+        let mut names: HashSet<&'a str> = HashSet::new();
+        let mut current = self.node_id_cache.get(uref.from_node_id.as_str()).copied();
+        for _ in 0..MAX_SCOPE_OWNER_DEPTH {
+            let Some(node) = current else { break };
+            if is_swift_type_kind(&node.kind) {
+                names.insert(node.name.as_str());
+            }
+            current = node
+                .parent_id
+                .as_deref()
+                .and_then(|id| self.node_id_cache.get(id))
+                .copied();
+        }
+        let mut frontier: Vec<&'a str> = names.iter().copied().collect();
+        for _ in 0..SWIFT_MAX_INHERITANCE_DEPTH {
+            let mut next = Vec::new();
+            for type_name in frontier {
+                for owner in self.swift_owner_nodes(uref, type_name) {
+                    for base in swift_base_types(owner.signature.as_deref().unwrap_or("")) {
+                        if names.insert(base) {
+                            next.push(base);
+                        }
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        names
+    }
+
+    /// `.make(kind: ...)`: a static member or initializer of the contextual
+    /// type, which the reference does not carry.
+    ///
+    /// Swift requires that member to produce the contextual type, so only
+    /// initializers and static members returning their own type (or `Self`)
+    /// qualify; `Duration.seconds(2)` written `.seconds(2)` never binds to a
+    /// project `static func seconds(_:) -> TimeInterval`. Candidates on the
+    /// caller's own types win; otherwise the labels must leave exactly one.
+    fn try_swift_implicit_member(&self, uref: &UnresolvedRef, member: &str) -> Option<ResolvedRef> {
+        let candidates: Vec<&'a Node> = self
+            .name_cache
+            .get(member)?
+            .iter()
+            .copied()
+            .filter(|n| self.is_candidate(uref, n))
+            .filter(|n| {
+                let Some(owner) = n
+                    .parent_id
+                    .as_deref()
+                    .and_then(|id| self.node_id_cache.get(id))
+                else {
+                    return false;
+                };
+                is_swift_type_kind(&owner.kind)
+                    && (n.kind == NodeKind::Constructor
+                        || is_swift_static_member_returning(n, &owner.name))
+            })
+            .collect();
+        let candidates = filter_swift_overloads(uref, candidates);
+        let visible_types = self.swift_types_visible_from(uref);
+        let own: Vec<&'a Node> = candidates
+            .iter()
+            .copied()
+            .filter(|n| {
+                n.parent_id
+                    .as_deref()
+                    .and_then(|id| self.node_id_cache.get(id))
+                    .is_some_and(|owner| visible_types.contains(owner.name.as_str()))
+            })
+            .collect();
+        let [only] = (if own.is_empty() { candidates } else { own })[..] else {
+            return None;
+        };
+        Some(ResolvedRef {
+            original: uref.clone(),
+            target_node_id: only.id.clone(),
+            confidence: SCORED_MATCH_CONFIDENCE,
+            resolved_by: SIMPLE_NAME_MATCH.to_string(),
+        })
+    }
+
+    /// `super.method()`: the member of a superclass (or conformed protocol) of
+    /// the caller's own type, never the caller's own type.
+    fn try_swift_super_member(
+        &self,
+        uref: &UnresolvedRef,
+        method_name: &str,
+    ) -> Option<ResolvedRef> {
+        let caller = self.node_id_cache.get(uref.from_node_id.as_str())?;
+        let own_type = self.node_id_cache.get(caller.parent_id.as_deref()?)?;
+        let own_owners = self.swift_owner_nodes(uref, &own_type.name);
+        let mut bases: Vec<&'a Node> = Vec::new();
+        for owner in &own_owners {
+            for base_name in swift_base_types(owner.signature.as_deref().unwrap_or("")) {
+                if base_name == own_type.name {
+                    continue;
+                }
+                for base in self.swift_owner_nodes(uref, base_name) {
+                    if !bases.iter().any(|b| b.id == base.id) {
+                        bases.push(base);
+                    }
+                }
+            }
+        }
+        if bases.is_empty() {
+            return None;
+        }
+        self.try_swift_member_of(uref, bases, method_name)
+    }
+
+    /// Resolve `method_name` on `owners`, walking their superclasses and
+    /// conformed protocols up to [`SWIFT_MAX_INHERITANCE_DEPTH`].
+    fn try_swift_member_of(
+        &self,
+        uref: &UnresolvedRef,
+        mut owners: Vec<&'a Node>,
+        method_name: &str,
+    ) -> Option<ResolvedRef> {
         let mut visited: HashSet<&str> = owners.iter().map(|o| o.id.as_str()).collect();
         for _ in 0..SWIFT_MAX_INHERITANCE_DEPTH {
             let mut raw_matched: Vec<&'a Node> = Vec::new();
@@ -2066,18 +2299,7 @@ impl<'a> ReferenceResolver<'a> {
                 for base_name in swift_base_types(owner.signature.as_deref().unwrap_or("")) {
                     if let Some(base_nodes) = self.name_cache.get(base_name) {
                         for b in base_nodes {
-                            if is_swift(&b.file_path)
-                                && (b.visibility != Visibility::Private
-                                    || b.file_path == uref.file_path)
-                                && matches!(
-                                    b.kind,
-                                    NodeKind::Class
-                                        | NodeKind::Struct
-                                        | NodeKind::Enum
-                                        | NodeKind::Interface
-                                        | NodeKind::Extension
-                                )
-                                && self.swift_target_visible(&uref.file_path, &b.file_path)
+                            if self.is_swift_owner_candidate(uref, b)
                                 && visited.insert(b.id.as_str())
                             {
                                 next_owners.push(b);
@@ -2108,8 +2330,14 @@ impl<'a> ReferenceResolver<'a> {
             .reference_name
             .rsplit_once('.')
             .map_or("", |(recv, _)| recv);
-        if receiver == "self" || receiver == "super" {
-            // Restrict `self.method()` / `super.method()` to the caller's own owner type/file.
+        if receiver.is_empty() {
+            return self.try_swift_implicit_member(uref, simple_name);
+        }
+        if receiver == "super" {
+            return self.try_swift_super_member(uref, simple_name);
+        }
+        if receiver == "self" {
+            // Restrict `self.method()` to the caller's own owner type/file.
             let caller = self.node_id_cache.get(uref.from_node_id.as_str())?;
             let own_candidates = filter_swift_overloads(
                 uref,
@@ -2186,10 +2414,7 @@ impl<'a> ReferenceResolver<'a> {
         kind_compatible(uref, &node.kind)
             && !self.is_own_type_via_other_value(uref, node)
             && !self.is_associated_type_of_bare_type_ref(uref, node)
-            && !(is_swift(&uref.file_path)
-                && is_swift(&node.file_path)
-                && node.file_path != uref.file_path
-                && node.visibility == Visibility::Private)
+            && !is_foreign_private_swift(uref, node)
             && self.swift_target_visible(&uref.file_path, &node.file_path)
     }
 
@@ -2811,6 +3036,64 @@ fn swift_spm_target<'p>(
     package_roots: &HashSet<&str>,
 ) -> Option<(bool, &'p str)> {
     swift_spm_target_where(file_path, |prefix| package_roots.contains(prefix))
+}
+
+/// Whether `node` is a `static`/`class` function or property whose declared
+/// type is `owner` (or `Self`), the shape an implicit member expression needs.
+fn is_swift_static_member_returning(node: &Node, owner: &str) -> bool {
+    let Some(sig) = node.signature.as_deref() else {
+        return false;
+    };
+    let is_static = sig
+        .split_whitespace()
+        .take_while(|token| !matches!(*token, "func" | "var" | "let"))
+        .any(|token| token == "static" || token == "class");
+    if !is_static {
+        return false;
+    }
+    let declared = match node.kind {
+        NodeKind::Property | NodeKind::Field => sig
+            .split_once(':')
+            .map(|(_, ty)| ty.split(['=', '{']).next().unwrap_or(ty)),
+        _ => sig
+            .rsplit_once("->")
+            .map(|(_, ty)| ty.split(" where ").next().unwrap_or(ty)),
+    };
+    let Some(declared) = declared else {
+        return false;
+    };
+    let base = declared
+        .trim()
+        .trim_end_matches(['?', '!'])
+        .split('<')
+        .next()
+        .unwrap_or("")
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .trim();
+    base == owner || base == SELF_TYPE
+}
+
+/// A `private` / `fileprivate` Swift declaration in another file than the
+/// Swift reference, which cannot see it.
+fn is_foreign_private_swift(uref: &UnresolvedRef, node: &Node) -> bool {
+    is_swift(&uref.file_path)
+        && is_swift(&node.file_path)
+        && node.file_path != uref.file_path
+        && node.visibility == Visibility::Private
+}
+
+/// Swift declaration kinds that own members.
+fn is_swift_type_kind(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Class
+            | NodeKind::Struct
+            | NodeKind::Enum
+            | NodeKind::Interface
+            | NodeKind::Extension
+    )
 }
 
 /// Extract base class / conformed protocol names from a Swift declaration signature.
@@ -3578,7 +3861,7 @@ mod swift_resolver_unit_tests {
 
     #[test]
     fn swift_base_types_parses_inheritance_clauses() {
-        assert!(swift_base_types("struct Plain").is_empty());
+        assert_eq!(swift_base_types("struct Plain"), Vec::<&str>::new());
         assert_eq!(
             swift_base_types("final class Child: Mod.Base<Int>, Proto where T: Eq {"),
             vec!["Base", "Proto"]
@@ -3963,7 +4246,7 @@ mod swift_resolver_unit_tests {
             file_path: "Sources/App/Canvas.swift".to_string(),
         };
         let draw_candidates = resolver.name_cache.get("draw").expect("draw candidates");
-        let kept = filter_swift_overloads(&draw_ref, draw_candidates.to_vec());
+        let kept = filter_swift_overloads(&draw_ref, draw_candidates.clone());
         assert_eq!(kept.len(), 2);
 
         // `parse_swift_signature_params` empty comma segments (`seg_start..i` and trailing `seg_start..`).
@@ -3989,7 +4272,10 @@ mod swift_resolver_unit_tests {
             column: 8,
             file_path: "Sources/App/Tile.swift".to_string(),
         };
-        assert!(filter_swift_overloads(&single_init_ref, vec![&single_init]).is_empty());
+        assert_eq!(
+            filter_swift_overloads(&single_init_ref, vec![&single_init]),
+            Vec::<&Node>::new()
+        );
 
         // Non-callable property target is never rejected by `swift_sig_matches_node`.
         let closure_prop = swift_node(

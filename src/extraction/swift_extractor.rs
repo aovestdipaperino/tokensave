@@ -1726,8 +1726,18 @@ impl SwiftExtractor {
             }
             "for_statement" => {
                 if let Some(item) = node.child_by_field_name("item") {
-                    if let Some(ident) = find_child_by_kind(item, "simple_identifier") {
-                        scope.bind(state.node_text(ident), None, true);
+                    let mut names = Self::pattern_bindings(state, item);
+                    if names.is_empty()
+                        && find_child_by_kind(item, "value_binding_pattern").is_none()
+                    {
+                        // `for item in items`: the bare identifier is the binding.
+                        names.extend(
+                            find_child_by_kind(item, "simple_identifier")
+                                .map(|ident| state.node_text(ident)),
+                        );
+                    }
+                    for name in names {
+                        scope.bind(name, None, true);
                     }
                 }
             }
@@ -1754,6 +1764,14 @@ impl SwiftExtractor {
                                     let ty = Self::extract_base_type_name(state, child);
                                     bindings.push((bound, ty));
                                 }
+                            }
+                            // `if case .file(let path, _) = value`.
+                            Some("condition") if child.kind() == "pattern" => {
+                                bindings.extend(
+                                    Self::pattern_bindings(state, child)
+                                        .into_iter()
+                                        .map(|name| (name, None)),
+                                );
                             }
                             Some("condition")
                                 if child.is_named()
@@ -1802,20 +1820,18 @@ impl SwiftExtractor {
                 let child = cursor.node();
                 match child.kind() {
                     "call_expression" => {
-                        if !Self::is_subscript_call(child) {
-                            if let Some(name) = Self::extract_callee_name(state, scope, child) {
-                                state.unresolved_refs.push(UnresolvedRef {
-                                    from_node_id: fn_node_id.to_string(),
-                                    reference_name: name,
-                                    reference_kind: EdgeKind::Calls,
-                                    line: child.start_position().row as u32,
-                                    column: child.start_position().column as u32,
-                                    file_path: state.file_path.clone(),
-                                });
+                        Self::visit_call_expression(state, scope, child, fn_node_id, 0);
+                    }
+                    "switch_entry" => {
+                        // `case .file(let path, _):` binds `path` for the entry body.
+                        scope.push_frame();
+                        if let Some(pattern) = find_child_by_kind(child, "switch_pattern") {
+                            for name in Self::pattern_bindings(state, pattern) {
+                                scope.bind(name, None, true);
                             }
-                            Self::extract_function_reference_args(state, scope, child, fn_node_id);
                         }
                         Self::extract_call_sites(state, scope, child, fn_node_id);
+                        scope.pop_frame();
                     }
                     "selector_expression" => {
                         Self::extract_selector_ref(state, scope, child, fn_node_id);
@@ -1911,6 +1927,113 @@ impl SwiftExtractor {
             column: ident_node.start_position().column as u32,
             file_path: state.file_path.clone(),
         });
+    }
+
+    /// Record one call site and walk into it.
+    ///
+    /// tree-sitter-swift parses `let x = f(a: 1) { }` as a call on the call
+    /// `f(a: 1)` whose suffix holds only the trailing closure. That wrapper is
+    /// the same call: its closures are counted on the inner call's selector and
+    /// no separate reference is recorded for the wrapper.
+    fn visit_call_expression(
+        state: &mut ExtractionState,
+        scope: &mut SwiftScope,
+        call: TsNode<'_>,
+        fn_node_id: &str,
+        extra_trailing_closures: usize,
+    ) {
+        if let Some((inner, closures)) = Self::trailing_closure_wrapper(call) {
+            Self::visit_call_expression(
+                state,
+                scope,
+                inner,
+                fn_node_id,
+                extra_trailing_closures + closures,
+            );
+            if let Some(suffix) = find_child_by_kind(call, "call_suffix") {
+                Self::extract_call_sites(state, scope, suffix, fn_node_id);
+            }
+            return;
+        }
+        if !Self::is_subscript_call(call) {
+            if let Some(name) =
+                Self::extract_callee_name(state, scope, call, extra_trailing_closures)
+            {
+                state.unresolved_refs.push(UnresolvedRef {
+                    from_node_id: fn_node_id.to_string(),
+                    reference_name: name,
+                    reference_kind: EdgeKind::Calls,
+                    line: call.start_position().row as u32,
+                    column: call.start_position().column as u32,
+                    file_path: state.file_path.clone(),
+                });
+            }
+            Self::extract_function_reference_args(state, scope, call, fn_node_id);
+        }
+        Self::extract_call_sites(state, scope, call, fn_node_id);
+    }
+
+    /// The inner call and closure count when `call` only adds trailing closures
+    /// to the call it wraps (its suffix has no argument list).
+    fn trailing_closure_wrapper(call: TsNode<'_>) -> Option<(TsNode<'_>, usize)> {
+        // `try f(a: 1) { }` / `await f(a: 1) { }` wrap the inner call too.
+        let mut inner = call.named_child(0)?;
+        while matches!(inner.kind(), "try_expression" | "await_expression") {
+            inner = inner.child_by_field_name("expr")?;
+        }
+        if inner.kind() != "call_expression" {
+            return None;
+        }
+        let suffix = find_child_by_kind(call, "call_suffix")?;
+        if find_child_by_kind(suffix, "value_arguments").is_some() {
+            return None;
+        }
+        let mut closures = 0;
+        let mut cursor = suffix.walk();
+        if cursor.goto_first_child() {
+            loop {
+                if cursor.node().kind() == "lambda_literal" {
+                    closures += 1;
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        (closures > 0).then_some((inner, closures))
+    }
+
+    /// Names a pattern binds: `let path` in `.file(let path, _)`, `name` in
+    /// `case let .other(name)`, tuple items in `for (key, value) in`. Names
+    /// matched against an existing value (`case .some(x)`) are not bindings.
+    fn pattern_bindings(state: &ExtractionState, pattern: TsNode<'_>) -> Vec<String> {
+        let mut names = Vec::new();
+        // (node, inside a `let`/`var` pattern)
+        let mut stack = vec![(pattern, false)];
+        while let Some((node, binding)) = stack.pop() {
+            let binding = binding || find_child_by_kind(node, "value_binding_pattern").is_some();
+            let mut cursor = node.walk();
+            if cursor.goto_first_child() {
+                loop {
+                    let child = cursor.node();
+                    if child.kind() == "simple_identifier" {
+                        let is_bound = cursor.field_name() == Some("bound_identifier")
+                            || (binding
+                                && node.kind() == "pattern"
+                                && node.named_child_count() == 1);
+                        if is_bound {
+                            names.push(state.node_text(child));
+                        }
+                    } else if child.kind().contains("pattern") {
+                        stack.push((child, binding));
+                    }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                }
+            }
+        }
+        names
     }
 
     /// Whether `node` is the member in `.member` leading-dot shorthand (e.g. `.body`).
@@ -2225,40 +2348,58 @@ impl SwiftExtractor {
         last
     }
 
-    /// Build Swift argument-label selector `(label1:label2:)` when a call has
-    /// `>= 2` arguments, `>= 1` explicitly labeled argument, or a trailing closure.
-    fn extract_call_selector_suffix(state: &ExtractionState, call_node: TsNode<'_>) -> String {
-        let Some(suffix) = find_child_by_kind(call_node, "call_suffix") else {
-            return String::new();
-        };
+    /// Build Swift argument-label selector `(label1:label2:)` for a call with at
+    /// least one argument: `_:` per unlabeled argument, `label:` per labeled one,
+    /// and the match-any marker per trailing closure.
+    ///
+    /// `extra_trailing_closures` counts closures that tree-sitter attached to an
+    /// enclosing wrapper call (`let x = f(a: 1) { }` parses as a call on `f(a: 1)`).
+    fn extract_call_selector_suffix(
+        state: &ExtractionState,
+        call_node: TsNode<'_>,
+        extra_trailing_closures: usize,
+    ) -> String {
         let mut labels: Vec<String> = Vec::new();
         let mut has_named_label = false;
-        let mut has_trailing_closure = false;
+        if let Some(suffix) = find_child_by_kind(call_node, "call_suffix") {
+            Self::push_suffix_labels(state, suffix, &mut labels, &mut has_named_label);
+        }
+        labels.extend(
+            std::iter::repeat_with(|| format!("{SWIFT_TRAILING_CLOSURE_LABEL}:"))
+                .take(extra_trailing_closures),
+        );
+        if labels.is_empty() {
+            String::new()
+        } else {
+            format!("({})", labels.join(""))
+        }
+    }
+
+    /// Append the labels of one `call_suffix`: its arguments, then one marker
+    /// per trailing closure.
+    fn push_suffix_labels(
+        state: &ExtractionState,
+        suffix: TsNode<'_>,
+        labels: &mut Vec<String>,
+        has_named_label: &mut bool,
+    ) {
         let mut cursor = suffix.walk();
         if cursor.goto_first_child() {
             loop {
                 let child = cursor.node();
                 match child.kind() {
                     "value_arguments" => {
-                        Self::push_argument_labels(state, child, &mut labels, &mut has_named_label);
+                        Self::push_argument_labels(state, child, labels, has_named_label);
                     }
                     // A trailing closure fills the next parameter whatever its
                     // label, so it is recorded with the match-any marker.
-                    "lambda_literal" => {
-                        has_trailing_closure = true;
-                        labels.push(format!("{SWIFT_TRAILING_CLOSURE_LABEL}:"));
-                    }
+                    "lambda_literal" => labels.push(format!("{SWIFT_TRAILING_CLOSURE_LABEL}:")),
                     _ => {}
                 }
                 if !cursor.goto_next_sibling() {
                     break;
                 }
             }
-        }
-        if labels.len() >= 2 || has_named_label || has_trailing_closure {
-            format!("({})", labels.join(""))
-        } else {
-            String::new()
         }
     }
 
@@ -2274,11 +2415,32 @@ impl SwiftExtractor {
             loop {
                 let child = cursor.node();
                 if child.kind() == "value_argument" {
+                    // `f(id:)` / `Type.f(in:of:)` name a function by its argument
+                    // labels: each label is a `reference_specifier`.
+                    let mut specifiers = Vec::new();
+                    let mut arg_cursor = child.walk();
+                    if arg_cursor.goto_first_child() {
+                        loop {
+                            if arg_cursor.field_name() == Some("reference_specifier") {
+                                specifiers.push(state.node_text(arg_cursor.node()));
+                            }
+                            if !arg_cursor.goto_next_sibling() {
+                                break;
+                            }
+                        }
+                    }
                     let label = child
                         .child_by_field_name("name")
                         .map(|label_node| state.node_text(label_node))
                         .filter(|label| !label.is_empty());
-                    if let Some(label) = label {
+                    if !specifiers.is_empty() {
+                        *has_named_label = true;
+                        labels.extend(
+                            specifiers
+                                .iter()
+                                .map(|label| format!("{}:", label.trim_end_matches(':'))),
+                        );
+                    } else if let Some(label) = label {
                         *has_named_label = true;
                         labels.push(format!("{label}:"));
                     } else {
@@ -2306,6 +2468,7 @@ impl SwiftExtractor {
         state: &ExtractionState,
         scope: &SwiftScope,
         node: TsNode<'_>,
+        extra_trailing_closures: usize,
     ) -> Option<String> {
         let callee = Self::callee_expression(node.named_child(0)?)?;
         let base = if callee.kind() == "navigation_expression" {
@@ -2339,9 +2502,21 @@ impl SwiftExtractor {
             if callee.kind() == "simple_identifier" && scope.is_local_function(&name) {
                 return None;
             }
-            name
+            // `.make(...)` names a static member of the contextual type, which
+            // is not known here: keep the leading dot so it is not a bare call.
+            let is_implicit_member = node.named_child(0).is_some_and(|target| {
+                target.kind() == "prefix_expression"
+                    && target
+                        .child_by_field_name("operation")
+                        .is_some_and(|op| op.kind() == ".")
+            });
+            if is_implicit_member {
+                format!(".{name}")
+            } else {
+                name
+            }
         };
-        let selector = Self::extract_call_selector_suffix(state, node);
+        let selector = Self::extract_call_selector_suffix(state, node, extra_trailing_closures);
         if selector.is_empty() {
             Some(base)
         } else {
@@ -2711,7 +2886,7 @@ mod swift_extractor_unit_tests {
 
         // Missing `call_suffix` / `value_arguments` guards.
         assert_eq!(
-            SwiftExtractor::extract_call_selector_suffix(&state_ro, root),
+            SwiftExtractor::extract_call_selector_suffix(&state_ro, root, 0),
             ""
         );
         let scope = SwiftScope::default();

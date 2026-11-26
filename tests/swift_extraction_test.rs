@@ -289,7 +289,7 @@ func main() {
         .collect();
     assert!(!call_refs.is_empty(), "should have call refs");
     assert!(
-        call_refs.iter().any(|r| r.reference_name == "print"),
+        call_refs.iter().any(|r| r.reference_name == "print(_:)"),
         "should find print call"
     );
     assert!(
@@ -316,12 +316,12 @@ fn test_swift_callee_names_by_receiver_shape() {
     assert_eq!(
         names,
         vec![
-            "Cache::open",
-            "Double",
+            "Cache::open(_:)",
+            "Double(_:)",
             "Inner::make",
             "helper",
             "items.allSatisfy(0:)",
-            "poll",
+            "poll(_:0:)",
             "worker.start"
         ]
     );
@@ -376,14 +376,20 @@ class Worker {
         .map(|r| r.reference_name.as_str())
         .collect();
 
-    assert!(call_names.contains(&"Data::append"), "got {call_names:?}");
+    assert!(
+        call_names.contains(&"Data::append(_:)"),
+        "got {call_names:?}"
+    );
     assert!(
         !call_names.contains(&"localBytes.append"),
         "stdlib receiver should not emit untyped ref: {call_names:?}"
     );
-    assert!(call_names.contains(&"Array::append"), "got {call_names:?}");
     assert!(
-        call_names.contains(&"JSONEncoder::encode"),
+        call_names.contains(&"Array::append(_:)"),
+        "got {call_names:?}"
+    );
+    assert!(
+        call_names.contains(&"JSONEncoder::encode(_:)"),
         "got {call_names:?}"
     );
     assert!(
@@ -449,7 +455,7 @@ struct ItemView: View {
         "expected function ref / selector 'handleTap' in {call_names:?}"
     );
     assert!(
-        call_names.iter().any(|n| n.ends_with("isValidIP")),
+        call_names.iter().any(|n| n.ends_with("isValidIP(_:)")),
         "expected prefix expression call '!isValidIP' in {call_names:?}"
     );
     assert!(
@@ -1036,8 +1042,8 @@ class Widget: Foundation.NSObject, Sendable {
         .collect();
     assert!(call_names.contains(&"Service::ping"), "{call_names:?}");
     assert!(call_names.contains(&"Store::save"), "{call_names:?}");
-    assert!(call_names.contains(&"Array::map"), "{call_names:?}");
-    assert!(call_names.contains(&"makeDefault"), "{call_names:?}");
+    assert!(call_names.contains(&"Array::map(_:)"), "{call_names:?}");
+    assert!(call_names.contains(&".makeDefault"), "{call_names:?}");
     assert!(
         call_names.contains(&"externalFreeTransform"),
         "{call_names:?}"
@@ -1212,7 +1218,7 @@ final class Reader {
 
     // B4: nested local `flush` attributes inner `parseValue` call to `parse`, without emitting `flush` or `localHelper`.
     assert!(
-        parse_calls.contains(&"parseValue"),
+        parse_calls.contains(&"parseValue(_:)"),
         "call inside nested local func must be attributed to enclosing method: {parse_calls:?}"
     );
     assert!(
