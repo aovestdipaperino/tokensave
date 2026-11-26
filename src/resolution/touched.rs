@@ -165,6 +165,7 @@ impl TouchedSet {
                     let seg = seg
                         .strip_prefix(super::CSHARP_SIMPLE_NAME_ROOT)
                         .unwrap_or(seg);
+                    let (seg, _) = super::resolver::split_swift_call_selector(seg);
                     self.names.contains(seg.trim_end_matches("()"))
                 }))
             || super::relative_module_candidates(file_path, reference_name)

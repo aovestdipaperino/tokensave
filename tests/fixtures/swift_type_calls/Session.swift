@@ -14,4 +14,8 @@ struct Session {
         _ = Registry.create()
         worker.start()
     }
+
+    func runDynamic(_ anyWorker: Any) {
+        anyWorker.start()
+    }
 }

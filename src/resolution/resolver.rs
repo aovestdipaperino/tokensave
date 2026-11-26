@@ -5,8 +5,10 @@ use std::path::Path;
 use super::constants::{
     CONFIDENCE_FLOOR, DIRECTORY_MODULE_STEMS, MAX_SCOPE_OWNER_DEPTH, RELATIVE_PATH_SEGMENTS,
     RUST_EXTERNAL_ROOTS, SAME_FILE_BLOCKLIST_CONFIDENCE, SCORED_MATCH_CONFIDENCE, SELF_RECEIVERS,
-    SELF_TYPE,
+    SELF_TYPE, SWIFT_MAX_INHERITANCE_DEPTH, SWIFT_PACKAGE_MANIFEST, SWIFT_SPM_SOURCES_DIR,
+    SWIFT_SPM_TESTS_DIR, SWIFT_STDLIB_METHODS, SWIFT_TYPED,
 };
+use crate::extraction::swift_constants::SWIFT_TRAILING_CLOSURE_LABEL;
 use crate::types::{
     AmbiguousCall, Edge, EdgeKind, Node, NodeKind, ResolutionResult, ResolvedBy, ResolvedRef,
     UnresolvedRef, Visibility,
@@ -138,12 +140,35 @@ const CROSS_FILE_BLOCKLIST: &[&str] = &[
     "try_lock",
 ];
 
+/// Strip an optional trailing Swift parameter-label selector `(label1:label2:)`
+/// when every character inside parentheses matches valid Swift selector labels.
+pub(super) fn split_swift_call_selector(name: &str) -> (&str, Option<Vec<&str>>) {
+    let Some(stripped) = name.strip_suffix(')') else {
+        return (name, None);
+    };
+    let Some((base, inner)) = stripped.rsplit_once('(') else {
+        return (name, None);
+    };
+    if base.is_empty()
+        || inner.is_empty()
+        || !inner.ends_with(':')
+        || !inner
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b':')
+    {
+        return (name, None);
+    }
+    let labels: Vec<&str> = inner.trim_end_matches(':').split(':').collect();
+    (base, Some(labels))
+}
+
 /// Returns the trailing "simple" name of a possibly-qualified reference:
 /// the last segment after the final `::` (Rust/C++/PHP path) or `.`
-/// (Python/TS/JS/Java receiver call). `Self::watermark_band` -> `watermark_band`,
-/// `obj.render_to_png` -> `render_to_png`, `plain` -> `plain`.
+/// (Python/TS/JS/Java/Swift receiver call), stripping any trailing Swift
+/// argument-label selector `(label1:label2:)`.
 pub fn simple_ref_name(name: &str) -> &str {
-    let after_path = name.rsplit("::").next().unwrap_or(name);
+    let (base, _) = split_swift_call_selector(name);
+    let after_path = base.rsplit("::").next().unwrap_or(base);
     after_path.rsplit('.').next().unwrap_or(after_path)
 }
 
@@ -264,14 +289,20 @@ pub fn is_csharp(path: &str) -> bool {
         .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("cs"))
 }
 
+/// True for a Swift source path. Case-insensitive, like [`is_gdscript`].
+pub fn is_swift(path: &str) -> bool {
+    path.rsplit_once('.')
+        .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("swift"))
+}
+
 /// True when a file's `calls` refs holding `::` are typed-receiver type
-/// expressions (`Type[::step]*::method`): `GDScript` (#597) and C# (#642).
+/// expressions (`Type[::step]*::method`): `GDScript` (#597), C# (#642), and Swift.
 pub fn has_typed_receiver_refs(path: &str) -> bool {
-    is_gdscript(path) || is_csharp(path)
+    is_gdscript(path) || is_csharp(path) || is_swift(path)
 }
 
 fn is_typed_receiver_tag(tag: &str) -> bool {
-    tag == GDSCRIPT_TYPED || tag == CSHARP_TYPED
+    tag == GDSCRIPT_TYPED || tag == CSHARP_TYPED || tag == SWIFT_TYPED
 }
 
 /// A call site: caller, file, line, column, and the method's bare name.
@@ -738,6 +769,10 @@ pub struct ReferenceResolver<'a> {
     /// `File` nodes keyed by their path, for binding a relative JS/TS import
     /// specifier to the file it names (#647).
     file_nodes: HashMap<&'a str, &'a Node>,
+    /// Directory prefixes (with trailing `/`, or empty for the project root)
+    /// holding an indexed `Package.swift`. Only `Sources/<Target>/` and
+    /// `Tests/<Target>/` directly below one of these are `SwiftPM` targets.
+    swift_package_roots: HashSet<&'a str>,
 }
 
 /// References paired with their position in the slice `resolve_all` was given,
@@ -872,6 +907,7 @@ impl<'a> ReferenceResolver<'a> {
             known_names,
             import_index,
             go_import_qualifiers,
+            swift_package_roots: swift_package_roots(&file_nodes),
             file_nodes,
         }
     }
@@ -970,6 +1006,14 @@ impl<'a> ReferenceResolver<'a> {
             return self.try_csharp_typed_match(uref, is_csharp_callable);
         }
 
+        // Swift type-qualified and statically inferred typed-receiver calls (`Type::method`).
+        if uref.reference_kind == EdgeKind::Calls
+            && is_swift(&uref.file_path)
+            && uref.reference_name.contains("::")
+        {
+            return self.try_swift_typed_match(uref);
+        }
+
         // C# member reads through a typed receiver (#637): `Type::Member`
         // binds to a field or property of that type, or to nothing. A
         // `using` directive's ref (`global::A.B`) is not a read.
@@ -1061,6 +1105,13 @@ impl<'a> ReferenceResolver<'a> {
                 && is_csharp(&uref.file_path)
             {
                 return self.try_csharp_receiver_fallback(uref, simple_name);
+            }
+            if simple_name != uref.reference_name
+                && uref.reference_kind == EdgeKind::Calls
+                && is_swift(&uref.file_path)
+            {
+                let bare_method = split_swift_call_selector(simple_name).0;
+                return self.try_swift_dotted_match(uref, bare_method);
             }
             if simple_name != uref.reference_name {
                 if let Some(resolved) = self.try_exact_name_match_scoped(
@@ -1368,9 +1419,21 @@ impl<'a> ReferenceResolver<'a> {
 
     /// Strategy 1: try matching the reference name against qualified names.
     fn try_qualified_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
+        let lookup_name = if is_swift(&uref.file_path) && uref.reference_kind == EdgeKind::Calls {
+            split_swift_call_selector(&uref.reference_name).0
+        } else {
+            uref.reference_name.as_str()
+        };
+
         // Direct lookup first
-        if let Some(candidates) = self.qualified_name_cache.get(uref.reference_name.as_str()) {
-            if let Some(node) = candidates.iter().find(|n| kind_compatible(uref, &n.kind)) {
+        if let Some(candidates) = self.qualified_name_cache.get(lookup_name) {
+            let matched: Vec<&Node> = candidates
+                .iter()
+                .copied()
+                .filter(|n| self.is_candidate(uref, n))
+                .collect();
+            let filtered = filter_swift_overloads(uref, matched);
+            if let Some(node) = filtered.into_iter().next() {
                 return Some(ResolvedRef {
                     original: uref.clone(),
                     target_node_id: node.id.clone(),
@@ -1382,10 +1445,16 @@ impl<'a> ReferenceResolver<'a> {
 
         // Suffix match via pre-built suffix index — O(1) lookup instead of
         // scanning the entire qualified_name_cache.
-        if let Some(full_names) = self.suffix_cache.get(uref.reference_name.as_str()) {
+        if let Some(full_names) = self.suffix_cache.get(lookup_name) {
             for full_name in full_names {
                 if let Some(candidates) = self.qualified_name_cache.get(full_name) {
-                    if let Some(node) = candidates.iter().find(|n| kind_compatible(uref, &n.kind)) {
+                    let matched: Vec<&Node> = candidates
+                        .iter()
+                        .copied()
+                        .filter(|n| self.is_candidate(uref, n))
+                        .collect();
+                    let filtered = filter_swift_overloads(uref, matched);
+                    if let Some(node) = filtered.into_iter().next() {
                         return Some(ResolvedRef {
                             original: uref.clone(),
                             target_node_id: node.id.clone(),
@@ -1902,13 +1971,208 @@ impl<'a> ReferenceResolver<'a> {
         self.ruby_constant_owners_at(constant_path)
     }
 
+    /// Swift typed-receiver and static type calls (`Type::method`).
+    ///
+    /// Searches Swift types and extensions named `Type` visible within `SwiftPM`
+    /// target import rules, walking inherited superclasses/protocols up to
+    /// [`SWIFT_MAX_INHERITANCE_DEPTH`]. Unindexed or stdlib types never fall back
+    /// to global bare-name matching.
+    fn try_swift_typed_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
+        let (base_ref, _) = split_swift_call_selector(&uref.reference_name);
+        let (type_name, method_name) = base_ref.split_once("::")?;
+        let mut owners: Vec<&'a Node> = self
+            .name_cache
+            .get(type_name)
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .copied()
+                    .filter(|n| {
+                        is_swift(&n.file_path)
+                            && matches!(
+                                n.kind,
+                                NodeKind::Class
+                                    | NodeKind::Struct
+                                    | NodeKind::Enum
+                                    | NodeKind::Interface
+                                    | NodeKind::Extension
+                            )
+                            && self.swift_target_visible(&uref.file_path, &n.file_path)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if owners.is_empty() {
+            return None;
+        }
+
+        let mut visited: HashSet<&str> = owners.iter().map(|o| o.id.as_str()).collect();
+        for _ in 0..SWIFT_MAX_INHERITANCE_DEPTH {
+            let mut raw_matched: Vec<&'a Node> = Vec::new();
+            for owner in &owners {
+                let qn = format!("{}::{method_name}", owner.qualified_name);
+                if let Some(candidates) = self.qualified_name_cache.get(qn.as_str()) {
+                    raw_matched.extend(
+                        candidates
+                            .iter()
+                            .copied()
+                            .filter(|n| self.is_candidate(uref, n)),
+                    );
+                }
+            }
+            // A type and its same-file extension share a qualified name, so
+            // both owners yield the same member: keep one copy per node.
+            raw_matched.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+            raw_matched.dedup_by(|a, b| a.id == b.id);
+            let matched = filter_swift_overloads(uref, raw_matched);
+            if matched.len() == 1 {
+                return Some(ResolvedRef {
+                    original: uref.clone(),
+                    target_node_id: matched[0].id.clone(),
+                    confidence: 0.95,
+                    resolved_by: SWIFT_TYPED.to_string(),
+                });
+            }
+            if matched.len() > 1 {
+                let winners = Self::find_best_matches(uref, &matched, &self.import_index);
+                let [best] = winners.as_slice() else {
+                    return None;
+                };
+                if is_unsupported_declaration(uref, best, &matched, &self.node_id_cache) {
+                    return None;
+                }
+                return Some(ResolvedRef {
+                    original: uref.clone(),
+                    target_node_id: best.id.clone(),
+                    confidence: 0.9,
+                    resolved_by: SWIFT_TYPED.to_string(),
+                });
+            }
+            // Step into superclasses / conformed protocols declared in signatures.
+            let mut next_owners: Vec<&'a Node> = Vec::new();
+            for owner in &owners {
+                for base_name in swift_base_types(owner.signature.as_deref().unwrap_or("")) {
+                    if let Some(base_nodes) = self.name_cache.get(base_name) {
+                        for b in base_nodes {
+                            if is_swift(&b.file_path)
+                                && matches!(
+                                    b.kind,
+                                    NodeKind::Class
+                                        | NodeKind::Struct
+                                        | NodeKind::Enum
+                                        | NodeKind::Interface
+                                        | NodeKind::Extension
+                                )
+                                && self.swift_target_visible(&uref.file_path, &b.file_path)
+                                && visited.insert(b.id.as_str())
+                            {
+                                next_owners.push(b);
+                            }
+                        }
+                    }
+                }
+            }
+            if next_owners.is_empty() {
+                break;
+            }
+            owners = next_owners;
+        }
+        None
+    }
+
+    /// Swift dotted-receiver fallback (`recv.method` or `self.method`).
+    ///
+    /// Calls through an untyped foreign receiver on common Swift stdlib/Foundation
+    /// method names (`append`, `sorted`, `encode`, `close`, etc.) are declined
+    /// outright so they never forge phantom edges or self-recursion.
+    fn try_swift_dotted_match(
+        &self,
+        uref: &UnresolvedRef,
+        simple_name: &str,
+    ) -> Option<ResolvedRef> {
+        let receiver = uref
+            .reference_name
+            .rsplit_once('.')
+            .map_or("", |(recv, _)| recv);
+        if receiver == "self" || receiver == "super" {
+            // Restrict `self.method()` / `super.method()` to the caller's own owner type/file.
+            let caller = self.node_id_cache.get(uref.from_node_id.as_str())?;
+            let own_candidates = filter_swift_overloads(
+                uref,
+                self.name_cache
+                    .get(simple_name)?
+                    .iter()
+                    .copied()
+                    .filter(|n| self.is_candidate(uref, n))
+                    .filter(|n| {
+                        n.file_path == uref.file_path
+                            || (is_method_kind(&caller.kind)
+                                && is_method_kind(&n.kind)
+                                && same_owner(&caller.qualified_name, &n.qualified_name))
+                    })
+                    .collect(),
+            );
+            if own_candidates.is_empty() {
+                return None;
+            }
+            return resolve_from_filtered_named(
+                uref,
+                &own_candidates,
+                SIMPLE_NAME_MATCH,
+                &self.import_index,
+                Reachability::Unrestricted,
+                &self.node_id_cache,
+            );
+        }
+
+        if SWIFT_STDLIB_METHODS.contains(&simple_name) {
+            return None;
+        }
+        self.try_exact_name_match_scoped(
+            uref,
+            simple_name,
+            Reachability::Required,
+            SIMPLE_NAME_MATCH,
+            None,
+        )
+    }
+
+    /// Whether `candidate_file` is visible from `caller_file` under `SwiftPM` target
+    /// boundaries (`Sources/<Target>` and `Tests/<TestTarget>`).
+    fn swift_target_visible(&self, caller_file: &str, candidate_file: &str) -> bool {
+        if !is_swift(caller_file) || !is_swift(candidate_file) || caller_file == candidate_file {
+            return true;
+        }
+        let caller_target = swift_spm_target(caller_file, &self.swift_package_roots);
+        let cand_target = swift_spm_target(candidate_file, &self.swift_package_roots);
+
+        // Production or other test targets cannot depend on a Tests/<Target> directory.
+        if let Some((true, test_target)) = cand_target {
+            return matches!(caller_target, Some((true, caller)) if caller == test_target);
+        }
+
+        if let (Some((_, caller_name)), Some((false, cand_name))) = (caller_target, cand_target) {
+            if caller_name == cand_name {
+                return true;
+            }
+            return self
+                .import_index
+                .get(caller_file)
+                .is_some_and(|imports| imports.contains(cand_name));
+        }
+
+        true
+    }
+
     /// Whether `node` may be the target of `uref` at all: its kind fits the
     /// reference, it is not the caller's own type reached through a call on
-    /// another value, and it is not an associated type named by a bare type.
+    /// another value, it respects `SwiftPM` target visibility, and it is not an
+    /// associated type named by a bare type.
     fn is_candidate(&self, uref: &UnresolvedRef, node: &Node) -> bool {
         kind_compatible(uref, &node.kind)
             && !self.is_own_type_via_other_value(uref, node)
             && !self.is_associated_type_of_bare_type_ref(uref, node)
+            && self.swift_target_visible(&uref.file_path, &node.file_path)
     }
 
     /// Whether binding `uref` to `node` would make a call on another value
@@ -2014,22 +2278,31 @@ impl<'a> ReferenceResolver<'a> {
 
     /// Strategy 2: exact name match using the name cache.
     fn try_exact_name_match(&self, uref: &UnresolvedRef) -> Option<ResolvedRef> {
+        let lookup_name = if is_swift(&uref.file_path) && uref.reference_kind == EdgeKind::Calls {
+            split_swift_call_selector(&uref.reference_name).0
+        } else {
+            uref.reference_name.as_str()
+        };
+
         // Skip cross-file resolution for blocklisted names (too ambiguous).
-        if CROSS_FILE_BLOCKLIST.contains(&uref.reference_name.as_str()) {
-            return self.same_file_blocklist_match(uref, &uref.reference_name, None);
+        if CROSS_FILE_BLOCKLIST.contains(&lookup_name) {
+            return self.same_file_blocklist_match(uref, lookup_name, None);
         }
 
-        let raw_candidates = self.name_cache.get(uref.reference_name.as_str())?;
+        let raw_candidates = self.name_cache.get(lookup_name)?;
         // Filter by node-kind compatibility with the reference kind. An
         // `Implements`/`Extends`/`DerivesMacro` ref like `impl Default for X`
         // must NOT bind to an unrelated node kind (e.g. a local
         // `enum_variant Default`) just because the names match — that
         // poisons `tokensave_rank` and every downstream graph query.
-        let kind_filtered: Vec<&Node> = raw_candidates
-            .iter()
-            .copied()
-            .filter(|n| self.is_candidate(uref, n))
-            .collect();
+        let kind_filtered: Vec<&Node> = filter_swift_overloads(
+            uref,
+            raw_candidates
+                .iter()
+                .copied()
+                .filter(|n| self.is_candidate(uref, n))
+                .collect(),
+        );
         if kind_filtered.is_empty() {
             return None;
         }
@@ -2132,11 +2405,14 @@ impl<'a> ReferenceResolver<'a> {
         }
 
         let raw_candidates = self.name_cache.get(simple_name)?;
-        let mut kind_filtered: Vec<&Node> = raw_candidates
-            .iter()
-            .copied()
-            .filter(|n| self.is_candidate(uref, n))
-            .collect();
+        let mut kind_filtered: Vec<&Node> = filter_swift_overloads(
+            uref,
+            raw_candidates
+                .iter()
+                .copied()
+                .filter(|n| self.is_candidate(uref, n))
+                .collect(),
+        );
         if let Some(scope) = scope {
             let in_scope: Vec<&Node> = kind_filtered
                 .iter()
@@ -2467,6 +2743,246 @@ impl<'a> ReferenceResolver<'a> {
     }
 }
 
+/// Directory prefixes of every indexed `Package.swift` manifest: `""` for one at
+/// the project root, `"Packages/Core/"` for `Packages/Core/Package.swift`.
+fn swift_package_roots<'a>(file_nodes: &HashMap<&'a str, &'a Node>) -> HashSet<&'a str> {
+    file_nodes
+        .keys()
+        .filter_map(|path| {
+            let prefix = path.strip_suffix(SWIFT_PACKAGE_MANIFEST)?;
+            (prefix.is_empty() || prefix.ends_with('/')).then_some(prefix)
+        })
+        .collect()
+}
+
+/// `SwiftPM` target classification `(is_test_target, target_name)` of a path
+/// under `<root>/Sources/<Target>/...` or `<root>/Tests/<TestTarget>/...`.
+///
+/// `is_package_root` decides which directory prefixes (with trailing `/`, or
+/// empty) hold a package. The target must be a directory: a file placed
+/// directly in `Sources/` (the Tuist and `XcodeGen` layout) names no target.
+fn swift_spm_target_where(
+    file_path: &str,
+    is_package_root: impl Fn(&str) -> bool,
+) -> Option<(bool, &str)> {
+    let mut offset = 0;
+    let mut rest = file_path;
+    while let Some((segment, tail)) = rest.split_once('/') {
+        let is_test = match segment {
+            SWIFT_SPM_SOURCES_DIR => Some(false),
+            SWIFT_SPM_TESTS_DIR => Some(true),
+            _ => None,
+        };
+        if let Some(is_test) = is_test {
+            if is_package_root(&file_path[..offset]) {
+                return tail
+                    .split_once('/')
+                    .filter(|(target, _)| !target.is_empty())
+                    .map(|(target, _)| (is_test, target));
+            }
+        }
+        offset += segment.len() + 1;
+        rest = tail;
+    }
+    None
+}
+
+/// `SwiftPM` target of `file_path`, counting only packages with an indexed manifest.
+fn swift_spm_target<'p>(
+    file_path: &'p str,
+    package_roots: &HashSet<&str>,
+) -> Option<(bool, &'p str)> {
+    swift_spm_target_where(file_path, |prefix| package_roots.contains(prefix))
+}
+
+/// Extract base class / conformed protocol names from a Swift declaration signature.
+fn swift_base_types(signature: &str) -> Vec<&str> {
+    let Some((_, rest)) = signature.split_once(':') else {
+        return Vec::new();
+    };
+    let rest = rest.split('{').next().unwrap_or(rest);
+    let rest = rest.split(" where ").next().unwrap_or(rest);
+    rest.split(',')
+        .filter_map(|part| {
+            let trimmed = part.trim();
+            let base = trimmed.split('<').next()?.trim();
+            let last = base.rsplit('.').next()?.trim();
+            (!last.is_empty() && last.chars().all(|c| c.is_alphanumeric() || c == '_'))
+                .then_some(last)
+        })
+        .collect()
+}
+
+/// Narrow Swift callable overload candidates sharing the same qualified name by
+/// matching call-site argument labels/arity against parameter signatures.
+fn filter_swift_overloads<'n>(uref: &UnresolvedRef, candidates: Vec<&'n Node>) -> Vec<&'n Node> {
+    if !is_swift(&uref.file_path) || uref.reference_kind != EdgeKind::Calls || candidates.len() < 2
+    {
+        return candidates;
+    }
+    let (_, selector) = split_swift_call_selector(&uref.reference_name);
+    match selector {
+        Some(call_labels) => candidates
+            .iter()
+            .copied()
+            .filter(|n| swift_sig_matches_labels(n.signature.as_deref(), &call_labels))
+            .collect(),
+        None => {
+            // Only narrow unlabeled/0-1-arg calls when multiple candidates share
+            // a qualified name (true overloads), leaving singletons/function refs intact.
+            let mut has_overload_group = false;
+            for (idx, a) in candidates.iter().enumerate() {
+                if candidates[idx + 1..]
+                    .iter()
+                    .any(|b| a.qualified_name == b.qualified_name)
+                {
+                    has_overload_group = true;
+                    break;
+                }
+            }
+            if !has_overload_group {
+                return candidates;
+            }
+            let filtered: Vec<&'n Node> = candidates
+                .iter()
+                .copied()
+                .filter(|n| swift_sig_accepts_short_unlabeled(n.signature.as_deref()))
+                .collect();
+            if filtered.is_empty() {
+                candidates
+            } else {
+                filtered
+            }
+        }
+    }
+}
+
+/// Parse Swift callable parameter specs `(external_label, has_default)` from `signature`.
+fn parse_swift_signature_params(signature: &str) -> Option<Vec<(String, bool)>> {
+    let inner = swift_parameter_clause(signature)?;
+    if inner.trim().is_empty() {
+        return Some(Vec::new());
+    }
+    let bytes = inner.as_bytes();
+    let mut params = Vec::new();
+    let mut depth = 0i32;
+    let mut seg_start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' | b'<' | b'[' => depth += 1,
+            // The `>` of a function type's `->` arrow closes nothing.
+            b'>' if i > 0 && bytes[i - 1] == b'-' => {}
+            b')' | b'>' | b']' => depth -= 1,
+            b',' if depth == 0 => {
+                if let Some(p) = parse_swift_single_param(&inner[seg_start..i]) {
+                    params.push(p);
+                }
+                seg_start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if let Some(p) = parse_swift_single_param(&inner[seg_start..]) {
+        params.push(p);
+    }
+    Some(params)
+}
+
+/// The text between the parentheses of a declaration's parameter clause.
+///
+/// Attribute arguments (`@available(macOS 10.15, *)`, `@objc(run:)`) come
+/// before the clause in a stored signature and are skipped, as is any `<...>`
+/// generic clause, so the first parenthesis left is the parameter list.
+fn swift_parameter_clause(signature: &str) -> Option<&str> {
+    let bytes = signature.as_bytes();
+    let mut i = 0;
+    let mut angle_depth = 0i32;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'@' if angle_depth == 0 => {
+                i += 1;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                if bytes.get(i) == Some(&b'(') {
+                    i = swift_matching_paren(bytes, i)? + 1;
+                }
+                continue;
+            }
+            b'<' => angle_depth += 1,
+            b'>' if angle_depth > 0 => angle_depth -= 1,
+            b'(' if angle_depth == 0 => {
+                let close = swift_matching_paren(bytes, i)?;
+                return signature.get(i + 1..close);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Index of the `)` matching the `(` at `open`, or `None` when unbalanced.
+fn swift_matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    for (offset, &b) in bytes.get(open..)?.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn parse_swift_single_param(param: &str) -> Option<(String, bool)> {
+    let trimmed = param.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let has_default = trimmed.contains('=');
+    let head = trimmed.split(':').next()?.trim();
+    // A parameter attribute (`@ViewBuilder content: ...`) precedes its label.
+    let label = head
+        .split_whitespace()
+        .find(|token| !token.starts_with('@'))?
+        .to_string();
+    Some((label, has_default))
+}
+
+fn swift_sig_matches_labels(signature: Option<&str>, call_labels: &[&str]) -> bool {
+    let Some(params) = signature.and_then(parse_swift_signature_params) else {
+        return true;
+    };
+    let mut li = 0usize;
+    for (label, has_default) in &params {
+        let call_label = call_labels.get(li).copied();
+        if call_label == Some(SWIFT_TRAILING_CLOSURE_LABEL) || call_label == Some(label.as_str()) {
+            li += 1;
+        } else if !*has_default {
+            return false;
+        }
+    }
+    li == call_labels.len()
+}
+
+fn swift_sig_accepts_short_unlabeled(signature: Option<&str>) -> bool {
+    let Some(params) = signature.and_then(parse_swift_signature_params) else {
+        return true;
+    };
+    let required: Vec<&str> = params
+        .iter()
+        .filter(|(_, has_default)| !*has_default)
+        .map(|(lbl, _)| lbl.as_str())
+        .collect();
+    required.is_empty() || (required.len() == 1 && required[0] == "_")
+}
+
 /// True when an unresolved-ref's edge kind is structurally compatible
 /// with a candidate target node's kind.
 ///
@@ -2529,6 +3045,19 @@ fn kind_compatible(uref: &UnresolvedRef, target_kind: &NodeKind) -> bool {
         EdgeKind::Instantiates => matches!(
             target_kind,
             NodeKind::Module | NodeKind::Interface | NodeKind::InterfaceType
+        ),
+        EdgeKind::Calls if is_swift(&uref.file_path) => matches!(
+            target_kind,
+            NodeKind::Function
+                | NodeKind::Method
+                | NodeKind::SingletonMethod
+                | NodeKind::StructMethod
+                | NodeKind::Constructor
+                | NodeKind::AbstractMethod
+                | NodeKind::ArrowFunction
+                | NodeKind::Procedure
+                | NodeKind::Macro
+                | NodeKind::Property
         ),
         EdgeKind::Calls => matches!(
             target_kind,
@@ -2771,6 +3300,28 @@ fn is_plausibly_reachable(
         return true;
     }
 
+    // Positive `SwiftPM` evidence only: same target, or an imported module
+    // named like the candidate's target. Target visibility itself is enforced
+    // by `is_candidate`, which knows the indexed `Package.swift` roots; this
+    // free function does not, so it never declines on layout alone.
+    if is_swift(&uref.file_path) && is_swift(&candidate.file_path) {
+        if let (Some((c_test, caller_t)), Some((t_test, cand_t))) = (
+            swift_spm_target_where(&uref.file_path, |_| true),
+            swift_spm_target_where(&candidate.file_path, |_| true),
+        ) {
+            if c_test == t_test && caller_t == cand_t {
+                return true;
+            }
+            if !t_test
+                && import_index
+                    .get(&uref.file_path)
+                    .is_some_and(|imports| imports.contains(cand_t))
+            {
+                return true;
+            }
+        }
+    }
+
     let candidate_dir = candidate.file_path.rsplit_once('/').map(|(dir, _)| dir);
     let reference_dir = uref.file_path.rsplit_once('/').map(|(dir, _)| dir);
     if candidate_dir == reference_dir {
@@ -2870,4 +3421,492 @@ fn resolve_from_filtered_named(
         confidence: SCORED_MATCH_CONFIDENCE,
         resolved_by: format!("{resolved_by}-scored"),
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod swift_resolver_unit_tests {
+    use super::*;
+    use crate::types::{Node, Visibility};
+
+    fn swift_node(
+        id: &str,
+        kind: NodeKind,
+        name: &str,
+        qn: &str,
+        file: &str,
+        sig: Option<&str>,
+    ) -> Node {
+        Node {
+            id: id.to_string(),
+            kind,
+            name: name.to_string(),
+            qualified_name: qn.to_string(),
+            file_path: file.to_string(),
+            start_line: 1,
+            attrs_start_line: 1,
+            end_line: 5,
+            start_column: 0,
+            end_column: 1,
+            signature: sig.map(str::to_string),
+            docstring: None,
+            visibility: Visibility::Pub,
+            is_async: false,
+            branches: 0,
+            loops: 0,
+            returns: 0,
+            max_nesting: 0,
+            unsafe_blocks: 0,
+            unchecked_calls: 0,
+            assertions: 0,
+            cognitive_complexity: 0,
+            distinct_operators: 0,
+            distinct_operands: 0,
+            total_operators: 0,
+            total_operands: 0,
+            updated_at: 0,
+            parent_id: None,
+        }
+    }
+
+    #[test]
+    fn split_selector_handles_edge_cases() {
+        assert_eq!(split_swift_call_selector("foo)"), ("foo)", None));
+        assert_eq!(split_swift_call_selector("foo()"), ("foo()", None));
+        assert_eq!(split_swift_call_selector("(a:)"), ("(a:)", None));
+        assert_eq!(split_swift_call_selector("foo(a)"), ("foo(a)", None));
+        assert_eq!(split_swift_call_selector("foo(a-b:)"), ("foo(a-b:)", None));
+        assert_eq!(
+            split_swift_call_selector("bind(_:value:)"),
+            ("bind", Some(vec!["_", "value"]))
+        );
+    }
+
+    #[test]
+    fn swift_spm_targets_need_a_manifest_and_a_target_directory() {
+        let roots: HashSet<&str> = ["", "Packages/Core/"].into_iter().collect();
+        assert_eq!(
+            swift_spm_target("Sources/App/A.swift", &roots),
+            Some((false, "App"))
+        );
+        assert_eq!(
+            swift_spm_target("Packages/Core/Tests/CoreTests/T.swift", &roots),
+            Some((true, "CoreTests"))
+        );
+        assert_eq!(swift_spm_target("Sources/A.swift", &roots), None);
+        assert_eq!(swift_spm_target("App/Sources/Views/A.swift", &roots), None);
+        assert_eq!(
+            swift_spm_target_where("App/Sources/Views/A.swift", |_| true),
+            Some((false, "Views"))
+        );
+    }
+
+    #[test]
+    fn signature_params_skip_arrows_attributes_and_param_attributes() {
+        assert_eq!(
+            parse_swift_signature_params(
+                "func request(_ handler: @escaping (Int) -> Void, queue: Int)"
+            ),
+            Some(vec![("_".to_string(), false), ("queue".to_string(), false)])
+        );
+        assert_eq!(
+            parse_swift_signature_params("@available(macOS 10.15, *) func paint(color: Int)"),
+            Some(vec![("color".to_string(), false)])
+        );
+        assert_eq!(
+            parse_swift_signature_params("init(@ViewBuilder content: () -> Content)"),
+            Some(vec![("content".to_string(), false)])
+        );
+        assert_eq!(
+            parse_swift_signature_params("func make<T: Equatable>(item: T) -> [T]"),
+            Some(vec![("item".to_string(), false)])
+        );
+        assert!(swift_sig_matches_labels(
+            Some("func load(id: Int, completion: (Int) -> Void)"),
+            &["id", SWIFT_TRAILING_CLOSURE_LABEL]
+        ));
+        assert!(!swift_sig_matches_labels(
+            Some("func load(id: Int)"),
+            &["id", SWIFT_TRAILING_CLOSURE_LABEL]
+        ));
+    }
+
+    #[test]
+    fn swift_base_types_parses_inheritance_clauses() {
+        assert!(swift_base_types("struct Plain").is_empty());
+        assert_eq!(
+            swift_base_types("final class Child: Mod.Base<Int>, Proto where T: Eq {"),
+            vec!["Base", "Proto"]
+        );
+        assert_eq!(swift_base_types("class Bad: !@# {}"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn signature_param_parsing_and_overload_matching() {
+        assert_eq!(parse_swift_signature_params("func empty()"), Some(vec![]));
+        assert_eq!(parse_swift_signature_params("func unclosed(a: Int"), None);
+        assert_eq!(parse_swift_single_param("   "), None);
+        assert_eq!(
+            parse_swift_signature_params(
+                "func run(pair: (Int, String), map: Dictionary<String, [Int]>, flag: Bool = false)"
+            ),
+            Some(vec![
+                ("pair".to_string(), false),
+                ("map".to_string(), false),
+                ("flag".to_string(), true),
+            ])
+        );
+        assert!(swift_sig_matches_labels(None, &["x"]));
+        assert!(swift_sig_matches_labels(
+            Some("func run(a: Int, b: Int = 1)"),
+            &["a"]
+        ));
+        assert!(!swift_sig_matches_labels(
+            Some("func run(a: Int, b: Int)"),
+            &["a"]
+        ));
+        assert!(swift_sig_accepts_short_unlabeled(None));
+        assert!(swift_sig_accepts_short_unlabeled(Some(
+            "func run(_ x: Int, flag: Bool = true)"
+        )));
+    }
+
+    #[test]
+    fn qualified_match_and_typed_match_cover_selector_tie_and_inheritance() {
+        let nodes = vec![
+            swift_node(
+                "cls-a",
+                NodeKind::Class,
+                "Child",
+                "Child",
+                "Sources/Core/A.swift",
+                Some("class Child: Base, MissingBase"),
+            ),
+            swift_node(
+                "cls-b",
+                NodeKind::Class,
+                "Base",
+                "Base",
+                "Sources/Core/B.swift",
+                Some("class Base"),
+            ),
+            swift_node(
+                "m-base",
+                NodeKind::Method,
+                "ping",
+                "Base::ping",
+                "Sources/Core/B.swift",
+                Some("func ping(x: Int)"),
+            ),
+            swift_node(
+                "caller",
+                NodeKind::Function,
+                "entry",
+                "entry",
+                "Sources/Core/C.swift",
+                Some("func entry()"),
+            ),
+            swift_node(
+                "dup-1",
+                NodeKind::Method,
+                "dup",
+                "Dup::dup",
+                "Sources/Other/D1.swift",
+                Some("func dup()"),
+            ),
+            swift_node(
+                "dup-2",
+                NodeKind::Method,
+                "dup",
+                "Dup::dup",
+                "Sources/Other/D2.swift",
+                Some("func dup()"),
+            ),
+            swift_node(
+                "dup-t1",
+                NodeKind::Class,
+                "Dup",
+                "Dup",
+                "Sources/Other/D1.swift",
+                Some("class Dup"),
+            ),
+            swift_node(
+                "dup-t2",
+                NodeKind::Class,
+                "Dup",
+                "Dup",
+                "Sources/Other/D2.swift",
+                Some("class Dup"),
+            ),
+        ];
+        let resolver = ReferenceResolver::from_nodes(&nodes);
+
+        // `try_qualified_match` with selector.
+        let qref = UnresolvedRef {
+            from_node_id: "caller".to_string(),
+            reference_name: "Base::ping(x:)".to_string(),
+            reference_kind: EdgeKind::Calls,
+            line: 2,
+            column: 4,
+            file_path: "Sources/Core/C.swift".to_string(),
+        };
+        let qres = resolver
+            .try_qualified_match(&qref)
+            .expect("qualified match strips selector");
+        assert_eq!(qres.target_node_id, "m-base");
+
+        // Symmetric cross-file tie on `Dup::dup` returns None.
+        let tie_ref = UnresolvedRef {
+            from_node_id: "caller".to_string(),
+            reference_name: "Dup::dup".to_string(),
+            reference_kind: EdgeKind::Calls,
+            line: 3,
+            column: 4,
+            file_path: "Sources/Core/C.swift".to_string(),
+        };
+        assert!(resolver.try_swift_typed_match(&tie_ref).is_none());
+
+        // `try_swift_typed_match` walks Base -> unresolved method returns None cleanly.
+        let miss_ref = UnresolvedRef {
+            from_node_id: "caller".to_string(),
+            reference_name: "Child::notFound".to_string(),
+            reference_kind: EdgeKind::Calls,
+            line: 4,
+            column: 4,
+            file_path: "Sources/Core/C.swift".to_string(),
+        };
+        assert!(resolver.try_swift_typed_match(&miss_ref).is_none());
+
+        // Unimported cross-target bare call in Swift stays blocked by `is_plausibly_reachable`.
+        let hidden_ref = UnresolvedRef {
+            from_node_id: "caller".to_string(),
+            reference_name: "missingTargetFn".to_string(),
+            reference_kind: EdgeKind::Calls,
+            line: 5,
+            column: 4,
+            file_path: "Sources/Core/C.swift".to_string(),
+        };
+        let target_other = swift_node(
+            "oth",
+            NodeKind::Function,
+            "missingTargetFn",
+            "missingTargetFn",
+            "Sources/Hidden/H.swift",
+            None,
+        );
+        assert!(!is_plausibly_reachable(
+            &hidden_ref,
+            &target_other,
+            &HashMap::new(),
+            &HashMap::new()
+        ));
+    }
+
+    #[test]
+    fn swift_resolver_typed_dotted_and_overload_branches() {
+        // 1 & 2: `try_swift_typed_match` with `matched.len() > 1` -> unique best winner & tie returning None.
+        let mut nodes = vec![
+            swift_node(
+                "caller-fn",
+                NodeKind::Method,
+                "caller",
+                "Alpha::caller",
+                "Sources/App/Caller.swift",
+                Some("func caller()"),
+            ),
+            swift_node(
+                "svc-1",
+                NodeKind::Class,
+                "Svc",
+                "Svc",
+                "Sources/App/Caller.swift",
+                Some("class Svc"),
+            ),
+            swift_node(
+                "ping-local",
+                NodeKind::Method,
+                "ping",
+                "Svc::ping",
+                "Sources/App/Caller.swift",
+                Some("func ping()"),
+            ),
+            swift_node(
+                "ping-other",
+                NodeKind::Method,
+                "ping",
+                "Svc::ping",
+                "Sources/App/Other.swift",
+                Some("func ping()"),
+            ),
+            // 3: Interface/Class declaration conflict (`is_unsupported_declaration`) -> None.
+            swift_node(
+                "proto-node",
+                NodeKind::Interface,
+                "Proto",
+                "Proto",
+                "Sources/App/Caller.swift",
+                Some("protocol Proto"),
+            ),
+            swift_node(
+                "proto-req",
+                NodeKind::AbstractMethod,
+                "req",
+                "Proto::req",
+                "Sources/App/Caller.swift",
+                Some("func req()"),
+            ),
+            swift_node(
+                "proto-impl",
+                NodeKind::Method,
+                "req",
+                "Proto::req",
+                "Sources/App/Impl.swift",
+                Some("func req()"),
+            ),
+            // 4: Diamond inheritance visited dedup (`Child: Left, Right`, both `: Root`).
+            swift_node(
+                "d-child",
+                NodeKind::Class,
+                "Diamond",
+                "Diamond",
+                "Sources/App/Diamond.swift",
+                Some("class Diamond: Left, Right"),
+            ),
+            swift_node(
+                "d-left",
+                NodeKind::Class,
+                "Left",
+                "Left",
+                "Sources/App/Diamond.swift",
+                Some("class Left: Root"),
+            ),
+            swift_node(
+                "d-right",
+                NodeKind::Class,
+                "Right",
+                "Right",
+                "Sources/App/Diamond.swift",
+                Some("class Right: Root"),
+            ),
+            swift_node(
+                "d-root",
+                NodeKind::Class,
+                "Root",
+                "Root",
+                "Sources/App/Diamond.swift",
+                Some("class Root"),
+            ),
+            // 5: `try_swift_dotted_match` with `self.onlyOnBeta` -> `own_candidates.is_empty()` -> None.
+            swift_node(
+                "beta-only",
+                NodeKind::Method,
+                "onlyOnBeta",
+                "Beta::onlyOnBeta",
+                "Sources/App/Beta.swift",
+                Some("func onlyOnBeta()"),
+            ),
+            // 6: `filter_swift_overloads` with `filtered.is_empty()` fallback.
+            swift_node(
+                "draw-xy",
+                NodeKind::Method,
+                "draw",
+                "Canvas::draw",
+                "Sources/App/Canvas.swift",
+                Some("func draw(x: Int, y: Int)"),
+            ),
+            swift_node(
+                "draw-wh",
+                NodeKind::Method,
+                "draw",
+                "Canvas::draw",
+                "Sources/App/Canvas.swift",
+                Some("func draw(w: Int, h: Int)"),
+            ),
+        ];
+        if let Some(n) = nodes.iter_mut().find(|n| n.id == "proto-req") {
+            n.parent_id = Some("proto-node".to_string());
+        }
+
+        let resolver = ReferenceResolver::from_nodes(&nodes);
+
+        // Unique best winner when `matched.len() > 1`.
+        let svc_win = UnresolvedRef {
+            from_node_id: "caller-fn".to_string(),
+            reference_name: "Svc::ping".to_string(),
+            reference_kind: EdgeKind::Calls,
+            line: 10,
+            column: 4,
+            file_path: "Sources/App/Caller.swift".to_string(),
+        };
+        let win_res = resolver
+            .try_swift_typed_match(&svc_win)
+            .expect("same-file winner among Svc.ping overloads");
+        assert_eq!(win_res.target_node_id, "ping-local");
+        assert_eq!(win_res.resolved_by, SWIFT_TYPED);
+
+        // Unqualified tie across two files returns None.
+        let svc_tie = UnresolvedRef {
+            from_node_id: "beta-only".to_string(),
+            reference_name: "Svc::ping".to_string(),
+            reference_kind: EdgeKind::Calls,
+            line: 11,
+            column: 4,
+            file_path: "Sources/App/Unrelated.swift".to_string(),
+        };
+        assert!(resolver.try_swift_typed_match(&svc_tie).is_none());
+
+        // Unsupported declaration winner (AbstractMethod over Method) returns None.
+        let decl_ref = UnresolvedRef {
+            from_node_id: "caller-fn".to_string(),
+            reference_name: "Proto::req".to_string(),
+            reference_kind: EdgeKind::Calls,
+            line: 12,
+            column: 4,
+            file_path: "Sources/App/Caller.swift".to_string(),
+        };
+        assert!(resolver.try_swift_typed_match(&decl_ref).is_none());
+
+        // Diamond inheritance walk visits `Root` once and terminates cleanly with None.
+        let diamond_ref = UnresolvedRef {
+            from_node_id: "caller-fn".to_string(),
+            reference_name: "Diamond::noSuchMethod".to_string(),
+            reference_kind: EdgeKind::Calls,
+            line: 13,
+            column: 4,
+            file_path: "Sources/App/Diamond.swift".to_string(),
+        };
+        assert!(resolver.try_swift_typed_match(&diamond_ref).is_none());
+
+        // `self.onlyOnBeta` declines foreign owner method (`own_candidates.is_empty()`).
+        let self_foreign = UnresolvedRef {
+            from_node_id: "caller-fn".to_string(),
+            reference_name: "self.onlyOnBeta".to_string(),
+            reference_kind: EdgeKind::Calls,
+            line: 14,
+            column: 4,
+            file_path: "Sources/App/Caller.swift".to_string(),
+        };
+        assert!(resolver
+            .try_swift_dotted_match(&self_foreign, "onlyOnBeta")
+            .is_none());
+
+        // `filter_swift_overloads` returns original candidates when unlabeled filter empties list.
+        let draw_ref = UnresolvedRef {
+            from_node_id: "caller-fn".to_string(),
+            reference_name: "draw".to_string(),
+            reference_kind: EdgeKind::Calls,
+            line: 15,
+            column: 4,
+            file_path: "Sources/App/Canvas.swift".to_string(),
+        };
+        let draw_candidates = resolver.name_cache.get("draw").expect("draw candidates");
+        let kept = filter_swift_overloads(&draw_ref, draw_candidates.to_vec());
+        assert_eq!(kept.len(), 2);
+
+        // `parse_swift_signature_params` empty comma segments (`seg_start..i` and trailing `seg_start..`).
+        assert_eq!(
+            parse_swift_signature_params("func f(, a: Int, )"),
+            Some(vec![("a".to_string(), false)])
+        );
+    }
 }
