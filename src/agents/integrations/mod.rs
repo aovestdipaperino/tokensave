@@ -50,7 +50,7 @@ use crate::agents::fs::{
     vscode_insiders_data_dir, write_json_file, write_toml_file,
 };
 use crate::agents::rules::{
-    check_managed_rules_file, check_shared_rules_block, remove_legacy_rules_block,
+    check_managed_rules_file, check_shared_rules_block, has_rules_block, remove_legacy_rules_block,
     remove_managed_rules_file, remove_rules_block, rules_for_agent, write_managed_rules_file,
     write_rules_block, LEGACY_RULES_MARKER, OMP_RULES_MARKER,
 };

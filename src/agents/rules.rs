@@ -895,6 +895,14 @@ pub fn check_managed_rules_file(dc: &mut DoctorCounters, path: &Path, agent_id: 
 /// Missing files are reported as warnings, not failures, because some
 /// variants (e.g. `JetBrains` Copilot instructions) may not be present on every
 /// machine.
+/// True when `path` holds a tokensave rules block, managed or legacy.
+/// Read-only; a missing or unreadable file holds none.
+pub fn has_rules_block(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|contents| {
+        contents.contains(BLOCK_START_PREFIX) || contents.contains(LEGACY_RULES_MARKER)
+    })
+}
+
 pub fn check_shared_rules_block(dc: &mut DoctorCounters, path: &Path, agent_id: &str) {
     let Some(expected) = expected_rules_markdown(agent_id) else {
         dc.warn(&format!("no canonical rules defined for agent {agent_id}"));
