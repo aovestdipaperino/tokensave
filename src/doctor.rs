@@ -662,13 +662,44 @@ mod tests {
     use super::*;
 
     /// A project directory with an index of `db_bytes`, plus a small WAL, so
-    /// the size check has something real to stat.
+    /// the size check has something real to stat. It also writes the
+    /// `config.json` that `init` writes, without which a database in the home
+    /// directory is a stray file rather than an indexed home (#1152).
     fn project_with_index(root: &Path, db_bytes: u64) {
+        stray_database(root, db_bytes);
+        let dir = crate::config::get_tokensave_dir(root);
+        std::fs::write(dir.join(crate::config::CONFIG_FILENAME), "{}").unwrap();
+    }
+
+    /// A database and WAL of `db_bytes` with no `config.json` next to them.
+    fn stray_database(root: &Path, db_bytes: u64) {
         let dir = crate::config::get_tokensave_dir(root);
         std::fs::create_dir_all(&dir).unwrap();
         let db = std::fs::File::create(dir.join("tokensave.db")).unwrap();
         db.set_len(db_bytes).unwrap();
         std::fs::write(dir.join("tokensave.db-wal"), vec![0u8; 512]).unwrap();
+    }
+
+    /// A stray database in the global state directory gets its own warning,
+    /// once, even when it is large and the user stands in the home directory,
+    /// and doctor does not report the home directory as unindexed (#1152).
+    #[test]
+    fn a_stray_home_database_is_reported_once_and_not_as_an_indexed_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        stray_database(&home, OVERSIZED_INDEX_BYTES + 1);
+
+        let mut dc = DoctorCounters::new();
+        check_index_scope_with(&mut dc, &home, Some(&home));
+        assert_eq!(
+            dc.warnings, 1,
+            "a stray database must not also raise the size warning"
+        );
+        let warnings = crate::index_scope::scope_warnings(&home, Some(&home));
+        assert!(
+            warnings[0].contains("Ignoring a stray tokensave.db"),
+            "got: {warnings:?}"
+        );
     }
 
     /// The reported state: `$HOME` itself initialized as a project. It must
