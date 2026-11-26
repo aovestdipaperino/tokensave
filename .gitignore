@@ -28,3 +28,7 @@ __pycache__/
 
 # Serena MCP local project cache (never ship)
 .serena/
+
+#markdown docs for devel
+reasoning/
+reasoning/**

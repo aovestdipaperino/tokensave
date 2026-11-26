@@ -455,7 +455,22 @@ impl TokenSave {
         path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(Node, u64, u64, u64)>> {
-        self.db.get_god_classes(path_prefix, limit).await
+        self.get_god_classes_filtered(path_prefix, limit, None, false)
+            .await
+    }
+
+    /// Returns classes/structs ranked by member count with optional container
+    /// `kinds` filtering and data-struct exclusion.
+    pub async fn get_god_classes_filtered(
+        &self,
+        path_prefix: Option<&str>,
+        limit: usize,
+        kinds: Option<&[&str]>,
+        exclude_data_structs: bool,
+    ) -> Result<Vec<(Node, u64, u64, u64)>> {
+        self.db
+            .get_god_classes_filtered(path_prefix, limit, kinds, exclude_data_structs)
+            .await
     }
 
     /// Detects circular dependencies at the file level.

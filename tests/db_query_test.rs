@@ -1239,6 +1239,89 @@ async fn test_get_undocumented_public_symbols_includes_fields_and_variants() {
     );
 }
 
+#[tokio::test]
+async fn test_get_undocumented_public_symbols_excludes_non_code_extensions() {
+    let (_dir, db) = setup_db().await;
+
+    let excluded_paths = [
+        "CHANGELOG.md",
+        "docs/GUIDE.MD",
+        "docs/notes.markdown",
+        "docs/page.mdx",
+        "docs/readme.rst",
+        "docs/notes.txt",
+        "Package.json",
+        "config.yaml",
+        "ci.yml",
+        "Cargo.toml",
+        "board.canvas",
+    ];
+    let mut nodes = Vec::new();
+    for (idx, path) in excluded_paths.iter().enumerate() {
+        let mut n = sample_node(&format!("noncode-{idx}"), &format!("Heading{idx}"), path);
+        n.kind = NodeKind::Function;
+        n.visibility = Visibility::Pub;
+        n.docstring = None;
+        nodes.push(n);
+    }
+
+    let mut swift_sym = sample_node("code-swift", "publicEntry", "Sources/App/App.swift");
+    swift_sym.kind = NodeKind::Function;
+    swift_sym.visibility = Visibility::Pub;
+    swift_sym.docstring = None;
+    nodes.push(swift_sym);
+
+    let mut md_prefix_sym = sample_node("code-docs-swift", "docHelper", "docs/Helper.swift");
+    md_prefix_sym.kind = NodeKind::Function;
+    md_prefix_sym.visibility = Visibility::Pub;
+    md_prefix_sym.docstring = None;
+    nodes.push(md_prefix_sym);
+
+    db.insert_nodes(&nodes).await.expect("insert_nodes failed");
+
+    let undoc_all = db
+        .get_undocumented_public_symbols(None, 100)
+        .await
+        .expect("get_undocumented_public_symbols(None) failed");
+    let ids_all: Vec<&str> = undoc_all.iter().map(|n| n.id.as_str()).collect();
+    assert!(ids_all.contains(&"code-swift"));
+    assert!(ids_all.contains(&"code-docs-swift"));
+    for (idx, path) in excluded_paths.iter().enumerate() {
+        assert!(
+            !ids_all.contains(&format!("noncode-{idx}").as_str()),
+            "non-code file {path} must be excluded when path_prefix is None: {ids_all:?}",
+        );
+    }
+
+    // Adversarial: a code file living inside a directory whose name contains "md"
+    // must NOT be filtered out, while uppercase non-code extensions ARE excluded.
+    let mut dir_md_code = sample_node("code-dir-md", "parseMd", "src/md_parser/Parser.swift");
+    dir_md_code.kind = NodeKind::Function;
+    dir_md_code.visibility = Visibility::Pub;
+    dir_md_code.docstring = None;
+    db.insert_nodes(&[dir_md_code])
+        .await
+        .expect("insert_nodes failed");
+    let undoc_md_dir = db
+        .get_undocumented_public_symbols(Some("src/md_parser/"), 100)
+        .await
+        .expect("md_parser prefix query failed");
+    assert_eq!(
+        undoc_md_dir
+            .iter()
+            .map(|n| n.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["code-dir-md"]
+    );
+
+    let undoc_docs = db
+        .get_undocumented_public_symbols(Some("docs/"), 100)
+        .await
+        .expect("get_undocumented_public_symbols(Some) failed");
+    let ids_docs: Vec<&str> = undoc_docs.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(ids_docs, vec!["code-docs-swift"]);
+}
+
 // -------------------------------------------------------------------------
 // get_god_classes
 // -------------------------------------------------------------------------
@@ -1314,6 +1397,99 @@ async fn test_get_god_classes() {
     assert_eq!(*fields, 1);
     // total: 4
     assert_eq!(*total, 4);
+}
+
+#[tokio::test]
+async fn test_get_god_classes_counts_val_and_var_as_fields() {
+    let (_dir, db) = setup_db().await;
+
+    let mut kt_class = sample_node("gc-kt", "KotlinModel", "Model.kt");
+    kt_class.kind = NodeKind::Class;
+
+    let mut f_val = sample_node("gc-val", "id", "Model.kt");
+    f_val.kind = NodeKind::ValField;
+    let mut f_var = sample_node("gc-var", "count", "Model.kt");
+    f_var.kind = NodeKind::VarField;
+    let mut f_field = sample_node("gc-fld", "tag", "Model.kt");
+    f_field.kind = NodeKind::Field;
+    let mut method = sample_node("gc-fn", "render", "Model.kt");
+    method.kind = NodeKind::Method;
+
+    db.insert_nodes(&[kt_class, f_val, f_var, f_field, method])
+        .await
+        .expect("insert_nodes failed");
+    db.insert_edges(&[
+        Edge {
+            source: "gc-kt".to_string(),
+            target: "gc-val".to_string(),
+            kind: EdgeKind::Contains,
+            line: None,
+            resolved_by: None,
+        },
+        Edge {
+            source: "gc-kt".to_string(),
+            target: "gc-var".to_string(),
+            kind: EdgeKind::Contains,
+            line: None,
+            resolved_by: None,
+        },
+        Edge {
+            source: "gc-kt".to_string(),
+            target: "gc-fld".to_string(),
+            kind: EdgeKind::Contains,
+            line: None,
+            resolved_by: None,
+        },
+        Edge {
+            source: "gc-kt".to_string(),
+            target: "gc-fn".to_string(),
+            kind: EdgeKind::Contains,
+            line: None,
+            resolved_by: None,
+        },
+    ])
+    .await
+    .expect("insert_edges failed");
+
+    let god_classes = db
+        .get_god_classes(None, 10)
+        .await
+        .expect("get_god_classes failed");
+    assert_eq!(god_classes.len(), 1);
+    let (_node, methods, fields, total) = &god_classes[0];
+    assert_eq!(*methods, 1);
+    assert_eq!(*fields, 3, "field, val, and var must all count as fields");
+    assert_eq!(*total, 4);
+
+    // Reject empty or unknown container kinds with Config error.
+    let empty_err = db
+        .get_god_classes_filtered(None, 10, Some(&[]), false)
+        .await;
+    assert!(matches!(
+        empty_err,
+        Err(tokensave::errors::TokenSaveError::Config { .. })
+    ));
+    let bad_err = db
+        .get_god_classes_filtered(None, 10, Some(&["function"]), false)
+        .await;
+    assert!(matches!(
+        bad_err,
+        Err(tokensave::errors::TokenSaveError::Config { .. })
+    ));
+    let sqli_err = db
+        .get_god_classes_filtered(None, 10, Some(&["class') OR 1=1 --"]), false)
+        .await;
+    assert!(matches!(
+        sqli_err,
+        Err(tokensave::errors::TokenSaveError::Config { .. })
+    ));
+
+    // Only `struct` returns zero results for KotlinModel (`class`).
+    let structs = db
+        .get_god_classes_filtered(None, 10, Some(&["struct"]), false)
+        .await
+        .expect("filtered query failed");
+    assert!(structs.is_empty());
 }
 
 // -------------------------------------------------------------------------

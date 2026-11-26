@@ -145,14 +145,14 @@ and not a fallback to a parent branch's index).
 | `tokensave_complexity` | Rank functions by cyclomatic & cognitive complexity, nesting depth, Halstead metrics, maintainability index, CRAP, and safety metrics |
 | `tokensave_dead_code` | Find unreachable symbols (no incoming edges; symbols named as an ambiguity candidate are excluded) |
 | `tokensave_ambiguous_calls` | Call sites the resolver could not pin to one target, with every tied candidate |
-| `tokensave_god_class` | Find classes with too many members |
+| `tokensave_god_class` | Find classes/structs with too many members (methods + fields; supports optional `kinds` and `exclude_data_structs`) |
 | `tokensave_coupling` | Rank files by fan-in/fan-out |
 | `tokensave_inheritance_depth` | Find the deepest inheritance hierarchies |
 | `tokensave_circular` | Detect circular file dependencies |
 | `tokensave_imports` | Module-level import dependencies, cycles, and cut simulation |
 | `tokensave_recursion` | Detect recursive/mutually-recursive call cycles |
 | `tokensave_unused_imports` | Import statements never referenced |
-| `tokensave_doc_coverage` | Public symbols missing documentation |
+| `tokensave_doc_coverage` | Public code symbols missing documentation (excludes non-code docs/config extensions such as `.md`, `.txt`, `.json`, `.yaml`, `.toml`, `.canvas`) |
 | `tokensave_simplify_scan` | Quality analysis of changed files (duplications, dead code, complexity) |
 
 ### Code-Health Analytics

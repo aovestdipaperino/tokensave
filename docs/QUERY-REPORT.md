@@ -2024,7 +2024,7 @@ SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
 
 #### Q0128 — `get_undocumented_public_symbols`
 
-Source: [src/db/queries/edges.rs:1420](../src/db/queries/edges.rs#L1420).
+Source: [src/db/queries/edges.rs:1471](../src/db/queries/edges.rs#L1471).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -2034,6 +2034,7 @@ SELECT id, kind, name, qualified_name, file_path,
                      WHERE visibility = 'public'
                        AND (docstring IS NULL OR docstring = '')
                        AND kind IN ({DOC_COVERAGE_KINDS})
+                       {non_code_filter}
                        AND {path_filter}
                      ORDER BY file_path, start_line
                      LIMIT ?1
@@ -2041,7 +2042,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0129 — `get_undocumented_public_symbols`
 
-Source: [src/db/queries/edges.rs:1435](../src/db/queries/edges.rs#L1435).
+Source: [src/db/queries/edges.rs:1487](../src/db/queries/edges.rs#L1487).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -2051,28 +2052,30 @@ SELECT id, kind, name, qualified_name, file_path,
                      WHERE visibility = 'public'
                        AND (docstring IS NULL OR docstring = '')
                        AND kind IN ({DOC_COVERAGE_KINDS})
+                       {non_code_filter}
                      ORDER BY file_path, start_line
                      LIMIT ?1
 ```
 
-#### Q0130 — `get_god_classes`
+#### Q0130 — `get_god_classes_filtered`
 
-Source: [src/db/queries/edges.rs:1482](../src/db/queries/edges.rs#L1482).
+Source: [src/db/queries/edges.rs:1585](../src/db/queries/edges.rs#L1585).
 
 ```sql
 SELECT n.id, n.kind, n.name, n.qualified_name, n.file_path,
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
                     SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
-                    SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
+                    SUM(CASE WHEN c.kind IN ('field', 'val', 'var') THEN 1 ELSE 0 END) AS fields,
                     COUNT(*) AS total
              FROM nodes n
              JOIN nodes c ON c.parent_id = n.id
-             WHERE n.kind IN ('class', 'struct', 'inner_class', 'object')
+             WHERE n.kind IN ({kind_placeholders})
                {path_filter}
              GROUP BY n.id
+             {having_clause}
              ORDER BY total DESC
-             LIMIT ?1
+             LIMIT ?{limit_param_idx}
 ```
 
 #### Q0131 — `get_all_edges`
@@ -2620,7 +2623,7 @@ SELECT id, kind, name, qualified_name, file_path,
 
 #### Q0196 — `get_all_nodes_for_resolution`
 
-Source: [src/db/queries/nodes.rs:1045](../src/db/queries/nodes.rs#L1045).
+Source: [src/db/queries/nodes.rs:1049](../src/db/queries/nodes.rs#L1049).
 
 ```sql
 SELECT id, kind, name, qualified_name, file_path,
@@ -2632,6 +2635,10 @@ SELECT id, kind, name, qualified_name, file_path,
                          WHEN file_path LIKE '%.cs'
                               AND kind IN ('class', 'inner_class', 'struct', 'interface', 'record',
                                            'function', 'method', 'field', 'csharp_property')
+                         THEN signature
+                         WHEN file_path LIKE '%.swift'
+                              AND kind IN ('class', 'struct', 'enum', 'interface', 'extension',
+                                           'function', 'method', 'constructor')
                          THEN signature END AS signature,
                     visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes
@@ -9736,9 +9743,9 @@ Source: [src/db/queries/nodes.rs:992](../src/db/queries/nodes.rs#L992).
     }
 ```
 
-### `get_all_nodes_for_resolution` — src/db/queries/nodes.rs:1041
+### `get_all_nodes_for_resolution` — src/db/queries/nodes.rs:1045
 
-Source: [src/db/queries/nodes.rs:1041](../src/db/queries/nodes.rs#L1041).
+Source: [src/db/queries/nodes.rs:1045](../src/db/queries/nodes.rs#L1045).
 
 ```rust
     pub async fn get_all_nodes_for_resolution(&self) -> Result<Vec<Node>> {
@@ -9754,6 +9761,10 @@ Source: [src/db/queries/nodes.rs:1041](../src/db/queries/nodes.rs#L1041).
                          WHEN file_path LIKE '%.cs'
                               AND kind IN ('class', 'inner_class', 'struct', 'interface', 'record',
                                            'function', 'method', 'field', 'csharp_property')
+                         THEN signature
+                         WHEN file_path LIKE '%.swift'
+                              AND kind IN ('class', 'struct', 'enum', 'interface', 'extension',
+                                           'function', 'method', 'constructor')
                          THEN signature END AS signature,
                     visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes",

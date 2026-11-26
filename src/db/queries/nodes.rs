@@ -1044,6 +1044,10 @@ impl Database {
     /// function's up to its body), so the column is bounded for these rows.
     /// C# type declarations, methods, fields and properties keep theirs for
     /// the same reason (#642): base lists, return types and member types.
+    /// Swift types, extensions and callables keep theirs too: the resolver
+    /// walks inheritance clauses and matches call-site argument labels against
+    /// parameter lists. The Swift extractor caps them at
+    /// `MAX_DECL_SIGNATURE_CHARS`, so these rows stay bounded as well.
     pub async fn get_all_nodes_for_resolution(&self) -> Result<Vec<Node>> {
         let mut rows = self
             .conn()
@@ -1057,6 +1061,10 @@ impl Database {
                          WHEN file_path LIKE '%.cs'
                               AND kind IN ('class', 'inner_class', 'struct', 'interface', 'record',
                                            'function', 'method', 'field', 'csharp_property')
+                         THEN signature
+                         WHEN file_path LIKE '%.swift'
+                              AND kind IN ('class', 'struct', 'enum', 'interface', 'extension',
+                                           'function', 'method', 'constructor')
                          THEN signature END AS signature,
                     visibility, is_async, branches, loops, returns, max_nesting, unsafe_blocks, unchecked_calls, assertions, updated_at, attrs_start_line, parent_id, cognitive_complexity, distinct_operators, distinct_operands, total_operators, total_operands
                  FROM nodes",

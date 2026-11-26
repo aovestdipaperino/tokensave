@@ -1355,15 +1355,31 @@ fn test_fixture_swift() {
         "processUsers function not found"
     );
 
-    // Properties (inside classes/structs)
+    // Stored fields and computed properties (inside classes/structs)
+    let fields: Vec<_> = result
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Field)
+        .collect();
     let props: Vec<_> = result
         .nodes
         .iter()
         .filter(|n| n.kind == NodeKind::Property)
         .collect();
     assert!(
-        props.len() >= 2,
-        "expected >= 2 properties, got {}",
+        !fields.is_empty(),
+        "expected >= 1 stored field, got {}",
+        fields.len()
+    );
+    assert!(
+        !props.is_empty(),
+        "expected >= 1 computed property, got {}",
+        props.len()
+    );
+    assert!(
+        fields.len() + props.len() >= 2,
+        "expected >= 2 stored/computed properties total, got {} + {}",
+        fields.len(),
         props.len()
     );
 

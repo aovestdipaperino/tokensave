@@ -42,3 +42,89 @@ pub(super) const MAX_SCOPE_OWNER_DEPTH: usize = 16;
 
 /// The receiver segment `Self` in a `Self::Name` path.
 pub(super) const SELF_TYPE: &str = "Self";
+
+/// `resolved_by` tag of a Swift call resolved through its receiver's inferred
+/// static type or explicit type qualifier.
+pub(super) const SWIFT_TYPED: &str = "swift-typed-receiver";
+
+/// Maximum superclass/conformance chain depth walked for Swift typed receivers
+/// to guard against malformed cyclic inheritance graphs (`CWE-674`).
+pub(super) const SWIFT_MAX_INHERITANCE_DEPTH: usize = 16;
+
+/// Standard Swift Package Manager (`SwiftPM`) target root directory names used for visibility scoping.
+pub(super) const SWIFT_SPM_SOURCES_DIR: &str = "Sources";
+pub(super) const SWIFT_SPM_TESTS_DIR: &str = "Tests";
+
+/// The `SwiftPM` manifest file name that marks a package root.
+pub(super) const SWIFT_PACKAGE_MANIFEST: &str = "Package.swift";
+
+/// Swift standard-library and Foundation method names (`Sequence`,
+/// `Collection`, `String`, `Dictionary`, `Set`, `Codable`, numeric and
+/// `CustomStringConvertible` APIs) that must never resolve across unrelated
+/// types when invoked on an untyped foreign receiver.
+///
+/// Only names whose usual meaning is that API belong here. Verbs that project
+/// code commonly declares for its own types (`save`, `update`, `create`,
+/// `register`, `reset`, `read`, `write`, `open`, `close`, `load`, `cancel`)
+/// stay out: a call on an untyped receiver still resolves to them by name.
+pub(super) const SWIFT_STDLIB_METHODS: &[&str] = &[
+    "allSatisfy",
+    "append",
+    "compactMap",
+    "compactMapValues",
+    "contains",
+    "debugDescription",
+    "decode",
+    "description",
+    "dropFirst",
+    "dropLast",
+    "encode",
+    "enumerated",
+    "filter",
+    "first",
+    "firstIndex",
+    "flatMap",
+    "forEach",
+    "formatted",
+    "formUnion",
+    "hasPrefix",
+    "hasSuffix",
+    "hash",
+    "index",
+    "insert",
+    "intersection",
+    "isEmpty",
+    "joined",
+    "last",
+    "lastIndex",
+    "lowercased",
+    "map",
+    "mapValues",
+    "max",
+    "merge",
+    "min",
+    "popLast",
+    "prefix",
+    "reduce",
+    "remove",
+    "removeAll",
+    "removeFirst",
+    "removeLast",
+    "removeValue",
+    "replacingOccurrences",
+    "reserveCapacity",
+    "reversed",
+    "rounded",
+    "shuffled",
+    "sort",
+    "sorted",
+    "split",
+    "starts",
+    "subtracting",
+    "suffix",
+    "toggle",
+    "trimmingCharacters",
+    "union",
+    "updateValue",
+    "uppercased",
+];

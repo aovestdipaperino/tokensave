@@ -1726,9 +1726,39 @@ pub(super) async fn handle_god_class(
         .and_then(serde_json::Value::as_u64)
         .map_or(10, |v| v.min(100) as usize);
 
+    let kinds_storage: Option<Vec<&str>> = match args.get("kinds") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(items)) => {
+            let mut parsed = Vec::with_capacity(items.len());
+            for item in items {
+                let s = item.as_str().ok_or_else(|| TokenSaveError::Config {
+                    message: "god_class `kinds` elements must be strings".to_string(),
+                })?;
+                parsed.push(s);
+            }
+            Some(parsed)
+        }
+        Some(_) => {
+            return Err(TokenSaveError::Config {
+                message: "god_class `kinds` must be an array of strings".to_string(),
+            });
+        }
+    };
+    let exclude_data_structs = args
+        .get("exclude_data_structs")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
     let path_prefix = effective_path(&args, scope_prefix);
 
-    let results = cg.get_god_classes(path_prefix, limit).await?;
+    let results = cg
+        .get_god_classes_filtered(
+            path_prefix,
+            limit,
+            kinds_storage.as_deref(),
+            exclude_data_structs,
+        )
+        .await?;
 
     let touched_files = unique_file_paths(results.iter().map(|(n, _, _, _)| n.file_path.as_str()));
 

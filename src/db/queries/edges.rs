@@ -2,6 +2,32 @@
 use super::*;
 use crate::profile::DbOp;
 
+/// Allowed container node kinds for `get_god_classes` and `tokensave_god_class` filtering.
+const DEFAULT_GOD_CLASS_KINDS: &[&str] = &["class", "struct", "inner_class", "object"];
+
+/// Case-insensitive non-code file extensions excluded from `doc_coverage`
+/// public-symbol audits while leaving Markdown/doc nodes indexed in the graph.
+const DOC_COVERAGE_EXCLUDED_EXTENSIONS: &[&str] = &[
+    ".md",
+    ".markdown",
+    ".mdx",
+    ".rst",
+    ".txt",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".canvas",
+];
+
+fn non_code_extension_exclusion_sql() -> String {
+    DOC_COVERAGE_EXCLUDED_EXTENSIONS
+        .iter()
+        .map(|ext| format!("AND LOWER(file_path) NOT LIKE '%{ext}'"))
+        .collect::<Vec<_>>()
+        .join("\n                       ")
+}
+
 // ---------------------------------------------------------------------------
 // Edge operations
 // ---------------------------------------------------------------------------
@@ -1434,6 +1460,7 @@ impl Database {
             'case_class', 'kotlin_object', 'inner_class', 'abstract_method', 'constructor', \
             'struct_method', 'val', 'var', 'mixin', 'extension', 'union', 'typedef'";
 
+        let non_code_filter = non_code_extension_exclusion_sql();
         let path_filter = path_prefix.map(|prefix| {
             let mut filter = String::new();
             push_path_prefix_filter(&mut filter, "", prefix);
@@ -1449,6 +1476,7 @@ impl Database {
                      WHERE visibility = 'public'
                        AND (docstring IS NULL OR docstring = '')
                        AND kind IN ({DOC_COVERAGE_KINDS})
+                       {non_code_filter}
                        AND {path_filter}
                      ORDER BY file_path, start_line
                      LIMIT ?1"
@@ -1464,6 +1492,7 @@ impl Database {
                      WHERE visibility = 'public'
                        AND (docstring IS NULL OR docstring = '')
                        AND kind IN ({DOC_COVERAGE_KINDS})
+                       {non_code_filter}
                      ORDER BY file_path, start_line
                      LIMIT ?1"
                 ),
@@ -1492,6 +1521,45 @@ impl Database {
         path_prefix: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(Node, u64, u64, u64)>> {
+        self.get_god_classes_filtered(path_prefix, limit, None, false)
+            .await
+    }
+
+    /// Returns classes/structs ranked by contained member count with optional
+    /// container `kinds` filtering and data-struct exclusion (`struct` containers
+    /// with zero methods).
+    pub async fn get_god_classes_filtered(
+        &self,
+        path_prefix: Option<&str>,
+        limit: usize,
+        kinds: Option<&[&str]>,
+        exclude_data_structs: bool,
+    ) -> Result<Vec<(Node, u64, u64, u64)>> {
+        let selected_kinds: &[&str] = match kinds {
+            Some([]) => {
+                return Err(TokenSaveError::Config {
+                    message: format!(
+                        "god_class `kinds` must not be empty; allowed kinds: {}",
+                        DEFAULT_GOD_CLASS_KINDS.join(", ")
+                    ),
+                });
+            }
+            Some(requested) => {
+                for kind in requested {
+                    if !DEFAULT_GOD_CLASS_KINDS.contains(kind) {
+                        return Err(TokenSaveError::Config {
+                            message: format!(
+                                "invalid god_class kind `{kind}`; allowed kinds: {}",
+                                DEFAULT_GOD_CLASS_KINDS.join(", ")
+                            ),
+                        });
+                    }
+                }
+                requested
+            }
+            None => DEFAULT_GOD_CLASS_KINDS,
+        };
+
         let path_filter = match path_prefix {
             Some(prefix) => {
                 let mut f = String::from("AND ");
@@ -1501,6 +1569,17 @@ impl Database {
             None => String::new(),
         };
 
+        let kind_placeholders: String = (1..=selected_kinds.len())
+            .map(|idx| format!("?{idx}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let limit_param_idx = selected_kinds.len() + 1;
+        let having_clause = if exclude_data_structs {
+            "HAVING NOT (n.kind = 'struct' AND SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) = 0)"
+        } else {
+            ""
+        };
+
         // After v9, containment is `nodes.parent_id`, not Contains edges.
         // Join each candidate container directly to its children via parent_id.
         let sql = format!(
@@ -1508,21 +1587,28 @@ impl Database {
                     n.start_line, n.end_line, n.start_column, n.end_column,
                     n.docstring, n.signature, n.visibility, n.is_async, n.branches, n.loops, n.returns, n.max_nesting, n.unsafe_blocks, n.unchecked_calls, n.assertions, n.updated_at, n.attrs_start_line, n.parent_id, n.cognitive_complexity, n.distinct_operators, n.distinct_operands, n.total_operators, n.total_operands,
                     SUM(CASE WHEN c.kind IN ('method', 'singleton_method', 'abstract_method', 'constructor') THEN 1 ELSE 0 END) AS methods,
-                    SUM(CASE WHEN c.kind = 'field' THEN 1 ELSE 0 END) AS fields,
+                    SUM(CASE WHEN c.kind IN ('field', 'val', 'var') THEN 1 ELSE 0 END) AS fields,
                     COUNT(*) AS total
              FROM nodes n
              JOIN nodes c ON c.parent_id = n.id
-             WHERE n.kind IN ('class', 'struct', 'inner_class', 'object')
+             WHERE n.kind IN ({kind_placeholders})
                {path_filter}
              GROUP BY n.id
+             {having_clause}
              ORDER BY total DESC
-             LIMIT ?1"
+             LIMIT ?{limit_param_idx}"
         );
+
+        let mut param_values: Vec<libsql::Value> = selected_kinds
+            .iter()
+            .map(|kind| libsql::Value::Text((*kind).to_string()))
+            .collect();
+        param_values.push(libsql::Value::Integer(limit as i64));
 
         let op = "get_god_classes";
         let mut rows = self
             .conn()
-            .query(&sql, params![limit as i64])
+            .query(&sql, libsql::params_from_iter(param_values))
             .await
             .map_err(|e| TokenSaveError::Database {
                 message: format!("failed to query god classes: {e}"),

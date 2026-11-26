@@ -1711,6 +1711,18 @@ fn def_god_class() -> ToolDefinition {
                 "limit": {
                     "type": "number",
                     "description": "Maximum number of results to return (default: 10)"
+                },
+                "kinds": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["class", "struct", "inner_class", "object"]
+                    },
+                    "description": "Container kinds to include (default: class, struct, inner_class, object)"
+                },
+                "exclude_data_structs": {
+                    "type": "boolean",
+                    "description": "Exclude struct containers with zero methods (pure data DTOs/models). Default false."
                 }
             }
         }),
