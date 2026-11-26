@@ -12,6 +12,15 @@ tokensave doctor
 
 Checks: binary location, project index, global DB, user config, where project state lives, agent integration (MCP server, hooks, permissions, prompt rules), and network connectivity. If any tool permissions are missing after an upgrade, it tells you to run `tokensave install`. Use `--agent` to check a specific agent only.
 
+Doctor checks an agent integration in full only when tokensave is set up in that agent. The **Agent integrations** section sorts every supported agent into one of these groups:
+
+- **Installed**: the agent is registered in `installed_agents` in `~/.tokensave/config.toml`, or its configuration has the tokensave MCP server. Every problem is counted.
+- **Partially installed or incompletely removed**: no MCP registration, but tokensave content remains, such as a rules block, a hook or a configuration file doctor cannot read. Doctor checks it in full and warns once, naming `tokensave install --agent ID` to repair it and `tokensave uninstall --agent ID` to finish removing it.
+- **Detected without tokensave**: the agent is on this machine, but tokensave was never installed in it or was removed cleanly. Doctor lists it with the install command and does not count it.
+- **Not installed**: neither the agent nor any tokensave content was found. Doctor lists it and does not count it.
+
+Agents that are not installed therefore add no issues or warnings. If tokensave is installed in no agent at all, doctor reports one warning. `tokensave doctor --agent ID` on an agent without tokensave prints one warning instead of a list of missing files.
+
 Doctor also validates that each installed hook uses the correct tokensave subcommand and auto-repairs broken hooks.
 
 ## Debug diagnostics

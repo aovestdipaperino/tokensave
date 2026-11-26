@@ -141,6 +141,55 @@ pub fn installed_agent_is_present(home: &Path, id: &str) -> bool {
     get_integration(id).map_or(true, |ag| ag.is_detected(home) || ag.has_tokensave(home))
 }
 
+/// Where an integration stands on this machine, as `doctor` reports it
+/// (#1116).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrationPresence {
+    /// Registered in `installed_agents`, or tokensave's MCP entry is in the
+    /// agent's configuration. Checked in full; failures are real issues.
+    Installed,
+    /// Neither registered nor carrying an MCP entry, yet TokenSave-owned
+    /// content remains (a rules block, a hook, an unreadable config): a
+    /// partial install or an incomplete removal. Checked in full.
+    Leftover,
+    /// Nothing TokenSave-owned found: never installed, or cleanly removed.
+    /// Not applicable, so not counted. `detected` says whether the agent
+    /// itself appears to be on this machine.
+    Absent { detected: bool },
+}
+
+/// Classify `agent` for `doctor` (#1116). Read-only: the leftover check is
+/// the same inventory `tokensave uninstall --dry-run` prints.
+pub fn integration_presence(
+    agent: &dyn AgentIntegration,
+    home: &Path,
+    installed_agents: &[String],
+) -> IntegrationPresence {
+    let id = agent.id();
+    let registered = installed_agents.iter().any(|known| known == id);
+    let configured =
+        agent.has_tokensave(home) || (id == "omp" && super::omp::has_recorded_integration(home));
+    if registered || configured {
+        return IntegrationPresence::Installed;
+    }
+    let ctx = super::InstallContext {
+        home: home.to_path_buf(),
+        tokensave_bin: String::new(),
+        tool_permissions: Vec::new(),
+        scope: super::InstallScope::Global,
+        force_permission_style: false,
+    };
+    let mut plan = super::uninstall::UninstallPlan::for_scope(&ctx.scope);
+    plan.plan_agent(agent, &ctx);
+    if plan.has_owned_content() {
+        IntegrationPresence::Leftover
+    } else {
+        IntegrationPresence::Absent {
+            detected: agent.is_detected(home),
+        }
+    }
+}
+
 /// Drop every registered agent that [`installed_agent_is_present`] reports
 /// as gone, returning the dropped ids in registry order.
 ///
