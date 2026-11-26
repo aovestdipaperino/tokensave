@@ -132,13 +132,13 @@ pub async fn load_registered_projects() -> Vec<RegisteredProject> {
     registered
 }
 
-/// Probes one registered path: `None` once its index is gone from disk.
+/// Probes one registered path: `None` once its index is gone from disk, or
+/// when the path is the home directory and its "index" is a stray database in
+/// the global state directory (#1152). Such a registration would otherwise be
+/// an ancestor of every working directory and win the global-DB fallback.
 fn probe_registered_project(path: String) -> Option<RegisteredProject> {
     let path = std::path::PathBuf::from(path);
-    if !tokensave::config::get_tokensave_dir(&path)
-        .join("tokensave.db")
-        .exists()
-    {
+    if !tokensave::config::holds_project_index(&path) {
         return None;
     }
     let canonical = path.canonicalize().ok();

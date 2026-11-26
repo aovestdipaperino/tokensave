@@ -84,6 +84,14 @@ The `.tokensave/` directory doesn't exist in your project, or, with a base state
 tokensave init
 ```
 
+## "Ignoring a stray tokensave.db in the global state directory"
+
+`~/.tokensave/` holds tokensave's global state (`config.toml`, `global.db`). It is a project only when `tokensave init` was run in your home directory, which also writes `config.json` there. A `tokensave.db` without `config.json` in that directory, for example one left by an older version, is ignored: folders under your home directory that have no index of their own are not served from it, so a `serve` never indexes your whole home tree from it. `serve` and `tokensave doctor` print this warning while the file exists. Delete the file to remove the warning:
+
+```bash
+rm ~/.tokensave/tokensave.db
+```
+
 ## State is not where `state_dir` says
 
 `tokensave doctor` warns that a project's state "is not at" the configured location when the project already had state before you set or changed `TOKENSAVE_STATE_DIR` or `state_dir`. tokensave keeps using the existing state, so nothing is lost. To follow the setting, stop the project's MCP servers and move the directory doctor names to the location it gives. Doctor also lists relocated state whose project directory was deleted; `tokensave state prune --dry-run` shows what `tokensave state prune` would delete. See [Keeping state outside the repository](INDEXING.md#keeping-state-outside-the-repository).

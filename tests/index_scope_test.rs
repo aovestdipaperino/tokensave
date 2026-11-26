@@ -160,3 +160,29 @@ fn a_config_without_the_key_defaults_to_warning() {
         "an older config must keep getting the warning"
     );
 }
+
+/// #1152: a `tokensave.db` in the global state directory that `init` did not
+/// write (no `config.json`) is not served as a project, so the warning must not
+/// claim that every `serve` indexes the home tree. It names the stray file.
+#[test]
+fn a_stray_database_in_the_global_state_directory_is_reported_as_ignored() {
+    let dir = tmp();
+    let (home, proj) = paths(&dir);
+    let state_dir = tokensave::config::get_tokensave_dir(&home);
+    std::fs::create_dir_all(&state_dir).expect("create global state dir");
+    std::fs::File::create(state_dir.join("tokensave.db")).expect("create stray db");
+    initialize(&proj, 1024);
+
+    let warnings = scope_warnings(&proj, Some(&home));
+    assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+    assert!(
+        warnings[0].contains("Ignoring a stray tokensave.db"),
+        "got: {}",
+        warnings[0]
+    );
+    assert!(
+        !warnings[0].contains("Home directory is initialized as a project"),
+        "a stray database is not an indexed home: {}",
+        warnings[0]
+    );
+}
