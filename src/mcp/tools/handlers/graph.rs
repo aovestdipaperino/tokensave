@@ -740,18 +740,40 @@ async fn handle_literal_search(
     })
 }
 
+fn context_task(args: &Value) -> Result<&str> {
+    let parse = |key| {
+        args.get(key)
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|text| !text.trim().is_empty())
+                    .ok_or_else(|| TokenSaveError::Config {
+                        message: format!("tokensave_context: '{key}' must be a non-empty string"),
+                    })
+            })
+            .transpose()
+    };
+    match (parse("task")?, parse("query")?) {
+        (Some(task), Some(query)) if task != query => Err(TokenSaveError::Config {
+            message: "tokensave_context: 'task' and its alias 'query' differ; pass just one"
+                .to_string(),
+        }),
+        (Some(task), _) | (None, Some(task)) => Ok(task),
+        (None, None) => Err(TokenSaveError::Config {
+            message:
+                "tokensave_context requires 'task' (or 'query'), e.g. {\"task\":\"Find tests\"}"
+                    .to_string(),
+        }),
+    }
+}
+
 /// Handles `tokensave_context` tool calls.
 pub(super) async fn handle_context(
     cg: &TokenSave,
     args: Value,
     scope_prefix: Option<&str>,
 ) -> Result<ToolResult> {
-    let task = args
-        .get("task")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| TokenSaveError::Config {
-            message: "missing required parameter: task".to_string(),
-        })?;
+    let task = context_task(&args)?;
 
     let max_nodes = args
         .get("max_nodes")
@@ -2714,5 +2736,34 @@ fn read_body(project_root: &std::path::Path, node: &crate::types::Node) -> Strin
     match crate::sync::read_source_file(&abs_path) {
         Ok(source) => super::info::extract_lines(&source, node.start_line, node.end_line),
         Err(_) => String::from("<file unreadable>"),
+    }
+}
+
+#[cfg(test)]
+mod context_argument_tests {
+    use super::context_task;
+    use serde_json::json;
+
+    #[test]
+    fn accepts_task_query_and_equal_aliases() {
+        for args in [
+            json!({"task": "find tests"}),
+            json!({"query": "find tests"}),
+            json!({"task": "find tests", "query": "find tests"}),
+        ] {
+            assert_eq!(context_task(&args).ok(), Some("find tests"));
+        }
+    }
+
+    #[test]
+    fn rejects_missing_invalid_and_conflicting_arguments() {
+        for (args, expected) in [
+            (json!({"question": "find tests"}), "requires 'task'"),
+            (json!({"task": " "}), "'task' must be"),
+            (json!({"query": null}), "'query' must be"),
+            (json!({"task": "first", "query": "second"}), "differ"),
+        ] {
+            assert!(context_task(&args).is_err_and(|error| error.to_string().contains(expected)));
+        }
     }
 }

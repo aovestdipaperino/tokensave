@@ -1628,10 +1628,7 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
         })?;
     if !canonical_path.starts_with(&canonical_root) {
         return Err(TokenSaveError::Config {
-            message: format!(
-                "selected tokensave_read path '{file}' resolves outside selected graph root '{}'; choose a file inside that root",
-                canonical_root.display()
-            ),
+            message: "tokensave_read: path resolves outside selected graph root; choose a repository file or use the host's authorized reader for external files".to_string(),
         });
     }
     // Map/signatures look symbols up by this path, so it must be the exact
@@ -1641,10 +1638,7 @@ pub(super) async fn handle_read(cg: &TokenSave, args: Value) -> Result<ToolResul
     // Windows) and the raw `file` may carry `./`, `..` or backslashes.
     let display_file = indexed_rel_path(&canonical_root, &canonical_path).ok_or_else(|| {
         TokenSaveError::Config {
-            message: format!(
-                "selected tokensave_read path '{file}' resolves outside selected graph root '{}'; choose a file inside that root",
-                canonical_root.display()
-            ),
+            message: "tokensave_read: path resolves outside selected graph root; choose a repository file or use the host's authorized reader for external files".to_string(),
         }
     })?;
     // `.git` holds repository metadata, not source, and `.git/config` can

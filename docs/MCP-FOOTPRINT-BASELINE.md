@@ -75,6 +75,8 @@ tools are loaded up front.
 
 ### Size guard
 
+The context argument alias (Refs #1149) changes the default schema by -183 UTF-8 bytes in compact JSON, including the shortened snippet description. The guard ceiling is 24,043 bytes. The live measurements below retain their original baseline revision.
+
 `default_footprint_tests` in `src/mcp/server.rs` builds the same quantity in
 process: the default `tools/list` result (core toolset, no area listed) plus
 the `initialize` instructions with savings reporting off and no sibling

@@ -9,6 +9,10 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Managed agent instructions explain the repository boundary for `tokensave_read`, and containment errors point to the host reader for authorized external access (Refs #1150).
+
+- `tokensave_context` accepts `query` as an alias for `task` and explains missing, invalid, or conflicting inputs (Refs #1149).
+
 - Symbol-based callers and impact responses retain matching symbols and a prefix of their results when the response size limit applies (Refs #1159).
 - Search hooks keep keyword-only C# searches such as `namespace` in native Grep, even when the same spelling names an indexed symbol (Refs #1146).
 

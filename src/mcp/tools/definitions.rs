@@ -942,7 +942,13 @@ fn def_context() -> ToolDefinition {
             "properties": {
                 "task": {
                     "type": "string",
-                    "description": "Natural language description of the task or question"
+                    "minLength": 1,
+                    "description": "Task or question in plain English"
+                },
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Alias for task; must agree if both are supplied"
                 },
                 "max_nodes": {
                     "type": "number",
@@ -958,7 +964,7 @@ fn def_context() -> ToolDefinition {
                 },
                 "max_code_lines": {
                     "type": "number",
-                    "description": "Maximum lines per code snippet (default: unlimited, max 1000). Use it to see the signature plus the first lines of several symbols instead of one whole large body. A separate size limit of ~1500 bytes per snippet always applies, so a high line cap has little effect — asking for 100 lines does not guarantee 100 lines. Truncated snippets name the tokensave_body call that returns the rest."
+                    "description": "Lines per snippet (max 1000); snippets are also capped at about 1500 bytes"
                 },
                 "mode": {
                     "type": "string",
@@ -994,7 +1000,7 @@ fn def_context() -> ToolDefinition {
                     "description": "Exclude results whose file path contains any of these substrings (e.g. \"node_modules\", \"dist\", \"venv\"). Takes precedence over path_include."
                 }
             },
-            "required": ["task"]
+            "anyOf": [{"required": ["task"]}, {"required": ["query"]}]
         }),
     )
 }
