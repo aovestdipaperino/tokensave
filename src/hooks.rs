@@ -15,6 +15,7 @@ use serde_json::Value;
 use crate::extraction::{LanguageExtractor, TypeScriptExtractor};
 
 mod constants;
+mod powershell;
 
 use constants::{CODE_CONTEXT_WORDS, CODE_RESEARCH_PHRASES, GENERIC_EXPLORATION_PHRASES};
 
@@ -253,6 +254,9 @@ pub fn hook_pre_tool_use_codex() {
     if let Some(reason) = reason {
         output["permissionDecisionReason"] = serde_json::json!(reason);
     }
+    if let Some(context) = hook_output.and_then(|value| value.get("additionalContext")) {
+        output["additionalContext"] = context.clone();
+    }
     println!("{}", serde_json::json!({ "hookSpecificOutput": output }));
 }
 
@@ -334,6 +338,21 @@ fn evaluate_pre_tool_use_event(
         } else {
             String::new()
         };
+    }
+    if !advise_on_bash && event.get("tool_name").and_then(Value::as_str) == Some("shell_command") {
+        let shell = tool_input.get("shell").and_then(Value::as_str);
+        if shell.map_or(cfg!(windows), powershell::is_shell) {
+            if let Some(advice) = tool_input
+                .get("command")
+                .and_then(Value::as_str)
+                .and_then(|command| powershell::advice(command, &env))
+            {
+                return build_search_advice(&advice);
+            }
+            if shell.is_some() {
+                return String::new();
+            }
+        }
     }
     evaluate_hook_decision_with_env(&tool_input.to_string(), &env)
 }
