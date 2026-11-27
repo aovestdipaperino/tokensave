@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::errors::{Result, TokenSaveError};
 use crate::tokensave::TokenSave;
@@ -542,8 +542,8 @@ pub(super) fn bounded_match_response(output: Value, key: &str, limit: usize) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{RESULT_LIMIT_DEFAULT, bounded_match_response, capped_list};
-    use serde_json::{Value, json};
+    use super::{bounded_match_response, capped_list, RESULT_LIMIT_DEFAULT};
+    use serde_json::{json, Value};
 
     #[test]
     fn response_budget_keeps_the_symbol_group_and_some_rows() {
