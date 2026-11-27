@@ -360,6 +360,8 @@ async fn check_database(dc: &mut DoctorCounters, project_path: &Path) {
 
 fn project_db_path(project_path: &Path) -> std::path::PathBuf {
     crate::config::get_tokensave_dir(project_path).join(constants::PROJECT_DB_FILENAME)
+}
+
 /// Report the periodic integrity-check interval and the last saved result, so
 /// the opt-in idle check is discoverable without `integrity-check --status`.
 fn check_integrity_schedule(dc: &mut DoctorCounters, ts: &TokenSave) {
