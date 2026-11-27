@@ -735,6 +735,9 @@ pub async fn handle_tool_call_with_session(
     );
     match tool_name {
         "tokensave_search" => graph::handle_search(cg, args, scope_prefix, session).await,
+        "tokensave_search_batch" => {
+            graph::handle_search_batch(cg, args, scope_prefix, session).await
+        }
         "tokensave_context" => graph::handle_context(cg, args, scope_prefix).await,
         "tokensave_callers" => graph::handle_callers(cg, args, scope_prefix, session).await,
         "tokensave_callees" => graph::handle_callees(cg, args, scope_prefix, session).await,

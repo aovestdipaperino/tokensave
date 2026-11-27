@@ -227,6 +227,7 @@ pub const CONTEXT_DESCRIPTION: &str = "Build an AI-ready context for a task desc
 pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     let mut definitions = vec![
         graph_scoped(def_search()),
+        graph_scoped(def_search_batch()),
         graph_scoped(def_context()),
         graph_scoped(def_callers()),
         graph_scoped(def_callees()),
@@ -405,6 +406,7 @@ pub fn tool_capability(name: &str) -> Option<ToolCapability> {
         | "tokensave_rename_preview"
         | "tokensave_runtime"
         | "tokensave_search"
+        | "tokensave_search_batch"
         | "tokensave_session_recall"
         | "tokensave_signature"
         | "tokensave_signature_search"
@@ -928,6 +930,34 @@ fn def_search() -> ToolDefinition {
                 }
             },
             "required": ["query"]
+        }),
+    )
+}
+
+fn def_search_batch() -> ToolDefinition {
+    use super::search_batch_limits as limits;
+
+    def(
+        "tokensave_search_batch",
+        "Batch Search",
+        "Run several symbol or literal searches with shared filters and return ordered JSON results.",
+        json!({
+            "type": "object",
+            "properties": {
+                "queries": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": limits::QUERIES,
+                    "items": { "type": "string", "minLength": 1 }
+                },
+                "literal": { "type": "boolean" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": limits::MATCHES },
+                "language": { "type": "string", "description": "Case-insensitive indexed language name, such as Rust." },
+                "path_include": { "type": "array", "items": { "type": "string" } },
+                "path_exclude": { "type": "array", "items": { "type": "string" } },
+                "ids": { "type": "boolean" }
+            },
+            "required": ["queries"]
         }),
     )
 }

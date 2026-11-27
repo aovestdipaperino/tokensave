@@ -35,6 +35,14 @@ pub use handlers::{handle_tool_call, handle_tool_call_with_session, SessionState
 /// Maximum character length for a tool response before truncation.
 const MAX_RESPONSE_CHARS: usize = 15_000;
 
+mod search_batch_limits {
+    pub(super) const QUERIES: usize = 8;
+    pub(super) const QUERY_BYTES: usize = 512;
+    pub(super) const MATCHES: u64 = 20;
+    pub(super) const DEFAULT_MATCHES: u64 = 10;
+    pub(super) const LITERAL_TIMEOUT_MS: u64 = 1_000;
+}
+
 /// Set once by `tokensave tool` so the CLI prints whole results (#673).
 static RESPONSE_LIMIT_DISABLED: AtomicBool = AtomicBool::new(false);
 

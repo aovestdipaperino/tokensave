@@ -81,6 +81,88 @@ pub(super) async fn handle_search(
     scope_prefix: Option<&str>,
     session: Option<&SessionState>,
 ) -> Result<ToolResult> {
+    search_one(cg, &args, scope_prefix, session, false).await
+}
+
+pub(super) async fn handle_search_batch(
+    cg: &TokenSave,
+    mut args: Value,
+    scope_prefix: Option<&str>,
+    session: Option<&SessionState>,
+) -> Result<ToolResult> {
+    use super::super::search_batch_limits as limits;
+
+    let queries = args["queries"].take();
+    let queries = queries
+        .as_array()
+        .filter(|values| (1..=limits::QUERIES).contains(&values.len()))
+        .ok_or_else(|| TokenSaveError::Config {
+            message: format!("queries must contain 1 to {} patterns", limits::QUERIES),
+        })?;
+    let limit = args["limit"].as_u64().unwrap_or(limits::DEFAULT_MATCHES);
+    args["limit"] = json!(limit.clamp(1, limits::MATCHES));
+    args["timeout_ms"] = json!(limits::LITERAL_TIMEOUT_MS);
+    args["exact_total"] = json!(false);
+
+    // Reserve envelope space and a share of the response for every query.
+    let group_budget = super::super::MAX_RESPONSE_CHARS / (queries.len() + 1);
+    let mut results = Vec::with_capacity(queries.len());
+    let mut touched_files = HashSet::new();
+    for query in queries {
+        let Some(query) = query
+            .as_str()
+            .filter(|text| !text.trim().is_empty() && text.len() <= limits::QUERY_BYTES)
+        else {
+            results.push(
+                json!({ "error": "Query must be a non-empty string within the byte limit." }),
+            );
+            continue;
+        };
+        args["query"] = json!(query);
+        let found = search_one(cg, &args, scope_prefix, session, true).await;
+        let mut group = match found {
+            Ok(output) => {
+                touched_files.extend(output.touched_files);
+                output.value
+            }
+            Err(error) => json!({ "error": error.to_string() }),
+        };
+        group["query"] = json!(query);
+        while group.to_string().len() > group_budget {
+            if let Some(matches) = group["matches"].as_array_mut() {
+                if matches.pop().is_some() {
+                    group["count"] = json!(matches.len());
+                    group["truncated"] = json!(true);
+                    continue;
+                }
+            }
+            group = json!({ "query": query, "truncated": true, "omitted": true });
+            // A heavily escaped query may itself exceed its share.
+            if group.to_string().len() > group_budget {
+                group.as_object_mut().map(|entry| entry.remove("query"));
+            }
+            break;
+        }
+        results.push(group);
+    }
+    let mut touched_files: Vec<_> = touched_files.into_iter().collect();
+    touched_files.sort_unstable();
+    Ok(ToolResult {
+        value: json!({
+            "content": [{ "type": "text", "text": json!({ "results": results }).to_string() }]
+        }),
+        touched_files,
+    })
+}
+
+async fn search_one(
+    cg: &TokenSave,
+    args: &Value,
+    scope_prefix: Option<&str>,
+    session: Option<&SessionState>,
+    batch: bool,
+) -> Result<ToolResult> {
+    let language = batch.then(|| args["language"].as_str()).flatten();
     let query =
         args.get("query")
             .and_then(|v| v.as_str())
@@ -108,8 +190,8 @@ pub(super) async fn handle_search(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
-    let path_include = parse_string_array(&args, "path_include");
-    let path_exclude = parse_string_array(&args, "path_exclude");
+    let path_include = parse_string_array(args, "path_include");
+    let path_exclude = parse_string_array(args, "path_exclude");
 
     use crate::debug_log::{event, Level};
     event(Level::Debug, "search", "parameters", || {
@@ -147,6 +229,8 @@ pub(super) async fn handle_search(
             exact_total,
             timeout,
             session,
+            batch,
+            language,
         )
         .await;
     }
@@ -155,7 +239,7 @@ pub(super) async fn handle_search(
     // than `limit`, and the text header says so instead of passing a capped
     // answer off as the complete set (#645).
     let probe_limit = limit.saturating_add(1);
-    let mut results = if path_include.is_empty() && path_exclude.is_empty() {
+    let mut results = if path_include.is_empty() && path_exclude.is_empty() && language.is_none() {
         let results = cg.search(query, probe_limit).await?;
         filter_by_scope(results, scope_prefix, |r| &r.node.file_path)
     } else {
@@ -166,6 +250,7 @@ pub(super) async fn handle_search(
         let results = filter_by_scope(results, scope_prefix, |r| &r.node.file_path);
         let mut results =
             filter_by_path_lists(results, &path_include, &path_exclude, |r| &r.node.file_path);
+        results.retain(|r| cg.file_matches_language(&r.node.file_path, language));
         results.truncate(probe_limit);
         results
     };
@@ -198,6 +283,13 @@ pub(super) async fn handle_search(
             item
         })
         .collect();
+
+    if batch {
+        return Ok(ToolResult {
+            value: json!({ "matches": items, "count": items.len(), "truncated": truncated }),
+            touched_files,
+        });
+    }
 
     // An empty array is where a cross-repo session gives up and concludes the
     // symbol does not exist, so this is the one place the sibling graphs are
@@ -495,6 +587,8 @@ async fn handle_literal_search(
     exact_total: bool,
     timeout: Option<std::time::Duration>,
     session: Option<&SessionState>,
+    batch: bool,
+    language: Option<&str>,
 ) -> Result<ToolResult> {
     if query.is_empty() {
         return Err(TokenSaveError::Config {
@@ -514,6 +608,7 @@ async fn handle_literal_search(
     // ranked search path applies — literal mode used to ignore them (#258).
     // `path_exclude` takes precedence, matching `filter_by_path_lists`.
     files = filter_by_path_lists(files, path_include, path_exclude, |f| f.path.as_str());
+    files.retain(|file| cg.file_matches_language(&file.path, language));
 
     // Project-level query-ignore applies to literal mode too — it used to
     // return before the ranked path's queryignore filter, so suppressed
@@ -666,6 +761,12 @@ async fn handle_literal_search(
         if let Some(object) = payload.as_object_mut() {
             object.insert("unscanned".to_string(), value);
         }
+    }
+    if batch {
+        return Ok(ToolResult {
+            value: payload,
+            touched_files,
+        });
     }
     if format == "text" {
         let mut text = if timed_out {
