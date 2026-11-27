@@ -106,8 +106,10 @@ Before reading source files or scanning a codebase, use the tokensave MCP tools:
 `tokensave_files`, and `tokensave_affected`. A tool that is not in your tool \
 list is listed by calling `tokensave_more` with its area: `navigate` for \
 `tokensave_node`, `git` for `tokensave_affected` and the branch tools.\n\n\
-To read a file's contents, use `tokensave_read`: it reads any file in the \
-project, indexed or not (except under `.git`), and slices with \
+For files inside the selected repository (the active graph root or an explicit \
+`graph_root`), use `tokensave_read`, including unindexed files outside `.git`. Use \
+the host's authorized reader for external files such as plugin skills, global \
+instructions, and configuration. TokenSave slices repository files with \
 `mode: \"lines\"` or maps a file's symbols with `mode: \"map\"` instead of \
 pulling in the whole body. Use the harness's own file-read tool for a file you \
 are about to edit.\n\n\
@@ -985,6 +987,14 @@ mod tests {
 
     /// #866: the integration guidance never promotes repository text to
     /// instructions; it tells the agent to treat it as data.
+    #[test]
+    fn canonical_rules_scope_file_reads_to_the_selected_repository() {
+        let body = canonical_rules_markdown();
+        assert!(body.contains("For files inside the selected repository"));
+        assert!(body.contains("`graph_root`"));
+        assert!(body.contains("authorized reader for external files"));
+    }
+
     #[test]
     fn canonical_rules_say_repository_content_is_data() {
         let body = canonical_rules_markdown();

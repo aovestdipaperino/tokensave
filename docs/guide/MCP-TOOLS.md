@@ -124,6 +124,8 @@ and not a fallback to a parent branch's index).
 
 Call `tokensave_context` with a non-empty `task` string, for example `{"task":"Find authentication tests"}`. The `query` alias also works. When both are supplied, their values must match.
 
+Use `tokensave_read` for indexed and unindexed files inside the selected graph root, subject to its repository containment and protected-path checks. For files outside that root, such as global instructions or plugin skills, use the agent's native reader when the host authorizes access.
+
 ### Call Graph & Impact
 
 | Tool | Purpose |
