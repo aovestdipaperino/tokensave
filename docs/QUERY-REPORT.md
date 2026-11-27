@@ -82,6 +82,7 @@ unchanged.
 ## Inventory summary
 
 - SQL-bearing source files: **42**.
+- SQL literal/template occurrences: **386**.
 - SQL literal/template occurrences: **388**.
 - Functions retained for construction/binding context: **183**.
 
@@ -108,6 +109,7 @@ unchanged.
 | [src/db/queries/search.rs](../src/db/queries/search.rs) | 9 |
 | [src/db/queries/stats.rs](../src/db/queries/stats.rs) | 5 |
 | [src/db/queries/unresolved.rs](../src/db/queries/unresolved.rs) | 12 |
+| [src/db_integrity.rs](../src/db_integrity.rs) | 3 |
 | [src/doctor.rs](../src/doctor.rs) | 1 |
 | [src/edge_audit.rs](../src/edge_audit.rs) | 4 |
 | [src/extraction/fstar_extractor.rs](../src/extraction/fstar_extractor.rs) | 2 |
@@ -13729,6 +13731,40 @@ Source: [src/accounting/codex.rs:710](../src/accounting/codex.rs#L710).
 ```
 
 
+## Periodic integrity additions (Refs #864)
+
+Source: [src/db_integrity.rs](../src/db_integrity.rs), `inspect`. Three new occurrences
+and one construction context, inspected 2026-10-30. No existing SQL changed.
+
+#### Q0427 — `inspect`: Read-only checker connection limits
+
+```sql
+PRAGMA query_only=1; PRAGMA busy_timeout=0; PRAGMA cache_size=-2048; PRAGMA mmap_size=0;
+```
+
+Fixed connection-local batch, no bindings. No write transaction or checkpoint.
+The connection uses SQLITE_OPEN_READ_ONLY; compatibility::check retains the
+existing Q0343–Q0349 policy queries with maximum schema u32::MAX because file
+integrity checking does not interpret application tables or migrate schemas.
+
+#### Q0428 — `inspect`: Full physical integrity
+
+```sql
+PRAGMA integrity_check(100)
+```
+
+#### Q0429 — `inspect`: Periodic/default physical integrity
+
+```sql
+PRAGMA quick_check(100)
+```
+
+Construction/binding context: a boolean `full` selects exactly one fixed pragma;
+there are no SQL parameters or interpolated inputs. SQLite supplies one read
+snapshot per statement. Stream rows, retain at most 100 diagnostics truncated to
+1,024 bytes each, require an `ok` row and no diagnostics for success. SQL errors
+produce incomplete checks. The owning process enforces a five-second lifetime;
+all results/connections are released on completion or process termination.
 ## SCIP comparison additions (Refs #1100)
 
 Source: [src/scip/compare.rs](../src/scip/compare.rs), `compare`. This section

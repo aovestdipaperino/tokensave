@@ -280,6 +280,39 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         None => return commands::handle_no_command().await,
     };
 
+    if let Commands::IntegrityCheck {
+        database,
+        full,
+        status,
+        worker,
+    } = &command
+    {
+        if *worker {
+            return tokensave::db_integrity::worker(database, *full).await;
+        }
+        let report = if *status {
+            tokensave::db_integrity::status(database)?
+        } else {
+            let Some(mut check) = tokensave::db_integrity::Check::start(
+                database,
+                &std::env::current_exe()?,
+                *full,
+                None,
+            )?
+            else {
+                return Err(tokensave::errors::TokenSaveError::Config {
+                    message: "another integrity check is running".into(),
+                });
+            };
+            while !check.poll().await? {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            check.report()?
+        };
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        process::exit(report.exit_code());
+    }
+
     if let Commands::VulnReachability { path, online } = &command {
         let root = tokensave::config::resolve_path_with_discovery(path.clone());
         // Preflight initialization before an online run is allowed to open
@@ -972,6 +1005,9 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
         Commands::ScipCompare { .. } => unreachable!("SCIP comparison dispatched before startup"),
         Commands::Okf { .. } => unreachable!("okf dispatched before startup"),
         Commands::Grep { .. } => unreachable!("grep is dispatched before startup"),
+        Commands::IntegrityCheck { .. } => {
+            unreachable!("integrity check dispatched before startup")
+        }
         Commands::Verify { .. } => unreachable!("verify is dispatched before startup"),
         Commands::Status {
             path,
