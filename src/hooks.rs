@@ -537,10 +537,16 @@ fn keyword_search(symbol: &str, path: &str, globs: &[&str], ty: &str) -> bool {
     if !ty.is_empty() {
         return is_csharp(ty);
     }
-    if let Some(ext) = Path::new(path).extension().and_then(|ext| ext.to_str())
-        && (is_csharp(ext)
-            || CODE_EXTENSIONS.iter().any(|known| ext.eq_ignore_ascii_case(known)))
-    {
+    let file_extension = Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| {
+            is_csharp(ext)
+                || CODE_EXTENSIONS
+                    .iter()
+                    .any(|known| ext.eq_ignore_ascii_case(known))
+        });
+    if let Some(ext) = file_extension {
         return is_csharp(ext);
     }
     let mut known_globs = 0;
