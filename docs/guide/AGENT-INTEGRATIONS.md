@@ -123,9 +123,11 @@ For agent-specific instructions, see [Connecting to Your Agent](../USER-GUIDE.md
 
 ### PreToolUse hook
 
-The native `tokensave hook-pre-tool-use` command handles Agent, Grep, Glob, and Bash tool calls without requiring bash or jq. It blocks Explore agents, redirects eligible Grep tool searches to `tokensave_search`, and redirects path-shaped discovery (`Glob`, `find -name`, `fd --extension`) over code extensions to `tokensave_files`.
+The native `tokensave hook-pre-tool-use` command handles Agent, Grep, Glob, and Bash tool calls without requiring bash or jq. It blocks Explore agents, provides guidance for eligible Grep searches, and redirects path-shaped discovery (`Glob`, `find -name`, `fd --extension`) over code extensions to `tokensave_files`.
 
 An Agent call with an explicit non-Explore `subagent_type` always passes. An untyped Agent call is redirected only when its prompt reads as code research. Code-specific phrases such as "call graph", "callers of" or "codebase structure" are enough on their own. Generic phrases such as "explore", "read every" or "full contents" also need a code word in the prompt ("code", "source", "src", "repo", "function", "class", "module" and similar), so an agent that reads plain-text or OCR files is not blocked.
+
+**Claude Code native Grep.** Claude's hook event does not report whether the session's TokenSave MCP connection is ready. Eligible native Grep calls receive optional search advice and continue through Claude's normal permissions. Use the native results during startup or a timeout, and call `tokensave_search` when it becomes available. Set `TOKENSAVE_CLAUDE_STRICT_GREP=1` in Claude Code's launch environment to restore redirects for eligible native Grep calls. Bash advice is unaffected.
 
 **Grep redirects.** A denial suggests `tokensave_search` for indexed definitions. For text matches such as references and comments, keep the original pattern, paths, and filters. Run a supported shell search through [`tokensave grep`](CLI-REFERENCE.md#index-facts-on-search-output) to add index facts, or use the bypass below to run the original search.
 

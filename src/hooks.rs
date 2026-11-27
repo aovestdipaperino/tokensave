@@ -219,7 +219,7 @@ pub fn hook_pre_tool_use_codex() {
     let decision = if raw.trim().is_empty() {
         evaluate_hook_decision(&std::env::var("TOOL_INPUT").unwrap_or_default())
     } else {
-        evaluate_pre_tool_use_event(&raw, &HookEnv::from_runtime(), false)
+        evaluate_pre_tool_use_event(&raw, &HookEnv::from_runtime(), false, false)
     };
     let decision_json =
         serde_json::from_str::<serde_json::Value>(&decision).unwrap_or(serde_json::Value::Null);
@@ -262,7 +262,9 @@ pub fn hook_pre_tool_use_codex() {
 /// [`evaluate_hook_decision`]. If the payload isn't the expected wrapper shape,
 /// falls back to treating `raw` as a flat tool-input object.
 pub fn evaluate_claude_pre_tool_use(raw: &str) -> String {
-    evaluate_claude_pre_tool_use_with_env(raw, &HookEnv::from_runtime())
+    let strict_grep =
+        std::env::var(constants::CLAUDE_STRICT_GREP_ENV).is_ok_and(|value| value == "1");
+    evaluate_pre_tool_use_event(raw, &HookEnv::from_runtime(), true, strict_grep)
 }
 
 /// [`evaluate_claude_pre_tool_use`] with an explicit environment snapshot.
@@ -270,10 +272,15 @@ pub fn evaluate_claude_pre_tool_use(raw: &str) -> String {
 /// The snapshot is a base: when the event reports its own `cwd`, the project is
 /// re-discovered from there.
 pub fn evaluate_claude_pre_tool_use_with_env(raw: &str, env: &HookEnv) -> String {
-    evaluate_pre_tool_use_event(raw, env, true)
+    evaluate_pre_tool_use_event(raw, env, true, false)
 }
 
-fn evaluate_pre_tool_use_event(raw: &str, env: &HookEnv, advise_on_bash: bool) -> String {
+fn evaluate_pre_tool_use_event(
+    raw: &str,
+    env: &HookEnv,
+    advise_on_bash: bool,
+    strict_grep: bool,
+) -> String {
     let Ok(event) = serde_json::from_str::<Value>(raw) else {
         return String::new();
     };
@@ -299,6 +306,34 @@ fn evaluate_pre_tool_use_event(raw: &str, env: &HookEnv, advise_on_bash: bool) -
             },
         );
         return advice.unwrap_or_default();
+    }
+    if advise_on_bash
+        && !strict_grep
+        && event.get("hook_event_name").and_then(Value::as_str) == Some("PreToolUse")
+        && event.get("tool_name").and_then(Value::as_str) == Some("Grep")
+    {
+        // Claude's event does not expose the current session's MCP health.
+        // A local index can support a suggestion, but cannot justify denial.
+        let eligible = evaluate_grep_tool_input_inner(tool_input, &env).is_some();
+        crate::debug_log::event(
+            crate::debug_log::Level::Debug,
+            "hook",
+            "grep_decision",
+            || {
+                serde_json::json!({
+                    "tool": "Grep",
+                    "decision": if eligible { "advise" } else { "allow" },
+                    "mcp_availability": "unknown",
+                })
+            },
+        );
+        return if eligible {
+            build_search_advice(
+                "Use native Grep results for text matches. For indexed definitions, use tokensave_search when the session has it available.",
+            )
+        } else {
+            String::new()
+        };
     }
     evaluate_hook_decision_with_env(&tool_input.to_string(), &env)
 }
@@ -833,15 +868,17 @@ fn bash_search_advice(command: &str, env: &HookEnv) -> Option<String> {
          available. Use the Bash results for exact text matches or when the index is stale \
          or unavailable."
     );
-    Some(
-        serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "additionalContext": advice,
-            }
-        })
-        .to_string(),
-    )
+    Some(build_search_advice(&advice))
+}
+
+fn build_search_advice(advice: &str) -> String {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": advice,
+        }
+    })
+    .to_string()
 }
 
 fn bash_advisory_symbol<'a>(pattern: &'a str, target: &Path) -> Option<&'a str> {
@@ -2888,6 +2925,39 @@ async fn print_session_receipt(stats: &crate::accounting::IngestStats) {
             "\x1b[36mSession: ${:.2} spent | {saved_str} saved | {efficiency:.0}% efficiency\x1b[0m",
             stats.cost_usd
         );
+    }
+}
+
+#[cfg(test)]
+mod claude_grep_tests {
+    use super::{evaluate_pre_tool_use_event, HookEnv};
+
+    #[test]
+    fn claude_grep_requires_opt_in_to_deny_when_mcp_health_is_unknown() {
+        let env = HookEnv {
+            in_tokensave_project: true,
+            ..HookEnv::default()
+        };
+        let event = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "handle_request", "path": "src/lib.rs", "output_mode": "content"},
+        });
+        let advice = evaluate_pre_tool_use_event(&event.to_string(), &env, true, false);
+        let output: serde_json::Value = serde_json::from_str(&advice).unwrap_or_default();
+        assert!(output["hookSpecificOutput"]["additionalContext"].is_string());
+        assert!(output["hookSpecificOutput"]
+            .get("permissionDecision")
+            .is_none());
+        let strict = evaluate_pre_tool_use_event(&event.to_string(), &env, true, true);
+        let output: serde_json::Value = serde_json::from_str(&strict).unwrap_or_default();
+        assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "deny");
+
+        let mut other_host = event;
+        other_host["hook_event_name"] = serde_json::json!("preToolUse");
+        let decision = evaluate_pre_tool_use_event(&other_host.to_string(), &env, true, false);
+        let output: serde_json::Value = serde_json::from_str(&decision).unwrap_or_default();
+        assert_eq!(output["permission"], "deny");
     }
 }
 
