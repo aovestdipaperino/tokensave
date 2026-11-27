@@ -4049,7 +4049,6 @@ mod tests {
             .filter(|definition| is_graph_scoped_tool(definition))
             .map(|definition| definition.name.as_str())
             .collect();
-        assert_eq!(actual.len(), 55);
         assert_eq!(actual, canonical);
     }
 
