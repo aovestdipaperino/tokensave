@@ -104,7 +104,7 @@ fn test_tool_definitions_count() {
     assert_eq!(tools.len(), expected);
     // `tokensave_doc` (#154) must be advertised, or the handler is unreachable.
     assert!(tools.iter().any(|t| t.name == "tokensave_doc"));
-    assert!(tools.iter().any(|t| t.name == "tokensave_batch_search"));
+    assert!(tools.iter().any(|t| t.name == "tokensave_search_batch"));
 }
 
 #[test]
