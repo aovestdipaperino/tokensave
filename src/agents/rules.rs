@@ -186,8 +186,8 @@ add index facts, or run the original command with `TOKENSAVE_DISABLE_GREP_HOOK=1
 Use `tokensave_callers` for indexed call edges, `tokensave_impact` for what depends \
 on a symbol, `tokensave_context` for a concept, and `tokensave_files` for paths. \
 For logs, docs, or config, name the file type, e.g. `--include='*.md'` or a `*.md` glob.\n\n\
-### Bash search suggestions\n\n\
-Claude Code Bash searches run with their usual permissions. If the hook \
+### Native search suggestions\n\n\
+Claude Code Bash and native Grep searches run with their usual permissions by default. If the hook \
 suggests an indexed definition lookup, use the Bash output for exact matches \
 or when the MCP tool or a fresh index is unavailable. To skip advice for one \
 Bash call, prefix the command with `TOKENSAVE_DISABLE_GREP_HOOK=1`.\n";

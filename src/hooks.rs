@@ -219,7 +219,7 @@ pub fn hook_pre_tool_use_codex() {
     let decision = if raw.trim().is_empty() {
         evaluate_hook_decision(&std::env::var("TOOL_INPUT").unwrap_or_default())
     } else {
-        evaluate_pre_tool_use_event(&raw, &HookEnv::from_runtime(), false)
+        evaluate_pre_tool_use_event(&raw, &HookEnv::from_runtime(), false, false)
     };
     let decision_json =
         serde_json::from_str::<serde_json::Value>(&decision).unwrap_or(serde_json::Value::Null);
@@ -262,7 +262,9 @@ pub fn hook_pre_tool_use_codex() {
 /// [`evaluate_hook_decision`]. If the payload isn't the expected wrapper shape,
 /// falls back to treating `raw` as a flat tool-input object.
 pub fn evaluate_claude_pre_tool_use(raw: &str) -> String {
-    evaluate_claude_pre_tool_use_with_env(raw, &HookEnv::from_runtime())
+    let strict_grep =
+        std::env::var(constants::CLAUDE_STRICT_GREP_ENV).is_ok_and(|value| value == "1");
+    evaluate_pre_tool_use_event(raw, &HookEnv::from_runtime(), true, strict_grep)
 }
 
 /// [`evaluate_claude_pre_tool_use`] with an explicit environment snapshot.
@@ -270,10 +272,15 @@ pub fn evaluate_claude_pre_tool_use(raw: &str) -> String {
 /// The snapshot is a base: when the event reports its own `cwd`, the project is
 /// re-discovered from there.
 pub fn evaluate_claude_pre_tool_use_with_env(raw: &str, env: &HookEnv) -> String {
-    evaluate_pre_tool_use_event(raw, env, true)
+    evaluate_pre_tool_use_event(raw, env, true, false)
 }
 
-fn evaluate_pre_tool_use_event(raw: &str, env: &HookEnv, advise_on_bash: bool) -> String {
+fn evaluate_pre_tool_use_event(
+    raw: &str,
+    env: &HookEnv,
+    advise_on_bash: bool,
+    strict_grep: bool,
+) -> String {
     let Ok(event) = serde_json::from_str::<Value>(raw) else {
         return String::new();
     };
@@ -299,6 +306,34 @@ fn evaluate_pre_tool_use_event(raw: &str, env: &HookEnv, advise_on_bash: bool) -
             },
         );
         return advice.unwrap_or_default();
+    }
+    if advise_on_bash
+        && !strict_grep
+        && event.get("hook_event_name").and_then(Value::as_str) == Some("PreToolUse")
+        && event.get("tool_name").and_then(Value::as_str) == Some("Grep")
+    {
+        // Claude's event does not expose the current session's MCP health.
+        // A local index can support a suggestion, but cannot justify denial.
+        let eligible = evaluate_grep_tool_input_inner(tool_input, &env).is_some();
+        crate::debug_log::event(
+            crate::debug_log::Level::Debug,
+            "hook",
+            "grep_decision",
+            || {
+                serde_json::json!({
+                    "tool": "Grep",
+                    "decision": if eligible { "advise" } else { "allow" },
+                    "mcp_availability": "unknown",
+                })
+            },
+        );
+        return if eligible {
+            build_search_advice(
+                "Use native Grep results for text matches. For indexed definitions, use tokensave_search when the session has it available.",
+            )
+        } else {
+            String::new()
+        };
     }
     evaluate_hook_decision_with_env(&tool_input.to_string(), &env)
 }
@@ -489,10 +524,52 @@ fn grep_check(tool: &'static str, check: &'static str, passed: bool) {
     );
 }
 
+/// Scope hints narrow a text search without inspecting repository contents.
+fn keyword_search(symbol: &str, path: &str, globs: &[&str], ty: &str) -> bool {
+    if !constants::CSHARP_SEARCH_KEYWORDS.contains(&symbol) {
+        return false;
+    }
+    let is_csharp = |value: &str| {
+        constants::CSHARP_SEARCH_TYPES
+            .iter()
+            .any(|kind| value.eq_ignore_ascii_case(kind))
+    };
+    if !ty.is_empty() {
+        return is_csharp(ty);
+    }
+    let file_extension = Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| {
+            is_csharp(ext)
+                || CODE_EXTENSIONS
+                    .iter()
+                    .any(|known| ext.eq_ignore_ascii_case(known))
+        });
+    if let Some(ext) = file_extension {
+        return is_csharp(ext);
+    }
+    let mut known_globs = 0;
+    for extensions in globs.iter().filter_map(|glob| glob_extensions(glob)) {
+        if extensions.iter().any(|ext| is_csharp(ext)) {
+            return true;
+        }
+        known_globs += 1;
+    }
+    if known_globs > 0 && known_globs == globs.len() {
+        return false;
+    }
+
+    // An unscoped namespace search may include C# alongside another language
+    // with an indexed symbol of that name. Keep the cross-language text match.
+    symbol == constants::CSHARP_NAMESPACE_KEYWORD
+}
+
 fn check_grep_pattern<'a>(
     tool: &'static str,
     pattern: &'a str,
     env: &HookEnv,
+    is_keyword: impl FnOnce(&str) -> bool,
 ) -> Option<SymbolMatch<'a>> {
     let found = classify_symbol_pattern(pattern);
     crate::debug_log::event(
@@ -510,6 +587,11 @@ fn check_grep_pattern<'a>(
         },
     );
     let found = found?;
+    let keyword = is_keyword(found.symbol);
+    grep_check(tool, "non_keyword_pattern", !keyword);
+    if keyword {
+        return None;
+    }
     let indexed = is_symbol_indexed(env, found.symbol);
     grep_check(tool, "symbol_indexed", indexed);
     indexed.then_some(found)
@@ -570,7 +652,9 @@ fn evaluate_grep_tool_input_inner(parsed: &Value, env: &HookEnv) -> Option<Strin
     if !code_target {
         return None;
     }
-    let found = check_grep_pattern("Grep", pattern, env)?;
+    let found = check_grep_pattern("Grep", pattern, env, |symbol| {
+        keyword_search(symbol, path, &[glob], ty)
+    })?;
     Some(redirect_message("Grep", pattern, &found))
 }
 
@@ -833,19 +917,24 @@ fn bash_search_advice(command: &str, env: &HookEnv) -> Option<String> {
          available. Use the Bash results for exact text matches or when the index is stale \
          or unavailable."
     );
-    Some(
-        serde_json::json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "additionalContext": advice,
-            }
-        })
-        .to_string(),
-    )
+    Some(build_search_advice(&advice))
+}
+
+fn build_search_advice(advice: &str) -> String {
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": advice,
+        }
+    })
+    .to_string()
 }
 
 fn bash_advisory_symbol<'a>(pattern: &'a str, target: &Path) -> Option<&'a str> {
     if let Some(found) = classify_symbol_pattern(pattern) {
+        if keyword_search(found.symbol, &target.to_string_lossy(), &[], "") {
+            return None;
+        }
         let simple_pattern = match found.shape {
             PatternShape::BareSymbol => pattern == found.symbol,
             PatternShape::WordBoundary => true,
@@ -999,7 +1088,15 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
     if !code_target {
         return None;
     }
-    let found = check_grep_pattern(inv.tool, &inv.pattern, env)?;
+    let found = check_grep_pattern(inv.tool, &inv.pattern, env, |symbol| {
+        let ty = inv.ty.as_deref().unwrap_or("");
+        keyword_search(symbol, target.as_ref(), &globs, ty)
+            || inv
+                .targets
+                .iter()
+                .skip(1)
+                .any(|target| keyword_search(symbol, target, &globs, ty))
+    })?;
     Some(redirect_message("Bash grep", &inv.pattern, &found))
 }
 
@@ -1272,7 +1369,11 @@ fn classify_bash_search_segment(command: &str) -> BashSearchVerdict {
     {
         return BashSearchVerdict::Excluded(Why::NonCodeTarget);
     }
-    if classify_symbol_pattern(&inv.pattern).is_some() {
+    if classify_symbol_pattern(&inv.pattern).is_some_and(|found| {
+        targets
+            .iter()
+            .all(|target| !keyword_search(found.symbol, target, &globs, ty))
+    }) {
         return BashSearchVerdict::Replaceable;
     }
     // `const NAME`, `let NAME`, `var NAME`: the advisory path accepts these
@@ -1850,6 +1951,14 @@ fn expand_home_prefix(raw: &str, home: Option<&Path>) -> Option<PathBuf> {
 }
 
 fn classify_glob_target(glob: &str) -> Option<bool> {
+    Some(
+        glob_extensions(glob)?
+            .iter()
+            .all(|ext| CODE_EXTENSIONS.contains(&ext.as_str())),
+    )
+}
+
+fn glob_extensions(glob: &str) -> Option<Vec<String>> {
     let trimmed = glob.trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
     if trimmed.is_empty() {
         return None;
@@ -1881,11 +1990,7 @@ fn classify_glob_target(glob: &str) -> Option<bool> {
         vec![ext]
     };
 
-    (!extensions.is_empty()).then(|| {
-        extensions
-            .iter()
-            .all(|ext| CODE_EXTENSIONS.contains(&ext.as_str()))
-    })
+    (!extensions.is_empty()).then_some(extensions)
 }
 
 #[derive(Debug, Default)]
@@ -2888,6 +2993,99 @@ async fn print_session_receipt(stats: &crate::accounting::IngestStats) {
             "\x1b[36mSession: ${:.2} spent | {saved_str} saved | {efficiency:.0}% efficiency\x1b[0m",
             stats.cost_usd
         );
+    }
+}
+
+#[cfg(test)]
+mod grep_keyword_tests {
+    use super::{evaluate_hook_decision_with_env, HookEnv};
+
+    #[test]
+    fn keyword_only_csharp_searches_stay_native() {
+        let env = HookEnv {
+            in_tokensave_project: true,
+            ..HookEnv::default()
+        };
+        for (pattern, path, glob, ty) in [
+            ("namespace", "src/Example.cs", "", ""),
+            (r"namespace", "src", "*.{cs,rs}", ""),
+            ("namespace(", "src", "", ""),
+            ("return", "src", "", "csharp"),
+            ("record", "src/Example.CS", "", ""),
+            ("@namespace", "src/Example.cs", "", ""),
+        ] {
+            let args = serde_json::json!({
+                "pattern": pattern, "path": path, "glob": glob, "type": ty,
+                "output_mode": "content",
+            });
+            assert!(
+                evaluate_hook_decision_with_env(&args.to_string(), &env).is_empty(),
+                "{pattern} in {path}",
+            );
+        }
+    }
+
+    #[test]
+    fn non_keyword_symbols_still_redirect_in_their_language() {
+        let env = HookEnv {
+            in_tokensave_project: true,
+            ..HookEnv::default()
+        };
+        for (pattern, path) in [
+            ("HandleRequest", "src/Example.cs"),
+            ("namespace", "src/example.py"),
+        ] {
+            let args = serde_json::json!({
+                "pattern": pattern, "path": path, "output_mode": "content",
+            });
+            let result = evaluate_hook_decision_with_env(&args.to_string(), &env);
+            assert!(result.contains("tokensave_search"), "{pattern} in {path}");
+        }
+    }
+
+    #[test]
+    fn shell_grep_preserves_keyword_searches_in_mixed_files() {
+        let env = HookEnv {
+            in_tokensave_project: true,
+            ..HookEnv::default()
+        };
+        let args = serde_json::json!({
+            "command": "rg -n namespace src/example.py src/Example.cs",
+        });
+        assert!(evaluate_hook_decision_with_env(&args.to_string(), &env).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod claude_grep_tests {
+    use super::{evaluate_pre_tool_use_event, HookEnv};
+
+    #[test]
+    fn claude_grep_requires_opt_in_to_deny_when_mcp_health_is_unknown() {
+        let env = HookEnv {
+            in_tokensave_project: true,
+            ..HookEnv::default()
+        };
+        let event = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "handle_request", "path": "src/lib.rs", "output_mode": "content"},
+        });
+        let advice = evaluate_pre_tool_use_event(&event.to_string(), &env, true, false);
+        let output: serde_json::Value = serde_json::from_str(&advice).unwrap_or_default();
+        assert!(output["hookSpecificOutput"]["additionalContext"].is_string());
+        assert!(output["hookSpecificOutput"]
+            .get("permissionDecision")
+            .is_none());
+        let strict = evaluate_pre_tool_use_event(&event.to_string(), &env, true, true);
+        let output: serde_json::Value = serde_json::from_str(&strict).unwrap_or_default();
+        assert_eq!(output["hookSpecificOutput"]["permissionDecision"], "deny");
+
+        let mut other_host = event;
+        other_host["hook_event_name"] = serde_json::json!("preToolUse");
+        let decision = evaluate_pre_tool_use_event(&other_host.to_string(), &env, true, false);
+        let output: serde_json::Value = serde_json::from_str(&decision).unwrap_or_default();
+        assert_eq!(output["permission"], "deny");
     }
 }
 
