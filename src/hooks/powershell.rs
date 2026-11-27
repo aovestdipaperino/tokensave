@@ -62,10 +62,11 @@ fn find_search(source: &str) -> Option<Search<'_>> {
         .named_children(&mut root.walk())
         .find(|node| node.kind() == "statement_list")?;
     let mut cursor = statements.walk();
-    statements
+    let search = statements
         .named_children(&mut cursor)
         .filter_map(standalone_command)
-        .find_map(|command| search_command(command, source))
+        .find_map(|command| search_command(command, source));
+    search
 }
 
 fn standalone_command(statement: Node<'_>) -> Option<Node<'_>> {
