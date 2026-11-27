@@ -4,7 +4,7 @@ How tokensave measures the tokens it saves, and the commands that report savings
 
 ## Per-call metrics
 
-tokensave measures the tokens it saves on every MCP tool call. Each tool response includes a `tokensave_metrics: before=N after=M` line showing how many raw-file tokens were avoided by that specific call.
+When enabled, the `tokensave_metrics` line reports estimated baseline (`before`) and MCP cost (`after`) for the call. The estimate uses the files associated with the result, caps the baseline according to the type of result, and accounts for request, response, and applicable schema overhead.
 
 **Turning the reporting off.** The metrics line, together with a sentence in the MCP `instructions`, asks the agent to report savings to you — which means the model spends *output* tokens narrating a saving tokensave made on *input* tokens. Output tokens are the more expensive kind, so if your agent mentions tokensave on nearly every turn, that narration can offset the win (#356). Set `report_savings` to `false` in `.tokensave/config.json`, or the `TOKENSAVE_REPORT_SAVINGS` environment variable to override it per-run (any value enables it except `0`, `false`, `no`, `off`, or empty). Both the metrics line and the instruction disappear; `tokensave install` likewise stops writing the reporting rule into agent prompt files. Measurement is untouched either way — every call still lands in the savings ledger, so `tokensave gain`, `tokensave list`, `status` and `monitor` keep reporting exactly as before. The default stays `true`.
 
@@ -23,6 +23,8 @@ tokensave gain --json
 `--by-tool` prints one row per tool name for the selected range and project, most-called first. With `--json` each row is an object with `tool`, `calls` and `saved_tokens`. It reads the same ledger as the other views, so it counts the same calls; it cannot be combined with `--history`. The ledger has no session id, so there is no per-session breakdown.
 
 A row is written for each `tools/call` on the served project that its tool handler answers. These calls write no row: `tokensave_more`; calls with a `graph_root` or `graph_branch` selector, which query another graph, and calls a server with no default project answers from the client's roots, which query a graph the same way; calls refused before dispatch (an invalid argument, no default project, a branch-drift or strict-mode refusal); and calls whose handler fails. The write is best-effort: if the global database cannot be opened, the row is skipped. The `tokensave_metrics` line and `report_savings` do not affect it.
+
+A successful call can add to the call count while contributing zero savings. A status call has no source-read baseline. A lookup can also lack usable file attribution, or its estimated baseline can be equal to or smaller than the cost of the MCP call. The totals describe estimated input-token savings and can differ from provider usage or billing. Use `gain --by-tool` to identify which tools recorded calls in the selected scope.
 
 Dollar estimates use the existing pricing module (Sonnet input pricing, refreshed daily via LiteLLM).
 

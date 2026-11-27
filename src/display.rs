@@ -512,12 +512,15 @@ pub fn print_gain_total(project: &str, range: &str, saved_tokens: u64, calls: u6
     println!("  {:<28} {:>12}", "Scope", project);
     println!("  {:<28} {:>12}", "Range", range);
     println!("  {:<28} {:>12}", "Tool calls", calls);
-    println!("  {:<28} {:>12}", "Tokens saved", saved_str);
+    println!("  {:<28} {:>12}", "Estimated tokens saved", saved_str);
     println!(
         "  {:<28} {:>12}",
         "USD saved (Sonnet input)",
         format!("${usd:.2}")
     );
+    if calls > 0 && saved_tokens == 0 {
+        println!("  Calls were recorded. No positive net token savings were estimated for this range.");
+    }
 }
 
 pub fn print_gain_history<F: Fn(u64) -> f64>(rows: &[crate::global_db::SavingsDay], to_usd: F) {
