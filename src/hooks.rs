@@ -992,7 +992,16 @@ fn evaluate_bash_command_inner(command: &str, env: &HookEnv) -> Option<String> {
             return None;
         };
         if let Some(found) = evaluate_bash_segment(first, env) {
-            reason.get_or_insert(found);
+            reason.get_or_insert_with(|| {
+                // Split stages are borrowed slices of the original command.
+                let start = first.as_ptr() as usize - command.as_ptr() as usize;
+                let end = start + first.len();
+                format!(
+                    "Search at UTF-8 bytes {start}..{end} in the submitted command. \
+                     To preserve shell sequencing and exit status, retry the entire original \
+                     invocation with the opt-out below, or run the suggested lookup separately.\n\n{found}"
+                )
+            });
         } else if !is_inert_command(first, reason.is_none()) {
             grep_check("Bash", "inert_companion_command", false);
             return None;
