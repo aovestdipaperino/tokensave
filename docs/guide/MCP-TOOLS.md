@@ -114,6 +114,7 @@ and not a fallback to a parent branch's index).
 |------|---------|
 | `tokensave_context` | Get relevant code context for a task -- entry points, related symbols, code snippets |
 | `tokensave_search` | Find symbols by name (functions, classes, types) |
+| `tokensave_search_batch` | Run bounded searches with shared filters and ordered per-query JSON results |
 | `tokensave_node` | Get details + source code for a specific symbol |
 | `tokensave_files` | List indexed project files (source and tracked artifacts) with filtering |
 | `tokensave_module_api` | Public API surface of a file or directory |
@@ -292,3 +293,9 @@ Four resources are exposed via `resources/list` and `resources/read`:
 - `tokensave://files` -- indexed file tree grouped by directory
 - `tokensave://overview` -- project summary with language distribution and symbol kinds
 - `tokensave://branches` -- tracked branches with DB sizes and parent info
+
+### Batch search
+
+Use `tokensave_search_batch` from the navigate area with `{"queries":["parse_input","parse_output"],"path_include":["src/"],"language":"Rust"}`. Set `literal: true` to scan source text. Both modes accept shared path filters and a case-insensitive language name. For the CLI, pass the same JSON through `tokensave tool search_batch --args`.
+
+The response contains one result per input in order, with a match count and a truncation flag for successful queries. Invalid patterns have an error entry. The tool accepts at most eight patterns of 512 UTF-8 bytes each and up to 20 matches per pattern. Literal searches stop at the match limit or after a one-second scan budget and may report a lower-bound total. A response-size budget can further truncate a group's matches.

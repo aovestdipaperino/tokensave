@@ -735,6 +735,9 @@ pub async fn handle_tool_call_with_session(
     );
     match tool_name {
         "tokensave_search" => graph::handle_search(cg, args, scope_prefix, session).await,
+        "tokensave_search_batch" => {
+            graph::handle_search_batch(cg, args, scope_prefix, session).await
+        }
         "tokensave_context" => graph::handle_context(cg, args, scope_prefix).await,
         "tokensave_callers" => graph::handle_callers(cg, args, scope_prefix, session).await,
         "tokensave_callees" => graph::handle_callees(cg, args, scope_prefix, session).await,
@@ -978,9 +981,9 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            91
+            92
         } else {
-            90
+            91
         };
         assert_eq!(tools.len(), expected_total);
 
@@ -988,6 +991,7 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_doc"));
         assert!(tool_names.contains(&"tokensave_create_file"));
         assert!(tool_names.contains(&"tokensave_search"));
+        assert!(tool_names.contains(&"tokensave_search_batch"));
         assert!(tool_names.contains(&"tokensave_context"));
         assert!(tool_names.contains(&"tokensave_callers"));
         assert!(tool_names.contains(&"tokensave_callees"));

@@ -103,6 +103,19 @@ impl TokenSave {
         Ok(ranked)
     }
 
+    pub(crate) fn file_matches_language(&self, path: &str, language: Option<&str>) -> bool {
+        language.is_none_or(|expected| {
+            let manifest = self.manifest();
+            let extractor = manifest
+                .as_ref()
+                .and_then(|manifest| manifest.language_for(path))
+                .and_then(|language| self.registry.extractor_for_language(language))
+                .or_else(|| self.registry.extractor_for_file(path));
+            extractor
+                .is_some_and(|extractor| extractor.language_name().eq_ignore_ascii_case(expected))
+        })
+    }
+
     /// Returns aggregate statistics about the code graph.
     pub async fn get_stats(&self) -> Result<GraphStats> {
         let manifest = self.manifest();

@@ -156,3 +156,34 @@ async fn ranked_text_format_signals_more_results() {
         "a complete ranked result must not claim truncation:\n{text}"
     );
 }
+
+#[tokio::test]
+async fn batch_search_preserves_order_and_reports_partial_results() {
+    let (_tmp, cg) = project().await;
+    let result = handle_tool_call(
+        &cg,
+        "tokensave_search_batch",
+        json!({
+            "queries": ["call_refresh_async();", "", "missing pattern"],
+            "literal": true,
+            "limit": 1,
+            "path_include": ["src/"],
+            "language": "rust"
+        }),
+        None,
+        None,
+    )
+    .await
+    .expect("batch search succeeds with an invalid individual pattern");
+    let payload: Value = serde_json::from_str(
+        result.value["content"][0]["text"]
+            .as_str()
+            .expect("JSON text"),
+    )
+    .expect("valid JSON");
+    assert_eq!(payload["results"][0]["count"], 1);
+    assert_eq!(payload["results"][0]["truncated"], true);
+    assert!(payload["results"][1]["error"].is_string());
+    assert_eq!(payload["results"][2]["query"], "missing pattern");
+    assert_eq!(payload["results"][2]["count"], 0);
+}
