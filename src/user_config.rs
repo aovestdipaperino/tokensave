@@ -1058,6 +1058,22 @@ fn lock_config_file() -> Option<std::fs::File> {
 }
 
 impl UserConfig {
+    /// Read a diagnostic snapshot without creating locks, recovering files,
+    /// or changing state. Config and state can reflect separate atomic saves.
+    pub(crate) fn read_for_doctor() -> Self {
+        let mut config = config_path()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| toml::from_str::<Self>(&text).ok())
+            .unwrap_or_default();
+        if let Some(state) = state_path()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| toml::from_str::<StateFile>(&text).ok())
+        {
+            apply_state(&mut config, state);
+        }
+        config
+    }
+
     /// Loads the config from `~/.tokensave/config.toml`, overlaying any
     /// machine-local state found in `~/.tokensave/state.toml`. Returns
     /// defaults if both files are missing or unreadable.

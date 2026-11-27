@@ -122,6 +122,11 @@ impl AgentIntegration for OpenCodeIntegration {
 
     fn healthcheck(&self, dc: &mut DoctorCounters, ctx: &HealthcheckContext) {
         crate::agent_note!("\n\x1b[1mOpenCode integration\x1b[0m");
+        if dc.read_only {
+            doctor_check_config(dc, &ctx.home, false);
+            dc.info("OpenCode version and version-specific rules checks skipped in read-only mode");
+            return;
+        }
         let v2 = opencode_is_v2();
         doctor_check_config(dc, &ctx.home, v2);
         doctor_check_prompt(dc, &ctx.home, v2);

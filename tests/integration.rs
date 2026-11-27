@@ -76,6 +76,7 @@ mod discover_test;
 mod display_test;
 mod dockerfile_extraction_test;
 mod docs_discovery_test;
+mod doctor_read_only_test;
 mod droid_agent_test;
 mod edge_audit_test;
 mod edge_provenance_output_test;

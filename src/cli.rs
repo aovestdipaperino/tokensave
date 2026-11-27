@@ -486,6 +486,9 @@ pub enum Commands {
         /// Check only this agent (default: all agents)
         #[arg(long, value_parser = agent_value_parser())]
         agent: Option<String>,
+        /// Inspect local state without repairs, database opens, or live probes
+        #[arg(long)]
+        read_only: bool,
         /// Also check Caveman compatibility (read-only) and print the
         /// per-agent report as JSON on stdout
         #[arg(long)]

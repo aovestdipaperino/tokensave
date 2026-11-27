@@ -165,10 +165,20 @@ pub fn integration_presence(
     home: &Path,
     installed_agents: &[String],
 ) -> IntegrationPresence {
+    doctor_presence(agent, home, installed_agents, false)
+}
+
+pub(crate) fn doctor_presence(
+    agent: &dyn AgentIntegration,
+    home: &Path,
+    installed_agents: &[String],
+    read_only: bool,
+) -> IntegrationPresence {
     let id = agent.id();
     let registered = installed_agents.iter().any(|known| known == id);
-    let configured =
-        agent.has_tokensave(home) || (id == "omp" && super::omp::has_recorded_integration(home));
+    let omp = id == "omp";
+    let configured = ((!read_only || !omp) && agent.has_tokensave(home))
+        || (omp && super::omp::has_recorded_integration(home));
     if registered || configured {
         return IntegrationPresence::Installed;
     }
@@ -185,7 +195,11 @@ pub fn integration_presence(
         IntegrationPresence::Leftover
     } else {
         IntegrationPresence::Absent {
-            detected: agent.is_detected(home),
+            detected: if read_only && omp {
+                super::omp::is_detected_without_probe(home)
+            } else {
+                agent.is_detected(home)
+            },
         }
     }
 }

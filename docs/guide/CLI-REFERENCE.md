@@ -62,7 +62,7 @@ tokensave monitor                  # Live TUI showing MCP calls across all proje
 tokensave memory [--clean]         # Per-instance RSS report for all tokensave processes
 tokensave upgrade [--dry-run] [--standalone] # Show installer guidance or verify and upgrade a standalone binary
 tokensave channel [stable|beta]    # Show or switch update channel
-tokensave doctor [--agent NAME]    # Check installation health
+tokensave doctor [--agent NAME] [--read-only]  # Check installation health
 tokensave doctor --caveman [--session-id ID]  # Also check Caveman compatibility; JSON report on stdout
 tokensave githooks [on|off] [--local]  # Manage git hooks (--local: this repo only, no core.hooksPath)
 tokensave branch add|list|remove|removeall|gc|set-default   # Multi-branch management
