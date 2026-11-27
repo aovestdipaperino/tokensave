@@ -19,6 +19,9 @@ source archive without that record, the commit is `unknown`.
 Use `tokensave tool --help` or `tokensave help tool` for the tool subcommand's
 help, and `tokensave tool <name> --help` for a specific tool's parameters.
 Place global diagnostics flags before the tool name.
+Pass the context task as a positional argument, for example
+`tokensave tool context "Find the parser tests"`. The `--task` and `--query`
+flags also accept the task text.
 
 ```bash
 tokensave --version                # Print the installed version
