@@ -3600,6 +3600,7 @@ mod tests {
     fn canonical_graph_scoped_tools() -> BTreeSet<&'static str> {
         [
             "tokensave_search",
+            "tokensave_search_batch",
             "tokensave_context",
             "tokensave_callers",
             "tokensave_callees",

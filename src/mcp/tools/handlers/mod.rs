@@ -981,9 +981,9 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            91
+            92
         } else {
-            90
+            91
         };
         assert_eq!(tools.len(), expected_total);
 
@@ -991,6 +991,7 @@ mod tests {
         assert!(tool_names.contains(&"tokensave_doc"));
         assert!(tool_names.contains(&"tokensave_create_file"));
         assert!(tool_names.contains(&"tokensave_search"));
+        assert!(tool_names.contains(&"tokensave_search_batch"));
         assert!(tool_names.contains(&"tokensave_context"));
         assert!(tool_names.contains(&"tokensave_callers"));
         assert!(tool_names.contains(&"tokensave_callees"));
