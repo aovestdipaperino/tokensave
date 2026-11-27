@@ -80,20 +80,16 @@ fn search_followed_by_other_work_passes_through() {
     }
 }
 
-/// Since #648 a search piped into a read-only filter is redirected: `| head`
-/// discards nothing a denial could lose. A pipe into a stage that writes is
-/// still work and still passes through.
+/// Preserve the pipeline whether the consumer filters results or writes them.
 #[test]
-fn piped_search_is_redirected_only_into_read_only_filters() {
+fn piped_search_preserves_consumers() {
     let (_tmp, root) = project();
     let target = root.join("src").join("lib.rs");
-    let cmd = format!("grep -n MySymbol {} | head -5", target.display());
-    assert!(is_blocked(&cmd, &root), "`| head` is not work: {cmd}");
-    for consumer in ["xargs rm", "tee out.txt", "sort -o out.txt"] {
+    for consumer in ["head -5", "xargs rm", "tee out.txt", "sort -o out.txt"] {
         let cmd = format!("grep -n MySymbol {} | {consumer}", target.display());
         assert!(
             !is_blocked(&cmd, &root),
-            "a pipe into a writer must not be denied: {cmd}"
+            "a pipeline must not be denied: {cmd}"
         );
     }
 }

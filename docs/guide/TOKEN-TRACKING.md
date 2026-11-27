@@ -85,7 +85,7 @@ tokensave discover --json          # machine-readable report
 
 `tokensave discover` reads the same Claude Code turns as `tokensave cost` and lists turns that a tokensave query could have answered more cheaply. A turn counts only when every tool it used is navigation: `Read`, `Grep`, `Glob`, or a Bash code search. Turns that also edit files or run other commands are left out, so the figures are a lower bound. The **Addressable** column is the measured size of those tools' results; **Recoverable** claims half of it.
 
-A Bash command counts as a code search when it is a `grep`, `rg`, `ag` or `git grep` for one symbol in code: a bare identifier, `\bname\b`, a declaration such as `fn name` or `class Name`, or `const`/`let`/`var NAME` in a JavaScript or TypeScript file. It may be followed by read-only filters such as `| head`. tokensave classifies the command when it ingests the turn, using the same rules as the Claude Code search hook, and stores only the verdict, never the command text.
+A Bash command counts as a code search when it is a `grep`, `rg`, `ag` or `git grep` for one symbol in code: a bare identifier, `\bname\b`, a declaration such as `fn name` or `class Name`, or `const`/`let`/`var NAME` in a JavaScript or TypeScript file. It may be followed by read-only filters such as `| head`. tokensave classifies the command when it ingests the turn and stores only the verdict. Pipelines can count as code searches while running unchanged under the search hook.
 
 Bash searches that do not count are listed under **Bash searches not counted** (`excluded_bash_searches` in JSON), one line per reason:
 
