@@ -1723,17 +1723,19 @@ fn test_claude_event_cwd_activates_the_guardrail() {
     let (_tmp, root) = indexed_project();
     let input = serde_json::json!({
         "cwd": root.to_string_lossy(),
+        "hook_event_name": "PreToolUse",
         "tool_name": "Grep",
         "tool_input": {"pattern": "handle_request", "path": "src", "output_mode": "content"},
     })
     .to_string();
-    assert!(
-        is_blocked(&evaluate_claude_pre_tool_use_with_env(
-            &input,
-            &env_not_indexed()
-        )),
-        "Claude's event cwd should decide the project too"
-    );
+    let output = evaluate_claude_pre_tool_use_with_env(&input, &env_not_indexed());
+    let decision: serde_json::Value = serde_json::from_str(&output).expect("hook advice");
+    assert!(decision.get("permission").is_none());
+    let hook_output = &decision["hookSpecificOutput"];
+    assert!(hook_output.get("permissionDecision").is_none());
+    let advice = hook_output["additionalContext"].as_str().expect("advice");
+    assert!(advice.contains("native Grep results"));
+    assert!(advice.contains("tokensave_search"));
 }
 
 #[test]

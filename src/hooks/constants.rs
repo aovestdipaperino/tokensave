@@ -68,3 +68,6 @@ pub(super) const BASH_ADVISORY_GREP_FLAGS: &str = "nrRw";
 
 /// Variable declaration prefixes understood by Claude's Bash search advice.
 pub(super) const JS_VARIABLE_DECLARATION_KEYWORDS: &[&str] = &["const", "let", "var"];
+
+/// Restores native Grep redirects for Claude Code sessions that require them.
+pub(super) const CLAUDE_STRICT_GREP_ENV: &str = "TOKENSAVE_CLAUDE_STRICT_GREP";
