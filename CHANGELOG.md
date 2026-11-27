@@ -9,6 +9,7 @@ and this project uses [maintenance-based versioning](TOKENSAVE-VERSIONING.md), n
 
 ### Fixed
 
+- Symbol-based callers and impact responses retain matching symbols and a prefix of their results when the response size limit applies (Refs #1159).
 - Search hooks keep keyword-only C# searches such as `namespace` in native Grep, even when the same spelling names an indexed symbol (Refs #1146).
 
 - Claude Code native Grep proceeds under normal host permissions when the hook cannot establish MCP availability. An explicit strict setting retains redirects (Refs #1137).
