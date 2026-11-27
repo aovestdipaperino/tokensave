@@ -1015,10 +1015,10 @@ pub(super) async fn handle_callers(
         }
     };
 
-    let output = serde_json::to_string_pretty(&output).unwrap_or_default();
+    let output = symbol_target::bounded_match_response(output, "callers", super::response_limit());
     Ok(ToolResult {
         value: json!({
-            "content": [{ "type": "text", "text": truncate_response(&output) }]
+            "content": [{ "type": "text", "text": output }]
         }),
         touched_files,
     })
@@ -1902,10 +1902,10 @@ pub(super) async fn handle_impact(
     };
     let touched_files = unique_file_paths(files.iter().map(String::as_str));
 
-    let formatted = serde_json::to_string_pretty(&output).unwrap_or_default();
+    let formatted = symbol_target::bounded_match_response(output, "nodes", super::response_limit());
     Ok(ToolResult {
         value: json!({
-            "content": [{ "type": "text", "text": truncate_response(&formatted) }]
+            "content": [{ "type": "text", "text": formatted }]
         }),
         touched_files,
     })
