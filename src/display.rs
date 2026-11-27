@@ -519,7 +519,9 @@ pub fn print_gain_total(project: &str, range: &str, saved_tokens: u64, calls: u6
         format!("${usd:.2}")
     );
     if calls > 0 && saved_tokens == 0 {
-        println!("  Calls were recorded. No positive net token savings were estimated for this range.");
+        println!(
+            "  Calls were recorded. No positive net token savings were estimated for this range."
+        );
     }
 }
 
