@@ -2264,11 +2264,11 @@ fn indexed_namesake_does_not_redirect_csharp_namespace_search() {
             "pattern": pattern, "path": path, "output_mode": "content",
         });
         let result = evaluate_hook_decision_with_env(&args.to_string(), &env);
-        assert_eq!(
-            is_blocked(&result),
-            redirect,
-            "{pattern} in {path}: {result}"
-        );
+        if redirect {
+            assert!(is_blocked(&result), "{pattern} in {path}: {result}");
+        } else {
+            assert!(result.is_empty(), "{pattern} in {path}: {result}");
+        }
     }
 }
 
