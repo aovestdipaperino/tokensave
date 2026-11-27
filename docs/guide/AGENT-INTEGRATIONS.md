@@ -141,6 +141,8 @@ To suppress the suggestion for one invocation, prefix the search in the Bash too
 
 ```bash
 TOKENSAVE_DISABLE_GREP_HOOK=1 grep -n 'fn verify' src/auth.rs
+
+When the hook redirects a batched Bash search, its reason gives the triggering search's UTF-8 byte range in the submitted command. Retry the whole original invocation with the opt-out in the diagnostic to preserve sequencing and exit status.
 ```
 
 The hook reads the inline assignment from the command before the shell runs. For a session-wide opt-out, set the variable in the environment that launches Claude Code.

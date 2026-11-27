@@ -82,6 +82,24 @@ fn a_search_batched_behind_inert_commands_is_redirected() {
 }
 
 #[test]
+fn batched_redirects_report_the_search_byte_range() {
+    let (_tmp, root) = project();
+    let search = "grep -n SymbolOne src/one.rs";
+    for separator in [";", "&&", "||"] {
+        let prefix = format!("echo 'caf?' {separator} ");
+        let command = format!("{prefix}{search}");
+        let input = serde_json::json!({ "command": command }).to_string();
+        let decision = evaluate_hook_decision_with_env(&input, &env_rooted_at(&root));
+        let start = prefix.len();
+        let end = start + search.len();
+        assert!(
+            decision.contains(&format!("UTF-8 bytes {start}..{end}")),
+            "{decision}"
+        );
+    }
+}
+
+#[test]
 fn a_segment_that_does_real_work_is_left_alone() {
     let (_tmp, root) = project();
     // Denying returns the whole command to the caller unrun, so the checkout
