@@ -742,6 +742,27 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
     }
 
     match command {
+        Commands::Dotnet {
+            kind,
+            project,
+            path,
+            name,
+            offset,
+            limit,
+        } => {
+            let root = tokensave::config::resolve_path_with_discovery(project);
+            let project = serve::ensure_initialized(&root).await?;
+            let result = tokensave::dotnet::query(
+                &project,
+                kind,
+                path.as_deref(),
+                name.as_deref(),
+                offset,
+                limit,
+            )
+            .await?;
+            println!("{result}");
+        }
         Commands::Init {
             path,
             skip_folders,
@@ -1072,7 +1093,11 @@ async fn run(cli: Cli) -> tokensave::errors::Result<()> {
                 let tokens_saved = cg.get_tokens_saved().await.unwrap_or(0);
                 // Register project and read global total in one open.
                 // Subtract this project's count so "Global" means "all other projects".
-                let gdb = tokensave::global_db::GlobalDb::open().await;
+                let gdb = if tokensave::global_db::project_registration_enabled() {
+                    tokensave::global_db::GlobalDb::open().await
+                } else {
+                    None
+                };
                 let global_tokens_saved = match &gdb {
                     Some(db) => {
                         db.upsert(&project_path, tokens_saved).await;

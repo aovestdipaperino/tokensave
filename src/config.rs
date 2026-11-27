@@ -264,8 +264,12 @@ fn default_artifact_extensions() -> Vec<String> {
     [
         "feature", "json", "yaml", "yml", "sql", "toml", "proto", "graphql", "md", "bnd", "bndrun",
     ]
-    .iter()
-    .map(|ext| (*ext).to_string())
+    .into_iter()
+    .chain([
+        crate::dotnet::constants::RESX_EXT,
+        crate::dotnet::constants::CONFIG_EXT,
+    ])
+    .map(str::to_owned)
     .collect()
 }
 

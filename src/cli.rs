@@ -32,6 +32,24 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Query indexed C# syntax, resources and configuration keys
+    Dotnet {
+        #[arg(value_enum)]
+        kind: tokensave::dotnet::Query,
+        /// Project root (default: discover from current directory)
+        #[arg(long)]
+        project: Option<String>,
+        /// Indexed file or directory prefix within the project
+        #[arg(long)]
+        path: Option<String>,
+        /// Exact syntax target or resource key
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        #[arg(long, default_value_t = tokensave::dotnet::DEFAULT_LIMIT)]
+        limit: usize,
+    },
     /// Export one indexed file as an experimental Graphify snapshot (no sync)
     GraphifyExport {
         /// Project root (default: discover from current directory)

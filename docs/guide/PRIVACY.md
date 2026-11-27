@@ -35,3 +35,12 @@ While either is set, tokensave makes no request to the counter (no upload, no to
 dependency ecosystems, package names and versions to OSV and fetching advisory
 records by ID. These lookups send no source code, call graph data or project
 paths. The cache lives in the project's index database.
+
+## Temporary project registration
+
+Set `TOKENSAVE_EPHEMERAL_PROJECT=1` for a disposable project's TokenSave
+processes, including the MCP server when testing auto-init. The local index
+works normally and the process skips writes to the shared project registry.
+This applies to new writes. Use the interactive stale-project cleanup in
+`tokensave doctor` for older registrations. Doctor preserves entries when
+the index path cannot be checked and rechecks reported paths after confirmation.

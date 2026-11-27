@@ -175,6 +175,7 @@ tree-sitter-vhdl = { version = "1.4", optional = true }
 # constructs a watcher unless `filesystem_watch_enabled` or `serve --watch`
 # asks for one.
 notify = "8"
+roxmltree = { version = "0.21", default-features = false, features = ["std", "positions"] }
 
 [target.'cfg(target_os = "freebsd")'.dependencies]
 kqueue = "1.2"
@@ -211,6 +212,7 @@ tempfile = "3"
 # Paused-clock tests of the filesystem watcher's debounce loop (#937).
 tokio = { version = "1", features = ["test-util"] }
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+regex = "1"
 
 # All integration tests share one binary (tests/integration.rs). The targets
 # after it stay separate because they mutate process-global state that the

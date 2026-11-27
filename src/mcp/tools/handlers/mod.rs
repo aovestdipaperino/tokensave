@@ -743,6 +743,30 @@ pub async fn handle_tool_call_with_session(
         "tokensave_status" => {
             info::handle_status(cg, server_stats, scope_prefix, selected_graph).await
         }
+        crate::dotnet::constants::TOOL => {
+            let kind = serde_json::from_value(args["kind"].clone()).map_err(|error| {
+                crate::errors::TokenSaveError::Config {
+                    message: format!("invalid .NET query kind: {error}"),
+                }
+            })?;
+            let offset = args["offset"].as_u64().unwrap_or(0);
+            let limit = args["limit"]
+                .as_u64()
+                .unwrap_or(crate::dotnet::DEFAULT_LIMIT as u64);
+            let result = crate::dotnet::query(
+                cg,
+                kind,
+                effective_path(&args, scope_prefix),
+                args["name"].as_str(),
+                usize::try_from(offset).unwrap_or(usize::MAX),
+                usize::try_from(limit).unwrap_or(usize::MAX),
+            )
+            .await?;
+            Ok(ToolResult {
+                value: serde_json::json!({"content": [{"type": "text", "text": result.to_string()}]}),
+                touched_files: vec![],
+            })
+        }
         "tokensave_files" => info::handle_files(cg, args, scope_prefix).await,
         "tokensave_affected" => git::handle_affected(cg, args).await,
         "tokensave_dead_code" => analysis::handle_dead_code(cg, args, scope_prefix).await,
@@ -978,9 +1002,9 @@ mod tests {
         // tool that will instantly fail. The count and the per-tool checks
         // below adapt to the host's capability set.
         let expected_total = if super::super::definitions::ast_grep_available() {
-            91
+            92
         } else {
-            90
+            91
         };
         assert_eq!(tools.len(), expected_total);
 

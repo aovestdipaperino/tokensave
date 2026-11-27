@@ -1,0 +1,1 @@
+pub(super) const EPHEMERAL_PROJECT: &str = "TOKENSAVE_EPHEMERAL_PROJECT";

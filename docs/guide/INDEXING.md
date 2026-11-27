@@ -198,9 +198,9 @@ on purpose. The check needs a git repository and is skipped outside one.
 
 `tokensave_files` covers more than source. Files whose extension is listed in
 `artifact_extensions` (`.feature`, `.json`, `.yaml`, `.yml`, `.sql`, `.toml`,
-`.proto`, `.graphql`, `.md`, `.bnd`, `.bndrun` by default) are tracked by path
+`.proto`, `.graphql`, `.md`, `.bnd`, `.bndrun`, `.resx`, `.config` by default) are tracked by path
 so questions like "where are the `.feature` files for the login flow?" have a
-graph answer rather than a blocked `find` (#323). They are never parsed and contribute no symbols;
+graph answer rather than a blocked `find` (#323). They contribute no graph symbols.
 `kind: "artifact"` and `kind: "code"` filter between the two, and analyses that
 mean "code" exclude them. An extension already handled by a language extractor
 is ignored in this list, so it cannot be used to stop a language being parsed.
@@ -215,3 +215,35 @@ lines are searched like any other, reported with `enclosing: null` since there
 is no symbol context. A literal response that could not reach every tracked
 file says so in an `unscanned` block naming the count and the extensions, so a
 partial answer is never presented as a complete one.
+
+## C# and .NET discovery
+
+Run `tokensave dotnet assignment --name Text --path src` against an indexed project.
+The other syntax modes are `call`, `attribute` and `comparison`. Assignments
+match plain assignments with literal right-hand sides. Method invocations
+and attributes match their terminal name. Comparisons match `==`, `!=`,
+`<`, `<=`, `>` or `>=`. Results include a one-based byte
+range with an exclusive end and the nearest named declaration. Comments and
+string contents are not parsed as separate constructs.
+
+Run `tokensave dotnet resources --path src` to discover RESX keys and keys in
+the `appSettings` and `connectionStrings` sections of .NET XML configuration.
+For an existing index, add `resx` and `config` to your saved
+`artifact_extensions` if absent, then run `tokensave sync`. XML values are omitted and documents with DTDs
+are rejected. UTF-8 RESX variants are grouped by directory and filename
+stem with a locale suffix such as `fr-FR`. Each result reports duplicates
+within one file, missing keys across observed variants and candidate unused
+resources. Use `missing-translations` or `unused-resources` to filter those
+findings directly. Common C# resource manager calls, generated property accesses such as `Resources.Key` and configuration index accesses are checked syntactically.
+Dynamic keys, custom class names that differ from the RESX stem, indirect references, other XML
+sections and external configuration files may require manual review.
+
+MCP exposes the same modes through `tokensave_dotnet` in
+`tokensave_more` area `navigate`. Both interfaces accept an indexed
+project-relative path with `/` separators and an exact name or key. Continue with the reported
+`next_offset` against the same query. Each request scans at most 256
+eligible indexed files and 8 MiB total, with a 512 KiB limit per file. Each page is also capped at 12 KiB of
+match data.
+Narrow the path when `scan_truncated` is true. A directory filter limits
+both definitions and reference coverage. Discovery reads the indexed
+checkout and requires its graph when branch indexes are present.

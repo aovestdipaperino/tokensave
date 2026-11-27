@@ -38,6 +38,7 @@ pub mod diagnostics;
 pub mod display;
 pub mod docs;
 pub mod doctor;
+pub mod dotnet;
 pub mod edge_audit;
 pub mod errors;
 pub mod extraction;

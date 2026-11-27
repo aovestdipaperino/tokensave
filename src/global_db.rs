@@ -454,6 +454,9 @@ impl GlobalDb {
     /// The path is canonicalised via [`normalize_project_key`] so that `.`,
     /// relative paths and case-variant drive letters all update one row.
     pub async fn upsert(&self, project_path: &Path, tokens_saved: u64) {
+        if !project_registration_enabled() {
+            return;
+        }
         let path_str = normalize_project_key(project_path);
         let _ = self
             .conn
@@ -1375,4 +1378,12 @@ mod tests {
         // The ledger row written under the old spelling still answers for the project.
         assert_eq!(db.sum_savings(Some(&canonical), 0).await.calls, 1);
     }
+}
+
+#[path = "global_db/constants.rs"]
+mod constants;
+
+/// Whether this process may update the shared project registry.
+pub fn project_registration_enabled() -> bool {
+    std::env::var_os(constants::EPHEMERAL_PROJECT).as_deref() != Some(std::ffi::OsStr::new("1"))
 }
