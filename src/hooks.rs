@@ -524,10 +524,52 @@ fn grep_check(tool: &'static str, check: &'static str, passed: bool) {
     );
 }
 
+/// Scope hints narrow a text search without inspecting repository contents.
+fn keyword_search(symbol: &str, path: &str, globs: &[&str], ty: &str) -> bool {
+    if !constants::CSHARP_SEARCH_KEYWORDS.contains(&symbol) {
+        return false;
+    }
+    let is_csharp = |value: &str| {
+        constants::CSHARP_SEARCH_TYPES
+            .iter()
+            .any(|kind| value.eq_ignore_ascii_case(kind))
+    };
+    if !ty.is_empty() {
+        return is_csharp(ty);
+    }
+    let file_extension = Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| {
+            is_csharp(ext)
+                || CODE_EXTENSIONS
+                    .iter()
+                    .any(|known| ext.eq_ignore_ascii_case(known))
+        });
+    if let Some(ext) = file_extension {
+        return is_csharp(ext);
+    }
+    let mut known_globs = 0;
+    for extensions in globs.iter().filter_map(|glob| glob_extensions(glob)) {
+        if extensions.iter().any(|ext| is_csharp(ext)) {
+            return true;
+        }
+        known_globs += 1;
+    }
+    if known_globs > 0 && known_globs == globs.len() {
+        return false;
+    }
+
+    // An unscoped namespace search may include C# alongside another language
+    // with an indexed symbol of that name. Keep the cross-language text match.
+    symbol == constants::CSHARP_NAMESPACE_KEYWORD
+}
+
 fn check_grep_pattern<'a>(
     tool: &'static str,
     pattern: &'a str,
     env: &HookEnv,
+    is_keyword: impl FnOnce(&str) -> bool,
 ) -> Option<SymbolMatch<'a>> {
     let found = classify_symbol_pattern(pattern);
     crate::debug_log::event(
@@ -545,6 +587,11 @@ fn check_grep_pattern<'a>(
         },
     );
     let found = found?;
+    let keyword = is_keyword(found.symbol);
+    grep_check(tool, "non_keyword_pattern", !keyword);
+    if keyword {
+        return None;
+    }
     let indexed = is_symbol_indexed(env, found.symbol);
     grep_check(tool, "symbol_indexed", indexed);
     indexed.then_some(found)
@@ -605,7 +652,9 @@ fn evaluate_grep_tool_input_inner(parsed: &Value, env: &HookEnv) -> Option<Strin
     if !code_target {
         return None;
     }
-    let found = check_grep_pattern("Grep", pattern, env)?;
+    let found = check_grep_pattern("Grep", pattern, env, |symbol| {
+        keyword_search(symbol, path, &[glob], ty)
+    })?;
     Some(redirect_message("Grep", pattern, &found))
 }
 
@@ -883,6 +932,9 @@ fn build_search_advice(advice: &str) -> String {
 
 fn bash_advisory_symbol<'a>(pattern: &'a str, target: &Path) -> Option<&'a str> {
     if let Some(found) = classify_symbol_pattern(pattern) {
+        if keyword_search(found.symbol, &target.to_string_lossy(), &[], "") {
+            return None;
+        }
         let simple_pattern = match found.shape {
             PatternShape::BareSymbol => pattern == found.symbol,
             PatternShape::WordBoundary => true,
@@ -1036,7 +1088,15 @@ fn evaluate_bash_segment(command: &str, env: &HookEnv) -> Option<String> {
     if !code_target {
         return None;
     }
-    let found = check_grep_pattern(inv.tool, &inv.pattern, env)?;
+    let found = check_grep_pattern(inv.tool, &inv.pattern, env, |symbol| {
+        let ty = inv.ty.as_deref().unwrap_or("");
+        keyword_search(symbol, target.as_ref(), &globs, ty)
+            || inv
+                .targets
+                .iter()
+                .skip(1)
+                .any(|target| keyword_search(symbol, target, &globs, ty))
+    })?;
     Some(redirect_message("Bash grep", &inv.pattern, &found))
 }
 
@@ -1309,7 +1369,11 @@ fn classify_bash_search_segment(command: &str) -> BashSearchVerdict {
     {
         return BashSearchVerdict::Excluded(Why::NonCodeTarget);
     }
-    if classify_symbol_pattern(&inv.pattern).is_some() {
+    if classify_symbol_pattern(&inv.pattern).is_some_and(|found| {
+        targets
+            .iter()
+            .all(|target| !keyword_search(found.symbol, target, &globs, ty))
+    }) {
         return BashSearchVerdict::Replaceable;
     }
     // `const NAME`, `let NAME`, `var NAME`: the advisory path accepts these
@@ -1887,6 +1951,14 @@ fn expand_home_prefix(raw: &str, home: Option<&Path>) -> Option<PathBuf> {
 }
 
 fn classify_glob_target(glob: &str) -> Option<bool> {
+    Some(
+        glob_extensions(glob)?
+            .iter()
+            .all(|ext| CODE_EXTENSIONS.contains(&ext.as_str())),
+    )
+}
+
+fn glob_extensions(glob: &str) -> Option<Vec<String>> {
     let trimmed = glob.trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
     if trimmed.is_empty() {
         return None;
@@ -1918,11 +1990,7 @@ fn classify_glob_target(glob: &str) -> Option<bool> {
         vec![ext]
     };
 
-    (!extensions.is_empty()).then(|| {
-        extensions
-            .iter()
-            .all(|ext| CODE_EXTENSIONS.contains(&ext.as_str()))
-    })
+    (!extensions.is_empty()).then_some(extensions)
 }
 
 #[derive(Debug, Default)]
@@ -2925,6 +2993,66 @@ async fn print_session_receipt(stats: &crate::accounting::IngestStats) {
             "\x1b[36mSession: ${:.2} spent | {saved_str} saved | {efficiency:.0}% efficiency\x1b[0m",
             stats.cost_usd
         );
+    }
+}
+
+#[cfg(test)]
+mod grep_keyword_tests {
+    use super::{evaluate_hook_decision_with_env, HookEnv};
+
+    #[test]
+    fn keyword_only_csharp_searches_stay_native() {
+        let env = HookEnv {
+            in_tokensave_project: true,
+            ..HookEnv::default()
+        };
+        for (pattern, path, glob, ty) in [
+            ("namespace", "src/Example.cs", "", ""),
+            (r"namespace", "src", "*.{cs,rs}", ""),
+            ("namespace(", "src", "", ""),
+            ("return", "src", "", "csharp"),
+            ("record", "src/Example.CS", "", ""),
+            ("@namespace", "src/Example.cs", "", ""),
+        ] {
+            let args = serde_json::json!({
+                "pattern": pattern, "path": path, "glob": glob, "type": ty,
+                "output_mode": "content",
+            });
+            assert!(
+                evaluate_hook_decision_with_env(&args.to_string(), &env).is_empty(),
+                "{pattern} in {path}",
+            );
+        }
+    }
+
+    #[test]
+    fn non_keyword_symbols_still_redirect_in_their_language() {
+        let env = HookEnv {
+            in_tokensave_project: true,
+            ..HookEnv::default()
+        };
+        for (pattern, path) in [
+            ("HandleRequest", "src/Example.cs"),
+            ("namespace", "src/example.py"),
+        ] {
+            let args = serde_json::json!({
+                "pattern": pattern, "path": path, "output_mode": "content",
+            });
+            let result = evaluate_hook_decision_with_env(&args.to_string(), &env);
+            assert!(result.contains("tokensave_search"), "{pattern} in {path}");
+        }
+    }
+
+    #[test]
+    fn shell_grep_preserves_keyword_searches_in_mixed_files() {
+        let env = HookEnv {
+            in_tokensave_project: true,
+            ..HookEnv::default()
+        };
+        let args = serde_json::json!({
+            "command": "rg -n namespace src/example.py src/Example.cs",
+        });
+        assert!(evaluate_hook_decision_with_env(&args.to_string(), &env).is_empty());
     }
 }
 

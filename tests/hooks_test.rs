@@ -2252,6 +2252,27 @@ async fn grep_denial_distinguishes_definitions_from_text_references() {
 }
 
 #[test]
+fn indexed_namesake_does_not_redirect_csharp_namespace_search() {
+    let (_tmp, root) = indexed_project_with_nodes(&["namespace", "HandleRequest"]);
+    let env = env_rooted_at(&root);
+    for (pattern, path, redirect) in [
+        ("namespace", "src/Example.cs", false),
+        ("namespace", "src/example.py", true),
+        ("HandleRequest", "src/Example.cs", true),
+    ] {
+        let args = serde_json::json!({
+            "pattern": pattern, "path": path, "output_mode": "content",
+        });
+        let result = evaluate_hook_decision_with_env(&args.to_string(), &env);
+        if redirect {
+            assert!(is_blocked(&result), "{pattern} in {path}: {result}");
+        } else {
+            assert!(result.is_empty(), "{pattern} in {path}: {result}");
+        }
+    }
+}
+
+#[test]
 fn test_686_keyword_not_in_index_passes_through() {
     let (_tmp, root) = indexed_project_with_nodes(&["MySymbol"]);
     let env = env_rooted_at(&root);
