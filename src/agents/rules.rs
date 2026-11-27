@@ -103,9 +103,10 @@ const CANONICAL_RULES_MARKDOWN: &str = "## Prefer tokensave MCP tools\n\n\
 Before reading source files or scanning a codebase, use the tokensave MCP tools: \
 `tokensave_context` for exploration, `tokensave_search` for a known symbol, plus \
 `tokensave_callers`, `tokensave_callees`, `tokensave_impact`, `tokensave_node`, \
-`tokensave_files`, and `tokensave_affected`. A tool that is not in your tool \
-list is listed by calling `tokensave_more` with its area: `navigate` for \
-`tokensave_node`, `git` for `tokensave_affected` and the branch tools.\n\n\
+`tokensave_files`, and `tokensave_affected`. Use core tools directly. If the host supports targeted \
+schema discovery, look up the exact tool name. For an unlisted tool, use \
+`tokensave_more` with its area, such as `navigate` for `tokensave_node` or \
+`git` for `tokensave_affected`.\n\n\
 For files inside the selected repository (the active graph root or an explicit \
 `graph_root`), use `tokensave_read`, including unindexed files outside `.git`. Use \
 the host's authorized reader for external files such as plugin skills, global \
