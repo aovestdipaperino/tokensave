@@ -653,12 +653,7 @@ fn evaluate_grep_tool_input_inner(parsed: &Value, env: &HookEnv) -> Option<Strin
         return None;
     }
     let found = check_grep_pattern("Grep", pattern, env, |symbol| {
-        keyword_search(
-            symbol,
-            path,
-            if glob.is_empty() { &[] } else { &[glob] },
-            ty,
-        )
+        keyword_search(symbol, path, &[glob], ty)
     })?;
     Some(redirect_message("Grep", pattern, &found))
 }
