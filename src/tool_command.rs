@@ -232,10 +232,14 @@ fn parse_invocation(def: &ToolDefinition, args: &[String]) -> Result<ParsedInvoc
     // A tool that takes `symbol` or `node_id` without requiring either
     // (`body`, `callers`, ... since #669) binds one positional to `symbol`,
     // which also accepts a node id.
+    // Context keeps `task` as its positional input after adding the `query` alias.
     if !positionals.is_empty() {
         let mut positional_iter = positionals.into_iter();
         let symbol_slot = [String::from("symbol")];
-        let slots: &[String] = if required.is_empty()
+        let context_slot = [String::from("task")];
+        let slots: &[String] = if def.name == "tokensave_context" {
+            &context_slot
+        } else if required.is_empty()
             && schema_properties.contains_key("symbol")
             && !collected.contains_key("node_id")
         {
@@ -715,6 +719,7 @@ mod tests {
             ],
         )
         .unwrap();
+        assert_eq!(parsed.tool_args["task"], json!("describe X"));
         assert_eq!(parsed.tool_args["include_code"], json!(true));
     }
 
